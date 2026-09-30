@@ -8,6 +8,7 @@ import { renderWithProviders, createTestStore } from './helpers'
 import ChatInput from '../components/ChatInput'
 import { api, ApiError } from '../api/client'
 import { i18nT } from '../i18n/t'
+import { selectSlotPendingApproval } from '../store/chatSlice'
 import type { RootState } from '../store'
 
 vi.mock('../api/client', () => {
@@ -308,6 +309,31 @@ describe('ChatInput approval flow', () => {
     // that ran past the 1000ms default under load in one of four full runs. A
     // named ceiling for that chain, not a longer guess (website/docs/testing.md).
     await waitFor(() => expect(screen.getByText(/command/)).toBeInTheDocument(), { timeout: 5000 })
+  })
+
+  it('carries tool_input through to a BACKGROUND slot, which is what a thread pane is', () => {
+    // The approval card's detail block keys off `meta.tool_input` and nothing
+    // else: `hasEntry={!!approvalToolInput}` in ChatInput, read off the row this
+    // selector returns. A thread is an ordinary slot rendered while another one
+    // is active, so its composer reads `slotMessages[thread]` instead of
+    // `chat.messages` -- a different branch of the selector, the same row out.
+    // So a thread card that cannot say what it is approving is a card whose meta
+    // carries no `tool_input`, not a background slot losing its details. The
+    // rendered card is pinned by the expanded-preview test above.
+    const base = stateWithApproval()
+    const rows = (base.chat as unknown as { messages: unknown[] }).messages
+    const store = createTestStore({
+      ...base,
+      chat: {
+        ...(base.chat as object),
+        activeSlot: 'slot-parent',
+        messages: [],
+        slotMessages: { 'chat-thread-1': rows },
+      } as unknown as RootState['chat'],
+    })
+    const onThread = selectSlotPendingApproval(store.getState(), 'chat-thread-1')
+    expect(onThread?.meta?.approval_id).toBe('ap-123')
+    expect(onThread?.meta?.tool_input).toBe('{"command":"ls /tmp"}')
   })
 
   it('uses approvalFullCommand for TrustDropdown', () => {

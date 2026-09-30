@@ -28,7 +28,7 @@ import {
   handleMemberProjection,
   handleMembersSubscribed,
   handleSourceStatus,
-  handleThreadReply,
+  handleThreadAnchor,
   invalidateRefreshQueries,
 } from './websocket/serverState'
 import { useChatStream } from './websocket/chatStream'
@@ -578,8 +578,8 @@ export function useWebSocket() {
           case 'chat.side_result':
             dispatch(sseSideResult(data as { slot: string; run_id: string; role: 'user' | 'assistant'; content: string; ts?: number; final?: boolean; is_error?: boolean; steer?: boolean }))
             break
-          case 'chat.thread_reply':
-            handleThreadReply(queryClient, data)
+          case 'chat.thread_anchor':
+            handleThreadAnchor(queryClient, data)
             break
           case 'chat.side_queue': {
             // `raw` marks content the LOCAL client typed; broadcast payloads are scrubbed by

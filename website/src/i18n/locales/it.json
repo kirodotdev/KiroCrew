@@ -10871,7 +10871,7 @@
       },
       "thread": {
         "title": "Thread",
-        "close": "Chiudi il thread",
+        "close": "Chiudi pannello",
         "reply_in_thread": "Rispondi nel thread",
         "open_thread": "Apri il thread",
         "replies_count_one": "{{count}} risposta",
@@ -10880,20 +10880,30 @@
         "last_reply": "Ultima risposta {{when}}",
         "you": "Tu",
         "no_replies_yet": "Ancora nessuna risposta",
-        "replying": "{{name}} sta rispondendo…",
-        "reply_placeholder": "Rispondi nel thread…",
-        "reply_after_retry": "Premi Riprova per caricare il thread, poi rispondi.",
-        "send_reply": "Invia risposta",
-        "err_replying": "{{name}} sta ancora rispondendo. Aspetta quella risposta.",
-        "err_parent_gone": "Quel messaggio non è più in questa chat.",
-        "err_too_long": "Quella risposta è troppo lunga. Accorciala e riprova.",
-        "err_full": "Questo thread è pieno. Chiedi nella chat principale.",
-        "err_chat_full": "Questa chat non ha spazio per altre risposte nei thread. Apri una nuova chat per continuare.",
-        "err_send_failed": "La risposta non è stata inviata. Premi invia per riprovare.",
         "err_load_failed": "Impossibile caricare questo thread.",
         "err_summary_failed": "Impossibile caricare i thread di risposta di questa chat. Le tue risposte sono ancora salvate; la chat in sé è aggiornata.",
-        "err_flag_failed": "Impossibile verificare se i thread di risposta sono attivi per questa chat. La chat in sé è aggiornata; le eventuali risposte sono ancora salvate.",
-        "retry": "Riprova"
+        "retry": "Riprova",
+        "opening": "Apertura del thread…",
+        "open_full": "Apri come pagina intera",
+        "closed": "Terminato",
+        "legacy_title": "Risposte precedenti",
+        "legacy_notice": "Queste risposte precedenti sono di sola lettura. Avvia un nuovo thread per continuare qui.",
+        "legacy_start_new": "Avvia un nuovo thread qui",
+        "err_open_failed": "Non è stato possibile aprire un thread su questo messaggio. Riprova.",
+        "err_open_not_ready": "Questo messaggio non è ancora pronto per un thread. Riprova tra un momento.",
+        "end": "Termina thread",
+        "err_end_failed": "Non e stato possibile terminare questo thread. Riprova.",
+        "from_main_chat": "Dalla chat principale",
+        "retry_footers": "Ricarica i pie di thread",
+        "composer_placeholder": "Scrivi in questo thread…",
+        "show_in_thread": "Mostra in questo thread",
+        "show_pending_tool_call_here": "Mostra la chiamata allo strumento in sospeso in questo thread",
+        "empty_hint": "Questo thread è vuoto. Scrivi un messaggio per iniziarlo.",
+        "end_hint": "Terminarlo lo lascia leggibile e libera il messaggio per un nuovo thread.",
+        "closed_composer": "Questo thread è terminato. Puoi ancora scrivergli, le risposte arrivano qui.",
+        "card_ended": "Thread terminato.",
+        "card_read": "Leggilo",
+        "parent_streaming": "Ancora in scrittura nella chat principale"
       },
       "toolCallLine": {
         "diff_truncated": "diff troncato",
@@ -10951,7 +10961,8 @@
         "steering": "Indirizzamento in corso…",
         "delivery_pending": "Consegna in attesa…",
         "redirecting_the_running_turn_not_yet_confirmed": "Reindirizzamento del turno in corso — non ancora confermato.",
-        "turn_ended_before_this_applied_runs_as_its_own_message": "Il turno è terminato prima che questo venisse applicato — viene eseguito come messaggio separato."
+        "turn_ended_before_this_applied_runs_as_its_own_message": "Il turno è terminato prima che questo venisse applicato — viene eseguito come messaggio separato.",
+        "more_actions": "Altre azioni"
       },
       "workflowCompletionCard": {
         "hide_result": "Nascondi il risultato",
@@ -15187,14 +15198,6 @@
         "on_windows_keystrokes_take_your_keyboard_focus": "Su Windows, i tasti premuti assumono il focus della tastiera e i clic per coordinate spostano il cursore reale: questa piattaforma non ha un percorso di input per singola app.",
         "the_app_lists_in_computer_use_json_could_not_be": "Non è stato possibile leggere gli elenchi di app in computer_use.json, quindi qui appaiono vuoti. L’agente continua a rifiutare ogni azione che dipende da essi fino a quando il file non è JSON valido.",
         "your_chat_sessions_were_restarted_so_this_takes": "Le tue sessioni di chat sono state riavviate perché questa modifica abbia effetto subito — Kiro legge l’elenco dei suoi strumenti una volta per sessione, quindi una chat aperta non l’avrebbe recepita. I tuoi messaggi sono ancora lì; l’agente rilegge il proprio contesto al tuo prossimo messaggio."
-      },
-      "crewmatesSection": {
-        "title": "Membri della crew",
-        "reply_threads": "Thread di risposta sui messaggi della chat di un membro",
-        "reply_threads_desc": "Consenti a qualsiasi messaggio nella chat di un membro della crew di avere il proprio thread di risposta, aperto nel pannello laterale mentre la chat resta visibile. Disattivato, Rispondi nel thread non viene offerto e i thread esistenti sono nascosti, non eliminati.",
-        "failed_to_save": "Impossibile salvare l'impostazione della crew. Riprova.",
-        "failed_to_load": "Impossibile caricare le impostazioni della crew.",
-        "retry": "Riprova"
       },
       "developerPanel": {
         "developer_mode": "Modalità sviluppatore",

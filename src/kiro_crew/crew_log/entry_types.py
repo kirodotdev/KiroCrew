@@ -449,6 +449,31 @@ _PARENT_EDGE_FIELDS: tuple[Field, ...] = (
 OBJECT_PRODUCER_PROBE = "probe"
 OBJECT_PRODUCERS: tuple[str, ...] = (OBJECT_PRODUCER_PROBE,)
 
+#: The anchor a thread hangs off: ``ChannelLink`` plus a message id, which is what
+#: keeps it channel-neutral -- dashboard is ``(dashboard, parent_slot, mid)`` and
+#: Slack is ``(slack, channel_id, thread_ts)``. Shared by ``thread/opened`` and
+#: ``thread/closed`` so the two can never describe the same relation differently.
+_THREAD_ANCHOR_FIELDS: tuple[Field, ...] = (
+    Field(
+        "surface",
+        JSON_STRING,
+        required=True,
+        note="The channel type the anchored conversation lives on, e.g. ``dashboard``.",
+    ),
+    Field(
+        "conversation",
+        JSON_STRING,
+        required=True,
+        note="The anchored conversation: a slot key on the dashboard, a channel id elsewhere.",
+    ),
+    Field(
+        "mid",
+        JSON_STRING,
+        required=True,
+        note="The anchored message's durable id within that conversation.",
+    ),
+)
+
 #: The conductor work board's vocabularies live in :mod:`kiro_crew.work_vocab`, a
 #: pure-data leaf outside this package, so the type declared below, the store and
 #: the tool schemas clamp to ONE set without the boot path loading this module.
@@ -643,6 +668,161 @@ _SESSION_TYPES: tuple[EntryType, ...] = (
                     "reasons than any site passes here today."
                 ),
             ),
+        ),
+    ),
+    EntryType(
+        "thread/opened",
+        "A thread was opened on one message of this conversation.",
+        (
+            Field(
+                "anchor",
+                JSON_OBJECT,
+                required=True,
+                fields=_THREAD_ANCHOR_FIELDS,
+                note=(
+                    "Which message the thread hangs off. Required: a thread with no "
+                    "anchor is an ordinary session, and the anchor is the only thing "
+                    "this entry says that session/opened does not."
+                ),
+            ),
+            Field(
+                "thread_slot",
+                JSON_STRING,
+                required=True,
+                note="Slot key of the session the thread runs in.",
+            ),
+            Field("title", JSON_STRING, note="The thread's title, as the sidebar shows it."),
+            Field(
+                "opened_by",
+                JSON_STRING,
+                note="``user`` when a person clicked the message, ``agent:<key>`` otherwise.",
+            ),
+            Field(
+                "in_flight",
+                JSON_BOOL,
+                note=(
+                    "True when the reply being written was still streaming as the "
+                    "thread opened, so the anchor is the user message that STARTED "
+                    "that turn rather than the reply. A streaming row has no message "
+                    "id yet -- ids are minted post-turn -- so this is what tells a "
+                    "reader the anchor was resolved rather than chosen."
+                ),
+            ),
+        ),
+        note=(
+            "Recorded on the PARENT conversation's log, where a reader asks 'what hangs "
+            "off this chat'. The thread's own lineage is already recorded on the thread's "
+            "log by ``session/opened.parent``, which the create core writes, so this "
+            "entry deliberately adds the anchor and nothing else -- two statements of the "
+            "same edge would be two things to keep consistent."
+        ),
+    ),
+    EntryType(
+        "thread/closed",
+        "A thread on one message of this conversation was closed.",
+        (
+            Field(
+                "anchor",
+                JSON_OBJECT,
+                required=True,
+                fields=_THREAD_ANCHOR_FIELDS,
+                note="The message the closed thread hung off.",
+            ),
+            Field(
+                "thread_slot",
+                JSON_STRING,
+                required=True,
+                note="Slot key of the session the thread ran in. The session is not deleted.",
+            ),
+            Field(
+                "summary_mid",
+                JSON_STRING,
+                note=(
+                    "Message id of the closing card posted in the parent conversation, "
+                    "which is also the card's back-link target. Absent when no card "
+                    "could be written."
+                ),
+            ),
+        ),
+    ),
+    EntryType(
+        "thread/context_projected",
+        "This thread was given a projection of its parent's conversation.",
+        (
+            Field(
+                "anchor",
+                JSON_OBJECT,
+                required=True,
+                fields=_THREAD_ANCHOR_FIELDS,
+                note="The message this thread hangs off, and the projection's origin.",
+            ),
+            Field(
+                "cursor_seq",
+                JSON_INT,
+                required=True,
+                note=(
+                    "The last PARENT log seq this projection summarized. The state the "
+                    "next projection computes its delta from, which is why it is "
+                    "required: a projection whose cursor is unknown cannot be continued, "
+                    "only redone from the window start."
+                ),
+            ),
+            Field(
+                "window_start_seq",
+                JSON_INT,
+                note=(
+                    "Where the window opened -- ``anchor - N_before`` rows. Fixed for "
+                    "the thread's life, so a reader can tell a delta from a rebuild."
+                ),
+            ),
+            Field(
+                "summary_version",
+                JSON_STRING,
+                note=(
+                    "Which projection code produced the block. A reader comparing two "
+                    "entries of the same thread needs this to know whether a difference "
+                    "is the parent moving or the projector changing."
+                ),
+            ),
+            Field(
+                "fold_generation",
+                JSON_INT,
+                note=(
+                    "How many times the running half has been re-folded coarser. Rises "
+                    "monotonically; it is the measure of how lossy the older part of "
+                    "the window has become, and the trigger for a rebuild from rows."
+                ),
+            ),
+            Field(
+                "block_chars",
+                JSON_INT,
+                note=(
+                    "Size of the injected block as characters, which is what this repo "
+                    "measures exactly. Tokens are an estimate and are not recorded here "
+                    "for the same reason ``context/composed`` records characters."
+                ),
+            ),
+            Field(
+                "partial",
+                JSON_BOOL,
+                note=(
+                    "True when the parent's reply was still streaming, so the summary "
+                    "describes an unfinished answer and a later projection carries the "
+                    "rest. The crew log holds no live partial, so this flag is the only "
+                    "record that the summary was taken mid-turn."
+                ),
+            ),
+            Field(
+                "rows",
+                JSON_INT,
+                note="How many parent entries fed this projection. Zero is a no-op delta.",
+            ),
+        ),
+        note=(
+            "Recorded on the THREAD's own log: it describes what this thread was told, "
+            "not anything about the parent, and a reader asking 'what did this thread "
+            "know' is reading the thread. One entry per projection, so two consecutive "
+            "entries bracket exactly the parent rows summarized between them."
         ),
     ),
     EntryType(

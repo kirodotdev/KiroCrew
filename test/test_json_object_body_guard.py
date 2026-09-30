@@ -166,9 +166,13 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     # A checklist tick is one task id and one boolean, so the shared default
     # ceiling is far above any legitimate body.
     "chat_todo.py::api_chat_slot_todo": ("<default>", _BOUNDED_BY_DEFAULT),
-    # A thread reply is one text field (capped at 32 KiB by the handler) plus a
-    # slot key, so the shared default ceiling is the right one.
-    "chat_threads.py::api_chat_thread_reply": ("<default>", _BOUNDED_BY_DEFAULT),
+    # Opening a thread is a slot key, a title, an agent name and one note that
+    # becomes the thread's first message, so the shared default ceiling is the
+    # right one.
+    "chat_threads.py::api_chat_thread_open": ("<default>", _BOUNDED_BY_DEFAULT),
+    # Closing a thread is a slot key, a short reason and the summary that becomes
+    # one card row in the parent. Same shape as the open, so the same ceiling.
+    "chat_threads.py::api_chat_thread_close": ("<default>", _BOUNDED_BY_DEFAULT),
     # Voice config is a flat set of short scalars (provider name, voice name,
     # rate, paths) and voice synthesis takes one reply's text, which the panel
     # already truncates well below the shared default. Neither has a legitimate

@@ -10871,7 +10871,7 @@
       },
       "thread": {
         "title": "Tópico",
-        "close": "Fechar o tópico",
+        "close": "Fechar painel",
         "reply_in_thread": "Responder no tópico",
         "open_thread": "Abrir o tópico",
         "replies_count_one": "{{count}} resposta",
@@ -10880,20 +10880,30 @@
         "last_reply": "Última resposta {{when}}",
         "you": "Você",
         "no_replies_yet": "Ainda não há respostas",
-        "replying": "{{name}} está respondendo…",
-        "reply_placeholder": "Responder no tópico…",
-        "reply_after_retry": "Toque em Tentar de novo para carregar o tópico e depois responda.",
-        "send_reply": "Enviar resposta",
-        "err_replying": "{{name}} ainda está respondendo. Espere essa resposta.",
-        "err_parent_gone": "Essa mensagem não está mais neste chat.",
-        "err_too_long": "Essa resposta é longa demais. Encurte e tente de novo.",
-        "err_full": "Este tópico está cheio. Pergunte no chat principal.",
-        "err_chat_full": "Este chat não tem espaço para mais respostas em tópicos. Comece um chat novo para continuar.",
-        "err_send_failed": "A resposta não foi enviada. Toque em enviar para tentar de novo.",
         "err_load_failed": "Não foi possível carregar este tópico.",
         "err_summary_failed": "Não foi possível carregar os tópicos de resposta deste chat. Suas respostas continuam salvas; o chat em si está atualizado.",
-        "err_flag_failed": "Não foi possível verificar se os tópicos de resposta estão ativados neste chat. O chat em si está atualizado; as respostas que existirem continuam salvas.",
-        "retry": "Tentar de novo"
+        "retry": "Tentar de novo",
+        "opening": "Abrindo o tópico…",
+        "open_full": "Abrir como página inteira",
+        "closed": "Encerrado",
+        "legacy_title": "Respostas anteriores",
+        "legacy_notice": "Estas respostas anteriores sao somente leitura. Inicie uma nova thread para continuar aqui.",
+        "legacy_start_new": "Começar um novo tópico aqui",
+        "err_open_failed": "Não foi possível abrir um tópico nesta mensagem. Tente de novo.",
+        "err_open_not_ready": "Esta mensagem ainda não está pronta para um tópico. Tente novamente num instante.",
+        "end": "Encerrar thread",
+        "err_end_failed": "Nao foi possivel encerrar esta thread. Tente novamente.",
+        "from_main_chat": "Do chat principal",
+        "retry_footers": "Recarregar os rodapes de thread",
+        "composer_placeholder": "Escreva neste tópico…",
+        "show_in_thread": "Mostrar neste tópico",
+        "show_pending_tool_call_here": "Mostrar a chamada de ferramenta pendente neste tópico",
+        "empty_hint": "Este tópico está vazio. Escreva uma mensagem para começar.",
+        "end_hint": "Encerrar mantém o tópico legível e libera a mensagem para um novo.",
+        "closed_composer": "Este tópico terminou. Você ainda pode escrever nele, e as respostas chegam aqui.",
+        "card_ended": "Tópico encerrado.",
+        "card_read": "Ler",
+        "parent_streaming": "Ainda sendo escrito no chat principal"
       },
       "toolCallLine": {
         "diff_truncated": "diff truncado",
@@ -10951,7 +10961,8 @@
         "steering": "Direcionando…",
         "delivery_pending": "Entrega pendente…",
         "redirecting_the_running_turn_not_yet_confirmed": "Redirecionando o turno em andamento — ainda não confirmado.",
-        "turn_ended_before_this_applied_runs_as_its_own_message": "O turno terminou antes de isto ser aplicado — é executado como uma mensagem separada."
+        "turn_ended_before_this_applied_runs_as_its_own_message": "O turno terminou antes de isto ser aplicado — é executado como uma mensagem separada.",
+        "more_actions": "Mais ações"
       },
       "workflowCompletionCard": {
         "hide_result": "Ocultar resultado",
@@ -15187,14 +15198,6 @@
         "on_windows_keystrokes_take_your_keyboard_focus": "No Windows, as teclas assumem o foco do teclado e os cliques por coordenadas movem o cursor real — esta plataforma não tem uma rota de entrada por aplicativo.",
         "the_app_lists_in_computer_use_json_could_not_be": "As listas de apps em computer_use.json não puderam ser lidas, então aparecem vazias aqui. O agente continua recusando toda ação que depende delas até o arquivo ser um JSON válido.",
         "your_chat_sessions_were_restarted_so_this_takes": "As suas sessões de conversa foram reiniciadas para que isso tenha efeito imediato — o Kiro lê a lista de ferramentas uma vez por sessão, então uma conversa aberta não teria percebido a mudança. As suas mensagens continuam lá; o agente relê o contexto na sua próxima mensagem."
-      },
-      "crewmatesSection": {
-        "title": "Membros da equipe",
-        "reply_threads": "Tópicos de resposta nas mensagens do chat de um membro",
-        "reply_threads_desc": "Deixa qualquer mensagem do chat de um membro da equipe ter seu próprio tópico de resposta, aberto no painel lateral enquanto o chat continua visível. Desligado, Responder no tópico não aparece e os tópicos existentes ficam ocultos, não apagados.",
-        "failed_to_save": "Não foi possível salvar a configuração da equipe. Tente de novo.",
-        "failed_to_load": "Não foi possível carregar as configurações da equipe.",
-        "retry": "Tentar de novo"
       },
       "developerPanel": {
         "developer_mode": "Modo desenvolvedor",

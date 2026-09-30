@@ -17,8 +17,9 @@ import { isTouchDevice } from '../utils/isTouchDevice'
 import { agentOrDefaultLabel } from '../utils/agentLabel'
 import { toApiDecision } from '../utils/approvalDecision'
 import { isHiddenInvisibleAssistantRow } from '../utils/invisibleText'
-import { mergeRenderers, resolveRenderer, type MessageRenderer, type MessageRenderContext } from '../app-sdk/messageRenderers'
+import { mergeRenderers, replyInThreadFor, resolveRenderer, threadFooterFor, type MessageRenderer, type MessageRenderContext } from '../app-sdk/messageRenderers'
 import { createTranscriptRenderers } from './chat/transcriptRenderers'
+import { threadOpenErrorKey, useThreads } from './chat/useThreads'
 import { featureRequestRefusalIsNewest, sessionStartRepeatIsNewest } from './chat/transcriptRenderers'
 import { useDrawerSwipe, animateDrawer, registerDrawerTargets, takeOverDrawer, safeAreaLeft } from '../hooks/useDrawerSwipe'
 import type { ResizeInfo } from '../utils/resizeImage'
@@ -329,6 +330,12 @@ import OverlayDrawer from '../components/OverlayDrawer'
 // Lazy for the same reason App.tsx lazy-loads the pill: the update chunk is
 // off the app-core budget, and the phone menu needs it only while an update exists.
 const MobileUpdateMenuItem = lazy(() => import('../components/UpdatePill'))
+// The thread drawer opens on a click and is rendered only behind
+// `threads.open`, so none of it belongs on the chat route's first paint. Its own
+// chunk instead: the panel is the one piece of the threads surface with a real
+// lazy boundary available -- the transcript and the composer inside it are
+// `ChatPane`, which this route already holds, so what moves is the panel.
+const ThreadPanel = lazy(() => import('./members/ThreadPanel'))
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '../components/ui/dropdown-menu'
 import { loadChatConfig, CONTENT_WIDTH, type ChatConfig } from './chat/ChatSettings'
 import { scaleContentWidth } from './chat/contentWidth'
@@ -337,7 +344,7 @@ import { focusComposer, focusComposerAfter, revealComposer } from './chat/compos
 import { useHoverIntent } from '../hooks/useHoverIntent'
 import { useKnowledgeFetch, extractKnowledgeQuery, expandKnowledgeBlock } from './chat/useKnowledgeFetch'
 import { KnowledgePicker } from './chat/KnowledgePicker'
-import { MessageSquare, Clock, AppWindow, Undo2, Columns2, ExternalLink, X, MoreHorizontal, EyeOff, VenetianMask } from 'lucide-react'
+import { MessageSquare, Clock, AppWindow, Undo2, Columns2, ExternalLink, X, MoreHorizontal, EyeOff, VenetianMask, RotateCw } from 'lucide-react'
 import { EdgeFade, JumpToBottomButton } from '../app-sdk/ChatScrollChrome'
 import { PanelLeftSolid, PanelLeftLight, PanelRightSolid } from '../components/icons/panels'
 
@@ -985,6 +992,84 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // transcripts. So the client must not OFFER them here either — same predicate
   // and same `executor` keying `selectContinuable` already uses for Resume.
   const activeSlotRemoteBound = slotIsRemoteBound(slots.find(s => s.key === activeSlot))
+  // Threads on this chat's messages. Every chat surface offers them now, not
+  // only the Crewmates page: a thread is an ordinary session anchored to a
+  // message, so there is nothing crewmate-shaped about it. The controller owns
+  // the anchor read, which thread is open and how one is opened; this page adds
+  // the drawer and the URL it lives at.
+  const threads = useThreads(activeSlot || undefined, { enabled: !embedded, crewmateName: '' })
+  const threadHooks = threads.hooks
+  // `?thread=<mid>` IS the open drawer, so a reload, a Back, and a copied link
+  // all land on the same thread. Read one way (URL -> controller) on a change,
+  // and written the other way when the drawer opens or closes below.
+  const urlThreadMid = searchParams.get('thread') || ''
+  const openThreadMid = threads.open?.mid || ''
+  // ONE continuous direction: controller -> URL, in the effect below. This one is
+  // a one-shot CONSUMER of an address the user arrived at, guarded by the mid it
+  // already acted on, so it is not the other half of a two-way sync.
+  //
+  // Both directions being continuous is what oscillated: an open can resolve to a
+  // different mid than the link named (`inflight` anchors to the turn's own prompt,
+  // and a refusal opens nothing), so the two values never converged -- the URL was
+  // rewritten to the controller's mid, this effect read the new mid as one that is
+  // not open, opened again, and the pair alternated until React gave up. The guard
+  // ends that: one address is consumed once, and whatever it resolves to is then
+  // written back by the single writer.
+  const consumedThreadMid = useRef<string | null>(null)
+  useEffect(() => {
+    if (embedded || !activeSlot) return
+    if (!urlThreadMid) {
+      // Back took `?thread=` off the address. Dismiss the drawer and re-arm, so a
+      // Forward or a fresh link to the same message opens again.
+      if (consumedThreadMid.current !== null) {
+        consumedThreadMid.current = null
+        threads.close()
+      }
+      return
+    }
+    if (consumedThreadMid.current === urlThreadMid) return
+    // Wait for the anchor read. Before it lands every message reads as anchorless,
+    // so a deep link would ask the backend to mint a thread that already exists
+    // and land on `already_open` instead of just showing the one it named.
+    if (!threads.summaryReady) return
+    consumedThreadMid.current = urlThreadMid
+    // `read`: an address NAMES a thread that exists. A reload, a Back, a link
+    // somebody sent -- all of them mean "show me that one", and on an ENDED thread
+    // starting a replacement instead would answer a reload with a new conversation
+    // and leave the ended one unreachable from its own URL.
+    threads.openThread(urlThreadMid, { read: true })
+    // `threads` is a fresh object per render, and `openThreadMid` is deliberately
+    // NOT a dependency: reading it here is the feedback edge that oscillated.
+  }, [urlThreadMid, activeSlot, embedded, threads.summaryReady]) // eslint-disable-line react-hooks/exhaustive-deps
+  const setUrlThread = useCallback((mid: string) => {
+    setSearchParams((sp) => {
+      const next = new URLSearchParams(sp)
+      if (mid) next.set('thread', mid)
+      else next.delete('thread')
+      return next
+    }, { replace: true })
+  }, [setSearchParams])
+  // The single writer. Whatever the controller settled on becomes the address, so a
+  // reload, a Back and a copied link all land on the thread that is actually open --
+  // including one whose mid the opener resolved rather than the link naming it.
+  useEffect(() => {
+    // `activeSlot` gates this the same way it gates the consumer: before the page
+    // knows which chat it is showing, the consumer has not claimed the address yet
+    // and this effect would strip a deep link on the first render.
+    if (embedded || !activeSlot) return
+    if (openThreadMid === urlThreadMid) return
+    // A deep link mid-resolution: the consumer above claimed this address and the
+    // open it started has not landed yet, so nothing is open and the address is
+    // not stale -- writing here would delete the link the reader arrived on
+    // before it could open anything. Once the open resolves this effect runs
+    // again with the mid it produced; if it is refused, `openError` releases the
+    // address so it does not sit pointing at a thread that never opened.
+    if (!openThreadMid && consumedThreadMid.current && !threads.openError) return
+    // Keep the consumer's guard in step with what it will read next, so the
+    // address this writes is never mistaken for one the user just arrived at.
+    consumedThreadMid.current = openThreadMid || null
+    setUrlThread(openThreadMid)
+  }, [openThreadMid, urlThreadMid, activeSlot, embedded, setUrlThread, threads.openError])
   const { agents: installedAgents, choices: catalogChoices, defaultAgent } = useAgents(refreshTrigger, activeSlot ?? undefined, activeSlotProject)
   // The picker lists every catalog row (a member and a template of one name
   // are two rows). A roster source that exposes only the folded list -- one
@@ -6557,6 +6642,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               timestampTitle={msgTimeFull}
               renderContent={renderUserContentCb}
               canEdit={!slotRunning && !regenerating && !!activeSlot && !activeSlotRemoteBound}
+              onReplyInThread={replyInThreadFor(m, ctx)}
               slotRunning={slotRunning}
               messageIndex={i}
               messageTs={m.ts || ''}
@@ -6632,10 +6718,17 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 return !slotRunning
               })()} onSpeak={handleSpeak} onRegenerate={i === lastTextIdxRef.current && !slotRunning && !regenerating && activeSlot && !activeSlotRemoteBound ? handleRegenerate : undefined} variants={m.variants} variantIdx={m.variant_idx} onSwitchVariant={i === lastTextIdxRef.current && m.variants && m.variants.length > 1 && activeSlot ? (idx: number) => { api.switchVariant(activeSlot, idx).catch((e: unknown) => {
                 showRefusedPress('switch_variant', e)
-              }) } : undefined} onFork={embedded && !popout ? undefined : handleFork} onPlanFromHere={embedded && !popout ? undefined : handlePlanFromHere} forkIndex={forkIndex} forkMessageId={canResolveOnServer ? messageId : undefined} onLoadEarlier={cursorIsForActiveSlot ? handleLoadEarlier : undefined} loadingOlder={loadingOlder} earlierRemaining={slotOldestIndex} onApplyPlan={handleApplyPlan} />
+              }) } : undefined} onFork={embedded && !popout ? undefined : handleFork} onPlanFromHere={embedded && !popout ? undefined : handlePlanFromHere} forkIndex={forkIndex} forkMessageId={canResolveOnServer ? messageId : undefined} onLoadEarlier={cursorIsForActiveSlot ? handleLoadEarlier : undefined} loadingOlder={loadingOlder} earlierRemaining={slotOldestIndex} onApplyPlan={handleApplyPlan} onReplyInThread={replyInThreadFor(m, ctx)} />
             </div>
           )}
         </div>
+        {/* The thread badge, under the bubble and inside the same column, so it
+            reads as belonging to that message. Drawn from `ctx.threads`, which
+            this page supplies -- the opener above and this footer are the two
+            consumers of it, and without them the hooks would be wired to
+            nothing and threads would be invisible on the dashboard's main chat
+            surface while every unit test still passed. */}
+        {threadFooterFor(m, ctx, isUser ? 'end' : 'start')}
       </div>
       </MessageSearchScope>
     )
@@ -6730,6 +6823,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       onFileOpen: handleFileOpen,
       hideCardOwnedOAuth: connectionsUiOn,
       autoDeniedIds: NO_AUTO_DENIED,
+      // Threads on an ORDINARY chat, not only a crewmate's. A thread is an
+      // ordinary chat session anchored to a message, so every chat surface
+      // offers them; the hooks used to arrive from the Crewmates page alone,
+      // which is what kept them off this one.
+      threads: threadHooks,
       // The shared row set returns `ctx.row(...)`; the row must be a KEYED
       // passthrough, not an element, so a tool line lands in the DOM exactly as
       // this page's own entry used to render it (the virtualizer measures the
@@ -6743,7 +6841,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // if-chain's fall-through did, so an unknown role is visible, never lost.
     // By reference: the merged list's tail is an SDK default, not the bubble.
     return (entry ?? bubbleRenderer).render(m, ctx)
-  }, [chatPageRenderers, bubbleRenderer, slotRunning, handleFileOpen, connectionsUiOn])
+  }, [chatPageRenderers, bubbleRenderer, slotRunning, handleFileOpen, connectionsUiOn, threadHooks])
 
   // Hoisted out of the row map so every TurnBlock receives the SAME function
   // identity per render — an inline closure there re-created it per row per
@@ -9489,6 +9587,112 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           </motion.div>
         )}
       </AnimatePresence>
+      {/* The open thread, as a right-hand drawer over the chat. Its own overlay
+          rather than a tab of the side panel: the side panel's tabs belong to
+          the PARENT session (its files, its pins, its work log), and a thread is
+          a different session, so folding it in there would put two sessions
+          behind one tab strip. The drawer pops out to `/chat?sid=<thread slot>`,
+          which is the same slot as an ordinary tab — nothing is duplicated, the
+          two are two views of one session (NOTES D9). */}
+      <AnimatePresence initial={false}>
+      {!embedded && threads.open && activeSlot && (
+        /* Slides in and out like the side panel beside it, with the same curve and
+           duration: two overlays on one edge of one page that appear differently
+           read as two different mechanisms. `AnimatePresence` is what lets the exit
+           play at all -- an unmounted drawer cannot animate itself away. */
+        <motion.div
+          key="chat-thread-drawer"
+          initial={{ x: '100%' }}
+          animate={{ x: 0 }}
+          exit={{ x: '100%' }}
+          transition={{ duration: 0.4, ease: [0.32, 0.72, 0, 1] }}
+          className="absolute top-0 bottom-0 right-0 z-[46] w-full max-w-[520px] border-l border-border shadow-xl overflow-hidden"
+          data-testid="chat-thread-drawer"
+        >
+          {/* `crewmateName` / `crewmateLabel` are the AGENT, not the session's
+              title: they feed the avatar seed and the author line over quoted
+              assistant text, and an ordinary chat's title is whatever its first
+              message was -- so a thread anchored on a reply attributed that reply
+              to a speaker called "Reply with exactly: Ready." with an avatar
+              seeded from it. The same pair the main chat's own bubbles use, so
+              the quote in the drawer names its author as the row behind it does. */}
+          <Suspense fallback={null}>
+            <ThreadPanel
+              slot={activeSlot}
+              mid={threads.open.mid}
+              threadSlot={threads.open.threadSlot}
+              crewmateName={activeAgentName}
+              crewmateLabel={agentOrDefaultLabel(currentSlot?.agent, effectiveDefaultAgent)}
+              onClose={threads.close}
+              onOpenFull={(threadSlot) => {
+                threads.close()
+                navigate(`/chat?sid=${encodeURIComponent(threadSlot)}`)
+              }}
+              onStartNew={() => threads.openThread(threads.open?.mid)}
+              startingNew={threads.opening}
+              onEnd={() => { if (threads.open) threads.endThread(threads.open.mid) }}
+              ending={threads.ending}
+              endError={threads.endError}
+            />
+          </Suspense>
+        </motion.div>
+      )}
+      </AnimatePresence>
+      {!embedded && threads.summaryFailed && messages.length > 0 && !switchSlotGone && (
+        /* The per-message anchor read failed, so every thread footer is missing and
+           an existing thread on this chat cannot be reached from its own message.
+           The chat itself is fine and stays mounted, so this says what is missing and
+           offers the read again in place -- the same answer the Crewmates page gives
+           for the same failure, which is where this notice is copied from.
+           No hand-off: the composer below holds an unsaved draft that navigating away
+           would discard, and the missing piece is a read this button retries.
+
+           Held to a chat that HAS rows and opened cleanly, because a footer only
+           exists under a message: with nothing rendered there is no footer to be
+           missing, and a session that could not be opened already reports itself
+           above. One page state must raise one alert, not two. */
+        <div className="absolute bottom-24 left-1/2 -translate-x-1/2 z-[46] max-w-[460px] flex items-start gap-2">
+          {/* `ErrorNotice`, not a muted line: `errors-use-error-notice` in
+              `website/AUTOSDE.yaml` is a blocking rule and names a `role="status"`
+              region with `text-muted` text as the same violation it forbids. It is a
+              second alert on a page that can already carry one, which is the shape
+              this component documents `testId` for -- a test naming the notice it
+              means beats one alert standing in for all of them. */}
+          <ErrorNotice
+            variant="inline"
+            message={i18nT('pages.chat.thread.err_summary_failed')}
+            className="flex-1 min-w-0"
+            testId="chat-threads-summary-error"
+          />
+          <Btn
+            disabled={threads.summaryRetrying}
+            onClick={threads.retrySummary}
+            className="shrink-0"
+            data-testid="chat-threads-summary-retry"
+            aria-label={i18nT('pages.chat.thread.retry_footers')}
+          >
+            <RotateCw className="lucide-inline" aria-hidden />
+            {i18nT('pages.chat.thread.retry')}
+          </Btn>
+        </div>
+      )}
+      {!embedded && threads.openError && (
+        /* Opening a thread was refused.
+           No hand-off: the draft at risk is THIS page's main composer -- the
+           `input` state behind `ChatInput` on the active slot, which the user may
+           have half-typed before clicking a message's thread action -- and a
+           hand-off navigates to the agent chat, unmounting this page and
+           discarding it. Nothing opened either, so there is no thread state to
+           carry, and every refusal of an open means the same thing to the reader:
+           try again. The sentence is the whole report. */
+        <div className="absolute bottom-24 left-1/2 -translate-x-1/2 z-[46] max-w-[420px]">
+          <ErrorNotice
+            variant="inline"
+            message={i18nT(threadOpenErrorKey(threads.openError))}
+            testId="chat-thread-open-error"
+          />
+        </div>
+      )}
       {/* Full-height tabbed side panel: portaled into the App shell's
           'actbar' grid column so it spans the window top-to-bottom; the header
           row ends at its left edge, shifting the top-bar buttons left.

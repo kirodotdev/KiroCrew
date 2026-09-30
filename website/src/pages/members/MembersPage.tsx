@@ -44,7 +44,7 @@
  * it shows the New crewmate hero instead. Below md nothing auto-opens (the
  * phone's two-level list rule).
  */
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import { AlarmClock, ArrowLeft, Check, ChevronRight, Circle, Goal, LayoutDashboard, ListChecks, MessageCircleQuestionMark, NotebookPen, Plus, RotateCw, Route, Sparkles, Square, Star, Users, Zap } from 'lucide-react'
 import { PanelRightSolid } from '../../components/icons/panels'
@@ -84,10 +84,11 @@ import CrewAvatar from '../../components/CrewAvatar'
 import CrewStateAvatar from '../../components/CrewStateAvatar'
 import Glass from '../../components/Glass'
 import ChatPane from '../../components/ChatPane'
-import type { ThreadHooks } from '../../app-sdk/messageRenderers'
-import { threadsApi, threadsQueryKey } from '../../api/threads'
-import ThreadPanel from './ThreadPanel'
-import { useCrewmateThreadsFlag } from '../../hooks/useCrewmateThreadsFlag'
+import { useThreads, threadOpenErrorKey } from '../chat/useThreads'
+// Its own chunk, shared with the chat route's drawer: the panel is rendered only
+// once a thread is open, so neither host pays for it on first paint.
+const ThreadPanel = lazy(() => import('./ThreadPanel'))
+import { i18nT } from '../../i18n/t'
 import CrewWebview from './CrewWebview'
 import CommandCenterPanel from '../chat/command-center/CommandCenterPanel'
 import ErrorBoundary from '../../components/ErrorBoundary'
@@ -1630,44 +1631,21 @@ export default function MembersPage() {
   // beside the transcript; the open thread takes over the side panel while it
   // is on screen, and closing it hands the panel's tabs back. Keyed on the
   // CONFIRMED slot only, like every other slot-bound view here.
-  // Behind `dashboard.crewmate_threads` (off by default): off, no footer read
-  // is made, no Reply in thread control is offered and no panel is mounted --
-  // the routes answer 404 then, so a control drawn anyway would only reach a
-  // refusal. Flipping the flag off closes an open thread. A config read that
-  // FAILED is not "off": the flag keeps its last known value and the failure
-  // is said below (ErrorNotice + Retry), so threads that are on do not vanish
-  // as if the switch had been flipped.
-  const {
-    on: threadsOn,
-    failed: threadsFlagFailed,
-    retrying: threadsFlagRetrying,
-    retry: retryThreadsFlag,
-  } = useCrewmateThreadsFlag()
-  const [openThreadMid, setOpenThreadMid] = useState<string | null>(null)
-  useEffect(() => { setOpenThreadMid(null) }, [confirmedSlot, threadsOn])
-  const threadsQuery = useQuery({
-    queryKey: threadsQueryKey(confirmedSlot || ''),
-    queryFn: () => threadsApi.summary(confirmedSlot),
-    enabled: threadsOn && !!confirmedSlot,
-    staleTime: 30_000,
-  })
-  const threadSummaries = threadsQuery.data?.threads
-  const openReplyThread = useCallback((mid: string) => {
-    setOpenThreadMid(mid)
+  // The anchor read, which thread is open and how one is opened all live in the
+  // shared controller (pages/chat/useThreads), so this page and the ordinary
+  // chat page offer threads from the same code rather than from two copies.
+  const threads = useThreads(confirmedSlot || undefined, { crewmateName: activeName })
+  const { close: closeReplyThread } = threads
+  useEffect(() => { closeReplyThread() }, [confirmedSlot, closeReplyThread])
+  // Opening a thread also has to bring the panel it lives in on screen, which
+  // is this page's concern and not the controller's.
+  const openReplyThread = threads.openThread
+  useEffect(() => {
+    if (!threads.open && !threads.opening) return
     if (beside) setDockedOpen(true)
     else setOverlayOpen(true)
-  }, [beside, setDockedOpen])
-  const closeReplyThread = useCallback(() => setOpenThreadMid(null), [])
-  const threadHooks = useMemo<ThreadHooks | undefined>(
-    () => (threadsOn && confirmedSlot
-      ? {
-          summaryOf: (mid: string) => threadSummaries?.[mid],
-          onOpen: openReplyThread,
-          crewmateName: activeName,
-        }
-      : undefined),
-    [threadsOn, confirmedSlot, threadSummaries, openReplyThread, activeName],
-  )
+  }, [threads.open, threads.opening, beside, setDockedOpen])
+  const threadHooks = threads.hooks
   // Whether each leading tab's body is on screen — the gate for its data reads.
   // Read from what the panel SHOWS (`onActiveTabChange`), not from the stored
   // focus: a stored focus on a withheld view falls back to the first leading tab
@@ -3421,32 +3399,7 @@ export default function MembersPage() {
                 />
               </div>
             )}
-            {threadsFlagFailed && (
-              /* The config read behind the reply-threads flag failed. Said
-                 here, not rendered as "threads are off": with nothing cached
-                 the Reply control is withheld (the routes would refuse), with
-                 a cached value the last reading stands; either way the user
-                 can ask for the read again in place. No hand-off: the DM
-                 composer below holds an unsaved draft. */
-              <div className="px-4 py-2 flex items-start gap-2" data-testid="member-threads-flag-error-row">
-                <ErrorNotice
-                  message={t('pages.chat.thread.err_flag_failed')}
-                  variant="inline"
-                  className="flex-1 min-w-0"
-                  testId="member-threads-flag-error"
-                />
-                <Btn
-                  disabled={threadsFlagRetrying}
-                  onClick={retryThreadsFlag}
-                  className="shrink-0"
-                  data-testid="member-threads-flag-retry"
-                >
-                  <RotateCw className="lucide-inline" aria-hidden />
-                  {t('pages.chat.thread.retry')}
-                </Btn>
-              </div>
-            )}
-            {threadsOn && threadsQuery.isError && (
+            {threads.summaryFailed && (
               /* The per-message reply counts failed to load: the chat itself is
                  fine and stays mounted below, so this says only what is
                  missing (the footers) and offers the read again in place. No
@@ -3460,8 +3413,8 @@ export default function MembersPage() {
                   testId="member-threads-error"
                 />
                 <Btn
-                  disabled={threadsQuery.isFetching}
-                  onClick={() => { void threadsQuery.refetch() }}
+                  disabled={threads.summaryRetrying}
+                  onClick={threads.retrySummary}
                   className="shrink-0"
                   data-testid="member-threads-retry"
                 >
@@ -4266,9 +4219,9 @@ export default function MembersPage() {
                         panel's own frame (SidePanel's root) so the thread reads as
                         the panel showing something else, not a second panel. */}
                     <AnimatePresence initial={false}>
-                      {threadsOn && openThreadMid && confirmedSlot && (
+                      {threads.open && confirmedSlot && (
                         <motion.div
-                          key={`thread-${openThreadMid}`}
+                          key={`thread-${threads.open.mid}`}
                           initial={reduceMotion ? { opacity: 1 } : { x: 24, opacity: 0 }}
                           animate={{ x: 0, opacity: 1 }}
                           exit={reduceMotion ? { opacity: 0 } : { x: 24, opacity: 0 }}
@@ -4276,16 +4229,48 @@ export default function MembersPage() {
                           className={`absolute inset-0 z-20 overflow-hidden ${beside ? 'mb-2 rounded-l-xl border-l border-t border-b border-border' : ''}`}
                           style={beside ? { inset: 0, bottom: 8 } : undefined}
                         >
-                          <ThreadPanel
-                            slot={confirmedSlot}
-                            mid={openThreadMid}
-                            crewmateName={activeName}
-                            crewmateLabel={crewmateLabel}
-                            onClose={closeReplyThread}
-                          />
+                          <Suspense fallback={null}>
+                            <ThreadPanel
+                              slot={confirmedSlot}
+                              mid={threads.open.mid}
+                              threadSlot={threads.open.threadSlot}
+                              crewmateName={activeName}
+                              crewmateLabel={crewmateLabel}
+                              crewmate={crewmateIdentity}
+                              onClose={closeReplyThread}
+                              onOpenFull={(threadSlot) => {
+                                closeReplyThread()
+                                navigate(`/chat?sid=${encodeURIComponent(threadSlot)}`)
+                              }}
+                              onStartNew={() => openReplyThread(threads.open?.mid)}
+                              startingNew={threads.opening}
+                              onEnd={() => { if (threads.open) threads.endThread(threads.open.mid) }}
+                              ending={threads.ending}
+                              endError={threads.endError}
+                            />
+                          </Suspense>
                         </motion.div>
                       )}
                     </AnimatePresence>
+                    {threads.openError && (
+                      /* Opening a thread was refused. The panel above mounts only
+                         once a thread exists, so without this the click is inert
+                         and the reader is told nothing at all.
+                         No hand-off: the draft at risk is this crewmate's DM
+                         composer -- the `ChatPane` on `confirmedSlot` below holds
+                         it in its own `input` state -- and a hand-off leaves this
+                         page, unmounting that pane and discarding what was typed.
+                         Nothing opened either, so there is no thread state to
+                         carry, and every refusal of an open means the same thing
+                         here: try again. The sentence is the whole report. */
+                      <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-[46] max-w-[420px]">
+                        <ErrorNotice
+                          variant="inline"
+                          message={i18nT(threadOpenErrorKey(threads.openError))}
+                          testId="members-thread-open-error"
+                        />
+                      </div>
+                    )}
                     <SidePanel
                       {...panelProps}
                       panelHidden={panelHidden}

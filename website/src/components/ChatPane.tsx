@@ -122,6 +122,7 @@ export default function ChatPane({
   onFileOpen,
   busyMode = 'split',
   crewmate,
+  threadSurface,
   onOpenCrewWorkLog,
   onOpenCommandCenter,
   threads,
@@ -164,6 +165,15 @@ export default function ChatPane({
    *  long transcripts keep the same user-configured measure as the main
    *  chat. */
   followContentWidth?: boolean
+  /** This pane IS a thread, drawn beside the chat it hangs off, and whether that
+   *  thread has ended. Two panes with identical chrome leave the send button's
+   *  colour as the only cue for which conversation the keystrokes reach, so the
+   *  composer hint names the thread, and on an ENDED one it names that too -- a
+   *  panel that says the thread is over above a composer that says nothing leaves
+   *  the reader guessing what typing would do. The approval card's focus control
+   *  says "this thread" instead of "chat" either way. The hint yields to a
+   *  crewmate pane's, which already names the peer. */
+  threadSurface?: 'open' | 'closed'
   /** Suppress the "Session ready. Type a message to start." hint on an empty
    *  transcript. A host that is showing its own verdict about this thread
    *  above the pane (the Members page's "Couldn't reconnect" notice) sets it,
@@ -1649,6 +1659,18 @@ export default function ChatPane({
           hiddenRow={pinHiddenRow}
           onQuote={onQuote}
           onAsk={onAsk}
+          // Deliberately NO `onApprove` here, though `ChatMessageList` would make
+          // the permission group an approval surface if one were supplied. The
+          // pane's COMPOSER already owns that decision: `ChatInput` selects the
+          // slot's pending approval itself (`selectSlotPendingApproval` on its own
+          // `slotId`, not on whichever slot is active) and resolves it in place,
+          // so a pane can answer an approval with no host wiring at all — which
+          // matters for a thread, whose only surface IS a pane.
+          //
+          // Supplying a resolver here put a SECOND set of Approve / Trust / Reject
+          // buttons in the transcript above the composer's own, for one decision.
+          // Two button sets for one yes reads as a bug, and it is the kind a
+          // screenshot catches and a type checker never will.
           threads={threads}
           onFileOpen={onFileOpen}
           transcript={{
@@ -1700,6 +1722,20 @@ export default function ChatPane({
                           <div className="mt-1" data-testid="crewmate-quiet-where">{i18nT('components.chatPane.crewmate_quiet_where')}</div>
                         )}
                       </>
+                    ) : threadSurface ? (
+                      /* "Session ready" under a header that says Thread makes the
+                         reader hold two words for one thing. A thread IS a session,
+                         so the hint names the one the reader is looking at.
+
+                         An ENDED thread states the fact and stops. "Type a message
+                         to start it" beside the composer's "This thread has ended"
+                         makes the reader hold two contradicting instructions for
+                         one state, and the composer is the one that is true. The
+                         factual line already exists for the footer chip, so the
+                         two surfaces cannot drift into different words for it. */
+                      threadSurface === 'closed'
+                        ? i18nT('pages.chat.thread.no_replies_yet')
+                        : i18nT('pages.chat.thread.empty_hint')
                     ) : (
                       i18nT('components.chatPane.session_ready_type_a_message_to_start')
                     )}
@@ -2047,7 +2083,14 @@ export default function ChatPane({
           project={paneSlot?.project ?? ''}
           // A crewmate's chat is a DM with one named crewmate, so the composer
           // addresses it by name rather than the product ("Message Kiro Crew…").
-          placeholder={crewmate ? i18nT('components.chatInput.message_placeholder', { bot: crewmate.label || crewmate.name }) : undefined}
+          placeholder={crewmate
+            ? i18nT('components.chatInput.message_placeholder', { bot: crewmate.label || crewmate.name })
+            : threadSurface === 'closed'
+              ? i18nT('pages.chat.thread.closed_composer')
+              : threadSurface
+                ? i18nT('pages.chat.thread.composer_placeholder')
+                : undefined}
+          inThread={!!threadSurface}
           onUploadFiles={uploadFiles}
           onCancelUpload={cancelUpload}
           pendingFiles={pendingFiles}

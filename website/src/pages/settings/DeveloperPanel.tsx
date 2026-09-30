@@ -5,7 +5,6 @@ import { ExternalLink } from 'lucide-react'
 import { SettingsSection, SettingsCard, SettingsToggle } from '../../components/settings'
 import { useLocalGateway } from '../../hooks/useLocalGateway'
 import { FeaturePreviewsSection } from './FeaturePreviewsSection'
-import { CrewmatesSection } from './CrewmatesSection'
 
 import { i18nT } from '../../i18n/t'
 const DEV_MODE_KEY = 'mc-dev-mode'
@@ -71,9 +70,6 @@ export function DeveloperPanel() {
         Developer Mode and the previews are the two things a reader comes to this
         tab to flip; the local-gateway switch is rare and platform-gated. */}
     <FeaturePreviewsSection />
-    {/* The crewmate feature switches, under the Crew Members preview card that
-        is their one door (`CrewmatesSection.tsx`). */}
-    <CrewmatesSection />
     {localGatewaySupported && (
       <SettingsSection title={i18nT('pages.settings.developerPanel.gateway')}>
         <SettingsCard>

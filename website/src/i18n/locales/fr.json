@@ -10871,7 +10871,7 @@
       },
       "thread": {
         "title": "Fil",
-        "close": "Fermer le fil",
+        "close": "Fermer le panneau",
         "reply_in_thread": "Répondre dans le fil",
         "open_thread": "Ouvrir le fil",
         "replies_count_one": "{{count}} réponse",
@@ -10880,20 +10880,30 @@
         "last_reply": "Dernière réponse {{when}}",
         "you": "Toi",
         "no_replies_yet": "Pas encore de réponse",
-        "replying": "{{name}} est en train de répondre…",
-        "reply_placeholder": "Répondre dans le fil…",
-        "reply_after_retry": "Appuie sur Réessayer pour charger le fil, puis réponds.",
-        "send_reply": "Envoyer la réponse",
-        "err_replying": "{{name}} est encore en train de répondre. Attends cette réponse.",
-        "err_parent_gone": "Ce message n'est plus dans cette conversation.",
-        "err_too_long": "Cette réponse est trop longue. Raccourcis-la et réessaie.",
-        "err_full": "Ce fil est plein. Pose la question dans la discussion principale.",
-        "err_chat_full": "Cette discussion n'a plus de place pour d'autres réponses en fil. Ouvre une nouvelle discussion pour continuer.",
-        "err_send_failed": "La réponse n'est pas partie. Appuie sur envoyer pour réessayer.",
         "err_load_failed": "Impossible de charger ce fil.",
         "err_summary_failed": "Impossible de charger les fils de réponse de cette discussion. Tes réponses sont toujours enregistrées ; la discussion elle-même est à jour.",
-        "err_flag_failed": "Impossible de vérifier si les fils de réponse sont activés pour cette discussion. La discussion elle-même est à jour et les réponses éventuelles sont toujours enregistrées.",
-        "retry": "Réessayer"
+        "retry": "Réessayer",
+        "opening": "Ouverture du fil…",
+        "open_full": "Ouvrir en pleine page",
+        "closed": "Terminé",
+        "legacy_title": "Réponses précédentes",
+        "legacy_notice": "Ces reponses anterieures sont en lecture seule. Demarre un nouveau fil pour continuer ici.",
+        "legacy_start_new": "Démarrer un nouveau fil ici",
+        "err_open_failed": "Impossible d'ouvrir un fil sur ce message. Reessaie.",
+        "err_open_not_ready": "Ce message n'est pas encore pret pour un fil. Reessaie dans un instant.",
+        "end": "Terminer le fil",
+        "err_end_failed": "Impossible de terminer ce fil. Reessaie.",
+        "from_main_chat": "Depuis la discussion principale",
+        "retry_footers": "Recharger les pieds de fil",
+        "composer_placeholder": "Écris dans ce fil…",
+        "show_in_thread": "Afficher dans ce fil",
+        "show_pending_tool_call_here": "Afficher dans ce fil l’appel d’outil en attente",
+        "empty_hint": "Ce fil est vide. Écris un message pour le lancer.",
+        "end_hint": "Terminer le garde lisible et libère le message pour un nouveau fil.",
+        "closed_composer": "Ce fil est terminé. Tu peux encore lui écrire, les réponses arrivent ici.",
+        "card_ended": "Fil terminé.",
+        "card_read": "Le lire",
+        "parent_streaming": "En cours d'écriture dans le chat principal"
       },
       "toolCallLine": {
         "diff_truncated": "diff tronqué",
@@ -10951,7 +10961,8 @@
         "steering": "Réorientation en cours…",
         "delivery_pending": "Envoi en attente…",
         "redirecting_the_running_turn_not_yet_confirmed": "Réorientation du tour en cours — pas encore confirmé.",
-        "turn_ended_before_this_applied_runs_as_its_own_message": "Le tour s'est terminé avant que ceci ne s'applique — s'exécute comme un message distinct."
+        "turn_ended_before_this_applied_runs_as_its_own_message": "Le tour s'est terminé avant que ceci ne s'applique — s'exécute comme un message distinct.",
+        "more_actions": "Plus d'actions"
       },
       "workflowCompletionCard": {
         "hide_result": "Masquer le résultat",
@@ -15187,14 +15198,6 @@
         "on_windows_keystrokes_take_your_keyboard_focus": "Sous Windows, les frappes prennent le focus du clavier et les clics par coordonnées déplacent votre curseur réel — cette plateforme n'a aucune voie d'entrée par application.",
         "the_app_lists_in_computer_use_json_could_not_be": "Les listes d’applications de computer_use.json n’ont pas pu être lues, elles apparaissent donc vides ici. L’agent continue de refuser toute action qui en dépend jusqu’à ce que le fichier soit du JSON valide.",
         "your_chat_sessions_were_restarted_so_this_takes": "Tes sessions de chat ont été redémarrées pour que cela prenne effet immédiatement — Kiro lit sa liste d’outils une seule fois par session, sinon un chat ouvert ne l’aurait pas prise en compte. Tes messages sont toujours là ; l’agent relit son contexte à ton prochain message."
-      },
-      "crewmatesSection": {
-        "title": "Membres de l'équipe",
-        "reply_threads": "Fils de réponse sur les messages du chat d'un membre",
-        "reply_threads_desc": "Permet à tout message du chat d'un membre de l'équipe d'avoir son propre fil de réponse, ouvert dans le panneau latéral pendant que le chat reste visible. Désactivé, Répondre dans le fil n'est pas proposé et les fils existants sont masqués, pas supprimés.",
-        "failed_to_save": "Impossible d'enregistrer le réglage de l'équipe. Réessaie.",
-        "failed_to_load": "Impossible de charger les réglages de l'équipe.",
-        "retry": "Réessayer"
       },
       "developerPanel": {
         "developer_mode": "Mode développeur",

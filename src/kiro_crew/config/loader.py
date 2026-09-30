@@ -3030,7 +3030,6 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
             key_present="tailscale" in dashboard_data,
         ),
         restore_sessions=dashboard_data.get("restore_sessions", False),
-        crewmate_threads=_safe_bool(dashboard_data.get("crewmate_threads"), False),
         dynamic_dashboard_cards=_safe_bool(dashboard_data.get("dynamic_dashboard_cards"), False),
         qr_session_until_restart=_safe_bool(dashboard_data.get("qr_session_until_restart"), True),
         qr_session_persist_across_restart=_safe_bool(

@@ -3198,6 +3198,177 @@ def on_session_released(
     )
 
 
+def on_thread_opened(
+    session_id: str,
+    *,
+    anchor: "dict[str, str]",
+    thread_slot: str,
+    title: str = "",
+    opened_by: str = "",
+    in_flight: bool = False,
+) -> None:
+    """Record ``thread/opened`` on the PARENT conversation's log.
+
+    Written where a reader asks "what hangs off this chat". The thread's own
+    lineage is already on the THREAD's log -- the create core writes
+    ``session/opened.parent`` naming the conversation that made it -- so this
+    entry carries the anchor and nothing else rather than restating that edge.
+
+    ``anchor`` is ``{surface, conversation, mid}``; a call missing any of the
+    three writes nothing, because an anchor is the whole content of this entry.
+    ``title`` is scrubbed here for the reason every other body field is: it
+    arrives from a caller and the log is not rewritable.
+    """
+    if not session_id or not thread_slot:
+        return
+    if not all(isinstance(anchor.get(k), str) and anchor.get(k) for k in _THREAD_ANCHOR_KEYS):
+        return
+    data: dict[str, Any] = {
+        "anchor": {k: anchor[k] for k in _THREAD_ANCHOR_KEYS},
+        "thread_slot": thread_slot,
+    }
+    clean_title = _safe_text(title)
+    if clean_title:
+        data["title"] = clean_title
+    if opened_by:
+        data["opened_by"] = opened_by
+    if in_flight:
+        data["in_flight"] = True
+
+    def _job() -> None:
+        log = _handle(session_id)
+        if log is None:
+            return
+        log.append("thread/opened", data, src=_SRC_GATEWAY)
+
+    _submit(_job, "appending thread/opened", session_id)
+
+
+def on_thread_context_projected(
+    session_id: str,
+    *,
+    anchor: "dict[str, str]",
+    cursor_seq: int,
+    window_start_seq: int = 0,
+    summary_version: str = "",
+    fold_generation: int = 0,
+    block_chars: int = 0,
+    partial: bool = False,
+    rows: int = 0,
+    after: Callable[[], None] | None = None,
+    on_permanent_drop: Callable[[], None] | None = None,
+) -> None:
+    """Record ``thread/context_projected`` on the THREAD's own log.
+
+    Written on the thread rather than the parent because it describes what THIS
+    session was told: a reader asking "what did this thread know, and when" is
+    reading the thread, and the parent's log already carries the rows the
+    projection summarized.
+
+    ``cursor_seq`` is the state the NEXT projection computes its delta from, which
+    is why a call without it writes nothing -- a projection whose cursor is unknown
+    cannot be continued, only redone from the window start. Zero is a legitimate
+    cursor for a parent whose log is empty, so the guard is on the anchor and the
+    caller's own arithmetic, not on truthiness.
+
+    One entry per projection, so two consecutive entries bracket exactly the parent
+    rows summarized between them. ``rows=0`` is a real record: it says this turn
+    found nothing new and injected nothing, which is what makes a quiet turn
+    distinguishable from a turn the projector never ran on.
+
+    ``after`` runs once this entry LANDS or the writer definitively drops it, and
+    ``on_permanent_drop`` only on the drop -- the pair the projector publishes its
+    context block behind. The cursor in this entry is the durable authority the
+    next window starts from, so a block put in front of a model while this write is
+    still buffered can be consumed by a turn whose cursor never lands; the next
+    turn then reads the old cursor and re-injects rows the thread has already been
+    told. Handing the caller the write's own outcome is what lets it publish after
+    the cursor rather than before it, without this function waiting on the writer.
+
+    Every path calls ``after``, including the ones that write nothing: a caller
+    that publishes in it must not be left holding a block forever because this
+    session has no log. With the crew log off there is no cursor at all -- every
+    turn is a first turn -- so there is no ordering left to get wrong.
+    """
+    if not session_id or not enabled():
+        if after is not None:
+            after()
+        return
+    if not all(isinstance(anchor.get(k), str) and anchor.get(k) for k in _THREAD_ANCHOR_KEYS):
+        if after is not None:
+            after()
+        return
+    data: dict[str, Any] = {
+        "anchor": {k: anchor[k] for k in _THREAD_ANCHOR_KEYS},
+        "cursor_seq": int(cursor_seq),
+    }
+    if window_start_seq:
+        data["window_start_seq"] = int(window_start_seq)
+    if summary_version:
+        data["summary_version"] = _safe_text(summary_version)
+    if fold_generation:
+        data["fold_generation"] = int(fold_generation)
+    if block_chars:
+        data["block_chars"] = int(block_chars)
+    if partial:
+        data["partial"] = True
+    if rows:
+        data["rows"] = int(rows)
+
+    def _job() -> None:
+        log = _handle(session_id)
+        if log is None:
+            return
+        log.append("thread/context_projected", data, src=_SRC_GATEWAY)
+
+    _submit(
+        _job,
+        "appending thread/context_projected",
+        session_id,
+        after=after,
+        on_permanent_drop=on_permanent_drop,
+    )
+
+
+def on_thread_closed(
+    session_id: str,
+    *,
+    anchor: "dict[str, str]",
+    thread_slot: str,
+    summary_mid: str = "",
+) -> None:
+    """Record ``thread/closed`` on the parent conversation's log.
+
+    Closing a thread does not delete its session: the record says the thread is
+    finished and where its card landed, and the session stays readable.
+    """
+    if not session_id or not thread_slot:
+        return
+    if not all(isinstance(anchor.get(k), str) and anchor.get(k) for k in _THREAD_ANCHOR_KEYS):
+        return
+    data: dict[str, Any] = {
+        "anchor": {k: anchor[k] for k in _THREAD_ANCHOR_KEYS},
+        "thread_slot": thread_slot,
+    }
+    if summary_mid:
+        data["summary_mid"] = summary_mid
+
+    def _job() -> None:
+        log = _handle(session_id)
+        if log is None:
+            return
+        log.append("thread/closed", data, src=_SRC_GATEWAY)
+
+    _submit(_job, "appending thread/closed", session_id)
+
+
+#: The three fields an anchor must carry to be recordable. Spelled here as well as
+#: in the entry type because this emitter REFUSES an incomplete anchor rather than
+#: writing a partial one: the log cannot be rewritten, and an entry whose anchor
+#: names no message records a thread nobody can find.
+_THREAD_ANCHOR_KEYS: tuple[str, ...] = ("surface", "conversation", "mid")
+
+
 def _parent_citation(slot: str, sid: str) -> "dict[str, str]":
     """One ``{slot, sid?}`` citation, or ``{}`` when there is no slot to cite.
 
@@ -3573,6 +3744,7 @@ def on_session_opened(
     workspace: str = "",
     previous_sid: str = "",
     previous_undecided: bool | None = None,
+    after: Callable[[], None] | None = None,
 ) -> None:
     """Create the crew log if this session has none, then echo its header.
 
@@ -3665,6 +3837,8 @@ def on_session_opened(
     at once while the repair waits for an ordering it cannot have yet.
     """
     if not session_id or not enabled():
+        if after is not None:
+            after()
         return
     # Read BEFORE the release below, which is what makes this the only place the
     # evidence still exists: a claim ends every turn this process believes is
@@ -3978,6 +4152,7 @@ def on_session_opened(
         "opening a crew log",
         session_id,
         exempt_ceiling=True,
+        after=after,
         on_permanent_drop=_flag_creation_failed,
     )
 

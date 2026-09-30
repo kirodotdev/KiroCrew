@@ -711,6 +711,11 @@ export function useChatPageSessionController({
     next.delete('autoSend')
     next.delete('newSession')
     next.delete('msg')
+    // `?thread=<mid>` names a message in THIS session; on a switch to another
+    // session it names nothing, so it is dropped rather than carried over and
+    // read as an anchor on the new slot. A reload of the same session keeps it,
+    // which is the whole point of putting the open thread in the URL.
+    if (current && current !== activeSlot) next.delete('thread')
     // Push vs replace — see `shouldReplaceSessionUrl` for why mobile never
     // pushes. Kept as a named predicate rather than an inline boolean so the
     // reasoning has somewhere to live and a test can pin it.

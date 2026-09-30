@@ -228,6 +228,74 @@ class ChannelLink:
         )
 
 
+#: How long an anchor's ``conversation`` or ``mid`` may be. Both are opaque ids
+#: minted by the surface they come from -- a dashboard slot key, a Slack channel
+#: id, a Slack ``thread_ts``, a minted row id -- so the shape that matters is
+#: "bounded and cannot carry prose", exactly as ``THREAD_SLOT_MAX_CHARS`` puts it
+#: for the slot key. The per-surface spelling is each adapter's own rule, checked
+#: where that surface's ids are minted, not here.
+THREAD_ANCHOR_ID_MAX_CHARS = 200
+_THREAD_ANCHOR_ID_RE = re.compile(r"^[A-Za-z0-9_:.\-]{1,200}$")
+#: A surface name is a ``channel_type``: the ONE identity everywhere (governance
+#: member id, transport ``channel_type``, session-key segment, config section,
+#: dashboard badge prefix), plus ``dashboard`` for the surface that is not a
+#: channel. Held to the same charset a channel namespace uses.
+_THREAD_ANCHOR_SURFACE_RE = re.compile(r"^[a-z][a-z0-9_-]{0,39}$")
+#: The dashboard's surface name. It sits here, beside the anchor it names, because
+#: the dashboard is the one surface that is not a ``channel_type``: every other
+#: surface spells its own name in its own package, and a shared registry for one
+#: constant would be a seam with a single user.
+SURFACE_DASHBOARD = "dashboard"
+
+
+@dataclass(frozen=True)
+class ThreadAnchor:
+    """One message, on one conversation, on one surface -- what a thread hangs off.
+
+    A surface, a conversation on it and a message id, which is what makes a
+    thread identity channel-neutral: the dashboard's anchor is ``(dashboard,
+    parent_slot_key, mid)`` and Slack's is ``(slack, channel_id, thread_ts)``.
+    Both surfaces read and write this one type rather than each carrying its own
+    vocabulary for the same relation.
+
+    Frozen because an anchor is an identity, not a record. Where the surface has a
+    parent transcript to hang an index off, that index IS the record -- the
+    dashboard writes it there and nowhere else. Slack has no parent transcript, so
+    its anchor lives on the thread session's own metadata instead: one record per
+    surface, never two to keep in step.
+    """
+
+    surface: str
+    conversation: str
+    mid: str
+
+    def to_dict(self) -> dict[str, str]:
+        return {"surface": self.surface, "conversation": self.conversation, "mid": self.mid}
+
+    @classmethod
+    def from_dict(cls, raw: Any) -> "ThreadAnchor | None":
+        """*raw* as an anchor, or ``None`` when it is not one.
+
+        Reads what :meth:`to_dict` wrote and nothing else: the value comes off a
+        metadata line under the data home, so a field another writer put there
+        must not reach a caller through a spread. Each field is held to a bounded
+        opaque shape -- the anchor is an identity three surfaces mint ids for, so
+        pattern-matching one surface's spelling here would refuse the others.
+        """
+        if not isinstance(raw, dict):
+            return None
+        surface = raw.get("surface")
+        conversation = raw.get("conversation")
+        mid = raw.get("mid")
+        if not (isinstance(surface, str) and _THREAD_ANCHOR_SURFACE_RE.match(surface)):
+            return None
+        if not (isinstance(conversation, str) and _THREAD_ANCHOR_ID_RE.match(conversation)):
+            return None
+        if not (isinstance(mid, str) and _THREAD_ANCHOR_ID_RE.match(mid)):
+            return None
+        return cls(surface, conversation, mid)
+
+
 def session_key(channel_type: str, conversation_id: str) -> str:
     """Build a namespaced session key, e.g. ``slack:123.456``."""
     return f"{channel_type}:{conversation_id}"

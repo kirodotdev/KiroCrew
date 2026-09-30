@@ -23,10 +23,12 @@ from typing import Any
 from kiro_crew import mcp_core
 from kiro_crew.context import RECALL_ROLES
 from kiro_crew.history import ConversationLog, TranscriptBusy, TranscriptWithheld
+from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.validation import (
     GET_CHAT_SESSION_SCHEMA,
     LIST_SESSIONS_SCHEMA,
     SEARCH_CHAT_HISTORY_SCHEMA,
+    THREAD_CONTEXT_READ_SCHEMA,
     validate_tool_args,
 )
 
@@ -152,7 +154,101 @@ def schemas() -> list[dict[str, Any]]:
                 },
             },
         },
+        {
+            "name": "thread_context_read",
+            "description": (
+                "Read the EXACT messages of the conversation THIS thread hangs off, by "
+                "their sequence numbers \u2014 including THE ANCHOR, the message this thread "
+                'was opened on. When someone asks about "the anchored message", "the '
+                'message this thread is on", or what the parent conversation actually '
+                "said, this is the tool: it reads that ONE parent conversation, and it is "
+                "not a search over past sessions or other chats. Only works inside a "
+                "thread. Each of a thread's turns is already given a short SUMMARY of the "
+                "parent, which quotes the anchor and names the sequence numbers it covers "
+                "\u2014 cite those numbers here to get the real wording behind it: someone's "
+                "precise phrasing, a number, a path, an error string. Returns one line per "
+                "message, carrying the message body up to a few thousand characters; a "
+                "longer one is trimmed. Both the row count and the total size are capped, "
+                "and the answer names the last sequence number it covers, so page from "
+                "there through a long range."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "from_seq": {
+                        "type": "integer",
+                        "description": (
+                            "First sequence number to read, as the summary block or an "
+                            "earlier answer named it. 1 or more."
+                        ),
+                    },
+                    "to_seq": {
+                        "type": "integer",
+                        "description": (
+                            "Last sequence number to read. Must not precede from_seq; the "
+                            "span is capped, so a long range is trimmed and the answer says "
+                            "which rows it covers."
+                        ),
+                    },
+                },
+                "required": ["from_seq", "to_seq"],
+            },
+        },
     ]
+
+
+def thread_context_read(name: str, args: dict[str, Any]) -> str:
+    """The parent rows behind a thread's injected summary.
+
+    Lives on ``kirocrew-core`` rather than on ``kirocrew-dashboard`` because every
+    thread needs it and the dashboard server is an opt-in set: the default agent's
+    spec references neither the server nor its tools, so a thread run by that
+    agent mounted no dashboard tools at all -- while its own injected context block
+    told it, by name, to call this one. A probe asked such a thread directly and it
+    answered that it had no tool of this name and offered ``get_chat_session``
+    instead. Core is always mounted, so the promise the block makes is now one the
+    session can keep.
+
+    The move costs nothing in containment: the strict gate below is the same
+    function the dashboard server calls, defined in ``mcp_core``, and the route
+    still takes the parent from the verified key rather than from an argument.
+    """
+    args = validate_tool_args(args, THREAD_CONTEXT_READ_SCHEMA)
+    start = int(args["from_seq"])
+    end = int(args["to_seq"])
+    if end < start:
+        return "Error: to_seq must not precede from_seq."
+    session_key, refusal = mcp_core.require_strict_session_key(
+        "Error: this session cannot be identified well enough to read its parent "
+        "conversation. The parent is resolved from the calling session's own identity, "
+        "and only a gateway-issued key counts."
+    )
+    if not session_key:
+        return refusal
+    # The thread is resolved from the verified session key, so this reads the
+    # caller's OWN parent and no query names a conversation.
+    resp = mcp_core._get(
+        f"/api/chat/threads/context?from={start}&to={end}",
+        session_key=session_key,
+    )
+    if resp.get("error"):
+        if resp.get("code") == "not_a_thread":
+            return (
+                "This session is not a thread, so it has no parent conversation to read. "
+                "thread_context_read only works inside a thread."
+            )
+        return redact(f"Error: could not read the parent's rows: {resp['error']}")
+    rows = resp.get("rows") or []
+    if not rows:
+        return (
+            f"No messages in that conversation between seq {resp.get('from')} and "
+            f"{resp.get('to')} (its log reaches {resp.get('last_seq')})."
+        )
+    listing = "\n".join(str(line) for line in rows)
+    return redact(
+        f"Exact rows {resp.get('from')}-{resp.get('to')} of the conversation this thread "
+        f"hangs off (its log reaches {resp.get('last_seq')}):\n{listing}"
+    )
 
 
 def search_chat_history(name: str, args: dict[str, Any]) -> str:
@@ -485,4 +581,5 @@ HANDLERS: dict[str, Callable[[str, dict[str, Any]], str]] = {
     "search_chat_history": search_chat_history,
     "get_chat_session": get_chat_session,
     "list_sessions": list_sessions,
+    "thread_context_read": thread_context_read,
 }

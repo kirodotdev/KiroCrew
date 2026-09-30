@@ -52,6 +52,7 @@ const PAGE_ONLY_ENTRY_IDS: Record<string, string> = {
   workflow_run_tool: 'launch card refining the tool line; store-connected',
   subagent_run_tool: 'launch card refining the tool line; store-connected',
   tool_completion: 'the ✅/🚫 completion sibling draws nothing, claimed so no surface\'s unclaimed-role fallback prints it',
+  thread_closed_card: 'ThreadClosedCard for the display-only thread_closed row (and the assistant spelling older transcripts hold); its back-link needs the host\'s thread controller (ctx.threads.onOpenSlot), which the SDK has no seam for',
   // -- page-only --
   permission: 'undrawn here; the registry leaves it to GROUPED_ROLES',
   hidden_invisible_assistant: 'zero-width-space quiet-cycle rows; the registry applies the same skip inside its assistant entry',

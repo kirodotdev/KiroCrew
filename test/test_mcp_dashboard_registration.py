@@ -378,7 +378,23 @@ class TestWhatThisSetGrants:
         "session_read_message",
         "session_summary",
     }
-    GRANTED_TOOLS = FOLDER_TOOLS | TAG_TOOLS | PIN_TOOLS | SESSION_TOOLS
+    #: Threads. Its own class because it is its own NOUN, not because it is its
+    #: own capability: ``thread_open`` creates a session exactly as
+    #: ``session_create`` does, through the same core and under the same gate, and
+    #: adds one thing on top -- an anchor to a message of the caller's own
+    #: conversation. So it rides in the same granted set (it reaches nothing
+    #: ``session_create`` does not) while being named separately, because a reader
+    #: asking "what may this agent do to my sessions" should see "open one
+    #: anchored to a message" spelled out rather than folded into the create verb.
+    #:
+    #: ``thread_context_read`` is NOT here, and its absence is the point: it lives on
+    #: ``kirocrew-core`` because this set is opt-in, so a session whose agent does not
+    #: reference this server mounts nothing from it -- while every thread's injected
+    #: context block names that tool and tells the model to call it. A promise the
+    #: session cannot keep is the defect, so the tool sits on the always-mounted
+    #: server and `test_mcp_tool_registry` pins it there.
+    THREAD_TOOLS = {"thread_open"}
+    GRANTED_TOOLS = FOLDER_TOOLS | TAG_TOOLS | PIN_TOOLS | SESSION_TOOLS | THREAD_TOOLS
 
     def test_the_set_is_exactly_the_folder_tools(self) -> None:
         from kiro_crew import mcp_dashboard
@@ -413,13 +429,15 @@ class TestWhatThisSetGrants:
         tags = {n for n in names if n.startswith("chat_tag_")}
         pins = {n for n in names if n.startswith("chat_session_")}
         session = {n for n in names if n.startswith("session_")}
+        threads = {n for n in names if n.startswith("thread_")}
         assert folder, "the folder-organization tools left this set"
         assert tags, "the tag-organization tools left this set"
         assert pins, "the pin tool left this set"
         assert session, "the session-control tools left this set"
+        assert threads, "the thread tool left this set"
         # Nothing else rides along unannounced.
-        assert names == folder | tags | pins | session, (
-            f"{sorted(names - folder - tags - pins - session)} is neither folder "
-            "organization, tag organization, pinning nor session control — name the "
-            "class it belongs to before adding it here"
+        assert names == folder | tags | pins | session | threads, (
+            f"{sorted(names - folder - tags - pins - session - threads)} is neither "
+            "folder organization, tag organization, pinning, session control nor "
+            "threads — name the class it belongs to before adding it here"
         )

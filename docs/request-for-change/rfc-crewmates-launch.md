@@ -281,6 +281,17 @@ Decided:
 - P1: the launch may ship without threads; when they ship, this is their
   shape.
 
+Amendment (2026-09-29): reply threads ship on **every** chat surface — ordinary
+chat, a member or crewmate DM, `td-*` resident sessions, and Slack — default on,
+with the developer flag `dashboard.crewmate_threads` removed. Three grounds. A
+thread is a full session, so the session controls already govern it: close it,
+stop its turn, or switch it off with `session_control`; a separate thread switch
+would be a second spelling of a control that exists. Slack carries threads
+natively, so a Kiro Crew switch there would gate a surface the product does not
+own. And the product owner's requirement is that a thread be openable from any
+chat, which a per-surface opt-in contradicts. Sections 01-06 and 08-09 are
+unchanged; this amends only the scope and the default of §07.
+
 ### 08 Meet CrewMates onboarding
 
 Decided: a four-step flow in the product's existing split-screen first-run

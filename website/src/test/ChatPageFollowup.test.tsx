@@ -234,7 +234,9 @@ describe('ChatPage follow-up worktree orchestration', () => {
     const store = makeStore()
     await renderPage(store)
     fireEvent.click(screen.getByRole('button', { name: /start in new worktree/i }))
-    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(/Branch already exists/i))
+    // By its own testid: the page may also carry the thread-anchor read's alert,
+    // and this case is about the worktree failure's own notice.
+    await waitFor(() => expect(screen.getByTestId('follow-up-error-0')).toHaveTextContent(/Branch already exists/i))
     expect(api.createChatSlot).not.toHaveBeenCalled()
     expect(composer().value).toBe('')
     expect(store.getState().chat.followups['chat-1']).toBeDefined()

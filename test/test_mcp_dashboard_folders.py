@@ -1899,6 +1899,11 @@ class TestAdvertisedSet:
             "session_summary",
             "session_adopt",
             "session_release",
+            "thread_open",
+            # `thread_context_read` is deliberately NOT here: it lives on
+            # `kirocrew-core`, because this server is an opt-in set and a thread
+            # whose agent does not reference it would mount no tool from here --
+            # while every thread's injected context block names that tool.
         }
 
 

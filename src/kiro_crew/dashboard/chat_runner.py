@@ -12263,8 +12263,28 @@ async def _run_chat(
         _crew_log_edge = slot.take_crew_log_previous(
             now_writing=_crew_log_sid, replay_pending=_crew_log_replay_owed
         )
+        # A thread's parent edge lives in THIS entry (`session/opened.parent.slot`),
+        # and `project_for_turn` a few hundred lines below reads it back off disk.
+        # The emitter hands the append to a buffered writer and returns, so on a
+        # first turn the projector can read before the write lands, find no parent
+        # edge, and answer "not a thread" -- the thread's first reply then carries
+        # no account of the conversation it was opened on, silently, and recovery
+        # is a turn late because no cursor was recorded either. So the entry gets a
+        # settle signal and the projection waits on it. Every path calls it,
+        # including the one where the crew log is off, so the wait cannot hang on a
+        # session that has nothing to settle.
+        _lineage_loop = asyncio.get_running_loop()
+        _lineage_settled = asyncio.Event()
+
+        def _signal_lineage_settled() -> None:
+            # The writer thread calls this, so the Event is set on the loop that
+            # awaits it. Scheduling returns a Handle nobody here needs, and the
+            # callback contract is None-returning, so it is dropped deliberately.
+            _lineage_loop.call_soon_threadsafe(_lineage_settled.set)
+
         crew_log_emit.on_session_opened(
             _crew_log_sid,
+            after=_signal_lineage_settled,
             agent=slot.agent or "",
             slot=slot.key,
             model=_crew_log_model(slot),
@@ -12634,6 +12654,43 @@ async def _run_chat(
             # Save raw user message before context/persona prepend for Slack
             # mirror — avoids leaking injected context to the linked thread.
             _user_msg_for_mirror = message
+            # A thread's account of the conversation it hangs off is queued HERE,
+            # one step before the drain reads the queue, for two reasons: it must
+            # describe the parent as of now rather than as of the open (a thread
+            # opened this morning and first written to this evening wants the
+            # evening's parent), and on every turn after the first it is only the
+            # delta since the cursor it recorded. A non-thread slot returns None
+            # after one cheap lookup. Never fatal: a parent that is gone, a crew
+            # log that is off, or a summarizer that cannot be reached costs the
+            # turn its block, not the turn.
+            try:
+                from kiro_crew.dashboard.thread_projection import (
+                    LINEAGE_SETTLE_TIMEOUT_S,
+                    project_for_turn,
+                )
+
+                # Wait for this turn's `session/opened` to reach disk first: it
+                # carries the parent edge the projector resolves the thread by, and
+                # a read that beats the write reads a thread as an ordinary chat.
+                # Bounded, and it suspends only this turn -- the loop keeps serving
+                # everything else. A writer too far behind to settle in time costs
+                # the first turn its block, which the next turn's delta then covers.
+                try:
+                    await asyncio.wait_for(
+                        _lineage_settled.wait(), timeout=LINEAGE_SETTLE_TIMEOUT_S
+                    )
+                except (TimeoutError, asyncio.TimeoutError):
+                    logger.warning(
+                        "thread projection: lineage for slot=%s not settled in %.0fs",
+                        slot.key,
+                        LINEAGE_SETTLE_TIMEOUT_S,
+                    )
+
+                await project_for_turn(state, slot)
+            except Exception:
+                logger.warning(
+                    "thread context projection failed for slot=%s", slot.key, exc_info=True
+                )
             # Drain pending context injections (silent background context
             # from apps/subagents).  Expired entries are discarded.
             _ctx_prefix = drain_pending_context(slot)

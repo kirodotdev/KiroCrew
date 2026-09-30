@@ -65,8 +65,8 @@ vi.mock('../../api/client', () => ({
     workflowRuns: vi.fn(() => Promise.resolve({ runs: [] })),
     sessionWorkProjection: vi.fn(() => Promise.resolve({ value: { items: [] } })),
     artifacts: vi.fn(() => Promise.resolve({ artifacts: [] })),
-    // `dashboard.crewmate_threads` (reply threads) is read from the shared config
-    // query; an empty config is the default -- the flag is OFF.
+    // The shared config query several panes on this page read. Threads are not
+    // among them: they are on, on every chat surface, with no flag.
     kirocrewConfig: vi.fn(() => Promise.resolve({})),
     // The Schedules chip's count and its tab body read the whole cron list and
     // filter it per crewmate (`wakesCrew`). Resolved-and-empty is the state every
@@ -103,9 +103,17 @@ vi.mock('../../api/client', () => ({
   },
 }))
 
-// The reply-thread footer read. Spied so the flag cases below can pin that it
-// is never issued while `dashboard.crewmate_threads` is off.
-const threadsSummary = vi.fn(() => Promise.reject(new Error('threads unavailable')))
+// The thread footer read. Spied so the case below can pin which slot it is
+// issued for and that its failure is said rather than swallowed.
+//
+// It RESOLVES by default. It used to reject, which was inert while threads sat
+// behind a flag that was off in every other case; with no flag the read goes out
+// on every render, so a rejecting default would put a thread notice on the page
+// in cases that are asserting the absence of any alert. The failure is now the
+// one case that asks for it.
+const threadsSummary = vi.fn<[unknown?], Promise<{ threads: Record<string, never> }>>(() =>
+  Promise.resolve({ threads: {} }),
+)
 vi.mock('../../api/threads', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../api/threads')>()
   return {
@@ -416,42 +424,23 @@ beforeEach(() => {
   // Module-level "thread on screen" registration; a case that unmounted
   // mid-effect would otherwise leave its slot registered for the next one.
   _resetViewedThreadForTests()
+  // The case that wants a failing footer read sets it on the shared spy, so
+  // put the resolving default back rather than leaving the next case with a
+  // thread notice it never asked for.
+  threadsSummary.mockImplementation(() => Promise.resolve({ threads: {} }))
 })
 
 describe('MembersPage roster', () => {
-  it('reply threads off (the default): no footer read is issued and no thread notice is drawn', async () => {
-    await renderPage([row()], 'kirocrew', { route: '/members?member=oncall' })
-    await screen.findByTestId('chat-pane-stub', PANE_READY)
-    // The config read has resolved (to an empty config) by the time the pane is up.
-    await waitFor(() => expect(api.kirocrewConfig).toHaveBeenCalled())
-    expect(threadsSummary).not.toHaveBeenCalled()
-    expect(screen.queryByTestId('member-threads-error-row')).toBeNull()
-    expect(screen.queryByTestId('thread-panel')).toBeNull()
-  })
-
-  it('reply threads on: the footer read is issued for the confirmed slot and its failure is shown', async () => {
-    vi.mocked(api.kirocrewConfig).mockResolvedValue({ dashboard: { crewmate_threads: true } })
+  it('the thread footer read is issued for the confirmed slot, and its failure is shown', async () => {
+    // No flag and no config gate: the read goes out as soon as the slot is
+    // confirmed. The three cases this replaces asserted the off-state, the
+    // on-state and an unreadable flag -- all of which described the switch,
+    // not the feature.
+    threadsSummary.mockRejectedValue(new Error('threads unavailable'))
     await renderPage([row()], 'kirocrew', { route: '/members?member=oncall' })
     await screen.findByTestId('chat-pane-stub', PANE_READY)
     await waitFor(() => expect(threadsSummary).toHaveBeenCalledWith('member-oncall'))
     await screen.findByTestId('member-threads-error-row', PANE_READY)
-  })
-
-  it('a failed config read is said with a Retry, not rendered as threads off', async () => {
-    vi.mocked(api.kirocrewConfig).mockRejectedValueOnce(new Error('boom'))
-    await renderPage([row()], 'kirocrew', { route: '/members?member=oncall' })
-    await screen.findByTestId('chat-pane-stub', PANE_READY)
-    // The failure is a notice on the standard path, with the read offered again.
-    await screen.findByTestId('member-threads-flag-error-row', PANE_READY)
-    expect(screen.getByTestId('member-threads-flag-error')).toHaveTextContent(/Couldn't check whether reply threads are on/)
-    // Not known to be on: no footer read, no panel -- and no silent "off" either.
-    expect(threadsSummary).not.toHaveBeenCalled()
-    expect(screen.queryByTestId('thread-panel')).toBeNull()
-    // Retry re-reads; a config that now says on turns the feature on in place.
-    vi.mocked(api.kirocrewConfig).mockResolvedValue({ dashboard: { crewmate_threads: true } })
-    fireEvent.click(screen.getByTestId('member-threads-flag-retry'))
-    await waitFor(() => expect(threadsSummary).toHaveBeenCalledWith('member-oncall'))
-    await waitFor(() => expect(screen.queryByTestId('member-threads-flag-error-row')).toBeNull())
   })
 
   it('renders one row per member from the API', async () => {
@@ -3215,7 +3204,18 @@ describe('New crewmate dialog', () => {
     await waitFor(() => expect(screen.queryByTestId('crewmate-create-form')).toBeNull())
     await waitFor(() => {
       expect((api.agentCatalog as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(registryReadsBefore)
-      expect((api.kirocrewConfig as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(configReadsBefore)
+      // The config cache is asserted as INVALIDATED rather than as refetched.
+      // A refetch needs a live observer, and this page had one only because the
+      // reply-threads flag hook subscribed to `['kirocrewConfig']`; with the
+      // flag gone there is nothing here watching it. What the pencil deep link
+      // actually depends on is the entry being marked stale, so the crew
+      // manager refetches when IT mounts -- which is what this now pins.
+      expect(queryClient.getQueryState(['kirocrewConfig'])?.isInvalidated).toBe(true)
+      // EXACTLY the count from before, so this pins "no refetch happened" -- the
+      // consequence of there being no observer left. A mock call count cannot
+      // decrease, so `>=` here would assert nothing at all and would pass just as
+      // happily if an unintended refetch were reintroduced.
+      expect((api.kirocrewConfig as ReturnType<typeof vi.fn>).mock.calls.length).toBe(configReadsBefore)
     })
   })
 

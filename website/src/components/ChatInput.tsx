@@ -484,6 +484,11 @@ interface ChatInputProps {
   busyMode?: ComposerBusyMode
   disabled?: boolean
   placeholder?: string
+  /** This composer belongs to a THREAD pane sitting beside the chat it hangs
+   *  off, so the approval card's focus control names the thread. "Show in chat"
+   *  reads, next to the parent's own transcript, as an offer to jump there --
+   *  and the control expands the call in place, in the thread. */
+  inThread?: boolean
   prefillHint?: boolean
   onDismissHint?: () => void
   /** macOS-only screenshot */
@@ -988,6 +993,7 @@ function ChatInput({
   busyMode = 'split',
   disabled: disabledProp = false,
   placeholder = '',
+  inThread = false,
   prefillHint,
   onScreenshot,
   onUploadFiles,
@@ -4061,12 +4067,12 @@ function ChatInput({
                       <button
                           type="button"
                           onClick={showInChat}
-                          title={i18nT('components.chatInput.show_pending_tool_call_in_chat')}
-                          aria-label={i18nT('components.chatInput.show_pending_tool_call_in_chat')}
+                          title={inThread ? i18nT('pages.chat.thread.show_pending_tool_call_here') : i18nT('components.chatInput.show_pending_tool_call_in_chat')}
+                          aria-label={inThread ? i18nT('pages.chat.thread.show_pending_tool_call_here') : i18nT('components.chatInput.show_pending_tool_call_in_chat')}
                           className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-transparent border border-border text-muted text-[11px] cursor-pointer hover:text-text hover:border-border-strong hover:bg-bg-hover transition-colors"
                       >
                           <Target size={11} className="shrink-0" />
-                          {i18nT('components.chatInput.show_in_chat')}
+                          {inThread ? i18nT('pages.chat.thread.show_in_thread') : i18nT('components.chatInput.show_in_chat')}
                       </button>
                   )}
                   {/* `data-approval-actions` is the probe `queryPendingApprovalAction`

@@ -290,6 +290,60 @@ a deliberate scope boundary, and an `mpim` is shared with other people. The key
 keeps the two-segment `slack:<scope>` shape on purpose, so callers that treat a
 Slack key as opaque or reverse-derive from it are unaffected.
 
+**Thread anchors (`slack/threads.py`).** Because the session key already IS the
+thread, one session per anchored message is not a thing this gateway had to grow
+— it is what it has always done. What it did not have is the anchor: the durable
+statement of which message the session hangs off, in the channel-neutral shape
+every surface shares (`ThreadAnchor(surface, conversation, mid)` in
+`messaging/link.py` — a `ChannelLink` plus a message id). Slack's is
+`(slack, <channel_id>, <reply_ts>)`.
+
+Both dispatch paths record it at the same point: immediately after
+`if is_new: set_channel(...)`, off the loop, through
+`slack.threads.record_anchor`. Recording is idempotent (a session that already
+carries an anchor is left alone, which matters because `is_new` goes true again
+after a restart while the metadata is still on disk) and never raises — an anchor
+is a record ABOUT a turn, and a turn that answered the user must not fail for its
+bookkeeping.
+
+Where the anchor lives, and why it is not the dashboard's sidecar index:
+`ConversationLog.write_thread_anchor` refuses unless the PARENT's transcript
+exists and holds a row whose `meta.mid` is the anchor's message id, because on
+the dashboard an anchor is durable only through the row it hangs off. A Slack
+channel has no such row — the transcripts this gateway keeps are per thread
+(`slack:<ts>`), not per channel — so giving the index a Slack anchor would mean
+inventing a per-channel conversation nothing writes to. Instead the anchor is
+recorded where it is already durable:
+
+- `_thread_anchor` on the thread session's OWN metadata. This is Slack ONLY: the
+  dashboard's sole record is the parent's index, because it has a parent row to
+  guard one. Here there is no such row, so the thread's own metadata is the only
+  durable place left -- and the writer reads this key back as its idempotency
+  guard, which is what keeps a replayed event from recording the anchor twice; and
+- `thread/opened` in the session-kind crew log, on the thread's own log. The
+  dashboard writes that entry on the parent conversation's log, where a reader
+  asks "what hangs off this chat"; a Slack channel has no log, and the thread's
+  own is where the mirror-image question is asked.
+
+Two cases are deliberately NOT anchored, and both are read off the key the
+dispatch actually used rather than off a flag — either exclusion changing the key
+is an exclusion this still sees:
+
+- a 1:1 DM folded by `slack.dm_single_session`, keyed `slack:<channel_id>`, where
+  a thread is a layout habit rather than a new topic; and
+- a message routed into a dashboard-linked session, keyed `dashboard:<slot>` —
+  that slot's conversation is not this thread's, and the mirror binding
+  (`SessionMap.get/set_slack_link`) stays separate from the anchor, guardrail G3.
+
+Slack records its anchor from the dispatch site, `slack/threads.py::record_anchor`,
+and there is deliberately no per-surface adapter abstraction between the two. A
+Protocol plus a registry would have exactly one registrant and no lookup, so the
+second surface that needs this is the one that should introduce the seam, sized to
+what two callers actually share. Until then the surface name lives beside the
+anchor it names (`SURFACE_DASHBOARD` in `messaging/link.py`), and Slack's session
+key stays a DERIVATION, `canonical_key(reply_ts)` — the key exists whether or not
+the session does.
+
 One consumer needs the shape spelled out: `file_send`'s upload handler resolves
 its target from the session map, and its thread-first branch requires a thread
 before it will use the linked channel. A flat DM has a channel and no thread, so

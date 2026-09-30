@@ -10871,7 +10871,7 @@
       },
       "thread": {
         "title": "Hilo",
-        "close": "Cerrar el hilo",
+        "close": "Cerrar panel",
         "reply_in_thread": "Responder en el hilo",
         "open_thread": "Abrir el hilo",
         "replies_count_one": "{{count}} respuesta",
@@ -10880,20 +10880,30 @@
         "last_reply": "Última respuesta {{when}}",
         "you": "Tú",
         "no_replies_yet": "Aún no hay respuestas",
-        "replying": "{{name}} está respondiendo…",
-        "reply_placeholder": "Responder en el hilo…",
-        "reply_after_retry": "Pulsa Reintentar para cargar el hilo y luego responde.",
-        "send_reply": "Enviar respuesta",
-        "err_replying": "{{name}} todavía está respondiendo. Espera esa respuesta.",
-        "err_parent_gone": "Ese mensaje ya no está en este chat.",
-        "err_too_long": "Esa respuesta es demasiado larga. Acórtala e inténtalo de nuevo.",
-        "err_full": "Este hilo está lleno. Pregunta en el chat principal.",
-        "err_chat_full": "Este chat no tiene espacio para más respuestas en hilos. Empieza un chat nuevo para seguir conversando.",
-        "err_send_failed": "La respuesta no se envió. Pulsa enviar para intentarlo de nuevo.",
         "err_load_failed": "No se pudo cargar este hilo.",
         "err_summary_failed": "No se pudieron cargar los hilos de respuesta de este chat. Tus respuestas siguen guardadas; el chat en sí está al día.",
-        "err_flag_failed": "No se pudo comprobar si los hilos de respuesta están activados en este chat. El chat en sí está al día; las respuestas que haya siguen guardadas.",
-        "retry": "Reintentar"
+        "retry": "Reintentar",
+        "opening": "Abriendo el hilo…",
+        "open_full": "Abrir como página completa",
+        "closed": "Finalizado",
+        "legacy_title": "Respuestas anteriores",
+        "legacy_notice": "Estas respuestas anteriores son de solo lectura. Inicia un hilo nuevo para continuar aqui.",
+        "legacy_start_new": "Empezar un hilo nuevo aquí",
+        "err_open_failed": "No se pudo abrir un hilo en este mensaje. Inténtalo de nuevo.",
+        "err_open_not_ready": "Este mensaje aún no está listo para un hilo. Inténtalo en un momento.",
+        "end": "Finalizar hilo",
+        "err_end_failed": "No se pudo finalizar este hilo. Intentalo de nuevo.",
+        "from_main_chat": "Del chat principal",
+        "retry_footers": "Reintentar los pies de hilo",
+        "composer_placeholder": "Escribe en este hilo…",
+        "show_in_thread": "Mostrar en este hilo",
+        "show_pending_tool_call_here": "Mostrar la llamada de herramienta pendiente en este hilo",
+        "empty_hint": "Este hilo está vacío. Escribe un mensaje para empezarlo.",
+        "end_hint": "Terminarlo lo deja legible y libera el mensaje para un hilo nuevo.",
+        "closed_composer": "Este hilo ha terminado. Puedes seguir escribiéndole, y las respuestas llegan aquí.",
+        "card_ended": "Hilo terminado.",
+        "card_read": "Leerlo",
+        "parent_streaming": "Se sigue escribiendo en el chat principal"
       },
       "toolCallLine": {
         "diff_truncated": "diff truncado",
@@ -10951,7 +10961,8 @@
         "steering": "Redirigiendo…",
         "delivery_pending": "Entrega pendiente…",
         "redirecting_the_running_turn_not_yet_confirmed": "Redirigiendo el turno en curso — aún sin confirmar.",
-        "turn_ended_before_this_applied_runs_as_its_own_message": "El turno terminó antes de que esto se aplicara — se ejecuta como un mensaje independiente."
+        "turn_ended_before_this_applied_runs_as_its_own_message": "El turno terminó antes de que esto se aplicara — se ejecuta como un mensaje independiente.",
+        "more_actions": "Más acciones"
       },
       "workflowCompletionCard": {
         "hide_result": "Ocultar el resultado",
@@ -15187,14 +15198,6 @@
         "on_windows_keystrokes_take_your_keyboard_focus": "En Windows, las pulsaciones de teclas toman el foco del teclado y los clics por coordenadas mueven el cursor real: en esta plataforma no existe una vía de entrada por aplicación.",
         "the_app_lists_in_computer_use_json_could_not_be": "No se pudieron leer las listas de aplicaciones de computer_use.json, así que aquí se muestran vacías. El agente sigue rechazando toda acción que dependa de ellas hasta que el archivo sea JSON válido.",
         "your_chat_sessions_were_restarted_so_this_takes": "Tus sesiones de chat se reiniciaron para que esto surta efecto de inmediato — Kiro lee su lista de herramientas una vez por sesión, así que un chat abierto no lo habría detectado de otro modo. Tus mensajes siguen ahí; el agente vuelve a leer su contexto en tu siguiente mensaje."
-      },
-      "crewmatesSection": {
-        "title": "Miembros del equipo",
-        "reply_threads": "Hilos de respuesta en los mensajes del chat de un miembro",
-        "reply_threads_desc": "Permite que cualquier mensaje del chat de un miembro del equipo tenga su propio hilo de respuesta, abierto en el panel lateral mientras el chat sigue visible. Desactivado, no se ofrece Responder en el hilo y los hilos existentes quedan ocultos, no borrados.",
-        "failed_to_save": "No se pudo guardar el ajuste del equipo. Inténtalo de nuevo.",
-        "failed_to_load": "No se pudieron cargar los ajustes del equipo.",
-        "retry": "Reintentar"
       },
       "developerPanel": {
         "developer_mode": "Modo de desarrollador",

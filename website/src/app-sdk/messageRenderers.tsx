@@ -49,13 +49,34 @@ import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 import { isRejectedDecision } from '../utils/approvalDecision'
 
 /** Everything a renderer may read. Passed per row so entries stay pure functions. */
-/** What a host that offers reply threads hands the rows: the footer data per
- *  parent `mid`, and the open action. Both are keyed by the message's durable
- *  `meta.mid`, the only identity a thread can hang off. */
+/** What a host that offers threads hands the rows: the footer data per anchored
+ *  `mid`, and the open action. */
 export interface ThreadHooks {
   summaryOf: (mid: string) => ThreadSummary | undefined
-  onOpen: (mid: string) => void
-  /** The crewmate's display name -- the face beside its replies. */
+  /**
+   * Open (or reopen) the thread anchored on this message.
+   *
+   * `undefined` means the row is still STREAMING and therefore has no `mid` at
+   * all — ids are minted when the row persists, post-turn. The host then asks
+   * the backend to resolve the anchor, which falls back to the user message
+   * that started the turn (NOTES D4). So a streaming row can start a thread
+   * without the UI inventing an id for it.
+   *
+   * `read` says the caller is pointing at a thread it can already SEE -- a
+   * footer, a close card's back-link -- so an ENDED thread opens for reading.
+   * Without it the call means "start a thread on this message", which on a
+   * message whose thread has ended mints a new one.
+   */
+  onOpen: (mid: string | undefined, opts?: { read?: boolean }) => void
+  /** Show the thread whose session is this slot. The close card's back-link knows
+   *  the slot it named, not the mid its thread is anchored to.
+   *
+   *  Answers whether the drawer took it. A slot no anchor claims any more -- a
+   *  later thread on the same message holds the anchor now -- is still a real
+   *  session, so a host with somewhere else to send the reader (the full page)
+   *  uses that answer rather than leaving the control inert. */
+  onOpenSlot?: (threadSlot: string) => boolean
+  /** The display name whose face sits beside the thread's replies. */
   crewmateName: string
 }
 
@@ -124,15 +145,67 @@ export function threadFooterFor(m: ChatMessage, ctx: MessageRenderContext, align
   const mid = threadMidOf(m)
   if (!hooks || !mid) return null
   const summary = hooks.summaryOf(mid)
-  if (!summary || summary.count <= 0) return null
-  return <ThreadFooter summary={summary} crewmateName={hooks.crewmateName} align={align} onOpen={() => hooks.onOpen(mid)} />
+  // An ANCHOR is enough to draw the footer, not a reply count. A thread is a
+  // real session now: one opened a second ago has no messages yet, and it is
+  // precisely then that the user needs the way back into it. A message with no
+  // thread at all still draws nothing -- its "Reply in thread" action is in the
+  // hover row -- and a version 1 thread still needs a reply to have existed.
+  if (!summary) return null
+  if (summary.kind === 'legacy' && summary.count <= 0) return null
+  // An ended thread whose own close card sits immediately below says the same
+  // thing twice -- the chip reads "Thread <title> Ended" and the card directly
+  // under it reads "Thread ended. <title>. Read it" -- and both link to the same
+  // session. The CARD is kept because it carries the back-link as its whole
+  // purpose and reads as a sentence; the chip is the redundant half. Only when
+  // they are ADJACENT: a card further down the transcript is out of sight of its
+  // anchor, which is exactly when the chip is the way back in.
+  if (summary.kind === 'session' && summary.closed_at) {
+    const next = ctx.messages[ctx.index + 1]
+    if (next && threadCloseCardOf(next)?.threadSlot === summary.thread_slot) return null
+  }
+  // `read`: the footer NAMES a thread, ended or not, so pressing it means "show
+  // me that one". Starting a fresh thread on the same message is the row action.
+  return (
+    <ThreadFooter
+      summary={summary}
+      crewmateName={hooks.crewmateName}
+      align={align}
+      onOpen={() => hooks.onOpen(mid, { read: true })}
+    />
+  )
 }
 
-/** The row action that opens (or starts) the thread on this message, or undefined. */
+/** The `{thread_slot, title}` a close card carries, or null for any other row.
+ *
+ *  Role-agnostic on purpose. The card is written with the display-only
+ *  `thread_closed` role, and a transcript written before that role existed holds
+ *  the same row as `assistant`; `meta.thread_summary` is the whole of its
+ *  card-ness either way, and `thread_slot` is the back-link into the thread it
+ *  closed. */
+export function threadCloseCardOf(m: ChatMessage): { threadSlot: string; title: string } | null {
+  const raw = (m.meta as { thread_summary?: unknown } | undefined)?.thread_summary
+  if (!raw || typeof raw !== 'object') return null
+  const rec = raw as { thread_slot?: unknown; title?: unknown }
+  const threadSlot = typeof rec.thread_slot === 'string' ? rec.thread_slot : ''
+  if (!threadSlot) return null
+  return { threadSlot, title: typeof rec.title === 'string' ? rec.title : '' }
+}
+
+/**
+ * The row action that opens (or starts) the thread on this message.
+ *
+ * A row with no `mid` still gets the action when it is the one being streamed:
+ * the backend resolves the anchor. A row with no mid for any OTHER reason (a
+ * pre-id transcript row) gets nothing, because there is no turn to fall back to.
+ */
 export function replyInThreadFor(m: ChatMessage, ctx: MessageRenderContext): (() => void) | undefined {
   const hooks = ctx.threads
+  if (!hooks) return undefined
   const mid = threadMidOf(m)
-  if (!hooks || !mid) return undefined
+  if (!mid) {
+    if (m.role !== 'streaming') return undefined
+    return () => hooks.onOpen(undefined)
+  }
   return () => hooks.onOpen(mid)
 }
 
@@ -460,7 +533,7 @@ export function renderAssistantBubble(
           : turnHadPolicyBlock(ctx.messages, ctx.index)
       }
       bubbleClassName={bubbleClassName}
-      onReplyInThread={isStreaming ? undefined : replyInThreadFor(m, ctx)}
+      onReplyInThread={replyInThreadFor(m, ctx)}
     />
   )
   // The column's child is the bubble itself unless this message has a thread

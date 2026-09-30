@@ -125,6 +125,7 @@ from kiro_crew.validation import (
     SESSION_STATUS_SCHEMA,
     SESSION_STOP_SCHEMA,
     SESSION_SUMMARY_SCHEMA,
+    THREAD_OPEN_SCHEMA,
     validate_tool_args,
 )
 
@@ -141,6 +142,12 @@ SERVER_VERSION = "1.0.0"
 #: be gated for identity but reachable from a channel agent.
 SESSION_CONTROL_TOOLS: tuple[str, ...] = (
     "session_create",
+    # A thread IS a created session, so it belongs to this set on both counts: its
+    # dispatch needs the verified caller key (it resolves the caller's own
+    # conversation as the anchor, and must not take that from the body), and a
+    # channel-bound agent stays walled off from session control -- the channel
+    # surfaces reach threads through their own adapter, not through this tool.
+    "thread_open",
     "session_fork",
     "session_stop",
     "session_set_model",
@@ -528,6 +535,68 @@ def _tool_definitions() -> list[dict[str, Any]]:
                             "the turn succeeds on the account's default model, and the only "
                             "signal is a notice in that session's transcript. The person "
                             "can still change it later."
+                        ),
+                    },
+                },
+                "required": [],
+            },
+        },
+        {
+            "name": "thread_open",
+            "description": (
+                "Open a THREAD on one message of this conversation: a new chat session "
+                "ANCHORED to that message, so a side topic gets its own place instead of "
+                "derailing the main chat. With no arguments it anchors to the message you "
+                "are answering right now, which is the common case — say what the thread "
+                "is for in `title` and you are done. The thread is an ordinary session: it "
+                "has your tools, its own memory and approval cards, it appears in the "
+                "user's sidebar, and it shows as a thread badge under the anchored message "
+                "so the user can open it there. Returns its key; pass that as `target` to "
+                "the other session tools. Unlike session_create it is LINKED to a message; "
+                "unlike session_fork it does not copy the whole transcript. It starts "
+                "EMPTY: at its first turn it is given a summary of the conversation it "
+                "hangs off, built from that conversation as it stands then, and it can "
+                "read the exact rows with thread_context_read."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": (
+                            "Short name for the thread, shown in the sidebar and on the "
+                            "badge under the anchored message. Say what the thread is FOR."
+                        ),
+                    },
+                    "anchor_mid": {
+                        "type": "string",
+                        "description": (
+                            "Message to anchor to, by its durable id (``m-`` + 16 hex). "
+                            "Omit it for the usual case: the thread then anchors to the "
+                            "user message that started YOUR CURRENT TURN — the message you "
+                            "are answering. A reply that is still being written has no id "
+                            "yet, so there is nothing else it could name."
+                        ),
+                    },
+                    "agent": {
+                        "type": "string",
+                        "description": (
+                            "Agent to bind the thread to. Omitting it inherits the "
+                            "CALLER'S OWN agent, exactly as session_create does, so the "
+                            "thread stays in this workspace's memory boundary. Name one "
+                            "explicitly when the thread's work needs different tools than "
+                            "you have."
+                        ),
+                    },
+                    "note": {
+                        "type": "string",
+                        "description": (
+                            "What you want the thread to work on, delivered as its own "
+                            "first message so its first turn runs on it: the question, "
+                            "plus the paths, ids or constraints the work needs. Omit it "
+                            "and the thread opens empty and waits. The anchored message "
+                            "itself needs no repeating — the thread is given a summary of "
+                            "that conversation at its first turn either way."
                         ),
                     },
                 },
@@ -2217,6 +2286,42 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             f"\U0001f195 Opened `{resp.get('target')}` ({resp.get('title')}){filed}{on_model}.{made_note} "
             "It is empty and waiting in the user's sidebar; watch it with "
             "session_read_message."
+        )
+
+    if name == "thread_open":
+        args = validate_tool_args(args, THREAD_OPEN_SCHEMA)
+        # ``inflight`` is the path segment for "the reply being written right now",
+        # which is what an omitted ``anchor_mid`` means: the endpoint resolves it to
+        # the user message that started this turn. The caller's conversation is NOT
+        # sent in the body -- the endpoint takes it from the verified session key,
+        # so this tool cannot open a thread on another chat.
+        anchor_mid = str(args.get("anchor_mid") or "").strip() or "inflight"
+        payload = {
+            "title": args.get("title", ""),
+            "agent": args.get("agent", ""),
+            "note": args.get("note", ""),
+        }
+        resp = _post(
+            f"/api/chat/threads/{quote(anchor_mid, safe='')}/open",
+            payload,
+            session_key=caller_key,
+        )
+        if resp.get("error"):
+            if resp.get("code") == "already_open" and resp.get("thread_slot"):
+                return redact(
+                    f"That message already has a thread: `{resp['thread_slot']}`. "
+                    "Send to it with session_send rather than opening a second one."
+                )
+            return redact(f"Error: could not open a thread: {resp['error']}")
+        note_state = (
+            "Its first turn is running on your note."
+            if resp.get("seeded")
+            else "It is empty and waiting; send to it with session_send."
+        )
+        return redact(
+            f"\U0001f9f5 Opened thread `{resp.get('thread_slot')}` ({resp.get('title')}) on "
+            f"message `{(resp.get('anchor') or {}).get('mid', '')}`. {note_state} "
+            "Watch it with session_read_message."
         )
 
     if name == "session_fork":

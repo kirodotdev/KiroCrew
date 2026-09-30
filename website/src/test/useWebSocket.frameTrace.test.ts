@@ -437,11 +437,11 @@ const FRAME_CASES: Array<[string, Frame[], Frame[]]> = [
     { type: 'workflow_run_event', data: { run_id: 'r-1', seq: 1, type: 'run_started', data: { session_key: ACTIVE } } },
     { type: 'chat.side_result', data: { slot: ACTIVE, run_id: 'side-1', role: 'assistant', content: 'aside', final: true } },
   ]],
-  ['chat.thread_reply', [], [
-    { type: 'chat.thread_reply', data: { slot: ACTIVE, mid: 'm-1', role: 'assistant', delta: 'part' } },
-    { type: 'chat.thread_reply', data: { slot: ACTIVE, mid: 'm-1', role: 'assistant', final: true, content: 'all' } },
-    { type: 'chat.thread_reply', data: { slot: ACTIVE, mid: 'm-1', role: 'user', content: 'reply' } },
-    { type: 'chat.thread_reply', data: { slot: ACTIVE, role: 'user' } },
+  ['chat.thread_anchor', [], [
+    { type: 'chat.thread_anchor', data: { slot: ACTIVE, mid: 'm-1', thread_slot: 'chat-9-1', event: 'opened' } },
+    { type: 'chat.thread_anchor', data: { slot: ACTIVE, mid: 'm-1', thread_slot: 'chat-9-1', event: 'closed' } },
+    // No `mid`: dropped before it reaches the store, so it traces nothing.
+    { type: 'chat.thread_anchor', data: { slot: ACTIVE, thread_slot: 'chat-9-1' } },
   ]],
   ['chat.side_queue', [], [
     { type: 'chat.side_queue', data: { slot: ACTIVE, action: 'push', queue_id: 'sq-1', content: 'aside', raw: true } },
@@ -1233,7 +1233,9 @@ const EXPECTED_FRAMES: Record<string, string[]> = {
     'action chat/sseWorkflowEvent {"run_id":"r-1","seq":1,"type":"run_started","data":{"session_key":"slot-a"}}',
     'action chat/sseSideResult {"slot":"slot-a","run_id":"side-1","role":"assistant","content":"aside","final":true}',
   ],
-  "chat.thread_reply": [
+  "chat.thread_anchor": [
+    // Unconditional per frame, unlike the reply frames this replaced: an anchor
+    // frame is only sent for an open or a close, and both change the index.
     'query invalidateQueries ["chat-thread","slot-a","m-1"]',
     'query invalidateQueries ["chat-threads","slot-a"]',
     'query invalidateQueries ["chat-thread","slot-a","m-1"]',

@@ -4,14 +4,14 @@ One chat session can open, fork, seed, watch, stop, close and revive another one
 change its model, and take another one under itself in the sidebar. The tools come from the
 `kirocrew-dashboard` MCP server, so an agent that does not mount that server
 never has them — exactly like any other MCP server. This page is the reference
-for all 23 of its tools, written for the agent that is about to use them.
+for all 24 of its tools, written for the agent that is about to use them.
 
 The server is defined in `src/kiro_crew/mcp_dashboard.py`. Two halves:
 
 - **Session control** — `session_create`, `session_fork`, `session_send`,
-  `session_read_message`, `session_summary`, `session_stop`, `session_set_model`,
-  `session_close`, `session_revive`, `session_broadcast`, `session_status`,
-  `session_adopt`, `session_release`. These reach another session.
+  `session_broadcast`, `session_status`, `session_read_message`, `session_summary`,
+  `session_stop`, `session_set_model`, `session_close`, `session_revive`,
+  `session_adopt`, `session_release`, `thread_open`. These reach another session.
 - **Sidebar shape** — `chat_folder_tree`, `chat_folder_create`,
   `chat_folder_move`, `chat_folder_move_session`, `chat_folder_file_self`,
   `chat_tag_list`, `chat_tag_create`, `chat_tag_update`, `chat_tag_assign`,
@@ -448,6 +448,56 @@ predates it, since none of those leaves a lineage to check. The person's own ses
 unaffected. A revive also spends the caller's create budget and per-caller slot
 cap (the revived slot is charged to the reviver for the cap while keeping its own
 creator) and the global slot cap.
+
+### `thread_open`
+
+Open a THREAD on one message of a conversation: a new session of its own, anchored
+to that message. Use it to take a side question out of a chat without spending the
+chat's turn on it — the thread is an ordinary session, so it has its own composer,
+tools, approvals, model, memory and place in the sidebar, and the parent keeps
+streaming while you open one.
+
+It starts EMPTY. At its first turn it is given a short summary of the conversation
+it hangs off, built from that conversation as it stands then, and every later turn
+gets only what changed since. So a thread opened today and written to next week
+discusses next week's parent, and a thread beside an idle parent pays nothing.
+
+| Argument | Required | Meaning |
+|---|---|---|
+| `anchor_mid` | yes | The anchored message's id, or `inflight` for the reply being written right now |
+| `title` | no | The thread's title; derived from the anchored message when omitted |
+| `agent` | no | Agent for the thread's own session; the caller's default when omitted |
+| `note` | no | What the thread should work on, delivered as its first message; omit and it waits |
+
+The anchor is `(surface, conversation, message_id)`. `inflight` exists because a
+streaming reply has no id yet — ids are minted after the turn — so the backend
+resolves the anchor to the user message that STARTED that turn. The partial reply
+is not lost: the thread's first-turn summary reads the parent live and says the
+answer was still being written. Opening never addresses the parent's running turn:
+it mints a sibling session, so it is neither a steer nor a queue entry and it
+cannot be refused for the parent being busy.
+
+One thread per message: a second open on the same message answers `already_open`
+and names the existing `thread_slot`, which is the thread to show rather than a
+failure. A message whose row is not on disk yet answers `transcript_missing`,
+which means try again rather than never. Closing a thread is a person's action in
+the drawer (**End thread**), not a tool.
+
+A channel-bound agent cannot call it (`CHANNEL_AGENT_BLOCKED_TOOLS`), like every
+other tool that reaches a dashboard session.
+
+### `thread_context_read` lives on `kirocrew-core`
+
+Reading a thread's parent rows is documented with the other session-reading tools
+on the core server, not here. It sits there because EVERY thread needs it: this
+server is an opt-in set, so a session whose agent does not reference it mounts no
+tool from this page at all -- and a thread's injected context block names
+`thread_context_read` and tells the model to call it. Core is always mounted, so
+the promise that block makes is one the session can keep.
+
+Containment does not change with the address: it takes no target, resolves the
+parent from the caller's verified session key through the same strict gate this
+server's own verbs use, and stays on the channel-agent block list.
 
 ## Folders
 

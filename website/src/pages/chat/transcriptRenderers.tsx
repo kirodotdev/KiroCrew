@@ -51,7 +51,8 @@ import { FileCard } from '../../components/FileCard'
 import UserMessage from './UserMessage'
 import CrewmateMessage, { type CrewmateIdentity } from './CrewmateMessage'
 import { crewmateBubbleClass, crewmateRunPosition } from '../../components/chat/crewmateBubbles'
-import { formatTs, renderAssistantBubble, replyInThreadFor, threadFooterFor, type MessageRenderer, type MessageRenderContext } from '../../app-sdk/messageRenderers'
+import { formatTs, renderAssistantBubble, replyInThreadFor, threadCloseCardOf, threadFooterFor, type MessageRenderer, type MessageRenderContext } from '../../app-sdk/messageRenderers'
+import ThreadClosedCard from './ThreadClosedCard'
 import { renderUserContent } from './ChatPageMessageContent'
 import { fmtMessageTimeFull } from './messageTime'
 import type { ChatMessage } from '../../types'
@@ -436,6 +437,35 @@ export function createTranscriptRenderers(
       roles: ['assistant'],
       match: isSystemNoticeRow,
       render: (m, ctx) => ctx.row(<SystemNoticeRow key={ctx.key} message={m} disclosureKey={ctx.key} />),
+    },
+    {
+      // The row a thread leaves when it ends. Its own role rather than
+      // `assistant`, so the gateway keeps it out of the parent's replay instead of
+      // handing the model "Thread ended." as something it said. Rendered as a card
+      // that names the thread and opens it; the older `assistant` spelling is
+      // still claimed so transcripts written before the role existed keep drawing
+      // the card rather than falling through to a bubble.
+      id: 'thread_closed_card',
+      roles: ['thread_closed', 'assistant'],
+      match: (m) => threadCloseCardOf(m) !== null,
+      render: (m, ctx) => {
+        const card = threadCloseCardOf(m)
+        if (!card) return null
+        // The drawer first, the full page when the drawer cannot key it: closing
+        // frees the message, so a later thread takes the anchor over and an older
+        // card's slot matches no anchor. The session is still there either way, and
+        // `onSessionOpen` is the page's ordinary way to open one.
+        const openSlot = ctx.threads?.onOpenSlot
+        const openSession = o.onSessionOpen
+        const onOpen =
+          openSlot || openSession
+            ? () => {
+                if (openSlot?.(card.threadSlot)) return
+                openSession?.(card.threadSlot)
+              }
+            : undefined
+        return ctx.row(<ThreadClosedCard key={ctx.key} title={card.title} onOpen={onOpen} />)
+      },
     },
     {
       // Refines `assistant`: an injected workflow completion is a compact

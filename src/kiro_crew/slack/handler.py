@@ -181,6 +181,7 @@ from kiro_crew.slack.thread_parent import (
     parent_prompt_text,
     record_thread_parent,
 )
+from kiro_crew.slack.threads import record_anchor as record_thread_anchor
 from kiro_crew.stats import Stats
 from kiro_crew.subagent import SubagentManager
 from kiro_crew.task import Task
@@ -3884,6 +3885,29 @@ async def handle_message(
         )
         if is_new:
             await sessions.set_channel(session_key, channel)
+        # Record the session Slack keys for this thread as an ANCHORED thread. On
+        # EVERY dispatch, not only a new session: the write can fail transiently
+        # (it rewrites a metadata line on a real filesystem) and
+        # ``record_thread_anchor`` swallows that failure by contract, so a call
+        # made only when the dispatch believed the session new would leave the
+        # anchor missing for the life of the process -- ``is_new`` is false for
+        # every later message in the same thread. The recorder is IDEMPOTENT: a
+        # session already carrying an anchor is returned untouched and writes no
+        # second ``thread/opened``, so the steady-state cost is one metadata read.
+        # ``set_channel`` stays gated above, because that one is not idempotent.
+        #
+        # Off the loop (it rewrites a metadata line), never raises, and answers
+        # None when `session_key` is not this thread's own key -- a folded 1:1 DM
+        # or a dashboard-linked route. See slack/threads.py.
+        await asyncio.to_thread(
+            record_thread_anchor,
+            conversation_log=conversation_log,
+            session_key=session_key,
+            channel=channel,
+            reply_ts=reply_ts,
+            client=client,
+            agent=_agent,
+        )
         if thread_owner_key is None and not route_pinned:
             # Self-link: thread index maps the bare Slack thread_ts to this
             # session's canonical key. reply_ts (not session_key) is the true

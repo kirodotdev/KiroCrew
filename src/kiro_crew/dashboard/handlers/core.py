@@ -2581,11 +2581,6 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # behavior (not a display pref), read by the prevent-sleep poll in
     # dashboard/server.py; off by default.
     "dashboard.prevent_sleep": {"type": "bool"},
-    # Reply threads on crewmate chat messages. Read live by
-    # ``dashboard/chat_threads.py`` (routes) and ``dashboard/ws.py`` (the
-    # thread frame); off by default, and the Settings toggle under Crewmates is
-    # the only dashboard door to it.
-    "dashboard.crewmate_threads": {"type": "bool"},
     "dashboard.dynamic_dashboard_cards": {"type": "bool"},
     # User profile (onboarding step 2 + Settings > General > About You).
     # Structured slugs, not free text: context.py maps them to prompt-ready

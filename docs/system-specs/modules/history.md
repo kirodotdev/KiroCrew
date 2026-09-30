@@ -1356,264 +1356,665 @@ inner JSONL fallback; only an absent replay requests fallback construction.
 5. User returns → new session with history re-injected
 6. After the message count crosses `_CONSOLIDATION_THRESHOLD` (30) past the last offset → background consolidation → structured memory updated
 
-## Reply Threads on Crewmate Chat Messages (`dashboard/chat_threads.py`)
+## Threads: an Anchored Session (`dashboard/chat_threads.py`)
 
-A **thread** is the set of replies attached to ONE message of a crewmate's chat --
-a member-mode slot (`slot.mode == members.DM_SLOT_MODE`) -- addressed by that
-message's durable `meta.mid`. "Thread" is only ever this reply thread; the main
-conversation is the chat. Any message, the user's or the crewmate's, can carry
-one.
+A **thread** is an ordinary chat session plus an **anchor** to one message of
+another conversation. It is a relation, not a container:
 
-**Flag.** The feature ships behind `dashboard.crewmate_threads` (`config/sections.py`,
-default `False`; editable from the dashboard, `handlers/core.py` `_EDITABLE_CONFIG`,
-and read live -- the config watcher's snapshot, else a load off the loop -- so a
-toggle takes effect on the next request without a restart). Off, the three routes
-below answer `404 {"error": "not found", "code": "slot_not_found"}` -- the same
-body the app-isolation refusal sends, so a caller cannot tell "threads are off"
-from "no such slot" -- before any read or write; nothing is stored, no turn runs,
-and `ws.broadcast_thread_reply` sends no `chat.thread_reply` frame (also for a
-turn that was already running when the flag went off, whose stored reply is
-served again once it is back on). The stored sidecar is untouched by the flag
-either way: turning threads off hides them, it does not delete them.
+```
+Anchor = (surface, conversation, message_id)
+```
 
-**Storage.** Replies live in a sidecar beside the slot's transcript,
-`ConversationLog.threads_sidecar_path(key)` =
-`<sessions dir>/.threads/<safe key>.json`, keyed by the slot's transcript key
-(`chat_utils.slot_history_key`). Shape: `{"version": 1, "threads": {<mid>:
-[{"id", "role": "user"|"assistant", "content", "ts"}, ...]}}`. It is a third
-sidecar next to `.summaries` and `.intents`, and its own file for the reason
-each of those is: it has its own writer (a reply landing) and no mtime contract
-with the transcript -- a reply must survive every later append to the main chat,
-so nothing about the session file's signature ever invalidates it. Replies
-never enter `slot.messages` or the JSONL, so the transcript read paths, the
-frozen-prefix save model and consolidation are untouched. The store is owned by
-`ConversationLog.read_threads` / `append_thread_reply`: the read-modify-write
-runs under the transcript's own `_locked(key)` -- the lock `delete_session`
-unlinks the sidecar under -- and REFUSES (`"missing"`) when no transcript
-exists, for the reason `set_cached_intent_summary` gives: a turn holds no lock
-while its model call is in flight, and an unconditional write landing after a
-delete would recreate the sidecar and resurrect a chat the user was told is
-gone. The same rule makes a chat younger than its first flush answer 409
-`transcript_missing` ("try again in a moment"). A reply is also admitted against
-ONE transcript: the handler captures the metadata line's `created_at`
-(`thread_transcript_identity`) BEFORE the parent lookup -- so the identity is
-never younger than the rows the parent was found in -- and both appends carry
-it (`expected_created_at`); a chat deleted and recreated under its
-deterministic key anywhere after that capture answers `"replaced"` (409
-`transcript_replaced` / a plain failure frame) instead of receiving the old
-chat's reply -- the same identity `chat_persistence` uses to tell "deleted and
-recreated" apart. Under the same lock the store also reads the chained
-transcript and refuses unless a row carries the parent's `meta.mid`
-(`"unflushed"`, 409 `transcript_missing` -- "try again in a moment"): a thread
-is durable only through the row it hangs off, so a parent that exists only in
-the slot's memory window is not admitted until the slot has flushed it, or a
-crash before the flush would leave the replies unreachable. For a pre-field
-transcript with no `created_at` that same check is what tells a replacement
-apart (a replacement never carries the old chat's message ids). Writes are
-`atomic_write`. A
-sidecar whose bytes are not a thread map raises `ThreadStoreUnreadable` and is
-NEVER overwritten (the three routes answer 503 `threads_unavailable`; a turn
-publishes a plain failure frame); rows of the wrong shape drop one by one, and
-a retained row is reduced to the reply schema (`id`, `role`, `content`, `ts`,
-strings) -- the file sits beside the transcript under the data home, so a field
-an agent put there never reaches the dashboard through the detail response,
-whose `_redacted_reply` likewise emits only those four fields. One
-thread holds at most 500 replies (`thread_full`), one chat's sidecar at most
-5 000 across every thread (`threads_full` -- the whole-file bound, since the
-panel reads the file whole), and the crewmate's stored reply is clipped at
-64 000 characters with a `[reply clipped]` marker (the streamed frames carried
-the whole text). The reader holds the same line whatever the file says
-(`THREAD_REPLY_CONTENT_MAX_CHARS`, `THREAD_MID_RE`,
-`THREADS_MAX_REPLIES_PER_THREAD`, `THREADS_MAX_REPLIES_PER_SIDECAR`, the one
-spelling the writer's caps and the routes' `_valid_mid` import): the file is opened once without
+Dashboard anchors are `(dashboard, <parent slot key>, <mid>)`; a channel's are
+its own (`(slack, <channel_id>, <thread_ts>)`). Any message of any chat surface
+can carry one -- the user's or the assistant's -- addressed by that message's
+durable `meta.mid`.
+
+The thread's SESSION is minted through the same core `session_create` uses
+(`session_control.create_session`), so it has everything a chat surface has by
+construction: tools with real approval cards, a model, memory, a steer channel, a
+queue, a stop record, a transcript, compaction, and a place in the sidebar. It is
+deliberately NOT a `session_fork`: fork copies the whole parent transcript and
+refuses an `agent` override, while a thread wants neither the parent's rows nor
+that refusal -- it may take an agent of its own.
+
+**On the dashboard the anchor is stored ONCE**, in the parent's **anchor index**,
+which is what lets a conversation list its threads in one read. A failure to record
+it retracts the minted session, so there is never an index the thread outlives or a
+thread the index does not know.
+
+A second copy on the thread's own metadata line was written here for durability --
+so a thread could still name what it hangs off if the index were lost -- and nothing
+ever read it, which makes it one more shape to keep consistent for no reader. Slack
+keeps its `_thread_anchor` metadata because a Slack thread has NO parent transcript
+to hang an index off, and Slack's own recorder reads that copy as its idempotency
+guard: one surface's only record, not a duplicate of another's. That recorder is
+not in this change -- it lands with the Slack anchor recorder, which ships
+separately.
+
+`ThreadAnchor` itself lives in `messaging/link.py`, beside the `ChannelLink` it is
+a message id away from, and is ONE type across every surface -- the dashboard's
+`chat_threads.Anchor` is an alias of it. It holds each field to a bounded opaque
+shape and no further, because a type that pattern-matched one surface's spelling
+for a message id would refuse the others; the dashboard's own extra rule, that its
+`mid` is a minted row id, is checked at the route and in `open_thread`.
+
+**On a channel, only the first half is written.** The index's admission rules are
+what makes it dashboard-shaped: it refuses unless the parent's transcript exists
+and holds the anchor's row. A Slack channel has no such row -- Slack's transcripts
+are per thread (`slack:<ts>`), not per channel -- so a channel's anchor is recorded
+on the thread session's metadata and in the crew log, and the index is not asked to
+hold it. See `slack-gateway.md` § Thread anchors. Each surface decides that for
+itself at its own dispatch site; there is no shared adapter layer, because one
+registrant and no lookup is not a seam yet.
+
+### The anchor index (version 2 of the thread sidecar)
+
+Same file as version 1 -- `ConversationLog.threads_sidecar_path(key)` =
+`<sessions dir>/.threads/<safe key>.json`, keyed by the parent's transcript key
+(`chat_utils.slot_history_key`) -- with a second half:
+
+```json
+{"version": 2,
+ "anchors": {"<mid>": {"thread_slot": "chat-…", "title": "…",
+                       "opened_by": "user|agent:<key>", "opened_at": "…",
+                       "closed_at": null, "summary_mid": null}},
+ "threads":  {"<mid>": [ … version-1 replies, read-only … ]}}
+```
+
+`anchors` is what this writer owns. `threads` is version 1's transcript of
+replies -- from when a thread had no session of its own -- and it is **read in
+place and never rewritten**: the anchor writer carries it over verbatim, and a
+conversation that only ever had v2 threads grows no empty legacy map. Both halves
+come out of ONE hardened open (`_read_thread_sidecar`), so they cannot be read
+under two different sets of rules; a document carrying NEITHER half, and a half
+that is PRESENT but not a map, both raise `ThreadStoreUnreadable` rather than
+reading as absent -- treating `{"threads": []}` as empty is exactly what would
+let a write erase a damaged file.
+
+It is still a third sidecar next to `.summaries` and `.intents`, and still its
+own file for the reason each of those is: its own writer and no mtime contract
+with the transcript. Anchors never enter `slot.messages` or the JSONL, so the
+transcript read paths, the frozen-prefix save model and consolidation are
+untouched.
+
+**Admission is version 1's, unchanged, because the reasoning is unchanged.**
+`read_thread_anchors` / `write_thread_anchor` / `update_thread_anchor` run the
+read-modify-write under the transcript's own `_locked(key)` -- the lock
+`delete_session` unlinks the sidecar under -- and:
+
+- REFUSE (`"missing"`) when no transcript exists, for the reason
+  `set_cached_intent_summary` gives: a caller holds no lock while it suspends,
+  and an unconditional write landing after a delete would recreate the sidecar
+  and resurrect a chat the user was told is gone;
+- admit an anchor against ONE transcript: the opener captures the metadata line's
+  `created_at` (`thread_transcript_identity`) BEFORE the parent lookup -- so the
+  identity is never younger than the rows the parent was found in -- and passes
+  it back as `expected_created_at`; a chat deleted and recreated under its
+  deterministic key after that capture answers `"replaced"` instead of receiving
+  the old chat's thread;
+- refuse unless a row on disk carries the parent's `meta.mid` (`"unflushed"`): an
+  anchor is durable only through the row it hangs off, so a parent that exists
+  only in the slot's memory window is not admitted until the slot has flushed it,
+  or a crash before the flush would leave the thread unreachable. For a pre-field
+  transcript with no `created_at`, that same check is what tells a replacement
+  apart, since a replacement never carries the old chat's message ids;
+- answer `"duplicate"` for a mid that already carries an OPEN anchor -- one
+  thread per message, because a second would split the discussion with no way to
+  tell which is live. A CLOSED anchor does not refuse: closing is what makes the
+  message available again.
+
+`thread_anchor_admissible(key, mid)` is a read-only probe answering what the
+write would, so an opener refuses BEFORE minting a session it would have to
+retract. The write re-checks every rule under the lock, so the probe is an
+optimisation and never the authority.
+
+**Retention bounds hold whatever the file says.** The file is opened once without
 following a link, sized on that descriptor and read to the ceiling
-(`THREADS_SIDECAR_MAX_BYTES`, 64 MiB; a link, a non-regular file or more
-bytes is `ThreadStoreUnreadable`, and the writer answers `threads_full` at the
-same ceiling so a sidecar it wrote is never past it), a row's `id`, `role` and
-`ts` must be in the writer's own shape (uuid hex, one of the two speakers,
-ISO-8601) or the row is dropped -- so `content` is the only field that can
-carry prose, and it is redacted at the boundary -- the content is cut at the
-writer's bound, a thread keeps its newest 500 rows (a key left with none is
-not a thread), the map stops at 5 000 rows, and a key that is not a minted row id (`m-` + 16 hex, `mint_row_mid`) is
-not a thread, since the summary route hands keys to the dashboard as they are.
-The write side holds the same line: the `.threads` directory must be a real
-directory (a link there is refused before anything is created under it) and on
-POSIX the leaf is replaced relative to its pinned descriptor
+(`THREADS_SIDECAR_MAX_BYTES`, 64 MiB; a link, a non-regular file or more bytes is
+`ThreadStoreUnreadable`, and the writer answers `sidecar_full` at the same
+ceiling). An anchor row is reduced to `THREAD_ANCHOR_FIELDS` and nothing else --
+`thread_slot` a bounded opaque key, `opened_by` one of `user` / `agent:<key>`,
+`opened_at` and `closed_at` ISO-8601 instants, `summary_mid` a minted row id --
+so `title` is the ONLY field that can carry prose, and it is cut at
+`THREAD_ANCHOR_TITLE_MAX_CHARS` (200) and redacted at every output boundary. A
+row breaking any of those is dropped whole rather than half-read; a key that is
+not a minted row id (`m-` + 16 hex, `mint_row_mid`) is not an anchor; the map
+stops at `THREADS_MAX_ANCHORS_PER_SIDECAR` (5 000) entries in file order. The
+write side holds the same line as version 1: the `.threads` directory must be a
+real directory (a link there is refused before anything is created under it) and
+on POSIX the leaf is replaced relative to its pinned descriptor
 (`atomic_write_at`), so no write of this store lands outside the session
-directory. A sidecar written by another hand under the data home cannot grow
-the gateway's memory past a legitimate one, nor reach the dashboard through a
-metadata field or a key, nor redirect a write. Session Storage
-(`session_storage.py`) counts the sidecar in the session's size and moves,
-restores and purges it with the transcript (`_unit_paths`, `_canonical_origin`
-accept `crew/.threads/<stem>.json`; the location is the one spelling
-`history.threads_sidecar_for_stem` gives). Because the sidecar is written under
-the transcript's lock, restore publishes it (relative to the pinned `.threads`
-descriptor, so a link swapped in after preflight is refused, not followed) and
-rolls it back under that same lock, beside the transcript, never as a pre-lock file -- a reply a recreated
-chat committed between publish and a lost-race rollback would otherwise ride
-the sidecar back to trash -- and a link where `.threads` should be stops the
-scan and leaves the batch staged. `delete_session`
-takes the sidecar with the transcript all-or-nothing, the way it takes the attachments directory (moved aside in one
-rename before the transcript goes, moved back if the unlink fails, purged only
-afterwards; the moves are relative to the pinned `.threads` descriptor on
-POSIX, and a link where `.threads` should be refuses the delete outright) -- replies are primary content, so a delete that reported success
-while the sidecar stayed behind would be a lie; the summary caches keep their
-best-effort unlink. **Threads do not travel**: a fork, a
-transfer and an export copy the transcript and leave the sidecar behind. That is
-a decision, not an omission -- replies are primary data that cannot regenerate,
-unlike the summary caches, and the fork/transfer/export paths carry a
-transcript's rows, not its sidecars; a copied chat starts with no threads, and
-the original keeps its own. Carrying them is a later, separate change. Assistant prose
-is re-redacted at every output boundary (`_redacted_reply`), as pins re-redact
-their previews.
+directory. A sidecar written by another hand under the data home cannot grow the
+gateway's memory past a legitimate one, nor reach the dashboard through a
+metadata field or a key, nor redirect a write.
 
-**API.** All three answer 404 `slot_not_found` for a missing slot or a foreign
-app caller (anti-enumeration, App Kit §5.2) and 409 `not_crewmate_chat` for a
-slot that is not a crewmate's chat.
+`ConversationLog.append_thread_reply` is **removed**. It wrote a `version: 1`
+document, so it would clobber the anchors half, and nothing writes replies once a
+thread is a session of its own.
 
-- `GET /api/chat/threads?slot=<key>` -- `{"threads": {<mid>: {"count",
-  "last_reply_ts", "participants": [roles, first-appearance order]}}}`, the
-  footer data under a bubble. A separate read, deliberately NOT folded into
-  `GET /api/chat/slots/{slot}`: the transcript read path stays unchanged and the
-  payload is small enough to fetch beside it.
+Session Storage (`session_storage.py`) is unchanged: it counts the sidecar in the
+session's size and moves, restores and purges it with the transcript
+(`_unit_paths`, `_canonical_origin` accept `crew/.threads/<stem>.json`; the
+location is the one spelling `history.threads_sidecar_for_stem` gives), publishing
+and rolling it back under the transcript's lock, relative to the pinned `.threads`
+descriptor. `delete_session` still takes the sidecar with the transcript
+all-or-nothing. **Anchors do not travel**: a fork, a transfer and an export carry
+a transcript's rows, not its sidecars, so a copied chat starts with no threads and
+the original keeps its own.
+
+### Opening: one coroutine, two entry points
+
+`open_thread(state, anchor, *, title, agent=None, opened_by, note="")` is the
+whole implementation. In order: resolve the anchored conversation and probe
+admission; mint the slot through `create_session`; write the parent's index entry,
+which is the dashboard's ONE record of the relation; emit `thread/opened` and the
+`chat.thread_anchor` frame; deliver the opener's note when there is one.
+
+**Nothing about the parent is injected at open.** A thread is a perpetual session,
+so a quote placed in its transcript at open would be carried for the thread's whole
+life and re-read on every turn -- and it would describe the parent as it stood at
+the click, which is the wrong parent for a thread first written to a week later.
+The parent reaches the thread at its FIRST TURN instead, as a summary built then.
+See [The parent-context projection](#the-parent-context-projection).
+
+**The note is the only thing anybody said, so it is the only thing delivered.** The
+route passes whatever the opener typed. A note travels `send_to_target` -- the same
+verb `session_send` uses, with the parent as the caller, because the parent CREATED
+this slot and the ownership fence therefore admits it without a new authorization
+path -- and because it travels that ordinary path it gets the queue receipt every
+chat message gets, not a bespoke first row that looks unlike every later one. A
+bare click delivers nothing: the thread starts no turn, and the drawer's empty hint
+("Type a message to start it") is the truth the person sees. A full-tool turn on
+boilerplate nobody typed would spend a model call unasked. The result reports
+`seeded`, which says whether a note was delivered.
+
+The dashboard writes no `_thread_anchor` on the thread session's own metadata. It
+has somewhere durable to put the relation -- the parent's index, guarded by the
+parent row the anchor hangs off -- so a second copy would be a second thing to
+keep true. The thread still reaches that one record without a copy: its own
+`session/opened.parent.slot` names the parent slot, which is enough to read the
+parent's index and find the anchor that names this thread. Slack is the asymmetric
+case and keeps its metadata copy for a reason of its own, set out in
+[slack-gateway](slack-gateway.md).
+
+| opener | entry point |
+|---|---|
+| the user clicks a message (streaming or not) | `POST /api/chat/threads/{mid}/open` |
+| an agent opens one on the message it is answering | MCP `thread_open(title?, anchor_mid?, agent?, note?)` on `@kirocrew-dashboard` |
+
+Both reach the same route. The user's call names the conversation in the body
+(`slot_key`); the agent's does not, and the conversation is then taken from the
+VERIFIED `X-Session-Key` -- never from the body -- so the tool cannot open a
+thread on another chat. `thread_open` is in `SESSION_CONTROL_TOOLS` (its dispatch
+needs the verified caller key) and in `channel.CHANNEL_AGENT_BLOCKED_TOOLS` (a
+channel-bound session's conversation is a thread other people are in; channel
+surfaces reach threads through their own adapter).
+
+The CALLER passed to `create_session` is the anchored conversation itself, which
+is what makes the child inherit the right things without a second policy: the
+parent's workspace (the memory boundary), its trust posture, its project and its
+folder, plus a `session/opened` entry whose `parent` link already records the
+thread's lineage -- so `thread/opened` adds the anchor and nothing else. It also
+means thread-opening is gated by `agent.session_control` (default true), whose own
+description is "let one chat session open a new session": a thread is one session
+opening another, so an operator who turned that switch off gets a plain refusal
+rather than a bypass.
+
+**Retraction.** An anchorless thread is worse than no thread -- a session in the
+sidebar that the conversation it belongs to cannot find, and whose own projector
+has no anchor to build a summary from -- so a failure to record either half closes
+the minted slot. A failure to deliver the NOTE does not: the thread exists once its
+anchor is recorded, and throwing away a real thread over one message would be the
+larger loss. The result reports `seeded` either way.
+
+Closing archives the conversation; the slot is DELETED from history on top of that
+only when it is empty, and emptiness is checked rather than assumed. The minted
+slot is an ordinary sidebar session from the moment `create_session` returns -- the
+person can open it and type into it -- and the anchor write that decides this
+retraction can wait out the patient off-loop lock acquire, seconds rather than an
+instant. A message sent inside that window is somebody's, `delete_session` has no
+recovery path, and the archive is the right home for a chat that was used. Any
+conversation row counts (`_RETRACT_KEEPING_ROLES`), a streamed chunk included: a
+turn is already answering, and its text is the answer before the row persists.
+
+### Anchoring to a message that is still streaming
+
+A streaming assistant row has **no `mid`**: ids are minted when the row persists,
+post-turn. So anchor resolution is:
+
+| target | anchor |
+|---|---|
+| any persisted message (the user's, or a finished reply) | that message's `mid` |
+| the assistant row still streaming | the **user message that started that turn** |
+
+The client asks for the second case with the literal path segment `inflight`,
+which `turn_anchor_mid` resolves to the newest user row carrying a mid. This is
+not a workaround for the storage constraint: the thread belongs under the sentence
+that started the work, so the paradigm and the constraint agree.
+
+The partial reply is not lost -- the thread's projector reads it at the thread's
+first turn. `in_flight_snapshot(slot)` reads it from the slot's own `role="chunk"`
+rows, which is where the dashboard's streaming text lives (`chat_runner` appends
+one per delta, plus one for the redactor's withheld tail at each segment flush; the
+turn's own `assistant_text` local is unreachable from here and is reset at every
+tool boundary). The read is **non-consuming and never blocks**, by three
+properties: the list reference is copied first and `purge_chunks` REBINDS
+`slot.messages` rather than mutating it, so a segment finalizing under the read
+cannot empty the copy; `chat_utils._collapse_wire_rows` returns a fresh merged row
+and never mutates its input dicts, which are shared with the live window; and
+nothing touches `slot._pending`, the queue a live SSE or OpenAI-compat reader owns
+(`release_pending_chunks` and `purge_chunks` are the consuming reads and are not
+called). An empty snapshot from a parent that is not running means nothing is
+streaming; an empty snapshot from a parent that IS running marks the projection
+`partial` anyway, rather than letting it claim the parent had finished.
+
+**Opening never touches the running turn.** It holds no semaphore, does not gate
+on `provider.has_active_turn()`, writes nothing into the turn, and is therefore
+not a fourth `_handle_busy` branch, not a `messaging.queue_mode` value and needs
+no capability gate -- which is what leaves [messaging](messaging.md)'s one-turn-
+per-session, exact-FIFO and single-drain-turn rules untouched. Open never fails
+because the parent is busy.
+
+### The parent-context projection
+
+A thread is a full session, so the parent's history is not its history. Nothing is
+injected when the thread opens, and nothing is ever injected verbatim -- both
+follow from sessions being perpetual. `dashboard/thread_projection.py` builds what
+the thread is told, and `_run_chat` calls it one step before
+`drain_pending_context` reads the queue.
+
+**The first turn gets one summary block, from three bands.** The parent's own
+stored intent summary, REUSED rather than re-derived (`read_intent_summary`; a
+stale payload is used and labelled stale, because the window and the delta cover
+what moved since). The anchor window: the rows around the message the thread hangs
+off, with the anchor itself weighted, its text read from the parent's TRANSCRIPT so
+the block and the drawer's quoted parent cannot disagree. And everything after the
+anchor, chunk-folded -- summarized in groups of `FOLD_CHUNK_ROWS`, so a parent that
+ran for a thousand rows since the anchor still fits `BLOCK_BUDGET_CHARS`. There is
+no compaction-summary band: the crew log's `on_compaction_applied` records
+percentages, and nothing writes a compaction summary anywhere, so the intent
+summary is the parent's own account to reuse.
+
+**Every later turn gets only the delta** -- the rows the parent appended since the
+recorded cursor. An empty delta injects NOTHING, rather than a block saying nothing
+happened, so a thread beside an idle parent pays no block per turn.
+
+**Addressing is by the parent's crew-log `seq`, joined by TIME.** The log's
+`message/received` carries no `mid` (its emitter does not run where a slot appends,
+there being no session id yet), so an anchor's id cannot be turned into a log
+position at all. `open_thread` resolves it once -- the last parent entry at or
+before the anchor row's timestamp -- into `parent_log_seq` on the anchor row. Time
+rather than correlating the Nth transcript row with the Nth `message/*` entry,
+because compaction rewrites the transcript and rewind drops rows from it while the
+append-only log keeps both. Once at open rather than per turn, because a thread
+first written to after the parent compacted its anchor row away has no row left
+whose timestamp could be resolved. An unresolved position reads as
+`THREAD_ANCHOR_PARENT_LOG_SEQ_UNKNOWN` and takes a small window off the parent's
+TAIL -- never a window from seq 1, which would project a whole parent for exactly
+the threads whose position is least trustworthy.
+
+**Naming the parent's log takes more than its live handle** (`slot_log_sid`). An ACP
+handle carries a session id only once `session/new` has succeeded on THAT client, and
+a thread reads its parent BETWEEN the parent's turns -- so a slot whose client is
+fresh (a cold start, a provider switch, a turn torn down) has a conversation with a
+crew log and no live id for it. Asking the handle alone reads that as "this chat keeps
+no log", which leaves a correctly anchored thread with no window and answers
+`thread_context_read` with `no_parent_log`. The order is: the live handle, then
+`_crew_log_opened_sid` (this process's statement of the store the slot writes), then
+`_crew_log_previous_sid` (the store it was on before a switch -- same conversation),
+then the thread's own lineage edge, and for the read path only, a store scan by slot
+key. All but the last are in memory, so the scan is what answers after a restart; it
+is not on the per-turn projection path. No copy of the id is kept on the anchor: the
+slot and the log both state it, and a third copy would be a shape to keep in step for
+no reader.
+
+**Each projection records itself.** `thread/context_projected` on the THREAD's own
+log carries the cursor, the window start, the summary version, the block size, the
+row count and `partial`. It is written even for a projection that injected nothing,
+which is what makes a quiet turn distinguishable from a turn the projector never
+ran on, and it is where the next turn reads its cursor from -- so a gateway restart
+between opening a thread and writing to it neither replays the first projection nor
+skips it. Two consecutive entries bracket exactly the parent rows summarized
+between them.
+
+**Exact rows stay reachable.** A thread carries a handle (parent slot key, anchor
+mid, parent turn id) and `thread_context_read` reads the real rows on demand. The
+projection is the cheap always-on account; the tool is the precise one, and a model
+that needs the exact bytes asks for them.
+
+**Degrading is the rule, not the exception.** A parent that is gone, a crew log
+that is off, an unreadable window, a summarizer that cannot be reached: each costs
+the turn its block, never the turn. One fold group whose model call fails falls
+back to that group's own digest lines, so a rougher account of eight rows beats no
+account of two hundred.
+
+### API
+
+All routes answer 404 `slot_not_found` for a missing slot or a foreign app caller
+(anti-enumeration, App Kit §5.2). There is no `not_crewmate_chat` refusal: threads
+work on every chat surface, because the thread runs as its OWN session rather than
+as the crewmate whose slot it hangs off.
+
+- `GET /api/chat/threads?slot=<key>` -- `{"threads": {<mid>: summary}}`, one entry
+  per message that has a thread. Two shapes fold into one map, because the footer
+  renders one badge per message and does not care which era the thread came from:
+  `{"kind": "session", "thread_slot", "title", "opened_by", "opened_at",
+  "closed_at", "summary_mid"}` for an anchor, and version 1's own
+  `{"kind": "legacy", "count", "last_reply_ts", "participants"}` for a legacy
+  thread. An anchor wins when a message has both -- the live thread is the one to
+  open, and the legacy replies stay reachable through the fold. Deliberately NOT
+  folded into `GET /api/chat/slots/{slot}`: the transcript read path stays
+  unchanged.
+- `GET /api/chat/threads/context?from=<seq>&to=<seq>` -- the parent's EXACT rows,
+  for the calling thread only. Registered BEFORE `{mid}` (aiohttp matches in
+  registration order, so the literal would otherwise be swallowed by the pattern
+  and refused as an invalid mid). Names no conversation: the thread is resolved
+  from the verified `X-Session-Key`, so the one parent it can reach is the
+  caller's own. Answers `{anchor, from, to, last_seq, rows}` with one digest line
+  per message, the span capped at 40 rows; 404 `not_a_thread` for a session with
+  no anchor, which is deliberately not an empty page. Backs MCP
+  `thread_context_read`, which is registered on `kirocrew-core` rather than on
+  `kirocrew-dashboard` even though `thread_open` is a dashboard tool. The reason is
+  which sessions mount which server: the dashboard set is OPT-IN, so a session
+  whose agent spec references neither the server nor its tools has none of them --
+  and the first-turn block injected into EVERY thread names `thread_context_read`
+  and tells the model to call it. A thread run by the default agent therefore read
+  an instruction to use a tool it did not have, and said so when asked. Core is
+  always mounted, so the promise is keepable. Containment is unchanged by the
+  address: the tool takes no target, resolves the parent through the same strict
+  identity gate the dashboard verbs use, and stays on the channel-agent block list.
 - `GET /api/chat/threads/{mid}?slot=<key>` -- `{"parent": {mid, role, content,
-  ts}, "replies": [...], "in_flight": bool}`. 404 `parent_not_found` when the
-  mid is no longer in the chat (the frozen disk prefix plus the memory window,
-  after `chat_handlers._reconcile_slot_window` -- the same reconciliation the
-  detail and resume handlers run, not a copy of it). Reading finds a parent the
-  window holds; writing a reply to it additionally needs the row on disk.
-- `POST /api/chat/threads/{mid}/reply` `{slot_key, text, reply_id?}` -- stores
-  the user's reply, broadcasts it, starts the crewmate's turn and answers
-  **202** `{reply, run_id}` at once. `reply_id` (32 hex, minted by the panel
-  per send and reused for a retry of the same text) makes the send idempotent:
-  a re-send of an id the thread already holds -- the 202 lost on the wire --
-  answers 202 `{reply, duplicate: true}` with the stored row: `run_id: ""` while
-  its turn runs or once it is answered, or -- stored as the last row with no
-  turn active (the turn failed, a restart took it) -- a fresh `run_id` for the
-  turn now run for the stored reply, without storing or broadcasting it again;
-  the store's own `duplicate` outcome under the lock guards the race; 400 `invalid_reply_id` for any other
-  shape. 400 `empty_reply`, 400 `invalid_text` (a lone
-  surrogate JSON admits and UTF-8 cannot carry -- a validation answer, never a
-  500), 413 `reply_too_long` (32 KiB),
-  409 `thread_turn_in_flight` while the crewmate is still replying in THAT
-  thread (a reply landing mid-turn would be answered by nothing; the panel
-  disables its send meanwhile), 409 `thread_full`, 409 `threads_full`, 409
-  `transcript_missing` (no transcript yet, or the parent row not flushed yet),
-  409 `transcript_replaced`,
-  503 `threads_unavailable` (no conversation log, an unreadable sidecar, a
-  lock timeout, or an `OSError` out of the sidecar write). The store write is shielded from
-  handler cancellation (a gateway shutdown mid-request): the worker's commit is
-  drained, and a reply that committed gets a terminal `assistant` row saying it
-  was stored but not answered, so a reopened thread never shows a question
-  with no answer. The user's reply is
-  admitted one seat BELOW each cap (499 / 4 999): it is stored only while the
-  crewmate's answer to it still fits, so the answer -- written under the full
-  caps -- is never the reply that finds the thread full after a whole turn ran. The in-flight reservation is taken with no await between the
-  check and the mark -- BEFORE the store write suspends -- so two replies racing
-  through it (a double-click) run one turn; one `finally` releases it on every
-  path that does not hand it to the turn -- each refusal, and an error the
-  store write raises that no outcome names (an `OSError` from the sidecar
-  write), so no failure leaves the thread refusing replies until restart. The
-  `thread_full` / `threads_full` texts each end in the next step ("Ask in the
-  main chat instead." / "Start a new chat to keep discussing.").
+  ts}, "anchor": summary|null, "legacy_replies": [...]}`. The thread's own
+  MESSAGES are not here: they are the thread slot's transcript, read through the
+  ordinary chat endpoints, which is the point of it being a real session. 404
+  `parent_not_found` when the mid is no longer in the chat (the frozen disk prefix
+  plus the memory window, after `chat_handlers._reconcile_slot_window` -- the same
+  reconciliation the detail and resume handlers run), 400 `invalid_mid`.
+- `POST /api/chat/threads/{mid}/open` `{slot_key?, title?, agent?, note?}` --
+  answers **201** `{thread_slot, anchor, title, seeded}`. `{mid}` may
+  be the literal `inflight`. Refusals: 400 `invalid_mid`, 400
+  `missing_required_fields` (no `slot_key` and no caller session naming one), 404
+  `slot_not_found`, 404 `parent_not_found`, 409 `already_open` (carrying
+  `thread_slot`, so the caller opens the existing thread instead of hunting for
+  it), 409 `transcript_missing` (no transcript yet, or the parent row not flushed
+  yet), 409 `transcript_replaced`, 409 `threads_full`, 400 `surface_unsupported`,
+  503 `threads_unavailable` (no conversation log, an unreadable sidecar, a lock
+  timeout, an `OSError` out of the sidecar write). A `create_session` refusal is
+  surfaced verbatim with its own code, since translating it would hide which one
+  fired.
 
-**The crewmate's turn.** `_run_thread_turn` is the side turn's shape
-([side](side.md)) without its steer/queue ledger: resolve the slot's agent
-through `resolve_agent_bindings`, run in the thread's own isolated session
-`thread:<slot>:<mid>` (a `_STATELESS_PREFIXES` member, so it never resumes
-across restarts -- see [session](session.md); `sel._infer_source` classifies it
-as the dashboard surface and `messaging.link._TELEMETRY_LOCAL_PREFIXES` labels
-it `thread`), and stream through `stream_and_collect`. The tool
-posture is the side chat's, for the side chat's reason -- the thread panel has
-no approval card to fall back to: on a harness in `ACP_BACKENDS_SIDE_READONLY`
-the turn runs the derived `<agent>--readonly` spec under `READ_ONLY`; elsewhere
-`REJECT_ALL`. Actions go through the main chat, and the boundary prompt says so.
-The envelope (`build_thread_message`) is always sent whole (the
-instructions, up to 6 chat messages before the parent as background, the parent
-itself, the thread so far as its newest 40 replies plus a count of the earlier
-ones, the boundary, the reply): a thread turn never reuses
-a session -- the one it acquires is released and destroyed in its `finally`, so
-every reply cold-starts under the agent, project and derived spec resolved that
-turn (`resolve_agent_bindings(..., validate_memory_files=False)`, as the main
-chat's resolvers: the validation opens the member's SQLite database
-synchronously on the loop), and a slot whose project or agent changed between two replies is never
-served by a session bound to the old ones. The parent lookup reads the
-transcript by `api_chat_slot_detail`'s rule -- `_reconcile_slot_window` first,
-then disk prefix plus window -- so a parent only disk holds is found. The crewmate's memory is not injected into a thread turn (not done;
-the crewmate's agent spec is). The answer is redacted, clipped, appended to the sidecar as
-an `assistant` reply and broadcast; an empty answer becomes the same visible
-read-only boundary line the side chat shows. A refused read-only spec is audited as a
-denied SEL API access (`operation=thread_reply`, `source=read_only_spec`),
-like the app-isolation refusal. A turn cancelled mid-stream (a gateway
-restart) stores the redacted partial answer under
-`[reply interrupted: Kiro Crew stopped before it finished]` -- or the
-"stored but not answered" row when nothing streamed -- before the
-cancellation propagates, since the panel drops its live row on reconnect; the
-final store write is shielded and drained, so a cancel that lands while the
-whole answer commits writes no interruption row beside it. The audit of a
-refused read-only spec is best-effort: an audit subsystem that raises does not
-cost the panel its terminal frame. A
-reply the store refuses (the
-thread filled up, or the chat was deleted, while the model was writing) is
-published as the failure it is -- a `final` + `is_error` frame with no `reply`
-record -- never as a reply. A signed-out harness is recognised by its error's
-class name (the ACP type lives behind the agent-SDK import boundary) and
-answered with `host_auth.signed_out_message`, latching the readiness service
-signed-out as the main chat does.
+**What version 1's reply route left behind.** `POST .../reply` is gone, and with
+it `_run_thread_turn`, the `_in_flight` set and `409 thread_turn_in_flight` (the
+one-reply lock), the 32 KiB per-reply body cap and the 64 000-character stored
+clip with its `[reply clipped]` marker, the 500-per-thread and
+5 000-per-sidecar reply caps, the `thread:<slot>:<mid>` session key, the
+`build_thread_message` envelope, and the read-only tool posture
+(`publish_readonly_spec` under `READ_ONLY`, or `REJECT_ALL` elsewhere) with its
+"actions go through the main chat" boundary prompt. A thread's messages are
+transcript rows under the transcript's own limits, answered by ordinary turns
+with ordinary approval cards, so none of that machinery has anything left to do.
 
-**Dashboard.** Only a crewmate's chat (the Members page) offers threads: it
-hands `ChatPane` a `threads` hook set (`app-sdk/messageRenderers.ThreadHooks`:
-`summaryOf(mid)`, `onOpen(mid)`, the crewmate's name), which the assistant and
-user rows read off `MessageRenderContext.threads`; every other surface has none
-and draws neither footer nor action. The page reads the flag through
-`hooks/useCrewmateThreadsFlag` (the shared `['kirocrewConfig']` query): `on`
-only once a successful read said `true`; a read that FAILED is its own state,
-said beside the chat through `ErrorNotice` with a Retry while the last known
-value stands -- never rendered as the flag being off, which would make an
-enabled feature vanish under a config blip. A bubble whose `mid` has replies gets a
-`ThreadFooter` under it (faces of who took part, "N replies" in accent, "Last
-reply 2h ago" muted); every bubble's hover action row gets "Reply in thread"
-(`MessageSquare`), the user's row included. The footer is a SIBLING of its bubble, not a
-child, and states its own side as `align-self` (`self-end` under the user's
-right-aligned bubble, `self-start` under the crewmate's), which beats the row
-wrapper's `align-items`. An appearance that re-aligns or indents the ROW must
-therefore re-state the footer too: CLI UI mode moves the user's bubble
-full-width to the left and indents both bubbles with a bar and padding on the
-message root, so it carries its own footer rules in `styles/cli-mode.css` --
-without them the user's footer stays pinned to the far right of a left-aligned
-bubble and the crewmate's sits 16px left of its own. Those rules are measured in
-a real engine by `scripts/capture-thread-footer-cli-align.mjs`, which asserts
-each footer's first mark against its bubble's edge on both appearances and
-requires the pre-fix state to reproduce; `src/test/cliModeThreadFooter.test.ts`
-pins the rules' source text, since happy-dom resolves neither `:has()` nor the
-`align-self`/`align-items` contest. The assistant-side `self-start` is
-load-bearing on every appearance: that column's `align-items` is the default
-`stretch`, so without it the footer renders as a full-width button. Either opens the thread in the
-right side panel: `pages/members/ThreadPanel` covers the panel's tabs while it
-is on screen (slides in; `prefers-reduced-motion` fades) and hands them back on
-close, so the main chat stays visible beside it. The panel shows the parent
-quoted as one bubble, a hairline reply count, the replies as small bubbles on
-the main chat's run and corner rule (`components/chat/crewmateBubbles.ts`:
-the crewmate's consecutive replies group on the left, the user's right-aligned
-bubbles are always singles), a typing row while the crewmate replies (an ordinary item, never a
-notice) and a one-line "Reply…" composer with the real `SendBtn`, disabled
-while a reply is in flight. Stored replies and the per-slot summary are React
-Query reads (`api/threads.ts`); the reply in progress streams through
-`state/threadLiveStore` from `chat.thread_reply` frames, and a stored frame
-(the user's reply, the crewmate's `final`) invalidates both queries. Failures
-render through `ErrorNotice` in the panel with one plain sentence picked by the
-backend `code`; a failed send keeps the draft.
+### Close
 
-**Wire.** `ws.broadcast_thread_reply` emits owner-only `chat.thread_reply`
-frames `{slot, mid, run_id, role, content, ts, final?, is_error?, reply?}`: the
-user's reply once, the crewmate's reply as streamed deltas grouped by `run_id`
-and a terminal `final` frame carrying the stored `reply` record. A frame with a
-`slot` field is a tier-1 slot-scoped WS event. Failure arms (the signed-out
-harness, `ReadOnlySpecError`, an unreadable sidecar, prompt-busy, anything else)
-always send a plain-language `final` + `is_error` frame, so the panel never waits
-on a reply that will not come; none of those is persisted. Only a failure a retry
-can cure says "Try again": a refused spec points at the main chat, an unreadable
-sidecar says the reply was not kept.
+`close_thread(state, anchor)` stamps `closed_at` on the anchor and posts a closing
+card in the PARENT conversation. The card states the close and names the thread; it
+carries no written summary, because no surface composes one -- a body line would be
+one fixed sentence presented as a report. The card is a row under the display-only
+`thread_closed` role whose `meta` carries `thread_summary: {thread_slot, title}`,
+and it persists, rewinds, exports and re-reads like any other row. The role is what
+keeps it out of the parent's model-visible history: `context.RECALL_ROLES` admits
+`user` / `assistant` / `inject`, and replay rebuilds an admitted row as `role` plus
+`content` alone, so an `assistant` card would reach the next cold turn as the
+crewmate's own earlier words -- "Thread ended." plus the thread's title, a sentence
+the crewmate never said -- with the `meta` that made it a card already dropped and
+nothing able to re-attach it. A role outside that set is dropped from replay whole,
+which is the accurate account: nothing was said.
+Its own `mid` is recorded as the anchor's `summary_mid`, which is the back-link
+target. Both link forms resolve because the thread is a real slot:
+`/chat/<thread_slot>` opens it as a full page, `/chat/<parent_slot>?thread=<mid>`
+opens the same slot in the drawer. Closing does not delete the session. A close on
+a mid with no anchor answers `thread_not_found`; on an already-closed one,
+`already_closed`.
+
+The dashboard draws that row as a CARD (`pages/chat/ThreadClosedCard.tsx`, claimed
+by the `thread_closed_card` renderer entry on a `thread_closed` or `assistant` row
+carrying `meta.thread_summary` -- the `assistant` spelling is claimed so a transcript
+holding the card under that role keeps drawing it), with the recorded `thread_slot`
+as a pressable way back in.
+The drawer takes it when an anchor still claims that slot; when none does -- closing
+frees the message, so a later thread on it holds the anchor and every older card's
+slot matches nothing -- `openThreadSlot` answers false and the host opens the
+session as a full page through its ordinary `onSessionOpen`. The thread is a real
+session either way, so the two outcomes are "in the drawer" and "as a page", never
+"nothing happens".
+Two reasons it is not left as the row's own text: read as prose it is the crewmate
+saying "Thread ended.", which the crewmate never said, and a back-link no surface
+renders is a pointer the reader does not have. The stored text is that prose rather
+than a `[Thread closed]` marker because the sidebar's session-card preview has no
+renderer and shows the row raw, where a bracketed marker read as a leaked token. The card is keyed by SLOT and the
+drawer by the anchored `mid`, so the controller finds the mid by the slot its
+anchor holds (`openThreadSlot`); one anchor holds any one slot, so the lookup is
+exact, and a card whose anchor is gone offers no control rather than guessing.
+
+**Reading an ended thread and starting a new one are different requests on the
+same message.** A footer, the close card's back-link and a `?thread=<mid>` ADDRESS
+all name a thread the reader can see, so each asks with `read` and the ended thread
+opens, readable, its composer saying that a message there continues it. The row's
+own **Reply in thread** asks without `read`: closing released the message, so that
+starts a fresh thread. One rule for both would either hide the conversation the
+reader pointed at or refuse to start the next one -- and on the address in
+particular, minting would answer a reload with a new conversation and leave the
+ended thread unreachable from its own URL.
+
+**The transition is persisted before the card is published**, and the card's mid
+is stored by a second write. The card is a durable row in the parent AND it is
+broadcast, so posting it first would leave a "thread closed" card standing over a
+thread the index still reads as open -- and `sidecar_full` refuses the same way
+every time, so each retry would append another card and none would converge.
+Ordered this way the only surviving failure is the benign one: a closed anchor
+whose card did not post, or one whose `summary_mid` was lost, which the row shape
+already admits and which costs the back-link and nothing else. The second write is
+best-effort for that reason: raising there would report a close that happened as a
+failure.
+
+`POST /api/chat/threads/{mid}/close` `{slot_key, thread_slot}` is the entry point,
+and **End thread** in the drawer header is its caller. Those two fields are the whole
+body: the one caller sends no free text, so a `reason` or `summary` field would be a
+parameter the route accepts and no surface fills. There is no agent branch either,
+for the same reason -- no `thread_close` tool exists, so every close names its slot
+outright.
+
+`thread_slot` is the thread the CALLER believes it is ending, and an anchor naming a
+different one is refused `409 already_closed`. The mid identifies the MESSAGE, and a
+message carries a succession of threads, so a drawer left open while this message was
+ended and reopened elsewhere would otherwise end the replacement. It is required
+rather than optional for that reason: an omitted field restores the hole exactly.
+This is a distinct guard from `update_thread_anchor`'s `expect_thread_slot`, which
+catches the row changing between `close_thread`'s own read and its write.
+
+**A thread route refuses an app caller on a LINKED slot**, even one the app owns.
+These routes address the slot's transcript, and a linked slot's transcript belongs to
+whatever bound it. An app may claim a name a later binding links -- only `member-` is
+reserved -- and the binding does not ask who created the slot, so ownership survives
+while the transcript key becomes the binder's. The check is re-run after the awaits a
+handler makes, because the link can be set inside one.
+It is deliberately a different control from the `X`
+that dismisses the panel: dismissing is a view action and reaches no thread, while
+ending closes the anchor, releases the message to carry a later thread, and returns
+the result to the conversation the thread came from. End is offered only for a live
+session thread -- a version 1 fold has nothing to end, a closed one nothing left to
+close -- and a refused end leaves the thread open and on screen rather than hiding
+an outcome that did not happen.
+
+End is also the release valve for the second copy of the relation. The anchor is
+recorded in the parent's index under retraction at open, but the thread SESSION is a
+second copy of the relation and can be deleted through the ordinary session
+controls. That leaves an open anchor whose
+`thread_slot` resolves to nothing, and the anchor is what refuses a second thread
+on the same message. Closing needs only the parent's index, so End releases such an
+anchor from the drawer without the thread's session existing. The read path does
+NOT additionally reconcile: presenting an anchor as closed because its slot is
+absent would mark live threads closed whenever their tab is merely not open, since
+a session out of memory is not a session deleted.
+
+### Ledger
+
+The session-kind crew log, no second store ([crew-log-core](crew-log-core.md)).
+Three kinds join the existing grammar. Two are written on the PARENT
+conversation's log -- where a reader asks "what hangs off this chat":
+
+```
+thread/opened  {anchor: {surface, conversation, mid}, thread_slot, title, opened_by, in_flight?}
+thread/closed  {anchor: {…}, thread_slot, summary_mid?}
+```
+
+The third is written on the THREAD's own log, because it describes what that
+session was TOLD and a reader asking "what did this thread know" is reading the
+thread:
+
+```
+thread/context_projected  {anchor: {…}, cursor_seq, window_start_seq?, summary_version?,
+                           fold_generation?, block_chars?, partial?, rows?}
+```
+
+`cursor_seq` is required: it is the last parent seq the projection summarized, and
+the state the NEXT projection computes its delta from, so an entry without it can
+only be redone from the window start rather than continued. `rows: 0` is a real
+record -- it says that turn found nothing new and injected nothing, which is what
+separates a quiet turn from a turn the projector never ran on. Two consecutive
+entries bracket exactly the parent rows summarized between them.
+
+`session/opened.parent`, which the create core writes on the THREAD's own log,
+already records the lineage, so `thread/opened` carries the anchor and nothing
+else: two statements of one edge would be two things to keep consistent. Both
+emitters refuse an incomplete anchor rather than writing a partial one, because
+the log cannot be rewritten and an entry whose anchor names no message records a
+thread nobody can find. Both are best-effort at the call site: a crew log that
+cannot be written must not cost the person their thread. The MEMBER event log's
+closed vocabulary is deliberately NOT extended -- a thread is not a roster
+projection, and widening a vocabulary four projections read costs more than it
+buys; a thread count in the Crewmates drawer reads the anchor index, which is
+already per-slot.
+
+### Wire
+
+`ws.broadcast_thread_anchor` emits owner-only `chat.thread_anchor` frames
+`{slot, mid, event: "opened"|"closed", thread_slot, title, ts, opened_by?,
+summary_mid?}`. A frame with a `slot` field is a tier-1 slot-scoped WS event.
+
+This replaces `chat.thread_reply`, and the rename IS the shape of the change: a
+thread's turns now stream on its OWN slot's `chat_chunk` and message frames like
+any other chat, so what a parent conversation still needs told is only that a
+thread appeared or closed under one of its rows. No alias is kept -- the payload
+has no `run_id`, `role` or `content`, so a client written against the old frame
+would read every field as absent, and a renamed event it does not subscribe to is
+a frame it ignores, which is the honest failure.
+
+The client's store (`state/threadLiveStore.ts`) is keyed by `(slot, mid)`, and a
+`closed` frame is applied ONLY when the row it holds names the same
+`thread_slot`. Closing releases the message, so a replacement thread can be opened
+on that mid before a close for the old one arrives -- two tabs, or an agent ending
+a thread while the reader starts the next -- and applied blind that stale close
+would overwrite the live replacement with the ended thread's slot, leaving a footer
+that reads `Ended` and points at a conversation nobody is in. An `opened` frame is
+the newest word on its mid by definition and always replaces. This is the same
+identity check the close ROUTE makes with `expect_thread_slot`, on the other side
+of the wire, because either side alone leaves the other's race open.
+
+### Surfaces
+
+Threads are offered on **every** chat surface, not only a crewmate's: ordinary
+chat, a member or crewmate DM, `td-*` resident sessions, and Slack. They are on
+by default and carry no switch of their own, which
+[rfc-crewmates-launch §07](../../request-for-change/rfc-crewmates-launch.md#07-reply-threads-p1)
+records as an amendment to its P1 scope. The reason a thread needs no switch is
+that it IS a session: closing it, stopping its turn and `session_control` already
+govern it, so a thread toggle would be a second spelling of a control that
+exists, and on Slack it would gate threading the platform provides itself. One
+controller owns the surface half — `pages/chat/useThreads` — so the ordinary chat
+page and the Crewmates page wire it in one line each instead of keeping two copies
+of four pieces of state. It owns the per-conversation anchor read, which thread is
+open, and opening one; it deliberately does NOT own a thread's messages, which are
+its own slot's transcript.
+
+Opening is decided from the anchor index alone, so the common case costs no
+request: a message whose anchor is `kind: "session"` opens straight away, and one
+whose anchor is `kind: "legacy"` shows the read-only fold. Only a message with no
+anchor reaches `POST .../open`.
+
+**`ThreadPanel` frames the ordinary chat pane rather than drawing a transcript of
+its own.** Header, the anchored message quoted once, then `ChatPane` on the
+thread's own slot — so a real composer, many turns, tool rows, approval cards,
+steer, queue, stop, model and agent pickers and history all arrive by
+construction, and none is reimplemented. Version 1 threads have no session to
+render: they draw as a read-only fold under the anchor with one action, start a
+real thread here, and a message carrying both shows the fold above the live
+thread. Nothing rewrites a version 1 document.
+
+A thread answers its own tool approvals, and needs no wiring to do so: the pane's
+COMPOSER owns that decision. `ChatInput` selects the pending approval for its own
+`slotId` (not for whichever slot is active) and resolves it in place, standing its
+text area down for the approval box while one waits — the same behaviour the main
+chat's composer has. So a thread, whose only surface is a pane, is a place a tool
+can actually be granted. `ChatPane` deliberately passes no `onApprove` to
+`ChatMessageList`: that would make the permission group a SECOND approval surface
+above the composer's own, offering two sets of Approve / Trust / Reject for one
+decision.
+
+**Two addresses, one slot.** `?thread=<mid>` on the parent's chat URL IS the open
+drawer, so a reload, a Back and a copied link all land on the same thread; the
+header's pop-out leaves for `?sid=<thread slot>`, the same session as an ordinary
+tab. The parameter is dropped when the session switches, because a mid names a
+message in one conversation and names nothing in the next.
+
+**The footer draws on an ANCHOR, not on a reply count.** A live thread has no
+count to show — how many turns another session holds is not the parent row's
+business — so it reads as the thread and its title, plus `Closed` once it has been
+wrapped up. A version 1 thread keeps what it always showed: the faces of who took
+part, `N replies`, and when the last one landed. A message with no thread draws
+nothing here; its `Reply in thread` action lives in the hover row.
+
+The footer is a SIBLING of its bubble, not a child, and states its own side as
+`align-self` (`self-end` under the user's right-aligned bubble, `self-start` under
+the crewmate's), which beats the row wrapper's `align-items`. An appearance that
+re-aligns or indents the ROW must therefore re-state the footer too: CLI UI mode
+moves the user's bubble full-width to the left and indents both bubbles with a bar
+and padding on the message root, so it carries its own footer rules in
+`styles/cli-mode.css` -- without them the user's footer sits pinned to the far right
+of a left-aligned bubble and the crewmate's 16px left of its own. Those rules are
+measured in a real engine by `scripts/capture-thread-footer-cli-align.mjs`, which
+asserts each footer's first mark against its bubble's edge on both appearances and
+requires the unfixed state to reproduce; `src/test/cliModeThreadFooter.test.ts` pins
+the rules' source text, since happy-dom resolves neither `:has()` nor the
+`align-self`/`align-items` contest. The assistant-side `self-start` is load-bearing
+on every appearance: that column's `align-items` is the default `stretch`, so
+without it the footer renders as a full-width button. The side is declared as
+`align-self` plus the matching negative margin, which is what pulls the button's own
+`px-1.5` back off the bubble's text edge; both halves per side, because keeping one
+and losing the other lines the footer up 6px inside the bubble it belongs to.
+
+**A reply carries the action in a header row at its TOP**, streaming or finished,
+and that row is `sticky` within the transcript viewport so a reply taller than the
+view keeps the control on screen. The footer row is withheld while a reply streams,
+which withheld the action at exactly the moment a long answer going the wrong way
+is worth branching off; an action in the body's row has the opposite fault, because
+a streaming body grows under the pointer and walks the target away between the
+decision to click and the click. The top of the reply does not move as text is
+appended below it. The header lives OUTSIDE `.message-bubble`: that element is
+`overflow-hidden`, and a clipping ancestor between a sticky element and the scroll
+container turns sticky back into static. The overflow menu keeps the same action as
+the secondary path on a finished reply. A streaming row has no `mid` (ids are
+minted post-turn), so the action carries none and the route's `inflight` sentinel
+stands in.
+
+Two refusals of an open mean *not yet* rather than *not ever*, and get a sentence
+that says to try again: `transcript_missing`/`unflushed` (the anchored row exists
+on screen but not yet on disk) and `caller_memory_changed` (the parent slot moved
+under a creation already in flight). Measured against a live gateway, opening on
+the reply being written during a fresh chat's FIRST turn hits these; the same call
+on any message already flushed succeeds, and the parent's turn streams on to
+completion either way.
 
 ## Inline Image Attachments (`chat_attachments.py`)
 

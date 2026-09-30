@@ -66,6 +66,7 @@
     "search_chat_history": "Search chat history",
     "get_chat_session": "Read chat session",
     "list_sessions": "List sessions",
+    "thread_context_read": "Read the parent chat's exact rows",
     "workflow_author": "Write workflow",
     "workflow_run": "Run workflow",
     "workflow_library_list": "List saved workflows",
@@ -107,7 +108,8 @@
     "session_broadcast": "Broadcast to sessions",
     "session_release": "Release session",
     "session_read_message": "Read session message",
-    "session_summary": "Read session summary"
+    "session_summary": "Read session summary",
+    "thread_open": "Open thread on a message"
   },
   "kirocrew-cron": {
     "cron_list": "List schedules",

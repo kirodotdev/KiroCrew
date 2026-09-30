@@ -81,7 +81,7 @@ const WS_SLOT_SCOPED_EVENTS = new Set([
   // Chat content
   'chat_chunk', 'chat_thinking', 'chat_status', 'chat_message', 'chat_done',
   'chat_segment', 'chat_append', 'chat_message_update', 'chat_variant_switch',
-  'chat.side_result', 'chat.thread_reply', 'heartbeat', 'context_usage',
+  'chat.side_result', 'chat.thread_anchor', 'heartbeat', 'context_usage',
   // Tool / queue
   'tool_call', 'tool_result',
   'queue_push', 'queue_cancel', 'queue_edit', 'queue_pop', 'queue_reorder',

@@ -23,7 +23,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { ReactElement } from 'react'
 import type { ChatMessage } from '../types'
-import { mergeRenderers, resolveRenderer, type MessageRenderContext } from '../app-sdk/messageRenderers'
+import { mergeRenderers, resolveRenderer, threadFooterFor, type MessageRenderContext } from '../app-sdk/messageRenderers'
 import { createTranscriptRenderers, featureRequestRefusalIsNewest, sessionStartRepeatIsNewest } from '../pages/chat/transcriptRenderers'
 import { FEATURE_REQUEST_FORM_URL, FEATURE_REQUEST_ROW_META_KEY } from '../prompts/featureRequest'
 import { isWorkflowRunTool } from '../pages/chat/WorkflowRunCard'
@@ -524,5 +524,133 @@ describe('the single-chat surface renders from THIS row set', () => {
     const shared = createTranscriptRenderers({ slot: 's1' }).map(r => r.id)
     const duplicated = pageIds.filter(id => shared.includes(id))
     expect(duplicated).toEqual([])
+  })
+})
+
+
+describe('the row a thread leaves when it ends', () => {
+  const card = msg('assistant', {
+    content: '[Thread closed]\nThe other eight',
+    meta: { thread_summary: { thread_slot: 'chat-77-1758524400', title: 'The other eight' } },
+  })
+
+  it('is claimed by the card entry, not drawn as the reply it looks like', () => {
+    expect(idFor(card)).toBe('thread_closed_card')
+    // An ordinary assistant row is untouched.
+    expect(idFor(msg('assistant', { content: 'Four are open.', meta: { mid: 'm-2' } }))).toBe('assistant')
+  })
+
+  it('draws under its own role, which is what keeps it out of the parent replay', () => {
+    // The gateway writes the card as `thread_closed` so replay drops it instead
+    // of handing the model "Thread ended." as its own words. A transcript written
+    // before that role holds the same row as `assistant`, and both must draw the
+    // card -- the entry claims the two spellings for exactly that reason.
+    const own = msg('thread_closed', {
+      content: 'Thread ended.\nThe other eight',
+      meta: { thread_summary: { thread_slot: 'chat-77-1758524400', title: 'The other eight' } },
+    })
+    expect(idFor(own)).toBe('thread_closed_card')
+    expect(idFor(card)).toBe('thread_closed_card')
+    // And a `thread_closed` row with no card metadata claims nothing, so a
+    // malformed one cannot render an empty card.
+    expect(idFor(msg('thread_closed', { content: 'x', meta: { mid: 'm-3' } }))).not.toBe(
+      'thread_closed_card',
+    )
+  })
+
+  it('opens the drawer when an anchor still claims the slot', () => {
+    const drawer = vi.fn(() => true)
+    const session = vi.fn()
+    const el = render(card, { slot: 's1', onSessionOpen: session }, {
+      threads: { summaryOf: () => undefined, onOpen: vi.fn(), onOpenSlot: drawer, crewmateName: 'Radar' },
+    }) as ReactElement<{ onOpen: () => void }>
+    el.props.onOpen()
+    expect(drawer).toHaveBeenCalledWith('chat-77-1758524400')
+    expect(session).not.toHaveBeenCalled()
+  })
+
+  it('falls back to the full page once a later thread holds the anchor', () => {
+    // Closing frees the message, so a newer thread on it takes the anchor over and
+    // this card's slot matches nothing. The session is still there, so the card
+    // sends the reader to it rather than going inert.
+    const drawer = vi.fn(() => false)
+    const session = vi.fn()
+    const el = render(card, { slot: 's1', onSessionOpen: session }, {
+      threads: { summaryOf: () => undefined, onOpen: vi.fn(), onOpenSlot: drawer, crewmateName: 'Radar' },
+    }) as ReactElement<{ onOpen: () => void }>
+    el.props.onOpen()
+    expect(session).toHaveBeenCalledWith('chat-77-1758524400')
+  })
+})
+
+/**
+ * One ended thread, announced once.
+ *
+ * The footer chip reads "Thread <title> Ended" and the close card directly under
+ * it reads "Thread ended. <title>. Read it" -- the same fact, stacked, both
+ * linking to the same session. A blind reader asked why it was shown twice.
+ */
+describe('the ended footer beside its own close card', () => {
+  const SLOT = 'chat-77-1758524400'
+  const anchored = msg('assistant', { content: 'Overnight triage.', meta: { mid: 'm-1' } })
+  const closeCard = msg('assistant', {
+    content: 'Thread ended.\nThe other eight',
+    meta: { thread_summary: { thread_slot: SLOT, title: 'The other eight' } },
+  })
+  const ended = {
+    kind: 'session' as const,
+    thread_slot: SLOT,
+    title: 'The other eight',
+    opened_by: 'user',
+    opened_at: '2026-09-22T07:40:00Z',
+    closed_at: '2026-09-22T08:00:00Z',
+    summary_mid: null,
+  }
+  const hooks = (summary: unknown) => ({
+    threads: { summaryOf: () => summary, onOpen: () => {}, crewmateName: 'Radar' },
+  }) as Partial<MessageRenderContext>
+
+  it('is suppressed when the card for that same thread is the next row', () => {
+    const got = threadFooterFor(anchored, ctx({
+      index: 0,
+      messages: [anchored, closeCard],
+      ...hooks(ended),
+    }), 'start')
+    expect(got).toBeNull()
+  })
+
+  it('is kept when the next row is something else, because the card is then out of sight', () => {
+    const other = msg('assistant', { content: 'Four are open.', meta: { mid: 'm-2' } })
+    const got = threadFooterFor(anchored, ctx({
+      index: 0,
+      messages: [anchored, other, closeCard],
+      ...hooks(ended),
+    }), 'start')
+    expect(got).not.toBeNull()
+  })
+
+  it('is kept when the adjacent card belongs to a DIFFERENT thread', () => {
+    // Closing frees the message, so a message can carry a live thread while the
+    // card below it closed an earlier one. Suppressing on adjacency alone would
+    // hide the way into the thread that is still open.
+    const elsewhere = msg('assistant', {
+      content: 'Thread ended.\nSomething else',
+      meta: { thread_summary: { thread_slot: 'chat-90-1758525000', title: 'Something else' } },
+    })
+    const got = threadFooterFor(anchored, ctx({
+      index: 0,
+      messages: [anchored, elsewhere],
+      ...hooks(ended),
+    }), 'start')
+    expect(got).not.toBeNull()
+  })
+
+  it('is kept for an OPEN thread even with a card adjacent', () => {
+    const got = threadFooterFor(anchored, ctx({
+      index: 0,
+      messages: [anchored, closeCard],
+      ...hooks({ ...ended, closed_at: null }),
+    }), 'start')
+    expect(got).not.toBeNull()
   })
 })

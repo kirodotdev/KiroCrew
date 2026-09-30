@@ -969,13 +969,6 @@
       "description": "Merge a connected remote crew's live sessions into the Sessions list, each marked with a server badge. Functional, but not finished."
     },
     {
-      "id": "developer.reply-threads-on-crewmate-chat-messages",
-      "label": "Reply threads on crewmate chat messages",
-      "tab": "developer",
-      "route": "/settings/developer?highlight=developer.reply-threads-on-crewmate-chat-messages",
-      "description": "Let any message in a crewmate's chat carry its own reply thread, opened in the side panel while the chat stays visible. Off, the Reply in thread control is not offered and existing threads are hidden, not deleted."
-    },
-    {
       "id": "developer.run-a-local-gateway",
       "label": "Run a local gateway",
       "tab": "developer",

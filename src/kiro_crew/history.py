@@ -1335,6 +1335,111 @@ _THREAD_REPLY_TS_RE = re.compile(
 )
 _THREAD_REPLY_ROLES = frozenset({"user", "assistant"})
 
+#: The sidecar document version this module WRITES. Version 1 held a transcript
+#: (``threads``: the replies a thread was made of, back when a thread had no
+#: session of its own); version 2 holds an ANCHOR INDEX (``anchors``: which slot
+#: a parent message's thread lives in). A v2 file may carry both keys -- the
+#: legacy replies are read in place and never rewritten -- so the reader accepts
+#: either half and the writer preserves the one it does not own.
+THREADS_SIDECAR_VERSION = 2
+
+#: The anchor-row schema the index holds; :meth:`ConversationLog.read_thread_anchors`
+#: keeps these keys and no other, for the reason :data:`THREAD_REPLY_FIELDS` gives:
+#: the file sits under the data home, so a field another writer put there must
+#: never reach the dashboard through a response's spread.
+THREAD_ANCHOR_FIELDS: tuple[str, ...] = (
+    "thread_slot",
+    "title",
+    "opened_by",
+    "opened_at",
+    "closed_at",
+    "summary_mid",
+    "parent_log_seq",
+)
+#: Where the anchor message sits in the PARENT's crew log, recorded when the
+#: thread opens because it cannot be recovered afterwards: the log's
+#: ``message/received`` entry carries no ``mid`` (its emitter deliberately does
+#: not run where a slot appends, there being no session id yet), so nothing later
+#: can turn an anchor's ``mid`` back into a log position. The thread's context
+#: projection is addressed by this seq, so an anchor written before this field
+#: existed reads ``0`` -- which its consumer must treat as "unknown" and NOT as
+#: "the beginning of the log", or an old anchor would project a whole parent.
+THREAD_ANCHOR_PARENT_LOG_SEQ_UNKNOWN = 0
+#: Anchors one chat's index holds. An anchor is one short row rather than a
+#: thread's whole text, so this is a bound on how many messages of one chat can
+#: carry a thread -- generous, and far below what the file ceiling admits.
+THREADS_MAX_ANCHORS_PER_SIDECAR = 5_000
+#: A thread's slot key, as ``get_or_create_slot`` mints it. Bounded and charset-
+#: fenced rather than pattern-matched against one surface's spelling: the index
+#: is channel-neutral (a Slack anchor names ``slack:<ts>``), so the shape that
+#: matters is "an opaque key that cannot carry prose".
+THREAD_SLOT_MAX_CHARS = 200
+_THREAD_SLOT_RE = re.compile(r"^[A-Za-z0-9_:.\-]{1,200}$")
+#: Who opened the thread: the user, or one agent session named by its key.
+_THREAD_OPENED_BY_RE = re.compile(r"^(?:user|agent:[A-Za-z0-9_:.\-]{1,200})$")
+#: The title the sidebar and the summary card show. The one free-text field of an
+#: anchor row, and the only one redacted on the way out.
+THREAD_ANCHOR_TITLE_MAX_CHARS = 200
+
+
+def _thread_anchor_row(raw: dict) -> dict[str, Any] | None:
+    """*raw* reduced to :data:`THREAD_ANCHOR_FIELDS`, or ``None`` when the row is
+    not one this store wrote.
+
+    ``thread_slot`` is required and must be a bounded opaque key; ``title`` is
+    the one free-text field and is cut at
+    :data:`THREAD_ANCHOR_TITLE_MAX_CHARS`; ``opened_by`` must be ``user`` or
+    ``agent:<key>``; ``opened_at`` and ``closed_at`` are ISO-8601 instants (
+    ``closed_at`` may be absent, which is what "still open" means) and
+    ``summary_mid`` a minted row id or absent. Same posture as
+    :func:`_thread_reply_row`: every field except the title is held to a shape
+    that cannot carry prose, so only the title needs redaction at the boundary.
+    """
+    slot = raw.get("thread_slot")
+    if not isinstance(slot, str) or not _THREAD_SLOT_RE.match(slot):
+        return None
+    title = raw.get("title", "")
+    if not isinstance(title, str):
+        return None
+    opened_by = raw.get("opened_by", "user")
+    if not isinstance(opened_by, str) or not _THREAD_OPENED_BY_RE.match(opened_by):
+        return None
+    opened_at = raw.get("opened_at", "")
+    if not isinstance(opened_at, str) or (opened_at and not _THREAD_REPLY_TS_RE.match(opened_at)):
+        return None
+    closed_at = raw.get("closed_at")
+    if closed_at is not None and (
+        not isinstance(closed_at, str) or not _THREAD_REPLY_TS_RE.match(closed_at)
+    ):
+        return None
+    summary_mid = raw.get("summary_mid")
+    if summary_mid is not None and (
+        not isinstance(summary_mid, str) or not THREAD_MID_RE.match(summary_mid)
+    ):
+        return None
+    # Absent, wrong-typed and negative all read as UNKNOWN rather than rejecting
+    # the row: every anchor written before this field existed lacks it, and an
+    # anchor is the only record that a thread belongs to a message -- dropping one
+    # over a missing projection cursor would orphan a live thread to save a
+    # summary. ``bool`` is excluded because JSON ``true`` is an ``int`` in Python
+    # and a seq of ``True`` would silently mean 1.
+    parent_log_seq = raw.get("parent_log_seq")
+    if (
+        not isinstance(parent_log_seq, int)
+        or isinstance(parent_log_seq, bool)
+        or parent_log_seq < 0
+    ):
+        parent_log_seq = THREAD_ANCHOR_PARENT_LOG_SEQ_UNKNOWN
+    return {
+        "thread_slot": slot,
+        "title": title[:THREAD_ANCHOR_TITLE_MAX_CHARS],
+        "opened_by": opened_by,
+        "opened_at": opened_at,
+        "closed_at": closed_at,
+        "summary_mid": summary_mid,
+        "parent_log_seq": parent_log_seq,
+    }
+
 
 def _thread_reply_row(raw: dict) -> dict[str, Any] | None:
     """*raw* reduced to :data:`THREAD_REPLY_FIELDS`, or ``None`` when a field is
@@ -2197,31 +2302,25 @@ class ConversationLog:
         """
         return threads_sidecar_for_stem(self._dir, _safe_key(key))
 
-    def read_threads(self, key: str) -> dict[str, list[dict[str, Any]]]:
-        """The reply-thread map of *key*'s sidecar (``{mid: [reply, ...]}``).
+    def _read_thread_sidecar(self, key: str) -> dict[str, Any] | None:
+        """*key*'s sidecar document as parsed JSON, or ``None`` when absent.
 
-        A missing sidecar reads as empty. Unreadable bytes -- torn JSON, a wrong
-        shape -- raise :class:`ThreadStoreUnreadable` instead of reading as empty,
-        because the one caller that writes would otherwise replace the damaged
-        file with an empty map and lose every reply it held. Rows and threads of
-        the wrong shape are dropped individually; only the document as a whole
-        refuses. Each retained row is NORMALIZED to the reply schema -- ``id``,
-        ``role``, ``content``, ``ts``, all strings -- and nothing else: the file
-        sits beside the transcript under the data home, so a field an agent or
-        an older writer put there must never reach the dashboard through the
-        detail response's spread. A row missing ``id``, ``role`` or ``content``
-        is dropped, as is one whose ``id``, ``role`` or ``ts`` is not in the
-        writer's own shape (uuid hex, one of the two speakers, ISO-8601), so
-        only ``content`` can carry prose and it is redacted at the boundary.
-        The content is cut at :data:`THREAD_REPLY_CONTENT_MAX_CHARS`, a thread
-        keeps its NEWEST :data:`THREADS_MAX_REPLIES_PER_THREAD` rows (a key left
-        with none is dropped, so keys alone cannot grow the map)
-        and the map stops at :data:`THREADS_MAX_REPLIES_PER_SIDECAR` rows in file
-        order, so what the file holds never decides what the gateway holds --
-        and the file is opened ONCE, without following a link, and sized on
-        that descriptor before it is read: over :data:`THREADS_SIDECAR_MAX_BYTES`,
-        or not a regular file, is refused, and the read is bounded to the ceiling
-        so a file swapped under the open cannot grow past it either.
+        The hardened read both halves of the sidecar share -- the legacy reply
+        map (:meth:`read_threads`) and the anchor index
+        (:meth:`read_thread_anchors`) live in ONE file, so they must not open it
+        under two different sets of rules. The file is opened once, without
+        following a link, and sized on that descriptor before a byte is read:
+        over :data:`THREADS_SIDECAR_MAX_BYTES`, or not a regular file, is
+        refused, and the read is bounded to the ceiling so a file swapped under
+        the open cannot grow past it either.
+
+        Raises :class:`ThreadStoreUnreadable` for torn JSON, a document that is
+        not an object, and a document carrying NEITHER a ``threads`` map nor an
+        ``anchors`` map -- rather than reading any of those as empty, because the
+        callers that write would otherwise replace a damaged file and lose what
+        it held. A half that is PRESENT but not a dict refuses too: that is a
+        shape this store never wrote, and admitting it as absent would let a
+        ``{"threads": []}`` document be silently replaced.
         """
         path = self.threads_sidecar_path(key)
         nofollow = getattr(os, "O_NOFOLLOW", 0)
@@ -2234,7 +2333,7 @@ class ConversationLog:
         try:
             fd = os.open(path, flags)
         except FileNotFoundError:
-            return {}
+            return None
         except OSError as exc:
             # ELOOP for a link at the name, EACCES, ENOTDIR: all "not this store".
             raise ThreadStoreUnreadable(f"thread sidecar unreadable: {path}") from exc
@@ -2260,9 +2359,53 @@ class ConversationLog:
             # A document nested past the interpreter's depth is as unreadable as
             # one that does not parse: refused, never a 500.
             raise ThreadStoreUnreadable(f"thread sidecar unreadable: {path}") from exc
-        threads = raw.get("threads") if isinstance(raw, dict) else None
+        if not isinstance(raw, dict):
+            raise ThreadStoreUnreadable(f"thread sidecar is not an object: {path}")
+        has_half = False
+        for half in ("threads", "anchors"):
+            if half not in raw:
+                continue
+            if not isinstance(raw[half], dict):
+                # Present but the wrong shape: refused, never treated as absent.
+                # A v1 document whose ``threads`` is a list is damaged, and
+                # reading it as empty is what would let a write erase it.
+                raise ThreadStoreUnreadable(f"thread sidecar {half} is not a map: {path}")
+            has_half = True
+        if not has_half:
+            raise ThreadStoreUnreadable(f"thread sidecar has no threads or anchors map: {path}")
+        return raw
+
+    def read_threads(self, key: str) -> dict[str, list[dict[str, Any]]]:
+        """The LEGACY reply-thread map of *key*'s sidecar (``{mid: [reply, ...]}``).
+
+        Version 1's transcript: the replies a thread was made of before a thread
+        became a session of its own. Still read, never written -- the dashboard
+        renders these as a read-only fold beside the anchors
+        (:meth:`read_thread_anchors`) -- so a v2 document with no ``threads`` key
+        reads as ``{}`` rather than refusing. A missing sidecar reads as empty.
+
+        Rows and threads of the wrong shape are dropped individually; only the
+        document as a whole refuses (see :meth:`_read_thread_sidecar`). Each
+        retained row is NORMALIZED to the reply schema -- ``id``, ``role``,
+        ``content``, ``ts``, all strings -- and nothing else: the file sits
+        beside the transcript under the data home, so a field an agent or an
+        older writer put there must never reach the dashboard through a
+        response's spread. A row missing ``id``, ``role`` or ``content`` is
+        dropped, as is one whose ``id``, ``role`` or ``ts`` is not in the
+        writer's own shape (uuid hex, one of the two speakers, ISO-8601), so only
+        ``content`` can carry prose and it is redacted at the boundary. The
+        content is cut at :data:`THREAD_REPLY_CONTENT_MAX_CHARS`, a thread keeps
+        its NEWEST :data:`THREADS_MAX_REPLIES_PER_THREAD` rows (a key left with
+        none is dropped, so keys alone cannot grow the map) and the map stops at
+        :data:`THREADS_MAX_REPLIES_PER_SIDECAR` rows in file order, so what the
+        file holds never decides what the gateway holds.
+        """
+        raw = self._read_thread_sidecar(key)
+        if raw is None:
+            return {}
+        threads = raw.get("threads")
         if not isinstance(threads, dict):
-            raise ThreadStoreUnreadable(f"thread sidecar has no threads map: {path}")
+            return {}
         out: dict[str, list[dict[str, Any]]] = {}
         budget = THREADS_MAX_REPLIES_PER_SIDECAR
         for mid, replies in threads.items():
@@ -2283,62 +2426,53 @@ class ConversationLog:
             out[mid] = kept
         return out
 
-    def thread_transcript_identity(self, key: str) -> str | None:
-        """The transcript's ``created_at`` metadata, or ``None`` when absent.
+    def read_thread_anchors(self, key: str) -> dict[str, dict[str, Any]]:
+        """The ANCHOR INDEX of *key*'s sidecar (``{mid: anchor}``) -- version 2.
 
-        The identity :meth:`append_thread_reply` checks a reply against; read at
-        admission, before any await, and handed back at the write.
+        One entry per message of this conversation that has a thread hanging off
+        it, naming the slot that thread's session lives in. A v1 document (no
+        ``anchors`` key) reads as ``{}``: the legacy replies it holds are reached
+        through :meth:`read_threads` instead, and nothing rewrites them.
+
+        Same retention posture as :meth:`read_threads`. Rows of the wrong shape
+        are dropped individually (:func:`_thread_anchor_row`), keys that are not
+        minted row ids are dropped, and the map stops at
+        :data:`THREADS_MAX_ANCHORS_PER_SIDECAR` entries in file order, so what the
+        file holds never decides what the gateway holds. Only the document as a
+        whole refuses (see :meth:`_read_thread_sidecar`).
         """
-        created = self.get_metadata(key).get("created_at")
-        return created if isinstance(created, str) and created else None
+        raw = self._read_thread_sidecar(key)
+        if raw is None:
+            return {}
+        anchors = raw.get("anchors")
+        if not isinstance(anchors, dict):
+            return {}
+        out: dict[str, dict[str, Any]] = {}
+        for mid, entry in anchors.items():
+            if len(out) >= THREADS_MAX_ANCHORS_PER_SIDECAR:
+                break
+            if not isinstance(mid, str) or not THREAD_MID_RE.match(mid):
+                continue
+            if not isinstance(entry, dict):
+                continue
+            row = _thread_anchor_row(entry)
+            if row is None:
+                continue
+            out[mid] = row
+        return out
 
-    def append_thread_reply(
-        self,
-        key: str,
-        mid: str,
-        reply: dict[str, Any],
-        *,
-        max_replies: int,
-        max_total: int,
-        expected_created_at: str | None = None,
+    def thread_anchor_admissible(
+        self, key: str, mid: str, *, expected_created_at: str | None = None
     ) -> str:
-        """Append *reply* to the thread on *mid* in *key*'s sidecar.
+        """What :meth:`write_thread_anchor` would answer on its admission rules alone.
 
-        Returns ``"ok"``, ``"duplicate"`` (the thread already holds a reply with
-        this ``id`` -- a client re-sending a reply whose acceptance it never saw;
-        nothing is written), ``"full"`` (the thread already holds *max_replies*),
-        ``"sidecar_full"`` (the sidecar already holds *max_total* replies across
-        every thread, or the document with this reply would pass
-        :data:`THREADS_SIDECAR_MAX_BYTES` -- the whole-file bounds, since the
-        panel reads the file whole and a per-thread cap alone leaves it
-        unbounded in the number of threads), ``"missing"`` (no transcript for *key*), or ``"replaced"``
-        (the transcript is not the one the reply was admitted against), or
-        ``"unflushed"`` (the transcript holds no row with ``meta.mid == mid``).
-        Every check runs under the lock so nothing can change between it and
-        the write. The identity is the metadata line's ``created_at`` -- minted
-        when a transcript is created, carried through verbatim by a rewrite --
-        so a member chat deleted and recreated under its deterministic key
-        while a turn was in flight is told apart from the chat the reply
-        belongs to, exactly as ``chat_persistence`` tells "deleted and
-        recreated" apart. Callers capture it with
-        :meth:`thread_transcript_identity` at admission and pass it back here.
-        The parent's ``meta.mid`` must ALWAYS be on disk: a thread is durable
-        only through the row it hangs off, and a parent that exists only in the
-        slot's memory window (a reply the slot has not flushed yet) would leave
-        the thread unreachable if the process died before the flush -- so such
-        a reply is refused as ``"unflushed"`` and the caller says "try again in
-        a moment". The same check is what tells a replacement apart for a
-        legacy transcript with no ``created_at`` (a replacement never carries
-        the old chat's message ids). The read-modify-write runs
-        under :meth:`_locked` -- the same lock
-        :meth:`delete_session` unlinks the sidecar under -- and refuses when the
-        transcript is gone, for the reason :meth:`set_cached_intent_summary`
-        gives: a turn holds no lock while its model call is in flight, and an
-        unconditional write landing after a delete would recreate the sidecar
-        and resurrect a conversation the user was told is gone. Raises
-        :class:`ThreadStoreUnreadable` on a damaged sidecar (never overwritten)
-        and :class:`HistoryLockTimeout` when the lock cannot be taken. Blocking;
-        callers run it off the event loop.
+        ``"ok"``, or the same refusal string the write would return
+        (``"missing"``, ``"replaced"``, ``"unflushed"``, ``"duplicate"``,
+        ``"full"``). A read-only probe, so an opener can refuse BEFORE it mints a
+        session it would then have to retract -- the write re-checks every rule
+        under the lock, so this is an optimisation and never the authority.
+        Exists so the rules are spelled once, here, rather than approximated by
+        the caller from what its transcript read happened to contain.
         """
         with self._locked(key):
             if not self._path(key).exists():
@@ -2349,27 +2483,174 @@ class ConversationLog:
                     return "replaced"
             if not self._transcript_holds_mid(key, mid):
                 return "replaced" if expected_created_at is None else "unflushed"
-            threads = self.read_threads(key)
-            if sum(len(r) for r in threads.values()) >= max_total:
-                return "sidecar_full"
-            replies = threads.setdefault(mid, [])
-            if any(r.get("id") == reply.get("id") for r in replies):
+            anchors = self.read_thread_anchors(key)
+            existing = anchors.get(mid)
+            if existing is not None and existing.get("closed_at") is None:
                 return "duplicate"
-            if len(replies) >= max_replies:
+            if mid not in anchors and len(anchors) >= THREADS_MAX_ANCHORS_PER_SIDECAR:
                 return "full"
-            replies.append(reply)
-            document = json.dumps({"version": 1, "threads": threads})
-            if len(document.encode("utf-8")) > THREADS_SIDECAR_MAX_BYTES:
-                return "sidecar_full"
-            _write_thread_sidecar(self.threads_sidecar_path(key), document)
             return "ok"
+
+    def write_thread_anchor(
+        self,
+        key: str,
+        mid: str,
+        anchor: dict[str, Any],
+        *,
+        max_anchors: int = THREADS_MAX_ANCHORS_PER_SIDECAR,
+        expected_created_at: str | None = None,
+    ) -> str:
+        """Record *anchor* as the thread on *mid* in *key*'s anchor index.
+
+        Returns ``"ok"``, ``"duplicate"`` (this ``mid`` already carries an OPEN
+        anchor -- one thread per message, so the caller shows the existing one
+        rather than minting a second session), ``"full"`` (the index already
+        holds *max_anchors* entries), ``"sidecar_full"`` (the document with this
+        anchor would pass :data:`THREADS_SIDECAR_MAX_BYTES`), ``"missing"`` (no
+        transcript for *key*), ``"replaced"`` (the transcript is not the one the
+        anchor was admitted against) or ``"unflushed"`` (the transcript holds no
+        row with ``meta.mid == mid``).
+
+        Every admission rule version 1's reply writer applied carries over
+        unchanged, and for the same reasons: an anchor is durable only through
+        the row it hangs off, so the parent's ``meta.mid`` must ALWAYS be on disk
+        (a parent that lives only in the slot's memory window would leave the
+        thread unreachable if the process died before the flush), the identity
+        check tells a chat deleted and recreated under the same key apart from
+        the chat the anchor belongs to, and the whole read-modify-write runs
+        under :meth:`_locked` -- the lock :meth:`delete_session` unlinks the
+        sidecar under -- so a write landing after a delete cannot recreate it.
+
+        A v1 document's ``threads`` half is PRESERVED verbatim: the legacy
+        replies keep rendering, and this writer owns only ``anchors``. Raises
+        :class:`ThreadStoreUnreadable` on a damaged sidecar (never overwritten)
+        and :class:`HistoryLockTimeout` when the lock cannot be taken. Blocking;
+        callers run it off the event loop.
+        """
+        row = _thread_anchor_row(anchor)
+        if row is None:
+            raise ValueError("anchor is not in the shape this store writes")
+        with self._locked(key):
+            if not self._path(key).exists():
+                return "missing"
+            if expected_created_at is not None:
+                current = self.thread_transcript_identity(key)
+                if current is not None and current != expected_created_at:
+                    return "replaced"
+            if not self._transcript_holds_mid(key, mid):
+                return "replaced" if expected_created_at is None else "unflushed"
+            anchors = self.read_thread_anchors(key)
+            existing = anchors.get(mid)
+            if existing is not None and existing.get("closed_at") is None:
+                return "duplicate"
+            if mid not in anchors and len(anchors) >= max_anchors:
+                return "full"
+            anchors[mid] = row
+            outcome = self._store_thread_anchors(key, anchors)
+            return outcome
+
+    def update_thread_anchor(
+        self,
+        key: str,
+        mid: str,
+        changes: dict[str, Any],
+        *,
+        expect_open: bool = False,
+        expect_thread_slot: str | None = None,
+    ) -> str:
+        """Merge *changes* into the anchor on *mid* -- how a thread is closed.
+
+        Returns ``"ok"``, ``"missing"`` (no transcript), ``"not_found"`` (no anchor
+        on this ``mid``), ``"already_closed"`` (only with *expect_open*),
+        ``"replaced"`` (only with *expect_thread_slot*), or ``"sidecar_full"``.
+
+        *expect_thread_slot* makes the change apply only while the row still names
+        THAT thread. Closing frees the message to carry a new one, so an amendment
+        written after the close -- the card's id -- would otherwise land on whatever
+        anchor is there when it arrives, stamping one thread's card onto another
+        thread. The two guards answer different questions and compose: *expect_open*
+        asks whether the row is still open, this asks whether it is still the same
+        thread.
+
+        There is no transcript-identity guard here, unlike the two writers: a close
+        only ever narrows what the index already claims, so a parent recreated under
+        its own key cannot be harmed by one, and the guard would need a caller to
+        pass an identity none of them holds.
+
+        *expect_open* makes the close a compare-and-set: the row must still be OPEN
+        for the change to land. Without it, two closes racing on one anchor both
+        read it open, both merge, and both go on to post a summary card in the
+        parent -- so closing once is a property of this lock, not of the caller's
+        earlier read. A caller that is only amending an already-closed row (storing
+        the card's id) leaves it false.
+
+        Read-modify-write under :meth:`_locked`, like
+        :meth:`write_thread_anchor`, so a close cannot race an open on the same
+        index. The merged row is re-validated, so a change that would leave the
+        row outside :func:`_thread_anchor_row`'s shape is refused rather than
+        written. ``_transcript_holds_mid`` is deliberately NOT re-checked: a
+        thread that outlived a rewind past its parent must still be closable,
+        and a close only ever narrows what the index claims.
+        """
+        with self._locked(key):
+            if not self._path(key).exists():
+                return "missing"
+            anchors = self.read_thread_anchors(key)
+            existing = anchors.get(mid)
+            if existing is None:
+                return "not_found"
+            if expect_open and existing.get("closed_at") is not None:
+                return "already_closed"
+            if (
+                expect_thread_slot is not None
+                and str(existing.get("thread_slot", "")) != expect_thread_slot
+            ):
+                return "replaced"
+            merged = _thread_anchor_row({**existing, **changes})
+            if merged is None:
+                raise ValueError("anchor change leaves the row outside the store's shape")
+            anchors[mid] = merged
+            return self._store_thread_anchors(key, anchors)
+
+    def _store_thread_anchors(self, key: str, anchors: dict[str, dict[str, Any]]) -> str:
+        """Write *anchors* as the sidecar's v2 index, keeping the legacy half.
+
+        Called under :meth:`_locked` by the two anchor writers, which is what
+        makes reading the current document here safe: the read the caller already
+        did and this one see the same file. ``threads`` is carried over verbatim
+        when the file has one -- version 1's replies are read in place and never
+        rewritten -- and omitted when it does not, so a conversation that only
+        ever had v2 threads does not grow an empty legacy map.
+        """
+        raw = self._read_thread_sidecar(key)
+        legacy = raw.get("threads") if isinstance(raw, dict) else None
+        document_body: dict[str, Any] = {
+            "version": THREADS_SIDECAR_VERSION,
+            "anchors": anchors,
+        }
+        if isinstance(legacy, dict) and legacy:
+            document_body["threads"] = legacy
+        document = json.dumps(document_body)
+        if len(document.encode("utf-8")) > THREADS_SIDECAR_MAX_BYTES:
+            return "sidecar_full"
+        _write_thread_sidecar(self.threads_sidecar_path(key), document)
+        return "ok"
+
+    def thread_transcript_identity(self, key: str) -> str | None:
+        """The transcript's ``created_at`` metadata, or ``None`` when absent.
+
+        The identity :meth:`write_thread_anchor` checks an anchor against; read
+        at admission, before any await, and handed back at the write.
+        """
+        created = self.get_metadata(key).get("created_at")
+        return created if isinstance(created, str) and created else None
 
     def _transcript_holds_mid(self, key: str, mid: str) -> bool:
         """Whether *key*'s transcript on disk has a row with ``meta.mid == mid``.
 
         Read through the chained projection, the same corpus the thread routes
         look a parent up in. Called under :meth:`_locked` by
-        :meth:`append_thread_reply`; the projection takes only its own in-process
+        :meth:`write_thread_anchor`; the projection takes only its own in-process
         index lock, so this is the read-inside-the-lock pattern the metadata
         rewrites already use.
         """
