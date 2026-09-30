@@ -820,18 +820,43 @@ _WIN_LOCK_POLL_SECS = _LOCK_POLL_SECS
 _WIN_LOCK_TIMEOUT_SECS = _LOCK_TIMEOUT_SECS
 
 
-def _lock_timeout_message(timeout: float, *, exclusive: bool = True) -> str:
-    """The one refusal string both platforms raise when the ceiling is hit.
+def _on_event_loop() -> bool:
+    """True when called on a thread that is running an asyncio event loop."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
 
-    Names the ceiling and the reason. A caller that catches this as best-effort
+
+def _lock_timeout_message(
+    waited: float,
+    *,
+    exclusive: bool = True,
+    ceiling: float | None = None,
+    on_loop: bool = False,
+) -> str:
+    """The one refusal string both platforms raise when an acquire gives up.
+
+    Names how long the acquire REALLY waited and what was observed: the lock was
+    still held. It deliberately names no cause. The acquire cannot tell a hung
+    holder from a busy one or from a queue of waiters, and naming one of them
+    sends an operator after the wrong fix. On the event-loop thread the acquire
+    makes one attempt and never waits, so the message says that instead of
+    naming a ceiling it never applied. A caller that catches this as best-effort
     work has nothing else to report, so this message is the only evidence of WHY
     the critical section was declined.
     """
     kind = "exclusive" if exclusive else "shared"
-    return (
-        f"could not acquire {kind} file lock within {timeout:g}s "
-        "(a holder is stuck); refusing to proceed unserialized"
-    )
+    if on_loop:
+        detail = (
+            f"still held after waiting {waited:.2f}s (one attempt: an acquire on "
+            "the event-loop thread never waits; take it from a worker thread to wait)"
+        )
+    else:
+        limit = waited if ceiling is None else ceiling
+        detail = f"still held after waiting {waited:.2f}s (limit {limit:g}s)"
+    return f"could not acquire {kind} file lock: {detail}; refusing to proceed unserialized"
 
 
 def _posix_acquire_blocking(
@@ -879,12 +904,7 @@ def _posix_acquire_blocking(
                 raise
             return False
 
-    try:
-        asyncio.get_running_loop()
-        on_loop = True
-    except RuntimeError:
-        on_loop = False
-    if on_loop:
+    if _on_event_loop():
         # Single attempt only -- a poll-sleep here blocks the event loop.
         return _try_once()
 
@@ -926,12 +946,7 @@ def _win_acquire_blocking(fd: int, *, timeout: float = _LOCK_TIMEOUT_SECS) -> bo
         except OSError:
             return False
 
-    try:
-        asyncio.get_running_loop()
-        on_loop = True
-    except RuntimeError:
-        on_loop = False
-    if on_loop:
+    if _on_event_loop():
         # Single attempt only — a spin-sleep here blocks the event loop.
         return _try_once()
 
@@ -974,7 +989,11 @@ def file_lock(
     called on the asyncio event-loop thread: a poll-sleep there would freeze chat
     and heartbeat for the whole wait, and a freeze long enough to miss a heartbeat
     is a supervisor kill, so a contended on-loop caller is refused at once and
-    fails closed rather than stalling every other session. The timeout is a safety
+    fails closed rather than stalling every other session. ``flock`` counts a
+    second descriptor in this same process as a competing holder, so even a
+    sibling thread's brief critical section refuses an on-loop caller: a caller
+    that must wait for the lock calls this from a worker thread
+    (``asyncio.to_thread``), where the wait is a real one. The timeout is a safety
     ceiling against a stuck holder, not a normal wait. ``required`` is kept for
     call-site intent and does not change the outcome (both paths refuse to proceed
     without the lock).
@@ -1011,19 +1030,22 @@ def file_lock(
             # BlockingIOError (an OSError) when held: same fail-closed contract
             # as the Windows branch, reported by the platform rather than by us.
             fcntl.flock(fd, mode | fcntl.LOCK_NB)
-        elif not _posix_acquire_blocking(fd, mode, timeout=timeout):
-            # Past the ceiling the holder is stuck, not busy. Refuse LOUDLY
-            # rather than wait on it without limit: an unbounded wait here leaves
-            # a boot with no port bound and no log line, while a raise is
-            # something the caller can report and recover from -- the gateway
-            # boot path logs it at ERROR, prints the repair command, and still
-            # binds its port.
-            raise OSError(
-                _lock_timeout_message(
-                    _LOCK_TIMEOUT_SECS if timeout is None else timeout,
-                    exclusive=exclusive,
+        else:
+            started = time.monotonic()
+            if not _posix_acquire_blocking(fd, mode, timeout=timeout):
+                # Refuse LOUDLY rather than wait without limit: an unbounded wait
+                # here leaves a boot with no port bound and no log line, while a
+                # raise is something the caller can report and recover from --
+                # the gateway boot path logs it at ERROR, prints the repair
+                # command, and still binds its port.
+                raise OSError(
+                    _lock_timeout_message(
+                        time.monotonic() - started,
+                        exclusive=exclusive,
+                        ceiling=_LOCK_TIMEOUT_SECS if timeout is None else timeout,
+                        on_loop=_on_event_loop(),
+                    )
                 )
-            )
         try:
             yield
         finally:
@@ -1041,6 +1063,7 @@ def file_lock(
         # change the outcome — both paths refuse to proceed lock-less.
         # The waiting path with no explicit ceiling is called with no keyword, so
         # the default-argument call shape existing tests stub out is preserved.
+        started = time.monotonic()
         if not wait:
             ceiling = 0.0
             acquired = _win_acquire_blocking(fd, timeout=0.0)
@@ -1053,9 +1076,16 @@ def file_lock(
         if not acquired:
             if not wait:
                 # Held right now. BlockingIOError so the caller can tell this
-                # from the stuck-holder ceiling below, matching POSIX LOCK_NB.
+                # from the timed-out wait below, matching POSIX LOCK_NB.
                 raise BlockingIOError("file lock is held; not waiting for it")
-            raise OSError(_lock_timeout_message(ceiling, exclusive=exclusive))
+            raise OSError(
+                _lock_timeout_message(
+                    time.monotonic() - started,
+                    exclusive=exclusive,
+                    ceiling=ceiling,
+                    on_loop=_on_event_loop(),
+                )
+            )
         try:
             yield
         finally:
@@ -1109,13 +1139,27 @@ def acquire_lock(fd: int, *, exclusive: bool = True) -> None:
     proceeding lock-less is the fail-open that loses writes. Pair every call
     with :func:`release_lock` on the same ``fd``.
     """
+    started = time.monotonic()
     if IS_POSIX:
         mode = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
         if not _posix_acquire_blocking(fd, mode):
-            raise OSError(_lock_timeout_message(_LOCK_TIMEOUT_SECS, exclusive=exclusive))
+            raise OSError(
+                _lock_timeout_message(
+                    time.monotonic() - started,
+                    exclusive=exclusive,
+                    ceiling=_LOCK_TIMEOUT_SECS,
+                    on_loop=_on_event_loop(),
+                )
+            )
         return
     if not _win_acquire_blocking(fd):
-        raise OSError(_lock_timeout_message(_LOCK_TIMEOUT_SECS))
+        raise OSError(
+            _lock_timeout_message(
+                time.monotonic() - started,
+                ceiling=_LOCK_TIMEOUT_SECS,
+                on_loop=_on_event_loop(),
+            )
+        )
 
 
 def release_lock(fd: int) -> None:

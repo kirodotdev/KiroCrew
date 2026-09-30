@@ -917,6 +917,36 @@ class TestProviderReclaimsAtShutdown:
         assert not (project / session_work_dir.RUN_DIR_MARKER).exists()
 
     @pytest.mark.asyncio
+    async def test_start_writes_the_cli_overlays_off_the_loop_thread(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """The cli.json lock needs a real wait, which the loop thread never gets."""
+        import threading
+
+        loop_thread = threading.get_ident()
+        seen: dict[str, int] = {}
+        work_dir = tmp_path / "project"
+        work_dir.mkdir()
+        provider = self._provider(work_dir, disposable=False)
+        provider._client.ensure_ready = AsyncMock()
+        provider._client.memory_mode = "persistent"
+        monkeypatch.setattr(
+            provider,
+            "_apply_effort_overlay",
+            lambda: seen.__setitem__("effort", threading.get_ident()),
+        )
+        monkeypatch.setattr(
+            provider,
+            "_apply_tool_search_overlay",
+            lambda: seen.__setitem__("tool_search", threading.get_ident()),
+        )
+        monkeypatch.setattr(type(provider), "is_acp_runtime_backend", property(lambda self: False))
+        monkeypatch.setattr(provider, "_apply_initial_effort", AsyncMock())
+        await provider.start()
+        assert set(seen) == {"effort", "tool_search"}
+        assert loop_thread not in seen.values()
+
+    @pytest.mark.asyncio
     async def test_a_reclaim_failure_never_fails_the_shutdown(
         self, tmp_path: Path, monkeypatch
     ) -> None:
