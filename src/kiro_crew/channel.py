@@ -182,6 +182,12 @@ CHANNEL_AGENT_BLOCKED_TOOLS: tuple[str, ...] = (
     # prompt; the chat_session_pin handler in mcp_dashboard.py refuses a
     # ``channel:`` caller at dispatch, which is what holds for auto-approval.
     "chat_session_pin",
+    # The board-column writes, on the same reason as pinning: they rearrange
+    # the person's own sidebar board. The handlers in mcp_dashboard.py also
+    # refuse a ``channel:`` caller at dispatch, for auto-approved calls.
+    # ``chat_tag_column_list`` stays available: the layout names no session.
+    "chat_tag_column_create",
+    "chat_tag_column_move",
     "session_revive",
     # The four work-ledger tools, blocked for the same containment reason and not
     # for a new one: a channel agent has no dispatch relationship, so it is

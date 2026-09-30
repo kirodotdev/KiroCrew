@@ -4099,6 +4099,12 @@ handle immediately.
 #:   the PATCH goes to ``/api/chat/slots/<target>/pin`` where the target is the
 #:   session named in the ARGUMENTS, the same shape as ``chat_tag_assign``, and
 #:   no conductor step needs it.
+#: * ``chat_tag_column_list`` / ``chat_tag_column_create`` — WITHHELD. A read
+#:   and an append that dedups on name and tag, so neither fails the invariant;
+#:   withheld because no conductor step needs them, like the tag verbs.
+#: * ``chat_tag_column_move`` — WITHHELD, on the invariant: it MUTATES the order
+#:   of columns the person arranged, which is existing state that is not the
+#:   caller's own, and no conductor step needs it.
 #: * ``session_send`` — WITHHELD. Runs text as another session's user-role turn
 #:   under that target's own grants. The server-side gates bound WHICH target is
 #:   reachable; nothing bounds WHAT is sent.

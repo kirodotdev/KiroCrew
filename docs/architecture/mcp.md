@@ -1335,7 +1335,7 @@ Managed servers, registered by `agent._MANAGED_MCP_SERVERS` and installed into
 | `kirocrew-cron` | `kirocrew mcp-cron` (`mcp_cron.py`) | `cron_add`, `cron_list`, `cron_update`, `cron_remove`, `cron_remove_all`, `cron_pause`, `cron_resume`, `cron_trigger`, `cron_secret_request` |
 | `kirocrew-core` | `kirocrew mcp-core` (`mcp_core.py` + `mcp_tools/`) | spawn/subagent, learn, task, messaging, artifact, workflow, knowledge and session-directive tools (see below) |
 | `kirocrew-computer` | `kirocrew mcp-computer` (`mcp_computer.py`) | `computer_list_apps`, `computer_launch_app`, `computer_get_state`, `computer_click`, `computer_drag`, `computer_type_text`, `computer_press_key`, `computer_set_value`, `computer_scroll`, `computer_perform_action`, `computer_end_turn` |
-| `kirocrew-dashboard` | `kirocrew mcp-dashboard` (`mcp_dashboard.py`) | `chat_folder_tree`, `chat_folder_create`, `chat_folder_move`, `chat_folder_move_session`, `chat_folder_file_self`, `chat_tag_list`, `chat_tag_create`, `chat_tag_update`, `chat_tag_assign`, `chat_session_pin`, `session_create`, `session_fork`, `session_stop`, `session_end_wait`, `session_set_model`, `session_close`, `session_revive`, `session_send`, `session_broadcast`, `session_status`, `session_adopt`, `session_release`, `session_read_message`, `session_summary` |
+| `kirocrew-dashboard` | `kirocrew mcp-dashboard` (`mcp_dashboard.py`) | `chat_folder_tree`, `chat_folder_create`, `chat_folder_move`, `chat_folder_move_session`, `chat_folder_file_self`, `chat_tag_list`, `chat_tag_create`, `chat_tag_update`, `chat_tag_assign`, `chat_tag_column_list`, `chat_tag_column_create`, `chat_tag_column_move`, `chat_session_pin`, `session_create`, `session_fork`, `session_stop`, `session_end_wait`, `session_set_model`, `session_close`, `session_revive`, `session_send`, `session_broadcast`, `session_status`, `session_adopt`, `session_release`, `session_read_message`, `session_summary` |
 | `kirocrew-work` | `kirocrew mcp-work` (`mcp_work.py`) | `work_brief`, `work_report`, `work_ledger_read`, `work_ledger_record` |
 | `kirocrew-crew-log` | `kirocrew mcp-crew-log` (`mcp_crew_log.py`) | `crew_log_list`, `crew_log_read`, `crew_log_projection` |
 | `kirocrew-debug` | `kirocrew mcp-debug` (`mcp_debug.py`) | `debug_gateway`, `debug_refusals`, `debug_threads`, `debug_processes`, `debug_snapshots` |
@@ -1940,6 +1940,23 @@ applies the unattributable-caller refusal, the crew-member `member_owns_slot`
 fence and the App Kit ownership check that `api_chat_slot_folder` applies, and
 the member chat-route gate admits `PATCH` on that path for the same reason it
 admits the folder and tag writes.
+
+**Board columns follow the tag rules.** `chat_tag_column_list` reads the board
+(`GET /api/chat/tag-columns`), `chat_tag_column_create` appends a column that
+filters on one existing tag (`POST /api/chat/tag-columns` with `ensure: true`,
+which makes the endpoint return an existing column with the same name, tag and
+mode under its write lock instead of appending a twin), and
+`chat_tag_column_move` places one column before or after another
+(`PUT /api/chat/tag-columns/order` with the full id list plus `base_ids`, the
+order the tool read; the endpoint refuses 409 `stale_base` when the board changed
+in between, so a person's reorder is never overwritten). The board UI sends
+neither field and keeps its append and last-write-wins behaviour. The board is the person's own layout with no owner,
+like the vocabulary, so all four column write endpoints apply
+`_refuse_vocabulary_write` (apps and crew members get 403 `app_forbidden`), the
+create endpoint draws on its own `TAG_COLUMN_CREATE` budget, and the member
+chat-route gate admits only `GET` on the list. There is no delete or retag tool:
+either would remove a view the person built. The two writes are blocked for
+channel agents, at the permission prompt and again at dispatch.
 
 **Assignment is still not authorization.** Being unreferenced by default keeps a
 capability cheap and deliberate; it does not prove the user consented to reach the

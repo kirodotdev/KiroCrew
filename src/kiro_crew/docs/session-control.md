@@ -4,7 +4,7 @@ One chat session can open, fork, seed, watch, stop, close and revive another one
 change its model, and take another one under itself in the sidebar. The tools come from the
 `kirocrew-dashboard` MCP server, so an agent that does not mount that server
 never has them — exactly like any other MCP server. This page is the reference
-for all 24 of its tools, written for the agent that is about to use them.
+for all 27 of its tools, written for the agent that is about to use them.
 
 The server is defined in `src/kiro_crew/mcp_dashboard.py`. Two halves:
 
@@ -15,6 +15,7 @@ The server is defined in `src/kiro_crew/mcp_dashboard.py`. Two halves:
 - **Sidebar shape** — `chat_folder_tree`, `chat_folder_create`,
   `chat_folder_move`, `chat_folder_move_session`, `chat_folder_file_self`,
   `chat_tag_list`, `chat_tag_create`, `chat_tag_update`, `chat_tag_assign`,
+  `chat_tag_column_list`, `chat_tag_column_create`, `chat_tag_column_move`,
   `chat_session_pin`. These organize what the person sees in the sidebar.
 
 Everything a created session does is visible: it appears in the user's sidebar
@@ -532,6 +533,22 @@ never delete a tag**, so nothing here can lose a label the person put on a
 session. `chat_tag_update` is metadata only: every session carrying the tag keeps
 it, and a column filtering on it keeps filtering.
 
+## Board columns
+
+The sidebar board shows one column per tag filter (or live-state lane). The
+column list is part of the person's own layout, shared by every session.
+
+| Tool | Arguments | What it does |
+|---|---|---|
+| `chat_tag_column_list` | none | Every column in board order: id, name, what it filters on. Read-only |
+| `chat_tag_column_create` | `name` (required), `tag` (required) | Append a column showing sessions that carry `tag`. A column with the same name and tag is returned instead of duplicated |
+| `chat_tag_column_move` | `column` (required), exactly one of `before` / `after` | Move one column next to another. The others keep their order |
+
+`tag`, `column`, `before` and `after` take an id or an exact name. There is
+no delete or retag verb: removing a column or changing its filter removes a view
+the person built. An app agent and a crew member can list columns but not
+write them; the `/api/chat/tag-columns` write endpoints refuse both.
+
 ## Pins
 
 | Tool | Arguments | What it does |
@@ -592,6 +609,8 @@ other humans can see, and sending would run channel text as a turn inside it.
 sidebar the same way `session_adopt` and `session_release` do. The tool also
 refuses a `channel:` caller itself, before listing any session, so an
 auto-approved call that never reaches the permission prompt is still refused.
+`chat_tag_column_create` and `chat_tag_column_move` are blocked and refused at
+dispatch in the same way, because they rearrange the person's board.
 `session_broadcast` is blocked for that reason multiplied by the fleet, and
 `session_status` because its rows carry other sessions' titles — the names of the
 user's private work, in front of whoever is in the thread.
@@ -605,7 +624,7 @@ user's private work, in front of whoever is in the thread.
 | `agent.crew_panel` | `true` | A crew member publishes its own webview, shown in that member's drawer on the Crew page. Its own mount and its own switch, so withdrawing session control leaves the drawer alone and withdrawing the drawer leaves session control alone |
 
 Rate limits are per caller, per verb, over a 300-second window: **20** session
-creates (forks included), **10** folder creates, **10** tag creates. Capacity ceilings sit behind
+creates (forks included), **10** folder creates, **10** tag creates, **10** board-column creates. Capacity ceilings sit behind
 them: 500 live sessions, 50 per creator, 500 folders.
 
 ## This or `spawn_run`?

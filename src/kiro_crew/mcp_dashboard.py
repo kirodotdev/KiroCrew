@@ -97,6 +97,7 @@ from kiro_crew.mcp_core import (
 from kiro_crew.mcp_shared import call_tool_with_logging, run_mcp_stdio_loop
 from kiro_crew.mcp_tool_titles import with_titles
 from kiro_crew.platform import redact_via_context as redact
+from kiro_crew.sel import sel
 from kiro_crew.validation import (
     BROADCAST_RESPONSE_MARGIN_SECS,
     BROADCAST_TARGET_ALLOWANCE_SECS,
@@ -107,6 +108,9 @@ from kiro_crew.validation import (
     CHAT_FOLDER_TREE_SCHEMA,
     CHAT_SESSION_PIN_SCHEMA,
     CHAT_TAG_ASSIGN_SCHEMA,
+    CHAT_TAG_COLUMN_CREATE_SCHEMA,
+    CHAT_TAG_COLUMN_LIST_SCHEMA,
+    CHAT_TAG_COLUMN_MOVE_SCHEMA,
     CHAT_TAG_CREATE_SCHEMA,
     CHAT_TAG_LIST_SCHEMA,
     CHAT_TAG_UPDATE_SCHEMA,
@@ -473,6 +477,66 @@ def _tool_definitions() -> list[dict[str, Any]]:
                     },
                 },
                 "required": ["session", "pinned"],
+            },
+        },
+        {
+            "name": "chat_tag_column_list",
+            "description": (
+                "List the sidebar board's columns in board order: each column's id, "
+                "name, and what it shows (the tags it filters on, or the live-state "
+                "lane it follows). Read-only. Call it before chat_tag_column_move to "
+                "see the order, and before chat_tag_column_create to see whether a "
+                "column for a tag already exists."
+            ),
+            "inputSchema": {"type": "object", "properties": {}},
+        },
+        {
+            "name": "chat_tag_column_create",
+            "description": (
+                "Append a column to the sidebar board that shows the sessions carrying "
+                "``tag`` (a tag id or exact name; see chat_tag_list — the tag must "
+                "already exist, chat_tag_create makes one). ``name`` is the column "
+                "heading (max 60 chars). A column with the same name that already "
+                "filters on exactly that tag is returned instead of duplicated, so "
+                "calling this again is a safe no-op. Create only: this server can "
+                "never delete a column or change what one filters on, because the "
+                "board is the person's own layout. Place the new column with "
+                "chat_tag_column_move. An app agent and a crew member cannot write "
+                "the board; they read it with chat_tag_column_list."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Column heading (max 60 chars)."},
+                    "tag": {"type": "string", "description": "Tag id or exact tag name."},
+                },
+                "required": ["name", "tag"],
+            },
+        },
+        {
+            "name": "chat_tag_column_move",
+            "description": (
+                "Move one sidebar board column so it sits directly before or after "
+                "another. ``column`` is the column to move and exactly one of "
+                "``before`` / ``after`` names the column to place it next to; each is "
+                "a column id or exact name (see chat_tag_column_list). Every other "
+                "column keeps its relative order, and nothing a column filters on "
+                "changes. An app agent and a crew member cannot write the board."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "column": {"type": "string", "description": "Column id or exact name to move."},
+                    "before": {
+                        "type": "string",
+                        "description": "Column id or exact name to place it before.",
+                    },
+                    "after": {
+                        "type": "string",
+                        "description": "Column id or exact name to place it after.",
+                    },
+                },
+                "required": ["column"],
             },
         },
         {
@@ -1792,6 +1856,104 @@ def _render_chat_tags(tags: list[dict]) -> str:
             f"- `{t.get('name', '?')}`  id={t.get('id', '?')}  color={t.get('color', '?')}{marker}"
         )
     return "\n".join(lines)
+
+
+def _chat_tag_column_label(col: dict, tag_names: dict[str, str]) -> str:
+    """What a board column shows, in words: its tag filter or its live-state lane."""
+    if col.get("source") == "state":
+        return f"live state `{col.get('state_key') or '?'}`"
+    # ``tag_columns.json`` is loaded verbatim, so a hand-edited ``tag_ids``
+    # that is not a list must render as "no filter" rather than end the call.
+    raw_ids = col.get("tag_ids")
+    tag_ids = [str(t) for t in raw_ids if isinstance(t, str)] if isinstance(raw_ids, list) else []
+    if not tag_ids:
+        # An empty filter matches every session; ``include_untagged`` adds
+        # nothing to that (``columnMatches`` in the board UI).
+        return "all sessions"
+    names = ", ".join(f"`{tag_names.get(t, t)}`" for t in tag_ids)
+    mode = str(col.get("mode") or "any")
+    label = f"tags {names} (match {mode})"
+    if col.get("include_untagged"):
+        label += " + untagged sessions"
+    return label
+
+
+def _render_chat_tag_columns(columns: list[dict], tags: list[dict]) -> str:
+    """One line per board column, in board order (the endpoint returns it sorted)."""
+    if not columns:
+        return "The board has no columns yet — chat_tag_column_create adds one."
+    tag_names = {str(t.get("id") or ""): str(t.get("name") or "?") for t in tags}
+    lines = [
+        f"\U0001f5c2\ufe0f Board columns — {len(columns)} column{'' if len(columns) == 1 else 's'}"
+    ]
+    for pos, col in enumerate(columns, start=1):
+        name = str(col.get("name") or "").strip() or "(unnamed)"
+        lines.append(
+            f"{pos}. `{name}`  id={col.get('id', '?')}  shows "
+            f"{_chat_tag_column_label(col, tag_names)}"
+        )
+    return "\n".join(lines)
+
+
+def _resolve_chat_tag_column(ref: str, columns: list[dict]) -> tuple[str, str | None]:
+    """Resolve a column reference (id or exact name) to a column id.
+
+    Same rules as :func:`_resolve_chat_tag_ids`: the id wins, a name matches
+    whole and case-insensitively, and a name two columns share is refused
+    rather than guessed, since moving the wrong column rearranges the board.
+    """
+    ref = str(ref or "").strip()
+    ids = [str(c.get("id")) for c in columns if isinstance(c.get("id"), str) and c["id"]]
+    if ref in ids:
+        return ref, None
+    named = [
+        str(c["id"])
+        for c in columns
+        if isinstance(c.get("id"), str)
+        and c["id"]
+        and str(c.get("name") or "").strip().lower() == ref.lower()
+    ]
+    if len(named) > 1:
+        return "", (
+            f"{len(named)} columns share the name {redact(ref)} "
+            f"({', '.join(named)}) — pass the column id instead"
+        )
+    if not ref or not named:
+        return "", (
+            f"no board column matches {redact(ref)} — call chat_tag_column_list for "
+            "the current columns"
+        )
+    return named[0], None
+
+
+def _refuse_channel_board_write(name: str, caller_key: str) -> str | None:
+    """Refuse a board write from a ``channel:`` caller, at dispatch.
+
+    The ``CHANNEL_AGENT_BLOCKED_TOOLS`` name match runs at the permission
+    prompt, which an auto-approved call never reaches, so the containment has to
+    hold here too (the same split ``chat_session_pin`` uses). A channel agent
+    acts on thread text other people wrote, and the board is the person's own
+    sidebar layout.
+    """
+    if not caller_key.startswith("channel:"):
+        return None
+    try:
+        sel().log_tool_invocation(
+            session_key=caller_key,
+            source="mcp",
+            tool_name=name,
+            tool_kind=SERVER_NAME,
+            outcome="rejected_blocked_tool",
+        )
+    except Exception:
+        # Stdio-silent: stderr would corrupt the JSON-RPC stream. The refusal
+        # below holds either way.
+        pass
+    return (
+        f"Error: {name} is not available to channel agents — the board is the "
+        "person's own sidebar layout, and a channel agent acts on thread text "
+        "other people wrote."
+    )
 
 
 def _validate_args(name: str, args: dict[str, Any]) -> dict[str, Any]:
@@ -3386,8 +3548,6 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         # session is listed.
         if caller_key.startswith("channel:"):
             try:
-                from kiro_crew.sel import sel
-
                 sel().log_tool_invocation(
                     session_key=caller_key,
                     source="mcp",
@@ -3440,6 +3600,136 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             state_word = "pinned" if want else "not pinned"
             return redact(f"No change: session `{slot_key}` is already {state_word}.")
         return redact(f"{verb} session `{slot_key}`.")
+    if name == "chat_tag_column_list":
+        validate_tool_args(args, CHAT_TAG_COLUMN_LIST_SCHEMA)
+        # Like the tag vocabulary, the board is one shared layout that names no
+        # session, so the read needs no caller scoping.
+        columns, cols_err = _get_rows("/api/chat/tag-columns")
+        if cols_err:
+            return f"Error: {cols_err}"
+        tags, tags_err = _get_rows("/api/chat/tags")
+        if tags_err:
+            return f"Error: {tags_err}"
+        return redact(_render_chat_tag_columns(columns, tags))
+    if name == "chat_tag_column_create":
+        args = validate_tool_args(args, CHAT_TAG_COLUMN_CREATE_SCHEMA)
+        # Agent-authored heading landing in durable, re-rendered state: redact
+        # before the write and check the stored length, as chat_tag_create does.
+        safe_name = redact(str(args["name"])).strip()
+        if not safe_name:
+            return "Error: column name must not be empty"
+        if len(safe_name) > _MAX_TAG_NAME:
+            return (
+                f"Error: column name too long after redaction ({len(safe_name)} chars): "
+                f"`{safe_name[:40]}…` — keep it to {_MAX_TAG_NAME} characters or fewer"
+            )
+        # Same gate as the vocabulary writes. The app and crew-member rule lives
+        # in the endpoint (``_refuse_vocabulary_write`` in the tag-columns
+        # handlers), which judges every transport on the validated claim.
+        caller_key, _caller_app, gate = _refuse_tree_shaping_if_unverifiable(
+            "creating a board column"
+        )
+        if gate:
+            return gate
+        channel_err = _refuse_channel_board_write(name, caller_key)
+        if channel_err:
+            return channel_err
+        tags, tags_err = _get_rows("/api/chat/tags")
+        if tags_err:
+            return f"Error: {tags_err}"
+        ids, ref_err = _resolve_chat_tag_ids([str(args["tag"])], tags)
+        if ref_err:
+            return redact(f"Error: {ref_err}")
+        tid = ids[0]
+        tag_name = next((str(t.get("name") or "?") for t in tags if t.get("id") == tid), tid)
+        columns, cols_err = _get_rows("/api/chat/tag-columns")
+        if cols_err:
+            return f"Error: {cols_err}"
+        # ``ensure`` makes the endpoint return an existing column with this
+        # name and tag instead of appending a twin, decided under its write
+        # lock, so a retried or racing call converges on one column.
+        d = _post(
+            "/api/chat/tag-columns",
+            {"name": safe_name, "tag_ids": [tid], "mode": "any", "ensure": True},
+            session_key=caller_key,
+        )
+        if d.get("error"):
+            if d.get("code") == "app_forbidden":
+                return (
+                    "Error: an app agent or crew member cannot add a board column — the "
+                    "board is the person's own layout. Read it with chat_tag_column_list."
+                )
+            return redact(f"Error: {d['error']}")
+        got_id = str(d.get("id") or "?")
+        if any(str(c.get("id")) == got_id for c in columns):
+            return redact(
+                f"Column `{d.get('name', safe_name)}` (id={got_id}) already shows "
+                f"tag `{tag_name}`."
+            )
+        return redact(
+            f"Added column `{d.get('name', safe_name)}` (id={got_id}) showing "
+            f"tag `{tag_name}`. Place it with chat_tag_column_move."
+        )
+    if name == "chat_tag_column_move":
+        args = validate_tool_args(args, CHAT_TAG_COLUMN_MOVE_SCHEMA)
+        # An empty string is "not given": the schema passes it through as "",
+        # and treating it as a reference would resolve the literal "None".
+        col_before = args.get("before") or None
+        col_after = args.get("after") or None
+        if (col_before is None) == (col_after is None):
+            return "Error: pass exactly one of ``before`` or ``after``"
+        caller_key, _caller_app, gate = _refuse_tree_shaping_if_unverifiable(
+            "moving a board column"
+        )
+        if gate:
+            return gate
+        channel_err = _refuse_channel_board_write(name, caller_key)
+        if channel_err:
+            return channel_err
+        columns, cols_err = _get_rows("/api/chat/tag-columns")
+        if cols_err:
+            return f"Error: {cols_err}"
+        move_id, col_err = _resolve_chat_tag_column(str(args["column"]), columns)
+        if col_err:
+            return redact(f"Error: {col_err}")
+        anchor_id, col_err = _resolve_chat_tag_column(str(col_before or col_after), columns)
+        if col_err:
+            return redact(f"Error: {col_err}")
+        if anchor_id == move_id:
+            return "Error: a column cannot be placed next to itself"
+        base_ids = [str(c.get("id")) for c in columns if isinstance(c.get("id"), str)]
+        order = list(base_ids)
+        order.remove(move_id)
+        at = order.index(anchor_id) + (0 if col_before is not None else 1)
+        order.insert(at, move_id)
+        names = {str(c.get("id")): str(c.get("name") or "").strip() or "(unnamed)" for c in columns}
+        side = "before" if col_before is not None else "after"
+        if order == base_ids:
+            return redact(
+                f"No change: column `{names[move_id]}` is already {side} `{names[anchor_id]}`."
+            )
+        # ``base_ids`` is the order this call read. The endpoint compares it
+        # under its lock and refuses with ``stale_base`` when the board changed
+        # in between, so the person's own reorder is never overwritten.
+        d = _put(
+            "/api/chat/tag-columns/order",
+            {"ids": order, "base_ids": base_ids},
+            session_key=caller_key,
+        )
+        if d.get("error"):
+            if d.get("code") == "stale_base":
+                return (
+                    "Error: the board's columns changed while this call was composing "
+                    "the move. Nothing was written — call chat_tag_column_move again; "
+                    "it re-reads the current order."
+                )
+            if d.get("code") == "app_forbidden":
+                return (
+                    "Error: an app agent or crew member cannot reorder the board — it "
+                    "is the person's own layout."
+                )
+            return redact(f"Error: {d['error']}")
+        return redact(f"Moved column `{names[move_id]}` {side} `{names[anchor_id]}`.")
     return f"Error: unknown tool '{name}'"
 
 
