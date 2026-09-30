@@ -76,10 +76,12 @@ from kiro_crew.config import live
 from kiro_crew.config.loader import DEFAULT_MODEL, KiroCrewConfig
 from kiro_crew.config.paths import data_home
 from kiro_crew.config.sections import SESSION_START_TIMEOUT_MIN, AgentConfig
-from kiro_crew.constants import (
+from kiro_crew.constants import (  # noqa: F401 - DENY_CAUSE_* resolved by run.py via bind_component_globals
     DEFAULT_SPAWN_MIN_MEMORY_GB,
     DEFAULT_SUBAGENT_COST_GB,
     DEFAULT_SUBAGENT_MAX_TURNS,
+    DENY_CAUSE_POLICY,
+    DENY_CAUSE_SURFACE_POLICY,
     INITIALIZE_TIMEOUT_SECS,
     SUBAGENT_COMPLETION_PREFIX,
     SUBAGENT_TIMEOUT_SECS,
@@ -115,6 +117,7 @@ from kiro_crew.llm_helpers import (
     TRANSIENT_RETRIES,
     FallbackState,
     _billing_stats,
+    _steer_host_deny,
     _sum_usage,
     acp_error_is_transient,
     advance_fallback_candidate,
@@ -1094,6 +1097,29 @@ _TURN_LIMIT = DEFAULT_SUBAGENT_MAX_TURNS
 # after it may have accepted its durable row (the successor's id is unknown).
 SUCCESSOR_PENDING = "(starting)"
 SUCCESSOR_UNKNOWN = "(start outcome unknown)"
+#: What the model is told when an unattended subagent run refuses a tool call
+#: nothing positively authorizes. The SURFACE refuses the call -- nothing about
+#: the call itself was judged -- so the reason names every tier that could
+#: still have authorized it, and the surface-policy notice tells the model to
+#: read exactly that. Resolved by ``subagent_manager/run.py`` through
+#: ``bind_component_globals``.
+_HEADLESS_DENY_REASON = (
+    "this subagent run is unattended: no approval handler is attached, the "
+    "parent did not set parent_policy=auto, and nothing positively authorizes "
+    "this call, so only calls this run authorizes on its own can run here -- "
+    "tools listed in hooks.auto_approve_tools, and calls the hook gate "
+    "classifies as read-only"
+)
+#: The unattended run's fail-closed answer to a backend child's request whose
+#: security context is absent (``AcpEvent.child_low_fidelity``): only the
+#: agent-authored title describes it, so no gate here can judge it and no
+#: approver is attached to be asked.
+_LOW_FIDELITY_DENY_REASON = (
+    "this subagent run is unattended and the child request carried no "
+    "verifiable security context -- its structured parameters are missing, so "
+    "only the agent-authored title describes it -- and nothing here can judge or "
+    "approve such a call"
+)
 _REAPER_INTERVAL = 60  # seconds between reaper sweeps
 # Idle TTL for continuable conversations (keep=True): a conversation with no
 # run for this long has its session files + map entry deleted by the reaper.
@@ -4010,10 +4036,43 @@ class SubagentManager:
         session_key: str,
         event: LLMEvent,
         *,
+        cause: str | None,
+        reason: str = "",
         error: str | None = None,
         metadata: dict | None = None,
     ) -> None:
-        await client.reject_tool(request_id)
+        """Audit a tool rejection, tell the model WHO refused it, then answer the wire.
+
+        The subagent surface's single reject funnel: every ``reject_tool`` on
+        this surface goes through here (``test_eval_subagent_deny_notice`` walks
+        ``subagent_manager/run.py`` to keep that true), so a path added later
+        cannot deny by omission.
+
+        *cause* is REQUIRED and says whether the HOST refused this call. A
+        rejected permission reaches the model as kiro-cli's fixed "User denied
+        tool execution"; for a host deny that is a refusal that never happened,
+        and the model abandons or routes around a call nobody objected to. So a
+        host cause (``DENY_CAUSE_POLICY`` for a hook or spec-gate verdict on the
+        call itself, ``DENY_CAUSE_SURFACE_POLICY`` for the unattended run
+        refusing a call nothing positively authorizes) steers the in-band notice
+        through ``llm_helpers._steer_host_deny`` BEFORE the reject -- while the
+        permission request is still unanswered the turn is provably in flight,
+        which is what gets the notice queued rather than dropped (see
+        ``kiro_crew.deny_notice``). ``None`` is the explicit verdict that this is
+        NOT a host deny and must stay bare: an interactive approver said no
+        (kiro-cli's wording is then the truth, and "this was NOT a user action"
+        would be a lie), or the run is bailing on a turn / escalation limit and
+        there is no continuing turn for a notice to correct. A caller has to
+        write one or the other; there is no default to inherit the wrong answer
+        from. *reason* is the host's own wording for the notice; the metric and
+        the SEL row keep their closed-enum ``error``.
+
+        The audit lands FIRST, before the steer and the reject, as on every other
+        deny surface: the steer is one more bounded await on the ACP pipe, and a
+        backend that stops reading stdin cancels this coroutine at the turn
+        deadline with the decision acted on and never audited if the row came
+        last.
+        """
         # getattr: production LLMEvents always carry sub_session_id, but this
         # static helper is also driven with lightweight test doubles.
         if getattr(event, "sub_session_id", ""):
@@ -4024,16 +4083,33 @@ class SubagentManager:
                 CHILD_PERMISSION_DENIED,
                 {"surface": "subagent", "reason": error or "rejected"},
             )
-        sel().log_tool_invocation(
-            session_key=session_key,
-            source="subagent",
-            tool_name=event.title,
-            tool_kind=event.tool_kind,
-            outcome="denied" if error else "rejected",
-            request_id=request_id,
-            error=error or "",
-            metadata=metadata,
-        )
+        # The SEL audit lands FIRST, but a failure to WRITE it must not skip the
+        # steer and the reject below: the wire request stays unanswered if it
+        # does, hanging the turn (an unloadable SEL trust root -- a documented
+        # upgrade-window state, sel.py -- raises here and is permanent per
+        # process). Answering the model is the critical path; the audit is
+        # best-effort. The bail call sites in ``run.py`` wrap the whole funnel in
+        # the same spirit, but that outer guard only stops the raise propagating
+        # -- it cannot re-answer the request this skipped.
+        try:
+            sel().log_tool_invocation(
+                session_key=session_key,
+                source="subagent",
+                tool_name=event.title,
+                tool_kind=event.tool_kind,
+                outcome="denied" if error else "rejected",
+                request_id=request_id,
+                error=error or "",
+                metadata=metadata,
+            )
+        except Exception:
+            logger.exception(
+                "SEL audit of subagent tool rejection failed; steering and "
+                "rejecting anyway so the request is still answered"
+            )
+        if cause is not None:
+            await _steer_host_deny(client, event, reason, cause=cause)
+        await client.reject_tool(request_id)
 
     def start_reaper(self) -> None:
         return self._monitor.start_reaper_impl()

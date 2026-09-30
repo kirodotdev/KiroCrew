@@ -723,7 +723,7 @@ class TestApprovalLogging:
         event = SimpleNamespace(title="write", tool_kind="fs")
         with patch.object(sa, "sel") as sel_mock:
             await SubagentManager._reject_and_log(
-                client, 3, "subagent:a1", event, error="policy denied"
+                client, 3, "subagent:a1", event, cause=None, error="policy denied"
             )
         client.reject_tool.assert_awaited_once_with(3)
         assert sel_mock().log_tool_invocation.call_args.kwargs["outcome"] == "denied"
@@ -733,7 +733,7 @@ class TestApprovalLogging:
         client = AsyncMock()
         event = SimpleNamespace(title="write", tool_kind="fs")
         with patch.object(sa, "sel") as sel_mock:
-            await SubagentManager._reject_and_log(client, 4, "subagent:a1", event)
+            await SubagentManager._reject_and_log(client, 4, "subagent:a1", event, cause=None)
         assert sel_mock().log_tool_invocation.call_args.kwargs["outcome"] == "rejected"
 
 

@@ -18,7 +18,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from kiro_crew.constants import DENY_CAUSE_POLICY, DENY_CAUSE_SURFACE_POLICY
 from kiro_crew.eval.scenario import Assertion, AssertionType, Scenario, SeedProfile, Session, Turn
+from kiro_crew.llm_helpers import _steer_host_deny
 from kiro_crew.memory import MemoryStore
 from kiro_crew.memory_stores import DEFAULT_MEMORY_STORE
 from kiro_crew.permission_floor import (
@@ -37,6 +39,28 @@ from kiro_crew.sel import sel
 from kiro_crew.skills import SkillsLoader
 
 logger = logging.getLogger(__name__)
+
+#: What the model is told when the eval harness refuses a tool it does not know
+#: to be read-only. The eval SURFACE refuses the call -- nothing about the call
+#: itself was judged -- so the reason says what this surface permits, which is
+#: what the surface-policy notice tells the model to read.
+_EVAL_UNSAFE_TOOL_REASON = (
+    "the eval harness runs tools read-only: only known read-only APIs and "
+    "filesystem reads of non-sensitive paths are approved here, so every other "
+    "tool call is refused"
+)
+#: The harness's own path check judged the call itself (a policy verdict).
+#: "sensitive credential path" is the fixed wording ``deny_guidance`` keys the
+#: secret-file remediation off, the same class the hook gate's own refusal
+#: lands in, so the model gets the same guidance either way.
+_EVAL_SENSITIVE_PATH_REASON = (
+    "the eval harness refused this filesystem call: it accesses a sensitive credential path"
+)
+_EVAL_NO_PATH_REASON = (
+    "the eval harness refused this filesystem call: no target path could be read "
+    "from its input, and a filesystem call is only approved on a path the harness "
+    "can check"
+)
 
 
 # ── Result types ──
@@ -500,6 +524,13 @@ class EvalRunner:
                         outcome="rejected_hook_deny",
                         source="eval_runner",
                     )
+                    # Audit FIRST, then tell the model in-band that the HOST
+                    # refused this (a rejected permission reaches it as
+                    # kiro-cli's "User denied tool execution"), then answer the
+                    # wire. The gate judged the call itself: a policy verdict,
+                    # with the gate's own reason so the class remediation can
+                    # key off it.
+                    await _steer_host_deny(provider, event, reason, cause=DENY_CAUSE_POLICY)
                     await provider.reject_tool(event.request_id)
                     continue
 
@@ -559,6 +590,14 @@ class EvalRunner:
                             outcome=outcome,
                             source="eval_runner",
                         )
+                        # The path check judged the call itself: a policy
+                        # verdict, so the notice may name a sanctioned path.
+                        await _steer_host_deny(
+                            provider,
+                            event,
+                            _EVAL_SENSITIVE_PATH_REASON if target else _EVAL_NO_PATH_REASON,
+                            cause=DENY_CAUSE_POLICY,
+                        )
                         await provider.reject_tool(event.request_id)
                 else:
                     logger.warning("Rejected unsafe tool in eval: %s", event.title)
@@ -567,6 +606,13 @@ class EvalRunner:
                         tool_name=event.title,
                         outcome="rejected",
                         source="eval_runner",
+                    )
+                    # The SURFACE refuses a tool it does not know to be
+                    # read-only; nothing about the call was judged, so the
+                    # notice says what this harness permits instead of a
+                    # sanctioned alternative the model should run.
+                    await _steer_host_deny(
+                        provider, event, _EVAL_UNSAFE_TOOL_REASON, cause=DENY_CAUSE_SURFACE_POLICY
                     )
                     await provider.reject_tool(event.request_id)
             elif event.kind == EVENT_COMPLETE:

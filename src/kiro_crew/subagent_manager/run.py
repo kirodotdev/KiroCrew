@@ -23,6 +23,8 @@ if TYPE_CHECKING:
         _CANCEL_RESUME_PREFIX,
         _DEDICATED_TOPUP_POLL_SECS,
         _DEDICATED_TOPUP_WAIT_SECS,
+        _HEADLESS_DENY_REASON,
+        _LOW_FIDELITY_DENY_REASON,
         _ON_DONE_TIMEOUT,
         _RECOVERY_SLOT_WAIT_SECS,
         _RESET_TIMEOUT,
@@ -30,6 +32,8 @@ if TYPE_CHECKING:
         _SYSTEM_PREFIX,
         _TRANSIENT_CONTINUE_MSG,
         _TURN_LIMIT,
+        DENY_CAUSE_POLICY,
+        DENY_CAUSE_SURFACE_POLICY,
         EVENT_AGENT_SWITCHED,
         EVENT_COMPLETE,
         EVENT_PERMISSION_REQUEST,
@@ -2352,12 +2356,16 @@ class RunEventCoordinator(ManagerComponent):
                         # "requests are answered on every queue path"
                         # contract this PR establishes applies to limit
                         # bails too.
+                        # Not a verdict on the call: the run bails here and its
+                        # turn ends, so there is no continuing turn for a deny
+                        # notice to correct.
                         try:
                             await self._manager._reject_and_log(
                                 client,
                                 event.request_id,
                                 session_key,
                                 event,
+                                cause=None,
                                 error="child_escalation_limit",
                             )
                         except Exception:
@@ -2404,9 +2412,16 @@ class RunEventCoordinator(ManagerComponent):
                     # Same contract as the child_escalation_limit bail: the
                     # triggering request is already dequeued and must be
                     # answered before this loop exits, or its oneshot strands.
+                    # Not a verdict on the call: the run bails here (no
+                    # continuing turn for a notice to correct).
                     try:
                         await self._manager._reject_and_log(
-                            client, event.request_id, session_key, event, error="turn_limit"
+                            client,
+                            event.request_id,
+                            session_key,
+                            event,
+                            cause=None,
+                            error="turn_limit",
                         )
                     except Exception:
                         logger.exception("failed to reject turn-limit trigger request")
@@ -2441,11 +2456,16 @@ class RunEventCoordinator(ManagerComponent):
                     logger.warning(
                         "Subagent %s PreToolUse hook blocked a tool: %s", info.id, _spec_block
                     )
+                    # A PreToolUse gate verdict on the call itself (a delivered
+                    # deny, or a gate with no verdict, which blocks): the policy
+                    # cause, with the gate's own reason.
                     await self._manager._reject_and_log(
                         client,
                         event.request_id,
                         session_key,
                         event,
+                        cause=DENY_CAUSE_POLICY,
+                        reason=_spec_block,
                         error="hook_deny",
                         metadata={"subagent_id": info.id, "reason": "spec_hook"},
                     )
@@ -2458,8 +2478,17 @@ class RunEventCoordinator(ManagerComponent):
                     **hook_gate_kwargs(event),
                 )
                 if tool_result.action == TOOL_DENY:
+                    # The hook judged the call itself: a policy verdict, with
+                    # the hook's own reason so the class remediation can key
+                    # off it.
                     await self._manager._reject_and_log(
-                        client, event.request_id, session_key, event, error="hook_deny"
+                        client,
+                        event.request_id,
+                        session_key,
+                        event,
+                        cause=DENY_CAUSE_POLICY,
+                        reason=tool_result.reason or "",
+                        error="hook_deny",
                     )
                     continue
                 if event.child_low_fidelity:
@@ -2571,19 +2600,28 @@ class RunEventCoordinator(ManagerComponent):
                                 info=info,
                             )
                         else:
+                            # The approver said no: kiro-cli's "user denied"
+                            # is the truth here, so no notice.
                             await self._manager._reject_and_log(
                                 client,
                                 event.request_id,
                                 session_key,
                                 event,
+                                cause=None,
                                 error="child_interactive_rejected",
                             )
                         continue
+                    # The SURFACE fails closed: nothing here can judge a
+                    # request with no security context and no approver is
+                    # attached to ask, so the notice says what this run can
+                    # and cannot do rather than offer a sanctioned alternative.
                     await self._manager._reject_and_log(
                         client,
                         event.request_id,
                         session_key,
                         event,
+                        cause=DENY_CAUSE_SURFACE_POLICY,
+                        reason=_LOW_FIDELITY_DENY_REASON,
                         error="child_origin_no_command_context",
                     )
                     continue
@@ -2642,11 +2680,14 @@ class RunEventCoordinator(ManagerComponent):
                         info._awaiting_approval = False
                         info.last_activity = time.time()
                     if not approved:
+                        # The per-subagent approver said no: kiro-cli's "user
+                        # denied" is the truth here, so no notice.
                         await self._manager._reject_and_log(
                             client,
                             event.request_id,
                             session_key,
                             event,
+                            cause=None,
                             metadata={"subagent_id": info.id, "reason": "factory_rejected"},
                         )
                         continue
@@ -2668,8 +2709,11 @@ class RunEventCoordinator(ManagerComponent):
                         info._awaiting_approval = False
                         info.last_activity = time.time()
                     if not approved:
+                        # The gateway-level approver said no: kiro-cli's "user
+                        # denied" is the truth here, so no notice --
+                        # interactive_rejected.
                         await self._manager._reject_and_log(
-                            client, event.request_id, session_key, event
+                            client, event.request_id, session_key, event, cause=None
                         )
                         continue
                     await self._manager._approve_and_log(
@@ -2681,12 +2725,18 @@ class RunEventCoordinator(ManagerComponent):
                         info=info,
                     )
                 else:
-                    # No callback, no auto policy — deny by default
+                    # No callback, no auto policy — deny by default. The
+                    # SURFACE refuses the call, not a rule about the call
+                    # itself: nothing here can approve it, so the notice names
+                    # what this run permits instead of a sanctioned alternative
+                    # the model should run.
                     await self._manager._reject_and_log(
                         client,
                         event.request_id,
                         session_key,
                         event,
+                        cause=DENY_CAUSE_SURFACE_POLICY,
+                        reason=_HEADLESS_DENY_REASON,
                         metadata={"subagent_id": info.id, "reason": "no_policy_deny_default"},
                     )
                     continue
