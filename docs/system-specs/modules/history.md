@@ -1521,7 +1521,22 @@ value stands -- never rendered as the flag being off, which would make an
 enabled feature vanish under a config blip. A bubble whose `mid` has replies gets a
 `ThreadFooter` under it (faces of who took part, "N replies" in accent, "Last
 reply 2h ago" muted); every bubble's hover action row gets "Reply in thread"
-(`MessageSquare`), the user's row included. Either opens the thread in the
+(`MessageSquare`), the user's row included. The footer is a SIBLING of its bubble, not a
+child, and states its own side as `align-self` (`self-end` under the user's
+right-aligned bubble, `self-start` under the crewmate's), which beats the row
+wrapper's `align-items`. An appearance that re-aligns or indents the ROW must
+therefore re-state the footer too: CLI UI mode moves the user's bubble
+full-width to the left and indents both bubbles with a bar and padding on the
+message root, so it carries its own footer rules in `styles/cli-mode.css` --
+without them the user's footer stays pinned to the far right of a left-aligned
+bubble and the crewmate's sits 16px left of its own. Those rules are measured in
+a real engine by `scripts/capture-thread-footer-cli-align.mjs`, which asserts
+each footer's first mark against its bubble's edge on both appearances and
+requires the pre-fix state to reproduce; `src/test/cliModeThreadFooter.test.ts`
+pins the rules' source text, since happy-dom resolves neither `:has()` nor the
+`align-self`/`align-items` contest. The assistant-side `self-start` is
+load-bearing on every appearance: that column's `align-items` is the default
+`stretch`, so without it the footer renders as a full-width button. Either opens the thread in the
 right side panel: `pages/members/ThreadPanel` covers the panel's tabs while it
 is on screen (slides in; `prefers-reduced-motion` fades) and hands them back on
 close, so the main chat stays visible beside it. The panel shows the parent
