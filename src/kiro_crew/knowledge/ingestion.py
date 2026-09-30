@@ -31,7 +31,7 @@ from .dedup import PERSISTENT_SOURCE_TYPES, dedup_document
 from .embedder import embedder_signature, floats_to_bytes
 from .extractor import EntityExtractor
 from .readers import FileReader
-from .store import AUTO_ADDED_PROP, KnowledgeStore
+from .store import AUTO_ADDED_PROP, KnowledgeStore, MAX_ENTITY_ALIASES, MAX_ENTITY_ALIAS_LEN
 
 #: Per-task depth of :meth:`IngestionPipeline.ingestion_in_flight` holds, so a
 #: nested entry by a current holder is a no-op instead of a second acquisition.
@@ -450,6 +450,64 @@ def _job_status(processed: int, total: int) -> str:
     if processed < total:
         return 'partial'
     return 'completed'
+
+
+def _coerce_aliases(raw: object, exclude: str) -> list[str] | None:
+    """Sanitize and bound a raw aliases value from LLM extraction output.
+
+    Returns a non-empty list of redacted alias strings, or ``None`` when the
+    result would be empty (so the caller can pass ``aliases=None`` to
+    ``add_entity`` and leave the column as its ``DEFAULT '[]'``).
+
+    ``exclude`` is the entity's canonical name: the name itself is never
+    stored as its own alias, but the check is a safety net — with bare
+    canonicals the name should not appear in the list anyway.
+
+    Cap is applied to the count of VALID accepted aliases, NOT to the raw
+    input position.  A raw list like ``[None, None, ..., None, "Music Bank"]``
+    with 11 elements correctly keeps ``"Music Bank"`` rather than discarding it
+    because invalid entries consumed the first 10 slots.
+    """
+    if not isinstance(raw, list):
+        return None
+
+    accepted: list[str] = []
+    accepted_cf: set[str] = set()
+    exclude_cf = exclude.casefold()
+    overflow = 0
+
+    for a in raw:
+        if not isinstance(a, str):
+            continue
+        stripped = a.strip()
+        if not stripped:
+            continue
+        # Redact the FULL stripped alias before truncating: a credential URL
+        # cut mid-token (e.g. before the terminating `@host`) would defeat
+        # redaction if truncation preceded it.
+        redacted = _redact(stripped) or stripped
+        truncated = redacted[:MAX_ENTITY_ALIAS_LEN]
+        if not truncated:
+            continue
+        cf = truncated.casefold()
+        # Reject if casefold-equivalent to entity's canonical name.
+        if cf == exclude_cf:
+            continue
+        # Casefold dedupe within this call.
+        if cf in accepted_cf:
+            continue
+        if len(accepted) >= MAX_ENTITY_ALIASES:
+            overflow += 1
+            continue
+        accepted.append(truncated)
+        accepted_cf.add(cf)
+
+    if overflow > 0:
+        logger.warning(
+            "_coerce_aliases: %d alias(es) discarded (limit %d) for entity %r",
+            overflow, MAX_ENTITY_ALIASES, exclude,
+        )
+    return accepted or None
 
 
 def _first_line_title(content: str) -> str:
@@ -1510,21 +1568,185 @@ class IngestionPipeline:
         return dict(row) if row else None
 
     def _store_entities(self, extraction: dict, item_id: str):
-        """Deduplicate and store entities, mentions, and relations."""
+        """Deduplicate and store entities, mentions, and relations.
+
+        Conservative lexical resolution (A-prime):
+        ------------------------------------------
+        Three lookup tiers, each more permissive but still safe:
+
+        Tier 1 — Canonical primary lookup (``find_entity_by_canonical_name``):
+            Exact + casefold name match, no alias scan.  Covers the simple case
+            where the same canonical name is used in both languages, or where a
+            prior chunk has already enriched the entity with this name as a
+            canonical alias and a re-ingest of any chunk finds it directly.
+
+        Tier 2 — Name-to-existing-alias lookup:
+            ``find_entity(name)`` performs the full 3-step lookup including alias
+            scan.  If a candidate is returned AND the incoming name is found
+            casefold-equivalent inside the candidate's persisted aliases, this is
+            a safe reuse: the existing entity already knew about this name.  This
+            covers the KO→EN case where the Korean entity already carries the
+            English name as an alias.  It is NOT alias-to-alias: the incoming
+            entity's own name (not its aliases) matches an existing alias.
+
+        Tier 3 — Alias fallback:
+            ``find_entity_by_canonical_name(alias)`` (casefold-consistent) is
+            called for each extracted alias.  A candidate is only reused when
+            found AND entity types do not conflict.  Type conflicts (e.g. person
+            "Jordan" vs org "요르단") are rejected to prevent silent corruption
+            of mentions and relations.  This covers EN→KO: the English entity
+            stored first, later Korean extraction matches via canonical lookup.
+
+        Safety invariants preserved across all tiers:
+          - Alias-to-alias matches are never sufficient on their own.
+          - Only one of: (incoming name == existing canonical) or
+            (incoming name ∈ existing aliases) or
+            (incoming alias == existing canonical) triggers reuse.
+          - Transitive alias chains cannot merge unrelated entities.
+          - Entity-type conflicts always produce a new entity (not a silent
+            merge); all three tiers normalise missing/empty types to
+            ``'concept'`` before comparing.
+
+        When an existing entity is found, enrichment is tier-scoped to prevent
+        transitive entity merges:
+          - Tier 1: enrich with ``aliases`` only (``name`` always dropped by
+            ``add_entity_aliases`` because it equals the canonical name)
+          - Tier 2: no enrichment (incoming name already in existing aliases;
+            adding its own aliases enables transitive collision)
+          - Tier 3: enrich with ``[name]`` only (alias matched canonical; adding
+            the incoming aliases risks the same transitive collision as Tier 2)
+        """
         entity_map: dict[str, str] = {}  # name -> entity_id
         for ent in extraction.get('entities', []):
             name = ent.get('name', '').strip()
             if not name:
                 continue
-            existing = self.store.find_entity(name)
+
+            aliases = _coerce_aliases(ent.get('aliases', []), name) or []
+
+            # Tier 1: canonical-only primary lookup (no alias scan).
+            # Same canonical name == same real-world entity regardless of how the
+            # LLM classified its type on this particular chunk.  Rejecting on a
+            # type mismatch here causes a new duplicate row on every re-ingest
+            # because there is no UNIQUE(name) constraint and no merge path, so
+            # the duplicate node accumulates without limit.  Type-conflict guards
+            # are retained in Tiers 2 and 3 where the match is alias-based and
+            # a type difference genuinely signals a different entity.
+            existing = self.store.find_entity_by_canonical_name(name)
+            if existing:
+                resolution_tier = 1
+
+            if not existing:
+                # Tier 2: incoming name matches an existing entity's alias.
+                # find_entity includes alias scan; we then verify the incoming
+                # name is genuinely in the candidate's persisted aliases.
+                # This is NOT alias-to-alias: it is name-to-existing-alias.
+                candidate = self.store.find_entity(name)
+                if candidate and candidate.get('name', '').casefold() != name.casefold():
+                    # candidate was found via alias scan, not canonical match
+                    try:
+                        persisted_aliases = json.loads(
+                            candidate.get('aliases') or '[]'
+                        )
+                    except (ValueError, TypeError):
+                        persisted_aliases = []
+                    if isinstance(persisted_aliases, list) and any(
+                        a.casefold() == name.casefold()
+                        for a in persisted_aliases
+                        if isinstance(a, str)
+                    ):
+                        existing_type = candidate.get('entity_type') or 'concept'
+                        new_type = ent.get('type') or 'concept'
+                        if existing_type != new_type:
+                            # F1 fix (Tier 2): reject on entity_type conflict.
+                            # Same policy as Tier 3: a type mismatch signals
+                            # these are likely different real-world entities that
+                            # happen to share a name string.  Silent merge would
+                            # corrupt mentions and relations for both.
+                            logger.debug(
+                                "entity type conflict in Tier 2: rejecting "
+                                "%r (%s) for incoming %r (%s)",
+                                candidate.get('name'), existing_type, name, new_type,
+                            )
+                        else:
+                            existing = candidate
+                            resolution_tier = 2
+
+            if not existing:
+                # Tier 3: alias fallback — incoming alias == existing canonical.
+                # An alias may resolve an existing entity ONLY when that alias
+                # exactly denotes the existing entity's canonical name (casefold).
+                # Uses find_entity_by_canonical_name (casefold-consistent) rather
+                # than find_entity (SQLite LOWER), to match the same normalization
+                # used in Tier 1 and in the guard comparison below.
+                # Alias-to-alias and entity-type-conflicting matches are blocked.
+                for alias in aliases:
+                    candidate = self.store.find_entity_by_canonical_name(alias)
+                    if candidate:
+                        existing_type = candidate.get('entity_type') or 'concept'
+                        new_type = ent.get('type') or 'concept'
+                        if existing_type != new_type:
+                            # F1 fix: reject on entity_type conflict to prevent
+                            # silent corruption of mentions/relations on the wrong node.
+                            logger.debug(
+                                "entity type conflict in Tier 3: rejecting "
+                                "%r (%s) for incoming %r (%s)",
+                                candidate.get('name'), existing_type, name, new_type,
+                            )
+                            continue
+                        existing = candidate
+                        resolution_tier = 3
+                        break
+
             if existing:
                 eid = existing['id']
+                # Tier-scoped enrichment:
+                #   Tier 1 (canonical match): enrich with all new aliases — the
+                #     incoming name IS the canonical so it matches; adding its
+                #     aliases is always safe.
+                #   Tier 2 (name-to-existing-alias): do NOT enrich — the incoming
+                #     name is already in the existing entity's alias set, and adding
+                #     the incoming entity's own aliases (e.g. "DC" for "Washington")
+                #     would enable transitive merges where a later canonical "DC"
+                #     entity incorrectly reuses the city entity.
+                #   Tier 3 (alias-to-canonical): enrich with the incoming name only
+                #     — the alias matched the existing canonical, so teaching the
+                #     entity that its canonical can also be spelled as the incoming
+                #     name is safe; adding the incoming entity's own aliases is not,
+                #     for the same transitive-merge reason as Tier 2.
+                if resolution_tier == 1:
+                    # Tier 1 canonical match: enrich with incoming aliases only.
+                    # 'name' is always dropped by add_entity_aliases (it equals
+                    # the canonical name), so including it wastes a lock
+                    # acquisition per entity.
+                    enrich_aliases = aliases
+                elif resolution_tier == 3:
+                    enrich_aliases = [name]
+                else:
+                    # Tier 2: no enrichment
+                    enrich_aliases = []
+
+                if enrich_aliases:
+                    # Enrichment is best-effort: the entity and its mention are
+                    # already committed.  Any exception here (invariant
+                    # violation, transient lock timeout, DB error) is logged at
+                    # warning and skipped so that alias enrichment never causes
+                    # the containing document to be rolled back or deleted.
+                    try:
+                        self.store.add_entity_aliases(eid, enrich_aliases)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "add_entity_aliases skipped for entity %r (%s): %s",
+                            name, eid, exc,
+                        )
             else:
                 eid = self.store.add_entity(
                     name=name,
                     entity_type=ent.get('type', 'concept'),
                     description=ent.get('description'),
+                    aliases=aliases or None,
                 )
+
             entity_map[name] = eid
             self.store.add_mention(item_id, eid, context=ent.get('description'))
 
