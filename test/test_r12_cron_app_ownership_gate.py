@@ -2,7 +2,8 @@
 
 App Kit lets an app token declare ``/api/crons`` and manage its jobs over REST
 (``docs/app-kit/api-reference.md``). The mutation routes -- ``PATCH``,
-``DELETE`` (single and batch), ``POST .../run`` and ``POST .../enable`` -- must
+``DELETE`` (single and batch), ``POST .../run``, ``POST .../enable``, ``POST
+.../ack`` and ``POST .../cancel`` -- must
 still refuse that token on a job it does not own: the person's, another app's,
 or one that does not exist. Ownership is the host-written ``created_by``
 ``app:<name>`` stamp, which ``POST /api/crons`` now writes for an app caller the
@@ -13,8 +14,8 @@ readers for real: ``token_auth.derive_caller_app`` (the cron session's scope)
 and ``mcp_cron._vet_app_owner_enabled`` (the disabled-app fire gate).
 
 The cron store is a real ``CronService`` in ``tmp_path``; the app-token scope
-check is the real ``_enforce_app_scope``. Only ``run_job`` is replaced, so no
-agent is started.
+check is the real ``_enforce_app_scope``. Only ``run_job`` and ``cancel`` are
+replaced, so no agent is started or stopped.
 """
 
 from __future__ import annotations
@@ -90,6 +91,8 @@ def _server(svc: CronService, app_claim: str) -> web.Application:
     app.router.add_patch("/api/crons/{job_id}", h.api_cron_update)
     app.router.add_post("/api/crons/{job_id}/run", h.api_cron_run)
     app.router.add_post("/api/crons/{job_id}/enable", h.api_cron_enable)
+    app.router.add_post("/api/crons/{job_id}/ack", h.api_cron_ack)
+    app.router.add_post("/api/crons/{job_id}/cancel", h.api_cron_cancel)
     app.router.add_delete("/api/crons/{job_id}", h.api_cron_delete)
     app.router.add_delete("/api/crons", h.api_cron_batch_delete)
     return app
@@ -111,6 +114,8 @@ def svc(tmp_path, monkeypatch: pytest.MonkeyPatch) -> CronService:
     service = CronService(base_dir=tmp_path)
     # Never start an agent: a run only has to be RECORDED as requested.
     monkeypatch.setattr(service, "run_job", AsyncMock(return_value=None))
+    # A cancel only has to be RECORDED as requested: no run is in flight.
+    monkeypatch.setattr(service, "cancel", AsyncMock(return_value=True))
     return service
 
 
@@ -125,6 +130,10 @@ def _effect(svc: CronService, route: str, job_id: str) -> bool:
         return job is not None and job.enabled is False
     if route == "run":
         return any(c.args == (job_id,) for c in svc.run_job.call_args_list)
+    if route == "ack":
+        return job is not None and "planted" in job.acked_items
+    if route == "cancel":
+        return any(c.args == (job_id,) for c in svc.cancel.call_args_list)
     raise AssertionError(route)
 
 
@@ -133,6 +142,8 @@ ROUTES = {
     "delete": ("DELETE", "/api/crons/{id}", None, "crons.delete"),
     "run": ("POST", "/api/crons/{id}/run", None, "crons.run"),
     "enable": ("POST", "/api/crons/{id}/enable", {"enabled": False}, "crons.enable"),
+    "ack": ("POST", "/api/crons/{id}/ack", {"summary": "planted"}, "crons.ack"),
+    "cancel": ("POST", "/api/crons/{id}/cancel", None, "crons.cancel"),
 }
 
 

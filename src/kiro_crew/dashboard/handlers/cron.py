@@ -1944,10 +1944,17 @@ async def api_cron_run(request: web.Request) -> web.Response:
 
 async def api_cron_cancel(request: web.Request) -> web.Response:
     """POST /api/crons/{id}/cancel — cancel a running execution."""
+    if request.get("app") == "":
+        owner_denied = await require_owner_dashboard_request(request, "crons.cancel")
+        if owner_denied is not None:
+            return owner_denied
     state: DashboardState = request.app["state"]
     job_id = request.match_info["job_id"]
     if (_e := _invalid_path_id_response(job_id, "job_id")) is not None:
         return _e
+    app_denied = await _refuse_foreign_app_job(request, state, [job_id], "crons.cancel")
+    if app_denied is not None:
+        return app_denied
     jobs = state.crons.list_jobs(include_disabled=True)
     job = next((j for j in jobs if j.id == job_id), None)
     if not job:
@@ -2084,10 +2091,17 @@ async def api_cron_enable(request: web.Request) -> web.Response:
 
 async def api_cron_ack(request: web.Request) -> web.Response:
     """POST /api/crons/{id}/ack — acknowledge a cron notification."""
+    if request.get("app") == "":
+        owner_denied = await require_owner_dashboard_request(request, "crons.ack")
+        if owner_denied is not None:
+            return owner_denied
     state: DashboardState = request.app["state"]
     job_id = request.match_info["job_id"]
     if (_e := _invalid_path_id_response(job_id, "job_id")) is not None:
         return _e
+    app_denied = await _refuse_foreign_app_job(request, state, [job_id], "crons.ack")
+    if app_denied is not None:
+        return app_denied
     # Default cap: the body is a short summary + notification ts. allow_absent
     # keeps the missing-body-means-defaults contract; see api_cron_enable.
     body, body_err = await read_bounded_json(request, allow_absent=True)
