@@ -290,6 +290,47 @@ class TestShadowedResolution:
         assert shim in refusal.detail
         assert str(system_dir / "head") in refusal.detail
 
+    def test_nix_store_shadow_is_pinnable_not_hard_refused(self, world, monkeypatch):
+        # A gateway PATH that leads with `~/.nix-profile/bin` resolves a coreutils
+        # name into an immutable /nix/store copy. Immutability is not identity -- the
+        # account controls the name->store mapping -- so the copy is NOT auto-approved.
+        # Removing only the hard SHADOWED refusal lets it reach the one-time human pin:
+        # it prompts ONCE (UNWITNESSED, not SHADOWED), then is honoured.
+        system_dir, user_dir = world
+        _program(system_dir, "head")
+        _program(user_dir, "head")  # stands in for the ~/.nix-profile/bin store copy
+        monkeypatch.setattr(platform_compat, "trusted_nix_store_file", lambda real: True)
+        first = name_grant.name_grant_refusal("head -5 /etc/hosts")
+        assert first is not None and first.code == name_grant.UNWITNESSED
+        name_grant.pin_human_approval("head -5 /etc/hosts")
+        assert name_grant.name_grant_refusal("head -5 /etc/hosts") is None
+
+    def test_untrusted_nix_store_copy_is_still_refused(self, world, monkeypatch):
+        # The gate is not a blanket /nix/store pass: a copy the account could
+        # substitute (single-user store, or a writable component) stays SHADOWED.
+        system_dir, user_dir = world
+        _program(system_dir, "head")
+        _program(user_dir, "head")
+        monkeypatch.setattr(platform_compat, "trusted_nix_store_file", lambda real: False)
+        refusal = name_grant.name_grant_refusal("head -5 /etc/hosts")
+        assert refusal is not None
+        assert refusal.code == name_grant.SHADOWED
+
+    def test_repointed_nix_store_shadow_re_prompts(self, world, monkeypatch):
+        # The security property GPT flagged: because the pin binds the binary's bytes,
+        # repointing a shadowing name at a DIFFERENT store binary is not silently
+        # honoured -- it re-prompts. "Unwritable store" alone never establishes identity.
+        system_dir, user_dir = world
+        _program(system_dir, "head")
+        _program(user_dir, "head")
+        monkeypatch.setattr(platform_compat, "trusted_nix_store_file", lambda real: True)
+        name_grant.pin_human_approval("head -5 /etc/hosts")
+        assert name_grant.name_grant_refusal("head -5 /etc/hosts") is None
+        (user_dir / "head").write_bytes(b"\x7fELF a different store binary\n")
+        refusal = name_grant.name_grant_refusal("head -5 /etc/hosts")
+        assert refusal is not None
+        assert refusal.code == name_grant.IDENTITY_CHANGED
+
     def test_shim_in_a_later_pipeline_stage_is_refused(self, world):
         system_dir, user_dir = world
         _program(system_dir, "cat")
