@@ -270,6 +270,8 @@ class _AllocationOwner(Protocol):
 
     def _fold_key(self, key: str) -> str: ...
 
+    def _bg_backend_supports_runtime(self) -> bool: ...
+
     async def await_replay_gap(self, key: str) -> None: ...
 
     def absorb_orphaned_release(self, key: str) -> bool: ...
@@ -1096,6 +1098,19 @@ class SessionAllocationService:
         if execution is not None and execution.memory_mode != "persistent":
             # A restricted task starts a fresh native conversation whose
             # retention policy is fixed before launch; do not borrow a parent.
+            return await owner.get_or_create(
+                key, agent=agent, approval_policy=approval_policy, cwd=cwd
+            )
+        if not owner._bg_backend_supports_runtime():
+            # Dispatch on the SAME membership rule ``get_bg_session`` uses: only
+            # a backend in ``ACP_BACKENDS_ACP_RUNTIME`` has a shared multiplexed
+            # runtime to open a per-step session on. A harness outside that set
+            # has no such runtime to share, so ``_get_or_bootstrap_run_runtime``
+            # would bootstrap one -- always a kiro-family process -- under the
+            # task runner's own key, spawning kiro-cli under a foreign backend
+            # label (and failing outright when kiro-cli is not installed). Route
+            # those to the dedicated per-session path instead, exactly as
+            # ``get_bg_session`` serves them a provider-backed session.
             return await owner.get_or_create(
                 key, agent=agent, approval_policy=approval_policy, cwd=cwd
             )
