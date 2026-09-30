@@ -14,6 +14,9 @@ import { createPortal } from 'react-dom'
 import { motion, useReducedMotion } from 'framer-motion'
 import { ArrowRight } from 'lucide-react'
 import { KiroGhost } from './KiroGhost'
+import { useOptionalTheme } from '../hooks/useTheme'
+import { getThemeBranding } from '../themeBranding'
+import ErrorBoundary from './ErrorBoundary'
 
 import { i18nT } from '../i18n/t'
 
@@ -53,16 +56,9 @@ function FloatingGhost({
   )
 }
 
-// The accent left panel — brand lockup + floating mascots + the flow's copy.
-// Factored out so the persistent HOST and the standalone shell render the exact
-// same aside; when it lives in the host it is mounted ONCE and only its copy
-// text changes between flows, so the mascots never re-run their entrance.
-// Exported so the Kiro CLI setup gate (KiroPrerequisiteGate) renders the SAME
-// panel — identical size, identical mascot positions — instead of a look-alike
-// copy that drifts.
-export function ShellAside({ copy }: { copy: ShellAsideCopy }) {
+function StockOnboardingDecorations() {
   return (
-    <aside className="relative flex min-h-[248px] w-full shrink-0 overflow-hidden bg-accent text-accent-fg sm:min-h-0 sm:w-[36%]">
+    <>
       <FloatingGhost className="-left-8 top-[24%] h-24 w-20 rotate-90 lg:h-28 lg:w-24" delay={0.15} rotate={90} />
       <FloatingGhost className="-right-5 top-5 h-28 w-20 -rotate-12 lg:h-36 lg:w-28" delay={0.35} rotate={-12} />
       {/* Peeks in 2rem from the panel edge: the mascot is near-white and the
@@ -72,9 +68,44 @@ export function ShellAside({ copy }: { copy: ShellAsideCopy }) {
           under it, at any width or copy length. */}
       <FloatingGhost className="bottom-[-6.5rem] right-[-10rem] hidden h-64 w-48 lg:block" delay={0.55} />
       <FloatingGhost className="-top-20 left-[40%] hidden h-48 w-36 rotate-180 lg:block" delay={0.75} rotate={180} />
+    </>
+  )
+}
+
+// The accent left panel — brand lockup + floating mascots + the flow's copy.
+// Factored out so the persistent HOST and the standalone shell render the exact
+// same aside; when it lives in the host it is mounted ONCE and only its copy
+// text changes between flows, so the mascots never re-run their entrance.
+// Exported so the Kiro CLI setup gate (KiroPrerequisiteGate) renders the SAME
+// panel — identical size, identical mascot positions — instead of a look-alike
+// copy that drifts.
+export function ShellAside({ copy }: { copy: ShellAsideCopy }) {
+  const theme = useOptionalTheme()
+  const branding = theme ? getThemeBranding(theme.colorTheme) : undefined
+  const brandLogo = branding?.logo
+  const OnboardingDecorations = branding?.onboardingDecorations
+
+  return (
+    <aside className="relative flex min-h-[248px] w-full shrink-0 overflow-hidden bg-accent text-accent-fg sm:min-h-0 sm:w-[36%]">
+      {OnboardingDecorations ? (
+        <div className="pointer-events-none absolute inset-0 z-0" aria-hidden="true">
+          <ErrorBoundary
+            scope="theme-onboarding-decorations"
+            fallback={<StockOnboardingDecorations />}
+          >
+            <OnboardingDecorations />
+          </ErrorBoundary>
+        </div>
+      ) : (
+        <StockOnboardingDecorations />
+      )}
       <div className="relative z-10 flex w-full flex-col p-7 sm:p-10">
         <div className="flex items-center gap-3">
-          <KiroGhost size={28} className="h-8 w-7" />
+          {brandLogo ? (
+            <img src={brandLogo} alt="" aria-hidden="true" className="h-8 w-8 shrink-0 object-contain" />
+          ) : (
+            <KiroGhost size={28} className="h-8 w-7" />
+          )}
           <span className="text-[15px] font-semibold tracking-wide">{i18nT('components.onboardingChapterShell.kiro_crew')}</span>
         </div>
         <div className="mt-auto max-w-[290px]">

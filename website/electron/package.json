@@ -20,7 +20,8 @@
   "devDependencies": {
     "@electron/notarize": "^3.1.1",
     "electron": "^43.2.0",
-    "electron-builder": "26.15.3"
+    "electron-builder": "26.15.3",
+    "parse5": "7.3.0"
   },
   "overrides": {
     "fast-uri": "3.1.7",
@@ -246,6 +247,7 @@
       "crew-companion/galleryWindow.js",
       "anime.global.js",
       "loading.html",
+      "edition-loading.html",
       "token-prompt.html",
       "icon.png",
       "icon-nightly.png",
