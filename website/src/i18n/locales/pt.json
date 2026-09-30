@@ -17084,8 +17084,8 @@
       "notes_refresh_error": "Não foi possível atualizar estas notas. Mostrando a última versão carregada.",
       "notes_unsupported": "As notas não podem ser lidas neste computador.",
       "notes_collision": "Dois colegas compartilham este nome curto, então as notas deles não podem ser distinguidas. Renomeie um deles para ver as notas aqui.",
+      "notes_agent_only": "{{name}} escreve estas notas para si mesmo enquanto trabalha. Você pode lê-las aqui, mas não alterá-las.",
       "notes_empty": "{{name}} ainda não escreveu nenhuma nota.",
-      "notes_empty_hint": "Um colega guarda aqui as próprias notas enquanto trabalha: do que cuida, quais perguntas estão em aberto para você, como trabalha.",
       "notes_updated": "Atualizado {{when}}",
       "notes_redacted_notice": "Algo que parece um segredo foi ocultado aqui. O arquivo em si está intacto.",
       "notes_truncated_notice": "Estas notas são mais longas do que o painel mostra; o resto está só no arquivo.",
@@ -17314,7 +17314,10 @@
       "schedules_blurb": "Agendamentos que iniciam este colega por conta própria, sem ninguém pedir.",
       "schedules_count_title": "{{active}} de {{total}} agendamentos ativos",
       "schedules_empty": "Ainda nada acorda este colega por conta própria.",
-      "schedules_leave_draft": "Sair da página e perder o agendamento que você estava escrevendo?"
+      "schedules_leave_draft": "Sair da página e perder o agendamento que você estava escrevendo?",
+      "discard_unsent_answer": "Descartar a resposta que você estava escrevendo?",
+      "discard_unsent_answer_confirm": "Descartar resposta",
+      "dashboard_leave_draft": "Sair da página e perder a resposta que você estava escrevendo?"
     },
     "tasksCapacityCard": {
       "title": "Tarefas e capacidade",

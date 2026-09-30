@@ -234,6 +234,9 @@ Decided:
 
 ### 06 The crewmate panel: Notes, Work log, Dashboard
 
+> Amended 2026-09-30: the order is now Dashboard, Work log, Notes and the panel
+> opens on Dashboard. See the amendment at the end of this document.
+
 Today: the right panel on the Crewmates page opens on a single **Crew
 summary** tab (`CREW_SUMMARY_TAB_ID` in
 `website/src/pages/members/MembersPage.tsx`) that mixes what the crewmate is
@@ -394,7 +397,9 @@ The launch is complete when, on main:
   template", "crew member" or "Runs on".
 - The crewmate panel opens on Notes and offers exactly Notes, Work log,
   Dashboard — plus Schedules, per the section 06 amendment of 2026-09-29
-  (CREW-18721).
+  (CREW-18721). (Amended again 2026-09-30: the panel opens on Dashboard and the
+  order is Dashboard, Work log, Notes, Schedules. See the amendment at the end of
+  this document.)
 - A new install reaches a crewmate's first greeting through either the
   four-step flow or New crewmate without seeing a settings form.
 - An install carrying crewmates an earlier sync generated loses, on its first
@@ -574,3 +579,41 @@ Provenance: accepted by the product owner on 2026-10-01, recorded here ahead of
 the implementation PR so the product-shape decision — a floating card replacing
 a full-height panel, gated on crew size — lands on main before the code that
 relies on it, per the First Principles lane's base-branch read.
+
+## 12. Amendment — the panel lands on Dashboard, not Notes (CREW-18720)
+
+Screen 06 fixed both the strip order and the landing tab in one sentence:
+"exactly three tabs, in this order, opening on the first: **Notes**, **Work
+log**, **Dashboard**", and § 7 made "the crewmate panel opens on Notes" an
+acceptance criterion. Shipped, that is the wrong landing, and the product owner
+asked for it changed on 2026-09-30.
+
+The reason is what Notes actually holds. It renders the crewmate's own briefing
+file, which the crewmate writes for itself as it works: absolute paths, branch
+names, rulings it owes, half-sentences in whatever language it was thinking in.
+That is working memory, not a page addressed to a person. Opening a crewmate put
+it first — so the first thing a person saw was the one tab of the three that was
+never written for them, and the only one they cannot change from the dashboard.
+
+Amended:
+
+- The three tabs stay exactly three and keep their bodies. Their order becomes
+  **Dashboard**, **Work log**, **Notes**, and the panel opens on the first as
+  before. The order is now how much of each tab is addressed to the reader:
+  Dashboard is what the crewmate publishes for them, Work log is what it did,
+  Notes is its own memory. Notes is one click away, never removed.
+- The order and the landing remain ONE fact, not two settings. The default is
+  `leadingIds[0]` in `usePanelTabs`, so a strip with no stored focus opens on
+  whichever tab is first; nothing was added to let them disagree.
+- A stored focus still wins, unchanged. Someone who was reading a crewmate's
+  notes and comes back finds Notes still focused.
+- The § 6 fallback sentence reads the same way with the new order: a stored
+  focus naming the removed Crew summary tab falls back to the first tab, which
+  is now Dashboard.
+- Notes gains one line above the body naming whose notes these are and saying
+  the tab does not change them. The tab already had no editor, and this is why
+  (see the Notes section of `docs/system-specs/modules/crew-mode.md`); the line
+  says so instead of leaving a reader to discover it by looking for the control.
+
+§ 7's acceptance criterion is superseded by this paragraph: the crewmate panel
+opens on Dashboard and offers exactly Dashboard, Work log, Notes.

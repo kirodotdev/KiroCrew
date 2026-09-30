@@ -16606,8 +16606,8 @@
       "notes_refresh_error": "无法刷新这些笔记。当前显示的是上次加载的版本。",
       "notes_unsupported": "这台电脑上无法读取笔记。",
       "notes_collision": "两个队友共用同一个短名称，所以分不清笔记属于谁。给其中一个改名后就能在这里看到它的笔记。",
+      "notes_agent_only": "{{name}} 会在工作时把这些笔记写给自己看。你可以在这里读，但改不了。",
       "notes_empty": "{{name}} 还没有写下任何笔记。",
-      "notes_empty_hint": "队友会在工作时把自己的笔记记在这里：它负责什么、有哪些问题等你决定、它是怎么工作的。",
       "notes_updated": "更新于 {{when}}",
       "notes_redacted_notice": "看起来像密钥的内容已在这里隐藏。文件本身未被改动。",
       "notes_truncated_notice": "这些笔记比面板显示的更长，其余部分只在文件里。",
@@ -16820,7 +16820,10 @@
       "schedules_blurb": "这些定时任务会在没人过问的情况下自己叫醒这位队友。",
       "schedules_count_title": "{{total}} 个定时任务中 {{active}} 个已启用",
       "schedules_empty": "还没有任何东西会自动唤醒这位队友。",
-      "schedules_leave_draft": "离开页面并丢弃正在编写的定时任务？"
+      "schedules_leave_draft": "离开页面并丢弃正在编写的定时任务？",
+      "discard_unsent_answer": "放弃正在输入的回答？",
+      "discard_unsent_answer_confirm": "放弃回答",
+      "dashboard_leave_draft": "离开页面并丢弃正在输入的回答？"
     },
     "tasksCapacityCard": {
       "title": "任务与容量",

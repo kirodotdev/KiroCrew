@@ -261,16 +261,31 @@ export const CREW_NOTES_TAB_ID = 'crew-notes'
 export const CREW_WORK_LOG_TAB_ID = 'crew-work-log'
 export const CREW_DASHBOARD_TAB_ID = 'crew-dashboard'
 export const CREW_SCHEDULES_TAB_ID = 'crew-schedules'
-/** Host tabs of the crewmate panel, in strip order. Notes is the default focus.
- *  Must not collide with a chat `TabKind` — `'summary'` is the chat page's
- *  session-summary view, a different thing.
+/** Host tabs of the crewmate panel, in strip order. The FIRST one is also the
+ *  default focus (`usePanelTabs`' `leadingIds[0]`), so the two are one fact
+ *  rather than two settings that can disagree.
  *
- *  Schedules is last and is the one tab that WRITES: it hosts the same
+ *  Dashboard leads and Notes is off the front. The order is how much of each tab
+ *  is addressed to the person reading it: Dashboard is what the crewmate
+ *  publishes FOR them, Work log is what it did, and Notes is the crewmate's own
+ *  working memory -- written by the agent, for the agent, in whatever language
+ *  and shorthand it works in. Opening a crewmate on that read as paths, rules and
+ *  half-sentences a person has no use for, which is what the RFC's 2026-09-30
+ *  amendment changes. A stored focus still wins: `usePanelTabs` only falls back
+ *  to this one when the strip has none.
+ *
+ *  Schedules stays LAST, where its own 2026-09-29 amendment put it, and keeps
+ *  that amendment's reason: it is the one tab that WRITES, hosting the same
  *  `CrewWakeSection` the crew editor's Schedules pane hosts, so the page's "never
- *  a second editor" rule holds by identity rather than by omission — there is one
+ *  a second editor" rule holds by identity rather than by omission -- there is one
  *  schedules editor in the product, mounted on two surfaces. Everything else the
- *  crew editor owns (template, memory, cloud, routing) still lives only there. */
-export const CREW_PANEL_TAB_IDS: readonly string[] = [CREW_NOTES_TAB_ID, CREW_WORK_LOG_TAB_ID, CREW_DASHBOARD_TAB_ID, CREW_SCHEDULES_TAB_ID]
+ *  crew editor owns (template, memory, cloud, routing) still lives only there.
+ *  Notes therefore lands third rather than last; what this change needed was that
+ *  it stop being FIRST, and reordering another item's tab was not part of it.
+ *
+ *  Must not collide with a chat `TabKind` -- `'summary'` is the chat page's
+ *  session-summary view, a different thing. */
+export const CREW_PANEL_TAB_IDS: readonly string[] = [CREW_DASHBOARD_TAB_ID, CREW_WORK_LOG_TAB_ID, CREW_NOTES_TAB_ID, CREW_SCHEDULES_TAB_ID]
 /** Chat-panel views this page withholds from the strip and the + menu
  *  (`SidePanel.hiddenViews`). The unfed half is DERIVED, not enumerated: every
  *  view `VIEW_DATA_SOURCE` classifies as `chat-transcript` (Changes / Issues /
@@ -1279,6 +1294,14 @@ export default function MembersPage() {
   // crewmate switch and every panel toggle through a promise would make the whole page's
   // navigation async to protect a form that is usually not open.
   const schedAtStakeRef = useRef<() => boolean>(() => false)
+  /* The same pair again, for the exits that destroy the whole panel SUBTREE rather
+   * than one tab body: they have to ask about the Dashboard's unsent answer as well,
+   * which the two refs above deliberately say nothing about. Both are assigned beside
+   * the schedules guards they build on; see the comment there for why the split
+   * exists. Declared here for the same reason those are -- callbacks above the
+   * assignment reach them through the ref. */
+  const subtreeGuardRef = useRef<() => Promise<boolean>>(async () => true)
+  const subtreeAtStakeRef = useRef<() => boolean>(() => false)
   const togglePanel = useCallback(() => {
     if (!openMemberRef.current) return
     // Hiding the panel unmounts the tab body, so it asks the same question closing it
@@ -1729,7 +1752,7 @@ export default function MembersPage() {
   // member's (or the endpoint could not repair it), so a cached key kept
   // through it would leave every slot-bound panel view (Side chat, Artifacts,
   // Files…) aimed at a foreign session. The panel falls back to the slot-free
-  // Notes / Work log / Dashboard tabs; the thread column keeps rendering the cached key under its
+  // Dashboard / Work log / Notes tabs; the thread column keeps rendering the cached key under its
   // own failure notice (its pre-existing contract, see activeThreadFailed).
   const confirmedSlot =
     active && (pendingThreadFor === active.name || activeThreadFailed) ? '' : activeSlot
@@ -1961,6 +1984,24 @@ export default function MembersPage() {
   const dashboardVisible = panelVisible && activeTabId === CREW_DASHBOARD_TAB_ID
   const [dashboardVisitedFor, setDashboardVisitedFor] = useState<string | null>(null)
   useEffect(() => {
+    // Armed whenever the Dashboard is on screen, INCLUDING by merely landing on
+    // it. What the flag protects is an unsaved answer: a pending question's
+    // draft lives only in `QuestionCard`'s own state and the command centre's
+    // panel-local `drafts`, nowhere persisted, so a body that unmounts on a tab
+    // switch or a panel close takes the typed text with it. Three comments in
+    // that panel already promise the opposite ("pending QuestionCard answer
+    // drafts remain mounted"), and this is what keeps that promise.
+    //
+    // It is armed on arrival even though a narrower rule was tried. With
+    // Dashboard as the landing tab this is true on every crewmate open, so the
+    // flag also latches `hasTaskDashboard` below and a closed panel is then
+    // hidden with `display: none` rather than leaving `AnimatePresence` -- the
+    // docked-column collapse and the drawer slide and scrim fade do not run.
+    // That is a real cost and it is accepted deliberately: arming only on a
+    // stored focus (a click on the chip) kept the motion but discarded text the
+    // person had typed, and losing an answer silently is worse than losing an
+    // animation. Narrowing it again needs a signal for "this body holds a draft"
+    // out of the command centre, not a guess from which tab is focused.
     if (dashboardVisible) setDashboardVisitedFor(activeMemberKey)
   }, [dashboardVisible, activeMemberKey])
   const closeOverlay = useCallback(() => setOverlayOpen(false), [])
@@ -1970,7 +2011,32 @@ export default function MembersPage() {
   // rather than unmounted. There is no find pane on this page.
   const hasLiveAppTab = useAnyLiveAppTab()
   const hasBrowserTab = tabsCtl.tabs.some((tab) => tab.kind === 'browser')
-  const hasTaskDashboard = dashboardVisible || dashboardVisitedFor === activeMemberKey || tabsCtl.tabs.some(tab => tab.kind === 'command-center')
+  // Whether the Dashboard body is holding a half-entered answer. It is reported
+  // by `CommandCenterPanel` (the draft lives in `QuestionCard`'s state and that
+  // panel's own bookkeeping, so nothing out here can see it), and it is the honest
+  // reason to keep this panel mounted while hidden: an unmount is the typed text
+  // being thrown away.
+  //
+  // Two earlier rules were tried and are recorded because each broke something.
+  // "Hold whenever the tab has been on screen" held the panel for every crewmate,
+  // which also kept the SCHEDULES body alive behind the hidden panel and brought a
+  // draft the person had explicitly DISCARDED back on the next open -- the product
+  // ignoring an answer it had just asked for. "Hold only while Dashboard is the
+  // active tab" fixed that but dropped the answer when someone typed, left the tab
+  // and then closed the panel. Asking the panel itself answers both: the hold
+  // follows the draft rather than the focus.
+  const [dashboardHasDraft, setDashboardHasDraft] = useState(false)
+  useEffect(() => { if (!active) setDashboardHasDraft(false) }, [active])
+  // A published Dashboard that has been expanded is the second thing in this body
+  // that an unmount destroys. The frame holds a SINGLE-USE minted document, so a
+  // remount re-requests a spent URL; `CrewWebview` keeps it mounted across a
+  // collapse for exactly that reason and reports the flag here, because only this
+  // page can keep the panel subtree itself alive. Without it the hold is
+  // draft-only, and the subtree then goes away on a plain panel close -- or on no
+  // gesture at all, since `beside` is recomputed from the window width.
+  const [dashboardFrameLive, setDashboardFrameLive] = useState(false)
+  useEffect(() => { if (!active) setDashboardFrameLive(false) }, [active])
+  const hasTaskDashboard = dashboardHasDraft || dashboardFrameLive || tabsCtl.tabs.some(tab => tab.kind === 'command-center')
   const mountInput = { activityOpen: panelVisible, hasLiveAppTab, hasBrowserTab, hasTaskDashboard, searchOpen: false }
   // A typed schedule draft is another thing on this page that cannot survive a remount,
   // and unlike the panel's own gestures it can be destroyed by something no guard is able
@@ -2022,12 +2088,13 @@ export default function MembersPage() {
     void schedGuardRef.current().then((ok) => { if (ok) void openFile(...args) })
   }, [openFile])
   // Opening one of the crewmate's sessions leaves `/members` for `/chat` outright, so it
-  // destroys the Schedules form as surely as the identity pill does. It is a raw
-  // `navigate`, which the leave channel never sees -- only callers that ask reach it --
-  // so it asks here, like every other exit.
+  // destroys the Schedules form as surely as the identity pill does, and the Dashboard's
+  // unsent answer with it -- the whole subtree goes, so the mount hold that covers a tab
+  // switch is no help. It is a raw `navigate`, which the leave channel never sees -- only
+  // callers that ask reach it -- so it asks here, like every other exit.
   const openSessionGuarded = useCallback((key: string) => {
-    if (!schedAtStakeRef.current()) { openSessionOnChatPage(key); return }
-    void schedGuardRef.current().then((ok) => { if (ok) openSessionOnChatPage(key) })
+    if (!subtreeAtStakeRef.current()) { openSessionOnChatPage(key); return }
+    void subtreeGuardRef.current().then((ok) => { if (ok) openSessionOnChatPage(key) })
   }, [openSessionOnChatPage])
   const drivingSessions = useMemo(() => {
     if (!activeMemberKey) return []
@@ -2233,6 +2300,34 @@ export default function MembersPage() {
     () => schedulesMounted && (schedSaving.current || schedDraftDirty.current),
     [schedulesMounted],
   )
+  /* The two guards above are the TAB-level pair, and they deliberately say nothing
+   * about an unsent Dashboard answer: `hasTaskDashboard` keeps the panel mounted while
+   * a draft is reported, so a tab switch and a panel close do not endanger it, and
+   * confirming there would ask about a draft in no danger.
+   *
+   * What the mount hold cannot survive is the subtree being DESTROYED under it: the
+   * `CommandCenterPanel` is keyed on the crewmate, so switching crewmate remounts it,
+   * and leaving the route unmounts the page outright. Those exits ask this pair
+   * instead, which is the tab-level question OR the Dashboard one. Typing an answer
+   * and clicking another crewmate in the same roster is an ordinary gesture, and the
+   * answer lives nowhere but component state, so it was silently discarded. */
+  subtreeAtStakeRef.current = useCallback(
+    () => schedAtStakeRef.current() || dashboardHasDraft,
+    [dashboardHasDraft],
+  )
+  /* Asked in sequence, not merged into one prompt: the two drafts are separate pieces
+   * of work and a person may want to keep one and drop the other, so a single "discard
+   * everything" would decide for them. A veto of either stops the exit -- and the
+   * Schedules question runs FIRST because it is the one that can refuse outright (a
+   * create in flight), which no confirmation should be offered over. */
+  subtreeGuardRef.current = useCallback(async () => {
+    if (!(await schedGuardRef.current())) return false
+    if (!dashboardHasDraft) return true
+    return confirmSched({
+      title: t('pages.membersPage.discard_unsent_answer'),
+      confirmLabel: t('pages.membersPage.discard_unsent_answer_confirm'),
+    })
+  }, [dashboardHasDraft, confirmSched, t])
   // Leaving the ROUTE is the last exit, and the registry that owns it is synchronous, so
   // it cannot use the app's confirm dialog. `window.confirm`, exactly as the New crewmate
   // dialog's own guard does on this page for the same reason. A create in flight refuses
@@ -2245,29 +2340,36 @@ export default function MembersPage() {
     // Same synchronous `window.confirm` the Schedules draft uses here, since
     // the registry cannot await the app's confirm dialog.
     if (crewModalAtStakeRef.current && !window.confirm(t('pages.membersPage.edit_leave_draft'))) return false
-    if (!schedulesMounted) return true
-    if (schedSaving.current) return false
-    if (!schedDraftDirty.current) return true
-    const ok = window.confirm(t('pages.membersPage.schedules_leave_draft'))
-    if (ok) releaseSchedRetention()
-    return ok
+    if (schedulesMounted) {
+      if (schedSaving.current) return false
+      if (schedDraftDirty.current) {
+        const ok = window.confirm(t('pages.membersPage.schedules_leave_draft'))
+        if (!ok) return false
+        releaseSchedRetention()
+      }
+    }
+    // The route going away takes the panel subtree with it, mount hold and all, so the
+    // Dashboard draft is asked about here even though no tab exit asks.
+    if (!dashboardHasDraft) return true
+    return window.confirm(t('pages.membersPage.dashboard_leave_draft'))
   })
   // Registering a guard is not enough on its own: `NavigationBackGuard` arms off the
   // published STAKE, not off the guard, so without this the browser's own Back button
   // discarded the draft silently while every wired in-app exit asked. The New crewmate
   // dialog on this same page already publishes, which is what made the gap uneven rather
   // than merely absent.
-  usePublishNavigationStake(schedAtStake || crewModalAtStake || crewModalBusy)
+  const anyDraftAtStake = schedAtStake || dashboardHasDraft || crewModalAtStake || crewModalBusy
+  usePublishNavigationStake(anyDraftAtStake)
   // A reload or a tab close is not a route change, so the guard above never sees it; the
-  // browser's own prompt is the only thing that can. Registered while a Schedules draft OR
-  // the editor modal's unsaved panes OR an in-flight editor write are at stake, since an
-  // always-on `beforeunload` nags on every ordinary close.
+  // browser's own prompt is the only thing that can. Registered while a Schedules or
+  // Dashboard draft, the editor modal's unsaved panes, or an in-flight editor write is at
+  // stake, since an always-on `beforeunload` nags on every ordinary close.
   useEffect(() => {
-    if (!schedAtStake && !crewModalAtStake && !crewModalBusy) return
+    if (!anyDraftAtStake) return
     const onUnload = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = '' }
     window.addEventListener('beforeunload', onUnload)
     return () => window.removeEventListener('beforeunload', onUnload)
-  }, [schedAtStake, crewModalAtStake, crewModalBusy])
+  }, [anyDraftAtStake])
   // Records come from the pushed activity projection so a new engagement
   // re-renders the block without a refetch; the day-folding rendering (#9564)
   // is unchanged — it is fed the projection's `recent` instead of the query
@@ -2714,12 +2816,13 @@ export default function MembersPage() {
         // instead of replace.
         setSearchParams({ [MEMBER_PARAM]: m.name }, { state: { fromRoster: true } })
       }
-      // A switch to ANOTHER crewmate remounts the Schedules section (it is keyed on the
-      // crewmate), so it destroys an open create form just as leaving the tab does. It
-      // used to do that silently, which is what made "every exit asks" untrue. Nothing
-      // at stake keeps the switch synchronous, exactly as before.
-      if (!schedAtStakeRef.current()) { go(); return true }
-      const ok = await schedGuardRef.current()
+      // A switch to ANOTHER crewmate remounts both keyed sections -- the Schedules
+      // create form and the Dashboard's command centre -- so it destroys an open create
+      // form just as leaving the tab does, and destroys an unsent answer that no tab
+      // exit can. It used to do both silently, which is what made "every exit asks"
+      // untrue. Nothing at stake keeps the switch synchronous, exactly as before.
+      if (!subtreeAtStakeRef.current()) { go(); return true }
+      const ok = await subtreeGuardRef.current()
       if (ok) go()
       return ok
     },
@@ -2952,10 +3055,10 @@ export default function MembersPage() {
         setSearchParams({ [TEAM_PARAM]: id }, { state: { fromRoster: true } })
       }
       // Opening a team clears the open crewmate, which unmounts the whole panel subtree
-      // and with it any create form on the Schedules tab. A team header row is a click
-      // away from that tab, so it asks first.
-      if (!schedAtStakeRef.current()) { go(); return }
-      void schedGuardRef.current().then((ok) => { if (ok) go() })
+      // and with it any create form on the Schedules tab and any unsent answer on the
+      // Dashboard. A team header row is a click away from both, so it asks first.
+      if (!subtreeAtStakeRef.current()) { go(); return }
+      void subtreeGuardRef.current().then((ok) => { if (ok) go() })
     },
     [urlMember, urlTeam, isMobile, setSearchParams, location.state],
   )
@@ -3530,6 +3633,12 @@ export default function MembersPage() {
         // chat; once that chat is closed the roster is the screen and the
         // notice waits for the reopen.
         className={`${activeName || activeTeam || postCreateError?.kind === 'roster' ? 'flex' : 'hidden md:flex'} flex-1 min-w-0 flex-col min-h-0`}
+        // The page's main column: the thread (or the team view, or an empty
+        // state), and never the side panel, which is a sibling of this section.
+        // Named so a case can ask what the THREAD says without matching the
+        // panel's own copy — the two surfaces share several sentences, "Opening
+        // the conversation…" among them, and each says it about itself.
+        data-testid="member-main-column"
       >
         {!greetingNoticeInRoster && postCreateNotice}
         {/* The hero yields to a post-create notice: after the FIRST create a
@@ -3630,13 +3739,14 @@ export default function MembersPage() {
                       else setSearchParams({}, { replace: true })
                     }
                     // Clearing the member param unmounts the panel subtree with the
-                    // Schedules form in it, so this asks like every other exit. The
-                    // replace branch is the one that needed it most: a replace raises no
-                    // `popstate`, so neither the published stake nor `NavigationBackGuard`
-                    // can see it, and a deep-linked crewmate on a narrow window reaches
-                    // it with an ordinary tap.
-                    if (!schedAtStakeRef.current()) { go(); return }
-                    void schedGuardRef.current().then((ok) => { if (ok) go() })
+                    // Schedules form and the Dashboard's unsent answer in it, so this
+                    // asks like every other exit. The replace branch is the one that
+                    // needed it most: a replace raises no `popstate`, so neither the
+                    // published stake nor `NavigationBackGuard` can see it, and a
+                    // deep-linked crewmate on a narrow window reaches it with an
+                    // ordinary tap.
+                    if (!subtreeAtStakeRef.current()) { go(); return }
+                    void subtreeGuardRef.current().then((ok) => { if (ok) go() })
                   }}
                   className="md:hidden inline-flex items-center p-1 -ml-1 rounded hover:bg-accent/40"
                   aria-label={t('pages.membersPage.title')}
@@ -4052,7 +4162,7 @@ export default function MembersPage() {
                     <li key={s.key}>
                       <button
                         type="button"
-                        onClick={() => navigate(`/chat?sid=${encodeURIComponent(s.key)}`)}
+                        onClick={() => openSessionGuarded(s.key)}
                         className="w-full text-left flex items-center gap-2 text-[11px] px-1.5 py-1 -mx-1.5 rounded hover:bg-accent/40"
                         title={title + PROJECT_SEPARATOR + label}
                         data-testid="member-driving-row"
@@ -4445,16 +4555,33 @@ export default function MembersPage() {
           const dashboardBody = (
             <div className="h-full min-h-0 flex flex-col" data-testid="member-dashboard" aria-label={t('pages.membersPage.dashboard_tab')}>
               <div className="px-3 pt-3 shrink-0">{identityRow}</div>
-              {!confirmedSlot && !activeThreadFailed && <p role="status" className="px-3 text-sm text-muted">{t('pages.membersPage.opening_thread')}</p>}
+              {/* Said here only when the MAIN COLUMN is not already saying it.
+                  That column renders this same sentence while it has no pane to
+                  show (`activeSlot` unset), and as the panel's landing tab this
+                  body is now on screen for that whole window -- so both surfaces
+                  said "Opening the conversation…" at once, one of them a live
+                  region, on every cold open. With a cached thread up beside it
+                  the panel's own line is the only one, and it is the honest
+                  state: this body cannot bind until the POST confirms. */}
+              {!confirmedSlot && !activeThreadFailed && activeSlot
+                ? <p role="status" className="px-3 text-sm text-muted">{t('pages.membersPage.opening_thread')}</p>
+                : null}
               <div className="flex-1 min-h-0">
                 <CommandCenterPanel
                   key={activeMemberKey}
                   slot={activeSlot || null}
                   active={dashboardVisible && !!confirmedSlot}
                   sessionReady={!!confirmedSlot}
+                  onDraftStateChange={setDashboardHasDraft}
+                  // This panel is keyed on the crewmate and lives on a route, so
+                  // its own Open session affordances would unmount the subtree
+                  // holding the answer they sit beside. Hand it the same guarded
+                  // exit the driving rows use.
+                  onOpenSession={openSessionGuarded}
                   publishedView={activeSlug && activeMemberName ? { title: crewDisplayName(activeView ?? active), content: <CrewWebview
                   slug={activeSlug}
                   member={activeMemberName}
+                  onLiveFrameChange={setDashboardFrameLive}
                   onSetUp={() => {
                     const destination = crewEditPath(activeMemberName)
                     leave(() => navigate(destination), destination)
@@ -4518,10 +4645,11 @@ export default function MembersPage() {
           // the DM header, and three faces in a row would name nothing.
           const leadingTabs: SidePanelLeadingTab[] = [
             {
-              id: CREW_NOTES_TAB_ID,
-              title: t('pages.membersPage.notes_tab'),
-              icon: <NotebookPen className="lucide-inline" aria-hidden="true" />,
-              render: () => notesBody,
+              id: CREW_DASHBOARD_TAB_ID,
+              title: t('pages.membersPage.dashboard_tab'),
+              icon: <LayoutDashboard className="lucide-inline" aria-hidden="true" />,
+              keepMounted: dashboardVisitedFor === activeMemberKey,
+              render: () => dashboardBody,
             },
             {
               id: CREW_WORK_LOG_TAB_ID,
@@ -4530,11 +4658,10 @@ export default function MembersPage() {
               render: () => workLogBody,
             },
             {
-              id: CREW_DASHBOARD_TAB_ID,
-              title: t('pages.membersPage.dashboard_tab'),
-              icon: <LayoutDashboard className="lucide-inline" aria-hidden="true" />,
-              keepMounted: dashboardVisitedFor === activeMemberKey,
-              render: () => dashboardBody,
+              id: CREW_NOTES_TAB_ID,
+              title: t('pages.membersPage.notes_tab'),
+              icon: <NotebookPen className="lucide-inline" aria-hidden="true" />,
+              render: () => notesBody,
             },
             {
               id: CREW_SCHEDULES_TAB_ID,

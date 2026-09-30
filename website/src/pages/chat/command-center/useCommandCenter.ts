@@ -59,11 +59,33 @@ export function useCommandCenter(root: string | null, enabled = true, scope: 'ta
   const draftScope = JSON.stringify([scope, root])
   const [drafts, setDrafts] = useState<{ scope: string; cards: Record<string, PendingQuestion> }>({ scope: draftScope, cards: {} })
   if (drafts.scope !== draftScope) setDrafts({ scope: draftScope, cards: {} })
+  /* WHICH cards are being typed into, as ids only. Deliberately separate from
+     `drafts.cards` above, because the two answer different questions and only one
+     of them may include a blocking ask:
+       - `drafts.cards` RETAINS a card past its retirement, so it is limited to
+         stateless `card_id` questions. Retaining a blocking `ask_id` question
+         would resurrect a card whose authority the live list owns.
+       - this set only says "text is unsent", which is true of a blocking ask too,
+         and a HOST uses it to keep the subtree mounted.
+     Folding the second into the first is what made a blocking ask's typed answer
+     unprotected: its early return left the flag false, the host released the
+     panel, and the draft went with the unmount. */
+  const [draftIds, setDraftIds] = useState<{ scope: string; ids: string[] }>({ scope: draftScope, ids: [] })
+  if (draftIds.scope !== draftScope) setDraftIds({ scope: draftScope, ids: [] })
   const onQuestionDraftChange = (question: PendingQuestion, active: boolean) => {
+    const key = question.ask_id || question.card_id
+    if (!key) return
+    const draftId = JSON.stringify([slotKey(question.slot), key])
+    setDraftIds(previous => {
+      // A departing card's cleanup must not clear a new scope's draft.
+      if (previous.scope !== draftScope) return previous
+      const held = previous.ids.includes(draftId)
+      if (active === held) return previous
+      return { ...previous, ids: active ? [...previous.ids, draftId] : previous.ids.filter(id => id !== draftId) }
+    })
     if (question.ask_id || !question.card_id) return
     const id = JSON.stringify([slotKey(question.slot), question.card_id])
     setDrafts(previous => {
-      // A departing card's cleanup must not clear a new scope's draft.
       if (previous.scope !== draftScope) return previous
       if (active) return previous.cards[id] === question ? previous : { ...previous, cards: { ...previous.cards, [id]: question } }
       if (!previous.cards[id]) return previous
@@ -160,8 +182,16 @@ export function useCommandCenter(root: string | null, enabled = true, scope: 'ta
     else settledLatches.delete(latchKey)
     rerenderSettledLatch(version => version + 1)
   }
+  // Whether ANY card on this scope is holding a half-entered answer -- a blocking
+  // ask as much as a stateless one. Read as one boolean so a HOST can keep its
+  // panel mounted while text is unsent: the Crewmates page does, because that
+  // draft lives nowhere but component state and an unmount is the text being
+  // thrown away. Taken from `draftIds`, not from the retention map, for the reason
+  // given where they are declared. Scope-guarded like the reads above: a departing
+  // scope's cards never answer for the new one.
+  const hasQuestionDraft = draftIds.scope === draftScope && draftIds.ids.length > 0
   return {
-    ...model, dashboards, connected, onQuestionDraftChange,
+    ...model, dashboards, connected, onQuestionDraftChange, hasQuestionDraft,
     approvalMode: effectiveApprovalMode(approvalMode, slots.find(s => s.key === root)),
     loading, stale, missing,
     // Real clock from completed reads. A websocket connection alone doesn't

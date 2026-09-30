@@ -241,6 +241,37 @@ describe('task dashboard sources and containment', () => {
     expect(result.current.attention).toEqual([])
   })
 
+  it('reports a draft for a BLOCKING ask too, while still refusing to retain its card', async () => {
+    // `hasQuestionDraft` is what a host keeps its panel mounted on, so it has to
+    // be true of every question being typed into. Retention is the narrower rule:
+    // a blocking `ask_id` card is owned by the live list and must not be resurrected
+    // past its retirement. Read off the retention map, a blocking ask reported no
+    // draft at all -- the host released the panel and the typed answer went with
+    // the unmount.
+    const { result, rerender } = renderHookWithProviders(() => useCommandCenter('root'), { store: store() })
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    const questions = [{ question: 'Which scope?', options: [{ label: 'Stable' }] }]
+    const blocking = { slot: 'root', ask_id: 'blocked', card_id: 'blocked-card', questions }
+    expect(result.current.hasQuestionDraft).toBe(false)
+    act(() => { result.current.onQuestionDraftChange(blocking, true) })
+    expect(result.current.hasQuestionDraft).toBe(true)
+    // Still not retained: the attention list carries nothing this hook invented.
+    expect(result.current.attention).toEqual([])
+    act(() => { result.current.onQuestionDraftChange(blocking, false) })
+    expect(result.current.hasQuestionDraft).toBe(false)
+    // A stateless card reports the same way, and is retained as before.
+    const stateless = { slot: 'root', card_id: 'same', questions }
+    act(() => { result.current.onQuestionDraftChange(stateless, true) })
+    expect(result.current.hasQuestionDraft).toBe(true)
+    expect(result.current.attention.map(a => a.id)).toEqual(['question:root:same'])
+    // A question with neither id cannot be tracked, and must not claim a draft.
+    act(() => { result.current.onQuestionDraftChange(stateless, false) })
+    act(() => { result.current.onQuestionDraftChange({ slot: 'root', questions }, true) })
+    expect(result.current.hasQuestionDraft).toBe(false)
+    rerender()
+    expect(result.current.hasQuestionDraft).toBe(false)
+  })
+
   it('renders model HTML through the sandbox document service without a privileged bridge', async () => {
     const modelHtml = '<article><h1>Dependency map</h1><script>window.taskSpecific=true</script></article>'
     vi.spyOn(api, 'artifact').mockResolvedValue(artifact('own', 'root', modelHtml))

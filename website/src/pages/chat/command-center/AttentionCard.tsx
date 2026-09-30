@@ -15,7 +15,20 @@ import { toApiDecision } from '../../../utils/approvalDecision'
 import { ApiError, isTerminalApprovalRefusal } from '../../../api/apiError'
 
 /** Kept mounted while other inbox items are selected, preserving each answer draft. */
-export default function AttentionCard({ item, title, context, onDraftChange }: { item: AttentionItem; title: string; context?: string; onDraftChange?: (active: boolean) => void }) {
+export default function AttentionCard({ item, title, context, onDraftChange, onOpenSession }: {
+  item: AttentionItem
+  title: string
+  context?: string
+  onDraftChange?: (active: boolean) => void
+  /** How to leave for this item's session, when the HOST must be asked first.
+   *  Open session sits in this card's own header, one line above the composer
+   *  holding the unsent answer, so it is the likeliest way to lose one -- and a
+   *  bare `<Link>` reaches no leave guard (`NavigationLeaveGuard`: coverage is
+   *  opt-in per navigation surface). A host that can unmount this subtree passes
+   *  its guarded exit here; with none the link is an ordinary one, which is
+   *  right where the route change does not take the draft with it. */
+  onOpenSession?: (slot: string) => void
+}) {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
   const dispatch = useAppDispatch()
@@ -75,7 +88,9 @@ export default function AttentionCard({ item, title, context, onDraftChange }: {
   return <section className="rounded-lg border border-border bg-card p-3 space-y-3">
     <div className="flex items-center gap-2 min-w-0">
       <h3 className="text-sm font-semibold break-words min-w-0 flex-1">{item.approval && <ShieldCheck size={15} className="lucide-inline" />}{approvalHeading || title}</h3>
-      <Link to={`/chat?sid=${encodeURIComponent(item.slot)}`} className="text-accent text-[12px] inline-flex items-center gap-1 shrink-0">{t('commandCenter.open_session')}<ArrowUpRight size={13} /></Link>
+      {onOpenSession
+        ? <button type="button" onClick={() => onOpenSession(item.slot)} className="text-accent text-[12px] inline-flex items-center gap-1 shrink-0">{t('commandCenter.open_session')}<ArrowUpRight size={13} /></button>
+        : <Link to={`/chat?sid=${encodeURIComponent(item.slot)}`} className="text-accent text-[12px] inline-flex items-center gap-1 shrink-0">{t('commandCenter.open_session')}<ArrowUpRight size={13} /></Link>}
     </div>
     {item.approval && <p className="text-[12px] text-muted break-words">{t('commandCenter.from_session', { name: title })}</p>}
     {context && <p className="text-sm text-muted break-words">{context}</p>}

@@ -17084,8 +17084,8 @@
       "notes_refresh_error": "Impossible d'actualiser ces notes. La dernière version chargée est affichée.",
       "notes_unsupported": "Les notes ne peuvent pas être lues sur cet ordinateur.",
       "notes_collision": "Deux coéquipiers partagent ce nom court, leurs notes ne peuvent donc pas être distinguées. Renomme l'un des deux pour voir ses notes ici.",
+      "notes_agent_only": "{{name}} écrit ces notes pour lui-même au fil de son travail. Tu peux les lire ici, mais pas les modifier.",
       "notes_empty": "{{name}} n'a pas encore écrit de notes.",
-      "notes_empty_hint": "Un coéquipier garde ici ses propres notes au fil de son travail : ce dont il s'occupe, les questions qu'il te pose, sa façon de travailler.",
       "notes_updated": "Mis à jour {{when}}",
       "notes_redacted_notice": "Quelque chose qui ressemble à un secret a été masqué ici. Le fichier lui-même est intact.",
       "notes_truncated_notice": "Ces notes sont plus longues que ce que le panneau affiche ; le reste n’est que dans le fichier.",
@@ -17314,7 +17314,10 @@
       "schedules_blurb": "Les planifications qui démarrent ce coéquipier sans que personne le demande.",
       "schedules_count_title": "{{active}} planification(s) active(s) sur {{total}}",
       "schedules_empty": "Rien ne réveille encore ce coéquipier de lui-même.",
-      "schedules_leave_draft": "Quitter la page et perdre la planification en cours d’écriture ?"
+      "schedules_leave_draft": "Quitter la page et perdre la planification en cours d’écriture ?",
+      "discard_unsent_answer": "Abandonner la réponse en cours d’écriture ?",
+      "discard_unsent_answer_confirm": "Abandonner la réponse",
+      "dashboard_leave_draft": "Quitter la page et perdre la réponse en cours d’écriture ?"
     },
     "tasksCapacityCard": {
       "title": "Tâches et capacité",

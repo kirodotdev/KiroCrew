@@ -117,7 +117,7 @@ describe('MembersPage Side Chat in the side panel (selection Ask)', () => {
 
   it('Ask opens the Side tab in the docked panel, bound to the MEMBER slot, and reports the Ask as done', async () => {
     await openThread()
-    await screen.findByTestId('member-notes')
+    await screen.findByTestId('member-dashboard')
     expect(tabLabels()).not.toContain('Side Chat')
 
     act(() => { fireEvent.click(screen.getByRole('button', { name: 'stub-ask' })) })
@@ -131,7 +131,7 @@ describe('MembersPage Side Chat in the side panel (selection Ask)', () => {
 
   it('Side Chat is offered from the + menu too: its draft lives in the chat-core store, so the panel unmounting the body loses nothing', async () => {
     await openThread()
-    await screen.findByTestId('member-notes')
+    await screen.findByTestId('member-dashboard')
     fireEvent.pointerDown(
       screen.getByRole('button', { name: 'Open side panel tab' }),
       { button: 0, ctrlKey: false, pointerType: 'mouse' },
@@ -144,7 +144,7 @@ describe('MembersPage Side Chat in the side panel (selection Ask)', () => {
     setWindowWidth(NARROW_WINDOW)
     await openThread()
     // Overlay closed by default — the panel is not on screen.
-    expect(screen.queryByTestId('member-notes')).toBeNull()
+    expect(screen.queryByTestId('member-dashboard')).toBeNull()
     act(() => { fireEvent.click(screen.getByRole('button', { name: 'stub-ask' })) })
     expect(verdicts).toEqual([true])
     const overlay = await screen.findByTestId('member-side-panel')
@@ -201,12 +201,12 @@ describe('MembersPage Side Chat in the side panel (selection Ask)', () => {
     // The collision surfaces as its own notice; no pane, so no Ask …
     await screen.findByTestId('member-thread-collision')
     expect(screen.queryByTestId('chat-pane-stub')).toBeNull()
-    // … and the strip is the slot-free bucket: only the Notes / Work log / Dashboard /
+    // … and the strip is the slot-free bucket: only the Dashboard / Work log / Notes /
     // Schedules chips, no Side Chat on the roster's unconfirmed `member-other`
     // key. Schedules is in that bucket because it keys on the crewmate's NAME,
     // not on a confirmed slot — the schedules a crewmate owns are readable
     // whether or not its thread opened.
-    await waitFor(() => expect(tabLabels()).toEqual(['Notes', 'Work log', 'Dashboard', 'Schedules']))
+    await waitFor(() => expect(tabLabels()).toEqual(['Dashboard', 'Work log', 'Notes', 'Schedules']))
     expect(screen.queryByTestId('side-chat-stub')).toBeNull()
   })
 })

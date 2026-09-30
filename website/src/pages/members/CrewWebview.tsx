@@ -295,9 +295,24 @@ interface CrewWebviewProps {
    * sentence without a dead control under it.
    */
   onSetUp?: () => void;
+  /**
+   * Report whether this webview is holding a live minted document.
+   *
+   * `everExpanded` keeps the frame mounted behind `display:none` across a
+   * collapse, because the minted URL is single-use and a re-created iframe would
+   * request a spent one. That rule only reaches as far as this component: the
+   * page that owns the side panel decides whether the whole subtree stays
+   * mounted, and it cannot see this flag. So the flag is reported outward, and a
+   * consumer that keeps a hidden panel alive for an unsent answer keeps it alive
+   * for a live frame on the same terms.
+   *
+   * Called with `false` on unmount, so a consumer holding the value in state
+   * does not keep holding the panel for a frame that is gone.
+   */
+  onLiveFrameChange?: (live: boolean) => void;
 }
 
-function CrewWebviewView({ slug, member, onSetUp }: CrewWebviewProps) {
+function CrewWebviewView({ slug, member, onSetUp, onLiveFrameChange }: CrewWebviewProps) {
   const [expanded, setExpanded] = useState(false);
   /**
    * Whether the document has EVER been opened, which is what gates minting.
@@ -313,6 +328,17 @@ function CrewWebviewView({ slug, member, onSetUp }: CrewWebviewProps) {
    *    bug this flag exists to make impossible, not merely to avoid.
    */
   const [everExpanded, setEverExpanded] = useState(false);
+
+  /* Keyed on a ref so a consumer passing an inline arrow does not re-run this on
+     every render and report the same value repeatedly. */
+  const reportLiveFrame = useRef(onLiveFrameChange);
+  reportLiveFrame.current = onLiveFrameChange;
+  useEffect(() => {
+    reportLiveFrame.current?.(everExpanded);
+    return () => {
+      if (everExpanded) reportLiveFrame.current?.(false);
+    };
+  }, [everExpanded]);
 
   /**
    * The shared-element timing, and what reduced motion changes about it.

@@ -812,14 +812,43 @@ The loader is defensive about hand-edited config: a non-string `model` or
 `triggers` collapses to `""`, an unknown `reasoning_effort` collapses to inherit,
 and a junk watchdog override collapses to `0`.
 
-### Crewmate panel: Notes, Work log, Dashboard, Schedules
+### Crewmate panel: Dashboard, Work log, Notes, Schedules
 
 The Crewmates page's right panel has exactly four host tabs, in this order:
-**Notes**, **Work log**, **Dashboard**, **Schedules**. The fourth is the section
-06 amendment of 2026-09-29 (CREW-18721) in
+**Dashboard**, **Work log**, **Notes**, **Schedules** (`CREW_PANEL_TAB_IDS`). The
+fourth is the section 06 amendment of 2026-09-29 (CREW-18721) in
 `docs/request-for-change/rfc-crewmates-launch.md`, which also records that create
-is available wherever a crewmate's schedules are shown; the three before it, and
-the tab the panel opens on, are that screen's original decision.
+is available wherever a crewmate's schedules are shown, and it stays last for that
+amendment's own reason: it is the one tab that writes.
+
+The FIRST of them is also the default focus -- `usePanelTabs` opens a strip with no
+stored focus on `leadingIds[0]` -- so the order and the landing are one fact rather
+than two settings that can disagree. The order is how much of each tab is
+addressed to the person reading it: Dashboard is what the crewmate publishes for
+them, Work log is what it did, Notes is the crewmate's own working memory. Notes
+led until 2026-09-30, which meant opening a crewmate showed first the one tab
+written by the agent for itself and the only one the dashboard cannot change (the
+RFC's amendment of that date carries the decision). It moved off the front rather
+than to the end, because Schedules already held the end on its own grounds. A
+STORED focus still wins: the default applies only to a bucket that has none, so
+someone who was reading a crewmate's notes comes back to them.
+
+That default is resolved on READ and never written. `syncPinned` leaves a strip
+that has host leading tabs unfocused rather than persisting its own fallback,
+because a derived value in storage outlives its derivation: whichever tab led on
+the build that first opened a strip would otherwise stay that strip's focus for
+good, so changing which tab a surface opens on would reach only the strips nobody
+had ever opened.
+
+A strip whose bucket an EARLIER build already gave a leading-tab focus keeps it,
+and that is deliberate. Once stored, such a focus is byte-identical whether the
+reconcile derived it or the person clicked that chip, so nothing in storage can
+tell the two apart, and clearing it on a guess would throw away a choice someone
+made. The consequence is stated rather than worked around: on a browser that had
+already opened a given crewmate before this change, that crewmate's panel still
+opens on Notes until the person selects another tab once, which stores their own
+choice. Every strip opened for the first time after this change gets the
+Dashboard default, and no strip acquires a derived focus again.
 
 **Notes** renders the crewmate's self-maintained briefing
 (`members/<slug>/briefing.md`) read-only, as markdown, through
@@ -832,6 +861,15 @@ that is the normal state, never a 404. `supported` is
 `member_briefing_supported()`: on a platform without `O_NOFOLLOW` plus the
 pinned ancestor walk the read fails closed to `""` and the panel says the notes
 cannot be read on this computer instead of showing an empty briefing.
+
+A line above the body names whose notes these are and says the tab does not
+change them ("<name> writes these notes for itself as it works. You can read them
+here, but not change them."). It is rendered in EVERY state — loading, empty,
+refused, failed, content — because it describes the tab and not the read, so a
+reader never arrives at this text without knowing who wrote it. The empty state is
+one line for the same reason: the sentence that used to sit under it, saying a
+crewmate keeps its own notes here as it works, is now the always-present line
+above.
 
 The panel offers NO editor for the file, and the response carries no file
 pointer. The file is agent-written; the dashboard's file viewer reads through
@@ -887,7 +925,68 @@ auto-patrol status, and the DM thread's own Crew Log record under the heading
 "This conversation" — named for the thread, so it is not read as one of the
 driven sessions listed above it.
 
-**Dashboard** is the single dashboard entrance for the crewmate. Dynamic
+**Dashboard** is the single dashboard entrance for the crewmate. As the landing
+tab it is on screen for the whole window in which the thread POST is still out,
+so its "Opening the conversation" line is withheld while the main column is
+already showing that same sentence (`activeSlot` unset, no pane to render): two
+surfaces said it at once, one of them a live region. With a cached thread up
+beside it the panel's line is the only one, and it is the honest state -- this
+body cannot bind until the POST confirms.
+
+The panel's MOUNT HOLD protects an unsaved answer: a pending question's draft
+lives only in `QuestionCard`'s own state and the command centre's panel-local
+`drafts`, so a body that unmounts takes the typed text with it, and the panel's
+own comments promise the opposite. It comes in two parts. `keepMounted` on the
+Dashboard leading tab is armed whenever that tab has been on screen for this
+crewmate, landing on it included, so a TAB SWITCH keeps the body. The
+`hasTaskDashboard` term of `shouldMountSidePanel`, which keeps the whole panel
+mounted while hidden, follows the DRAFT: `CommandCenterPanel` reports whether it
+is holding one (`onDraftStateChange`), and the page holds its panel on that alone.
+Nothing outside that subtree can see the draft, which is why it is reported rather
+than inferred; the report is also fired `false` on unmount, so a panel that is
+gone cannot go on holding one open.
+
+What is reported is tracked SEPARATELY from the `drafts` map that stops a card
+being auto-retired, because the two rules differ on blocking questions. Retention
+is limited to stateless `card_id` cards: retaining a blocking `ask_id` card would
+resurrect one whose authority the live list owns. The report is not, since a
+blocking ask's answer is typed into the same way and is lost the same way. Read
+off the retention map it claimed no draft at all for a blocking ask, so the host
+released the panel and the typed answer went with the unmount.
+
+Two narrower rules were tried first and each broke something, which is why the
+report exists. Holding whenever the tab had been on screen held the panel for
+every crewmate -- Dashboard being the landing tab -- and kept every OTHER leading
+body alive behind the hidden panel, so a Schedules draft the person had explicitly
+DISCARDED came back on the next open. Holding only while Dashboard was the ACTIVE
+tab fixed that and lost the answer whenever someone typed, left the tab and then
+closed the panel.
+
+The mount hold answers a tab switch and a panel close, and CANNOT answer an exit that
+destroys the subtree under it: `CommandCenterPanel` is keyed on the crewmate, so a
+switch to another crewmate remounts it, and the page belongs to a route. Those exits
+CONFIRM instead, through a second guard pair beside the Schedules one
+(`subtreeAtStakeRef` / `subtreeGuardRef`, the tab-level question OR the Dashboard one):
+the crewmate switch, a team header row, the narrow-window Back, opening one of the
+crewmate's sessions on `/chat`, the registered navigation leave guard (which is what the
+sidebar, the command palette and the header identity pill all ask), the published
+navigation stake for the browser's own Back, and `beforeunload` for a reload. Typing an
+answer and clicking another crewmate in the same roster discarded it silently, with the
+answer living nowhere but component state and no recovery path.
+
+The two pairs stay SEPARATE, and the tab-level one deliberately says nothing about a
+Dashboard draft: a tab switch and a panel close keep that body mounted, so confirming
+there would ask about a draft in no danger, on every one of those gestures. Where both
+drafts are live the questions are asked in sequence rather than merged into one
+"discard everything", since a person may want to keep one and drop the other; the
+Schedules question runs first, because it is the one that can refuse outright (a create
+in flight) and no confirmation should be offered over that.
+
+A held panel is hidden with `display: none` rather than leaving `AnimatePresence`,
+so while a draft is outstanding the docked-column collapse and the narrow-window
+drawer slide and scrim fade do not run. That is accepted, and it now costs only
+the case that earns it: losing an answer silently is worse than losing an
+animation, and with nothing typed the motion runs as before. Dynamic
 Dashboard adds native task progress, questions and approvals to this tab. The
 chat's three-tile dock above the composer opens this tab from its open-panel
 action; the panel's + menu offers no parallel Dynamic Dashboard tab. The existing published

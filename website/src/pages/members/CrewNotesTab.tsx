@@ -4,7 +4,11 @@
  * The body is the crewmate's self-maintained briefing markdown
  * (`members/<slug>/briefing.md`), read through
  * `GET /api/members/{slug}/briefing` and rendered by the real
- * `MarkdownRenderer`. Read-only by design, with no editor: the crewmate
+ * `MarkdownRenderer`. A line above the body says whose notes these are and that
+ * the tab does not change them — the text is the agent's own working memory,
+ * addressed to itself, and a person who reads it as a page written for them
+ * looks for an edit control that is deliberately absent.
+ * Read-only by design, with no editor: the crewmate
  * writes this file as it works, and the dashboard's file viewer reads through
  * a redacting path whose Save writes the buffer back — an in-dashboard edit of
  * an agent-written file could replace a secret the crewmate wrote in the
@@ -86,7 +90,17 @@ export default function CrewNotesTab({ slug, member, header, visible }: CrewNote
   return (
     <div className="flex flex-col h-full" data-testid="member-notes">
       <div className="px-3 pt-3 shrink-0">{header}</div>
-      <div className="flex-1 min-h-0 overflow-y-auto px-3 pb-3">
+      {/* Whose notes these are, said before they are read, in every state —
+          including the ones that render no notes at all, because it describes
+          the TAB and not the read. The text below is the crewmate's own working
+          memory, addressed to itself: its language, its shorthand, its paths.
+          Without this line a person opening the tab reads it as something
+          written for them and looks for the edit control that deliberately does
+          not exist (see the module comment for why there is no editor). */}
+      <p className="px-3 pt-1.5 shrink-0 text-[11.5px] text-muted" data-testid="member-notes-agent-only">
+        {t('pages.membersPage.notes_agent_only', { name: member })}
+      </p>
+      <div className="flex-1 min-h-0 overflow-y-auto px-3 pt-2 pb-3">
         {loading ? (
           <div className="space-y-2" data-testid="member-notes-loading" aria-hidden>
             <Skeleton className="h-3 w-3/4" />
@@ -125,10 +139,13 @@ export default function CrewNotesTab({ slug, member, header, visible }: CrewNote
                 {t('pages.membersPage.notes_unsupported')}
               </p>
             ) : !data?.text ? (
-              <div className="space-y-1.5" data-testid="member-notes-empty">
-                <p className="text-[12px] text-text">{t('pages.membersPage.notes_empty', { name: member })}</p>
-                <p className="text-[11.5px] text-muted">{t('pages.membersPage.notes_empty_hint')}</p>
-              </div>
+              /* One line, not two. The second used to explain that a crewmate
+                 keeps its own notes here as it works — which is now the
+                 always-present line above, so repeating it under the empty
+                 state said the same thing twice to the same reader. */
+              <p className="text-[12px] text-text" data-testid="member-notes-empty">
+                {t('pages.membersPage.notes_empty', { name: member })}
+              </p>
             ) : (
               <>
                 {hidden && (

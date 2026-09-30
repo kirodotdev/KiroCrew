@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { LayoutDashboard, MessageSquare, ShieldCheck } from 'lucide-react'
@@ -25,7 +25,7 @@ const STATE_KEYS: Record<RunState, string> = {
   blocked: 'commandCenter.blocked', waiting: 'commandCenter.waiting', needs_input: 'commandCenter.state_needs_input', stopped: 'commandCenter.stopped',
 }
 
-export default function CommandCenterPanel({ slot, active, publishedView, sessionReady = true }: {
+export default function CommandCenterPanel({ slot, active, publishedView, sessionReady = true, onDraftStateChange, onOpenSession }: {
   slot: string | null
   active: boolean
   /** A Crew publication remains readable while its thread is revalidated;
@@ -34,6 +34,21 @@ export default function CommandCenterPanel({ slot, active, publishedView, sessio
   /** The Crew host supplies its existing published view, with its own sandbox.
    * Presentation composition never grants a document native action authority. */
   publishedView?: { title: string; content: ReactNode }
+  /** Called when this panel starts or stops holding a half-entered answer.
+   *  A host that can UNMOUNT this subtree needs it: the draft lives only in
+   *  `QuestionCard`'s state and this panel's own `drafts`, so an unmount is the
+   *  typed text being thrown away, and the host cannot see that from outside.
+   *  The Crewmates page keeps its side panel mounted while this is true. */
+  onDraftStateChange?: (hasDraft: boolean) => void
+  /** How to leave for a session named in this panel, when the HOST must be asked
+   *  first. The two Open session affordances -- an attention card's header and a
+   *  live-activity row -- are plain `<Link>`s otherwise, and a bare link reaches
+   *  no leave guard, so on a host that UNMOUNTS this subtree on a route change
+   *  they took the unsent answer with them. Same division as
+   *  `onDraftStateChange`: the panel reports and delegates, the host decides.
+   *  With no callback the links stay links, which is right on a host the route
+   *  change does not unmount. */
+  onOpenSession?: (slot: string) => void
 }) {
   const { t } = useTranslation()
   const data = useCommandCenter(slot, active && sessionReady)
@@ -41,6 +56,13 @@ export default function CommandCenterPanel({ slot, active, publishedView, sessio
   // only when it is the progress source (present and nothing omitted). It
   // decides only whether the running runs are listed; work items always are.
   const boardStands = data.progress?.source === 'work'
+  // Report the draft state up, and report FALSE on unmount: a host holding its
+  // panel open for a draft must not be held by a panel that is no longer there.
+  const draftCb = useRef(onDraftStateChange)
+  draftCb.current = onDraftStateChange
+  const hasDraft = data.hasQuestionDraft
+  useEffect(() => { draftCb.current?.(hasDraft) }, [hasDraft])
+  useEffect(() => () => { draftCb.current?.(false) }, [])
   const [selected, setSelected] = useState<string | null>(null)
   const views = [
     ...(publishedView ? [{ id: 'crew', title: publishedView.title }] : []),
@@ -96,7 +118,7 @@ export default function CommandCenterPanel({ slot, active, publishedView, sessio
       {data.attention.map(item => {
         const node = data.nodes.find(n => n.id === `session:${item.slot}`)!
         return <div key={`${slot}:${item.id}`} hidden={!showingOverview && (section === 'approvals' ? item.kind !== 'approval' : item.kind === 'approval')}>
-          <AttentionCard item={item} title={runTitle(node)} context={node.detail} onDraftChange={item.question ? active => data.onQuestionDraftChange(item.question!, active) : undefined} />
+          <AttentionCard item={item} title={runTitle(node)} context={node.detail} onOpenSession={onOpenSession} onDraftChange={item.question ? active => data.onQuestionDraftChange(item.question!, active) : undefined} />
         </div>
       })}
     </div>

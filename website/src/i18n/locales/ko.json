@@ -16606,8 +16606,8 @@
       "notes_refresh_error": "이 메모를 새로 고치지 못했습니다. 마지막으로 불러온 버전을 표시합니다.",
       "notes_unsupported": "이 컴퓨터에서는 메모를 읽을 수 없습니다.",
       "notes_collision": "두 크루메이트가 같은 짧은 이름을 쓰고 있어 메모를 구분할 수 없습니다. 둘 중 하나의 이름을 바꾸면 여기에서 메모를 볼 수 있습니다.",
+      "notes_agent_only": "{{name}}은(는) 일하면서 이 메모를 자기 자신을 위해 씁니다. 여기서 읽을 수는 있지만 바꿀 수는 없습니다.",
       "notes_empty": "{{name}}은(는) 아직 메모를 쓰지 않았습니다.",
-      "notes_empty_hint": "크루메이트는 일하면서 자기 메모를 여기에 남깁니다. 맡고 있는 일, 당신의 결정을 기다리는 질문, 일하는 방식이 담깁니다.",
       "notes_updated": "{{when}} 업데이트됨",
       "notes_redacted_notice": "비밀 정보처럼 보이는 내용은 여기에서 숨겨졌습니다. 파일 자체는 그대로입니다.",
       "notes_truncated_notice": "이 메모는 패널에 표시된 것보다 길며, 나머지는 파일에만 있습니다.",
@@ -16820,7 +16820,10 @@
       "schedules_blurb": "아무도 요청하지 않아도 이 크루메이트를 스스로 시작하는 일정입니다.",
       "schedules_count_title": "전체 {{total}}개 일정 중 {{active}}개 활성",
       "schedules_empty": "이 크루메이트를 스스로 깨우는 것이 아직 없습니다.",
-      "schedules_leave_draft": "페이지를 벗어나 작성 중인 일정을 버리시겠습니까?"
+      "schedules_leave_draft": "페이지를 벗어나 작성 중인 일정을 버리시겠습니까?",
+      "discard_unsent_answer": "작성 중인 답변을 버리시겠습니까?",
+      "discard_unsent_answer_confirm": "답변 버리기",
+      "dashboard_leave_draft": "페이지를 벗어나 작성 중인 답변을 버리시겠습니까?"
     },
     "tasksCapacityCard": {
       "title": "작업 및 용량",

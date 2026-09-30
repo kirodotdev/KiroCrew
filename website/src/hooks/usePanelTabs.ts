@@ -858,18 +858,33 @@ export function usePanelTabs(
       const nextTabs = [...pinned, ...dynamic]
       // Refocus if the active tab was a pinned view that just went away. Any of
       // the host's leading tabs is a valid focus even though none is a stored
-      // tab; a strip with no usable focus lands on the first leading tab (else
-      // the first pinned).
-      const activeId = b.activeId && (leadingIds?.includes(b.activeId) || nextTabs.some(t => t.id === b.activeId))
+      // tab, so such a focus is KEPT.
+      //
+      // With nothing to keep, what gets written depends on whether the host HAS
+      // leading tabs. With them, the strip is left with NO stored focus and the
+      // read path derives one (`effectiveActiveId` resolves null to
+      // `defaultLeadingId`): writing the default here would persist a DERIVED
+      // value, and a derived value in storage outlives its derivation -- the tab
+      // that led on the build which first opened this strip would stay its focus
+      // for good, so a later change of which tab a surface opens on would reach
+      // only the strips nobody had opened yet. A bucket written by a build that
+      // DID persist it keeps that focus: once stored, a leading-tab focus is
+      // indistinguishable from a click on that chip, and clearing it on a guess
+      // would throw away a choice the person made.
+      // Without leading tabs there is nothing to derive from on read, so the
+      // first pinned view is still written, exactly as before.
+      const keep = b.activeId && (leadingIds?.includes(b.activeId) || nextTabs.some(t => t.id === b.activeId))
         ? b.activeId
-        : (defaultLeadingId ?? (nextTabs.length ? nextTabs[0].id : null))
+        : null
+      const activeId = keep
+        ?? (leadingIds?.length ? null : (nextTabs.length ? nextTabs[0].id : null))
       // Bail if nothing actually changed (id sequence + focus) — avoids churn.
       const sameOrder = nextTabs.length === b.tabs.length
         && nextTabs.every((t, i) => t.id === b.tabs[i].id)
       if (sameOrder && activeId === b.activeId) return b
       return { tabs: nextTabs, activeId }
     })
-  }, [update, leadingIds, defaultLeadingId])
+  }, [update, leadingIds])
 
   const openFile = useCallback((path: string, content: string, slot: string | null = null, opts?: { replaceId?: string; line?: number; endLine?: number; diffMode?: boolean; binary?: boolean; partial?: boolean }) => {
     // `revealLine` is always present in the object, `undefined` when absent:

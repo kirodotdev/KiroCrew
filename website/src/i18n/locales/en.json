@@ -7405,8 +7405,8 @@
       "notes_refresh_error": "Couldn't refresh these notes. Showing the last version that loaded.",
       "notes_unsupported": "Notes can't be read on this computer.",
       "notes_collision": "Two crewmates share this short name, so their notes can't be told apart. Rename one of them to see its notes here.",
+      "notes_agent_only": "{{name}} writes these notes for itself as it works. You can read them here, but not change them.",
       "notes_empty": "{{name}} hasn't written any notes yet.",
-      "notes_empty_hint": "A crewmate keeps its own notes here as it works: what it looks after, open questions for you, how it works.",
       "notes_updated": "Updated {{when}}",
       "notes_redacted_notice": "Something that looks like a secret was hidden here. The file itself is untouched.",
       "notes_truncated_notice": "These notes are longer than the panel shows; the rest is only in the file.",
@@ -7630,7 +7630,10 @@
       "schedules_blurb": "Schedules that start this crewmate on its own, with nobody asking.",
       "schedules_count_title": "{{active}} active of {{total}} schedules",
       "schedules_empty": "Nothing wakes this crewmate on its own yet.",
-      "schedules_leave_draft": "Leave the page and lose the schedule you were writing?"
+      "schedules_leave_draft": "Leave the page and lose the schedule you were writing?",
+      "discard_unsent_answer": "Discard the answer you were typing?",
+      "discard_unsent_answer_confirm": "Discard answer",
+      "dashboard_leave_draft": "Leave the page and lose the answer you were typing?"
     },
     "migrationPage": {
       "app_migration": "App Migration",

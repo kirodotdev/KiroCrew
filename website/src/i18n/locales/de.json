@@ -16845,8 +16845,8 @@
       "notes_refresh_error": "Diese Notizen konnten nicht aktualisiert werden. Es wird die zuletzt geladene Version angezeigt.",
       "notes_unsupported": "Notizen können auf diesem Computer nicht gelesen werden.",
       "notes_collision": "Zwei Crew-Kameraden teilen sich diesen Kurznamen, daher lassen sich ihre Notizen nicht auseinanderhalten. Benenne einen von ihnen um, um seine Notizen hier zu sehen.",
+      "notes_agent_only": "{{name}} schreibt diese Notizen bei der Arbeit für sich selbst. Du kannst sie hier lesen, aber nicht ändern.",
       "notes_empty": "{{name}} hat noch keine Notizen geschrieben.",
-      "notes_empty_hint": "Ein Crew-Kamerad führt hier bei der Arbeit seine eigenen Notizen: worum er sich kümmert, welche Fragen er an dich hat, wie er arbeitet.",
       "notes_updated": "Aktualisiert {{when}}",
       "notes_redacted_notice": "Etwas, das wie ein Geheimnis aussieht, wurde hier ausgeblendet. Die Datei selbst ist unverändert.",
       "notes_truncated_notice": "Diese Notizen sind länger, als das Panel zeigt; der Rest steht nur in der Datei.",
@@ -17067,7 +17067,10 @@
       "schedules_blurb": "Zeitpläne, die diesen Crewmate von selbst starten, ohne dass jemand fragt.",
       "schedules_count_title": "{{active}} von {{total}} Zeitplänen aktiv",
       "schedules_empty": "Diesen Crewmate weckt noch nichts von selbst.",
-      "schedules_leave_draft": "Die Seite verlassen und den begonnenen Zeitplan verwerfen?"
+      "schedules_leave_draft": "Die Seite verlassen und den begonnenen Zeitplan verwerfen?",
+      "discard_unsent_answer": "Die begonnene Antwort verwerfen?",
+      "discard_unsent_answer_confirm": "Antwort verwerfen",
+      "dashboard_leave_draft": "Die Seite verlassen und die begonnene Antwort verwerfen?"
     },
     "tasksCapacityCard": {
       "title": "Aufgaben & Kapazität",

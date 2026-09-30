@@ -17084,8 +17084,8 @@
       "notes_refresh_error": "Impossibile aggiornare queste note. Viene mostrata l'ultima versione caricata.",
       "notes_unsupported": "Le note non possono essere lette su questo computer.",
       "notes_collision": "Due compagni condividono questo nome breve, quindi le loro note non si possono distinguere. Rinomina uno dei due per vedere qui le sue note.",
+      "notes_agent_only": "{{name}} scrive queste note per sé mentre lavora. Puoi leggerle qui, ma non modificarle.",
       "notes_empty": "{{name}} non ha ancora scritto nessuna nota.",
-      "notes_empty_hint": "Un compagno tiene qui le proprie note mentre lavora: di cosa si occupa, quali domande ha aperte per te, come lavora.",
       "notes_updated": "Aggiornato {{when}}",
       "notes_redacted_notice": "Qualcosa che sembra un segreto è stato nascosto qui. Il file in sé è intatto.",
       "notes_truncated_notice": "Queste note sono più lunghe di quanto il pannello mostri; il resto è solo nel file.",
@@ -17314,7 +17314,10 @@
       "schedules_blurb": "Pianificazioni che avviano questo compagno da sole, senza che nessuno lo chieda.",
       "schedules_count_title": "{{active}} pianificazioni attive su {{total}}",
       "schedules_empty": "Ancora niente sveglia questo compagno da solo.",
-      "schedules_leave_draft": "Uscire dalla pagina e perdere la pianificazione che stavi scrivendo?"
+      "schedules_leave_draft": "Uscire dalla pagina e perdere la pianificazione che stavi scrivendo?",
+      "discard_unsent_answer": "Eliminare la risposta che stavi scrivendo?",
+      "discard_unsent_answer_confirm": "Elimina risposta",
+      "dashboard_leave_draft": "Uscire dalla pagina e perdere la risposta che stavi scrivendo?"
     },
     "tasksCapacityCard": {
       "title": "Attività e capacità",

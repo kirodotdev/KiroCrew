@@ -308,6 +308,24 @@ describe('SidePanel leading tab', () => {
     expect(JSON.parse(raw as string).activeId).toBe(LEADING_ID)
   })
 
+  it('the DERIVED default focus is never persisted: a fresh strip stores no focus at all', async () => {
+    // `syncPinned` reconciles the pinned block on mount and used to write its
+    // fallback focus into the bucket. That froze whichever tab led on the build
+    // that first opened the strip: changing the default later would reach only
+    // strips nobody had opened. The default is resolved on READ instead, so the
+    // strip renders the leading tab while the bucket stays unfocused.
+    renderPanel({ closable: false })
+    // Rendered focus IS the leading tab; the BUCKET is what must stay unwritten.
+    expect(ctl?.activeId).toBe(LEADING_ID)
+    await new Promise(r => setTimeout(r, 400))
+    const raw = localStorage.getItem('mc-panel-tabs:member-radar')
+    if (raw !== null) expect(JSON.parse(raw).activeId).toBeNull()
+    // A CLICK is a choice, and that is what gets stored.
+    act(() => { ctl!.setActive(LEADING_ID) })
+    await new Promise(r => setTimeout(r, 400))
+    expect(JSON.parse(localStorage.getItem('mc-panel-tabs:member-radar') as string).activeId).toBe(LEADING_ID)
+  })
+
   it('a withheld body-owning tab (Browser) stays MOUNTED and hidden, not unmounted', () => {
     const first = renderPanel({ closable: false })
     act(() => { ctl!.openView('browser') })
