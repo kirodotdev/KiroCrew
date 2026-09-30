@@ -10192,7 +10192,11 @@ async def _run_chat(
                 tool_name=tool_name,
                 tool_input=tool_input,
                 tool_response=tool_response,
-                parent_session_key=session_key,
+                # This session's OWN key, for per-session attribution and the
+                # governance scope. Not ``parent_session_key``: that names the
+                # session that spawned a subagent, and a hook reading it as
+                # such would take every dashboard turn for a subagent's.
+                session_key=session_key,
                 hook_continuation_count=hook_continuation_count,
                 extra_hooks=_spec_hooks,
                 extra_hooks_cwd=_spec_hooks_cwd,

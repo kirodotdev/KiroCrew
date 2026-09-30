@@ -4816,7 +4816,9 @@ async def run_script_hook(
     # Governance: the ``capabilities.script_hooks`` gate (default OFF) may forbid
     # running script hooks for the active surface. Checked before the subprocess
     # spawns. The session key is carried on the hook_event when a caller threads
-    # it (parent_session_key); absent → policy-only resolution.
+    # it — ``parent_session_key`` for a subagent's event (the spawning session
+    # governs), else the firing session's own ``session_key``; absent →
+    # policy-only resolution.
     sk = ""
     if hook_event:
         sk = str(hook_event.get("parent_session_key") or hook_event.get("session_key") or "")
@@ -5350,6 +5352,7 @@ class ScriptHookStore:
         subagent_id: str | None = None,
         parent_session_key: str | None = None,
         agent_role: str | None = None,
+        session_key: str | None = None,
         hook_continuation_count: int = 0,
         extra_hooks: Sequence[ScriptHook] = (),
         extra_hooks_cwd: str | None = None,
@@ -5381,8 +5384,18 @@ class ScriptHookStore:
 
         Optional ``subagent_id``, ``parent_session_key``, and ``agent_role`` are
         emitted into the hook_event payload so hook scripts can attribute tool
-        calls to the specific agent/session that fired them. Parent contexts
-        (dashboard chat, generic LLM helpers) leave them as ``None``.
+        calls to the specific agent/session that fired them. They describe a
+        SPAWNED subagent: ``subagent_id`` is its id and ``parent_session_key`` is
+        the session that spawned it. Parent contexts (dashboard chat, generic LLM
+        helpers) leave them as ``None`` — a hook may read a present
+        ``parent_session_key`` as "this event came from a subagent".
+
+        ``session_key`` is the firing session's OWN key (``dashboard:<slot>``,
+        a channel session key, …), emitted as ``session_key`` whenever the caller
+        knows it, on top-level and subagent events alike. It is the field for
+        per-session attribution; before it existed the dashboard runner reused
+        ``parent_session_key`` for that, which made every composer turn look like
+        a subagent to a hook keyed on the field's documented meaning.
 
         For the Stop event, the full ``context`` (the final assistant segment) is
         used for matcher evaluation and echoed to stdin as ``assistant_text``;
@@ -5423,6 +5436,8 @@ class ScriptHookStore:
             hook_event["parent_session_key"] = parent_session_key
         if agent_role:
             hook_event["agent_role"] = agent_role
+        if session_key:
+            hook_event["session_key"] = session_key
 
         extra_ids = {id(h) for h in extra_hooks}
         # The extra hooks' own payload: their workspace as ``cwd``, and on a tool
@@ -5471,7 +5486,7 @@ class ScriptHookStore:
                 # Governance: skills-only hooks must respect the same capability
                 # gate as command hooks — a disabled capabilities.script_hooks
                 # must not be bypassable by omitting the command field.
-                sk = parent_session_key or ""
+                sk = parent_session_key or session_key or ""
                 # Off the loop, as in run_script_hook: the scope lookup can walk
                 # the governance profile store.
                 gov_denied = await asyncio.to_thread(_script_hooks_capability_denied, sk)

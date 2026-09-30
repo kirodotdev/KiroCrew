@@ -4732,6 +4732,25 @@ a hook is therefore **not portable across platforms**:
 Both platforms receive the same `KIROCREW_HOOK_EVENT` / `KIROCREW_HOOK_CONTEXT`
 env vars and the same hook-event JSON on stdin.
 
+**Attribution keys in the stdin JSON.** Beyond `hook_event_name`, `cwd` and the
+event's own fields (`prompt`, `tool_name`, `tool_input`, `tool_response`,
+`assistant_text`), `ScriptHookStore.fire()` stamps these only when the caller
+supplies them, so a hook reads them with a default:
+
+| key | meaning |
+|---|---|
+| `session_key` | the firing session's **own** key (`dashboard:<slot>`, a channel key) — the field for per-session attribution and the governance scope on a top-level turn |
+| `subagent_id` | present **only** on an event fired by a spawned subagent; its id |
+| `parent_session_key` | present only on a subagent's event: the session that spawned it (it is that session's governance scope) |
+| `agent_role` | the agent template the firing session runs |
+
+A human's dashboard turn therefore carries `session_key` and no `subagent_id`.
+A hook deciding "did a person type this?" keys on `subagent_id`; it must not
+read `parent_session_key` as a subagent marker and equally must not expect it
+on a top-level turn. Before `session_key` existed the dashboard runner reused
+`parent_session_key` for its own key, which made every composer turn look
+spawned to a hook written against this table.
+
 **A hook subprocess inherits only an allowlisted slice of the gateway
 environment, not the whole of `os.environ`.** The gateway process holds
 credentials (provider API keys, tokens) in its environment; copying that wholesale
