@@ -558,6 +558,20 @@ def adaptive_summary_lines(state: dict | None = None) -> list[str]:
     if state.get("enabled", True) and "slow_start" in state:
         growth = "slow start (x2/window)" if state.get("slow_start") else "+1 per window"
         lines.append(f"  Growth toward ceiling: {growth}")
+    # The last cut behind a cap below the ceiling: it outlives both the last
+    # decision (usually a hold) and the five-entry history below. Named as the
+    # LAST cut, not as the cause: a cap recovered to its fresh-start value is
+    # still below the ceiling, and the cut is then history, not the bound.
+    cut = state.get("last_cut")
+    if isinstance(cut, dict) and isinstance(exec_cap, int) and isinstance(ceiling, int):
+        if exec_cap < ceiling:
+            age = cut.get("age_secs")
+            age_text = f" {age:.0f}s ago" if isinstance(age, (int, float)) else ""
+            cut_signals = ",".join(cut.get("signals") or []) or "none"
+            lines.append(
+                f"  Last pressure cut: {cut.get('action')}{age_text} ({cut.get('reason')}); "
+                f"signals: {cut_signals}"
+            )
     last = state.get("last") or {}
     if last:
         signals = ",".join(last.get("signals") or []) or "none"
