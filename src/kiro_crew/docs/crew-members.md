@@ -225,7 +225,7 @@ thing across the product.
   refused outright with `crew_delegation_disabled`. Triggers is the only
   delegation switch: there is no separate "accept delegated tasks" toggle. A
   crewmate added from an agent template starts with empty triggers, so fill them
-  in on its Crew page (Routing tab) before delegating to it.
+  in on the Crewmates page (the Triggers pane) before delegating to it.
 - **Memory unavailable.** A crewmate whose memory binding cannot be resolved
   comes back under `unavailable` with a reason. Report the refusal; running it on
   the default store instead is the one substitution never to make.

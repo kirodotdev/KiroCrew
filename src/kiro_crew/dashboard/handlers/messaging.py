@@ -740,8 +740,8 @@ async def api_spawn(request: web.Request) -> web.Response:
             return web.json_response(
                 {
                     "error": (
-                        "The target member has no Triggers set. Add Triggers on "
-                        "its Crew page (Routing tab) to let other agents delegate to it."
+                        "The target member has no Triggers set. Open it on the Crewmates page "
+                        "and fill in Triggers to let other agents delegate to it."
                     ),
                     "code": "crew_delegation_disabled",
                 },

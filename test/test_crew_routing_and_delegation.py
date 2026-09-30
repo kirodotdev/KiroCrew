@@ -478,7 +478,7 @@ class TestTheSpawnEndpointActuallyDelegates:
         body = json.loads(resp.text)
         assert body["code"] == "crew_delegation_disabled"
         assert "no Triggers set" in body["error"]
-        assert "Routing tab" in body["error"]
+        assert "Crewmates page" in body["error"]
         assert "delegated tasks" not in body["error"]
         mgr.spawn.assert_not_called()
 

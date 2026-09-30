@@ -331,7 +331,7 @@ def schemas() -> list[dict[str, Any]]:
                             "Crew Member name from select_crew or route_crew. "
                             "Selects that member's memory and provider template; agent "
                             "alone selects a template. The member must have non-empty Triggers "
-                            "(Crew page, Routing tab); there is no other delegation switch. Omit to inherit the current member. Applies to every task."
+                            "(set on the Crewmates page); there is no other delegation switch. Omit to inherit the current member. Applies to every task."
                         ),
                     },
                     "target_member": {
