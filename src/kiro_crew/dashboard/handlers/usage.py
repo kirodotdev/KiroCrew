@@ -719,82 +719,193 @@ def slot_turn_usage(
 
 
 def context_trace(slot: str, days: int = 14) -> dict[str, Any]:
-    """Per-turn injection breakdown for one session, newest shard last.
+    """Per-turn injection breakdown for one slot, oldest turn first.
 
-    Reads the ``ctx_blocks`` / ``phase`` fields ``persist_token_record`` writes
-    each turn and returns them in chronological order, plus per-block totals.
-    Billing stays out of the payload: :func:`slot_turn_usage` is the per-turn
-    reader for ``credits`` / ``duration_ms``, and this trace answers only "what
-    was injected".
+    Served from the slot's ``usage`` PROJECTION -- one memoised fold read -- and no
+    longer by scanning the token shards. The scan it replaces opened every shard in
+    the window, JSON-parsed every row in each, and threw away all but this slot's:
+    work proportional to the whole installation's turn volume to answer a question
+    about one session. The crew log already records the same composition
+    (``context/composed``, which the ``usage`` fold folds into ``context.turns``),
+    so the projection is where the answer lives.
 
-    Kept out of the OTEL pipeline for the same reason as
-    :func:`context_occupancy`: this is per-session, per-turn detail, and slot
-    keys are unbounded-cardinality labels that must not become metric labels.
-    The bounded half (block label -> size, aggregated) is what belongs on a
-    metric; this is the drill-down.
+    Billing stays out of the payload: :func:`slot_turn_usage` is the per-turn reader
+    for ``credits`` / ``duration_ms``, and this trace answers only "what was
+    injected".
 
-    Rows written before this field existed simply carry no ``ctx_blocks`` and
-    are skipped, so the trace starts where the recording does rather than
-    inventing zeros for history.
+    Kept out of the OTEL pipeline for the same reason as :func:`context_occupancy`:
+    this is per-session, per-turn detail, and slot keys are unbounded-cardinality
+    labels that must not become metric labels. The bounded half (block label ->
+    size, aggregated) is what belongs on a metric; this is the drill-down.
 
-    ``peak_context_used`` (the largest ``context_used`` reading across the
-    turns, in tokens) and ``context_window`` (the newest non-zero window size)
-    are the occupancy pair the Session Breakdown tree reads. Block sizes are in
-    characters and occupancy is in tokens; the trace carries both as recorded
-    and derives nothing across the unit boundary.
+    ONE BOUND on the payload: *days*. Turns older than the window are excluded, so
+    ``window_days`` keeps meaning what it meant and a caller asking for 14 days is
+    still answered about 14 days. The fold's own truncation needs no second field,
+    because every row carries its own ``ordinal`` -- a reader shown a truncated list
+    reads the first row's true position and knows exactly how much precedes it, which
+    a whole-session drop count applied to an array index could never tell it.
+
+    ``peak_context_used`` and ``context_window`` are the PROVIDER's own occupancy
+    reading and the window it was taken against, and they are ONE pair from ONE turn
+    -- the fullest turn INSIDE the day window. Both halves matter. The pair, because
+    the Session Breakdown tree divides one by the other, and a reading over a window
+    from somewhere else describes no turn that ran (a model switch moves the window).
+    Inside the window, because the caller asked about a span of days: on a long
+    session the fullest turn is frequently older than every row in that span. Neither
+    is derived from the turn's token counts, which are billing summed over every model
+    call and on a tool-using turn exceed the window they would be divided by.
+
+    HISTORY BEFORE THIS RELEASE. The crew log is the only source now, so a session
+    whose ``context/composed`` entries predate this fold reads with an unstated
+    ``phase`` (its chart does not split the session-start turn out) and no occupancy
+    until its first turn closes under this build; a session recorded with the crew log
+    switched off reads empty. No read-through to the token shards is offered, and that
+    is deliberate rather than deferred: this release stops writing ``ctx_blocks`` to
+    the row, and the scan it would perform was bounded to ``days``, so such a fallback
+    could serve data for at most that many days after release and would read nothing
+    for the rest of its life. A read path with a provable expiry date is worse than
+    none. Both cases self-heal as new turns are recorded.
+
+    Block sizes are in characters and occupancy is in tokens.
     """
+    # Imported here rather than at module scope, the same way ``work_ledger`` reaches
+    # this function: the projection module pulls in the ledger and work stores, and
+    # this handler module is imported from the route table they in turn reach.
+    from kiro_crew.crew_log.projection import read_slot_projection
+
+    try:
+        folded = read_slot_projection(slot, "usage").value
+    except Exception:
+        # A damaged or unreadable log reads as "nothing folded" rather than as a 500,
+        # the same contract the panel and work readers keep. WARNING because a trace
+        # that silently stopped updating has no other trace of its own, and it
+        # reproduces on every read until the log is repaired.
+        logger.warning("usage fold unreadable for slot %s", slot, exc_info=True)
+        folded = {}
+    context = folded.get("context") if isinstance(folded, dict) else None
+    if not isinstance(context, dict):
+        context = {}
+    rows = context.get("turns")
+    if not isinstance(rows, list):
+        rows = []
+
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).timestamp()
     turns: list[dict[str, Any]] = []
     totals: dict[str, int] = {}
-    for shard_path in _shards_in_window(days):
-        try:
-            with shard_path.open("rb") as fh:
-                for line in bounded_records(fh, shard_path, label="usage"):
-                    try:
-                        obj = json.loads(line)
-                    except ValueError:
-                        continue
-                    if not isinstance(obj, dict) or obj.get("_type") != "tokens":
-                        continue
-                    if str(obj.get("slot") or "") != slot:
-                        continue
-                    raw = obj.get("ctx_blocks")
-                    if not isinstance(raw, dict) or not raw:
-                        continue
-                    blocks = {str(k): _coerce_int(v) for k, v in raw.items() if _coerce_int(v) > 0}
-                    if not blocks:
-                        continue
-                    for label, size in blocks.items():
-                        totals[label] = totals.get(label, 0) + size
-                    turn_row: dict[str, Any] = {
-                        "ts": str(obj.get("ts") or ""),
-                        "phase": str(obj.get("phase") or ""),
-                        "blocks": blocks,
-                        "total_chars": sum(blocks.values()),
-                        "context_used": _coerce_int(obj.get("context_used")),
-                        "context_window": _coerce_int(obj.get("context_window")),
-                        "model": str(obj.get("model") or ""),
-                    }
-                    turns.append(turn_row)
-        except (OSError, UnicodeDecodeError):
+    peak_used = 0
+    peak_window = 0
+    # The smallest EXACT ordinal among the rows kept in this day window, so the count
+    # Whether any row in the window carried a reading. It separates two causes of a
+    # zero window that must not share an answer: no reading in this span at all (the
+    # configured size is then the best a reader can be given), or a reading whose
+    # window the provider never stated (there IS no size it was measured against).
+    peak_seen = False
+    for row in rows:
+        if not isinstance(row, dict):
             continue
+        stamp = _row_iso(row.get("ts"))
+        if stamp is None:
+            # A row this reader cannot DATE cannot be placed inside or outside the
+            # window, and the window is the one thing the caller asked about.
+            continue
+        when, iso = stamp
+        if when < cutoff:
+            continue
+        sources = row.get("sources")
+        if not isinstance(sources, dict):
+            continue
+        blocks = {str(k): _coerce_int(v) for k, v in sources.items() if _coerce_int(v) > 0}
+        if not blocks:
+            continue
+        for label, size in blocks.items():
+            totals[label] = totals.get(label, 0) + size
+        # PRESENCE of the key, not its value, is what says this row's turn reported
+        # occupancy: the fold stamps both fields only when a closer carried them, so a
+        # row with no reading is absent rather than zero. Testing the value instead
+        # would make an unreported turn indistinguishable from a turn that genuinely
+        # measured zero, and every row would then claim to be a reading of 0.
+        has_reading = "used" in row
+        used = _coerce_int(row.get("used"))
+        # The window this row's occupancy is a fraction of. For a MEASURED turn it is
+        # the provider's own ``used_window`` -- the size the reading was actually taken
+        # against, which a model switch moves -- so ``context_used / context_window``
+        # is a coherent ratio from one measurement. The configured ``window`` (stamped
+        # at composition from the newest request/configured) is only the fallback for
+        # an UNMEASURED turn, which has no reading and so no window of its own; pairing
+        # a measured ``used`` with the configured size instead would divide the
+        # provider's reading by a size it was never measured against. This mirrors the
+        # peak below, which already takes its window from ``used_window``.
+        row_window = (
+            _coerce_int(row.get("used_window")) if has_reading else _coerce_int(row.get("window"))
+        )
+        turns.append(
+            {
+                "ts": iso,
+                "phase": str(row.get("phase") or ""),
+                "blocks": blocks,
+                # The fold records the composition's own total, which is what the
+                # writer measured; summing the blocks would silently drop whatever
+                # the row reports as omitted detail.
+                "total_chars": _coerce_int(row.get("chars")) or sum(blocks.values()),
+                # The provider's occupancy reading for the turn this composition
+                # belongs to, 0 when that turn reported none.
+                "context_used": used,
+                "context_window": row_window,
+                "model": str(row.get("model") or ""),
+                # The row's EXACT position in the whole session history, assigned by the
+                # fold before any truncation. A reader shows this as the turn's number
+                # directly, so it stays true no matter how many older rows the fold
+                # dropped or this day view excluded -- applying one whole-session omitted
+                # count to an array index would corrupt it, because the index counts only
+                # the rows still present AND inside the window.
+                "ordinal": _coerce_int(row.get("ordinal")),
+            }
+        )
+        # The peak INSIDE the requested window, with the window that same reading was
+        # measured against. Taken here rather than from a session-wide figure because
+        # the caller asked about a span of days: on a long session the fullest turn is
+        # frequently older than every row in that span, and reporting it would answer a
+        # question nobody asked. ``>=`` keeps the LATEST among equally-full turns, which
+        # is the reading describing the model currently running.
+        if has_reading and (not peak_seen or used >= peak_used):
+            peak_used = used
+            # Travels with the reading, including as 0. A turn that reported a used
+            # count but no window has no size it was measured against, and borrowing
+            # another turn's would manufacture a ratio for a turn that never ran.
+            peak_window = _coerce_int(row.get("used_window"))
+            peak_seen = True
 
-    turns.sort(key=lambda t: str(t["ts"]))
-    injected = sum(totals.values())
-    # Occupancy is per-turn cumulative, so the largest reading in the session is
-    # the closest thing to "how full did this window get".
-    peak_used = max((int(t["context_used"]) for t in turns), default=0)
     return {
         "slot": slot,
         "turns": turns,
         "totals": totals,
-        "injected_chars": injected,
+        "injected_chars": sum(totals.values()),
         "user_chars": totals.get(USER_LABEL, 0),
         "peak_context_used": peak_used,
-        "context_window": next(
-            (int(t["context_window"]) for t in reversed(turns) if t["context_window"]), 0
-        ),
+        # The peak's own window once a reading exists in this span; otherwise the size
+        # the session is configured with, which is what a reader with no reading can
+        # still be told.
+        "context_window": peak_window if peak_seen else _coerce_int(context.get("window")),
         "window_days": days,
     }
+
+
+def _row_iso(raw: Any) -> tuple[float, str] | None:
+    """A fold row's ``ts`` as ``(epoch seconds, ISO-8601 UTC)``, or ``None``.
+
+    The crew log stamps an entry in epoch MILLISECONDS, and the payload's declared
+    shape is a string, so both forms are produced here from one conversion rather
+    than at the two places that need them -- a reader that dated a row one way and
+    displayed it another could show a turn it had excluded.
+    """
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        return None
+    seconds = raw / 1000.0
+    try:
+        return seconds, datetime.fromtimestamp(seconds, timezone.utc).isoformat()
+    except (OSError, OverflowError, ValueError):
+        # A stamp outside the platform's representable range dates nothing.
+        return None
 
 
 def cost_breakdown(days: int = SPEND_WINDOW_DAYS) -> dict[str, Any]:
@@ -1302,8 +1413,6 @@ def _build_token_record(
     context_used: int = 0,
     context_window: int = 0,
     elapsed_ms: int = 0,
-    ctx_blocks: dict[str, int] | None = None,
-    phase: str = "",
     app: str = "",
 ) -> dict[str, Any]:
     """Build the JSONL token-usage record dict (no I/O).
@@ -1373,15 +1482,6 @@ def _build_token_record(
         "agent": agent or "",
         "context_used": _coerce_int(context_used),
         "context_window": _coerce_int(context_window),
-        # Per-turn injection breakdown: block label -> characters, from
-        # kiro_crew.context_blocks.split_blocks. Sizes are characters (exact and
-        # tokenizer-independent). ``phase`` separates the one-off session-start
-        # injection from the much smaller per-turn one so a reader never pools
-        # the two populations into one meaningless percentile.
-        "ctx_blocks": {
-            str(k): _coerce_int(v) for k, v in (ctx_blocks or {}).items() if _coerce_int(v) > 0
-        },
-        "phase": phase or "",
         # Additive: the turn's terminal stop reason ("" when the producer has
         # none). str-coerced so a non-string on a test double / legacy event
         # can't break json.dumps.
@@ -1514,8 +1614,6 @@ def persist_token_record(
     context_used: int = 0,
     context_window: int = 0,
     elapsed_ms: int = 0,
-    ctx_blocks: dict[str, int] | None = None,
-    phase: str = "",
     app: str = "",
     model_source: object = None,
 ) -> None:
@@ -1562,8 +1660,6 @@ def persist_token_record(
                 context_used=context_used,
                 context_window=context_window,
                 elapsed_ms=elapsed_ms,
-                ctx_blocks=ctx_blocks,
-                phase=phase,
                 app=app,
             ),
             now,
@@ -1583,8 +1679,6 @@ async def persist_token_record_async(
     context_used: int = 0,
     context_window: int = 0,
     elapsed_ms: int = 0,
-    ctx_blocks: dict[str, int] | None = None,
-    phase: str = "",
     app: str = "",
     model_source: object = None,
     emit_metric: bool = True,
@@ -1639,8 +1733,6 @@ async def persist_token_record_async(
             context_used=context_used,
             context_window=context_window,
             elapsed_ms=elapsed_ms,
-            ctx_blocks=ctx_blocks,
-            phase=phase,
             app=app,
         )
         # Before the offloaded write: a file-write failure must not cost the

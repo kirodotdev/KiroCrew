@@ -72,8 +72,9 @@ class TestParseSessions:
     def test_iterdir_oserror(self, tmp_path):
         d = tmp_path / "cli"
         d.mkdir()
-        with patch.object(usage_mod, "_SESSIONS_DIR", d), patch(
-            "pathlib.Path.iterdir", side_effect=OSError("boom")
+        with (
+            patch.object(usage_mod, "_SESSIONS_DIR", d),
+            patch("pathlib.Path.iterdir", side_effect=OSError("boom")),
         ):
             result = _parse_sessions()
             assert "error" in result
@@ -104,8 +105,9 @@ class TestParseSessions:
 
         d = tmp_path / "cli"
         d.mkdir()
-        with patch.object(usage_mod, "_SESSIONS_DIR", d), patch(
-            "pathlib.Path.iterdir", side_effect=OSError("boom")
+        with (
+            patch.object(usage_mod, "_SESSIONS_DIR", d),
+            patch("pathlib.Path.iterdir", side_effect=OSError("boom")),
         ):
             result = _parse_sessions()
 
@@ -130,8 +132,9 @@ class TestParseSessions:
         d = tmp_path / "cli"
         d.mkdir()
         _write_session(d / "s1.jsonl", [{"kind": "Prompt"}])
-        with patch.object(usage_mod, "_SESSIONS_DIR", d), patch.object(
-            usage_mod, "validate_file_path", return_value=None
+        with (
+            patch.object(usage_mod, "_SESSIONS_DIR", d),
+            patch.object(usage_mod, "validate_file_path", return_value=None),
         ):
             r = _parse_sessions()
             assert r["total_sessions"] == 0
@@ -149,18 +152,18 @@ class TestParseSessions:
         d.mkdir()
         _write_session(d / "s1.jsonl", [{"kind": "Prompt"}])
         _write_session(d / "s2.jsonl", [{"kind": "Prompt"}])
-        with patch.object(usage_mod, "_SESSIONS_DIR", d), patch.object(
-            usage_mod, "validate_file_path", return_value=None
-        ), caplog.at_level(logging.WARNING, logger="kiro_crew.dashboard.handlers.usage"):
+        with (
+            patch.object(usage_mod, "_SESSIONS_DIR", d),
+            patch.object(usage_mod, "validate_file_path", return_value=None),
+            caplog.at_level(logging.WARNING, logger="kiro_crew.dashboard.handlers.usage"),
+        ):
             r = _parse_sessions()
         assert r["total_sessions"] == 0
         # The silent-zero fix: the count reaches the client, not just the log.
         assert r["refused_transcripts"] == 2
         # One aggregated record, not one per file: a UNC home refuses every
         # transcript, and per-file logging would emit thousands.
-        refusals = [
-            rec for rec in caplog.records if "could not be loaded" in rec.getMessage()
-        ]
+        refusals = [rec for rec in caplog.records if "could not be loaded" in rec.getMessage()]
         assert len(refusals) == 1
         assert "2" in refusals[0].getMessage()
 
@@ -170,9 +173,11 @@ class TestParseSessions:
         d.mkdir()
         f = d / "s1.jsonl"
         _write_session(f, [{"kind": "Prompt"}])
-        with patch.object(usage_mod, "_SESSIONS_DIR", d), patch.object(
-            usage_mod, "validate_file_path", return_value=str(f)
-        ), caplog.at_level(logging.WARNING, logger="kiro_crew.dashboard.handlers.usage"):
+        with (
+            patch.object(usage_mod, "_SESSIONS_DIR", d),
+            patch.object(usage_mod, "validate_file_path", return_value=str(f)),
+            caplog.at_level(logging.WARNING, logger="kiro_crew.dashboard.handlers.usage"),
+        ):
             r = _parse_sessions()
         assert r["total_sessions"] == 1
         assert r["refused_transcripts"] == 0
@@ -190,9 +195,11 @@ class TestParseSessions:
                 raise OSError("stat fail")
             return orig_stat(self_, *a, **kw)
 
-        with patch.object(usage_mod, "_SESSIONS_DIR", d), patch.object(
-            usage_mod, "validate_file_path", return_value=str(f)
-        ), patch.object(Path, "stat", stat_side_effect):
+        with (
+            patch.object(usage_mod, "_SESSIONS_DIR", d),
+            patch.object(usage_mod, "validate_file_path", return_value=str(f)),
+            patch.object(Path, "stat", stat_side_effect),
+        ):
             r = _parse_sessions()
             assert r["all_time_sessions"] == 0
             # First Principles: a stat failure is a did-not-load branch, so
@@ -235,17 +242,17 @@ class TestParseSessions:
                 raise OSError("read fail")
             return orig_open(self_, *a, **kw)
 
-        with patch.object(usage_mod, "_SESSIONS_DIR", d), patch.object(
-            usage_mod, "validate_file_path", side_effect=validate
-        ), patch.object(Path, "stat", stat_side_effect), patch.object(
-            Path, "open", open_side_effect
-        ), caplog.at_level(logging.WARNING, logger="kiro_crew.dashboard.handlers.usage"):
+        with (
+            patch.object(usage_mod, "_SESSIONS_DIR", d),
+            patch.object(usage_mod, "validate_file_path", side_effect=validate),
+            patch.object(Path, "stat", stat_side_effect),
+            patch.object(Path, "open", open_side_effect),
+            caplog.at_level(logging.WARNING, logger="kiro_crew.dashboard.handlers.usage"),
+        ):
             r = _parse_sessions()
         assert r["total_sessions"] == 0
         assert r["refused_transcripts"] == 3
-        loaded_msgs = [
-            rec for rec in caplog.records if "could not be loaded" in rec.getMessage()
-        ]
+        loaded_msgs = [rec for rec in caplog.records if "could not be loaded" in rec.getMessage()]
         assert len(loaded_msgs) == 1
         assert "3" in loaded_msgs[0].getMessage()
 
@@ -258,8 +265,9 @@ class TestParseSessions:
         f = d / "old.jsonl"
         old_mtime = time.time() - (60 * 86400)
         _write_session(f, [{"kind": "Prompt"}], mtime=old_mtime)
-        with patch.object(usage_mod, "_SESSIONS_DIR", d), patch.object(
-            usage_mod, "validate_file_path", return_value=str(f)
+        with (
+            patch.object(usage_mod, "_SESSIONS_DIR", d),
+            patch.object(usage_mod, "validate_file_path", return_value=str(f)),
         ):
             r = _parse_sessions()
         assert r["all_time_sessions"] == 1
@@ -271,8 +279,9 @@ class TestParseSessions:
         f = d / "old.jsonl"
         old_mtime = time.time() - (60 * 86400)  # 60 days ago
         _write_session(f, [{"kind": "Prompt"}], mtime=old_mtime)
-        with patch.object(usage_mod, "_SESSIONS_DIR", d), patch.object(
-            usage_mod, "validate_file_path", return_value=str(f)
+        with (
+            patch.object(usage_mod, "_SESSIONS_DIR", d),
+            patch.object(usage_mod, "validate_file_path", return_value=str(f)),
         ):
             r = _parse_sessions()
             assert r["all_time_sessions"] == 1
@@ -290,8 +299,9 @@ class TestParseSessions:
             {"kind": "Other"},
         ]
         _write_session(f, lines)
-        with patch.object(usage_mod, "_SESSIONS_DIR", d), patch.object(
-            usage_mod, "validate_file_path", return_value=str(f)
+        with (
+            patch.object(usage_mod, "_SESSIONS_DIR", d),
+            patch.object(usage_mod, "validate_file_path", return_value=str(f)),
         ):
             r = _parse_sessions()
             assert r["total_sessions"] == 1
@@ -307,8 +317,9 @@ class TestParseSessions:
         d.mkdir()
         f = d / "s1.jsonl"
         f.write_text('{"kind":"Prompt"}\nNOT_JSON\n{"kind":"ToolResults"}\n')
-        with patch.object(usage_mod, "_SESSIONS_DIR", d), patch.object(
-            usage_mod, "validate_file_path", return_value=str(f)
+        with (
+            patch.object(usage_mod, "_SESSIONS_DIR", d),
+            patch.object(usage_mod, "validate_file_path", return_value=str(f)),
         ):
             r = _parse_sessions()
             assert r["total_messages"] == 1
@@ -319,8 +330,9 @@ class TestParseSessions:
         d.mkdir()
         f = d / "s1.jsonl"
         f.write_text('"just a string"\n42\nnull\n[1,2]\n{"kind":"Prompt"}\n')
-        with patch.object(usage_mod, "_SESSIONS_DIR", d), patch.object(
-            usage_mod, "validate_file_path", return_value=str(f)
+        with (
+            patch.object(usage_mod, "_SESSIONS_DIR", d),
+            patch.object(usage_mod, "validate_file_path", return_value=str(f)),
         ):
             r = _parse_sessions()
             assert r["total_messages"] == 1
@@ -337,9 +349,11 @@ class TestParseSessions:
                 raise OSError("read fail")
             return orig_open(self_, *a, **kw)
 
-        with patch.object(usage_mod, "_SESSIONS_DIR", d), patch.object(
-            usage_mod, "validate_file_path", return_value=str(f)
-        ), patch.object(Path, "open", open_raises):
+        with (
+            patch.object(usage_mod, "_SESSIONS_DIR", d),
+            patch.object(usage_mod, "validate_file_path", return_value=str(f)),
+            patch.object(Path, "open", open_raises),
+        ):
             r = _parse_sessions()
             assert r["all_time_sessions"] == 1
             assert r["total_sessions"] == 0  # not counted when file read fails
@@ -351,8 +365,9 @@ class TestParseSessions:
         now = time.time()
         f = d / "today.jsonl"
         _write_session(f, [{"kind": "Prompt"}, {"kind": "ToolResults"}], mtime=now)
-        with patch.object(usage_mod, "_SESSIONS_DIR", d), patch.object(
-            usage_mod, "validate_file_path", return_value=str(f)
+        with (
+            patch.object(usage_mod, "_SESSIONS_DIR", d),
+            patch.object(usage_mod, "validate_file_path", return_value=str(f)),
         ):
             r = _parse_sessions()
             assert r["today"]["sessions"] == 1
@@ -371,8 +386,9 @@ class TestParseSessions:
         ]
         # mtime is today, but timestamp says April 20
         _write_session(f, lines)
-        with patch.object(usage_mod, "_SESSIONS_DIR", d), patch.object(
-            usage_mod, "validate_file_path", return_value=str(f)
+        with (
+            patch.object(usage_mod, "_SESSIONS_DIR", d),
+            patch.object(usage_mod, "validate_file_path", return_value=str(f)),
         ):
             r = _parse_sessions()
             assert r["total_sessions"] == 1
@@ -389,8 +405,9 @@ class TestParseSessions:
             {"kind": "ToolResults"},
         ]
         _write_session(f, lines)
-        with patch.object(usage_mod, "_SESSIONS_DIR", d), patch.object(
-            usage_mod, "validate_file_path", return_value=str(f)
+        with (
+            patch.object(usage_mod, "_SESSIONS_DIR", d),
+            patch.object(usage_mod, "validate_file_path", return_value=str(f)),
         ):
             r = _parse_sessions()
             assert r["total_sessions"] == 1
@@ -407,8 +424,9 @@ class TestParseSessions:
             {"kind": "AssistantMessage"},
         ]
         _write_session(f, lines)
-        with patch.object(usage_mod, "_SESSIONS_DIR", d), patch.object(
-            usage_mod, "validate_file_path", return_value=str(f)
+        with (
+            patch.object(usage_mod, "_SESSIONS_DIR", d),
+            patch.object(usage_mod, "validate_file_path", return_value=str(f)),
         ):
             r = _parse_sessions()
             assert r["total_sessions"] == 1
@@ -481,19 +499,21 @@ class TestApiKiroUsage:
         d.mkdir()
         f = d / "s.jsonl"
         _write_session(f, [{"kind": "Prompt"}])
-        with patch.object(usage_mod, "_SESSIONS_DIR", d), patch.object(
-            usage_mod, "validate_file_path", return_value=str(f)
-        ), patch.object(
-            usage_mod,
-            "get_usage_cache",
-            return_value={
-                "credits_used": 10,
-                "credits_plan": 100,
-                "cost_usd": 0,
-                "resets": "May 1",
-                "plan": "Pro",
-                "overage_rate": 0.01,
-            },
+        with (
+            patch.object(usage_mod, "_SESSIONS_DIR", d),
+            patch.object(usage_mod, "validate_file_path", return_value=str(f)),
+            patch.object(
+                usage_mod,
+                "get_usage_cache",
+                return_value={
+                    "credits_used": 10,
+                    "credits_plan": 100,
+                    "cost_usd": 0,
+                    "resets": "May 1",
+                    "plan": "Pro",
+                    "overage_rate": 0.01,
+                },
+            ),
         ):
             app = web.Application()
             app.router.add_get("/api/usage/kiro", api_kiro_usage)
@@ -652,9 +672,11 @@ class TestApiKiroUsage:
         d.mkdir()
         f = d / "s.jsonl"
         _write_session(f, [{"kind": "Prompt"}])
-        with patch.object(usage_mod, "_SESSIONS_DIR", d), \
-             patch.object(usage_mod, "validate_file_path", return_value=str(f)), \
-             patch.object(usage_mod, "get_usage_cache", return_value={"available": False}):
+        with (
+            patch.object(usage_mod, "_SESSIONS_DIR", d),
+            patch.object(usage_mod, "validate_file_path", return_value=str(f)),
+            patch.object(usage_mod, "get_usage_cache", return_value={"available": False}),
+        ):
             app = web.Application()
             app.router.add_get("/api/usage/kiro", api_kiro_usage)
             async with TestClient(TestServer(app)) as client:
@@ -1159,12 +1181,8 @@ class TestBuildTokenRecordCredits:
     def test_record_coerces_non_numeric_credits_to_zero(self):
         from types import SimpleNamespace
 
-        event = SimpleNamespace(
-            input_tokens=0, output_tokens=0, credits="not-a-number"
-        )
-        rec = usage_mod._build_token_record(
-            "s", "m", event, "acp", datetime.now(timezone.utc)
-        )
+        event = SimpleNamespace(input_tokens=0, output_tokens=0, credits="not-a-number")
+        rec = usage_mod._build_token_record("s", "m", event, "acp", datetime.now(timezone.utc))
         assert rec["credits"] == 0.0
 
 
@@ -1266,9 +1284,7 @@ class TestBuildTokenRecordContextFields:
         from types import SimpleNamespace
 
         ev = SimpleNamespace(usage=None, stop_reason="error: tool stall")
-        rec = usage_mod._build_token_record(
-            "chat-1", "m", ev, "acp", datetime.now(timezone.utc)
-        )
+        rec = usage_mod._build_token_record("chat-1", "m", ev, "acp", datetime.now(timezone.utc))
         assert rec["stop_reason"] == "error: tool stall"
         json.dumps(rec)  # must not raise
 
@@ -1283,9 +1299,7 @@ class TestBuildTokenRecordContextFields:
         from types import SimpleNamespace
 
         weird = SimpleNamespace(usage=None, stop_reason=1234)
-        rec = usage_mod._build_token_record(
-            "chat-1", "m", weird, "acp", datetime.now(timezone.utc)
-        )
+        rec = usage_mod._build_token_record("chat-1", "m", weird, "acp", datetime.now(timezone.utc))
         assert rec["stop_reason"] == ""
         json.dumps(rec)
 
@@ -1342,8 +1356,8 @@ class TestBuildTokenRecordContextFields:
         assert record["context_window"] == 1_000_000
 
 
-class TestBuildTokenRecordCtxBlocks:
-    """_build_token_record emits the per-turn injection breakdown + phase."""
+class TestBuildTokenRecordCarriesNoInjectionBreakdown:
+    """The row stopped carrying the per-turn injection breakdown and its phase."""
 
     @staticmethod
     def _event():
@@ -1358,43 +1372,41 @@ class TestBuildTokenRecordCtxBlocks:
             duration_ms=0,
         )
 
-    def test_emits_ctx_blocks_and_phase(self):
-        rec = usage_mod._build_token_record(
-            "chat-1",
-            "claude-opus-4-8",
-            self._event(),
-            "acp",
-            datetime.now(timezone.utc),
-            ctx_blocks={"memory": 1200, "lessons": 800},
-            phase="session_start",
-        )
-        assert rec["ctx_blocks"] == {"memory": 1200, "lessons": 800}
-        assert rec["phase"] == "session_start"
+    def test_the_row_no_longer_carries_the_injection_breakdown(self):
+        """Both fields are gone, and the crew log is where the fact lives now.
 
-    def test_drops_non_positive_and_non_numeric_block_sizes(self):
-        # A zero, a negative, and two non-numeric sizes are all dropped so the
-        # row carries only real spans and stays json.dumps-safe.
+        They were written every turn for exactly one reader, ``context_trace``, which
+        is now served from the ``usage`` projection -- so the row was paying to store
+        a breakdown nothing read. ``context/composed`` in the crew log carries the
+        same blocks and the same phase, recorded by the same composer.
+        """
         rec = usage_mod._build_token_record(
-            "s",
-            "m",
-            self._event(),
-            "acp",
-            datetime.now(timezone.utc),
-            ctx_blocks={"keep": 10, "zero": 0, "neg": -5, "text": "x", "none": None},
-            phase="per_turn",
+            "chat-1", "claude-opus-4-8", self._event(), "acp", datetime.now(timezone.utc)
         )
-        assert rec["ctx_blocks"] == {"keep": 10}
-        assert rec["phase"] == "per_turn"
+        assert "ctx_blocks" not in rec
+        assert "phase" not in rec
         json.dumps(rec)
 
-    def test_backcompat_defaults_when_omitted(self):
-        # Legacy callers pass neither: the fields still exist, defaulted, so old
-        # readers and old shards stay valid.
-        rec = usage_mod._build_token_record(
-            "chat-1", "opus", self._event(), "acp", datetime.now(timezone.utc)
-        )
-        assert rec["ctx_blocks"] == {}
-        assert rec["phase"] == ""
+    def test_the_two_parameters_are_gone_from_the_builder(self):
+        """A caller still passing them fails loudly rather than writing a dead field."""
+        with pytest.raises(TypeError):
+            usage_mod._build_token_record(
+                "chat-1",
+                "opus",
+                self._event(),
+                "acp",
+                datetime.now(timezone.utc),
+                ctx_blocks={"memory": 1200},
+            )
+        with pytest.raises(TypeError):
+            usage_mod._build_token_record(
+                "chat-1",
+                "opus",
+                self._event(),
+                "acp",
+                datetime.now(timezone.utc),
+                phase="session_start",
+            )
 
 
 class _Inner:
@@ -1629,16 +1641,12 @@ class TestModelSourceFallback:
         # `auto` records the explicit backend-selection mode even when the
         # backend does not disclose the concrete model for this completed turn.
         shard_dir = _patch_shard_layout(monkeypatch, tmp_path)
-        persist_token_record(
-            "slot", "auto", self._event(), provider="acp", surface="task_runner"
-        )
+        persist_token_record("slot", "auto", self._event(), provider="acp", surface="task_runner")
         assert self._row(shard_dir)["model"] == "auto"
 
     def test_auto_is_case_and_space_insensitive(self, tmp_path, monkeypatch):
         shard_dir = _patch_shard_layout(monkeypatch, tmp_path)
-        persist_token_record(
-            "slot", "  AUTO ", self._event(), provider="acp", surface="cron"
-        )
+        persist_token_record("slot", "  AUTO ", self._event(), provider="acp", surface="cron")
         assert self._row(shard_dir)["model"] == "auto"
 
     def test_auto_source_fills_empty_model(self, tmp_path, monkeypatch):

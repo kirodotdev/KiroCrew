@@ -890,7 +890,6 @@ test/test_turn_duration_workflow.py
 test/test_turn_stats.py
 test/test_unattended_slot_guardrails.py
 test/test_update_venv_detection.py
-test/test_usage.py
 test/test_use_builtin_browser_config.py
 test/test_user_resolution_fallback.py
 test/test_validation.py

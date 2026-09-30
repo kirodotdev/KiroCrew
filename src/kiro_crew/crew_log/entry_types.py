@@ -806,6 +806,33 @@ _SESSION_TYPES: tuple[EntryType, ...] = (
                 note="Present with credits; absent on a synthesized close.",
             ),
             Field(
+                "context",
+                JSON_OBJECT,
+                fields=(
+                    Field(
+                        "used",
+                        JSON_INT,
+                        required=True,
+                        note="Tokens the provider reported occupying the window.",
+                    ),
+                    Field(
+                        "window",
+                        JSON_INT,
+                        required=True,
+                        note="Window size that reading was taken against.",
+                    ),
+                ),
+                note=(
+                    "The provider's own OCCUPANCY reading, a different quantity from "
+                    "tokens above: tokens is summed over every model call the turn "
+                    "made and answers what it cost, while this answers how full the "
+                    "window was. The two travel as one object because a used count "
+                    "from one turn over a window from another describes no turn, and "
+                    "a model switch moves the window. Absent when the provider "
+                    "reports no occupancy, so unmeasured reads as unmeasured."
+                ),
+            ),
+            Field(
                 "error",
                 JSON_STRING,
                 note="Exception class name, never its message, on an in-process failed close.",
@@ -935,6 +962,18 @@ _SESSION_TYPES: tuple[EntryType, ...] = (
                 JSON_BOOL,
                 required=True,
                 note="Always true -- tokens are derived from characters.",
+            ),
+            Field(
+                "phase",
+                JSON_STRING,
+                note=(
+                    "session_start or per_turn. Which POPULATION this composition "
+                    "belongs to: the one-off session-start injection is many times "
+                    "the size of a per-turn one, so a reader that pools them "
+                    "describes neither. Absent on a log written before it was "
+                    "recorded, and absent rather than guessed when the composer "
+                    "does not state it."
+                ),
             ),
         ),
     ),

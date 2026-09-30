@@ -13790,19 +13790,6 @@ async def _run_chat(
             source=telemetry_channel_of(session_key),
             attachments=_attachments,
         )
-        crew_log_emit.on_request_configured(
-            _crew_log_sid,
-            _crew_log_turn_no,
-            model=_crew_log_model(slot, slot.model or agent_model),
-            provider=provider_name,
-            context_window=read_context_tokens(client)[1],
-        )
-        crew_log_emit.on_context_composed(
-            _crew_log_sid,
-            _crew_log_turn_no,
-            blocks=slot_ctx_blocks,
-        )
-
         # Lease-dispatch race gate: this session's semaphore lease
         # was taken by get_or_create above, but the provider turn only opens on
         # the first stream iteration below. If a gateway restart / Make-Live
@@ -13908,6 +13895,37 @@ async def _run_chat(
         # stop-generation read above and the stream's turn registration below --
         # the emitter hands the write to its own thread and returns -- so the
         # atomic span those two gates rely on is unchanged.
+        #
+        # The two request facts are emitted HERE for the same reason, and not where the
+        # prompt is assembled further up. ``context/composed`` states what the gateway
+        # PUT IN FRONT OF THE MODEL, so a refused dispatch must not write one: the
+        # prompt was built, but nothing ever saw it. Written before the gates, every
+        # refusal left a composition the ``usage`` fold published as a per-turn row, and
+        # the Context chart drew a bar for a turn that never ran -- with no way to
+        # retract it, since ``USAGE_TYPES`` carries no ``turn/refused``. The earlier
+        # expansion gate already states this contract for itself ("the contract on a
+        # refusal is the accepted input plus the refusal, not facts derived from a
+        # request that was never assembled"); these two writes now honour it at the
+        # later gates too. The previous guard was the completion-gated row store, which
+        # only ever wrote a composition for a turn that finished.
+        #
+        # ``request/configured`` stays immediately ahead of ``context/composed``: the
+        # fold reads the configured window from it to stamp each composition row, so the
+        # order between these two is load-bearing even though their order against
+        # ``turn/started`` is not. Neither adds a suspension point, for the reason above.
+        crew_log_emit.on_request_configured(
+            _crew_log_sid,
+            _crew_log_turn_no,
+            model=_crew_log_model(slot, slot.model or agent_model),
+            provider=provider_name,
+            context_window=read_context_tokens(client)[1],
+        )
+        crew_log_emit.on_context_composed(
+            _crew_log_sid,
+            _crew_log_turn_no,
+            blocks=slot_ctx_blocks,
+            phase=slot_ctx_phase,
+        )
         crew_log_emit.on_turn_started(
             _crew_log_sid,
             _crew_log_turn_no,
@@ -17417,6 +17435,17 @@ async def _run_chat(
                 # write anyway.
                 _provider_name = capabilities_of(client).provider_seam
                 _record_model = slot.model
+                # Occupancy is read ABOVE the billing gate, beside the other locals
+                # the turn closer needs. Two reasons, and either alone decides it:
+                # the closer runs for EVERY completed turn, so a name bound only
+                # inside the gate is unbound on a turn that billed nothing (a fake
+                # backend, an unmetered provider) and the completion path raises;
+                # and occupancy is not a billing quantity -- a turn that costs
+                # nothing still filled the window, so gating the read would drop a
+                # real measurement for the turns least likely to have one recorded
+                # elsewhere. `read_context_tokens` never raises and answers (0, 0)
+                # for a provider without the accessors.
+                _ctx_used, _ctx_window = read_context_tokens(client)
                 if slot._active_fallback_model or slot._refusal_fallback_primary:
                     # Either fallback mechanism active ⇒ the model that SERVED
                     # this turn is the provider's, not the pin; attribute usage
@@ -17457,10 +17486,6 @@ async def _run_chat(
                         if _canonical:
                             slot.model = _canonical
                             _record_model = _canonical
-                    # Read context-window occupancy off the same `client`
-                    # used above (mirrors _context_usage_payload's accessor
-                    # pattern); read_context_tokens never raises.
-                    _ctx_used, _ctx_window = read_context_tokens(client)
                     await persist_token_record_async(
                         slot.key,
                         _record_model,
@@ -17480,8 +17505,6 @@ async def _run_chat(
                         # _build_token_record): the row must outlive the slot
                         # without becoming readable by whoever recreates its name.
                         app=getattr(slot, "_app", "") or "",
-                        ctx_blocks=slot_ctx_blocks,
-                        phase=slot_ctx_phase,
                         # Same wall clock the turn-duration histogram below is
                         # given, so the row store and the histogram can never
                         # disagree about one turn. acp reports 0 here.
@@ -17531,6 +17554,12 @@ async def _run_chat(
                     "model": _turn_model or _record_model,
                     "provider": _provider_name,
                     "depth": _prompt_depth,
+                    # The same occupancy reading the row store is given just above,
+                    # so the crew log and the row describe one turn's window
+                    # identically. It is the provider's own figure; the token counts
+                    # beside it are billing, which is a different quantity.
+                    "context_used": _ctx_used,
+                    "context_window": _ctx_window,
                 }
                 _emit_turn_metric(
                     event.usage.duration_ms,

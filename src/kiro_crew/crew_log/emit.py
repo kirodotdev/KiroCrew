@@ -147,13 +147,20 @@ _CHUNK_TEXT_CHARS = 8 * 1024
 #: log, and the cost of over-reserving is one extra chunk.
 _ENVELOPE_HEADROOM = 4 * 1024
 
-#: The label a block with no marker of its own is reported under. ``split_blocks``
-#: classifies by opening marker, and three blocks the design names -- steering,
-#: tool specs, injected crew log context -- have none, so their characters land in
-#: its unclassified bucket. Renaming that bucket here keeps the entry honest
-#: about being a remainder rather than inventing three zeroed sources.
+#: The label a source with NO NAME AT ALL is reported under. ``split_blocks``
+#: classifies by opening marker, and three blocks the design names -- steering, tool
+#: specs, injected crew log context -- have none, so their characters land in its
+#: ``unclassified`` bucket.
+#:
+#: That bucket keeps its own name and is NOT renamed here. It is a label the readers
+#: already know: the Context panel carries a translated string for ``unclassified``
+#: and none for ``other``, so folding the two together made a named remainder render
+#: as an untranslated word in every shipped locale -- visible the moment that panel
+#: started reading these sources instead of the token row's own ``split_blocks``
+#: output. Only the empty label lands here, because an empty label names nothing and
+#: a reader cannot be given a translation for it.
 _OTHER_SOURCE = "other"
-_UNCLASSIFIED_LABELS = frozenset({"unclassified", ""})
+_UNCLASSIFIED_LABELS = frozenset({""})
 
 #: Who caused a turn to run. Every value names a STRUCTURAL producer the
 #: dispatch layer identifies; ``user`` means a person typed the message,
@@ -4090,8 +4097,24 @@ def on_turn_completed(
     model: str = "",
     provider: str = "",
     depth: int = 0,
+    context_used: int = 0,
+    context_window: int = 0,
 ) -> None:
-    """Record a turn's terminal event and what it cost."""
+    """Record a turn's terminal event and what it cost.
+
+    ``context_used`` / ``context_window`` are the PROVIDER's own occupancy reading
+    for this turn, and they are a different quantity from ``tokens`` beside them.
+    ``tokens`` is what was BILLED: it is summed over every model call the turn made,
+    so it answers what the turn cost. Occupancy answers how full the window was, and
+    a reader wanting "how close to full did this session get" needs the second --
+    dividing a billed total by a window size is not that number, and on a
+    tool-using turn it is larger than the window it is divided by.
+
+    The pair travels TOGETHER on one entry for the same reason: a used count from one
+    turn over a window size from another describes no turn at all, and a model switch
+    moves the window. Both are absent when the provider reports neither, so an
+    unmeasured turn reads as unmeasured rather than as an empty window.
+    """
     data = _turn_closer(
         turn,
         duration_ms=duration_ms,
@@ -4107,6 +4130,11 @@ def on_turn_completed(
         "cache_read": int(cache_read_tokens),
         "cache_write": int(cache_write_tokens),
     }
+    # Written only when the provider actually reported them. ``read_context_tokens``
+    # answers (0, 0) for a provider without the accessors, and a stored zero would
+    # be indistinguishable from a window of nothing.
+    if int(context_used) > 0 or int(context_window) > 0:
+        data["context"] = {"used": int(context_used), "window": int(context_window)}
     _write(
         session_id,
         "turn/completed",
@@ -4550,6 +4578,7 @@ def on_context_composed(
     step: int = 0,
     blocks: "dict[str, int] | None" = None,
     total_chars: int = 0,
+    phase: str = "",
 ) -> None:
     """Record what the gateway put in front of the model, block by block.
 
@@ -4560,11 +4589,22 @@ def on_context_composed(
     spec says so. The one tokenizer available is the wrong one for the served
     model, and a fabricated exact count would be worse than an admitted estimate.
 
-    Every label ``split_blocks`` does not classify is folded into a single
-    ``other`` source. Three blocks the design names -- steering, tool specs and
-    injected crew log context -- have no opening marker, so their characters are
-    genuinely in that remainder; reporting them as three zeroed sources would
-    claim a measurement that was never taken.
+    Labels pass through as ``split_blocks`` named them, including its
+    ``unclassified`` remainder -- three blocks the design names (steering, tool specs
+    and injected crew log context) have no opening marker, so their characters are
+    genuinely in that bucket, and reporting them as three zeroed sources would claim a
+    measurement nobody took. Only a source whose label is EMPTY is renamed, to
+    :data:`_OTHER_SOURCE`; see there for why the named remainder keeps its name.
+
+    ``phase`` says which POPULATION this composition belongs to
+    (:data:`~kiro_crew.context_blocks.PHASE_SESSION_START` or
+    :data:`~kiro_crew.context_blocks.PHASE_PER_TURN`). A session-start injection is
+    many times the size of a per-turn one, so a reader that cannot separate them
+    either pools two populations into one meaningless distribution or lets the
+    single largest composition set the scale for every other. Only the composer
+    knows which it built, so the field is recorded here and DERIVED nowhere: an
+    unstated phase is left absent, because the nearest available guess -- the first
+    composition in a unit -- is wrong for the rebuild a replay triggers mid-session.
     """
     if not session_id or not enabled() or not blocks:
         return
@@ -4594,6 +4634,8 @@ def on_context_composed(
     }
     if step:
         data["step"] = int(step)
+    if phase:
+        data["phase"] = str(phase)
     _write(session_id, "context/composed", data, src=_SRC_GATEWAY)
 
 

@@ -149,6 +149,16 @@ def _turn_items(
             "cache_read": 5,
             "cache_write": 1,
         }
+        # The provider's occupancy reading. Present on the MEASURED closer only, which
+        # is what carries it in production -- and load-bearing for
+        # ``test_a_fold_never_reaches_into_the_state_it_was_handed``: ``usage`` stamps
+        # this reading onto the context rows its ``context/composed`` already
+        # appended, and those row dicts are SHARED with an earlier snapshot by
+        # ``_usage_copy``. Without a closer that carries occupancy, the copier's miss
+        # is invisible -- the fold produces the right value while editing a caller's
+        # state, and nothing raises. A composition must precede this entry in the same
+        # turn for the stamp to have a row to reach (see ``_busy_log``).
+        done["context"] = {"used": 4_200, "window": 200_000}
     return [
         {"type": "turn/started", "data": start},
         {"type": "step/started", "data": {"turn": turn, "step": 1}},
@@ -538,6 +548,224 @@ def test_usage_bills_injected_context_per_source():
     assert context["estimated_turns"] == 1
     assert context["by_source"]["memory"] == {"blocks": 2, "tokens": 25, "chars": 100}
     assert context["by_source"]["system"] == {"blocks": 1, "tokens": 25, "chars": 100}
+
+
+def test_usage_a_retry_attempts_reading_does_not_stamp_the_first_attempts_rows():
+    """MUTATION-SENSITIVE: a rerun of one turn ordinal is a separate attempt.
+
+    A regenerate or rewind reruns a turn the ordinal already names, so one ordinal can
+    carry two attempts, each with its own compositions and its own closer. Matching a
+    reading to rows by TURN NUMBER alone conflates them: attempt 2's closer walking the
+    tail back would reach attempt 1's rows -- same ordinal -- and stamp them with
+    attempt 2's occupancy. It bites hardest when attempt 1 reported NO occupancy, so
+    its rows are unstamped and nothing else marks them closed. Each closer sealing its
+    own run is what keeps the two apart, whether or not attempt 1 measured anything.
+    """
+
+    def _completed(reading: dict[str, int] | None) -> dict[str, Any]:
+        done: dict[str, Any] = {
+            "turn": 1,
+            "stop_reason": "end_turn",
+            "depth": 0,
+            "duration_ms": 100,
+            "model": "opus",
+            "provider": "kiro",
+            "credits": 0.1,
+            "tokens": {"input": 1, "output": 1, "cache_read": 0, "cache_write": 0},
+        }
+        if reading is not None:
+            done["context"] = reading
+        return done
+
+    def _composed(kind: str, chars: int) -> dict[str, Any]:
+        return {
+            "turn": 1,
+            "sources": [{"kind": kind, "chars": chars, "tokens": chars // 4}],
+            "chars": chars,
+            "tokens": chars // 4,
+            "tokens_estimated": True,
+        }
+
+    handle = _log()
+    _opened(handle)
+    # Attempt 1 at ordinal 1 composes, then completes WITHOUT an occupancy reading.
+    handle.append("context/composed", _composed("memory", 40), src=GATEWAY)
+    handle.append("turn/completed", _completed(None), src=GATEWAY)
+    # Attempt 2 reruns ordinal 1, composes fresh rows, and completes WITH a reading.
+    handle.append("context/composed", _composed("system", 90), src=GATEWAY)
+    handle.append(
+        "turn/started", {"turn": 1, "actor": "user", "depth": 0, "attempt": 2}, src=GATEWAY
+    )
+    handle.append("turn/completed", _completed({"used": 8_000, "window": 200_000}), src=GATEWAY)
+    turns = crew_log.fold_usage(_entries(handle))["context"]["turns"]
+    # Attempt 1's row keeps NO reading; only attempt 2's row carries the 8_000. The
+    # reading did not walk back across the attempt boundary onto the earlier run.
+    assert [("used" in row) for row in turns] == [False, True]
+    assert [row.get("used") for row in turns] == [None, 8_000]
+
+
+def test_usage_each_attempt_of_one_turn_keeps_its_own_reading():
+    """MUTATION-SENSITIVE: two attempts that BOTH measured keep their own readings.
+
+    When each attempt reports occupancy the seal still matters: attempt 2's closer
+    must not overwrite attempt 1's already-stamped reading, and attempt 1's must not be
+    left for attempt 2 to claim.
+    """
+    handle = _log()
+    _opened(handle)
+    handle.append(
+        "context/composed",
+        {
+            "turn": 1,
+            "sources": [{"kind": "memory", "chars": 40, "tokens": 10}],
+            "chars": 40,
+            "tokens": 10,
+            "tokens_estimated": True,
+        },
+        src=GATEWAY,
+    )
+    _turn(handle, 1)  # the helper's closer carries a used=4_200 reading
+    handle.append(
+        "context/composed",
+        {
+            "turn": 1,
+            "sources": [{"kind": "system", "chars": 90, "tokens": 22}],
+            "chars": 90,
+            "tokens": 22,
+            "tokens_estimated": True,
+        },
+        src=GATEWAY,
+    )
+    handle.append(
+        "turn/started", {"turn": 1, "actor": "user", "depth": 0, "attempt": 2}, src=GATEWAY
+    )
+    handle.append(
+        "turn/completed",
+        {
+            "turn": 1,
+            "stop_reason": "end_turn",
+            "depth": 0,
+            "duration_ms": 100,
+            "model": "opus",
+            "provider": "kiro",
+            "credits": 0.1,
+            "tokens": {"input": 1, "output": 1, "cache_read": 0, "cache_write": 0},
+            "context": {"used": 8_000, "window": 200_000},
+        },
+        src=GATEWAY,
+    )
+    turns = crew_log.fold_usage(_entries(handle))["context"]["turns"]
+    assert [row.get("used") for row in turns] == [4_200, 8_000]
+
+
+def test_usage_snapshot_row_is_not_stamped_by_a_later_completion():
+    """MUTATION-SENSITIVE: a copied snapshot's rows are independent of the base's.
+
+    The ``turn/completed`` closer stamps the provider's occupancy reading onto the
+    rows of the turn it closes, AFTER those rows were appended. ``copy_state`` ships a
+    snapshot of the fold to socket owners, so if that snapshot shared the row objects
+    a later completion would stamp a reading into a snapshot a reader is still holding
+    -- an occupancy from a turn the snapshot was taken BEFORE. The copy must be deep
+    enough at the row level that the base can be stamped without touching it.
+    """
+    from kiro_crew.crew_log.schema import Entry
+
+    state = crew_log._usage_start()
+    crew_log._usage_step(
+        state,
+        Entry(
+            seq=1,
+            time=1000,
+            type="request/configured",
+            src=GATEWAY,
+            data={"turn": 1, "context_window": 200_000},
+        ),
+    )
+    crew_log._usage_step(
+        state,
+        Entry(
+            seq=2,
+            time=1001,
+            type="context/composed",
+            src=GATEWAY,
+            data={"turn": 1, "sources": [{"kind": "memory", "chars": 40}], "chars": 40},
+        ),
+    )
+    snapshot = crew_log._usage_copy(state)
+    assert "used" not in snapshot["context_turns"][0]
+    # The turn now closes with a reading. It must land on the base state's row only.
+    crew_log._usage_step(
+        state,
+        Entry(
+            seq=3,
+            time=1002,
+            type="turn/completed",
+            src=GATEWAY,
+            data={"turn": 1, "context": {"used": 9_000, "window": 200_000}},
+        ),
+    )
+    assert state["context_turns"][0]["used"] == 9_000
+    assert "used" not in snapshot["context_turns"][0]
+
+
+def test_usage_an_interrupted_units_open_row_is_not_stamped_by_the_next_unit():
+    """MUTATION-SENSITIVE: the seal alone cannot close the unit boundary.
+
+    A slot's window merges every UNIT it ran under and turn ordinals restart in each
+    one, so a matching ordinal is not proof a row belongs to the turn now closing. The
+    ``_closed`` seal tells two FINISHED runs of one ordinal apart, because each closer
+    marks its own tail run. It cannot see a unit cut off mid-turn: that unit composed a
+    row and then died, so no closer ever sealed it, and the next unit's turn 1 walks
+    straight onto it and stamps an unmeasured turn with its own reading.
+    """
+    handle_a = _log("unit-a")
+    _opened(handle_a)
+    handle_a.append(
+        "context/composed",
+        {
+            "turn": 1,
+            "sources": [{"kind": "memory", "chars": 400, "tokens": 100}],
+            "chars": 400,
+            "tokens": 100,
+            "tokens_estimated": True,
+        },
+        src=GATEWAY,
+    )
+    # No closer: the gateway died mid-turn, so nothing seals that row.
+    handle_b = _log("unit-b")
+    _opened(handle_b)
+    handle_b.append(
+        "context/composed",
+        {
+            "turn": 1,
+            "sources": [{"kind": "memory", "chars": 800, "tokens": 200}],
+            "chars": 800,
+            "tokens": 200,
+            "tokens_estimated": True,
+        },
+        src=GATEWAY,
+    )
+    handle_b.append(
+        "turn/completed",
+        {
+            "turn": 1,
+            "stop_reason": "end_turn",
+            "depth": 0,
+            "duration_ms": 100,
+            "model": "opus",
+            "provider": "kiro",
+            "credits": 0.1,
+            "tokens": {"input": 1, "output": 1, "cache_read": 0, "cache_write": 0},
+            "context": {"used": 90_000, "window": 200_000},
+        },
+        src=GATEWAY,
+    )
+    turns = crew_log.fold_slot("usage", ["unit-a", "unit-b"], slot="dashboard:1").value["context"][
+        "turns"
+    ]
+    assert [row.get("used") for row in turns] == [None, 90_000]
+    # The counter is the fold's own bookkeeping and never reaches a reader.
+    assert all("unit" not in row for row in turns)
 
 
 def test_usage_bills_every_source_that_spends_and_says_which_spent_what():
@@ -2472,3 +2700,79 @@ def test_a_resume_cannot_widen_a_class_the_log_already_moved_away_from():
     value = crew_log.fold("class", _entries(handle))
     assert value["channel"] is True
     assert value["complete"] is True
+
+
+def test_usage_units_order_by_succession_not_wall_clock(monkeypatch):
+    """MUTATION-SENSITIVE: a clock rollback must not invert two units of one slot.
+
+    Unit ``b`` REPLACED unit ``a`` (its ``session/opened`` names ``a`` as its
+    predecessor), so ``b`` is the newer unit and its rows must fold LAST -- the fold
+    applies a later unit over an earlier one. But the clock stepped backward before
+    ``b`` was created, so ``b``'s header ``createdAt`` (100) is SMALLER than ``a``'s
+    (200). A wall-clock sort would put ``b`` first, land its rows at the front of the
+    per-turn window, and the front-trim would evict the newest unit's rows. Ordering
+    by the durable ``previous_sid`` succession chain keeps ``b`` last regardless.
+    """
+    created = {"a": 200, "b": 100}
+    previous = {"a": None, "b": "a"}
+    monkeypatch.setattr(crew_log, "session_units_for_slot", lambda slot: ("a", "b"))
+    monkeypatch.setattr(crew_log, "unit_header_created_at", lambda kind, uid: created.get(uid))
+    monkeypatch.setattr(crew_log, "unit_opened_previous", lambda kind, uid: previous.get(uid))
+    assert crew_log._usage_units_in_succession("chat-1") == ("a", "b")
+
+
+def test_usage_units_keep_disconnected_chains_contiguous(monkeypatch):
+    """Two UNRELATED chains fold each as a contiguous run, ordered by root createdAt.
+
+    A slot can hold two chains the ``previous_sid`` links never relate -- a session
+    recreated after its predecessor's log was pruned, two logs whose link was never
+    written. Chain B is b0->b1->b2 (three deep); chain A is a0->a1 (two deep) and its
+    root was created FIRST. Ordering by depth alone would interleave them
+    (a0,b0,a1,b1,b2) and split each chain's predecessor edges apart. The order must be
+    chain-contiguous -- A's whole run then B's whole run -- with the runs ordered by
+    their roots' ``createdAt``, so every ``previous_sid`` edge stays adjacent.
+    """
+    # a-root created before b-root; within each chain the header clock is irrelevant.
+    created = {"a0": 100, "a1": 500, "b0": 200, "b1": 50, "b2": 300}
+    previous = {"a0": None, "a1": "a0", "b0": None, "b1": "b0", "b2": "b1"}
+    # Store listing order deliberately interleaves the two chains, to prove the resolver
+    # regroups them rather than trusting the listing.
+    monkeypatch.setattr(
+        crew_log, "session_units_for_slot", lambda slot: ("a0", "b0", "a1", "b1", "b2")
+    )
+    monkeypatch.setattr(crew_log, "unit_header_created_at", lambda kind, uid: created.get(uid))
+    monkeypatch.setattr(crew_log, "unit_opened_previous", lambda kind, uid: previous.get(uid))
+    # A's run (root createdAt 100) precedes B's run (root createdAt 200); each run is
+    # predecessor-first and unbroken.
+    assert crew_log._usage_units_in_succession("chat-1") == ("a0", "a1", "b0", "b1", "b2")
+
+
+def test_usage_units_unrelated_roots_without_a_clock_keep_store_order(monkeypatch):
+    """Two unrelated roots with no readable createdAt keep their store listing order.
+
+    Neither unit names the other, and the header clock is unreadable for both, so the
+    chain has nothing to say and neither does the clock. The resolver must fall back to
+    the store's own listing order (the creation order it established), NOT an arbitrary
+    id order that could sort a retired unit's rows ahead of a live one's.
+    """
+    monkeypatch.setattr(crew_log, "session_units_for_slot", lambda slot: ("older", "newer"))
+    monkeypatch.setattr(crew_log, "unit_header_created_at", lambda kind, uid: None)
+    monkeypatch.setattr(crew_log, "unit_opened_previous", lambda kind, uid: None)
+    assert crew_log._usage_units_in_succession("chat-1") == ("older", "newer")
+
+
+def test_usage_units_single_unit_skips_the_chain_read(monkeypatch):
+    """One unit has nothing to reorder, so the predecessor read is not even paid."""
+    monkeypatch.setattr(crew_log, "session_units_for_slot", lambda slot: ("only",))
+
+    def _boom(*_a, **_k):
+        raise AssertionError("unit_opened_previous must not be read for a single unit")
+
+    monkeypatch.setattr(crew_log, "unit_opened_previous", _boom)
+    assert crew_log._usage_units_in_succession("chat-1") == ("only",)
+
+
+def test_usage_fold_uses_the_succession_order(monkeypatch):
+    """The usage fold's unit resolver routes through the durable-succession helper."""
+    monkeypatch.setattr(crew_log, "_usage_units_in_succession", lambda slot: ("x", "y"))
+    assert crew_log._slot_units_for_fold("chat-1", "usage") == ("x", "y")

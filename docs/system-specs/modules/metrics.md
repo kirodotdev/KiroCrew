@@ -895,15 +895,19 @@ Each row (`_build_token_record`) carries:
 | `agent` | str | **(#647)** agent id resolved for the turn; `""` if unset |
 | `context_used` | int | **(#647)** context-window tokens occupied after the turn (int-coerced) |
 | `context_window` | int | **(#647)** served context-window size in tokens (int-coerced) |
-| `ctx_blocks` | dict[str,int] | per-turn injection breakdown: context block label → **characters** (never tokens); non-positive / non-numeric sizes dropped; `{}` when the turn injected nothing |
-| `phase` | str | `session_start` (the first turn's one-off injection) vs `per_turn` (every later turn); `""` if unset |
 | `stop_reason` | str | the turn's terminal stop reason read off the EVENT_COMPLETE event (`""` when the producer has none, e.g. a bare `TurnUsage` from `provider_last_turn_usage`). Free-form is fine HERE (the row store has no cardinality limit, unlike OTel attrs) — this is where per-agent stall analysis happens: joining `stop_reason` (`error: tool stall` / `stale_recover`) against the row's `agent` field attributes watchdog outcomes to free-form agent names retroactively |
 
-The `surface` / `agent` / `context_used` / `context_window` fields (all #647),
-the later `ctx_blocks` / `phase` pair, and `stop_reason` are all **additive** —
-every field defaults (`""` / `{}` / `0`) so existing callers stay valid and
-shards predating a field (which lack its key) remain parseable; readers must
-tolerate their absence.
+The `surface` / `agent` / `context_used` / `context_window` fields (all #647) and
+`stop_reason` are all **additive** — every field defaults (`""` / `0`) so existing
+callers stay valid and shards predating a field (which lack its key) remain
+parseable; readers must tolerate their absence.
+
+The row no longer carries an injection breakdown. `ctx_blocks` and `phase` were
+written here for one reader, `context_trace`, which is now served from the crew log's
+`usage` projection; the same composition is recorded by `crew_log.emit
+.on_context_composed` as `context/composed`, with the same block labels and the same
+`phase`. Shards written earlier still carry both keys and stay parseable — nothing
+reads them.
 `context_used` / `context_window`
 are read from the provider at the persist call site via
 `usage.read_context_tokens(source)`, which calls the provider's public
@@ -918,7 +922,8 @@ monitor/heartbeat/webhook/taskrunner/workflow) retain their canonical source;
 `taskrunner` when rows are read. Zero-token surfaces (cron `script=`/`command=`
 modes, heartbeat maintenance ticks) never call a model and must not write a row.
 
-**Per-turn injection breakdown (`ctx_blocks` / `phase`).** `ctx_blocks` is
+**Per-turn injection breakdown (`context/composed`).** Recorded in the crew log
+rather than on this row (see above). Its `sources` are
 produced by `context_blocks.split_blocks(prompt, user_chars=…)`, which attributes
 the FINAL assembled prompt to the blocks that produced it by matching the bracket
 markers the assembly emits (`[CRITICAL RULES`, `[Memory`, `[Skills:]`,
@@ -1040,18 +1045,27 @@ shard-fingerprint + 30s-TTL cache, same contract as `_parse_token_history`), and
 `handlers/telemetry.py` serves it as the `context` block of
 `GET /api/telemetry/startup` (a plain module-scope import — `handlers.usage`
 imports nothing from `dashboard.handlers`, so there is no cycle to dodge).
-`usage.context_trace(slot, days)` is the per-session drill-down: it returns each
-turn's `ctx_blocks` in chronological order plus per-block `totals`,
-`injected_chars`, `user_chars` (the `your_message` label), and the occupancy
-pair `peak_context_used` (largest `context_used` across the turns, in TOKENS)
-and `context_window` (newest non-zero window size), which the Session Breakdown
-tree turns into a fill ratio. Block sizes are characters and occupancy is tokens;
-the trace carries both as recorded and derives nothing across that unit
-boundary — there is no chars-per-token estimate of the un-instrumented remainder
-on the wire, because a number that mixed fixed kiro-cli overhead with the growing
-conversation had no honest reader. Rows
-predating the field carry no `ctx_blocks` and are skipped, not zero-filled, so
-the trace starts where the recording does. Billing is not on this payload:
+`usage.context_trace(slot, days)` is the per-session drill-down, and it reads the
+slot's `usage` PROJECTION rather than the shards: one memoised fold of the crew log's
+`context/composed` entries, where the scan it replaced opened every shard in the
+window and discarded all but one slot's rows. It returns each composition in
+chronological order plus per-block `totals`, `injected_chars`, `user_chars` (the
+`your_message` label), and the occupancy pair `peak_context_used` / `context_window`
+— the provider's own reading and the window it was measured against, both taken from
+the single `turn/completed` inside the requested window that reported the largest
+occupancy, which the Session Breakdown tree turns into a fill ratio. The pair travels
+together because a reading over a window from another turn describes no turn that ran,
+and a model switch moves the window; neither is derived from the turn's token counts,
+which are billing summed over every model call. Block sizes are characters and
+occupancy is tokens; the trace carries both as recorded and derives nothing across
+that unit boundary — there is no chars-per-token estimate of the un-instrumented
+remainder on the wire, because a number that mixed fixed kiro-cli overhead with the
+growing conversation had no honest reader. Two bounds apply: `days`, as before, and
+the fold's own newest-200 window, which needs no count on the wire because every
+row carries the `ordinal` it was assigned before the trim. A session whose
+compositions predate the fold reads with an unstated `phase` and no occupancy, and one
+recorded with the crew log switched off reads empty — this surface depends on that
+switch, which is the one thing it is not independent of. Billing is not on this payload:
 `slot_turn_usage` (below) is the per-turn reader for `credits` / `duration_ms`,
 and a trace row carries only what was injected.
 

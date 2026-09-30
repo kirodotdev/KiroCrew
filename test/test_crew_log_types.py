@@ -890,6 +890,11 @@ def test_every_entry_a_real_turn_produces_validates():
         stop_reason="end_turn",
         model="claude",
         provider="kiro",
+        # The provider's occupancy reading, which the measured closer carries and the
+        # two synthesized closers cannot. Unequal to the token counts above on
+        # purpose: they are billing, this is how full the window was.
+        context_used=44_000,
+        context_window=200_000,
     )
     emit.on_session_closed(SESSION, "reset")
     assert emit.flush(timeout=5.0)

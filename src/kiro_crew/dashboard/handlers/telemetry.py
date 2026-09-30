@@ -1349,11 +1349,16 @@ async def api_context_trace(request: web.Request) -> web.Response:
     this per-session, per-turn half deliberately does not — see
     :func:`kiro_crew.dashboard.handlers.usage.context_trace`.
 
-    Independent of the telemetry main switch: the usage rows this reads are
-    always written, so the trace works with OTEL collection off.
+    Independent of the telemetry main switch — OTEL collection being off does not
+    affect it. It DOES depend on the crew log, which is the source it reads: the
+    composer's ``context/composed`` entry is written only while the crew log records,
+    so a session run with ``KIROCREW_CREW_LOG`` switched off has nothing for this
+    route to return and the panel is empty for it. That is the one switch this
+    endpoint is not independent of, and it is named here rather than left for a
+    reader to discover from an empty chart.
 
     Dashboard-only. Unlike ``/api/usage/turns`` this reader has no row-ownership
-    model, and its rows carry the turn's billing — so an app caller is refused
+    model — so an app caller is refused
     outright (deny-by-default, App Kit §5.2) rather than handed an arbitrary
     slot's data. The 404 is indistinguishable from an unknown route on purpose,
     and the refusal is SEL-audited like every app-caller decision.
