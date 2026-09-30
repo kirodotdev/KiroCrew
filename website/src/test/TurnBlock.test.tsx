@@ -728,3 +728,36 @@ describe('TurnBlock — summary counts distinct tool calls', () => {
     expect(screen.getByText('2 tool calls')).toBeInTheDocument()
   })
 })
+
+// #15115: the watchdog's recycle notice is an assistant-role row tagged
+// `kind: 'compaction'` and lands AFTER a finished turn's answer. It must not be
+// picked as the turn's conclusion, or the real answer folds into the
+// "Worked through N steps" pane and the banner is the only visible output.
+describe('TurnBlock — trailing recycle notice does not become the conclusion (#15115)', () => {
+  const answer = 'Here is the full answer to your question, long enough to be substantive on its own.'
+  const notice = '♻️ This session was recycled by the watchdog (memory limit (1950MB)). Conversation history is preserved — your next message starts a fresh process.'
+  const items = (): TurnItem[] => [
+    { kind: 'single', msg: { role: 'tool', content: '🔧 Running: read_me', ts: '1' }, idx: 0 },
+    { kind: 'single', msg: { role: 'tool', content: '🔧 Running: shell', ts: '2' }, idx: 1 },
+    { kind: 'single', msg: { role: 'assistant', content: answer, ts: '3', meta: { turn_stats: { tool_calls: 2 } } }, idx: 2 },
+    { kind: 'single', msg: { role: 'assistant', content: notice, ts: '4', meta: { kind: 'compaction', notice: 'session_recycled' } }, idx: 3 },
+  ]
+  const renderItem = (it: TurnItem, i: number) => (
+    <div data-testid={`item-${i}`}>{it.kind === 'single' ? it.msg.content : 'group'}</div>
+  )
+  const inFold = (el: HTMLElement) => el.closest('[style*="overflow: hidden"]')
+
+  for (const collapseAll of [false, true]) {
+    it(`keeps the answer visible and the notice after it (collapseAll=${collapseAll})`, () => {
+      const { container } = render(
+        <TurnBlock turn={makeTurn(items())} renderItem={renderItem} collapseAll={collapseAll} />
+      )
+      const answerEl = screen.getByTestId('item-2')
+      const noticeEl = screen.getByTestId('item-3')
+      expect(inFold(answerEl)).toBeNull()
+      expect(inFold(noticeEl)).toBeNull()
+      expect(answerEl.compareDocumentPosition(noticeEl) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+      expect(container.textContent).toContain(answer)
+    })
+  }
+})

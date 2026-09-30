@@ -11,6 +11,7 @@ import { isSpawnRunTool } from './SubagentRunCard'
 import { isWorkflowCompletionMessage } from './WorkflowCompletionCard'
 import { isSubagentCompletionMessage } from './subagentCompletion'
 import { isReasoningBurst } from './groupDisplayItems'
+import { isSystemNoticeRow } from './CompactionCard'
 import { isDiffToolMessage } from './toolDiff'
 import { findOptionMarkers, stripOptionMarkers } from '../../app-sdk/protocol/optionMarker'
 import { hasKeepVisibleMarker } from '../../app-sdk/protocol/keepVisibleMarker'
@@ -204,17 +205,18 @@ function substantiveLength(text: string): number {
 /**
  * Find the index of a turn's conclusion item: the last `isConclusion` item that
  * is substantive (>= 50 chars), falling back to the last `isConclusion` item of
- * any length, else -1. Shared by the auto-expand decision and the render split
- * so the "what's the always-visible conclusion vs collapsed reasoning" answer
- * can't drift between them (a mismatch wrongly expands reasoning above a visible
- * match and pushes it down).
+ * any length, else -1. System notice rows (a watchdog recycle, a compaction)
+ * never qualify: they trail the answer and must not displace it. Shared by the
+ * auto-expand decision and the render split so the "what's the always-visible
+ * conclusion vs collapsed reasoning" answer can't drift between them (a
+ * mismatch wrongly expands reasoning above a visible match and pushes it down).
  */
 function findConclusionIdx(items: TurnItem[]): number {
   let conclusionIdx = -1
   let fallbackIdx = -1
   for (let i = items.length - 1; i >= 0; i--) {
     const it = items[i]
-    if (isConclusion(it)) {
+    if (isConclusion(it) && !(it.kind === 'single' && isSystemNoticeRow(it.msg))) {
       if (fallbackIdx === -1) fallbackIdx = i
       if (it.kind === 'single' && substantiveLength(it.msg.content) >= 50) { conclusionIdx = i; break }
     }
