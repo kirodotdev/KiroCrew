@@ -208,6 +208,7 @@
       "host-config.js",
       "open-path.js",
       "store-rename.js",
+      "upgrade-cache.js",
       "remote-token.js",
       "remote-crew-setup.js",
       "token-acquire.js",
