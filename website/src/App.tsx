@@ -3760,9 +3760,9 @@ export default function App() {
    * `replace` so Back returns to the chat rather than to a second copy of it.
    * That is a property of the drawer that hosts the rail, so it is not an option.
    *
-   * Rows the full nav drawer offers and this rail does not: Library (reachable
-   * from Discover), Developer, Terminal and Connect-your-phone — each toggles a
-   * desktop-shaped surface or is moot on the phone itself.
+   * The only row the full nav drawer offers and this rail does not is
+   * Connect-your-phone, which is moot on the phone itself. Terminal toggles the
+   * docked panel and closes the drawer so the panel is not left behind it.
    *
    * The brand mark on top is a control -- the product's "home": it goes to the
    * chat root (the page every other app's logo returns to) and closes the
@@ -3833,6 +3833,17 @@ export default function App() {
             onClickOverride={discoverNavActive ? onActivate : undefined}
             badge={<NavBadge navId="apps" collapsed appBadges={discoverBadges} />}
           />
+          <NavItem
+            navId="apps-library"
+            path="/apps/library"
+            label={i18nT('nav.library')}
+            icon={<LayoutGrid size={16} />}
+            active={libraryNavActive}
+            collapsed
+            touch
+            replace
+            onClickOverride={libraryNavActive ? onActivate : undefined}
+          />
           {/* Apps list: scrolls in its OWN frame when many apps are installed --
               the brand mark, the Main rows and Discover above it, and
               Capabilities / Settings / Search below it stay pinned, exactly as
@@ -3845,6 +3856,32 @@ export default function App() {
           >
             {sortedAppGroup.map(railRow)}
           </div>
+          {devMode && (
+            <NavItem
+              navId="developer"
+              path="/developer"
+              label={i18nT('app.developer')}
+              icon={<Code size={16} />}
+              active={activePath === '/developer'}
+              collapsed
+              touch
+              replace
+              onClickOverride={activePath === '/developer' ? onActivate : undefined}
+            />
+          )}
+          {terminalEnabled && (
+            <NavItem
+              navId="terminal"
+              path="#"
+              label={i18nT('app.terminal')}
+              icon={<SquareTerminal size={16} />}
+              active={bottomTerminalOpen || terminalPoppedOut}
+              pressed={bottomTerminalOpen || terminalPoppedOut}
+              collapsed
+              touch
+              onClickOverride={() => { onActivate(); if (terminalPoppedOut) focusTerminalPopout(); else toggleBottomTerminal(activeSlotProject) }}
+            />
+          )}
           {railRow(capabilitiesSurface)}
           {/* The account modal (balance, sign-in state): the desktop opens it
               from the readout capsule, which the phone does not render, so the

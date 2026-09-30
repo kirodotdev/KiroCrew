@@ -165,6 +165,27 @@ describe('phone chat page: one top bar', () => {
     expect(apps).not.toContainElement(customize)
   })
 
+  it('carries Library, Developer and Terminal on the rail, and leaves out Connect-your-phone', async () => {
+    localStorage.setItem('mc-onboarded', '1')
+    localStorage.setItem('mc-dev-mode', '1')
+    try {
+      renderWithProviders(<App />, { route: '/chat' })
+      const rail = await screen.findByTestId('mobile-nav-rail')
+      expect(within(rail).getByRole('button', { name: 'Library' })).toBeInTheDocument()
+      expect(within(rail).getByRole('button', { name: 'Developer' })).toBeInTheDocument()
+      // Terminal toggles the docked panel from the chat page itself, without a
+      // detour through another page's nav drawer. Pinned below the scrolling
+      // Apps frame, like Capabilities / Settings.
+      const terminal = within(rail).getByRole('button', { name: 'Terminal' })
+      expect(terminal).toHaveAttribute('aria-pressed', 'false')
+      expect(within(rail).queryByRole('button', { name: /connect your phone/i })).toBeNull()
+      const apps = within(rail).getByTestId('mobile-nav-rail-apps')
+      expect(apps).not.toContainElement(terminal)
+    } finally {
+      localStorage.removeItem('mc-dev-mode')
+    }
+  })
+
   it('keeps the logo -> nav drawer on other phone pages and still has three in-flow header cells', async () => {
     localStorage.setItem('mc-onboarded', '1')
     renderWithProviders(<App />, { route: '/settings' })
