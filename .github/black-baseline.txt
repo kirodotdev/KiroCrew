@@ -450,7 +450,6 @@ test/test_dashboard_themes_coverage.py
 test/test_dashboard_worktree_coverage.py
 test/test_dashboard_ws_offloop_fanout.py
 test/test_dashboard_ws_task_tracking.py
-test/test_dashboard_yolo_startup.py
 test/test_delete_message.py
 test/test_denied_commands_api.py
 test/test_denied_commands_authority.py

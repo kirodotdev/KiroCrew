@@ -21,7 +21,12 @@ from urllib.parse import quote  # noqa: F401
 
 from aiohttp import web
 
-from kiro_crew import platform_compat, port_resolution, shutdown_event  # noqa: F401
+from kiro_crew import (  # noqa: F401
+    platform_compat,
+    port_resolution,
+    shutdown_event,
+    standing_approval,
+)
 from kiro_crew.apps.backend import (  # noqa: F401
     start_deferred_app_backends,
     start_enabled_app_backends,

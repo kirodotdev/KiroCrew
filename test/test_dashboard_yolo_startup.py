@@ -1,14 +1,42 @@
-"""Tests that a declared auto-approve grant is standing (non-expiring)."""
+"""Tests that a declared auto-approve grant is standing (non-expiring).
+
+The declaration is the operator-owned keystone ``standing-approval/grant.json``, not a
+key in ``config.json``: a standing skip of every approval must not be declarable by the
+population it governs, and ``config.json`` stays agent-READABLE by design, which leaves
+the inode behind its read-only seal reachable under a second name. So every test here
+that means "the operator declared it" writes the keystone with :func:`_declare`, and
+``agent.dangerously_skip_permissions`` appears only where the subject is that the
+retired key grants nothing.
+"""
 
 from __future__ import annotations
 
+import json
 import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+from kiro_crew import standing_approval
+from kiro_crew.config.loader import (
+    standing_approval_path,
+)
 from kiro_crew.dashboard.server import _apply_startup_yolo
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.safety_override import SafetyOverride, reset_singleton, safety_override
+
+
+@pytest.fixture(autouse=True)
+def _host_that_masks_the_keystone(_floor_monkeypatch):
+    """Pin the host as one whose sandbox masks the keystone.
+
+    The subject here is the startup path's reading of the declaration, not the mask that
+    makes the declaration trustworthy, and a machine with no sandbox backend refuses the
+    grant before the reading is reached. ``test_standing_approval_keystone.py`` owns the
+    cases about the mask itself.
+    """
+    _floor_monkeypatch.setattr(standing_approval, "_keystone_is_masked", lambda *_a, **_k: True)
 
 
 def _make_state() -> DashboardState:
@@ -21,9 +49,31 @@ def _make_state() -> DashboardState:
 
 
 def _cfg(yolo: bool, duration: str = "6h") -> SimpleNamespace:
+    """A config whose ``dangerously_skip_permissions`` is the DEPRECATED alias key.
+
+    ``yolo=True`` here means "the operator left the deprecated key set": it STILL grants
+    on its own (a backwards-compatible alias) and logs a one-line deprecation warning.
+    :func:`_declare` is the keystone path, which grants with no warning.
+    """
     return SimpleNamespace(
-        agent=SimpleNamespace(dangerously_skip_permissions=yolo, yolo_duration=duration)
+        agent=SimpleNamespace(
+            dangerously_skip_permissions=yolo, yolo_duration=duration, sandbox="auto"
+        )
     )
+
+
+def _declare() -> None:
+    """Write the operator's standing declaration to the keystone.
+
+    The suite gives each test an isolated ``KIROCREW_HOME``, so this writes into that
+    scratch data home rather than the operator's real one. The keystone is bind-masked
+    from every agent spawn, so an operator-written document grants wherever the mask
+    holds; ``_keystone_is_masked`` is pinned True by the module fixture.
+    """
+    path = standing_approval_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"dangerously_skip_permissions": True}), encoding="utf-8")
+    assert standing_approval.is_declared("auto") is True
 
 
 def setup_function() -> None:
@@ -37,8 +87,9 @@ def teardown_function() -> None:
 def test_declared_yolo_does_not_expire() -> None:
     """Declared YOLO does not lapse after 24h and revert to Normal."""
     state = _make_state()
+    _declare()
     with patch("kiro_crew.safety_override.sel"):
-        _apply_startup_yolo(state, _cfg(yolo=True))
+        _apply_startup_yolo(state, _cfg(yolo=False))
 
     so = safety_override()
     assert so.is_active() is True
@@ -59,9 +110,53 @@ def test_declared_yolo_does_not_expire() -> None:
 def test_declared_yolo_is_cleared_by_choosing_another_mode() -> None:
     """Permanence must never mean unrevokable."""
     state = _make_state()
+    _declare()
     with patch("kiro_crew.safety_override.sel"):
-        _apply_startup_yolo(state, _cfg(yolo=True))
+        _apply_startup_yolo(state, _cfg(yolo=False))
+        # Guard against a vacuous pass: the grant must be live before it is cleared,
+        # or the assertion below would hold for a startup that granted nothing.
+        assert safety_override().is_active() is True
         safety_override().deactivate("dashboard")
+
+    assert safety_override().is_active() is False
+
+
+def test_a_sandbox_flip_before_startup_leaves_the_grant_suspended(monkeypatch) -> None:
+    """A sandbox unmask between boot and dashboard startup refuses the standing grant.
+
+    ``_apply_startup_yolo`` resolves the sandbox mode from :func:`config.live.current`
+    immediately before activation, never the boot ``cfg`` it was handed. If the operator
+    flips ``agent.sandbox`` off after the boot copy was captured, the live mode is ``off``
+    and the grant stays suspended even though the keystone IS declared and the mask holds
+    for the stale masked tier.
+
+    Discriminating: the keystone grants (``_declare``) and ``_keystone_is_masked`` is True
+    for the masked tier, so the ONLY thing that keeps the override from activating is that
+    the live ``off`` mode is the one consulted. Passing the boot
+    ``cfg.agent.sandbox`` (``strict``) would grant.
+    """
+    from kiro_crew.config import live as _live
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    state = _make_state()
+    _declare()
+    flipped = KiroCrewConfig()
+    flipped.agent.sandbox = "off"
+    monkeypatch.setattr(_live, "current", lambda *_a, **_k: flipped)
+    # Mask holds for the masked tier, not for the flipped-off one: the verdict turns on
+    # WHICH mode is consulted -- the stale boot copy or the live one.
+    monkeypatch.setattr(
+        standing_approval,
+        "_keystone_is_masked",
+        lambda mode, *_a, **_k: mode != "off",
+    )
+    boot_cfg = SimpleNamespace(
+        agent=SimpleNamespace(
+            dangerously_skip_permissions=False, yolo_duration="6h", sandbox="strict"
+        )
+    )
+    with patch("kiro_crew.safety_override.sel"):
+        _apply_startup_yolo(state, boot_cfg)
 
     assert safety_override().is_active() is False
 
@@ -72,8 +167,9 @@ def test_startup_seeds_the_adhoc_ttl_even_when_yolo_is_off() -> None:
     cfg = MagicMock()
     cfg.agent.dangerously_skip_permissions = False
     cfg.agent.yolo_duration = "1h"
-    with patch("kiro_crew.safety_override.sel"), patch(
-        "kiro_crew.config.loader.KiroCrewConfig.load", return_value=cfg
+    with (
+        patch("kiro_crew.safety_override.sel"),
+        patch("kiro_crew.config.loader.KiroCrewConfig.load", return_value=cfg),
     ):
         _apply_startup_yolo(state, _cfg(yolo=False, duration="1h"))
 
@@ -98,8 +194,8 @@ def test_slack_only_path_also_gets_a_standing_grant() -> None:
     assert so.is_permanent is True
 
 
-def test_apply_startup_yolo_noop_when_config_false() -> None:
-    """No declaration means no override at startup."""
+def test_apply_startup_yolo_noop_when_nothing_is_declared() -> None:
+    """No keystone means no override at startup."""
     state = _make_state()
     with patch("kiro_crew.safety_override.sel"):
         _apply_startup_yolo(state, _cfg(yolo=False))
@@ -107,11 +203,37 @@ def test_apply_startup_yolo_noop_when_config_false() -> None:
     assert safety_override().is_active() is False
 
 
+def test_the_deprecated_config_key_alone_still_grants_and_warns(caplog) -> None:
+    """First-Principles ruling: the config key is a DEPRECATED ALIAS, not retired. It
+    STILL grants on its own (so no operator loses the grant on upgrade) and logs a
+    one-line deprecation warning.
+
+    Control beside it: the keystone path grants too, with NO deprecation warning, so the
+    warning above is specific to the config-key alias and not the harness.
+    """
+    state = _make_state()
+    with patch("kiro_crew.safety_override.sel"), caplog.at_level("WARNING"):
+        _apply_startup_yolo(state, _cfg(yolo=True))
+
+    assert safety_override().is_active() is True
+    assert "DEPRECATED" in caplog.text
+    assert "no longer grants" not in caplog.text
+
+    reset_singleton()
+    caplog.clear()
+    _declare()
+    with patch("kiro_crew.safety_override.sel"), caplog.at_level("WARNING"):
+        _apply_startup_yolo(state, _cfg(yolo=False))
+    assert safety_override().is_active() is True
+    assert "DEPRECATED" not in caplog.text
+
+
 def test_apply_startup_yolo_logs_sel() -> None:
     """Activation emits SEL audit event via safety_override module."""
     state = _make_state()
+    _declare()
     with patch("kiro_crew.safety_override.sel") as mock_sel:
-        _apply_startup_yolo(state, _cfg(yolo=True))
+        _apply_startup_yolo(state, _cfg(yolo=False))
 
     mock_sel.return_value.log_api_access.assert_called()
     kwargs = mock_sel.return_value.log_api_access.call_args.kwargs
@@ -123,20 +245,26 @@ def test_apply_startup_yolo_logs_sel() -> None:
 def test_apply_startup_yolo_handles_exception_gracefully() -> None:
     """If the grant raises, startup continues without YOLO."""
     state = _make_state()
+    _declare()
     with patch(
         "kiro_crew.dashboard.server.grant_declared_yolo",
         side_effect=RuntimeError("boom"),
     ) as mock_grant:
-        _apply_startup_yolo(state, _cfg(yolo=True))
+        _apply_startup_yolo(state, _cfg(yolo=False))
 
     mock_grant.assert_called_once()
     assert safety_override().is_active() is False
 
 
 def test_apply_startup_yolo_refuses_when_sel_fails() -> None:
-    """SEL audit failure must prevent activation (fail-closed)."""
+    """SEL audit failure must prevent activation (fail-closed).
+
+    The keystone IS declared here, so the inactive result below is the SEL refusal
+    rather than a startup that never attempted a grant.
+    """
     state = _make_state()
+    _declare()
     with patch("kiro_crew.safety_override.sel") as mock_sel:
         mock_sel.return_value.log_api_access.side_effect = RuntimeError("sel down")
-        _apply_startup_yolo(state, _cfg(yolo=True))
+        _apply_startup_yolo(state, _cfg(yolo=False))
     assert safety_override().is_active() is False

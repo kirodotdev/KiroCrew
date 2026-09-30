@@ -31,6 +31,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from kiro_crew import standing_approval
 from kiro_crew.config.loader import (
     ACTIVATION_ALWAYS,
     ACTIVATION_OBSERVE,
@@ -65,6 +66,24 @@ def _isolated_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
     return tmp_path
+
+
+def _declare_standing_approval() -> None:
+    """Write the operator's STANDING auto-approve declaration to the keystone.
+
+    The autouse ``_isolated_home`` fixture already points ``KIROCREW_HOME`` at
+    ``tmp_path``, so this lands in the scratch data home. Used instead of setting
+    ``agent.dangerously_skip_permissions`` (now a deprecated alias): the keystone lives
+    on a leaf an agent sandbox cannot open, and an operator-written document grants
+    wherever the mask holds. The TestInitSocketMode fixture pins the mask in force.
+    """
+    from kiro_crew.config.loader import (
+        standing_approval_path,
+    )
+
+    path = standing_approval_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('{"dangerously_skip_permissions": true}', encoding="utf-8")
 
 
 def _make_orch(
@@ -691,6 +710,17 @@ class _SocketPatches:
 
 
 class TestInitSocketMode:
+    @pytest.fixture(autouse=True)
+    def _host_that_masks_the_keystone(self, _floor_monkeypatch):
+        """Pin the host as one whose sandbox masks the keystone.
+
+        The subject here is what ``init_socket_mode`` does with the declaration, not the
+        mask that makes the declaration trustworthy, and a machine with no sandbox
+        backend refuses the grant before that is reached.
+        ``test_standing_approval_keystone.py`` owns the cases about the mask itself.
+        """
+        _floor_monkeypatch.setattr(standing_approval, "_keystone_is_masked", lambda *_a, **_k: True)
+
     @pytest.mark.asyncio
     async def test_disabled_gateway_is_a_noop(self):
         orch = _socket_orch()
@@ -731,12 +761,69 @@ class TestInitSocketMode:
         assert len(orch._socket_client.socket_mode_request_listeners) == 1
 
     @pytest.mark.asyncio
-    async def test_dangerously_skip_permissions_enables_yolo(self):
+    async def test_a_declared_keystone_grant_enables_yolo(self):
+        """The STANDING grant comes from the operator-owned keystone, not config.json.
+
+        The retired ``agent.dangerously_skip_permissions`` key is left False here, so a
+        pass cannot come from the config document that does not carry this switch.
+        """
+        _declare_standing_approval()
+        orch = _socket_orch()
+        orch._cfg.agent.dangerously_skip_permissions = False
+        with _SocketPatches() as sp:
+            await ev.init_socket_mode(orch, ev.SeenCache())
+        sp.setters["set_yolo_mode"].assert_called_once_with(True)
+
+    @pytest.mark.asyncio
+    async def test_the_deprecated_config_key_alone_still_enables_yolo(self):
+        """First-Principles ruling: the config key is a DEPRECATED ALIAS, not retired, so
+        it STILL enables yolo on its own (and logs a deprecation warning) rather than
+        being announced-but-refused."""
         orch = _socket_orch()
         orch._cfg.agent.dangerously_skip_permissions = True
         with _SocketPatches() as sp:
             await ev.init_socket_mode(orch, ev.SeenCache())
         sp.setters["set_yolo_mode"].assert_called_once_with(True)
+
+    @pytest.mark.asyncio
+    async def test_a_sandbox_flip_before_init_leaves_the_grant_suspended(self, monkeypatch):
+        """A sandbox unmask between boot and Slack init refuses the standing grant.
+
+        The grant is honoured only where the LIVE sandbox masks the keystone. If the
+        operator flips ``agent.sandbox`` off (or down to an unmasked tier) after the
+        orchestrator captured its boot config but before this init establishes the
+        grant, the cached ``orch._cfg.agent.sandbox`` is stale and still reads
+        "masked" -- so passing that cached value would activate a grant the live host
+        does not protect. ``init_socket_mode`` resolves the mode from
+        :func:`config.live.current` immediately before activation, so the flipped ``off``
+        reaches ``is_declared`` and the grant stays suspended.
+
+        Discriminating: the keystone IS declared and the mask DOES hold for the cached
+        ``strict`` tier, so the only thing that keeps ``set_yolo_mode`` from firing is
+        that the LIVE mode (``off``) is the one consulted. Passing the cached ``strict``
+        here would grant.
+        """
+        from kiro_crew.config import live as _live
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        _declare_standing_approval()
+        orch = _socket_orch()
+        # Boot copy says a masked tier; the live config has been flipped OFF.
+        orch._cfg.agent.sandbox = "strict"
+        orch._cfg.agent.dangerously_skip_permissions = False
+        flipped = KiroCrewConfig()
+        flipped.agent.sandbox = "off"
+        monkeypatch.setattr(_live, "current", lambda *_a, **_k: flipped)
+        # The mask holds for the masked tier but not for the flipped-off one, so the
+        # verdict turns on WHICH mode is consulted -- the stale cached one or the live one.
+        monkeypatch.setattr(
+            standing_approval,
+            "_keystone_is_masked",
+            lambda mode, *_a, **_k: mode != "off",
+        )
+        with _SocketPatches() as sp:
+            await ev.init_socket_mode(orch, ev.SeenCache())
+        sp.setters["set_yolo_mode"].assert_not_called()
 
     # ── Loop-requirement pins ──
     #
@@ -777,13 +864,15 @@ class TestInitSocketMode:
         """The YOLO grant and enterprise auth.test stay off the loop.
 
         Blocking calls must stay off the loop thread; the code offloads them
-        per-call.
+        per-call. The grant is declared on the keystone, because that read is the
+        blocking work being placed off the loop.
         """
+        _declare_standing_approval()
         loop_thread = threading.current_thread()
         seen_threads: dict[str, threading.Thread] = {}
 
         orch = _socket_orch()
-        orch._cfg.agent.dangerously_skip_permissions = True
+        orch._cfg.agent.dangerously_skip_permissions = False
         with _SocketPatches() as sp:
             sp.setters["set_yolo_mode"].side_effect = lambda *_a: seen_threads.__setitem__(
                 "yolo", threading.current_thread()

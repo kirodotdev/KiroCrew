@@ -32,7 +32,7 @@ from slack_sdk.socket_mode.response import SocketModeResponse
 from slack_sdk.socket_mode.websockets import SocketModeClient as WSSocketModeClient
 from slack_sdk.web.async_client import AsyncWebClient
 
-from kiro_crew import __version__
+from kiro_crew import __version__, standing_approval
 from kiro_crew.agent_discovery import agent_spec_stems
 from kiro_crew.agent_spec_format import (
     is_markdown_spec,
@@ -1026,9 +1026,10 @@ async def init_socket_mode(orch: GatewayOrchestrator, seen: SeenCache) -> None:
     ``WSSocketModeClient`` requires a current event loop in the constructing
     thread (its ``__init__`` ends in ``asyncio.ensure_future``), so running
     this function in a worker thread crashes every Slack-enabled boot with
-    ``RuntimeError: There is no current event loop``.  The two blocking calls
-    it contains — the YOLO grant's profiles-dir walk and the enterprise
-    ``auth.test`` network call — are offloaded individually below instead,
+    ``RuntimeError: There is no current event loop``.  The three blocking calls
+    it contains — the standing-approval keystone read, the YOLO grant's
+    profiles-dir walk and the enterprise ``auth.test`` network call — are
+    offloaded individually below instead,
     which keeps the security-relevant early-return ordering (owner check,
     then YOLO grant, then enterprise validation) intact.
     ``test_slack_events_coverage.py::TestInitSocketMode`` pins both halves.
@@ -1050,8 +1051,51 @@ async def init_socket_mode(orch: GatewayOrchestrator, seen: SeenCache) -> None:
     set_tracking_channels(orch._tracking_channels)
     set_open_channels(orch._open_channels)
     set_owner_id(orch._owner_id)
-    if orch._cfg.agent.dangerously_skip_permissions:
-        # grant_declared_yolo walks the profiles dir — blocking, so off-loop.
+    # The STANDING grant is read from the operator-owned keystone, never from
+    # config.json: a standing skip of every approval must not be declarable by the
+    # population it governs, and config.json stays agent-READABLE by design, which
+    # leaves the inode behind its read-only seal a link(2) source. The config key is a
+    # deprecated alias that still grants, and says so once, rather than being honoured
+    # silently.
+    #
+    # Off-loop like the two calls below it: is_declared opens a file and establishes
+    # the sandbox mask, and this function runs ON the event loop by necessity (see the
+    # docstring), so a data home whose storage stalls must not be able to hold the loop.
+    #
+    # Resolve the sandbox mode from the config in force NOW, immediately before this
+    # activation -- never the orchestrator's boot copy. The keystone grant is honoured
+    # only where Kiro Crew's own sandbox masks the leaf away from the agent; if the
+    # operator flipped sandbox OFF (or down to an unmasked tier) between boot and this
+    # init, the cached ``orch._cfg.agent.sandbox`` would still read "masked" and
+    # activate a grant the live host does not protect. ``live.current`` (off-loop,
+    # it may reload from disk) returns the watcher snapshot else the boot copy, so a
+    # mid-flight unmask leaves the grant suspended rather than activated under a stale
+    # mode.
+    from kiro_crew.config import live as _live
+
+    sandbox_mode = (
+        await asyncio.to_thread(_live.current, orch._cfg, log_prefix="slack")
+    ).agent.sandbox
+    if await asyncio.to_thread(standing_approval.is_declared, sandbox_mode):
+        # The keystone -- the SECURE path. grant_declared_yolo walks the profiles dir —
+        # blocking, so off-loop.
+        await asyncio.to_thread(set_yolo_mode, True)
+    elif orch._cfg.agent.dangerously_skip_permissions:
+        # Deprecated alias: agent.dangerously_skip_permissions still GRANTS (today's
+        # behaviour, on every platform including those the keystone mask does not cover),
+        # with a one-line deprecation warning naming the keystone to migrate to. Retiring
+        # it, or refusing it off the masked platforms, would be a product-shape change the
+        # First-Principles review blocks, so it is kept working and warned about instead.
+        # Off-loop for the same reason as the call above: migration_notice establishes the
+        # sandbox mask to decide the remedy wording, which reads the data home and probes
+        # the backend.
+        notice = await asyncio.to_thread(standing_approval.migration_notice, sandbox_mode)
+        logger.warning(
+            "agent.dangerously_skip_permissions in config.json is DEPRECATED as a "
+            "standing auto-approve switch and will stop granting in a future release. "
+            "It still grants for now. %s",
+            notice,
+        )
         await asyncio.to_thread(set_yolo_mode, True)
     set_orch_cfg(orch._cfg)
     if orch.dashboard_state:
