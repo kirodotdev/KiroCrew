@@ -3422,19 +3422,22 @@ html[data-font-family="opendyslexic"] .nav-item {
    farm lives inside this same scroller, so off-screen rows inherit identical
    column widths and heights. Hosts that do
    not publish the property fall back to ordinary markdown sizing. */
-/* Only top-level assistant tables may escape the reading column. The
+/* Only top-level assistant tables may escape the reading column, and only
+   from an unbordered bubble: a host that draws the reply as a bordered card
+   (a crewmate's chat, AssistantMessage's `bubbleClassName` → `data-bordered`)
+   keeps its table inside the card. The
    intervening div is rehypeStableRootKeys' display:contents wrapper;
    quoted/list tables and formatted code cards retain their own bounds. */
-.chat-container .chat-message-body:has([data-role="assistant"] > .message-bubble > [data-image-scope] > div > .markdown-table),
-.chat-container [data-role="assistant"] > .message-bubble:has(> [data-image-scope] > div > .markdown-table) {
+.chat-container .chat-message-body:has([data-role="assistant"] > .message-bubble:not([data-bordered]) > [data-image-scope] > div > .markdown-table),
+.chat-container [data-role="assistant"] > .message-bubble:not([data-bordered]):has(> [data-image-scope] > div > .markdown-table) {
   overflow: visible;
 }
-.chat-container [data-role="assistant"] > .message-bubble:has(> [data-image-scope] > div > .markdown-table) {
+.chat-container [data-role="assistant"] > .message-bubble:not([data-bordered]):has(> [data-image-scope] > div > .markdown-table) {
   /* Preserve the bubble's margin containment and raw-view height measurement
      while allowing its table to paint into the surrounding gutters. */
   display: flow-root;
 }
-.chat-container [data-role="assistant"] > .message-bubble > [data-image-scope] > div > .markdown-table {
+.chat-container [data-role="assistant"] > .message-bubble:not([data-bordered]) > [data-image-scope] > div > .markdown-table {
   /* Stop 40px short of each pane edge: the band TurnNavigationMinimap needs
      free beside the content column (MIN_GUTTER_PX, a px constant — so px here,
      not rem, or a browser's smaller root font would shrink the clearance under
