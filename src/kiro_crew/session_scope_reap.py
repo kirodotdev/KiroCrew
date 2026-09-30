@@ -734,7 +734,7 @@ def _stop_and_signal_members(
 
 
 def _sel_scope_reap(unit_name: str, member_count: int, reason: str, outcome: str) -> None:
-    """Emit one SEL audit event per reclaimed (or failed) scope."""
+    """Emit one SEL audit event per reclaimable scope: completed, refused or failed."""
     try:
         # Lazy import: sel pulls in heavy modules and this file is imported
         # early by the session cleanup path.
@@ -847,12 +847,13 @@ def reap_scopes(
         # A refusal and a failure are different events for an operator: one says a
         # tenant is still using the scope and the next pass should try again, the
         # other says the stop was attempted and did not finish.
-        _sel_scope_reap(
-            unit_name,
-            members,
-            reason,
-            "completed" if cleared else ("refused" if refused else "failed"),
-        )
+        if cleared:
+            outcome = "completed"
+        elif refused:
+            outcome = "refused"
+        else:
+            outcome = "failed"
+        _sel_scope_reap(unit_name, members, reason, outcome)
         if cleared:
             summary.reclaimed += 1
         else:
