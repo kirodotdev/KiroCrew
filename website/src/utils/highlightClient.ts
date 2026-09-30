@@ -4,6 +4,8 @@
 // The main thread never runs hljs, so a pathological regex can no longer freeze
 // scrolling or interaction.
 import DOMPurify from 'dompurify'
+import hljsWorkerUrl from './hljsWorker.ts?worker&url'
+import { workerUrlWithBuildKey } from './workerCacheKey'
 
 interface HighlightResponse {
   id: number
@@ -28,7 +30,7 @@ function getWorker(): Worker | null {
   if (workerFailed || typeof Worker === 'undefined') return null
   if (worker) return worker
   try {
-    worker = new Worker(new URL('./hljsWorker.ts', import.meta.url), { type: 'module' })
+    worker = new Worker(workerUrlWithBuildKey(hljsWorkerUrl), { type: 'module' })
     worker.onmessage = (e: MessageEvent<HighlightResponse>) => {
       const resolve = pending.get(e.data.id)
       if (resolve) {

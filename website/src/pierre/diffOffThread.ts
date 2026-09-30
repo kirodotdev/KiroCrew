@@ -8,6 +8,8 @@
 // next request.
 import type { FileContents } from '@pierre/diffs'
 import type { PairDiffRequest, PairDiffResponse } from './diffWorker'
+import diffWorkerUrl from './diffWorker.ts?worker&url'
+import { workerUrlWithBuildKey } from '../utils/workerCacheKey'
 
 interface Pending {
   resolve: (patch: string) => void
@@ -72,7 +74,7 @@ function rejectAllPending(err: Error) {
 
 function ensureWorker(): Worker {
   if (worker) return worker
-  worker = new Worker(new URL('./diffWorker.ts', import.meta.url), { type: 'module' })
+  worker = new Worker(workerUrlWithBuildKey(diffWorkerUrl), { type: 'module' })
   worker.onmessage = (e: MessageEvent<PairDiffResponse>) => {
     const p = pending.get(e.data.id)
     if (!p) return // cancelled — result discarded
