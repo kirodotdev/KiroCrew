@@ -719,8 +719,18 @@ export default function ChatPane({
     paneSlot?.model_withheld,
   )
   // `default` only for the Settings default (see ChatPage).
-  const settingsDefaultModel = useSettingsDefaultModel(paneRemoteCrew.isRemote)
-  const modelMarker = modelChipMarker(paneSlot?.model || '', shownModel, _pinShownModel, settingsDefaultModel)
+  const chipDefault = useSettingsDefaultModel(
+    paneSlot && !paneSlot.model ? paneAgentName : '',
+    paneRemoteCrew.isRemote,
+    codexPairModels,
+  )
+  const modelMarker = modelChipMarker(
+    paneSlot?.model || '',
+    shownModel,
+    _pinShownModel,
+    chipDefault.settingsDefault,
+    chipDefault.agentPinned,
+  )
 
   // One-time hydrate of this slot's message history via React Query + the api
   // client (caching + cross-pane dedup; staleTime Infinity keeps it one-shot —
@@ -1908,6 +1918,13 @@ export default function ChatPane({
           testId="chat-pane-effort-capabilities-error"
           message={provider.capabilities.reasoningEffort && selectionCapabilitiesQ.isError
             ? i18nT('pages.chatPage.effort_options_unavailable') : ''}
+        />
+        {/* No hand-off: this pane holds an unsent draft; the reads retry in place. */}
+        <ErrorNotice
+          variant="inline"
+          className="mx-4 mt-2"
+          testId="chat-pane-model-default-error"
+          message={chipDefault.failed ? i18nT('pages.settings.chatPanel.failed_to_load_config') : ''}
         />
         {/* No hand-off: the composer draft is untouched by a failed stop; the
             turn is still running, so the Stop button stays for a retry. */}

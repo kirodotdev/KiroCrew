@@ -4656,21 +4656,13 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   )
   // The chip says `default` only for the Settings default; a model picked for
   // the user (Auto router, withheld pin's fallback) is marked `auto` instead.
-  const settingsDefaultModel = useSettingsDefaultModel(remoteCrew.isRemote)
-  // Whether the slot's agent pins its own model: an agent pin equal to the
-  // Settings default does not move when the default does, so it is no default.
-  const { data: _slotAgentResolved } = useQuery<{ pinned?: boolean }>({
-    queryKey: ['agent-resolved-model', _slotAgentName],
-    queryFn: () => api.agentResolvedModel(_slotAgentName),
-    enabled: !!_slotAgentName && !remoteCrew.isRemote,
-  })
+  const chipDefault = useSettingsDefaultModel(_slotAgentName, remoteCrew.isRemote, codexPairModels)
   const modelMarker = modelChipMarker(
     currentSlot?.model || '',
     shownModel,
     _pinShownModel,
-    // An unanswered pin read is not "unpinned": claim nothing until it lands.
-    _slotAgentName && !_slotAgentResolved ? null : settingsDefaultModel,
-    !!_slotAgentResolved?.pinned,
+    chipDefault.settingsDefault,
+    chipDefault.agentPinned,
   )
   // Context-window fallback for a peer-bound session BEFORE its first turn. Once a
   // turn has run the real number arrives with the relayed `context_usage` frame and
@@ -8035,6 +8027,13 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
             ? i18nT('pages.chatPage.effort_options_unavailable') : ''}
           className="mx-4 mt-2 mb-0 animate-rise"
           testId="effort-capabilities-error"
+        />
+        {/* No hand-off: navigating away would discard the unsent composer draft. */}
+        <ErrorNotice
+          message={activeSlot && chipDefault.failed
+            ? i18nT('pages.settings.chatPanel.failed_to_load_config') : ''}
+          className="mx-4 mt-2 mb-0 animate-rise"
+          testId="model-default-error"
         />
         <ErrorNotice
           title={actionError?.title}

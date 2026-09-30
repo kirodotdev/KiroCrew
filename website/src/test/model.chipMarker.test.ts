@@ -1,4 +1,9 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
+import { createElement, type ReactNode } from 'react'
+import { renderHook, waitFor } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { api } from '../api/client'
+import { useSettingsDefaultModel } from '../hooks/useSettingsDefaultModel'
 import { displayModel, modelChipMarker } from '../lib/model'
 
 /** The composer chip's ` · default` marker must mean the Settings default, and
@@ -74,5 +79,41 @@ describe('modelChipMarker', () => {
   it('never says default when Settings names no default', () => {
     expect(chip('auto', 'claude-sonnet-5', null, '')).toBe('auto')
     expect(chip('', '', null, '', 'claude-sonnet-5')).toBeNull()
+  })
+})
+
+/** Both chat hosts read the chip's default through this hook, so a failed read
+ *  must reach them as `failed` rather than as a silently missing marker. */
+function run(agentName: string, stripEffort = false) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const wrapper = ({ children }: { children: ReactNode }) =>
+    createElement(QueryClientProvider, { client }, children)
+  return renderHook(() => useSettingsDefaultModel(agentName, false, stripEffort), { wrapper })
+}
+
+afterEach(() => vi.restoreAllMocks())
+
+describe('useSettingsDefaultModel', () => {
+  it('reports a failed config read instead of claiming no default', async () => {
+    vi.spyOn(api, 'kirocrewConfig').mockRejectedValue(new Error('503'))
+    const { result } = run('')
+    await waitFor(() => expect(result.current.failed).toBe(true))
+    expect(result.current.settingsDefault).toBeNull()
+  })
+
+  it('reports a failed agent pin read and claims no default until it lands', async () => {
+    vi.spyOn(api, 'kirocrewConfig').mockResolvedValue({ agent: { model: 'claude-sonnet-5' } } as never)
+    vi.spyOn(api, 'agentResolvedModel').mockRejectedValue(new Error('500'))
+    const { result } = run('kirocrew')
+    await waitFor(() => expect(result.current.failed).toBe(true))
+    expect(result.current.settingsDefault).toBeNull()
+  })
+
+  it('returns the default and the agent pin once both reads land', async () => {
+    vi.spyOn(api, 'kirocrewConfig').mockResolvedValue({ agent: { model: 'gpt-5-codex[high]' } } as never)
+    vi.spyOn(api, 'agentResolvedModel').mockResolvedValue({ pinned: true } as never)
+    const { result } = run('kirocrew', true)
+    await waitFor(() => expect(result.current.settingsDefault).toBe('gpt-5-codex'))
+    expect(result.current).toEqual({ settingsDefault: 'gpt-5-codex', agentPinned: true, failed: false })
   })
 })

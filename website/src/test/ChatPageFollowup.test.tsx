@@ -59,6 +59,7 @@ vi.mock('../api/client', () => ({
     // it fails and the sidebar renders a second `role="alert"` beside the
     // worktree-failure notice the assertions below look up by role.
     kirocrewConfig: vi.fn().mockResolvedValue({}),
+    agentResolvedModel: vi.fn().mockResolvedValue({ pinned: false }),
   },
   SEARCH_MIN_CHARS: 2,
 }))
