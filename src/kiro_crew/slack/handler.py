@@ -112,6 +112,7 @@ from kiro_crew.messaging.dispatch import (
     await_replay_gap,
     consume_reinjection,
     rearm_reinjection,
+    rollback_skill_bodies,
     session_stop_generation,
     stop_reason_landed,
 )
@@ -4981,6 +4982,7 @@ async def handle_message(
         # read; a cancelled or failed turn discarded the prompt that carried them.
         if _turn_landed and _thread_replies is not None and _thread_replies.read_ok:
             note_turn(session_key, thread_ts or msg_ts, msg_ts)
+        rollback_skill_bodies(context_builder, session_key, landed=_turn_landed)
         # The permit is held past this ``finally`` when the turn reached a clean
         # model completion, because success/failure accounting is booked only
         # after the answer-carrying delivery below and mutates per-session breaker

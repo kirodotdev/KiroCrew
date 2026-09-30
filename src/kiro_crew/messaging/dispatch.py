@@ -992,6 +992,43 @@ def rearm_reinjection(sessions: Any, session_key: str, *, consumed: bool, landed
         )
 
 
+def rollback_skill_bodies(ctx_builder: Any, session_key: str, *, landed: bool) -> None:
+    """Settle this turn's build-time skill-body dedup writes at the turn seam.
+
+    Companion to :func:`rearm_reinjection` at the same turn ``finally`` seam.
+    ``build_message`` records injected skill bodies at build time so the dedup
+    holds at every caller and stashes an undo entry for the current build. This
+    settles that entry exactly once per turn:
+
+    * ``landed`` — the prompt reached the provider window, so commit: drop the
+      undo entry (the bodies are in the window and must not be rolled back
+      later). Leaving it armed would let a later non-landing turn roll back this
+      LANDED build, re-injecting bodies the window already holds.
+    * not ``landed`` — a provider error, cancel or driver fault discarded the
+      prompt, so roll back: restore the pre-build state so the next turn
+      re-injects the bodies as full bodies rather than demoting to pointers.
+
+    A turn that built no context finds no armed undo entry (a landed build
+    cleared its own, and turns on one session key are serialized) so both calls
+    are no-ops. Never raises: a failed settle is logged and the record's own
+    fail-safe (a pointer next turn, not silence) still holds. Defensive on the
+    accessors so a builder stand-in that predates the methods is a safe no-op.
+    """
+    method = "commit_skill_bodies" if landed else "rollback_skill_bodies"
+    settle = getattr(ctx_builder, method, None)
+    if not callable(settle):
+        return
+    try:
+        settle(session_key)
+    except Exception:
+        logger.debug(
+            "settling skill-body dedup state failed (landed=%s) session=%s",
+            landed,
+            session_key,
+            exc_info=True,
+        )
+
+
 def hook_auto_reply(ctx_builder: Any, text: str) -> str | None:
     """The canned answer a user-defined ``on_message`` hook gives *text*, else None.
 
@@ -1958,6 +1995,7 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
         # back so the next turn re-injects it. First, because nothing below
         # depends on it and it must run on every exit path.
         rearm_reinjection(sessions, session_key, consumed=needs_reinjection, landed=_turn_landed)
+        rollback_skill_bodies(ctx_builder, session_key, landed=_turn_landed)
         # Always finalize the turn, even if get_or_create raised before the
         # semaphore was held. Only release if we actually acquired it.
         #

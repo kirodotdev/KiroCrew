@@ -231,15 +231,24 @@ The mechanism, when on:
 - The bar is `MIN_TRIGGER_OVERLAP = 0.7`. `always: true` skills are excluded (already
   pinned) and a `repo_scope` mismatch suppresses mechanically. Matches are then
   truncated to `max_triggered`, highest score first.
-- `skill_runtime/delivery.py` → `split_triggered` decides delivery. **Full body
-  is the default**: a matched skill's procedure lands in the prompt as
-  `[Skill: name]`. An unconfined skill opts out with `inject_on_trigger: false`
-  and contributes one line to the `[Relevant skills for this message]` block from
-  `skill_runtime/delivery.py` → `trigger_hint` instead. A confined project skill
-  always takes the body path, because handing out a live path would bypass the
-  descriptor-pinned reader.
-- One SEL audit row records the matched set, the body/pointer split, and any
-  negative-trigger deny.
+- `skill_runtime/delivery.py` → `split_triggered` decides delivery. **A matched
+  skill's full body lands in the prompt as `[Skill: name]` the first time it
+  matches in a provider session**; a later match of the same unconfined skill in
+  that same session demotes to the one-line pointer in `[Relevant skills for this
+  message]` instead, because the provider replays the body from native history
+  (see "Per-session body dedup" below). An unconfined skill opts out entirely
+  with `inject_on_trigger: false` and contributes only that pointer line from
+  `skill_runtime/delivery.py` → `trigger_hint`. A confined project skill always
+  takes the body path on every match (never demoted), because handing out a live
+  path would bypass the descriptor-pinned reader.
+- The matcher emits one SEL audit row recording the matched set, the
+  frontmatter-level body/pointer split, and any negative-trigger deny. When the
+  per-session dedup demotes a body the matcher counted as delivered, a second
+  `skill_delivery` row is emitted after dedup naming what the prompt *actually*
+  carries (bodies vs pointers vs demoted), so an auditor is never told a demoted
+  body reached the prompt. That correction row fires only on a turn where a
+  demotion diverged from the matcher's claim; a no-demotion turn keeps its one
+  row.
 - The Jev decision point (`decisions/points/skills_select.py` →
   `selected_skills`, wired through the `select` callable) may **replace** the
   matched set for a sampled session; `None` keeps the match, `[]` empties it. See

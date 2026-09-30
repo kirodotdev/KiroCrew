@@ -87,6 +87,7 @@ from kiro_crew.messaging.dispatch import (
     predecessor_sid,
     rearm_reinjection,
     requested_model_sid,
+    rollback_skill_bodies,
     slot_workspace,
 )
 from kiro_crew.messaging.display_safety import redact_for_display
@@ -1538,6 +1539,7 @@ class DiscordDispatcher:
             rearm_reinjection(
                 self.sessions, session_key, consumed=_needs_reinjection, landed=_turn_landed
             )
+            rollback_skill_bodies(self.ctx_builder, session_key, landed=_turn_landed)
             # Renderer finalization is best-effort and must NEVER prevent the
             # session release below — a rendering failure (e.g. Discord/proxy
             # returning a malformed body) that also failed finalization would

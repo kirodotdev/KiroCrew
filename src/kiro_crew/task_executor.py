@@ -45,7 +45,11 @@ from kiro_crew.llm_helpers import (
     provider_last_turn_usage,
     stream_and_collect_json,
 )
-from kiro_crew.messaging.dispatch import consume_reinjection, rearm_reinjection
+from kiro_crew.messaging.dispatch import (
+    consume_reinjection,
+    rearm_reinjection,
+    rollback_skill_bodies,
+)
 from kiro_crew.messaging.link import telemetry_channel_of
 from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR
 from kiro_crew.providers.base import (
@@ -1307,6 +1311,7 @@ async def execute_task(
             rearm_reinjection(
                 sessions, session_key, consumed=_needs_reinjection, landed=_turn_landed
             )
+            rollback_skill_bodies(ctx, session_key, landed=_turn_landed)
             if _acquired:
                 sessions.release(session_key)
 

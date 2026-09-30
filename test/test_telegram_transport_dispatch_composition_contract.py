@@ -207,6 +207,7 @@ BASE_NAMES = frozenset(
         "release_conversation_location",
         "requested_model_sid",
         "reserve_new_generation",
+        "rollback_skill_bodies",
         "run_in_embed_pool",
         "run_yolo_command",
         "runtime_death",

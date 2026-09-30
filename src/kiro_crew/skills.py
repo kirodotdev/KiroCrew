@@ -5445,6 +5445,15 @@ class SkillsLoader:
         """
         return _delivery.split_triggered(self, names, project_dir)
 
+    def confined_triggered(
+        self, names: list[str], project_dir: str | Path | None = None
+    ) -> set[str]:
+        """Return the subset of *names* that are confined project skills.
+
+        Contract and rationale: ``skill_runtime.delivery.confined_triggered``.
+        """
+        return _delivery.confined_triggered(self, names, project_dir)
+
     def trigger_hint(self, names: list[str], project_dir: str | Path | None = None) -> str:
         """Return a pointer block naming *names* and where to read each one.
 

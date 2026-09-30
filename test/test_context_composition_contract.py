@@ -1202,6 +1202,10 @@ _FACADE_IMPORTS: dict[str, tuple[str, str]] = {
 _BUILDER_MEMBERS: dict[str, tuple[str, str]] = {
     "_CAP_FIGURE_SESSIONS": ("attr", "512"),
     "_MAX_SUBAGENTS_TOKEN": ("attr", "'{{MAX_SUBAGENTS}}'"),
+    "_SENT_SKILL_BODY_ENTRIES": ("attr", "64"),
+    "_SENT_SKILL_BODY_SESSIONS": ("attr", "512"),
+    "_SKILL_DELIVERY_AUDIT_NAMES": ("attr", "64"),
+    "_SKILL_DELIVERY_AUDIT_NAME_LEN": ("attr", "128"),
     "__init__": (
         "method",
         "(self, memory: 'MemoryStore | None' = None, skills: 'SkillsLoader | None' = None, hooks: 'HookManager | None' = None, lessons: 'LessonStore | None' = None, conversation_log: \"'ConversationLog | None'\" = None, channel_history: \"'ChannelHistory | None'\" = None, bot_name: 'str' = '')",
@@ -1215,6 +1219,10 @@ _BUILDER_MEMBERS: dict[str, tuple[str, str]] = {
         "(self, memory_store: 'str | None', *, member: 'str' = '', member_is_id: 'bool' = True, project: 'str | None' = None, workspace: 'str | None' = None, blocks_reads: 'bool' = False, context_groups: 'frozenset[str] | None' = None, profile_overrides: 'dict[str, str] | None' = None, native_documents: 'dict[str, str] | None' = None, native_envelope_out: 'list[str] | None' = None, execution_template: 'str' = '', member_template: 'str' = '', conditional_index: 'bool' = False, trigger_text: 'str' = '', steering_dirs: 'tuple[str, ...]' = (), desk_withheld: 'bool' = False, provider_type: 'str' = 'acp') -> 'str'",
     ),
     "_cap_memo_key": ("static", "(session_key: 'str') -> 'str'"),
+    "_dedup_triggered_bodies": (
+        "method",
+        "(self, session_key: 'str | None', agent: 'str | None', reset: 'bool', candidates: 'list[tuple[str, str]]') -> 'set[str]'",
+    ),
     "_forget_shown_lessons": ("method", "(self, session_key: 'str') -> 'None'"),
     "_live_cap_figure": ("static", "() -> 'str'"),
     "_live_shown_lessons": ("method", "(self, session_key: 'str') -> '_ShownLessons'"),
@@ -1245,6 +1253,7 @@ _BUILDER_MEMBERS: dict[str, tuple[str, str]] = {
         "method",
         "(self, session_key: 'str | None' = None, agent: 'str | None' = None, resumed: 'bool' = False, workspace: 'str | None' = None, memory_store: 'str | None' = None, compressed_history: 'str | None' = None, mode: 'str' = '', blocks_reads: 'bool' = False, provider_type: 'str' = 'acp', minimal_context: 'bool' = False, *, runtime_source: 'str | None' = None, exclude_last_n: 'int' = 0, model_window: 'int | None' = None, context_groups: 'frozenset[str] | None' = None, query_text: 'str' = '', project: 'str | None' = None, member: 'str' = '', execution_context: 'Any' = None, steering_dirs: 'tuple[str, ...]' = (), _v2_essentials: 'str | None' = None) -> 'str'",
     ),
+    "commit_skill_bodies": ("method", "(self, session_key: 'str | None') -> 'None'"),
     "ensure_store": ("static", "(memory_store: 'str | None') -> \"'VectorMemoryStore | None'\""),
     "get_lessons_for": (
         "static",
@@ -1254,6 +1263,7 @@ _BUILDER_MEMBERS: dict[str, tuple[str, str]] = {
         "static",
         "(workspace: 'str | None' = None, memory_store: 'str | None' = None) -> 'MemoryStore'",
     ),
+    "rollback_skill_bodies": ("method", "(self, session_key: 'str | None') -> 'None'"),
 }
 
 

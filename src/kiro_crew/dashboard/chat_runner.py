@@ -313,7 +313,11 @@ from kiro_crew.members import (
 )
 from kiro_crew.memory_stores import UnknownMemoryStore
 from kiro_crew.messaging.commands import compact_unsupported_reply
-from kiro_crew.messaging.dispatch import consume_reinjection, rearm_reinjection
+from kiro_crew.messaging.dispatch import (
+    consume_reinjection,
+    rearm_reinjection,
+    rollback_skill_bodies,
+)
 from kiro_crew.messaging.display_safety import redact_for_display
 from kiro_crew.messaging.empty_turn_copy import (
     EMPTY_TURN_NOTICE,
@@ -21474,6 +21478,7 @@ async def _run_chat(
             consumed=_needs_reinjection or _member_session_start_pending,
             landed=_turn_landed,
         )
+        rollback_skill_bodies(state.context_builder, session_key, landed=_turn_landed)
         # ── AutoNudge: (re)arm the idle timer on EVERY turn-exit path. ──
         # Must be in finally, not the happy path: a turn that ends via timeout
         # / AcpProcessDied / AcpError / cancel would otherwise never re-arm,
