@@ -47,6 +47,7 @@ import { createAgentsEndpoints } from './client/agents'
 import { createChatSlotSettingsEndpoints } from './client/chatSlotSettings'
 import { createFilesEndpoints } from './client/files'
 import { createCronEndpoints } from './client/cron'
+import { createMigrationEndpoints } from './client/migration'
 import { createHooksEndpoints } from './client/hooks'
 import { createSkillsEndpoints } from './client/skills'
 import { createSteeringEndpoints } from './client/steering'
@@ -1138,6 +1139,7 @@ const agents = createAgentsEndpoints(transport)
 const chatSlotSettings = createChatSlotSettingsEndpoints(transport)
 const files = createFilesEndpoints(transport)
 const cron = createCronEndpoints(transport)
+const migration = createMigrationEndpoints(transport)
 const hooks = createHooksEndpoints(transport)
 const skills = createSkillsEndpoints(transport)
 const steering = createSteeringEndpoints(transport)
@@ -1212,6 +1214,7 @@ export const api = {
   ...chatSlotSettings.selection,
   ...files.projects,
   ...cron.jobs,
+  ...migration.plans,
   ...security.secrets,
   ...cron.historyAndFolders,
   ...memory.lessons,
