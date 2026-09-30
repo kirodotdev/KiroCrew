@@ -195,6 +195,7 @@ from kiro_crew.dashboard.session_directive_apply import (
 )
 from kiro_crew.dashboard.slot_queue_repository import RESTORED_QUEUE_KEY
 from kiro_crew.dashboard.state import (
+    _MAX_SLOT_MESSAGES,
     CRON_NOTIFY_PREFIX,
     CRON_NOTIFY_RE,
     DENY_CAUSE_APPROVAL_NO_BUDGET,
@@ -234,6 +235,7 @@ from kiro_crew.dashboard.state import (
     context_entry_expired,
     durable_row_count,
     parse_hook_continuations,
+    row_mid,
     should_queue_hook_continuation,
     should_queue_refusal_recovery,
     stage_boundary_for,
@@ -2912,8 +2914,64 @@ def _turn_line_changes(changes: Any) -> int:
     return line_changes_from_file_changes(resolved)
 
 
-def _flush_file_changes(slot: "_ChatSlot") -> None:
-    """Attach accumulated file changes to the last assistant message.
+def _turn_rows(
+    slot: "_ChatSlot", turn_boundary: int, turn_start_mid: str | None
+) -> list[dict[str, Any]]:
+    """The window rows appended since this turn began.
+
+    ``turn_start_mid`` is the ``meta.mid`` of the row at the window's tail when
+    the turn began, ``""`` when the window was empty. The window is
+    front-trimmed at ``_MAX_SLOT_MESSAGES`` and rewritten by a mid-turn clear,
+    so a position captured at turn start can stop naming this turn's first row;
+    a row identity cannot. Rows after the identified row are this turn's, and a
+    tail row that is gone (trimmed away, or cleared) means every row still in
+    the window arrived after it.
+
+    ``None`` means the tail row carried no id (a transcript restored from a
+    disk format that predates row ids). Then ``turn_boundary``, the window
+    index ``_attach_turn_stats`` also scopes to, is the only signal: exact while
+    nothing has been trimmed, and clamped to the window otherwise, which yields
+    no rows rather than an earlier turn's.
+    """
+    rows = slot.messages
+    if turn_start_mid is not None:
+        if turn_start_mid == "":
+            return rows
+        for index in range(len(rows) - 1, -1, -1):
+            if row_mid(rows[index]) == turn_start_mid:
+                return rows[index + 1 :]
+        return rows
+    return rows[min(max(0, turn_boundary), len(rows)) :]
+
+
+def _note_reply_row(slot: "_ChatSlot", row: dict[str, Any]) -> None:
+    """Record ``row`` as a reply the runner in flight appended this turn.
+
+    ``_flush_file_changes`` anchors the turn's chips only to a row recorded
+    here. The window is shared: a workflow or sub-agent completion is appended
+    into it as an assistant row by another writer while a turn runs
+    (``workflow_inject.py``), and position alone cannot tell that row from this
+    turn's reply. Identity can. ``getattr`` because test doubles built on
+    MagicMock have no list to append to.
+
+    Bounded at ``_MAX_SLOT_MESSAGES``, the window's own cap: a row older than
+    that many appends has been front-trimmed out of the window and can no
+    longer be an anchor, so its id is dropped from the head of the list. The
+    ids are runner-minted (``mint_row_mid``), fixed-length and never
+    externally supplied.
+    """
+    mids = getattr(slot, "_turn_reply_mids", None)
+    mid = row_mid(row)
+    if isinstance(mids, list) and mid:
+        if len(mids) >= _MAX_SLOT_MESSAGES:
+            del mids[0]
+        mids.append(mid)
+
+
+def _flush_file_changes(
+    slot: "_ChatSlot", turn_boundary: int = 0, turn_start_mid: str | None = None
+) -> None:
+    """Attach accumulated file changes to this turn's last assistant message.
 
     Dedups by path (first before, last after), reads the AFTER content from
     disk, and writes the list to message meta as ``file_changes``. Files the
@@ -2921,6 +2979,17 @@ def _flush_file_changes(slot: "_ChatSlot") -> None:
     int present only when it is non-zero. Called on
     every exit path (success / cancel / error) so users always see what was
     modified, even on aborted turns.
+
+    Only rows appended by this turn are scanned (see ``_turn_rows`` for the
+    two ways the turn's start is identified), so a turn that changed files but
+    ended without an assistant row gets its own synthetic anchor instead of
+    writing its chips onto the previous turn's answer. Within those rows the
+    anchor must also be a reply THIS runner appended (``slot._turn_reply_mids``,
+    filled by ``_note_reply_row``): the live window is shared, and an assistant
+    row another writer injected mid-turn (a workflow or sub-agent completion
+    envelope) is not this turn's reply even when it is the newest assistant row
+    in the turn. A slot that tracks no identities (a test double without the
+    list) keeps the position rule.
     """
     # Defensive: only proceed when a real, non-empty list is present. Tests
     # using MagicMock slots leave _file_changes as a MagicMock attribute
@@ -3002,27 +3071,43 @@ def _flush_file_changes(slot: "_ChatSlot") -> None:
     file_meta: dict[str, Any] = {"file_changes": fc_list}
     if _dropped:
         file_meta["file_changes_omitted_files"] = _dropped
-    # Attach to the most recent assistant message; if none exists (turn
-    # aborted before any text), create a synthetic message so the chips
-    # still surface.
-    for m in reversed(slot.messages):
-        if m.get("role") == "assistant":
-            meta = m.setdefault("meta", {})
-            meta.update(file_meta)
-            # The count describes the file_changes written beside it, so a
-            # flush that drops nothing leaves no earlier count behind.
-            if not _dropped:
-                meta.pop("file_changes_omitted_files", None)
-            break
+    # Attach to the most recent reply row this runner appended this turn; if
+    # none exists (turn aborted before any text, or every assistant row in the
+    # turn was injected by another writer), create a synthetic message so the
+    # chips still surface without touching a row that is not this turn's reply.
+    reply_mids = getattr(slot, "_turn_reply_mids", None)
+    for m in reversed(_turn_rows(slot, turn_boundary, turn_start_mid)):
+        if m.get("role") != "assistant":
+            continue
+        if isinstance(reply_mids, list) and row_mid(m) not in reply_mids:
+            continue
+        meta = m.setdefault("meta", {})
+        meta.update(file_meta)
+        # The count describes the file_changes written beside it, so a
+        # flush that drops nothing leaves no earlier count behind.
+        if not _dropped:
+            meta.pop("file_changes_omitted_files", None)
+        break
     else:
         # broadcast=False: the synthetic message reaches the UI via the same
         # SSE/WS path the dashboard already drains for this slot. Default
         # broadcast=True would schedule a fan-out via asyncio.ensure_future(),
         # which (a) is redundant here and (b) raises RuntimeError when the
         # function is invoked from a sync context like a unit test.
+        # Content-less on purpose. The turn's error row (every ``except``
+        # branch appends it before this ``finally`` runs) is already in the
+        # window, so this row lands AFTER it; an assistant row with text there
+        # would be read by ``state.is_turn_interrupted`` and its frontend twin
+        # ``selectTurnInterrupted`` as the turn's reply, hiding the trailing
+        # error and with it the Resume control. Every last-conversational-row
+        # scan looks through an assistant row whose ``content`` is empty, and
+        # the transcript still draws it because the chips are content
+        # (``invisibleText.ts::isHiddenInvisibleAssistantRow``). The chips say
+        # what is known here -- files changed -- and the row beside them says
+        # whether the turn stopped, errored, or queued a continuation.
         slot.append(
             "assistant",
-            "*(stopped — files were modified)*",
+            "",
             "msg msg-a",
             broadcast=False,
             meta=file_meta,
@@ -3048,6 +3133,8 @@ def _flush_file_changes(slot: "_ChatSlot") -> None:
     # covers both branches and cannot be missed by a later edit.)
     slot._dirty = True
     slot._file_changes = []
+    if isinstance(reply_mids, list):
+        reply_mids.clear()
 
 
 def _attach_turn_stats(
@@ -5733,16 +5820,19 @@ def _flush_segment(
     # other tabs viewing the same slot receive the finalized text.
     # The active tab already has this content from streaming chunks;
     # the chat_segment event tells it to finalize streaming → assistant.
-    slot.append(
-        "assistant",
-        redacted,
-        "msg msg-a",
-        broadcast=not quiet_persist,
-        # The decision strip, when this turn made one, and the blocked-link records
-        # from the redaction above. Passed here rather than written onto the row
-        # afterwards so the frame this call broadcasts carries them too -- see
-        # _decisions_strip_meta for why that matters.
-        meta=_segment_row_meta(slot, blocked_links, redactions),
+    _note_reply_row(
+        slot,
+        slot.append(
+            "assistant",
+            redacted,
+            "msg msg-a",
+            broadcast=not quiet_persist,
+            # The decision strip, when this turn made one, and the blocked-link records
+            # from the redaction above. Passed here rather than written onto the row
+            # afterwards so the frame this call broadcasts carries them too -- see
+            # _decisions_strip_meta for why that matters.
+            meta=_segment_row_meta(slot, blocked_links, redactions),
+        ),
     )
     # The append-only log's copy of the same body. Written here rather than at the
     # turn's terminal event because a turn produces SEVERAL assistant messages --
@@ -9968,6 +10058,15 @@ async def _run_chat(
     # makes every emitter call a no-op.
     _crew_log_sid = ""
     _turn_msg_boundary = 0
+    # Identity of the window's tail row when the turn began ("" for an empty
+    # window), so the file-change flush can find this turn's rows after a
+    # front-trim moved every index. Re-captured at dispatch with the boundary.
+    _turn_start_mid = row_mid(slot.messages[-1]) if slot.messages else ""
+    # The reply rows this turn appends, recorded by _note_reply_row for the same
+    # flush. Fresh per turn: a previous turn whose flush raised would otherwise
+    # leave its ids behind, and the flush clears the list itself on exit.
+    if isinstance(getattr(slot, "_turn_reply_mids", None), list):
+        slot._turn_reply_mids.clear()
     # The turn's ORDINAL for the crew log, kept separate from the message-slice
     # index above even though both start at the same value. The slice index is
     # reset when a mid-turn clear empties the message list, because the turn-stats
@@ -10241,8 +10340,14 @@ async def _run_chat(
         # after this line only the placeholder exists, so an interrupted reply
         # would otherwise lose what it explains for good.
         _redacted, _blocked, _redactions = _redact_segment(slot, body)
-        slot.append(
-            "assistant", _redacted, "msg msg-a", meta=_segment_row_meta(slot, _blocked, _redactions)
+        _note_reply_row(
+            slot,
+            slot.append(
+                "assistant",
+                _redacted,
+                "msg msg-a",
+                meta=_segment_row_meta(slot, _blocked, _redactions),
+            ),
         )
         crew_log_emit.on_message_sent(
             _crew_log_sid,
@@ -13139,6 +13244,7 @@ async def _run_chat(
         _turn_cost_usd = 0.0
         _turn_model = ""
         _turn_msg_boundary = len(slot.messages)
+        _turn_start_mid = row_mid(slot.messages[-1]) if slot.messages else ""
         # The crew log ordinal is the ABSOLUTE durable position, not the window
         # length. `slot.messages` is front-trimmed at `_MAX_SLOT_MESSAGES`, so past
         # that cap its length stops growing and every later turn drew the SAME
@@ -16312,6 +16418,7 @@ async def _run_chat(
                 # turn-stats scan slice and the completed turn would drop its
                 # elapsed/credits stats.
                 _turn_msg_boundary = 0
+                _turn_start_mid = ""
                 assistant_text = ""
                 _wsred.reset()
                 _produced_visible_output = True
@@ -18369,8 +18476,10 @@ async def _run_chat(
                 turn_boundary=_turn_msg_boundary,
                 model=_turn_model,
             )
-            # Attach accumulated file changes to last assistant message before persist
-            _flush_file_changes(slot)
+            # Attach accumulated file changes to this turn's assistant row before persist
+            _flush_file_changes(
+                slot, turn_boundary=_turn_msg_boundary, turn_start_mid=_turn_start_mid
+            )
             # The reply is in the window, so this save is the durable clear of
             # the in-flight marker: retire it first and the omission rides the
             # same write instead of costing a second one in the finally. Not
@@ -20377,7 +20486,9 @@ async def _run_chat(
         # a raise here cannot skip the re-arm below and re-introduce the orphan
         # bug this fix prevents.
         try:
-            _flush_file_changes(slot)
+            _flush_file_changes(
+                slot, turn_boundary=_turn_msg_boundary, turn_start_mid=_turn_start_mid
+            )
         except Exception:
             logger.debug("_flush_file_changes failed", exc_info=True)
         # Replay settlement belongs on the one path every turn exit crosses.

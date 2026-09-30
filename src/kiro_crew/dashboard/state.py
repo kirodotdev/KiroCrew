@@ -2802,6 +2802,7 @@ class _ChatSlot:
         "_foreign_reported",
         "_pending_rewrite",
         "_file_changes",
+        "_turn_reply_mids",
         "linked_session_key",
         # Remote-execution binding: this slot lives in the LOCAL list and local
         # history, but its turns run on a connected peer crew. See
@@ -3778,6 +3779,13 @@ class _ChatSlot:
         self._file_changes: list[dict[str, str]] = (
             []
         )  # [{path, content}] before-snapshots accumulated per turn for file-chip diffs
+        # ``meta.mid`` of every reply row the runner in flight appended this
+        # turn (``chat_runner._flush_segment`` / ``_persist_partial_reply``).
+        # ``_flush_file_changes`` attaches the turn's chips only to one of these
+        # rows: an assistant row another writer injects into the live window
+        # mid-turn (a workflow or sub-agent completion) is never this turn's
+        # reply, whatever its position. Reset where the turn's start is captured.
+        self._turn_reply_mids: list[str] = []
         self.linked_session_key: str = ""  # when set, _run_chat uses this as session key
         # Where the turn CURRENTLY in flight actually started, as opposed to
         # where the slot would route a new one. The two diverge whenever the
