@@ -1924,7 +1924,7 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
     root = app_dir(app_name)
     entry_point = manifest.backend.entryPoint
     # Module-style entry point (e.g. "kiro_crew.apps.builtins.<name>"):
-    # used by built-in apps that live inside the KiroCrew package itself.
+    # used by built-in apps that live inside the Kiro Crew package itself.
     # Heuristics:
     #   - no path separator,
     #   - no script-file extension (.py/.js/.ts/.mjs/.cjs/.sh) — those are
