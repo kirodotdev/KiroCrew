@@ -736,17 +736,6 @@ async def api_spawn(request: web.Request) -> web.Response:
                 {"error": "The target member does not exist.", "code": "unknown_member"},
                 status=404,
             )
-        if crew and config is not None and not config.agents[crew].triggers.strip():
-            return web.json_response(
-                {
-                    "error": (
-                        "The target member has no Triggers set. Open it on the Crewmates page "
-                        "and fill in Triggers to let other agents delegate to it."
-                    ),
-                    "code": "crew_delegation_disabled",
-                },
-                status=403,
-            )
         admitted_execution = derive_execution(
             parent_execution,
             target_member=crew or None,

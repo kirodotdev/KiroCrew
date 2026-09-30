@@ -457,14 +457,12 @@ class TestTheSpawnEndpointActuallyDelegates:
         assert json.loads(resp.text)["code"] == "unknown_member"
         mgr.spawn.assert_not_called()
 
-    def test_a_crew_without_triggers_is_refused_with_a_message_naming_triggers(
-        self, tmp_path, monkeypatch
-    ):
-        """Triggers is the only delegation switch, so the refusal must name it.
+    def test_a_crew_named_without_triggers_still_spawns_in_its_store(self, tmp_path, monkeypatch):
+        """Triggers steer automatic routing only; naming a member is enough.
 
-        A member added from an agent template starts with empty triggers. The
-        caller reads this text to learn what to fix, and a message that names a
-        switch the UI does not have sends them looking for a toggle.
+        Members added from an agent template, or synced from an installed agent package, start with
+        empty triggers. A named delegation to one must bind that member's store,
+        exactly as it does for a member that has triggers.
         """
         cfg = {
             "default_agent": "kirocrew",
@@ -474,22 +472,21 @@ class TestTheSpawnEndpointActuallyDelegates:
             },
         }
         resp, mgr = self._spawn_call({"task": "x", "crew": "builder"}, cfg, tmp_path, monkeypatch)
-        assert resp.status == 403
-        body = json.loads(resp.text)
-        assert body["code"] == "crew_delegation_disabled"
-        assert "no Triggers set" in body["error"]
-        assert "Crewmates page" in body["error"]
-        assert "delegated tasks" not in body["error"]
-        mgr.spawn.assert_not_called()
+        assert resp.status == 200, resp.text
+        mgr.spawn.assert_called_once()
+        config = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
+        store = config["agents"]["builder"]["memory_store"]
+        assert store and mgr.spawn.call_args.kwargs["memory_store"] == store
 
-    def test_the_crew_field_description_names_triggers_as_the_switch(self):
+    def test_the_crew_field_description_does_not_gate_on_triggers(self):
         """The tool text is what an agent reads before it delegates."""
         import inspect
 
         from kiro_crew.mcp_tools import spawn as spawn_tool
 
         src = inspect.getsource(spawn_tool)
-        assert "must have non-empty Triggers" in src
+        assert "Naming a member is enough" in src
+        assert "must have non-empty Triggers" not in src
         assert "delegated tasks" not in src
 
     def test_the_mcp_tool_forwards_the_field_it_accepts(self):
