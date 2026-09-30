@@ -89,6 +89,27 @@ def _sweep(now: float, *, force: bool = False) -> None:
         _buckets.pop(key, None)
 
 
+def has_create_budget(verb: str, caller_key: str, *, now: float | None = None) -> bool:
+    """Whether :func:`allow_create` would admit *caller_key* now. Spends nothing.
+
+    The read-only twin a preview asks, with the same fail-closed answers for an
+    unknown verb or an empty key. Two calls racing between this answer and the
+    real ``allow_create`` can still see different budgets; the real call stays
+    the one that decides.
+    """
+    budget = _BUDGETS.get(verb)
+    if budget is None or not caller_key:
+        return False
+    if now is None:
+        now = time.monotonic()
+    cutoff = now - WINDOW_SECS
+    with _lock:
+        bucket = _buckets.get((verb, caller_key))
+        if bucket is None:
+            return True
+        return sum(1 for t in bucket if t >= cutoff) < budget
+
+
 def allow_create(verb: str, caller_key: str, *, now: float | None = None) -> bool:
     """Consume one unit of *caller_key*'s budget for *verb*.
 

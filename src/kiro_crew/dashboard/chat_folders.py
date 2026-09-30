@@ -472,7 +472,22 @@ async def api_chat_folders(request: web.Request) -> web.Response:
     folders = await loop.run_in_executor(subprocess_executor(), _folders_with_history_counts, state)
     member_principal = str(request.get(MEMBER_CHAT_PRINCIPAL_KEY) or "")
     if member_principal.startswith("member:"):
-        folders = [f for f in folders if _folder_owner_app(f) == member_principal]
+        # The member also sees the folder its own session is filed in, and that
+        # folder's ancestors, so a path like ``Ops/<agent>`` resolves to the
+        # person's ``Ops`` instead of forking a second one. That chain is the
+        # path its own ``[FOLDER]`` line already shows it; nothing else of the
+        # person's tree is added.
+        by_id = {str(f.get("id") or ""): f for f in folders}
+        home_chain: set[str] = set()
+        cursor = _slot_home_folder_id(caller_home_slot(state, request, member_principal))
+        while cursor and cursor in by_id and cursor not in home_chain:
+            home_chain.add(cursor)
+            cursor = str(by_id[cursor].get("parent_id") or "")
+        folders = [
+            f
+            for f in folders
+            if _folder_owner_app(f) == member_principal or str(f.get("id") or "") in home_chain
+        ]
     return web.json_response(folders)
 
 
@@ -971,6 +986,50 @@ def _folder_owner_app(folder: dict[str, Any]) -> str:
     return str(folder.get("owner_app") or "")
 
 
+def caller_home_slot(state: DashboardState, request: web.Request, principal: str) -> Any:
+    """The calling session's OWN slot, when a non-person *principal* may nest from it.
+
+    A conductor running as an app or a crew member often sits in a folder the
+    person filed it in. Its workers belong under that folder, so the tree fence
+    lets the principal create a child directly under the folder its own calling
+    session is filed in (its "home" folder), and nowhere else in the person's
+    tree. This returns the slot whose ``folder_id`` names that home, or ``None``.
+
+    The slot must BE the caller's, bound to the same principal, or a caller
+    naming someone else's session in ``X-Session-Key`` would borrow that
+    session's folder:
+
+    * an app caller: the slot's ``_app`` must be the app itself;
+    * a crew member: the chat gate stamped this principal from THIS request's
+      verified session key (``MEMBER_CHAT_PRINCIPAL_KEY``), so the key's slot is
+      the member's own session.
+
+    The slot object is returned, not its folder id, so the create reads
+    ``folder_id`` under the folder-store lock at the moment it decides.
+    """
+    if not principal:
+        return None
+    key = str(request.headers.get("X-Session-Key") or "").strip()
+    if not key.startswith("dashboard:"):
+        return None
+    slots = getattr(state, "_slots", None)
+    slot = slots.get(key[len("dashboard:") :]) if isinstance(slots, dict) else None
+    if slot is None:
+        return None
+    if principal.startswith("member:"):
+        if str(request.get(MEMBER_CHAT_PRINCIPAL_KEY) or "") != principal:
+            return None
+    elif str(getattr(slot, "_app", "") or "") != principal:
+        return None
+    return slot
+
+
+def _slot_home_folder_id(slot: Any) -> str:
+    """The folder *slot* is filed in, or ``""`` for none (or no slot)."""
+    folder_id = getattr(slot, "folder_id", "") if slot is not None else ""
+    return folder_id if isinstance(folder_id, str) else ""
+
+
 def _subtree_holds_foreign_folder(
     folders: list[dict[str, Any]], *, root_id: str, request_app: str
 ) -> bool:
@@ -1099,6 +1158,7 @@ async def create_folder_record(
     unique_project_dir: bool = False,
     require_resolved_project_dir: bool = False,
     refuse_duplicate_name: bool = False,
+    home_slot: Any = None,
 ) -> dict[str, Any]:
     """Validate one folder and append it to the store under the folders lock.
 
@@ -1164,7 +1224,15 @@ async def create_folder_record(
     rule the MCP path walk matches segments by. Off by default because the
     sidebar lets a person hold two folders of one name; the folder API turns it
     on for agent callers, whose mkdir -p would otherwise fork a duplicate when
-    two walks race or when the caller cannot see the existing folder.
+    two walks race or when the caller cannot see the existing folder. When the
+    one colliding sibling already belongs to the caller's own principal, it is
+    returned instead (with ``"reused": True`` on the returned copy), so a lost
+    race resolves to the winner's folder in the same request.
+
+    ``home_slot`` is the caller's own session (see :func:`caller_home_slot`).
+    A non-person principal may nest directly under the folder that session is
+    filed in, even when the person owns that folder. The slot's ``folder_id``
+    is read under the lock, where the parent is decided.
 
     Raises:
         FolderCreateError: if the folder was refused (unusable name, missing
@@ -1247,6 +1315,8 @@ async def create_folder_record(
     if request_app:
         folder["owner_app"] = request_app
 
+    reused: list[dict[str, Any]] = []
+
     def _append(folders: list[dict[str, Any]]) -> tuple[bool, str]:
         # Re-check the parent under the lock. Its existence was validated before
         # the lock was taken, so a concurrent delete of that parent would
@@ -1266,7 +1336,12 @@ async def create_folder_record(
         # so has no owner to violate — that is where an app's own tree starts.
         # Decided here rather than pre-lock because a reparent racing this
         # request can change who the parent belongs to.
-        if request_app and parent is not None and _folder_owner_app(parent) != request_app:
+        if (
+            request_app
+            and parent is not None
+            and _folder_owner_app(parent) != request_app
+            and parent_id != _slot_home_folder_id(home_slot)
+        ):
             return False, "forbidden_parent"
         # Under the lock, not pre-lock: a pre-lock read is exactly the
         # check-then-act gap that lets two concurrent creators both see the
@@ -1282,11 +1357,16 @@ async def create_folder_record(
         # test, taken while the store is held, sees the other's append.
         if refuse_duplicate_name:
             folded = name.casefold()
-            if any(
-                str(f.get("parent_id") or "") == parent_id
-                and str(f.get("name") or "").strip().casefold() == folded
+            twins = [
+                f
                 for f in folders
-            ):
+                if str(f.get("parent_id") or "") == parent_id
+                and str(f.get("name") or "").strip().casefold() == folded
+            ]
+            if len(twins) == 1 and _folder_owner_app(twins[0]) == request_app:
+                reused.append(dict(twins[0], reused=True))
+                return False, "reused"
+            if twins:
                 return False, "name_exists"
         folder["order"] = len(folders)  # recount under the lock
         folders.append(folder)
@@ -1313,6 +1393,8 @@ async def create_folder_record(
         )
     if create_err == "name_exists":
         raise FolderNameExistsError()
+    if create_err == "reused":
+        return reused[0]
     return folder
 
 
@@ -1423,8 +1505,17 @@ async def api_chat_folder_create(request: web.Request) -> web.Response:
             # or a folder it cannot see, and a duplicate is wrong in both cases.
             # The browser keeps a person's freedom to name two folders alike.
             refuse_duplicate_name=rl_source != "dashboard",
+            home_slot=caller_home_slot(state, request, request_app),
         )
     except FolderNameExistsError as exc:
+        sel().log_api_access(
+            caller=request_app or rl_caller,
+            operation="chat.folder_create",
+            outcome="denied",
+            source="duplicate_name",
+            resources=f"parent={parent_id}",
+            error="a folder with this name already exists under that parent",
+        )
         return web.json_response({"error": str(exc), "code": exc.code}, status=409)
     except FolderOwnershipError as exc:
         sel().log_api_access(
@@ -1447,6 +1538,10 @@ async def api_chat_folder_create(request: web.Request) -> web.Response:
         if exc.code:
             return web.json_response({"error": str(exc), "code": exc.code}, status=400)
         return web.json_response({"error": str(exc)}, status=400)
+    if folder.get("reused"):
+        # Nothing was written: the caller's own same-name folder already sat
+        # there. 200, not 201, so a client can tell reuse from creation.
+        return web.json_response(folder, status=200)
     state.push_slots_update()
     # Create never generates an icon: a folder without an explicit emoji gets
     # the default glyph. Generation runs only on the explicit Auto-generate

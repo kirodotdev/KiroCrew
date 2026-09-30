@@ -84,7 +84,11 @@ from kiro_crew.dashboard.chat_utils import (
     effective_session_key,
     slot_history_key,
 )
-from kiro_crew.dashboard.create_rate_limit import SESSION_CREATE, allow_create
+from kiro_crew.dashboard.create_rate_limit import (
+    SESSION_CREATE,
+    allow_create,
+    has_create_budget,
+)
 from kiro_crew.dashboard.state import (
     MAX_LIVE_SLOTS,
     MAX_SLOTS_PER_CREATOR,
@@ -2296,23 +2300,6 @@ async def create_session(
         if _cron_caller(caller_key) or getattr(live_caller, "_origin", "") == SlotOrigin.CRON
         else SlotOrigin.USER
     )
-    if dry_run:
-        # The ceilings read the slot table and change nothing, so a dry run tests
-        # them too. The rate guard is left alone: it spends a token on every
-        # call, and a preview must not use up the create it previews.
-        if state.live_slot_count() >= MAX_LIVE_SLOTS:
-            raise SessionControlError(
-                f"slot cap reached ({MAX_LIVE_SLOTS})",
-                code="slot_cap_reached",
-                status=429,
-            )
-        if state.creator_slot_count(caller_key) >= MAX_SLOTS_PER_CREATOR:
-            raise SessionControlError(
-                f"per-caller slot cap reached ({MAX_SLOTS_PER_CREATOR})",
-                code="creator_slot_cap_reached",
-                status=429,
-            )
-        return {"dry_run": True}
     # The RATE guard, ahead of the capacity ceilings below. Those bound how many
     # sessions can exist; this bounds how fast one caller may open them, which is
     # the property an auto-approved verb loses -- a waived prompt leaves a loop
@@ -2320,7 +2307,15 @@ async def create_session(
     # state: a lifetime quota means nothing across a restart unless every
     # rehydrate path carries its attribution, while a five-minute window buys a
     # restart one window rather than a clean slate.
-    if not allow_create(SESSION_CREATE, caller_key):
+    #
+    # A dry run asks the same question without spending the token: a preview
+    # must not use up the create it previews.
+    admitted = (
+        has_create_budget(SESSION_CREATE, caller_key)
+        if dry_run
+        else allow_create(SESSION_CREATE, caller_key)
+    )
+    if not admitted:
         raise SessionControlError(
             "too many sessions created recently; retry shortly",
             code="create_rate_limited",
@@ -2344,6 +2339,12 @@ async def create_session(
             code="creator_slot_cap_reached",
             status=429,
         )
+    # The dry run ends HERE, after the last refusal and before the first write.
+    # Any new refusal gate belongs above this line, or the preview would pass a
+    # create the real call then refuses, and the MCP path walk would leave the
+    # folders it made for that create empty.
+    if dry_run:
+        return {"dry_run": True}
 
     # The agent rides in the constructor rather than being assigned afterwards, for
     # the same reason: it decides which workspace actually EXECUTES the turn, so it

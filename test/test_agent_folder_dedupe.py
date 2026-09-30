@@ -34,6 +34,7 @@ from kiro_crew.dashboard.chat_folders import api_chat_folder_create, create_fold
 from kiro_crew.dashboard.chat_utils import slot_history_key
 from kiro_crew.dashboard.handlers import session_control as handlers_sc
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
+from kiro_crew.dashboard.token_auth import MEMBER_CHAT_PRINCIPAL_KEY
 from kiro_crew.mcp_dashboard import _call_tool_inner
 
 _CALLER = "dashboard:chat-1-100"
@@ -267,13 +268,26 @@ async def _post_folder(state: DashboardState, body: dict, *, internal: bool) -> 
 
 @pytest.mark.asyncio
 async def test_an_agent_cannot_create_a_same_name_sibling() -> None:
+    """A twin owned by another principal is refused, never forked."""
     create_rate_limit.reset_for_tests()
-    folders = [dict(_OPS)]
+    folders = [dict(_OPS, owner_app="member:someone-else")]
     status, body = await _post_folder(
         _folder_state(folders), {"name": " ops ", "parent_id": ""}, internal=True
     )
     assert status == 409
     assert body["code"] == "folder_name_exists"
+    assert len(folders) == 1
+
+
+@pytest.mark.asyncio
+async def test_an_agent_reuses_its_own_principals_twin() -> None:
+    """A person-level agent naming the person's own folder gets that folder back."""
+    create_rate_limit.reset_for_tests()
+    folders = [dict(_OPS)]
+    status, body = await _post_folder(
+        _folder_state(folders), {"name": " ops ", "parent_id": ""}, internal=True
+    )
+    assert status == 200 and body["id"] == _OPS["id"] and body["reused"] is True
     assert len(folders) == 1
 
 
@@ -307,7 +321,9 @@ async def test_the_sibling_test_runs_under_the_lock() -> None:
     real = state.mutate_folders
 
     async def _racing(fn: Any, on_committed: Any = None) -> Any:
-        state._folders.append({"id": "0000000000d4", "name": "Ops", "parent_id": ""})
+        state._folders.append(
+            {"id": "0000000000d4", "name": "Ops", "parent_id": "", "owner_app": "some-app"}
+        )
         return await real(fn, on_committed)
 
     state.mutate_folders = _racing
@@ -378,3 +394,207 @@ def test_the_route_refuses_a_non_boolean_dry_run(tmp_path, _session_control_on) 
     resp = asyncio.run(handlers_sc.api_session_control_create(request))
     assert resp.status == 400
     assert state.live_slot_count() == before
+
+
+# ── Gateway: an agent nests under the folder its own session is filed in ────
+
+_MEMBER = "member:crew-conductor"
+_OTHER = {"id": "0000000000e5", "name": "Canaries", "parent_id": ""}
+_SUB = {"id": "0000000000f6", "name": "Sub", "parent_id": _OPS["id"]}
+
+
+def _home_state(folders: list[dict[str, Any]], *, filed_in: str = _OPS["id"]) -> DashboardState:
+    state = _folder_state(folders)
+    state._slots["chat-1-100"].folder_id = filed_in
+    return state
+
+
+def _member_app(state: DashboardState, *, member: str = _MEMBER) -> web.Application:
+    app = web.Application()
+    app["state"] = state
+
+    @web.middleware
+    async def _as_member(request: web.Request, handler: Any) -> Any:
+        # What the chat gate stamps on an admitted member's verified request.
+        request["app"] = ""
+        request[MEMBER_CHAT_PRINCIPAL_KEY] = member
+        return await handler(request)
+
+    app.middlewares.append(_as_member)
+    app.router.add_post("/api/chat/folders", api_chat_folder_create)
+    app.router.add_get("/api/chat/folders", chat_folders.api_chat_folders)
+    return app
+
+
+_INTERNAL = {
+    "X-Session-Key": _CALLER,
+    "X-Internal-Secret": "s3cret",
+    "X-Internal-Caller": "kirocrew-dashboard",
+}
+
+
+async def _member_post(state: DashboardState, body: dict) -> tuple[int, dict]:
+    async with TestClient(TestServer(_member_app(state))) as client:
+        resp = await client.post("/api/chat/folders", json=body, headers=_INTERNAL)
+        return resp.status, await resp.json()
+
+
+@pytest.mark.asyncio
+async def test_a_member_in_the_persons_folder_creates_its_subfolder_once() -> None:
+    """Conductor in the person's Ops: ``Ops/<agent>`` is made once, then reused.
+
+    Mutation guard: drop the home-folder allowance and the first create is 403.
+    """
+    create_rate_limit.reset_for_tests()
+    folders = [dict(_OPS)]
+    state = _home_state(folders)
+    status, made = await _member_post(state, {"name": "kirocrew-worker", "parent_id": _OPS["id"]})
+    assert status == 201, made
+    assert made["owner_app"] == _MEMBER, "the new subfolder belongs to the agent"
+    status, again = await _member_post(state, {"name": "kirocrew-worker", "parent_id": _OPS["id"]})
+    assert status == 200, again
+    assert again["id"] == made["id"] and again["reused"] is True
+    assert [f["name"] for f in folders].count("kirocrew-worker") == 1
+    assert all("reused" not in f for f in folders), "the flag is never persisted"
+
+
+@pytest.mark.asyncio
+async def test_parallel_member_creates_land_one_folder() -> None:
+    """Two creates of ``Ops/<agent>`` at once: one folder, both get its id."""
+    create_rate_limit.reset_for_tests()
+    folders = [dict(_OPS)]
+    state = _home_state(folders)
+    (s1, a), (s2, b) = await asyncio.gather(
+        _member_post(state, {"name": "kirocrew-worker", "parent_id": _OPS["id"]}),
+        _member_post(state, {"name": "kirocrew-worker", "parent_id": _OPS["id"]}),
+    )
+    assert sorted([s1, s2]) == [200, 201]
+    assert a["id"] == b["id"]
+    assert [f["name"] for f in folders].count("kirocrew-worker") == 1
+
+
+@pytest.mark.asyncio
+async def test_other_person_folders_are_still_refused() -> None:
+    """Only the caller's own folder opens: not a sibling, not a deeper child."""
+    create_rate_limit.reset_for_tests()
+    folders = [dict(_OPS), dict(_OTHER), dict(_SUB)]
+    state = _home_state(folders)
+    for parent in (_OTHER["id"], _SUB["id"]):
+        status, body = await _member_post(state, {"name": "x", "parent_id": parent})
+        assert status == 403, (parent, body)
+    assert len(folders) == 3
+
+
+@pytest.mark.asyncio
+async def test_a_person_owned_twin_under_the_home_folder_is_not_reused() -> None:
+    """Reuse is for the agent's own folder only; the person's is refused."""
+    create_rate_limit.reset_for_tests()
+    twin = {"id": "0000000000a7", "name": "kirocrew-worker", "parent_id": _OPS["id"]}
+    folders = [dict(_OPS), twin]
+    status, body = await _member_post(
+        _home_state(folders), {"name": "kirocrew-worker", "parent_id": _OPS["id"]}
+    )
+    assert status == 409 and body["code"] == "folder_name_exists"
+
+
+@pytest.mark.asyncio
+async def test_an_app_cannot_borrow_another_sessions_folder() -> None:
+    """The home slot must be the caller's own: an app naming a person's session
+    in ``X-Session-Key`` gets no allowance from that session's folder."""
+    create_rate_limit.reset_for_tests()
+    folders = [dict(_OPS)]
+    state = _home_state(folders)
+    app = web.Application()
+    app["state"] = state
+
+    @web.middleware
+    async def _as_app(request: web.Request, handler: Any) -> Any:
+        request["app"] = "some-app"
+        return await handler(request)
+
+    app.middlewares.append(_as_app)
+    app.router.add_post("/api/chat/folders", api_chat_folder_create)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post(
+            "/api/chat/folders", json={"name": "w", "parent_id": _OPS["id"]}, headers=_INTERNAL
+        )
+        assert resp.status == 403
+    state._slots["chat-1-100"]._app = "some-app"
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post(
+            "/api/chat/folders", json={"name": "w", "parent_id": _OPS["id"]}, headers=_INTERNAL
+        )
+        assert resp.status == 201, "the app's OWN session does open its folder"
+
+
+@pytest.mark.asyncio
+async def test_a_member_sees_its_home_folder_chain_and_nothing_else() -> None:
+    """The list adds the folder the member's session sits in and its ancestors."""
+    folders = [dict(_OPS), dict(_OTHER), dict(_SUB)]
+    state = _home_state(folders, filed_in=_SUB["id"])
+    with patch.object(chat_folders, "_folders_with_history_counts", lambda _s: list(folders)):
+        async with TestClient(TestServer(_member_app(state))) as client:
+            resp = await client.get("/api/chat/folders", headers=_INTERNAL)
+            seen = {f["id"] for f in await resp.json()}
+    assert seen == {_OPS["id"], _SUB["id"]}
+
+
+def test_the_walk_takes_a_reused_folder_as_found_not_created() -> None:
+    """A 200 reuse from the endpoint is a match, never a "created" segment."""
+    winner = {"id": "0000000000b8", "name": "kirocrew-worker", "parent_id": _OPS["id"]}
+
+    def _post(path: str, body: dict, **_kw: Any) -> dict:
+        if path == "/api/chat/folders":
+            return {**winner, "reused": True}
+        if body.get("dry_run"):
+            return {"dry_run": True}
+        return {"target": "chat-9-900", "title": "w", "folder_id": body.get("folder_id")}
+
+    gw = _Gateway([_OPS])
+    with (
+        patch("kiro_crew.mcp_dashboard._get", side_effect=gw.get),
+        patch("kiro_crew.mcp_dashboard._post", side_effect=_post) as post,
+    ):
+        out = _call_tool_inner("session_create", {"title": "w", "folder": "Ops/kirocrew-worker"})
+    assert "created folder path" not in out
+    assert post.call_args_list[-1].args[1]["folder_id"] == winner["id"]
+
+
+# ── The preview misses nothing the real create refuses ───────────────────────
+
+
+def test_a_long_later_segment_creates_nothing() -> None:
+    """``New/<too long>``: the length refusal comes before ``New`` is made."""
+    gw = _Gateway([_OPS])
+    out = gw.run("session_create", {"title": "w", "folder": "New/" + "x" * 101})
+    assert out.startswith("Error:") and "too long" in out
+    assert gw.folder_posts == [] and gw.create_posts == []
+
+
+def test_a_spent_create_budget_refuses_the_dry_run(tmp_path, _session_control_on) -> None:
+    """A caller out of create budget is refused by the preview, so no folder
+    is made for a create the rate guard would then refuse."""
+    state = _make_state(tmp_path)
+    caller = state.get_or_create_slot("chat-1")
+    for _ in range(create_rate_limit.MAX_SESSION_CREATES_PER_WINDOW):
+        assert create_rate_limit.allow_create(create_rate_limit.SESSION_CREATE, caller.key)
+    with pytest.raises(sc.SessionControlError) as exc:
+        asyncio.run(
+            sc.create_session(state, caller_session_key=slot_history_key(caller), dry_run=True)
+        )
+    assert exc.value.code == "create_rate_limited"
+
+
+@pytest.mark.asyncio
+async def test_a_refused_duplicate_is_audited() -> None:
+    """The 409 leaves a denied SEL line, like the ownership refusal beside it."""
+    create_rate_limit.reset_for_tests()
+    folders = [dict(_OPS, owner_app="member:someone-else")]
+    fake_sel = MagicMock()
+    with patch.object(chat_folders, "sel", return_value=fake_sel):
+        status, _body = await _post_folder(
+            _folder_state(folders), {"name": "Ops", "parent_id": ""}, internal=True
+        )
+    assert status == 409
+    outcomes = [c.kwargs.get("outcome") for c in fake_sel.log_api_access.call_args_list]
+    assert "denied" in outcomes

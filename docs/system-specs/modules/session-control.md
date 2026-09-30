@@ -331,11 +331,23 @@ slot or spending a rate-limit token. A refusal there is returned before any
 segment exists. The folder endpoint refuses an agent caller (the internal
 transport) a sibling whose trimmed, case-folded name is already taken under the
 same parent, tested under the folder-store lock (`folder_name_exists`, 409).
-The walk reads that as a lost race and re-reads the tree once: it reuses the
-winner's folder when it can now see it, and otherwise refuses. That second case
-is a crew member, whose tree view holds only its own folders, naming a folder
-the person owns: it is refused rather than forked into a same-name twin. The
-browser keeps a person's freedom to name two folders alike.
+When the one colliding sibling belongs to the caller's own principal, the
+endpoint returns it instead (200, `"reused": true` on the response only), so a
+lost race resolves to the winner's folder in the same request. A twin owned by
+anyone else is refused; the walk re-reads the tree once and then refuses rather
+than forking a same-name twin. The browser keeps a person's freedom to name two
+folders alike.
+
+An app or crew-member agent may nest a new folder directly under the folder its
+OWN calling session is filed in (`chat_folders.caller_home_slot`), even when the
+person owns that folder, so a conductor the person filed in `Ops` puts its
+workers in `Ops/<agent>`. The slot must be the caller's: an app's `_app` must
+match, and a member's principal must be the one the chat gate stamped from this
+request's verified key. The slot's `folder_id` is read under the folder-store
+lock. The new folder is owned by the agent. Nowhere else in the person's tree
+opens, and renaming, moving or deleting the person's folders stays refused. A
+member's folder list adds that home folder and its ancestors, the path its own
+`[FOLDER]` line already shows, so the walk resolves `Ops` instead of missing it.
 
 `session_create` also takes an optional `model` — the model the child starts
 on, pinned as the person's own pick in the model dropdown would be (same
