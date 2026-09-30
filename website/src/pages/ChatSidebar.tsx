@@ -76,6 +76,7 @@ import {
 } from './recentWindow'
 import { loadChatConfig, saveChatConfig } from './chat/ChatSettings'
 import { focusSiblingSessionRow } from './chat/sessionRowNav'
+import { SessionRowWindowContext, SessionRowWindowScroller, WindowedSessionRow, useSessionRowWindowRoot } from './chat/sessionRowWindow'
 import { compareBySort, fmtRelativeTime, lastActivityEpoch, readSessionSortKey, SESSION_SORT_STORAGE_KEY, slotActivityTs } from './chat/sessionOrder'
 import { STALE_COLLAPSE_PRESETS_MS, splitStaleSlots } from './staleCollapse'
 import type { StaleSplit } from './staleCollapse'
@@ -3154,6 +3155,16 @@ function ChatSidebar({
   // tree keep independent positions); board columns are their own scrollers
   // and out of scope here. See useLaneScrollMemory.
   const laneScrollRef = useRef<HTMLDivElement | null>(null)
+  // Row windowing (pages/chat/sessionRowWindow): the lane scroller is the
+  // observer root, so the one callback ref feeds both the scroll memory's ref
+  // object and the window. Stable, so React does not detach and re-attach it on
+  // every commit.
+  const laneRowWindow = useSessionRowWindowRoot()
+  const setLaneRowWindowRoot = laneRowWindow.setRoot
+  const setLaneScrollEl = useCallback((el: HTMLDivElement | null) => {
+    laneScrollRef.current = el
+    setLaneRowWindowRoot(el)
+  }, [setLaneRowWindowRoot])
   const laneScrollMemory = useLaneScrollMemory(
     boardLaneActive ? null : `chat-sidebar-lane:${conductorLaneActive ? 'conductor' : flatLaneActive ? 'flat' : 'tree'}`,
     laneScrollRef,
@@ -3595,13 +3606,23 @@ function ChatSidebar({
     // Clamped, not raw: rows past the window share a stamp and bail out of a
     // displacement above them (see SIDEBAR_DISPLACEMENT_WINDOW).
     const orderStamp = Math.min(sessionRowOrderStamp++, SIDEBAR_DISPLACEMENT_WINDOW)
+    const isActive = isActiveRow(s)
+    const revealing = !isPeer && revealFlash?.kind === 'session' && revealFlash.key === s.key
+    // Windowed: far from the viewport the row renders as a cheap stub (see
+    // pages/chat/sessionRowWindow). Each window root (the lane, or one board
+    // column) mounts its own first rows at once so the initial paint shows real
+    // rows; the active, renaming, dragged and revealed rows never stub, because
+    // each holds state a remount would drop.
     return (
-      <SessionRow key={rowIdentity} slot={s} orderStamp={orderStamp}
+      <WindowedSessionRow key={rowIdentity} rowId={rowIdentity} slotKey={s.key} navScope={navScope} holdContainer={holdContainer}
+        title={s.title && s.title !== s.key ? s.title : s.key}
+        keepMounted={isActive || revealing || (!isPeer && renamingSlot === s.key) || (activeDrag?.type === 'session' && activeDrag.id === s.key)}>
+      <SessionRow slot={s} orderStamp={orderStamp}
         onAdoptPeerSession={adoptPeerSession}
         adoptPending={isPeer && !!adoptPending[rowIdentity]}
         adoptError={isPeer ? (adoptErrors[rowIdentity] || '') : ''}
         showDivider={showDivider} scope={scope} navScope={navScope} holdContainer={holdContainer} conductor={conductor}
-        isActive={isActiveRow(s)} connected={connected} isOut={!isPeer && poppedOut.has(s.key)}
+        isActive={isActive} connected={connected} isOut={!isPeer && poppedOut.has(s.key)}
         isPinned={!isPeer && pinned.has(s.key)} isUnread={!isPeer && unreadSet.has(s.key)}
         isRunning={isPeer ? s.running === true : runningSet.has(s.key)}
         recent={isPeer ? undefined : recentRank.get(s.key)} recentTintCount={recentTintCount}
@@ -3639,6 +3660,7 @@ function ChatSidebar({
         onOpenElsewhere={openElsewhere}
         onOpenSlotInNewTab={onOpenSlotInNewTab} onOpenSource={onOpenSource}
       />
+      </WindowedSessionRow>
     )
   }
 
@@ -5665,7 +5687,8 @@ function ChatSidebar({
           //
           // DnD is off, like the flat lane's row order: position here is a function of
           // who opened whom, so there is nothing a drop inside the lane could land on.
-          <motion.div ref={laneScrollRef} onScroll={laneScrollMemory.onScroll} layoutScroll={rowAnimEnabled} className={`${LIST_BODY_CLS} flex flex-col`} style={{ scrollbarWidth: 'none' }} data-testid="conductor-view-lane">
+          <SessionRowWindowContext.Provider value={laneRowWindow.rowWindow}>
+          <motion.div ref={setLaneScrollEl} onScroll={laneScrollMemory.onScroll} layoutScroll={rowAnimEnabled} className={`${LIST_BODY_CLS} flex flex-col`} style={{ scrollbarWidth: 'none' }} data-testid="conductor-view-lane">
             {folderCreateError && renderFolderCreateError(folderCreateError.folderId, folderCreateError.columnId)}
             {(() => {
               const tree = lineage
@@ -5807,6 +5830,7 @@ function ChatSidebar({
             {renderHiddenReveal('conductor', allHiddenFolders, 0)}
             {renderOlderSessionsHint('conductor')}
           </motion.div>
+          </SessionRowWindowContext.Provider>
         ) : flatLaneActive ? (
           // Flat view: every chat exploded out of its folder into one lane.
           // Removes only the folder rendering hierarchy — sort, pin priority,
@@ -5835,7 +5859,8 @@ function ChatSidebar({
                 <ChatPaneDropZone refusal={draggingRefRefusal} />,
                 chatDropTarget,
               )}
-            <motion.div ref={laneScrollRef} onScroll={laneScrollMemory.onScroll} layoutScroll={rowAnimEnabled} className={`${LIST_BODY_CLS} flex flex-col`} style={{ scrollbarWidth: 'none' }} data-testid="flat-view-lane">
+            <SessionRowWindowContext.Provider value={laneRowWindow.rowWindow}>
+            <motion.div ref={setLaneScrollEl} onScroll={laneScrollMemory.onScroll} layoutScroll={rowAnimEnabled} className={`${LIST_BODY_CLS} flex flex-col`} style={{ scrollbarWidth: 'none' }} data-testid="flat-view-lane">
               {/* Flat view renders no folder headers, so the per-folder mount
                *  points for the create-failure notice never exist here — yet
                *  the New menu still offers "New chat in folder". Render the
@@ -5892,6 +5917,7 @@ function ChatSidebar({
               {renderHiddenReveal('flat', allHiddenFolders, 0)}
               {renderOlderSessionsHint('flat')}
             </motion.div>
+            </SessionRowWindowContext.Provider>
             {dragOverlay}
           </DndContext>
         ) : orderedColumns.length === 0 ? (
@@ -5903,7 +5929,8 @@ function ChatSidebar({
           // the sidebar rather than a transient hint. Scrolling itself is
           // untouched — wheel, trackpad, keyboard, and drag-autoscroll all
           // still work, and the list's own overflow is still the affordance.
-          <motion.div ref={laneScrollRef} onScroll={laneScrollMemory.onScroll} layoutScroll={rowAnimEnabled} className={`${LIST_BODY_CLS} flex flex-col`} style={{ scrollbarWidth: 'none' }} data-testid="tree-view-lane">
+          <SessionRowWindowContext.Provider value={laneRowWindow.rowWindow}>
+          <motion.div ref={setLaneScrollEl} onScroll={laneScrollMemory.onScroll} layoutScroll={rowAnimEnabled} className={`${LIST_BODY_CLS} flex flex-col`} style={{ scrollbarWidth: 'none' }} data-testid="tree-view-lane">
             {/* Tree-lane fallback, completing the set (flat and board lanes
              *  carry the same): a create into a folder the folder-filter or
              *  hide feature excludes never renders that folder's header, so
@@ -6011,6 +6038,7 @@ function ChatSidebar({
               {dragOverlay}
             </DndContext>
           </motion.div>
+          </SessionRowWindowContext.Provider>
         ) : (
           // Trello-style horizontal column strip. The columns scroll on their own
           // inside the strip, so the lane itself steps below the floating dock
@@ -6291,7 +6319,7 @@ function ChatSidebar({
                     </div>,
                     document.body
                   )}
-                  <div className="flex-1 overflow-y-auto scrollbar-none p-1.5 flex flex-col" style={{ scrollbarWidth: 'none' }}>
+                  <SessionRowWindowScroller className="flex-1 overflow-y-auto scrollbar-none p-1.5 flex flex-col" style={{ scrollbarWidth: 'none' }}>
                     {/* No onDrop here: folder assignment only changes via folder-header drop.
                         Cross-column drops are handled by the OUTER column onDrop
                         (which only mutates status tags, keeping folder_id intact). */}
@@ -6380,7 +6408,7 @@ function ChatSidebar({
                         </>
                       )
                     })()}
-                  </div>
+                  </SessionRowWindowScroller>
                 </div>
               )
             })}
