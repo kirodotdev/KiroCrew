@@ -908,9 +908,10 @@ async def _update_unserialized(
                     # silence this stop exists to end.
                     if not was_active:
                         loop.approval_stalled = False
-                        # Same rule, same reason: the streak is evidence
+                        # Same rule, same reason: the streaks are evidence
                         # about a PAST run, and a revival starts a fresh one.
                         loop.consecutive_start_failures = 0
+                        loop.consecutive_failed_cycles = 0
                         # The user's resume resets the counter BEHIND A SPENT
                         # BOUND, and only that one: a spent cycle cap zeroes
                         # ``cycle_count``, a spent time budget re-anchors

@@ -71,6 +71,7 @@ from kiro_crew.agent_sdk import AgentTurnUsage
 from kiro_crew.agents_janitor import sweep_agents_dir
 from kiro_crew.autonudge import (
     APPROVAL_STALL_REASON,
+    CONSECUTIVE_FAILURE_REASON,
     MONITOR_TERMINAL_REASON,
     STRUCTURAL_TERMINAL_REASON,
     AutoNudgeService,
@@ -7055,6 +7056,12 @@ class GatewayOrchestrator:
             tagged = f"{nudge_cycle_header(loop)}\n{msg}"
         else:
             tagged = wake_message
+            # Capture the generation on THIS arm too. A monitor wake runs the
+            # loop's own cycle just as a plain nudge does, so the directive
+            # consumers (the structural-terminal verdict and the failed-cycle
+            # charge) must scope to the generation this turn fired under here as
+            # well -- otherwise the read below is unbound on this path.
+            _fired_generation = loop.config_generation
         # ONE STRING, TWO CONSUMERS, and only an opt-in ``banner`` splits them.
         # ``tagged`` is the PROMPT and is never shortened — re-delivering the
         # whole instruction every cycle is the guarantee the nudge exists to
@@ -7238,7 +7245,18 @@ class GatewayOrchestrator:
         # applied via an atomic (id, generation) fence and a stale completion
         # cannot deactivate a loop whose config advanced under the turn.
         run_kwargs["_directive_loop_id"] = loop.id
-        run_kwargs["_directive_loop_gen"] = _fired_generation if wake_message is None else 0
+        # Pass the generation captured when THIS turn fired, for both fire
+        # shapes. A plain nudge and a monitor wake_message both snapshot
+        # ``loop.config_generation`` into ``_fired_generation`` above, before the
+        # compose await, so a real generation is always available -- passing 0
+        # for the wake_message shape would leave the fence comparing against a
+        # generation no revised loop ever holds, so a stale completion of a
+        # since-revised loop (A->B->A) could still match and wrongly stop it, and
+        # a legitimately-revised loop fired this way would never match at all.
+        # The default of 0 on the runner parameter is the floor for a turn that
+        # is NOT a self-wake (no loop, so the consumers are guarded off anyway);
+        # every self-wake fire passes its true generation here.
+        run_kwargs["_directive_loop_gen"] = _fired_generation
         if completion_hook is not None:
             run_kwargs["monitor_completion"] = completion_hook
             # Structured monitor turns own a single durable budgeted turn.
@@ -8142,6 +8160,22 @@ class GatewayOrchestrator:
                     "runs meant to go unattended overnight, Settings → "
                     "agent.yolo_duration has an 'until_shutdown' option that "
                     "has no timed expiry."
+                )
+            elif (
+                not terminal
+                and not capped_out
+                and loop.stopped_reason == CONSECUTIVE_FAILURE_REASON
+            ):
+                title = "Monitoring loop stopped — its cycles kept failing"
+                body = (
+                    f"The loop stopped after {loop.cycle_count} cycles because "
+                    "several in a row reached a model session and then died "
+                    "(a backend error, a persistent tool failure or a timeout), "
+                    "so further cycles would wake, fail the same way and "
+                    "accomplish nothing. Look at the session for the error, fix "
+                    "the cause, then restart the loop from the goal popover — a "
+                    "cycle that completes clears the streak, so a loop that can "
+                    "make progress again is never held back."
                 )
             elif terminal:
                 settled = getattr(loop.monitor, "outcome", None) if loop.monitor else None

@@ -24,9 +24,11 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew import shutdown_event
 from kiro_crew.autonudge_service.model import (
+    _CONSECUTIVE_FAILURE_STANDDOWN_AFTER,
     _START_FAILURE_BACKOFF_AFTER,
     _START_FAILURE_STANDDOWN_AFTER,
     NudgeLoop,
+    is_structured_monitor_loop,
 )
 from kiro_crew.monitoring.models import MONITOR_STATE_VERSION, MonitorDispatchResult
 
@@ -151,18 +153,147 @@ def notify_cycle_start_failed(self: AutoNudgeService, slot_key: str) -> None:
     self._persist_soon()
 
 
-def notify_cycle_landed(self: AutoNudgeService, slot_key: str) -> None:
-    """Clear *slot_key*'s start-failure streak: a turn on it completed.
+async def notify_cycle_failed(
+    self: AutoNudgeService,
+    slot_key: str,
+    *,
+    loop_id: str,
+    expected_generation: int,
+) -> None:
+    """Record that this loop's own delivered cycle in *slot_key* ended in a fault.
 
-    Any landed turn counts, a human's as much as a cycle's -- the streak is a
-    reading of whether this session can start at all, and a turn that reached
-    completion proves it can. That is the conservative direction: it can only
-    let a loop keep running, never stop one.
+    Called from the chat runner's terminal-error paths when the failure is neither
+    a structural rejection nor a session-start failure and the turn was this
+    loop's own cycle -- a turn that reached a model session and dispatched, then
+    died (``error`` or ``timeout``). Evidence, not inference: the loop spent a
+    turn and it failed, which is the one thing that distinguishes a loop making no
+    progress from a quiet one.
+
+    Only the loop's OWN cycle counts (the chat runner passes the self-wake guard,
+    excluding the structural and session-start cases, before calling this), so a
+    human turn that happened to error on a slot carrying a loop cannot spend the
+    loop's stand-down budget. That is the same guard ``notify_cycle_start_failed``
+    relies on, and for the same reason.
+
+    Scoped to the fired loop by BOTH its id AND its ``config_generation``,
+    captured at fire time (chat_runner passes ``_directive_loop_id`` and
+    ``_directive_loop_gen``), matched under ``_lock`` so there is no TOCTOU
+    window -- the same ``(id, generation)`` fence the structural-terminal verdict
+    is applied under. The id guards the slot-reuse case the generation alone
+    cannot: a loop A on this slot replaced by a fresh loop B that happens to carry
+    the same slot and the same generation (both start at 0) would otherwise take
+    A's stale failure onto B. The generation guards the revision case (A->B->A):
+    a completion whose generation advanced under it describes the OLD instruction
+    and must not stand the revised loop down. Either mismatch is a stale fault and
+    is dropped.
+
+    Durability (persist before you publish): the increment and its durable write
+    happen together under ``_lock`` and the write is AWAITED. A write that
+    genuinely fails rolls the live ``consecutive_failed_cycles`` back to what the
+    store last held, so the stand-down never reads a count the store has not
+    accepted. A ``CancelledError``, by contrast, is raised by the cancellation-
+    safe writer ONLY after its executor future has settled, so on cancel the write
+    DID land -- the committed increment is durable and is kept, never rolled back
+    (rolling it back would erase an accepted failure and leave the live count one
+    short of the store). The chat runner's terminal arm is async and awaits this,
+    which is what lets it stage-then-write rather than detach the write the way a
+    deadline-reassigning sync hook must. The stand-down DECISION still belongs to
+    ``_timer``, which owns every terminal and scheduling decision and evaluates
+    them serialized before a fire -- this only records the evidence.
+    """
+    async with self._lock:
+        loop = self._loops.get(loop_id)
+        if loop is None or not loop.active or loop.slot_key != slot_key:
+            return
+        if loop.config_generation != expected_generation:
+            # Stale completion of a now-revised loop: the generation advanced
+            # between fire and fault, so this charge belongs to the old
+            # instruction, not the loop live on the slot now.
+            return
+        if is_structured_monitor_loop(loop):
+            # A structured monitor loop's ``_timer`` returns at its own
+            # ``is_structured_monitor_loop`` guard (firing.py) BEFORE the only
+            # reader of ``consecutive_failed_cycles`` (the consecutive-failure
+            # stand-down), so charging it here would grow the counter
+            # monotonically in the store and on the loop's API row while no bound
+            # could ever act on it -- a write-only field. Monitor faults are
+            # bounded by the monitor's own ``consecutive_provider_errors``
+            # budget, not this stand-down, so skip the charge and keep the
+            # counter meaning exactly what the bound that reads it expects.
+            return
+        # Persist BEFORE publishing: increment, drive it to a durable write
+        # under the SAME lock hold, and roll back ONLY when the store genuinely
+        # refused it -- so a near-threshold streak the store never accepted can
+        # never stand the loop down, and a streak the store DID accept is never
+        # erased. The two failure modes are not the same event and must not share
+        # a handler:
+        #   * A real write error (``Exception``) means the fsync did not land, so
+        #     the increment is unpublished evidence -- roll the live field back to
+        #     what the store last held and propagate.
+        #   * ``CancelledError`` from ``_write_monitor_snapshot_locked`` is raised
+        #     ONLY AFTER its executor future is observed (it shields the write and
+        #     calls ``future.result()`` before re-raising), so the write DID land
+        #     -- the committed increment is now durable and must stand. Rolling it
+        #     back here (the earlier ``except BaseException``) would erase a
+        #     failure the store already accepted and leave the live count one
+        #     short of the durable one, so a cancellation during the fifth
+        #     charge's fsync would cost an extra cycle before the stand-down. Let
+        #     the cancellation propagate with the increment intact.
+        prior = loop.consecutive_failed_cycles
+        loop.consecutive_failed_cycles = prior + 1
+        try:
+            # ``_write_monitor_snapshot_locked`` offloads the fsyncing
+            # ``_write_state`` to a worker thread and ABSORBS cancellation until
+            # the executor result is observed, so the lock scope cannot release
+            # (or this method return) around a half-applied snapshot -- the one
+            # cancellation-safe writer the service already uses under the lock.
+            await self._write_monitor_snapshot_locked()
+        except asyncio.CancelledError:
+            # The write already settled before the writer re-raised: the
+            # increment is durable, so keep it and only propagate the cancel.
+            raise
+        except Exception:
+            # The durable write actually failed: the increment is unaccepted
+            # evidence, so unpublish it before propagating.
+            loop.consecutive_failed_cycles = prior
+            raise
+        logger.warning(
+            "AutoNudge: loop %s's cycle failed (%d consecutive); it will stand "
+            "down at %d unless a turn lands first",
+            loop.id,
+            loop.consecutive_failed_cycles,
+            _CONSECUTIVE_FAILURE_STANDDOWN_AFTER,
+        )
+
+
+def notify_cycle_landed(self: AutoNudgeService, slot_key: str) -> None:
+    """Clear *slot_key*'s failure streaks: a turn on it completed.
+
+    Any landed turn counts, a human's as much as a cycle's -- the streaks are a
+    reading of whether this session can start (``consecutive_start_failures``)
+    and make progress (``consecutive_failed_cycles``) at all, and a turn that
+    reached completion proves both. That is the conservative direction: it can
+    only let a loop keep running, never stop one.
+
+    Deliberately SYNCHRONOUS and lock-free: it clears ONE field on the live loop
+    and must be callable from the turn-completion path WHILE a baseline commit
+    holds ``_lock`` mid-write (see
+    ``test_a_streak_cleared_during_the_commit_write_stays_cleared``), so it must
+    not itself take the lock or await a write. The durable write is detached via
+    ``_persist_soon`` -- and a LOST clear is the harmless direction: the streak
+    returns to a stale non-zero value, which only ever slows or stands a loop
+    down, never fires one early or spuriously, and any later landed turn clears
+    it again. The dangerous direction (a durable count AHEAD of what the store
+    accepted, which can stand a loop down early) belongs to the INCREMENT, and
+    ``notify_cycle_failed`` closes that one by awaiting its write under the lock
+    with rollback. The two directions are not symmetric, so they do not share a
+    remedy.
     """
     loop = self._find_by_slot(slot_key)
-    if not loop or not loop.consecutive_start_failures:
+    if not loop or not (loop.consecutive_start_failures or loop.consecutive_failed_cycles):
         return
     loop.consecutive_start_failures = 0
+    loop.consecutive_failed_cycles = 0
     # Drop the paid-deferral marker with the streak it belonged to: a streak
     # that climbs back to the same value must pay its own deferral again.
     self._start_failure_deferred.pop(loop.id, None)

@@ -995,3 +995,274 @@ class TestStructuralTerminalSlotFlag:
         assert (
             slot._last_turn_structural_terminal_loop_gen == 0
         ), "a genuine new turn did not clear the scoped loop generation"
+
+
+class _RecordingNudgeSvc:
+    """Records ``notify_cycle_failed`` calls so a runner-level test can assert
+    the real call-site (not the helper) charged or did not charge.
+
+    Patched in as ``kiro_crew.autonudge.get_instance``'s return value, which is
+    exactly what ``_note_cycle_failure`` resolves at call time.
+    """
+
+    def __init__(self) -> None:
+        self.charges: list[tuple[str, str, int]] = []
+
+    async def notify_cycle_failed(
+        self, slot_key: str, *, loop_id: str, expected_generation: int
+    ) -> None:
+        self.charges.append((slot_key, loop_id, expected_generation))
+
+    def __getattr__(self, _name: str):
+        # The AcpError arm touches other service accessors in passing; this test
+        # only cares about notify_cycle_failed, so answer the rest inertly.
+        return MagicMock()
+
+
+class TestTheRunnerCallSitesChargeTheFailedCycle:
+    """The call sites, not the helper, are what these pin.
+
+    The helper's own gate is unit-tested in test_autonudge_cycle_failures.py, but
+    nothing exercised the two ``_run_chat`` call sites: deleting either
+    ``_note_cycle_failure`` call, or dropping the ``err_meta=_err_meta`` argument
+    the generic arm passes, left the whole suite green. These drive ``_run_chat``
+    end to end into the generic terminal arm so a dispatched death DOES charge
+    while a pre-dispatch ``memory_unavailable`` does NOT -- the latter is what the
+    ``err_meta`` argument is for, so dropping it reddens the no-charge case.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_dispatched_death_charges_but_a_pre_dispatch_fault_does_not(
+        self, tmp_path
+    ) -> None:
+        # A plain dispatched death: no structural / start-failure / pre-dispatch
+        # tag, so the generic arm resolves err_meta via _terminal_error_meta
+        # (None) and the gate charges. This is the "dispatched timeout does"
+        # half of the contrast.
+        state, client = _l1_state(tmp_path)
+        client.last_infra_error = None
+
+        def _raise_dispatched(_message, *_a, **_kw):
+            raise RuntimeError("the model session died mid-turn")
+
+        client.stream = MagicMock(side_effect=_raise_dispatched)
+        svc = _RecordingNudgeSvc()
+        slot = _RecordingSlot("chat-1-dispatched")
+        with (
+            patch("kiro_crew.dashboard.chat.sel") as mock_sel,
+            patch("kiro_crew.autonudge.get_instance", return_value=svc),
+        ):
+            mock_sel.return_value = MagicMock()
+            await _run_chat(
+                state,
+                slot,
+                "[auto-nudge cycle 7] check the PR",
+                _directive_self_wake=True,
+                _directive_loop_id="loop-dispatched",
+                _directive_loop_gen=5,
+            )
+            if slot.task:
+                await slot.task
+        assert svc.charges == [
+            ("chat-1-dispatched", "loop-dispatched", 5)
+        ], "a self-wake dispatched death did not charge the loop's failed-cycle streak"
+
+        # A pre-dispatch fault: _MemoryUnavailable resolves to err_meta
+        # {"code": "memory_unavailable"} in the SAME generic arm, which the gate
+        # drops -- the store never opened, so no session was reached and the
+        # stand-down (whose notice blames a backend/tool/timeout) must not fire.
+        # If the call site stops passing err_meta=_err_meta, the gate can no
+        # longer see the code and this death wrongly charges.
+        state2, client2 = _l1_state(tmp_path)
+        client2.last_infra_error = None
+
+        def _raise_pre_dispatch(_message, *_a, **_kw):
+            raise chat_runner._MemoryUnavailable(
+                "memory_unavailable: the member's store would not open"
+            )
+
+        client2.stream = MagicMock(side_effect=_raise_pre_dispatch)
+        svc2 = _RecordingNudgeSvc()
+        slot2 = _RecordingSlot("chat-1-predispatch")
+        with (
+            patch("kiro_crew.dashboard.chat.sel") as mock_sel,
+            patch("kiro_crew.autonudge.get_instance", return_value=svc2),
+        ):
+            mock_sel.return_value = MagicMock()
+            await _run_chat(
+                state2,
+                slot2,
+                "[auto-nudge cycle 7] check the PR",
+                _directive_self_wake=True,
+                _directive_loop_id="loop-predispatch",
+                _directive_loop_gen=5,
+            )
+            if slot2.task:
+                await slot2.task
+        assert (
+            svc2.charges == []
+        ), "a pre-dispatch memory_unavailable death wrongly charged the failed-cycle streak"
+
+    @pytest.mark.asyncio
+    async def test_a_dispatched_death_in_the_acp_error_arm_charges(self, tmp_path) -> None:
+        """The OTHER call site: a terminal, non-transient, non-structural
+        ``AcpError`` lands in the dedicated AcpError arm (not the generic
+        ``except``) and must charge there too. Removing that arm's
+        ``_note_cycle_failure`` call leaves the generic-arm test green, so this
+        pins it independently.
+        """
+        state, client = _l1_state(tmp_path)
+        client.last_infra_error = None
+
+        def _raise_terminal_acp(_message, *_a, **_kw):
+            # No transient flag (so it is not retried) and no structural_terminal
+            # tag (so it is not the malformed path) -- a plain dispatched death
+            # that reaches the AcpError arm's failed-cycle report.
+            raise AcpError("the backend died after the turn dispatched", transient=False)
+
+        client.stream = MagicMock(side_effect=_raise_terminal_acp)
+        svc = _RecordingNudgeSvc()
+        slot = _RecordingSlot("chat-1-acp-arm")
+        with (
+            patch("kiro_crew.dashboard.chat.sel") as mock_sel,
+            patch("kiro_crew.autonudge.get_instance", return_value=svc),
+        ):
+            mock_sel.return_value = MagicMock()
+            await _run_chat(
+                state,
+                slot,
+                "[auto-nudge cycle 7] check the PR",
+                _directive_self_wake=True,
+                _directive_loop_id="loop-acp-arm",
+                _directive_loop_gen=6,
+            )
+            if slot.task:
+                await slot.task
+        assert svc.charges == [
+            ("chat-1-acp-arm", "loop-acp-arm", 6)
+        ], "a self-wake dispatched death in the AcpError arm did not charge the streak"
+
+    @pytest.mark.asyncio
+    async def test_an_l1_infra_requeue_does_not_charge(self, tmp_path) -> None:
+        """The L1 ladder's infra re-queue: a turn whose last tool result was a
+        CLASS_CAPACITY infra refusal (``client.last_infra_error``) is re-queued
+        as a continuation (``chat_runner.py`` ~15355) and never reaches a
+        terminal arm, so it must not charge -- the cycle has not failed, it is
+        being retried. The runner re-queues once and the turn ends clean, so
+        neither call site runs.
+
+        This covers the ``last_infra_error`` branch only; the ACP transient-5xx
+        same-session retry (a different branch, ~16563) is pinned by
+        ``test_an_acp_transient_5xx_same_session_retry_does_not_charge`` below.
+        """
+        state, client = _l1_state(tmp_path)
+        # _l1_state's client already ends the turn on a CLASS_CAPACITY infra
+        # refusal (client.last_infra_error), which the L1 arm re-queues once.
+        prompts: list[str] = []
+
+        def _stream(message, *_a, **_kw):
+            prompts.append(message)
+            if len(prompts) > 1:
+                # The re-queued continuation runs clean -- the transient cleared.
+                client.last_infra_error = None
+
+            async def _gen():
+                yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="recovered")
+                yield LLMEvent(kind=EVENT_COMPLETE, stop_reason="end_turn")
+
+            return _gen()
+
+        client.stream = MagicMock(side_effect=_stream)
+        lad.default_ladder().forget(lad.L1_TOOL_CALL, "chat-1-transient")
+        svc = _RecordingNudgeSvc()
+        slot = _RecordingSlot("chat-1-transient")
+        try:
+            with (
+                patch.object(chat_runner, "_recovery_delay", new=AsyncMock()),
+                patch("kiro_crew.dashboard.chat.sel") as mock_sel,
+                patch("kiro_crew.autonudge.get_instance", return_value=svc),
+            ):
+                mock_sel.return_value = MagicMock()
+                await _run_chat(
+                    state,
+                    slot,
+                    "[auto-nudge cycle 7] check the PR",
+                    _directive_self_wake=True,
+                    _directive_loop_id="loop-transient",
+                    _directive_loop_gen=5,
+                )
+                if slot.task:
+                    await slot.task
+        finally:
+            lad.default_ladder().forget(lad.L1_TOOL_CALL, "chat-1-transient")
+        assert svc.charges == [], (
+            "an L1 infra re-queue charged the failed-cycle streak -- a retried "
+            "cycle has not failed"
+        )
+
+    @pytest.mark.asyncio
+    async def test_an_acp_transient_5xx_same_session_retry_does_not_charge(self, tmp_path) -> None:
+        """A transient backend 5xx raised as an ``AcpError`` is retried ONCE on
+        the SAME live session (no reset) at ``chat_runner.py`` ~16563 --
+        ``not _turn_emitted and acp_error_is_transient(exc) and
+        _transient_5xx_retries < TRANSIENT_RETRIES``. That arm re-queues the
+        message and ends the turn without reaching a terminal arm, so the cycle
+        has not failed and must NOT charge.
+
+        This is a DIFFERENT branch from the L1 ``last_infra_error`` re-queue the
+        test above covers: a charge added inside this ACP transient arm passed
+        every prior test because nothing drove it. ``last_infra_error`` is None
+        here so the L1 arm cannot fire; the retry is reached purely through the
+        ACP transient path.
+        """
+        state, client = _l1_state(tmp_path)
+        # Silence the L1 arm: with no infra verdict the only live retry path is
+        # the ACP transient-5xx branch under test.
+        client.last_infra_error = None
+        prompts: list[str] = []
+
+        def _stream(message, *_a, **_kw):
+            prompts.append(message)
+            if len(prompts) == 1:
+                # First turn: a transient backend 5xx BEFORE any token streams
+                # (not _turn_emitted stays True), classified via the structured
+                # AcpError.transient flag that acp_error_is_transient reads.
+                raise AcpError("the backend returned a transient 5xx", transient=True)
+
+            # The re-queued continuation runs on the SAME session and completes
+            # clean -- the transient cleared.
+            async def _gen():
+                yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="recovered")
+                yield LLMEvent(kind=EVENT_COMPLETE, stop_reason="end_turn")
+
+            return _gen()
+
+        client.stream = MagicMock(side_effect=_stream)
+        svc = _RecordingNudgeSvc()
+        slot = _RecordingSlot("chat-1-acp-transient")
+        with (
+            patch.object(chat_runner, "_recovery_delay", new=AsyncMock()),
+            patch("kiro_crew.dashboard.chat.sel") as mock_sel,
+            patch("kiro_crew.autonudge.get_instance", return_value=svc),
+        ):
+            mock_sel.return_value = MagicMock()
+            await _run_chat(
+                state,
+                slot,
+                "[auto-nudge cycle 7] check the PR",
+                _directive_self_wake=True,
+                _directive_loop_id="loop-acp-transient",
+                _directive_loop_gen=5,
+            )
+            if slot.task:
+                await slot.task
+        # The transient arm must have fired (retry counted + re-prompted twice);
+        # otherwise the assertion below is vacuous.
+        assert len(prompts) == 2, (
+            "the ACP transient-5xx arm did not retry on the same session "
+            f"(prompted {len(prompts)}x) -- the no-charge assertion would be vacuous"
+        )
+        assert svc.charges == [], (
+            "an ACP transient-5xx same-session retry charged the failed-cycle "
+            "streak -- a retried cycle has not failed"
+        )

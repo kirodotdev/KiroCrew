@@ -156,6 +156,93 @@ def _note_cycle_start_failure(slot_key: str, exc: BaseException, *, self_wake: b
         logger.debug("autonudge.notify_cycle_start_failed failed", exc_info=True)
 
 
+async def _note_cycle_failure(
+    slot_key: str,
+    exc: BaseException,
+    *,
+    self_wake: bool,
+    loop_id: str,
+    expected_generation: int,
+    err_meta: object = None,
+) -> None:
+    """Report a cycle that reached a model session and then DIED to its loop.
+
+    The generic superset the three narrow bounds miss: a self-wake cycle that
+    dispatched and then died terminally -- a backend error after retries were
+    spent, a persistent tool error, a prompt timeout -- rather than one of the
+    specific deterministic rejections, approval stalls or never-got-a-session
+    streaks that already have their own stand-down. Called from BOTH terminal
+    arms (an ``AcpError`` and the generic ``except Exception`` that catches the
+    ``AcpRuntimeError`` timeout family and plain errors), which is why this is a
+    helper and not an inline block: a report in only one arm would miss whichever
+    death the other serves, and the gate below -- the part with the regression
+    risk -- is then tested once instead of twice.
+
+    The gate, in the one place it is defined:
+
+    * ``self_wake`` -- only the loop's OWN delivered cycle counts; a human turn
+      that happened to error on a slot that also carries a loop must not spend
+      the loop's stand-down budget. Same marker ``_note_cycle_start_failure``
+      relies on.
+    * NOT a session-start failure -- that has its own streak
+      (``notify_cycle_start_failed``); the ``session_start_failed`` tag is read
+      with ``getattr`` because the two ACP families carry it independently.
+    * NOT a structural rejection -- that is one deterministic turn with its own
+      terminal stop (``structural_terminal`` tag); counting it here would
+      double-charge the same fault.
+    * NOT a pre-dispatch fault -- a memory store that would not open
+      (``memory_unavailable``) or a member agent file changed out of band
+      (``materialization_changed``) never reached a session at all, so the
+      "reached a session and then died" stand-down (and the operator notice that
+      names a backend/tool/timeout cause) must not fire for them. Identified by
+      the already-resolved row meta, so no new classification is needed. A plain
+      internal bug is NOT excluded: a self-wake cycle that dispatches and raises
+      the same bug every interval is exactly the no-progress waste this bound
+      ends.
+
+    Scoped to the fired loop by BOTH its id (``loop_id``) AND its config
+    generation (``expected_generation``), captured at fire time, so neither a
+    stale completion of a since-revised loop (A->B->A) nor a stale completion of
+    a loop since REPLACED by a fresh one on the same slot and generation can
+    charge the loop live on the slot now -- the same ``(id, generation)`` fence
+    the structural verdict uses. The service matches both under its lock.
+
+    Awaited, not fire-and-forget: the service records the charge and awaits its
+    durable write before this returns, so the stand-down never reads a count the
+    store has not accepted. This is possible because the terminal arm is async;
+    the sync turn-lifecycle hooks that reassign a deadline cannot await and keep
+    their detached write. Best-effort: a monitoring convenience never changes how
+    this turn is reported, so any failure here is swallowed.
+    """
+    if not self_wake:
+        return
+    if getattr(exc, "session_start_failed", False) is True:
+        return
+    if getattr(exc, "structural_terminal", False):
+        return
+    if isinstance(err_meta, dict) and err_meta.get("code") in (
+        "memory_unavailable",
+        "materialization_changed",
+    ):
+        return
+    if not loop_id:
+        # No fired loop identity (not a real self-wake fire): nothing to scope
+        # the charge to, so there is nothing to record.
+        return
+    try:
+        from kiro_crew.autonudge import (
+            get_instance as _autonudge_failed_get,  # circular: autonudge -> dashboard.chat -> chat_runner
+        )
+
+        svc = _autonudge_failed_get()
+        if svc is not None:
+            await svc.notify_cycle_failed(
+                slot_key, loop_id=loop_id, expected_generation=expected_generation
+            )
+    except Exception:
+        logger.debug("autonudge.notify_cycle_failed failed", exc_info=True)
+
+
 def _terminal_error_meta(exc: BaseException) -> dict[str, object] | None:
     """Row-level kind for a terminal ACP error, or None for a plain error row.
 

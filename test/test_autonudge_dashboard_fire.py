@@ -840,3 +840,91 @@ class TestChannelStructuralTerminalHelper:
             stopped_reason=gw.STRUCTURAL_TERMINAL_REASON,
             expected_generation=1,
         )
+
+
+class TestFireScopesTheTurnToTheConfigGeneration:
+    """The fire path must hand ``_run_chat`` the loop's live ``config_generation``
+    for BOTH fire shapes, so the failed-cycle charge and the structural-terminal
+    verdict scope to the generation the turn actually fired under.
+
+    The gap this pins: the ``wake_message`` arm captured its own
+    ``_fired_generation = loop.config_generation`` beside the plain-nudge arm,
+    but nothing asserted the captured value reached the runner. Reverting that
+    arm to a literal ``0`` (``_directive_loop_gen = _fired_generation if ... else
+    0``) left every other test green -- a stale completion of a since-revised
+    loop fired this way would then match a generation no revised loop holds and
+    wrongly stop it. These two assert the real generation travels on each shape.
+    """
+
+    @staticmethod
+    def _running_spawn(spawned: list[asyncio.Task]):
+        """A ``spawn_guarded_turn`` stand-in that RUNS the dispatch coroutine (so
+        the real ``_run_chat`` call is reached), unlike ``_fake_spawn`` which
+        closes it. Mirrors the structured-monitor test's ``_spawn``."""
+
+        def _spawn(_state, _slot, coro, **_kw):
+            task = asyncio.create_task(coro)
+            spawned.append(task)
+            return task
+
+        return _spawn
+
+    @pytest.mark.asyncio
+    async def test_a_wake_message_fire_passes_the_live_config_generation(self) -> None:
+        orch = _orchestrator()
+        live = _slot()
+        orch.dashboard_state.get_slot = MagicMock(return_value=live)
+        # The wake_message shape is the structured-monitor wake (the arm whose
+        # generation capture was unpinned); build it exactly as the passing
+        # structured-monitor test does.
+        loop = _loop()
+        loop.config_generation = 9  # distinctive, non-zero, != the default 0
+        loop.monitor = MonitorState(
+            kind="github_pull_request",
+            target="owner/repo#123",
+            objective="review_ready",
+            created_ts=1_000.0,
+            last_wake_fingerprint="failure-a",
+            wake_in_flight=True,
+        )
+        orch.autonudge_svc.monitor_dispatch_is_authorized.return_value = True
+        spawned: list[asyncio.Task] = []
+        run_chat = AsyncMock(side_effect=_run_chat_through_monitor_boundary)
+        with (
+            patch.object(gw, "spawn_guarded_turn", self._running_spawn(spawned)),
+            patch("kiro_crew.dashboard.chat._run_chat", new=run_chat),
+        ):
+            assert isinstance(
+                await orch._fire_dashboard_nudge(loop, "[Monitor wake]"),
+                gw.MonitorDispatchResult,
+            )
+            await asyncio.gather(*spawned)
+        run_chat.assert_awaited()
+        kwargs = run_chat.await_args.kwargs
+        assert kwargs["_directive_loop_id"] == loop.id
+        assert kwargs["_directive_loop_gen"] == 9, (
+            "the wake_message fire must pass loop.config_generation, not a literal "
+            "0 -- a stale completion would otherwise match a generation no revised "
+            "loop ever holds"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_plain_nudge_fire_passes_the_live_config_generation(self) -> None:
+        orch = _orchestrator()
+        live = _slot()
+        orch.dashboard_state.get_slot = MagicMock(return_value=live)
+        loop = _loop()
+        loop.config_generation = 4
+        spawned: list[asyncio.Task] = []
+        run_chat = AsyncMock()
+        with (
+            patch.object(gw, "spawn_guarded_turn", self._running_spawn(spawned)),
+            patch("kiro_crew.dashboard.chat._run_chat", new=run_chat),
+        ):
+            # The plain-nudge shape (wake_message is None).
+            assert await orch._fire_dashboard_nudge(loop) is True
+            await asyncio.gather(*spawned)
+        run_chat.assert_awaited()
+        kwargs = run_chat.await_args.kwargs
+        assert kwargs["_directive_loop_id"] == loop.id
+        assert kwargs["_directive_loop_gen"] == 4
