@@ -196,7 +196,13 @@ WRITE TARGET, so a stamp carried back off the metadata line would append the
 entry's own text to a session the editor does not own, with nothing that retracts
 it. A delivery that outlives a restart and is then dropped reports to nobody while
 the delivery itself still survives, which is the price of the stamp living in
-`meta`.
+`meta`. The channel counterpart, `CHANNEL_RECIPIENT_META_KEY`
+(`channel_recipient_meta` / `channel_recipient_of` / `notify_channel_recipient_dropped`,
+stamped by `dashboard/channel_handoff.py` for a message a channel conversation
+queued into a resumed dashboard session), is stripped for the same reason with a
+wider blast radius — it names a conversation on a network surface — and its notice
+re-runs the outbound recipient check with the principal the channel authorized on
+inbound before anything is sent (see [messaging](messaging.md#a-busy-resumed-dashboard-session-takes-the-slots-own-machinery-discord)).
 
 **`steer: true` asks for a third outcome on a busy target.** Instead of waiting
 for the running turn, the message cuts into it (`steer_into_running_turn`, the
@@ -251,7 +257,16 @@ window and replaces it with a narrower one: the steer RPC suspends on
   bound between then and the reply, and the reply is what reaches the channel. So the
   sender records and, on what it can see, stops the turn; whether the reply may be
   published is the publisher's question, answered in the same synchronous moment it
-  publishes.
+  publishes. A channel conversation resumed into the session records the same fence
+  for a mid-turn steer of its own (`dashboard/channel_handoff.py`), without the stop —
+  a human's own message clears no containment gate for a stop to narrow — so the
+  publisher's question has one answer whoever cut into the turn. Its records are
+  keyed by audience and capped at `MAX_PENDING_STEERS` (one per distinct
+  containment snapshot per turn, never one per message; at the cap no fence is
+  evicted and the message takes the slot's queue instead, refused only when that
+  queue is itself full), where a peer delivery's
+  are one random token each, popped by the sender on every outcome but a landed
+  steer and a cancellation.
 
   Two consequences worth stating. An ordinary steer costs the channel audience
   nothing: the comparison is exact rather than precautionary, so a turn nobody

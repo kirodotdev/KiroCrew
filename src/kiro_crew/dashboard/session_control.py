@@ -1092,6 +1092,16 @@ QUEUED_CONTAINMENT_META_KEY = "queued_containment"
 # copies the admission dict onto the new entry's meta.
 SEND_ORIGIN_META_KEY = "send_origin_slot"
 
+# Queue-entry meta key naming the CHANNEL CONVERSATION that sent a message into a
+# resumed dashboard session mid-turn (``dashboard.channel_handoff``), so a
+# drain-time drop can be reported back into that conversation: the channel was
+# told "queued" at admission and, unlike a dashboard sender, reads neither the
+# target's transcript nor the SEL. Same reasoning as the sender stamp above for
+# why it is ``meta`` and how a requeued steer keeps it. It names a WRITE TARGET
+# on a network surface, so the restore path strips it like the sender stamp, and
+# the notice re-runs the outbound recipient authorization before it is sent.
+CHANNEL_RECIPIENT_META_KEY = "channel_recipient"
+
 # How much of a dropped delivery's own text the sender's notice quotes back, so
 # a caller holding several deliveries in flight can tell which one went.
 SEND_DROP_EXCERPT_CHARS = 120
@@ -1295,6 +1305,63 @@ def send_drop_excerpt(text: Any) -> str:
     return flat[:SEND_DROP_EXCERPT_CHARS].rstrip() + "…"
 
 
+def channel_recipient_meta(
+    channel_type: str, conversation_id: str, principal: str
+) -> dict[str, Any]:
+    """Queue-entry ``meta`` naming the channel conversation a message came FROM.
+
+    Stamped by :func:`~kiro_crew.dashboard.channel_handoff.hand_to_resumed_slot`
+    on both of its arms (the queue entry directly; the steer through its admission
+    dict, which the requeue copies onto the entry), so a drain-time drop can be
+    reported into that conversation (:func:`notify_channel_recipient_dropped`).
+
+    *principal* is the platform user id the channel authorized on inbound. It
+    rides along because the outbound recipient check needs one the SESSION KEY
+    cannot supply: a dashboard session names no channel peer, and a Discord DM's
+    conversation id is unrelated to the user id its roster holds, so without it the
+    notice would be refused as an unidentifiable recipient. Empty when the
+    channel has none to give (a thread route answers on its conversation id).
+
+    Empty when either address field is missing, and then nothing is stamped
+    rather than a half-address: a stamp that cannot be delivered to must not
+    produce a write.
+    """
+    channel_type = str(channel_type or "")
+    conversation_id = str(conversation_id or "")
+    if not channel_type or not conversation_id:
+        return {}
+    return {
+        CHANNEL_RECIPIENT_META_KEY: {
+            "channel_type": channel_type,
+            "conversation_id": conversation_id,
+            "principal": str(principal or ""),
+        }
+    }
+
+
+def channel_recipient_of(entry_meta: Any) -> tuple[str, str, str] | None:
+    """``(channel_type, conversation_id, principal)`` from an entry's stamp, or None.
+
+    *entry_meta* is plumbing of any shape: a missing, non-dict or malformed stamp
+    -- a non-string field, an empty address -- reads as no recipient, and the drop
+    proceeds unreported exactly as it does for a human-typed entry. Both readers
+    of a write-target stamp fail closed on the same shapes.
+    """
+    if not isinstance(entry_meta, dict):
+        return None
+    stamp = entry_meta.get(CHANNEL_RECIPIENT_META_KEY)
+    if not isinstance(stamp, dict):
+        return None
+    channel_type = stamp.get("channel_type")
+    conversation_id = stamp.get("conversation_id")
+    principal = stamp.get("principal", "")
+    if not isinstance(channel_type, str) or not isinstance(conversation_id, str):
+        return None
+    if not channel_type or not conversation_id or not isinstance(principal, str):
+        return None
+    return channel_type, conversation_id, principal
+
+
 def newly_held_constraints(
     now: dict[str, Any], entry_meta: Any, *, directive_user_origin: bool = False
 ) -> list[str]:
@@ -1469,6 +1536,109 @@ def notify_send_origin_dropped(
             target_key,
         )
         return False
+    return True
+
+
+def notify_channel_recipient_dropped(
+    state: "DashboardState",
+    *,
+    entry_meta: Any,
+    target_slot: "_ChatSlot",
+    text: Any,
+    constraints: list[str],
+    mirror_unverified: bool = False,
+) -> bool:
+    """Tell the CHANNEL CONVERSATION that sent a message that the drain dropped it.
+
+    The channel counterpart of :func:`notify_send_origin_dropped`. A message a
+    channel handed to a resumed dashboard slot's queue
+    (``dashboard.channel_handoff``) was confirmed "queued" in that conversation,
+    and the conversation reads neither the target's transcript nor the SEL -- so
+    without this the one outcome the author most needs, that the message will
+    never run, is the one they are never told, and they wait for a reply that
+    cannot come.
+
+    Returns whether a notice was SCHEDULED: True once the entry carries a channel
+    stamp and the task below exists. Answers False, and is not a failure, when the
+    entry carries no stamp (a dashboard-typed or restored entry) or when no loop
+    is running to carry the task. Whether the notice is then SENT is decided
+    inside the task, and its refusals are logged and audited there.
+
+    The send goes through the cross-surface ladder every proactive channel
+    delivery takes (``chat_runner._resolve_channel_target``: channels governance,
+    a registered transport that can send proactively, and the RECIPIENT
+    re-check), with the principal the stamp recorded -- the platform user the
+    channel authorized on inbound -- because a dashboard session key names no
+    channel peer for the ladder to derive one from. A revoked recipient gets no
+    notice; the refusal is audited by the ladder. The mirror pause is NOT
+    consulted: this is a delivery receipt to the message's own author, not turn
+    output, and the pause mutes output.
+
+    Nothing of the ladder runs on the calling thread. The drain that drops the
+    entry is synchronous on the event loop by contract (no suspension between its
+    snapshot and the dequeue), so the send cannot be awaited there -- and the
+    ladder's governance vet is the call every other async caller offloads,
+    because it reads and validates policy on the shared loop. Both therefore run
+    inside the scheduled task: the resolve through ``asyncio.to_thread``, the
+    send awaited after it. The task is held in the state's background set so it
+    cannot be collected mid-flight. Best-effort throughout: a failure is logged
+    and the drop, which is the authorization decision, stands.
+
+    The quoted excerpt is redacted through the same egress chain every channel
+    delivery uses: the author typed the text, but this is a network write and the
+    conversation may be read on a shared screen.
+    """
+    recipient = channel_recipient_of(entry_meta)
+    if recipient is None:
+        return False
+    channel_type, conversation_id, principal = recipient
+    # circular import: chat_runner imports this module's helpers at module level.
+    from kiro_crew.dashboard.chat_runner import _resolve_channel_target
+    from kiro_crew.dashboard.chat_utils import _redact_for_display
+
+    link = ChannelLink(channel_type, channel_id=conversation_id)
+    session_key = slot_history_key(target_slot)
+    excerpt = _redact_for_display(sanitize_outbound(send_drop_excerpt(text)))
+    notice = (
+        "⚠️ Your queued message to that session was dropped before it ran: "
+        + describe_containment_change(constraints, mirror_unverified=mirror_unverified)
+        + " after it was queued, so the authorization that admitted it no longer "
+        + "holds. It was not delivered and will not run; send it again if it still applies."
+        + (f' Text: "{excerpt}"' if excerpt else "")
+    )
+
+    async def _send() -> None:
+        try:
+            target = await asyncio.to_thread(
+                _resolve_channel_target, state, session_key, link, principal=principal
+            )
+        except Exception:
+            logger.warning(
+                "channel drop notice: send ladder failed for %s; the drop is not reported",
+                channel_type,
+                exc_info=True,
+            )
+            return
+        if target is None:
+            return
+        resolved_link, transport = target
+        try:
+            await transport.send_message(
+                resolved_link.channel_id, notice, thread_id=resolved_link.thread_id
+            )
+        except Exception:
+            logger.warning("channel drop notice: send to %s failed", channel_type, exc_info=True)
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        logger.warning("channel drop notice: no running loop to carry the send to %s", channel_type)
+        return False
+    task = loop.create_task(_send())
+    background = getattr(state, "_background_tasks", None)
+    if isinstance(background, set):
+        background.add(task)
+        task.add_done_callback(background.discard)
     return True
 
 

@@ -313,9 +313,11 @@ async def steer_into_running_turn(
     *,
     send_id: str | None = None,
     user_origin: bool = False,
+    channel_origin: bool = False,
     admission: dict | None = None,
     decision_strip: dict | None = None,
     attachments: dict | None = None,
+    delivery_id: str | None = None,
 ) -> str:
     """Inject *message* into the slot's RUNNING turn; return a ``STEER_*`` outcome.
 
@@ -333,16 +335,31 @@ async def steer_into_running_turn(
     for every caller, not just the current one.
 
     ``user_origin`` says whether this text was typed by the session's OWN human.
-    The composer passes True and the ``session_send`` peer path passes False. The
-    requeue is what needs it: ``directive_user_origin`` on the queue entry exempts
-    it from the drain's LINKED drop, and that exemption is justified by the author
-    having typed into the session's own surface. A peer's steer has no such author,
-    so the flag has to be told apart per caller rather than read off the slot, which
-    cannot distinguish the two.
+    The composer passes True, the ``session_send`` peer path passes False, and a
+    channel conversation resumed into this session passes True (its owner gate
+    makes the author the session's own human). The requeue is what needs it:
+    ``directive_user_origin`` on the queue entry exempts it from the drain's
+    LINKED drop, and that exemption is justified by the author having typed into
+    the session's own surface. A peer's steer has no such author, so the flag has
+    to be told apart per caller rather than read off the slot, which cannot
+    distinguish the two.
 
     Defaults to FALSE so the human's exemption is the one thing a caller cannot
     acquire by saying nothing. A default of True would put the same trap one layer
     down: correct for whichever callers exist, wrong for the next one.
+
+    ``channel_origin`` says the text arrived through a messaging channel rather
+    than the dashboard's own composer. Two readers. The requeue reads it for
+    ``directive_channel_origin`` on the queue entry: a requeued steer runs as its
+    own turn, and channel authority is the narrower credential boundary, so a
+    directive that turn issues is filed as channel-created the way a queued
+    channel message's is. The row and its ``steer_push`` read it for the displayed
+    form: a channel author is not the dashboard's reader, so with it set the row is
+    stored sanitized and the card display-redacted even when ``user_origin`` is
+    True -- the rule :func:`queue_entry_is_user_origin` applies to a queue entry
+    carrying both stamps. A steer the turn CONSUMES runs under that turn's own
+    provenance, as every steer does. Defaults to FALSE for the composer and the
+    peer path, whose text did not come through a channel.
 
     ``admission`` is the containment that held when the caller's gate cleared this
     send (``session_control.containment_meta``). It is recorded for the REQUEUE,
@@ -351,7 +368,7 @@ async def steer_into_running_turn(
     during that suspension into the entry's admission baseline, after which the
     drain reads the widened audience as one the authorization saw.
 
-    Both callers pass it, and the requeue reads NOTHING else: a slot read there is
+    Every caller passes it, and the requeue reads NOTHING else: a slot read there is
     not a fallback, so there is one baseline rather than two. An absent stamp
     therefore means the entry carries no containment key at all, which puts it on the
     drain's documented fail-closed floor (checked against every currently held
@@ -364,6 +381,16 @@ async def steer_into_running_turn(
     ``meta.decisions_strip`` so the transcript carries the receipt for it. Absent
     for every other caller and for a manual steer, which is what keeps their rows
     byte-identical.
+
+    ``delivery_id`` is the identity this steer carries through every record it
+    leaves: the pending registration, the queue entry a teardown requeue writes
+    (``meta.steer_delivery_id``, durable with the queue), the row a drain writes
+    for that entry, and the row this call persists itself. Minted here when the
+    caller passes none, as the composer and the peer path do. A caller that must
+    find its text again after this call returns -- the channel hand-off, whose
+    slot can move while the RPC is suspended -- mints it and passes it in, so its
+    reconciliation reads identity and never content: the same text can recur in
+    a restored transcript, and only an id names THIS delivery.
     """
     send_id = normalize_send_id(send_id)
     attachments = attachment_meta(attachments)
@@ -422,6 +449,7 @@ async def steer_into_running_turn(
             slot._steer_delivery_ids,
             slot._steer_send_ids,
             slot._steer_user_origin,
+            slot._steer_channel_origin,
             slot._steer_admissions,
             slot._steer_attachment_meta,
             slot._steer_decision_strips,
@@ -442,7 +470,8 @@ async def steer_into_running_turn(
     # it is handed to the requeue, which puts it on the queue entry; the drain then
     # unions entry meta onto the row it appends, so the id reaches the row even
     # through a merge.
-    delivery_id = uuid.uuid4().hex
+    if not (isinstance(delivery_id, str) and delivery_id):
+        delivery_id = uuid.uuid4().hex
     slot._steer_delivery_ids[message] = delivery_id
     # Recorded HERE, next to the delivery id, because the requeue is what needs it
     # and the requeue runs in the TURN's teardown -- another coroutine, which never
@@ -461,6 +490,24 @@ async def steer_into_running_turn(
     # that from "nobody told us". The requeue's fail-closed floor depends on
     # reading a definite False here for a peer's steer.
     slot._steer_user_origin[message] = bool(user_origin)
+    # Same lockstep, same reason: the requeue reads this for the entry's
+    # ``directive_channel_origin`` and must find a definite value for every
+    # in-flight steer, so it is stored for the composer's False as well.
+    slot._steer_channel_origin[message] = bool(channel_origin)
+    if channel_origin:
+        # NARROW the running turn's directive provenance, at admission. The turn's
+        # ``_directive_channel_origin`` is its opener's -- False for a
+        # dashboard-driven turn -- and a channel human's text injected into it can
+        # shape every directive the model emits from here on (``monitor_watch`` and
+        # the like), which the turn stamps with its own provenance: unchanged, a
+        # channel-shaped input would carry the dashboard's authority. Set BEFORE
+        # the RPC: the client can inject the text and the model can act on it
+        # before ``steer()`` returns, and the ``steering_consumed`` echo arrives
+        # later still. Held for the remainder of this turn, a declined or requeued
+        # steer included -- narrowing authority is the direction that cannot be
+        # wrong, and a requeued text runs as its own channel-origin turn anyway;
+        # ``chat_runner`` resets it at the turn's end and at the next turn's start.
+        slot._turn_channel_narrowed = True
     if admission is not None:
         slot._steer_admissions[message] = admission
     if attachments:
@@ -539,6 +586,7 @@ async def steer_into_running_turn(
         slot._steer_delivery_ids.pop(message, None)
         slot._steer_send_ids.pop(message, None)
         slot._steer_user_origin.pop(message, None)
+        slot._steer_channel_origin.pop(message, None)
         slot._steer_admissions.pop(message, None)
         slot._steer_attachment_meta.pop(message, None)
         slot._steer_decision_strips.pop(message, None)
@@ -570,6 +618,7 @@ async def steer_into_running_turn(
             slot._steer_delivery_ids.pop(message, None)
             slot._steer_send_ids.pop(message, None)
             slot._steer_user_origin.pop(message, None)
+            slot._steer_channel_origin.pop(message, None)
             slot._steer_admissions.pop(message, None)
             slot._steer_attachment_meta.pop(message, None)
             slot._steer_decision_strips.pop(message, None)
@@ -659,6 +708,7 @@ async def steer_into_running_turn(
     # would hold a full message string for the slot's lifetime.
     slot._steer_send_ids.pop(message, None)
     slot._steer_user_origin.pop(message, None)
+    slot._steer_channel_origin.pop(message, None)
     slot._steer_admissions.pop(message, None)
     # Same reason as `sendId` above, and why this is NOT held for the requeue the way
     # the attachments below are: the row persisted below carries the receipt, so a
@@ -738,6 +788,12 @@ async def steer_into_running_turn(
     meta: dict[str, Any] = {
         "steer": True,
         "steerState": _state,
+        # The row names its delivery, as a drained row names the deliveries it
+        # stands for (``steer_delivery_ids``): a caller reconciling after this
+        # call -- the channel hand-off on a slot that moved under the RPC -- finds
+        # THIS delivery by identity rather than by text. Inert for the client,
+        # which reads ``steer``, ``steerState``, ``mid`` and ``sendId``.
+        "steer_delivery_id": delivery_id,
     }
     if user_origin:
         # A PERSON typed this into the session's own surface, same as an ordinary
@@ -762,12 +818,17 @@ async def steer_into_running_turn(
         meta.update(attachments)
     # The row survives a page reload via the dirty-flush cycle. The session's own
     # human's steer is stored as typed, like an ordinary send's row; a peer's is
-    # stored sanitized, because its text has no human author to be its reader.
-    _row_content = message if user_origin else sanitized
+    # stored sanitized, because its text has no human author to be its reader. A
+    # channel human's is stored sanitized too -- the same rule
+    # ``queue_entry_is_user_origin`` applies to a queue entry carrying both stamps:
+    # that author is not the dashboard's reader, so the row and its card keep the
+    # display redaction even though the provenance marks say a person typed it.
+    _shown_as_typed = user_origin and not channel_origin
+    _row_content = message if _shown_as_typed else sanitized
     _row = slot.append("user", _row_content, "msg msg-u", ts=ts, meta=meta)
     push_payload: dict[str, Any] = {
         "slot": slot.key,
-        "content": queued_text_for_display(_row_content, user_origin=user_origin),
+        "content": queued_text_for_display(_row_content, user_origin=_shown_as_typed),
         "ts": ts,
         # Same state the row carries, so a live client and a page reload agree.
         # A later `chat_message_update` moves a `written` row to consumed or
@@ -809,15 +870,34 @@ def queue_for_next_turn(
     message: str,
     *,
     directive_user_origin: bool = False,
+    directive_channel_origin: bool = False,
     send_id: str | None = None,
     attachments: dict[str, list[str]] | None = None,
     decision_strip: dict | None = None,
     turn_actor: str = "",
+    channel_recipient: dict[str, Any] | None = None,
 ) -> str:
     """Append *message* to the slot's queue and announce it; return the queue id.
 
     The running turn's teardown drains the queue, so this is how a message
     reaches a busy slot when steering is unavailable or not asked for.
+
+    *channel_recipient* is the channel conversation the message came FROM -- the
+    address ``session_control.channel_recipient_meta`` builds (channel type,
+    conversation id, the platform user the channel authorized) -- stamped onto the
+    entry's ``meta`` under ``CHANNEL_RECIPIENT_META_KEY`` so a drain-time drop can
+    be reported back to that conversation (``notify_channel_recipient_dropped``).
+    Passed by ``channel_handoff`` for a channel human's text; the composer and the
+    peer path leave it None and stamp nothing. One key, not a generic merge: the
+    containment stamp is the drain's authorization input and nothing a caller
+    passes here can reach it.
+
+    *directive_channel_origin* marks the entry as a channel human's text
+    (``_directive_channel_origin``), the mark the Slack linked-thread path stamps
+    on its queued messages: channel authority is the narrower credential boundary,
+    so the drained turn files any directive it issues as channel-created. Passed
+    by a channel conversation resumed into this session; the composer leaves it
+    False.
 
     *send_id* is the client-minted ``meta.sendId`` the plain send path persists
     on its user row, already passed through ``normalize_send_id`` by the caller.
@@ -847,9 +927,11 @@ def queue_for_next_turn(
     decided, which keeps the entry's prior shape.
     """
     # circular import: session_control imports this module at module level.
-    from kiro_crew.dashboard.session_control import containment_meta
+    from kiro_crew.dashboard.session_control import CHANNEL_RECIPIENT_META_KEY, containment_meta
 
-    meta: dict[str, Any] = containment_meta(state, slot)
+    meta: dict[str, Any] = dict(containment_meta(state, slot))
+    if channel_recipient:
+        meta[CHANNEL_RECIPIENT_META_KEY] = dict(channel_recipient)
     if turn_actor:
         # A queued turn reaches `_run_chat` through the DRAIN, not through the
         # caller, so a keyword on the dispatch cannot carry the actor across --
@@ -867,6 +949,7 @@ def queue_for_next_turn(
         message,
         meta=meta,
         directive_user_origin=directive_user_origin,
+        directive_channel_origin=directive_channel_origin,
     )
     # Append-only session ledger. The session id comes off the client the running
     # turn published on the slot -- a message is only queued because a turn IS
@@ -887,7 +970,12 @@ def queue_for_next_turn(
     )
     push: dict[str, Any] = {
         "slot": slot.key,
-        "content": queued_text_for_display(message, user_origin=directive_user_origin),
+        # The same rule the queue view applies to the entry itself
+        # (``queue_entry_is_user_origin``): as typed only for the session's own
+        # human, and a channel author is not that reader.
+        "content": queued_text_for_display(
+            message, user_origin=directive_user_origin and not directive_channel_origin
+        ),
         "ts": datetime.now(timezone.utc).isoformat(),
         "queue_id": qid,
     }

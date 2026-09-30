@@ -6006,6 +6006,7 @@ async def stop_slot_turn(
             # the client's send id onto.
             slot._steer_send_ids.pop(_discarded, None)
             slot._steer_user_origin.pop(_discarded, None)
+            slot._steer_channel_origin.pop(_discarded, None)
             slot._steer_admissions.pop(_discarded, None)
             slot._steer_attachment_meta.pop(_discarded, None)
             slot._steer_decision_strips.pop(_discarded, None)

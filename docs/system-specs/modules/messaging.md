@@ -84,6 +84,7 @@ legacy metadata do not override a canonical execution.
 | `messaging/inbound_spool.py` | The durable spool for an inbound message the SHUTDOWN GATE refused, and its boot-time replay. See [Durable inbound spool](#durable-inbound-spool-inbound_spoolpy) |
 | `messaging/session_resume.py` | **Layer 3** — the channel-neutral half of dashboard-session resume. `SessionResumeController` consumes a bound `ResumeSurface` (including its exact durable expectation identity, which may be narrower than `ChannelLink.channel_id`) and owns the complete SHOW-PICKER flow (eligibility/search, audit, nonce/TTL/owner/message scoping, and registration only after a successful post) plus the CHOOSE/BIND transaction (history existence, conflict checks around the awaited settlement, durable expectation before success, atomic inbound claim, lost-claim/storage outcomes, dashboard push, and audit). `SessionBinder` owns inbound routing, settlement, and release. It also owns the two conversation-log reads each adapter used to spell for itself — `persisted_session_agent(conv_log, session_key)` and `session_title_of(conv_log, session_key, channel=)` — both SYNCHRONOUS, because metadata access blocks and the async caller owns the `asyncio.to_thread` offload; `channel` only names the call site in its debug line. Discord, Telegram, and Teams retain only address/identity derivation, widgets/cards, exact wording and display redaction, callback parsing, and channel-local replay. |
 | `messaging/resume_expectation.py` | The durable conversation-keyed shadow of those bindings, ONE file per channel (`store_filename`), because a Discord channel id and a Teams conversation id are unrelated address spaces |
+| `dashboard/channel_handoff.py` (dashboard-side, reached by a channel through a deferred import) | `hand_to_resumed_slot(state, session_key, text, mode=, has_attachments=, channel_type=, conversation_id=, principal=)` — the channel-neutral hand-off of a mid-turn message into a RESUMED dashboard session's own slot machinery: the slot's steer path (recording the same audience fence the peer-steer path records) or the slot's queue (drained by the dashboard turn loop, stamped user- and channel-origin, and with the sending conversation as the drop-notice recipient), never the channel's own queue. Answers `steered` / `queued` (the audience-fence cap sends a steer to the queue instead of refusing), or `refused` with a `REFUSED_*` reason the channel words — no open slot, a closing or remote-bound slot, a slot that is not itself driving the turn, attachments, a slot that moved under the steer RPC with no record holding the delivery id or with the id held only in memory on a closing slot, or a live queue at `MAX_LIVE_QUEUE_ENTRIES`. An incognito or temporary session is taken like any other: those modes keep their transcript and queue (decision 2026-09-25). |
 | `teams/service_urls.py` | `ServiceUrlStore` — durable `conversation_id -> serviceUrl` (plus the authorized identity owning each conversation), because the Bot Framework offers no lookup and a lost reference leaves every proactive path with nowhere to send. `forget` drops a route the Connector permanently refuses |
 | `teams/cards.py` | Adaptive Card construction + `parse_submit` — the strict, total validation of an untrusted card payload. Mints no nonce of its own: every clickable widget's token comes from `messaging.renderer.new_approval_nonce` |
 | `teams/approvals.py` | `TeamsApprovalDecider` — awaits one Approve / Approve+auto-approve / Deny click, deny-by-default on every non-answer. Holds NO grant: the button's press is recorded and the dispatcher arms the shared process-wide grant through `messaging.commands.run_yolo_command` |
@@ -1955,6 +1956,176 @@ because a `/`-leading message the client did send is more likely a path than a
 command, and it defers to `parse_command` and the directive alias sets so a real
 command can never be answered with the card.
 
+### A busy RESUMED dashboard session takes the slot's own machinery (Discord)
+
+A DM bound to a dashboard session (`!sessions`, or the dashboard's mirror menu)
+that messages that session mid-turn cannot use the channel's steer/queue above:
+`_handle_busy` enqueues into the CHANNEL's queue, `_drain_queue` drains that queue
+only at the tail of a Discord-driven turn, and the replay dispatches with resume
+routing off (a drained item's affinity is native by construction) — so a message
+queued there while the dashboard drives would sit until some later Discord turn
+and then run in the NATIVE session. Discord's dispatcher therefore hands the
+message to the dashboard slot instead (`_handle_resumed_busy` →
+`dashboard/channel_handoff.py::hand_to_resumed_slot`), under the same mode ladder
+(the `!queue`/`!steer` override, else `messaging.queue_mode`):
+
+- **steer** → `chat_delivery.steer_into_running_turn` on the slot's published
+  client, the injection the dashboard composer uses, with `user_origin=True`
+  (the owner gate on resume makes the author the session's own human) and
+  `channel_origin=True`, recording the same **audience fence** the peer-steer
+  path records (`slot._steer_audience_fences`, the containment holding at
+  admission, recorded before the RPC and kept for the whole turn, so the
+  publisher's `cross_surface_withheld` withholds the reply's cross-surface leg
+  when a constraint newly holds). The channel's records are **bounded**: keyed
+  by the audience (`channel_handoff.audience_fence_key`, a digest of the
+  containment snapshot) rather than by message, so a turn that takes many
+  Discord steers holds one record per distinct audience, re-recording the same
+  audience is a no-op, the set shares `MAX_PENDING_STEERS` with the other
+  per-steer stores, and the turn's teardown clears it. At the cap a new
+  audience is never recorded over an existing fence — a dropped fence is a
+  cross-surface leg published that should have been withheld — and the message
+  is not refused for it either: it takes the queue arm, which records no fence
+  and is already where a declined steer goes. **The fence follows the message
+  into the turn**: every admission under an audience counts a holder
+  (`_ChatSlot._steer_audience_fence_holders`), a steer whose text does not enter
+  the running turn — unavailable or declined before or after the RPC, requeued by
+  the teardown to run as its own turn — releases its hold, and the record is
+  popped once no holder remains. A fence a landed sibling relies on therefore
+  survives another steer's decline, while a fence for text that never reached
+  the turn cannot withhold that turn's cross-surface leg — the release the peer
+  path performs on its per-token record when it is not steered (see
+  session-control). The release is bound to the turn the steer was admitted to
+  (`slot._turn_generation`, captured before the RPC, as the peer path binds its
+  stop): a steer that wakes after that turn's teardown finds its hold already
+  cleared with the maps, and a record under the same audience key belongs to the
+  next turn's steers, so it releases nothing. The peer path's containment STOP is not repeated:
+  it narrows a delivery a gate authorized against containment, and a human's own
+  message has no such gate. A codex client (`steer_needs_loss_recovery`) is not
+  steered — the composer accepts that a denied approval can drop a steer because
+  its human watches the turn; a channel human cannot see the dashboard's turn —
+  and a declined or unavailable steer falls through to the queue. **The RPC
+  suspends and the slot can move under it**, so after it the key is resolved
+  again and compared by object identity, as `send_to_target` re-gates its own
+  fallback. A moved slot is not refused outright, because the text may already
+  be somewhere that runs it: a close during the RPC cancels the turn, whose
+  teardown requeues the pending steer onto the queue the close archives
+  (`queued_prompts`), and that entry drains when the session is next resumed —
+  a refusal there reads as "NOT delivered" to a human who then resends and runs
+  the text twice. `channel_handoff.standing_after_move` reads the queue and
+  turn RECORDS of both objects, for every RPC outcome, by the **delivery id**
+  the hand-off mints and hands to `steer_into_running_turn` (which writes it
+  into the pending registration, the requeued entry's durable
+  `meta.steer_delivery_id`, the drained row's `steer_delivery_ids`, and the
+  steer's own row) — never by content, since a slot recreated under the same
+  key restores its whole prior transcript and a recurring short message would
+  prove a delivery that never happened; never by timing. The slot the text was
+  HANDED TO is judged first, successor or not — an accepted steer left its row
+  there, a teardown requeue its entry, a suspended registration its id, and a
+  successor knows none of that; only when it holds nothing does the successor
+  answer. The successor's queue carries the id → the ordinary queued
+  confirmation; the successor's transcript carries it → `✅ Delivered to that
+  session — it was reopened while your message was in flight, and the message
+  ran there as its own turn.`; the queue the close ARCHIVED carries the id — read off the
+  persistence layer's own witness, `queue_persist_pending` False with the entry
+  present, because the close saves the popped slot once and nothing revisits a
+  popped object → `⏳ Queued for that session — it closed while your message
+  was in flight; the message runs when the session is next resumed.`; the id
+  held only in memory on the handed-to slot (the pending registration, a requeue
+  the archive missed, a row appended after the save) → refused with
+  `REFUSED_UNSAVED_CLOSE` (`⏳ That session closed while your message was in
+  flight, and the message had not been saved with it yet. If it does not run once
+  the session is reopened, send it again.`); no record carries the id (a
+  declined steer's unwound registration, an entry left on the detached object
+  while a live successor holds the key, a hard stop's cleared pending list) →
+  refused (`REFUSED_MOVED`, `⏳ That session changed while your message was in
+  flight …`). The fallback never appends to the detached object, and on an
+  unmoved slot it re-runs the admission gate, since a slot that went idle or
+  started closing during the RPC can no longer take the text. The queue arm
+  itself is bounded: at `MAX_LIVE_QUEUE_ENTRIES` the hand-off refuses before the
+  append (`REFUSED_QUEUE_FULL`, `⏳ That session's queue is full, so this
+  message was NOT added …`) rather than appending past the bound or evicting a
+  waiting entry, the shape every producer guarding the live queue takes.
+  **A channel steer narrows the running turn's directive provenance.** The
+  turn's `_directive_channel_origin` is its opener's — False for a
+  dashboard-driven turn — and every directive the model emits is stamped with
+  it (`apply_session_directive`'s `producer_is_channel`); a channel human's text
+  injected mid-turn can shape the `monitor_watch` the model emits next, so
+  unchanged the stamp would hand a channel-shaped input the dashboard's
+  authority. `steer_into_running_turn(channel_origin=True)` therefore sets the
+  slot's `_turn_channel_narrowed` at admission — before the RPC, since the client
+  can inject the text and the model can act on it before the RPC returns — and
+  the turn reads that flag beside its opener's provenance at both
+  directive-application sites for the remainder of the turn, so a directive
+  emitted after channel text reached the turn is filed as channel-created, the
+  authority a channel-origin turn's directive carries. The narrowing holds even
+  when the steer is declined or requeued (narrowing is the direction that cannot
+  be wrong; a requeued text runs as its own channel-origin turn), and the turn
+  resets it at its end and at the next turn's start, whose provenance is its own
+  opener's. The composer's own steer narrows nothing.
+- **queue** → `chat_delivery.queue_for_next_turn` on the slot's queue, drained by
+  the dashboard turn loop (so ordering is the dashboard's and the Discord-side
+  drain never sees the entry), stamped with the drain's admission snapshot and
+  BOTH provenance marks a channel human's text carries on the Slack
+  linked-thread path: `_directive_user_origin` and `_directive_channel_origin`
+  (channel authority is the narrower credential boundary, so a directive the
+  drained turn issues is filed as channel-created). A steer the turn never
+  consumed is requeued with the same two marks, through the slot's lockstep
+  `_steer_channel_origin` map. The entry also carries the sending conversation
+  as its **drop-notice recipient** (`session_control.channel_recipient_meta`:
+  channel type, conversation id, and — for a DM route only — the platform user
+  the channel authorized on inbound; a thread route supplies no principal, so
+  `may_send_to` answers it from the thread roster alone and a thread since
+  removed from `allowed_thread_ids` refuses the notice instead of passing the DM
+  arm on a user roster it was never checked against), on the queue entry directly — `queue_for_next_turn`'s singular
+  `channel_recipient` parameter writes that one key beside the containment
+  stamp, which nothing passed there can reach — and, for a steer, through the
+  admission dict the requeue copies. When the drain's re-validation drops the entry
+  (`chat_runner._drop_stale_admissions`), `notify_channel_recipient_dropped`
+  schedules a notice into that conversation — the DM was told "queued" and reads
+  neither the target's transcript nor the SEL — through the same cross-surface
+  send ladder every proactive channel delivery takes (channels governance, a
+  registered proactive transport, the recipient re-check with the stamped
+  principal, since a dashboard session key names no channel peer); a revoked
+  recipient gets no notice, and the quoted excerpt takes the egress redaction.
+  The stamp names a write target on a network surface, so
+  `sanitize_restored_queue` strips it like the dashboard sender stamp: a drop
+  after a restart is reported nowhere rather than to whoever an edited line named.
+
+**The hand-off runs as one task, awaited through `asyncio.shield`.** The caller
+is the channel's message handler, and a transport close cancels those handlers
+as an ordinary path (Discord gathers its handler tasks on close). Awaited inline,
+that cancellation lands inside `steer_into_running_turn`'s RPC: the pending
+registration is made, the client may already have accepted the text, and
+everything behind the RPC — the transcript row for an accepted steer, the unwind
+of a declined one, the fallback to the queue — is skipped, so accepted text runs
+with no row while the per-steer maps keep its entry for the slot's lifetime (the
+`steering_consumed` settle removes the pending entry and patches an existing row;
+the turn's teardown requeues only UNconsumed steers). Shielded, the caller's
+cancellation cancels the shield's outer future alone: the hand-off task — gate,
+RPC, reconciliation, fallback — completes, held by a strong reference
+(`channel_handoff._HANDOFFS_IN_FLIGHT`, since the loop keeps only weak references
+to its tasks) that the task's done callback releases on every completion, and
+the caller unwinds without the outcome, so no confirmation reaches the closing
+DM. The audience fence recorded before the RPC is not the hand-off's to release:
+it is the audience's record for the turn and the turn's teardown clears it.
+
+Every outcome is confirmed in the DM (`↪️ Steering that session …` /
+`⏳ Queued for that session …`): a dashboard-driven turn's reply reaches the DM,
+if at all, through the dashboard's own cross-surface leg and not through this
+dispatcher, so a silent hand-off would read as a drop. The refusal (`⏳ That session is busy with a turn started elsewhere …`)
+stays for the cases the slot cannot take (`slot_unable_to_take`, fail-closed on
+an attribute the slot cannot answer): no open slot for the key, a closing slot, a
+remote-bound slot (no local drain), and a slot that is NOT itself driving the
+turn (`running or _in_stage_execution` false while the lease is held — Discord's
+own turn on the resumed key is that case; the slot then has no client to steer
+into, no drain coming, and the queue-or-run admission would start a second turn
+against the held lease). A message carrying attachments is refused with wording
+that names them: `_session/steer` carries text only, and the slot's queue cannot
+carry Discord attachment material (temp files owned by the consuming turn, which
+the dashboard drain has no hook to own), so the files stay with the user instead
+of being dropped or answered without. Discord-native conversations keep
+`_handle_busy` unchanged; Telegram's resumed branch still refuses.
+
 ### Hard cancel: `/stop`
 
 `/stop` (alias `/cancel`; `!stop` / `!cancel` on Discord) aborts the running
@@ -3004,7 +3175,9 @@ loop guard. `DISCORD_BOT_TOKEN` is on the sandbox agent env denylist.
 `transport_dispatch.py` carries the same mid-turn steer/queue/drain/cancel
 machinery as the Telegram dispatcher (see "Mid-turn routing, queue receipts &
 cancel" above) plus `!compact` under atomic `try_acquire` and the dashboard
-mirror `!link`/`!unlink`. The renderer streams via throttled in-place edits
+mirror `!link`/`!unlink`. A mid-turn message into a busy RESUMED dashboard
+session takes that slot's own steer path or queue rather than this machinery
+(see "A busy RESUMED dashboard session takes the slot's own machinery"). The renderer streams via throttled in-place edits
 under the 2000-char cap, splitting ordinary text with the shared
 `split_markdown_safe` (at 1900 less 100 characters of chip/footer headroom)
 and holding local-image markup for secure multipart extraction at the semantic

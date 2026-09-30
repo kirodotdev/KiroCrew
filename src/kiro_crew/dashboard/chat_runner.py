@@ -8082,10 +8082,12 @@ def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> No
         if _strip:
             _meta["decisions_strip"] = _strip
         # Provenance is REPORTED by the steer's caller, not derived from the slot.
-        # `steer_into_running_turn` has two callers that differ on exactly this
-        # point: the api_chat composer branch, whose text its session's own human
-        # typed, and `session_send`, whose text a peer sent. The slot cannot tell
-        # them apart, and the difference is the whole point of the flag:
+        # `steer_into_running_turn`'s callers differ on exactly this point: the
+        # api_chat composer branch, whose text its session's own human typed, and
+        # `session_send`, whose text a peer sent (a channel conversation resumed
+        # into the session reports as the composer does -- its owner gate makes the
+        # author the session's own human). The slot cannot tell them apart, and the
+        # difference is the whole point of the flag:
         # `directive_user_origin` exempts the entry from the drain's LINKED drop
         # because "the author typed into the session's own surface", which is true
         # of the composer and false of a peer. Deriving it would hand a peer the
@@ -8098,16 +8100,27 @@ def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> No
         # steers stay unexempted as before.
         _origin = bool(getattr(slot, "_steer_user_origin", {}).pop(steer_msg, False))
         _requeue_user_origin = _origin and not bool(getattr(slot, "_app", ""))
+        # The channel mark rides the same way, from its own lockstep map: a
+        # requeued steer runs as its own turn, so a channel human's text keeps the
+        # narrower channel authority a queued channel message carries. Absent means
+        # not through a channel.
+        _channel = bool(getattr(slot, "_steer_channel_origin", {}).pop(steer_msg, False))
         qid = slot.queue_insert(
             0,
             steer_msg,
             meta=_meta,
             directive_user_origin=_requeue_user_origin,
+            directive_channel_origin=_channel,
         )
         try:
             _push: dict = {
                 "slot": slot.key,
-                "content": queued_text_for_display(steer_msg, user_origin=_requeue_user_origin),
+                # As typed only for the session's own human -- the rule the queue view
+                # applies to the entry (``queue_entry_is_user_origin``), which reads
+                # the channel stamp too.
+                "content": queued_text_for_display(
+                    steer_msg, user_origin=_requeue_user_origin and not _channel
+                ),
                 "ts": datetime.now(timezone.utc).isoformat(),
                 "queue_id": qid,
             }
@@ -8430,6 +8443,20 @@ def _drop_stale_admissions(state: DashboardState, slot: _ChatSlot) -> None:
             state,
             origin=_origin,
             origin_tab=_sc.send_origin_tab(_meta),
+            target_slot=slot,
+            text=q.get("content") or "",
+            constraints=changed,
+            mirror_unverified=_mirror_unverified,
+        )
+        # A message a CHANNEL conversation queued here (a resumed dashboard
+        # session's Discord DM) has the same reader problem one step further
+        # out: it was told "queued" in the channel and reads neither this
+        # transcript nor the SEL. Same stamp discipline -- read off the entry,
+        # stripped on restore -- and the notice re-runs the outbound recipient
+        # check before anything is sent.
+        _sc.notify_channel_recipient_dropped(
+            state,
+            entry_meta=_meta,
             target_slot=slot,
             text=q.get("content") or "",
             constraints=changed,
@@ -9993,6 +10020,13 @@ async def _run_chat(
     # suspended and reset _stop_state to idle before continuation processing.
     # The monotonic generation preserves that user intent across the whole call.
     _stop_gen_at_entry = slot._stop_generation
+    if _prompt_depth == 0:
+        # This turn's directive provenance starts from its OWN opener
+        # (`_directive_channel_origin`); a channel steer admitted into the previous
+        # turn narrowed that turn, not this one. Reset at the outermost frame only:
+        # the depth-1 re-entry runs inside the same turn and must keep a narrowing
+        # the turn already took.
+        slot._turn_channel_narrowed = False
     # Dispatch appends the triggering row before entering this runner. Freeze
     # that row now, before await points, prompt expansion or new deliveries.
     _current_replay_message = _current_message
@@ -10023,6 +10057,20 @@ async def _run_chat(
     def _session_stop_generation() -> int:
         """The session manager's Stop count for this turn's session key."""
         return _session_stop_generation_for(sessions, session_key)
+
+    def _directive_producer_is_channel() -> bool:
+        """The turn's directive provenance, NARROWED by any channel steer admitted into it.
+
+        ``_directive_channel_origin`` is the opener's provenance and is fixed for
+        the turn. A channel human's steer admitted mid-turn
+        (``steer_into_running_turn(channel_origin=True)``) sets the slot's
+        ``_turn_channel_narrowed`` at admission, before its RPC, and the flag holds
+        for the remainder of the turn -- so a directive the model emits after
+        channel text reached it is filed as channel-created, never with more
+        authority than a channel-origin turn's directive carries. The one reader
+        for both directive-application sites, so they cannot disagree.
+        """
+        return _directive_channel_origin or getattr(slot, "_turn_channel_narrowed", False) is True
 
     _session_stop_gen_at_entry = _session_stop_generation()
 
@@ -14467,7 +14515,7 @@ async def _run_chat(
                             dict(_oob.get("args") or {}),
                             producer_is_user_facing=_directive_user_origin,
                             producer_is_self_wake=_directive_self_wake,
-                            producer_is_channel=_directive_channel_origin,
+                            producer_is_channel=_directive_producer_is_channel(),
                             producer_wake_loop_id=_directive_loop_id,
                         )
                         _record_terminal_question(_applied_kind, _applied_one)
@@ -14680,7 +14728,7 @@ async def _run_chat(
                                 _dir_args,
                                 producer_is_user_facing=_directive_user_origin,
                                 producer_is_self_wake=_directive_self_wake,
-                                producer_is_channel=_directive_channel_origin,
+                                producer_is_channel=_directive_producer_is_channel(),
                                 producer_wake_loop_id=_directive_loop_id,
                             )
                             _record_terminal_question(_dir_tool, _applied_one)
@@ -20839,6 +20887,12 @@ async def _run_chat(
         # never about it. Cleared unconditionally, so a hard stop, a crash or a
         # gateway abort cannot leave a record behind to silence the next turn.
         slot._steer_audience_fences.clear()
+        slot._steer_audience_fence_holders.clear()
+        if _prompt_depth == 0:
+            # A channel steer's narrowing of this turn's directive provenance ends
+            # with the turn; the next turn's provenance is its own opener's. Outermost
+            # frame only: the depth-1 re-entry's exit is not the turn's end.
+            slot._turn_channel_narrowed = False
         # ── Retire any wait countdown ──
         # A healthy `wait` clears its own state with a final keepalive ping, but
         # that ping is best-effort and cannot run at all if the MCP subprocess
