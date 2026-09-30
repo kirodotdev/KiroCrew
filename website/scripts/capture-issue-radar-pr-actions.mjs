@@ -230,7 +230,7 @@ async function main() {
     }
     if (path.startsWith('/api/agents/detail/')) return json(route, { name: 'kirocrew', model: 'claude-opus-5', skills: [] })
     if (path === '/api/agents/installed') return json(route, [])
-    // A bare LIST: the shell calls .filter() on it directly (App.tsx:767).
+    // A bare LIST: the shell calls .filter() on it directly (useGlobalApprovalCount in src/shell/nav/railBadges.ts).
     if (path === '/api/approvals') return json(route, [])
     if (path === '/api/terminal/sessions') return json(route, { sessions: [] })
     if (path === '/api/sessions/usage') return json(route, { sessions: [] })

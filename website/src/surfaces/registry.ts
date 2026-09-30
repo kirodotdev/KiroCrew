@@ -5,8 +5,9 @@
  * The left rail contains a mix of static built-in nav items (Chat,
  * Notifications, Settings, ...) and dynamic app nav items (loaded from
  * installed apps). Both kinds register here through one shape: a `Surface`
- * describes a nav destination plus how its badge count is derived. `App.tsx`
- * iterates the registry exactly once to render nav items and their badges;
+ * describes a nav destination plus how its badge count is derived.
+ * `shell/nav/navItems.ts` iterates the registry exactly once (`NAV_ITEMS`), and
+ * `App.tsx` renders the nav items and their badges from it;
  * `ChatPage` resolves the slot filter via `surface.slotMode` instead of a
  * hardcoded comparison; new surfaces (built-in or third-party) register one
  * entry and everything else (route, badge, slot routing) just works.
@@ -165,7 +166,7 @@ export interface Surface {
    * coverage included, keeps covering it — but it occupies a rail row only
    * while its navId is in the user's pinned set (`lib/navPinned.ts`). That
    * read is per render and comes from localStorage, so it cannot be expressed
-   * here: `App.tsx` applies it in the ONE derivation that feeds every rail
+   * here: `shell/nav/appRail.tsx` applies it in the ONE derivation that feeds every rail
    * list, for the same reason `previewFlag` is filtered there.
    *
    * Unlike `hiddenFromNav` (a permanent "rendered elsewhere" marker) this is

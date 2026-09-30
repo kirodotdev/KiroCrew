@@ -74,7 +74,8 @@ describe('NotificationDetailPanel — "Continue in Chat" (task runner)', () => {
   })
 
   it('does not carry the failure onto the next notification', async () => {
-    // The bell popover mounts this panel with NO `key` (App.tsx), unlike the
+    // The bell popover mounts this panel with NO `key`
+    // (shell/notifications/notificationSheet.tsx), unlike the
     // full page (`key={selected.ts}`), so a different `n` reuses the instance.
     vi.mocked(api.taskRunToChat).mockRejectedValue(new Error('to-chat returned 500'))
     const { rerender } = renderWithProviders(<NotificationDetailPanel n={taskNote} onClose={() => {}} />)

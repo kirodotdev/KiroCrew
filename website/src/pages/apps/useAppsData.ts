@@ -200,7 +200,8 @@ export type AppsData = {
 }
 
 // ---- Pending-update derivation ------------------------------------------
-// Shared by this hook's `updatables` and App.tsx's sidebar Discover badge —
+// Shared by this hook's `updatables` and the rail's Discover badge
+// (shell/nav/railBadges.ts) —
 // the sidebar count must equal the Updates sub-tab count, and one shared
 // derivation is the only arrangement two surfaces cannot drift under.
 

@@ -785,10 +785,10 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   // lights and drag strips out from under a header the user can see. A
   // focus-mode-aware pane's first report corrects the brief lights-flash; a
   // non-conforming pane keeps working chrome forever. Switching to LOCAL is
-  // covered by App.tsx's own writer (gated on activeInstanceId === null).
+  // covered by shell/focus/focusChrome.ts's own writer (gated on activeInstanceId === null).
   useEffect(() => {
     // Only while focus mode is ON: off, chrome is unconditionally visible and
-    // owned by the surfaces themselves (and the local writer in App.tsx).
+    // owned by the surfaces themselves (and the local writer in shell/focus/focusChrome.ts).
     if (activeId === null || !focusMode) return
     setFocusChromeVisible(paneChromeRef.current[activeId] ?? true)
   }, [activeId, focusMode])

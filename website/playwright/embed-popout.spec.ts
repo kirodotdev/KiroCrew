@@ -164,7 +164,7 @@ test.describe('Embed route tree — /embed/*', () => {
   /**
    * FINDING (product bug, not fixed here): /embed/settings cannot be reached by
    * URL, and cannot be held once reached. EmbedTabStrip is a sibling of <Routes>
-   * in the embed shell (App.tsx:1397), so it mounts on every /embed/* path and
+   * in the embed shell (App.tsx), so it mounts on every /embed/* path and
    * navigates away twice over:
    *
    *   1. a one-shot mount effect -> the restored tab (EmbedTabStrip.tsx:53-60);

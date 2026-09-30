@@ -344,7 +344,7 @@ export default function AgentImportFlow({
         // Escape means SKIP ALL, not "skip import": one keystroke abandons the
         // whole of first run, exactly like the header control. It still cannot
         // bypass the mandatory Privacy chapter — that is the host's job, and
-        // both exits route through it (see App.tsx).
+        // both exits route through it (see shell/boot/firstRun.tsx).
         skipAll()
         return
       }

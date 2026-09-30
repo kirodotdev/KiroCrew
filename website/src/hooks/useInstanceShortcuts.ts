@@ -28,7 +28,8 @@
  * single source of truth also rendered by the shortcuts modal), so the chords
  * the modal advertises and the chords this handler claims cannot drift apart.
  *
- * Registered ONCE from App.tsx. It must NOT live inside InstanceTabBar, which
+ * Registered ONCE from the app shell (shell/shortcuts/shellKeyboard.ts). It must
+ * NOT live inside InstanceTabBar, which
  * can mount more than once (strip + inline header copies) — that would
  * double-fire every press.
  */

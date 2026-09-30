@@ -31,7 +31,8 @@
  *  - Embedded panes never run this: an embedded pane shows no switcher and must
  *    not connect onward (see isEmbeddedPane).
  *
- * Registered ONCE from App.tsx (like useInstanceShortcuts), never inside a
+ * Registered ONCE from the app shell (shell/shortcuts/shellKeyboard.ts, like
+ * useInstanceShortcuts), never inside a
  * component that can mount more than once.
  */
 import { useCallback, useEffect, useRef } from 'react'

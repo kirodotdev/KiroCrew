@@ -254,8 +254,8 @@ export default function SchedulePage() {
   const dispatch = useAppDispatch()
   const { agents, error: rosterError, reload: reloadRoster, reloading: rosterReloading } = useAgents(0)
   // A recovered roster must not be recovered for this form alone. `useAgents`
-  // holds PER-INSTANCE state, and the app shell keeps its own copy (App.tsx
-  // feeds it to the agent-cycle shortcuts), so a retry that refreshed only this
+  // holds PER-INSTANCE state, and the app shell keeps its own copy
+  // (shell/shortcuts/shellKeyboard.ts feeds it to the agent-cycle shortcuts), so a retry that refreshed only this
   // page would tell the user the roster is back while another surface still
   // holds the empty one. Bumping the shared refresh trigger — the same channel
   // chat already uses after an agent operation — makes one press recover every

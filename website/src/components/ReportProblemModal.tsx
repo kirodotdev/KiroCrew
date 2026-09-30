@@ -25,7 +25,8 @@ interface ReportProblemModalProps {
  * The "Report a Problem" flow, shared by every surface that offers it.
  *
  * Two entry points mount this same modal — Settings › About › Support
- * (`ReportProblemCard`) and the nav rail's "Report issue" link (`App.tsx`) —
+ * (`ReportProblemCard`) and the nav rail's "Report issue" link
+ * (`shell/nav/railChrome.tsx`) —
  * so a user who reaches for the rail gets the redacted bundle instead of a bare
  * link to the issue tracker. Keeping ONE component means the collect call, the
  * redaction notice, and the deliveries can never drift between surfaces.

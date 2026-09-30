@@ -1,6 +1,6 @@
 /** The one agent-switch call path shared by every surface (#5120).
  *
- *  App.tsx (keyboard cycle), ChatPage.tsx and ChatPane.tsx all switch a
+ *  shell/shortcuts/shellKeyboard.ts (keyboard cycle), ChatPage.tsx and ChatPane.tsx all switch a
  *  slot's agent the same way: fire the endpoint through the adjudicated
  *  switch protocol and mirror EXACTLY what the response names — the stored
  *  agent plus the re-resolved workspace binding, as one pair — into the

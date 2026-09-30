@@ -28,7 +28,7 @@ import type { ResourceProvider, Result } from '../types'
  * by hand.
  *
  * This list is NO LONGER identical to the rail's. Both read
- * `getAdvertisedSurfaces()`, but `App.tsx` additionally drops a `pinnable`
+ * `getAdvertisedSurfaces()`, but `shell/nav/appRail.tsx` additionally drops a `pinnable`
  * surface the user has not promoted, so a promotable sub-item (an Agent
  * Capabilities tab) is searchable here whether or not it occupies a rail row.
  * That is deliberate: the palette answers "where can I go", and such a tab is

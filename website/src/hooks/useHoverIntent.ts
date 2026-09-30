@@ -23,7 +23,7 @@ export const HOVER_MIN_VISIBLE_MS = 450
 
 /** Width of the band an exit sample must fall in for the event to count as the
  *  pointer crossing the window boundary. Matches the edge-slam threshold in
- *  App.tsx: the same coarse gesture that reveals the surface dismisses it. */
+ *  shell/focus/focusChrome.ts: the same coarse gesture that reveals the surface dismisses it. */
 const EDGE_BAND_PX = 20
 
 /** A mid-window region that stops answering hover reports the same

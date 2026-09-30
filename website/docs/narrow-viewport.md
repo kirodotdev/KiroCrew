@@ -341,7 +341,8 @@ centre track and collapse.
 now holds a 72px icon rail on the left -- the shell's, rendered by `App.tsx` and
 handed down through `MobileNavRailContext` -- beside the sessions pane. The rail is
 built from the same registry as the desktop rail (`advertisedNavItems`,
-`sortedAppGroup`, the Bottom group) through the same `NavItem`, with `touch` for a
+`sortedAppGroup`, both from `shell/nav/appRail.tsx`, and the Bottom group) through
+the same `NavItem`, with `touch` for a
 64x56 `rounded-xl` tile carrying a 10px caption under the glyph (a finger cannot summon
 the desktop rail's hover tip), a full-opacity muted glyph (the desktop rail's 70% dimming
 measured 3.4:1 on these flat tiles) and the desktop rail's selected paint, on a
@@ -481,8 +482,9 @@ hamburger-opened drawer cannot be dragged shut.
 
 **A MODAL LAYER owns every touch inside it, read from its `role`.** A dialog is not
 necessarily portaled out of the shell: the changelog and update-error overlays are plain
-`fixed inset-0` JSX inside it (the shell element spans `App.tsx` 2635-3878, and both sit
-between), so a horizontal drag across one pulled the nav drawer out BEHIND the dialog.
+`fixed inset-0` JSX inside it (the shell element is the `shellRef` root `App.tsx`
+renders, and both the update-error overlay and `ChangelogModal` from
+`shell/updates/updateFlow.tsx` mount inside it), so a horizontal drag across one pulled the nav drawer out BEHIND the dialog.
 The hook therefore stands down for any `role="dialog"` / `role="alertdialog"` in the
 chain. Read as a rule rather than a list of overlays, because `src/` declares dozens of
 dialogs and a list means the next one silently fights the drawer — the same reasoning as

@@ -1,5 +1,6 @@
 /**
- * Screenshot harness for the bell sheet's column scrim (App.tsx, the
+ * Screenshot harness for the bell sheet's column scrim
+ * (src/shell/notifications/notificationSheet.tsx, the
  * `aria-hidden` strip behind the notification rows).
  *
  * Runs the REAL built SPA (website/dist) gateway-free (stubDashboardApi),

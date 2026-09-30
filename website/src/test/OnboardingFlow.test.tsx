@@ -472,7 +472,7 @@ describe('OnboardingFlow — end of the tour', () => {
 
   // Privacy is mandatory, so every early exit has to be distinguishable from a
   // completion: the host routes a skip back through the Privacy chapter when the
-  // user has not passed it yet (App.tsx).
+  // user has not passed it yet (shell/boot/firstRun.tsx).
   describe('abandoning the tour reports a SKIP, not a completion', () => {
     const cases: Array<[string, () => void]> = [
       ['"Skip all" on the Customize modal', () => {

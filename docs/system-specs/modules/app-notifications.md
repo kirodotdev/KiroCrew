@@ -289,8 +289,9 @@ predicate.
 
 ## In-app banner (client)
 
-`website/src/components/notifications/NotificationBanner.tsx`, mounted once by
-the bell button in `App.tsx` and portalled beside the bell's sheet, shows a
+`website/src/components/notifications/NotificationBanner.tsx`, mounted once with
+the bell's sheet (`website/src/shell/notifications/notificationSheet.tsx`, which
+the bell button in `App.tsx` renders) and portalled beside it, shows a
 macOS Notification Center-style card under the top bar for a **live**
 notification. The card body is `NotificationCard.tsx`, the ONE rendering the
 bell popover's mac rows and the banner both use (kind-tinted 26 px icon square,

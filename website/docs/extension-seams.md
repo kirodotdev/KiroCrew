@@ -407,7 +407,8 @@ ships in the edition's own overlay: this seam contributes only the picker entry.
 (core wins).
 
 **Theme branding reaches three consumers.** `getThemeBranding(colorTheme)` drives
-the `App.tsx` shell chrome, `WelcomeView.tsx` (the new-session brand mark), and
+the shell chrome (resolved once in `shell/branding.ts`, which `App.tsx`'s header
+and rail read), `WelcomeView.tsx` (the new-session brand mark), and
 `pages/chat/ChatFooter.tsx` (the turn-running loader). A registered theme's `logo`
 shows in the first two, falling back to the stock ghost mark when the theme
 registers none. The loader contract is documented in
@@ -415,8 +416,8 @@ registers none. The loader contract is documented in
 
 A branding's optional `onActivate` side-effect fires on each transition into that
 theme, including the first render for the initially-active theme, because the
-"previous theme" ref starts empty. Keep it idempotent and cheap. `App.tsx` wraps
-the call in a `try`/`catch` so an edition-owned effect that throws cannot take
+"previous theme" ref starts empty. Keep it idempotent and cheap. `shell/branding.ts`
+wraps the call in a `try`/`catch` so an edition-owned effect that throws cannot take
 down the shell, but it still logs. `favicon` is handled the same generic way: the
 core has no per-theme favicon and falls back to `/logo.png`.
 

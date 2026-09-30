@@ -120,7 +120,8 @@ async def test_feature_request_stamp_survives_ingress_persistence_echo_and_fetch
         initial = await asyncio.wait_for(owner.receive_json(), timeout=5)
         assert initial["type"] == "slots"
 
-        # INGRESS: the flow's send, byte for byte the shape App.tsx posts --
+        # INGRESS: the flow's send, byte for byte the shape
+        # website/src/shell/topbar/requestFeature.ts posts --
         # the correlation id, the stamp, and (the control) a gateway-minted key
         # a caller may never supply.
         response = await client.post(

@@ -246,7 +246,7 @@ The backend serves only validated files from the installed pack, and the label i
 trimmed to 48 printable characters. When an asset or label is absent, the shell
 falls back independently to its configured Kiro Crew branding. Compiled edition
 branding registered through `registerThemeBranding()` has precedence over an
-installed pack.
+installed pack. `useShellBranding` in `src/shell/branding.ts` owns that order.
 
 ## Fonts
 

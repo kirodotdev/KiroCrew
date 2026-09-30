@@ -4,8 +4,8 @@
  *
  * The module owns the `mc-app-nav-hidden` localStorage key (a JSON string
  * array of HIDDEN app nav ids) and the same-tab sync event
- * `mc:app-nav-hidden-changed`. Both the LibraryPage tiles and the App.tsx
- * sidebar filter read/write through it, so the contract pinned here is what
+ * `mc:app-nav-hidden-changed`. Both the LibraryPage tiles and the sidebar
+ * filter (shell/nav/appRail.tsx) read/write through it, so the contract pinned here is what
  * keeps the two surfaces agreeing:
  *
  *  - an id ABSENT from storage is visible (pinned) — new installs need no

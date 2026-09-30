@@ -3234,8 +3234,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // default view) -- the user picks what to open.
     dispatch(toggleActivity())
   }, [dispatch])
-  // Header-launched toggle: the top-bar Activity button (App.tsx) dispatches
-  // this event so the panel-close coordination above stays in ChatPage.
+  // Shell-launched toggle: the panel-toggle shortcut (`onToggleSidePanel`,
+  // shell/shortcuts/shellKeyboard.ts) dispatches this event so the panel-close
+  // coordination above stays in ChatPage.
   useEffect(() => {
     const h = () => toggleAct()
     window.addEventListener('toggle-activity-panel', h)

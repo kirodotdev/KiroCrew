@@ -97,13 +97,14 @@ export default function LibraryPage() {
   // at once. The module's own event covers same-tab writes (this page's
   // toggles included, via the module's dispatch-on-write); the `storage`
   // listener covers a toggle made in ANOTHER tab — the same two-listener
-  // shape App.tsx's sidebar filter uses.
+  // shape the sidebar filter in shell/nav/appRail.tsx uses.
   const navHidden = useAppNavHidden()
 
   // Pin toggle — resolve the tile's app to the SAME nav id the sidebar rows
   // carry (`appNavTarget(app).id`, the rail's own derivation) and flip it in
   // the persisted hidden set. The module's write dispatches the sync event,
-  // which feeds the state above and App.tsx's sidebar filter — no local
+  // which feeds the state above and the sidebar filter in
+  // shell/nav/appRail.tsx — no local
   // set-state here. A tile without a nav target never offers the toggle
   // (`pinnable` below), so the null branch is only a race guard.
   const togglePin = (name: string) => {

@@ -177,7 +177,8 @@ export function useSessionStatusFilters({ unreadSlots, activeFilters, enableFilt
   // recompute the recency lookup for free, so this only matters when the sidebar
   // sits idle with the Recent filter on — without it a stale session would
   // never age out of the list. Gated on the filter being active so we don't
-  // wake an idle tab needlessly, mirroring the `staleTick` pattern in App.tsx.
+  // wake an idle tab needlessly, mirroring the `staleTick` pattern in
+  // shell/topbar/metricsReadout.tsx.
   const recentFilterActive = activeFilters.has('recent')
   // User-selectable recency window (ms), persisted. Presets + custom value live
   // in the filter submenu; the chip and menu row show the current window.

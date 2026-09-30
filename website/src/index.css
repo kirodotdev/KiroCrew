@@ -2179,7 +2179,7 @@ file-tree-container{
    visible through the shifted band; the descendant selector out-specifies the
    base hide rule. `block` matches what preflight gives the SVG, so the rule
    stays inert if the button ever stops blockifying its flex children. */
-/* Probe for the metrics rung, read by App.tsx to decide whether clicking the
+/* Probe for the metrics rung, read by shell/topbar/metricsReadout.tsx to decide whether clicking the
    metrics control should toggle the inline readings or open the popover. It
    carries `.tb-drop-metrics` so every rung above -- base and update-shifted --
    applies to it unchanged; keeping it out of flow at 0x0 means it can never
@@ -2347,7 +2347,8 @@ body.mc-focus-mode .linux-electron .focus-caption-reserve{padding-right:112px}
 
 /* Focus-mode edge triggers. 10px is deliberately tight: a wider strip opened the
    chrome on pointer travel that was merely passing near the edge, and overshooting
-   a 10px target is cheap because the edge-slam path (App.tsx mouseout handler)
+   a 10px target is cheap because the edge-slam path (the mouseout handler in
+   shell/focus/focusChrome.ts)
    opens the overlay anyway when the pointer exits the window through that edge.
 
    The size is CONSTANT. An earlier version shrank the strip to 8px on reveal so it

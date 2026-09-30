@@ -7,7 +7,8 @@
  * visible set, so a newly installed app defaults to pinned with no
  * migration: an id absent from the list is visible.
  *
- * Both writers/readers (LibraryPage tiles and the App.tsx sidebar filter)
+ * Both writers/readers (LibraryPage tiles and the sidebar filter in
+ * shell/nav/appRail.tsx)
  * MUST go through this module so the contract lives in one place. Writes
  * dispatch `mc:app-nav-hidden-changed` on window because same-tab
  * localStorage writes do not fire the `storage` event — the sidebar

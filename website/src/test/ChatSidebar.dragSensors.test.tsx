@@ -20,7 +20,7 @@
  *    soon as the finger travels past the tolerance, handing the gesture back to
  *    the browser; only a stationary hold arms a drag.
  *
- * Same split as the Apps nav rail (App.tsx). These are wiring assertions read
+ * Same split as the Apps nav rail (shell/nav/appRail.tsx). These are wiring assertions read
  * from source. jsdom has no compositor, so it cannot demonstrate a pan being
  * swallowed — the mechanism above is what the assertions pin, at the one place
  * where it is decided.

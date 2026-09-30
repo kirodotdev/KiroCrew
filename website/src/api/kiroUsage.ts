@@ -2,7 +2,7 @@
  * The one parser for the `/api/sessions/usage` envelope.
  *
  * Both readers of that envelope share it: the top-bar credit pill's query in
- * `App.tsx` (the polled GET) and the account modal's Refresh button (the POST to
+ * `shell/topbar/kiroUsageReadout.tsx` (the polled GET) and the account modal's Refresh button (the POST to
  * `/api/sessions/usage/refresh`, which answers with the same `{usage}` shape).
  * One parser means the reading the modal shows after a click can never be
  * normalized differently from the reading the pill polls thirty seconds later.
@@ -95,7 +95,7 @@ export function parseKiroUsagePayload(d: { usage?: KiroUsagePayload } | undefine
   // No reading (kiro-cli absent, or neither the API nor the /usage scrape
   // produced a plan) -> 'none': on the Kiro backend a dash whose modal carries
   // the Refresh that can fill it, so the segment stays on screen; on any other
-  // harness App.tsx hides the segment (see isKiroBackend). API-key auth -> terminal "not
+  // harness shell/topbar/kiroUsageReadout.tsx hides the segment (see isKiroBackend). API-key auth -> terminal "not
   // available for this auth type" (a dash with that reason; for this account
   // type the state is permanent, not a warming cache). No readable Kiro
   // credential -> also terminal, with its remedy named: sign in again. Empty

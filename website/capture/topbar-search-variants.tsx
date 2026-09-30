@@ -226,7 +226,7 @@ function TopBar() {
         <div className="tb-capsule flex items-center gap-2 h-7 px-2.5 rounded-xl bg-card">
           <span className="w-1.5 h-1.5 rounded-full bg-ok shrink-0" />
           <span className="w-px h-3.5 bg-border shrink-0" />
-          {/* Verbatim from App.tsx's two open states. `pending` is dimmed and
+          {/* Verbatim from the two open states in shell/topbar/metricsReadout.tsx. `pending` is dimmed and
               carries an em dash per metric rather than a spinner, which holds the
               capsule at the loaded width -- so the frame's arrival does not
               reflow the group, and the container-query rungs are calibrated

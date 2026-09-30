@@ -42,7 +42,7 @@ setup('authenticate', async ({ page }) => {
       expect(response.ok(), await response.text()).toBeTruthy()
     }
   }
-  // Dismiss the first-run theme-onboarding overlay. App.tsx gates the "Choose
+  // Dismiss the first-run theme-onboarding overlay. shell/boot/firstRun.tsx gates the "Choose
   // your look" modal on the `mc-onboarded` localStorage flag; a fresh browser
   // context has no flag, so the modal would overlay the shell and intercept
   // every spec's interactions. Persisting it into storageState here lets all

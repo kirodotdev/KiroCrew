@@ -24,7 +24,8 @@ import { i18nT } from '../i18n/t'
  *   - no Escape-to-dismiss (the Tab trap below deliberately omits it),
  *   - and the paths that abandon the flows on EITHER side still route through
  *     it: skipping Import setup lands here, and "Skip all" from Import setup
- *     shows this screen before the user reaches the product (see App.tsx).
+ *     shows this screen before the user reaches the product (see
+ *     shell/boot/firstRun.tsx).
  *
  * Mandatory is not the same as a consent gate. The screen discloses what is
  * sent and offers the opt-out; "Continue" is always enabled and never requires

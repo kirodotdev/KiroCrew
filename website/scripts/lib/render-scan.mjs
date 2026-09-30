@@ -378,7 +378,7 @@ export function scanDocument(opts) {
    * The chain matters, not just the leaf, but the LEAF COMES FIRST. Measured both ways:
    * for a string written inline — `<span title="Filter these runs">` in
    * `ProjectsPage.tsx:355` — the element's own `_debugSource` is already the answer, and
-   * `_debugOwner` walks OUTWARD into route and app wrappers (`App.tsx:2223`,
+   * `_debugOwner` walks OUTWARD into route and app wrappers (`App.tsx`,
    * `BuiltinAppRoute.tsx:28`) that tell the author nothing. For a string passed into a
    * shared component — `"Chat"` rendering from `components/settings.tsx:241` but written
    * at `pages/settings/DisplayPanel.tsx:167` — the answer is one hop out. Inline is much

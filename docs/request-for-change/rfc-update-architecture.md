@@ -218,13 +218,14 @@ re-asked which shapes it still governs.
    `isDesktop`; `SettingsPage.tsx:92` couples differently — it selects the
    desktop-only redux field `desktopUpdateAvailable`, mirrored from the Electron
    updater, so on a wheel install its update nudge simply never lights up. The
-   changelog modal at `App.tsx:1709` does neither. That modal fires on the first
+   changelog modal (`ChangelogModal`, `website/src/shell/updates/updateFlow.tsx`)
+   does neither. That modal fires on the first
    launch after a version change — i.e. immediately after an OTA install — and
    renders:
-   - an **inert** "Auto-update on restart" toggle (`App.tsx:1739`) writing
+   - an **inert** "Auto-update on restart" toggle (in `ChangelogModal`) writing
      `auto_update`, which nothing on a packaged install reads; and
    - an **Update now** button whenever `updateAvailable` is true, where
-     `updateAvailable` includes `desktopUpdateAvailable` (`App.tsx:728`,
+     `updateAvailable` includes `desktopUpdateAvailable` (the `updateAvailable` selector in `App.tsx`,
      mirrored from the Electron updater). It POSTs to the git-only
      `/api/update`, which answers 400 or `409 Not a git checkout — update by
      redeploying (e.g. \`kirocrew cloud launch\`)`. A `.dmg` user is told to run
@@ -237,8 +238,8 @@ re-asked which shapes it still governs.
    in-app Update button where `POST /api/update` would 409, and surfaces the
    installer command instead. The other two surfaces are **unchanged** —
    `SettingsPage.tsx` still selects the desktop-only `desktopUpdateAvailable`
-   (so its nudge still never lights on a wheel install), and the `App.tsx`
-   changelog modal still has no capability check at all. Phase 1b converts both.
+   (so its nudge still never lights on a wheel install), and the changelog
+   modal (`ChangelogModal`) still has no capability check at all. Phase 1b converts both.
    Note also that #1734 fixed the *check*, not the *apply*: Problem 1 stands in
    full.
 
@@ -432,7 +433,7 @@ opt-out. Without it in the contract, the UI can show that an update is
 mandatory but not why.
 
 The three consumers — `AboutPanel.tsx`, `SettingsPage.tsx`, and the
-`App.tsx:1709` changelog modal — read only this contract. Each sheds a
+changelog modal (`ChangelogModal`) — read only this contract. Each sheds a
 *different* coupling: `AboutPanel.tsx:491` loses its `isDesktop` branch,
 `SettingsPage.tsx:92` stops selecting `desktopUpdateAvailable` in favour of the
 contract's `state` / `latest_version`, and the changelog modal gains the
@@ -669,8 +670,8 @@ as one.
 - **Phase 1b — remaining.** Add `platform/update_capability.py` and serve the §2
   contract; collapse the three ad-hoc `.git` derivations into it (Open Question
   5); convert the two SPA surfaces 1a did **not** touch — `SettingsPage.tsx`
-  (still selecting the desktop-only `desktopUpdateAvailable`) and the `App.tsx`
-  changelog modal (still no capability check at all); de-arm the boot-time git
+  (still selecting the desktop-only `desktopUpdateAvailable`) and the changelog
+  modal, `ChangelogModal` (still no capability check at all); de-arm the boot-time git
   apply; retire the three `auto_update` surfaces named under Migration.
   **Problem 2 is only PARTLY closed by 1a** — `AboutPanel.tsx` reads capability,
   the other two surfaces do not, so the third-instance-of-the-same-class defect

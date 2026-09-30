@@ -797,14 +797,14 @@ Radix (`website/electron/package.json`, `@radix-ui/*` in `website/package.json`)
 2. **Peek the header, then move the pointer down into the content.** The header
    should close. Peek the rail, then move the pointer right past the rail track —
    it should close too. Exercises the **positional** close in
-   [`website/src/App.tsx`](../../website/src/App.tsx) (`departWhen: clientY > 48`
+   [`website/src/shell/focus/focusChrome.ts`](../../website/src/shell/focus/focusChrome.ts) (`departWhen: clientY > 48`
    for the top peek, `clientX > 248` for the rail): the revealed header doubles
    as the drag surface and a drag region eats pointer events before hit-testing,
    so the close is driven by pointer position, not by `mouseleave`. If a bump
    changes hover/pointer-event delivery, the peek sticks open or never opens.
 3. **Peek the header, then open the instance switcher.** The header must stay on
    screen while the switcher menu is open. Exercises the header-pin heuristic in
-   [`website/src/App.tsx`](../../website/src/App.tsx): Radix portals the menu to
+   [`website/src/shell/focus/focusChrome.ts`](../../website/src/shell/focus/focusChrome.ts): Radix portals the menu to
    `document.body`, so the pin rides on a `[aria-haspopup][aria-expanded="true"]`
    query against the header rather than DOM containment. If a Radix bump changes
    the ARIA a trigger emits (`aria-haspopup` absent, or `aria-expanded="true"`

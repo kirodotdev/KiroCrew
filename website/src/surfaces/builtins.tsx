@@ -111,7 +111,7 @@ registerBuiltinSurface({
   appOnly: true,
   // Stub surface — no slotMode and no unreadSelector. The Projects badge
   // (global task-gate approval count) comes from a React Query result that
-  // lives outside Redux; App.tsx mirrors it into `appBadges['projects']`
+  // lives outside Redux; shell/nav/railBadges.ts mirrors it into `appBadges['projects']`
   // and `NavBadge` picks it up via the appBadges fallback. The label here
   // is what the fallback path's aria-label uses.
   badgeLabel: 'approvals needed',

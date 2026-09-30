@@ -76,7 +76,7 @@ every group. Measured at `e6b06685e`, the situation is worse than "hard to
 customize":
 
 - **There is no overview surface.** `/overview` is a redirect to
-  `/settings?tab=overview` (`website/src/App.tsx:2712`). Overview is a settings
+  `/settings?tab=overview` (the `/overview` route in `website/src/App.tsx`). Overview is a settings
   tab reached through `website/src/pages/settings/OverviewPanel.tsx:1-4`.
 - **It is one fixed layout for everyone.** The six stat tiles are a hardcoded
   literal with no conditional (`website/src/pages/OverviewPage.tsx:193-198`).
