@@ -15120,6 +15120,19 @@ async def _run_chat(
                     _refusal_notices[:] = _still_pending
             elif event.kind == EVENT_COMPACTION_STATUS:
                 logger.debug("Main loop: compaction event text=%r", event.text)
+                # A shared runtime fans a compaction echo to every co-tenant
+                # runner and marks it ``runtime_global`` -- but the fanned frame
+                # carries NO issuer, and this runner marks its OWN compaction
+                # ownerless too whenever a subagent is registered, so a blanket
+                # ``runtime_global`` discard here dropped this session's own
+                # compaction: the UI never showed the compacting state and the
+                # answer streamed after the boundary was lost. The cross-session
+                # state mutations that MUST NOT bleed to a peer (the post-failure
+                # budget, the context-meter reset) are already gated on
+                # ``owns_frame`` in ``session_handle`` (compaction branch), which
+                # surfaces the event deliberately for this consumer. So this arm
+                # applies what it sees on its OWN turn stream and does not second-
+                # guess provenance the frame cannot carry.
                 if event.text == "started":
                     # Show the compacting state (input disabled, hourglass) for
                     # an AUTOMATIC mid-turn compaction too, not only from the
@@ -15174,6 +15187,23 @@ async def _run_chat(
                 # replaying the persisted Kiro Crew history afterwards would undo
                 # the user's clear. Retire either an unconsumed slash lease or the
                 # consumed-turn marker before any terminal can re-arm it.
+                #
+                # On a SHARED runtime the clear echo is fanned out to every
+                # co-tenant runner (``runtime_global``), so this event can arrive
+                # on a session that did NOT type ``/clear`` -- it is a peer's clear.
+                # Wiping this session's history, advancing its durable base and
+                # broadcasting ``slot_clear`` for a peer's command would destroy a
+                # conversation the user never asked to clear. Ignore an ownerless
+                # clear unless THIS runner's own command this turn is ``/clear``
+                # (a founder that typed it marks the frame ownerless too whenever a
+                # subagent is registered, so frame ownership alone cannot tell the
+                # typer apart -- the turn's command can).
+                if event.runtime_global and not _this_turn_is_clear:
+                    logger.debug(
+                        "ignoring fanned-out clear on %s: this runner did not issue /clear",
+                        slot.key,
+                    )
+                    continue
                 if _replay_pending or _replay_accepted_this_turn:
                     state.sessions.commit_provider_switch_replay_sid(session_key)
                 if _replay_pending:
@@ -15231,6 +15261,17 @@ async def _run_chat(
                     state, slot, "assistant", "🗑️ Conversation cleared.", "msg msg-a"
                 )
             elif event.kind == EVENT_AGENT_SWITCHED:
+                # A shared runtime fans an agent-switch echo to every co-tenant
+                # runner and marks it ``runtime_global`` -- but the fanned frame
+                # carries NO issuer, and this runner marks its OWN switch ownerless
+                # too whenever a subagent is registered. A blanket ``runtime_global``
+                # discard here dropped THIS session's own switch, so the member-pin
+                # veto and the stale-switch reset below never fired -- a security
+                # regression, since a pinned member thread would silently run on
+                # the switched agent. ``session_handle`` (agent_switched branch)
+                # already carries provenance for a consumer that needs it; this arm
+                # must APPLY the switch it sees on its own turn stream so the veto
+                # and reset run.
                 new_agent, _ = redact_credentials(event.text)
                 new_agent, _ = redact_exfiltration_urls(new_agent)
                 if new_agent and (

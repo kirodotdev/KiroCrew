@@ -2641,6 +2641,31 @@ class SessionAllocationService:
                     pre_spawn = await pre_spawn_identity(
                         getattr(owner, "spawn_identity_reader", None)
                     )
+                    # The chat runtime's compatibility key carries the account era,
+                    # so a session starting after a credential change cannot join a
+                    # process that authenticated before it. This is the read it
+                    # keys on -- handed over rather than taken again, so keying on
+                    # it adds no identity-store read and no audit event to the
+                    # start path. Best-effort like the stamp below: a provider that
+                    # will not carry it simply keys on an empty era, which is the
+                    # placement it had before the key had the field.
+                    # ``setattr`` because the static type here is ``LLMProvider``,
+                    # the interface every backend implements, and the slot belongs
+                    # to the one that spawns chat runtimes.
+                    with contextlib.suppress(Exception):
+                        setattr(provider, "pre_spawn_identity", pre_spawn)
+                        # Hand the SAME reader over so the placement can RE-READ the
+                        # account era AFTER it takes a lease: the acquisition wait
+                        # (a founding spawn under the registry lock) is exactly the
+                        # window a credential change can land in, and the pre-read
+                        # alone cannot see one that arrives during it. Best-effort:
+                        # a provider that will not carry it keeps only the pre-read,
+                        # the behaviour before the confirm re-read existed.
+                        setattr(
+                            provider,
+                            "spawn_identity_reader",
+                            getattr(owner, "spawn_identity_reader", None),
+                        )
                     await provider.start()
                 except (asyncio.CancelledError, Exception):
                     if preparation.revision:
@@ -2672,6 +2697,27 @@ class SessionAllocationService:
                         pre_spawn=pre_spawn,
                     )
                 except BaseException:
+                    # ``start()`` RETURNED, so a chat-share provider is already
+                    # holding the lease its own placement took before the spawn.
+                    # Killing without releasing it cannot work: the gate refuses a
+                    # kill while a lease is outstanding, and the reconciler's
+                    # unowned sweep skips a leased pid, so the process is not
+                    # merely leaked -- no later pass can ever reclaim it. Release
+                    # first, then kill. A non-sharing provider holds none and this
+                    # is a no-op.
+                    #
+                    # As a TASK under ``shield``: the exception in flight here is
+                    # usually ``CancelledError``, and a bare await would take the
+                    # next cancellation and re-raise before the kill is dispatched
+                    # -- stranding the very lease this arm exists to give back.
+                    _release = asyncio.ensure_future(release_session_lease(provider))
+                    while not _release.done():
+                        try:
+                            await asyncio.shield(_release)
+                        except asyncio.CancelledError:
+                            continue
+                    with contextlib.suppress(Exception):
+                        _release.result()
                     owner._dispatch_hard_kill(provider)
                     if starting_pid is not None:
                         self._starting_pids.discard(starting_pid)
@@ -2866,12 +2912,17 @@ class SessionAllocationService:
         except BaseException:
             if preparation.revision:
                 self._remember_capability_failure(key, preparation)
-            # The ONE of these cleanup paths that can be past registration: this
-            # handler spans the lock section that registers the session, so a
-            # failure after it leaves a tenant holding a lease. Release before the
-            # kill or the gate refuses it and the process leaks -- the cleanup
-            # would be refusing its own teardown. Every earlier hard-kill site in
-            # this file is pre-registration and holds no lease.
+            # The cleanup path that spans registration: this handler covers the
+            # lock section that registers the session, so a failure after it
+            # leaves a tenant holding a lease. Release before the kill or the gate
+            # refuses it and the process leaks -- the cleanup would be refusing
+            # its own teardown.
+            #
+            # Registration is not the only line that makes a lease outstanding. An
+            # eligible chat-share start takes its lease BEFORE the spawn, so the
+            # post-``start()`` stamp handler above holds one too and releases for
+            # the same reason. A hard-kill site EARLIER than that start is
+            # pre-lease and kills unconditionally.
             await release_session_lease(provider)
             owner._dispatch_hard_kill(provider)
             raise
