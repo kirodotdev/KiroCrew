@@ -563,14 +563,48 @@ async def test_a_dangling_folder_id_unchanged_across_the_read_is_still_dropped(
 
 
 @pytest.mark.asyncio
-async def test_a_resume_into_a_folder_a_running_delete_has_frozen_keeps_the_filing(
+@pytest.mark.parametrize("stored", [["x"], {"a": 1}, 7], ids=["list", "dict", "int"])
+async def test_a_stored_folder_id_of_the_wrong_shape_resumes_unfiled_and_is_cleared(
+    tmp_path, monkeypatch, stored
+):
+    """The metadata line is a file an agent's tools can edit. A ``folder_id`` that
+    is not a string names no folder: the resume answers 200, the session publishes
+    unfiled, and the stored value is cleared by the hydrate's own drop -- instead
+    of the freeze predicates hashing a list and failing the resume every time."""
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    state = _make_state(tmp_path)
+    log = state.conversation_log
+    key = "dashboard:foldershape1"
+    log.append(key, "user", "history-1")
+    log.update_metadata(key, {"folder_id": stored})
+    assert log.get_metadata(key)["folder_id"] == stored, "fixture: the odd shape was stored"
+
+    async with TestClient(TestServer(_make_app(state))) as client:
+        resp = await client.post("/api/chat/slots/foldershape1/resume", json={"key": key})
+
+    assert resp.status == 200, f"resume did not publish (status {resp.status})"
+    slot = state._slots.get("foldershape1")
+    assert slot is not None, "the slot was never published"
+    assert slot.folder_id == "", f"the odd value survived resume (folder_id={slot.folder_id!r})"
+    assert state.serialize_slot(slot)["folder_id"] == ""
+    # The clear is durable: the slot's own save writes the unfiled record.
+    from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
+
+    assert await save_slot_off_loop(state, slot, force=True)
+    assert not log.get_metadata(key).get("folder_id"), "the stored value was not cleared"
+
+
+@pytest.mark.asyncio
+async def test_a_resume_into_a_folder_a_running_delete_has_frozen_keeps_the_stored_filing(
     tmp_path, monkeypatch
 ):
-    """Frozen is not absent. A folder a ``delete_contents`` cascade has frozen
-    still exists; a resume landing inside that cascade keeps the stored filing --
-    the cascade's own commit sweeps it if the delete commits, and an aborted
-    delete leaves a folder the session is still rightly in. The frozen row is not
-    written either (its ``hidden`` flag stays)."""
+    """Frozen is not gone. A folder a ``delete_contents`` cascade has frozen still
+    exists and the delete may abort, so a resume landing inside the cascade KEEPS
+    the stored filing: the slot publishes with it (registered, so the delete's
+    commit-time sweep unfiles it if the delete commits), the slot payload projects
+    it as unfiled for as long as the folder is frozen, and nothing is written --
+    the metadata line still names the folder, the frozen row keeps its ``hidden``
+    flag. Thawed (the abort), the payload renders the filing again."""
     from kiro_crew.dashboard import chat_folders
 
     monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
@@ -587,18 +621,111 @@ async def test_a_resume_into_a_folder_a_running_delete_has_frozen_keeps_the_fili
     try:
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.post("/api/chat/slots/frozenresume1/resume", json={"key": key})
+        assert resp.status == 200, f"resume did not publish (status {resp.status})"
+        slot = state._slots.get("frozenresume1")
+        assert slot is not None, "the slot was never published"
+        assert slot.folder_id == frozen_id, (
+            f"a filing into a FROZEN folder was dropped (folder_id={slot.folder_id!r}); only "
+            "the delete's own commit may unfile it"
+        )
+        assert state.serialize_slot(slot)["folder_id"] == "", "projected unfiled while frozen"
+    finally:
+        chat_folders._deleting_folder_ids(state).discard(frozen_id)
+
+    # Thawed by the abort: the filing stands, stored and rendered.
+    assert state.serialize_slot(slot)["folder_id"] == frozen_id
+    assert log.get_metadata(key).get("folder_id") == frozen_id, "the stored filing was erased"
+    row = next(f for f in state._folders if f["id"] == frozen_id)
+    assert row.get("hidden") is True, "a frozen folder is never written"
+
+
+@pytest.mark.asyncio
+async def test_the_hydrate_never_clears_a_frozen_folders_id_whatever_the_verdict_says(
+    tmp_path, monkeypatch
+):
+    """The hydrate's clear is for a folder that is GONE. Forced to an 'absent'
+    verdict while the folder is frozen, it still keeps the id: the stored filing
+    is the running delete's to unfile, and ``folder_id`` is a clearable field the
+    next save would otherwise write out as erased."""
+    from kiro_crew.dashboard import chat_folders, chat_handlers
+
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    state = _make_state(tmp_path)
+    log = state.conversation_log
+    key = "dashboard:frozenverdict1"
+    log.append(key, "user", "history-1")
+    frozen_id = "fldrFROZEN02"
+    state._folders.append({"id": frozen_id, "name": "Going", "parent_id": "", "order": 0})
+    log.update_metadata(key, {"folder_id": frozen_id})
+
+    async def absent_verdict(state_, folder_id, **kwargs):
+        return False
+
+    monkeypatch.setattr(chat_handlers, "_unhide_folder", absent_verdict)
+    chat_folders._deleting_folder_ids(state).add(frozen_id)
+    try:
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/frozenverdict1/resume", json={"key": key})
     finally:
         chat_folders._deleting_folder_ids(state).discard(frozen_id)
 
     assert resp.status == 200, f"resume did not publish (status {resp.status})"
-    slot = state._slots.get("frozenresume1")
+    slot = state._slots.get("frozenverdict1")
+    assert slot is not None and slot.folder_id == frozen_id
+
+
+@pytest.mark.asyncio
+async def test_a_folder_deleted_between_the_verdict_and_the_build_is_not_published(
+    tmp_path, monkeypatch
+):
+    """The late-assignment window itself. The folder verdict is earned before the
+    awaits that separate it from the build; a delete committing inside one of
+    them runs its commit-time sweep over the live slot table while this slot does
+    not exist yet, so nothing unfiles the filing it is about to bind. The
+    synchronous re-ask adjacent to the build catches it: the session publishes
+    unfiled, with nothing live naming the removed folder."""
+    from kiro_crew.dashboard import chat_handlers
+
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    state = _make_state(tmp_path)
+    log = state.conversation_log
+    key = "dashboard:lateverdict1"
+    log.append(key, "user", "history-1")
+    going_id = "fldrGOING001"
+    state._folders.append({"id": going_id, "name": "Going", "parent_id": "", "order": 0})
+    log.update_metadata(key, {"folder_id": going_id})
+    real_unhide = chat_handlers._unhide_folder
+    seen: dict[str, object] = {}
+
+    async def verdict_then_delete(state_, folder_id, **kwargs):
+        # The verdict is earned against a folder that exists...
+        verdict = await real_unhide(state_, folder_id, **kwargs)
+        seen["verdict"] = verdict
+
+        def _remove(folders):
+            folders[:] = [f for f in folders if f.get("id") != going_id]
+            return True, None
+
+        # ...and the folder is committed away inside the resume's await window,
+        # before the slot exists for any sweep to find.
+        await state_.mutate_folders(_remove)
+        return verdict
+
+    monkeypatch.setattr(chat_handlers, "_unhide_folder", verdict_then_delete)
+    async with TestClient(TestServer(_make_app(state))) as client:
+        resp = await client.post("/api/chat/slots/lateverdict1/resume", json={"key": key})
+
+    assert (
+        seen["verdict"] is True
+    ), "fixture: the pre-await verdict must have read the folder present"
+    assert resp.status == 200, f"resume did not publish (status {resp.status})"
+    slot = state._slots.get("lateverdict1")
     assert slot is not None, "the slot was never published"
-    assert slot.folder_id == frozen_id, (
-        f"the stored filing was erased (folder_id={slot.folder_id!r}) because the folder "
-        "was frozen, not absent"
+    assert slot.folder_id == "", (
+        f"the slot published filed under a folder deleted during the resume's awaits "
+        f"(folder_id={slot.folder_id!r})"
     )
-    row = next(f for f in state._folders if f["id"] == frozen_id)
-    assert row.get("hidden") is True, "a frozen folder is never written"
+    assert going_id not in {f["id"] for f in state._folders}
 
 
 @pytest.mark.asyncio

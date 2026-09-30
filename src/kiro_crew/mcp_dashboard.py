@@ -87,6 +87,7 @@ from kiro_crew.dashboard.chat_folders import (
     _subtree_holds_foreign_folder,
 )
 from kiro_crew.mcp_core import (
+    _delete,
     _get,
     _patch,
     _post,
@@ -102,6 +103,7 @@ from kiro_crew.validation import (
     BROADCAST_RESPONSE_MARGIN_SECS,
     BROADCAST_TARGET_ALLOWANCE_SECS,
     CHAT_FOLDER_CREATE_SCHEMA,
+    CHAT_FOLDER_DELETE_SCHEMA,
     CHAT_FOLDER_FILE_SELF_SCHEMA,
     CHAT_FOLDER_MOVE_SCHEMA,
     CHAT_FOLDER_MOVE_SESSION_SCHEMA,
@@ -233,6 +235,46 @@ def _tool_definitions() -> list[dict[str, Any]]:
                     },
                 },
                 "required": ["name"],
+            },
+        },
+        {
+            "name": "chat_folder_delete",
+            "description": (
+                "Delete a sidebar chat folder. By default (delete_contents=false) "
+                "this is SAFE: the folder's live sessions are unfiled to the top "
+                "level, its direct child folders are re-parented to the top level, "
+                "and only the folder itself is removed. Pass delete_contents=true to "
+                "remove the entire subtree in one step, INCLUDING its sessions: every "
+                "descendant folder is deleted and every live session filed anywhere "
+                "in it is ARCHIVED to History (the tab-close path -- closed and "
+                "resumable, never a deleted transcript), archived sessions filed "
+                "there are unfiled -- echo the affected count to the user before "
+                "doing so: chat_folder_tree shows the subtree and the live sessions "
+                "filed in each folder (it lists no archived counts, so say the "
+                "archived sessions filed there are unfiled as well). ``folder`` = "
+                "folder id or human path from chat_folder_tree. The person's own "
+                "sessions may delete; an app agent or a crew member is refused, "
+                "whoever created the folder -- move your sessions out and leave the "
+                "folder, or ask the person. The sidebar's own delete dialog is "
+                "separate; this is the agent-facing consumer of the route."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "folder": {
+                        "type": "string",
+                        "description": "Folder to delete (id or human path).",
+                    },
+                    "delete_contents": {
+                        "type": "boolean",
+                        "description": (
+                            "false (default) = unfile the folder's sessions and re-parent "
+                            "its children to the top level, remove the one folder. true = "
+                            "remove the whole subtree and archive every session in it."
+                        ),
+                    },
+                },
+                "required": ["folder"],
             },
         },
         {
@@ -3037,6 +3079,48 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         new_id = str(d.get("id") or "?")
         new_path = _chat_folder_paths(chat_folders).get(new_id) or str(d.get("name") or "?")
         return redact(f"Created folder `{new_path}` (id={new_id}).{made_note}")
+
+    if name == "chat_folder_delete":
+        args = validate_tool_args(args, CHAT_FOLDER_DELETE_SCHEMA)
+        caller_key, _caller_app, gate = _refuse_tree_shaping_if_unverifiable("deleting a folder")
+        if gate:
+            return gate
+        chat_folders, folders_err = _get_rows("/api/chat/folders")
+        if folders_err:
+            return f"Error: {folders_err}"
+        fld_id, fld_err = _resolve_chat_folder_id(args["folder"], chat_folders)
+        if fld_err:
+            return f"Error: {fld_err}"
+        if not fld_id:
+            return "Error: 'root' is not a folder — name the folder to delete."
+        cascade = bool(args.get("delete_contents"))
+        fld_path = _chat_folder_paths(chat_folders).get(fld_id) or fld_id
+        # A thin wrapper: the endpoint owns every rule (the 404, the app and
+        # member refusals, the frozen-subtree cascade), so nothing is decided
+        # here but the caller's verifiability above. The verified key is passed
+        # through unchanged, as every tree-shaping write here does. The cascade
+        # archives each live session in the subtree before it answers, so it
+        # gets a longer wait than a one-row delete.
+        d = _delete(
+            f"/api/chat/folders/{quote(fld_id, safe='')}{'?delete_contents=true' if cascade else ''}",
+            session_key=caller_key,
+            timeout=120 if cascade else 10,
+        )
+        if d.get("error"):
+            return redact(f"Error: {d['error']}")
+        if not cascade:
+            return redact(
+                f"Deleted folder `{fld_path}` (id={fld_id}); its live sessions are "
+                "unfiled and its child folders now sit at the top level."
+            )
+        n_folders = len(d.get("deleted_folder_ids") or [])
+        return redact(
+            f"Deleted folder `{fld_path}` (id={fld_id}) and everything in it: "
+            f"{n_folders} folder{'' if n_folders == 1 else 's'} removed, "
+            f"{d.get('archived_sessions', 0)} live session(s) archived to History, "
+            f"{d.get('unfiled_history_sessions', 0)} stored session filing(s) cleared, "
+            f"{d.get('unfiled_sessions', 0)} filing(s) cleared from live sessions during the deletion."
+        )
 
     if name == "chat_folder_move":
         args = validate_tool_args(args, CHAT_FOLDER_MOVE_SCHEMA)

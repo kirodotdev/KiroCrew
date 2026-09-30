@@ -134,6 +134,60 @@ async def test_a_first_arrival_creates_the_group_and_the_sender_folder():
 
 
 @pytest.mark.asyncio
+async def test_a_frozen_group_takes_no_new_sender_folder():
+    """A delete running on ``Imported`` has frozen its subtree. A sender folder
+    appended under it now would be outside the set that delete walks and
+    commits, and would outlive it re-parented to the top level with the arrival
+    filed into it. Under the lock the freeze is authoritative, so the arrival is
+    refused a folder -- the empty filing every refusal path answers -- and the
+    tree is left exactly as it was."""
+    from kiro_crew.dashboard.chat_folders import _deleting_folder_ids
+
+    group = _row("Imported")
+    state = _store([group])
+    _deleting_folder_ids(state).add(str(group["id"]))
+    filing = await af.arrival_folder_id(state, origin="mac", request_app="")
+    assert filing.folder_id == ""
+    assert filing.created_ids == ()
+    assert _tree(state) == {"Imported": ""}
+
+
+@pytest.mark.asyncio
+async def test_a_frozen_hidden_group_owes_no_unhide():
+    """The adopted branch defers the group's un-hide to the landed path. A
+    refusal on the freeze lands nothing, so it must not leave that un-hide
+    owed: an aborted delete would otherwise find the folder flipped visible."""
+    from kiro_crew.dashboard.chat_folders import _deleting_folder_ids
+
+    group = _row("Imported", hidden=True)
+    state = _store([group])
+    _deleting_folder_ids(state).add(str(group["id"]))
+    filing = await af.arrival_folder_id(state, origin="mac", request_app="")
+    assert filing.folder_id == ""
+    assert filing.hidden_ids == ()
+    assert group["hidden"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_frozen_sender_folder_is_the_deletes_to_decide():
+    """The sender's folder exists and a delete has frozen it (alone, or as part
+    of a subtree): the filing that would land in it is not made now."""
+    from kiro_crew.dashboard.chat_folders import _deleting_folder_ids
+
+    group = _row("Imported")
+    child = _row("from mac", str(group["id"]))
+    state = _store([group, child])
+    _deleting_folder_ids(state).add(str(child["id"]))
+    filing = await af.arrival_folder_id(state, origin="mac", request_app="")
+    assert filing.folder_id == ""
+    assert _tree(state) == {"Imported": "", "from mac": str(group["id"])}
+    # Thawed, the same arrival is filed into that folder again.
+    _deleting_folder_ids(state).discard(str(child["id"]))
+    filing = await af.arrival_folder_id(state, origin="mac", request_app="")
+    assert filing.folder_id == str(child["id"])
+
+
+@pytest.mark.asyncio
 async def test_both_levels_are_settled_in_one_transaction():
     """Constraint 3. Two transactions would leave a window in which a delete of
     ``Imported`` lands between the two appends and the child is persisted with a

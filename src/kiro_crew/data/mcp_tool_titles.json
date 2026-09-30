@@ -87,6 +87,7 @@
   "kirocrew-dashboard": {
     "chat_folder_tree": "Read folder tree",
     "chat_folder_create": "Create folder",
+    "chat_folder_delete": "Delete folder",
     "chat_folder_move": "Move folder",
     "chat_folder_move_session": "Move session to folder",
     "chat_folder_file_self": "File this session",

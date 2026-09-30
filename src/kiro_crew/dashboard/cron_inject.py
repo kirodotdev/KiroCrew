@@ -398,6 +398,9 @@ def chat_folder_exists(state: DashboardState, folder_id: str) -> bool:
     """
     if not folder_id:
         return False
+    # circular import: chat_folders -> chat_tags -> handlers (its package init
+    # imports this module) -> here, so chat_folders cannot be imported at module
+    # level; the same reason ``_commit_cron_tab_placement`` imports it locally.
     from kiro_crew.dashboard.chat_folders import folder_is_deleting
 
     # A folder a running delete has frozen is going: a placement into it would

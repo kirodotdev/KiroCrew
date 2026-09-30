@@ -128,6 +128,33 @@ class TestCreateInFolder:
         assert state._slots["s1"].folder_id == FOLDER_ID
 
     @pytest.mark.asyncio
+    async def test_the_folder_is_assigned_only_after_its_verdict(self, tmp_path, monkeypatch):
+        """``name`` can address a live slot. While the destination's verdict is
+        pending, no provisional folder_id may be live for a delete cascade to
+        read; on True the assignment follows without a suspension."""
+        from kiro_crew.dashboard import chat_handlers
+
+        state = _make_state(tmp_path)
+        real = chat_handlers._unhide_folder
+        seen: list[str] = []
+
+        async def _record_then_answer(state_, folder_id, **kw):
+            seen.append(state._slots["s1"].folder_id)
+            return await real(state_, folder_id, **kw)
+
+        monkeypatch.setattr(chat_handlers, "_unhide_folder", _record_then_answer)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots", json={"name": "s1"})
+            assert resp.status == 200
+            resp = await client.post(
+                "/api/chat/slots", json={"name": "s1", "folder_id": FOLDER_ID}
+            )
+            assert resp.status == 200
+            assert (await resp.json())["folder_id"] == FOLDER_ID
+        assert seen == [""], "the filing was live before its verdict"
+        assert state._slots["s1"].folder_id == FOLDER_ID
+
+    @pytest.mark.asyncio
     async def test_unknown_folder_is_rejected(self, tmp_path):
         state = _make_state(tmp_path)
         async with TestClient(TestServer(_make_app(state))) as client:

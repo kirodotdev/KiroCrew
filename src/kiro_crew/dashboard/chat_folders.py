@@ -10,6 +10,7 @@ import time
 import unicodedata
 import uuid
 import weakref
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -433,9 +434,77 @@ def _deleting_folder_ids(state: DashboardState) -> set[str]:
     return ids
 
 
+def is_folder_id(folder_id: object) -> bool:
+    """Whether *folder_id* has the shape of a folder id: a non-empty string.
+
+    A stored ``folder_id`` comes back from a session's metadata line, in a file an
+    agent's tools can edit, so it can be anything JSON holds. Only a non-empty
+    string can name a folder; every other shape is unfiled to a reader and absent
+    to a verdict, so the caller's own clear path heals the record. The freeze
+    predicates below hash their argument, and a list or a dict would raise there
+    on every resume of that session instead.
+    """
+    return isinstance(folder_id, str) and bool(folder_id)
+
+
 def folder_is_deleting(state: DashboardState, folder_id: str) -> bool:
-    """Whether a running delete has frozen *folder_id*. Call on the event loop."""
-    return bool(folder_id) and folder_id in _deleting_folder_ids(state)
+    """Whether a running delete has frozen *folder_id*. Call on the event loop.
+
+    Anything that is not a folder id (see :func:`is_folder_id`) is not frozen.
+    """
+    return is_folder_id(folder_id) and folder_id in _deleting_folder_ids(state)
+
+
+def _filed_in(slot: Any, folder_ids: set[str]) -> bool:
+    """Whether *slot*'s filing names one of *folder_ids*.
+
+    The delete route's membership tests all go through here: ``slot.folder_id``
+    is restored from a metadata line anyone can edit, and a list or a dict there
+    would raise on the set lookup and fail every folder delete while that session
+    is live. A value that is not a folder id is filed nowhere.
+    """
+    return is_folder_id(slot.folder_id) and slot.folder_id in folder_ids
+
+
+def folder_is_gone(state: DashboardState, folder_id: str) -> bool:
+    """Whether *folder_id* names a folder that is GONE: not in the committed tree
+    and not frozen by a running delete. Only a gone folder may clear a stored filing.
+
+    The synchronous last word for an assignment whose folder verdict was earned
+    before an await -- the resume's ``_unhide_folder`` reading, the channel
+    surface's stored filing. A delete that committed inside that await swept the
+    live slot table before this slot was in it, so the verdict has to be asked
+    again with nothing able to run between the answer and the assignment. A
+    folder that is gone leaves the assignment dangling, so the caller publishes
+    the session unfiled (and its next save persists that, as for any folder
+    deleted while the session was archived).
+
+    FROZEN IS NOT GONE. A folder a running delete has frozen still exists, and
+    the delete may yet abort (a refused close answers 500 with the tree
+    untouched) -- so a stored filing into it is KEPT: the caller publishes the
+    session filed, in memory, and :meth:`DashboardState.serialize_slot` projects
+    the filing as unfiled for as long as the folder is frozen. The delete's own
+    commit-time sweep (``_remove``, under the store lock) unfiles every live slot
+    naming a removed folder if the delete commits; an abort thaws and the filing
+    renders again. Nothing but that sweep unfiles a stored filing on the strength
+    of a freeze. Frozen is checked FIRST, so a folder missing from the in-memory
+    list while its removal's disk write is still in flight (the store rolls the
+    list back if that write fails) also reads as frozen, not gone.
+
+    Read off the loaded store, a membership test on a list this loop owns
+    (folder mutations run on it), like the cron placement's
+    ``chat_folder_exists``. Call on the event loop, with no await between the
+    call and the assignment it guards.
+    """
+    if not folder_id:
+        return False
+    if not is_folder_id(folder_id):
+        # Not an id at all (a list, a dict): no folder carries it and no delete
+        # can have frozen it, so it is gone, and the caller's clear heals it.
+        return True
+    if folder_is_deleting(state, folder_id):
+        return False
+    return not any(str(f.get("id")) == folder_id for f in getattr(state, "_folders", None) or ())
 
 
 async def _unhide_folder(
@@ -465,6 +534,12 @@ async def _unhide_folder(
     """
     if not folder_id:
         return True
+    if not is_folder_id(folder_id):
+        # Not an id at all: absent, whichever reading the caller asked for. The
+        # frozen check below hashes its argument, and this value came from a
+        # metadata line anyone can edit; reporting it absent lets the resume's
+        # clear path unfile the session instead of failing on every attempt.
+        return False
 
     def _clear(folders: list[dict[str, Any]]) -> tuple[bool, bool]:
         if folder_is_deleting(state, folder_id):
@@ -2327,12 +2402,14 @@ async def api_chat_folder_delete(request: web.Request) -> web.Response:
     # session closing after the scan and writing its folder_id on the way out.
     # Each was closable in isolation; the class was not.
     #
-    # Nothing shipped loses a capability: no MCP tool exposes folder deletion
-    # (the set is chat_folder_tree / chat_folder_create / chat_folder_move /
-    # chat_folder_move_session), and the only client of this route is the
-    # dashboard UI, which is the person. An app organizes its own work by
-    # creating, renaming and reparenting its folders and filing its sessions --
-    # cleanup is the person's, who can delete a full folder as they always could.
+    # No agent principal loses a capability it had: the MCP verb
+    # ``chat_folder_delete`` (``mcp_dashboard``) is a thin wrapper over this
+    # route under the caller's OWN session identity, so an app agent's call
+    # lands here and gets this refusal, and a crew member's is refused by the
+    # member gate before it (no DELETE is admitted on the folder routes). An app
+    # organizes its own work by creating, renaming and reparenting its folders
+    # and filing its sessions -- cleanup is the person's, whose own sessions
+    # (the dashboard UI, or their agent through the verb) delete a full folder.
     if request_app:
         sel().log_api_access(
             caller=request_app,
@@ -2383,6 +2460,15 @@ async def api_chat_folder_delete(request: web.Request) -> web.Response:
         deleting.update(subtree)
         return False, subtree
 
+    def _thaw(ids: set[str]) -> None:
+        # Release *ids* from the freeze -- called by ``_delete_frozen`` the
+        # moment ``_remove`` has committed, with exactly the ids it removed.
+        # Synchronous and lock-free like the ``finally`` below, and for the same
+        # reason. ``taken`` follows so the ``finally`` releases only what this
+        # request still holds.
+        deleting.difference_update(ids)
+        taken.difference_update(ids)
+
     try:
         frozen = await state.mutate_folders(_freeze)
         if frozen is None:
@@ -2392,7 +2478,7 @@ async def api_chat_folder_delete(request: web.Request) -> web.Response:
         if not frozen:
             # Deleted between the lookup above and the lock.
             return web.json_response({"error": "not found", "code": "folder_not_found"}, status=404)
-        return await _delete_frozen(request, state, fid, delete_contents, frozen)
+        return await _delete_frozen(request, state, fid, delete_contents, frozen, thaw=_thaw)
     finally:
         # Synchronous and lock-free on purpose: the set is only ever touched on
         # this loop, the store callbacks that read it are synchronous, so nothing
@@ -2401,6 +2487,13 @@ async def api_chat_folder_delete(request: web.Request) -> web.Response:
         # ``taken`` is what the callback actually took, so a freeze call that
         # raised after its callback ran is released too.
         deleting.difference_update(taken)
+        if taken:
+            # Something was still frozen at the end, so this request did not
+            # commit it: a refused close, a failed commit, a store failure. The
+            # slot payload projected every filing into those folders as unfiled
+            # while they were frozen (``serialize_slot``); thawed, the filings
+            # stand as stored, so publish once more and they render filed again.
+            state.push_slots_update()
 
 
 async def _delete_frozen(
@@ -2409,13 +2502,18 @@ async def _delete_frozen(
     fid: str,
     delete_contents: bool,
     target_ids: set[str],
+    *,
+    thaw: Callable[[set[str]], None],
 ) -> web.Response:
     """The body of :func:`api_chat_folder_delete`, run while *target_ids* is frozen.
 
     Archive (cascade) or unfile (safe path) the live sessions filed in
     *target_ids*, commit the removal of exactly that set, then tidy the archived
     rows it covered. Split from the route so the freeze around it is one
-    ``try``/``finally`` rather than a thaw at every exit.
+    ``try``/``finally`` rather than a thaw at every exit. *thaw* releases ids from
+    that freeze early: it is called with the committed ids the moment the removal
+    lands, so the post-commit tidy runs against folders that read as gone rather
+    than as frozen (see the call below).
     """
     archived: list[str] = []
     if delete_contents:
@@ -2438,7 +2536,7 @@ async def _delete_frozen(
         for name, slot in list(state._slots.items()):
             # Re-check the registration: each close awaits, and a name can be
             # popped and re-minted for another conversation meanwhile.
-            if state._slots.get(name) is not slot or slot.folder_id not in target_ids:
+            if state._slots.get(name) is not slot or not _filed_in(slot, target_ids):
                 continue
             if slot.is_closing:
                 # Another retraction owns this slot (a ✕ mid-flight, the idle
@@ -2452,7 +2550,7 @@ async def _delete_frozen(
                 # subtree, or a re-mint of the name) makes this a session the
                 # person just placed elsewhere. Raising unwinds the close and
                 # leaves it live where it now sits; the code is ours to catch.
-                if state._slots.get(name) is not slot or slot.folder_id not in target_ids:
+                if state._slots.get(name) is not slot or not _filed_in(slot, target_ids):
                     raise SlotCloseError(
                         "session left the folder subtree during the close",
                         code=_CODE_LEFT_SUBTREE,
@@ -2509,9 +2607,22 @@ async def _delete_frozen(
     # the step after that pop -- outside the rollback ``try`` below, with slots
     # already unfiled and the folder still present. A name popped or re-minted
     # since the snapshot is skipped; its own close carries it.
+    #
+    # A slot an active close owns is left to that close, here and in the commit's
+    # sweep: its archival save is the close's own and unguarded, while every save
+    # THIS route makes for it is refused by the close fence and only marks the
+    # slot dirty -- a flush that never comes for a slot the close pops. Unfiling
+    # it in memory would make the close persist "" and, should the commit then
+    # fail, leave the rollback's restore refused too: an archived conversation
+    # durably unfiled from a folder that still exists. Left alone, its closing
+    # save carries the folder it sat in; on a committed cascade the post-commit
+    # pass clears that row with the rest, and until then a dangling id is inert
+    # at every reader.
     unfiled: list[tuple[Any, str]] = []
     for name, slot in list(state._slots.items()):
-        if state._slots.get(name) is not slot or slot.folder_id not in target_ids:
+        if state._slots.get(name) is not slot or not _filed_in(slot, target_ids):
+            continue
+        if slot.is_closing:
             continue
         unfiled.append((slot, slot.folder_id))
         # Pin the write to the transcript this iteration's membership
@@ -2595,7 +2706,8 @@ async def _delete_frozen(
         # on the cascade nothing should hang off a removed folder any more, and
         # the same line keeps the tree acyclic-and-rooted if something does.
         for f in folders:
-            if f.get("id") not in removed and f.get("parent_id") in removed:
+            parent = f.get("parent_id")
+            if f.get("id") not in removed and isinstance(parent, str) and parent in removed:
                 f["parent_id"] = ""
         # The last word on live assignments, in the same synchronous step as the
         # removal: a filing path that never consulted the store or the freeze (a
@@ -2603,10 +2715,16 @@ async def _delete_frozen(
         # default) can have set a slot's ``folder_id`` since the unfile loop's
         # snapshot. Nothing can interleave between this sweep and the commit --
         # both run inside this callback -- so the commit cannot leave a live
-        # slot naming a folder it removes. The persist follows the commit
-        # (below); the rollback covers these entries like the loop's own.
+        # slot naming a folder it removes, save one an active close owns (its
+        # closing save and the post-commit pass carry that one). The persist
+        # follows the commit (below); the rollback covers these entries like
+        # the loop's own.
         for name, slot in list(state._slots.items()):
-            if state._slots.get(name) is slot and slot.folder_id in removed:
+            if state._slots.get(name) is slot and _filed_in(slot, removed):
+                if slot.is_closing:
+                    # The close's own save carries this slot (see the unfile
+                    # loop): a pre-commit unfile here could not be rolled back.
+                    continue
                 unfiled.append((slot, slot.folder_id))
                 swept.append((name, slot))
                 slot.folder_id = ""
@@ -2636,6 +2754,31 @@ async def _delete_frozen(
                 error=type(exc).__name__,
             )
         raise
+    # The commit's own sweep ran inside ``_remove``; between it and here the
+    # store's disk write awaited, and a session published in that window -- a
+    # resume that built while the folder was frozen -- keeps its filing (frozen
+    # is not gone: a filing is never dropped on the strength of a freeze), so it
+    # now names a folder that is committed away. Sweep once more, synchronously,
+    # before the thaw: nothing can interleave between this pass and the thaw, so
+    # after it no live slot names a removed folder. Persisted with the swept saves
+    # below, and counted with them.
+    for name, slot in list(state._slots.items()):
+        if state._slots.get(name) is slot and _filed_in(slot, removed_ids):
+            unfiled.append((slot, slot.folder_id))
+            swept.append((name, slot))
+            slot.folder_id = ""
+    # Thaw the committed ids NOW, before the post-commit tidy awaits (the swept
+    # saves, the history scan below): the freeze's "frozen is present" reading
+    # exists so a resume or an import landing mid-cascade keeps a stored filing
+    # for the commit-time sweep to decide -- but that sweep has just run, and
+    # cannot see a slot published after it. Left frozen, a removed folder would
+    # keep answering "present" to those two readers across these awaits, and a
+    # resume landing here would publish a live slot filed under a folder that is
+    # already gone -- one the sidebar renders in no lane. Thawed, the same
+    # readers find the folder absent and drop the filing, which is the ordinary
+    # dangling-id path. Only the committed ids: a frozen id the commit did not
+    # remove stays held until the route's ``finally``.
+    thaw(removed_ids)
     for name, slot in swept:
         # Persist what the sweep unfiled, the way the loop persists its own: a
         # slot closed meanwhile carried the unfile in its closing save; one that
@@ -2862,12 +3005,30 @@ async def api_chat_slot_folder(request: web.Request) -> web.Response:
     # compare-and-set below stays as defense for the non-endpoint writers
     # (the folder-delete unfile loop) that do not take this lock.
     async with _slot_meta_txn_lock(state):
-        # Re-authorize after the awaits above (body parse, lock acquisition):
-        # same slot OBJECT still registered under the name, routing still on
-        # the transcript captured before the first await. No await between
-        # this check and the mutation below; the _unhide_folder and persist
-        # awaits after it are covered by the save's pin. The generation token
-        # is checked in the same breath: a mismatch means the caller resolved a
+        # The destination's verdict FIRST, before anything is assigned. The
+        # existence check above read the store unlocked, so a delete can land
+        # between it and here; _unhide_folder re-checks under the store lock,
+        # which is the only place the answer cannot go stale, and reads a
+        # folder a running delete has frozen as absent to this new filing.
+        # Nothing on the slot is touched until it has answered: a provisional
+        # ``folder_id`` written before this await would be live for its
+        # duration, and a delete cascade running meanwhile reads the live field
+        # in its membership pass (and again, synchronously, at close_slot's
+        # point of no return) -- it would archive a session on a move this
+        # route then rejects. Reject rather than persist a placement into a
+        # folder that is gone. When the verdict is True the coroutine resumes
+        # without suspending, so nothing can change the answer before the
+        # assignment below.
+        if not await _unhide_folder(state, folder_id):
+            return web.json_response(
+                {"error": "folder not found", "code": "folder_not_found"}, status=400
+            )
+        # Re-authorize after the awaits above (body parse, lock acquisition,
+        # the verdict): same slot OBJECT still registered under the name,
+        # routing still on the transcript captured before the first await. No
+        # await between this check and the mutation below; the persist await
+        # after it is covered by the save's pin. The generation token is
+        # checked in the same breath: a mismatch means the caller resolved a
         # slot that has since been replaced under its key.
         if (
             state._slots.get(name) is not slot
@@ -2892,16 +3053,6 @@ async def api_chat_slot_folder(request: web.Request) -> web.Response:
         if folder_id != slot.folder_id:
             slot._folder_changed = True  # re-inject [FOLDER] breadcrumb on next turn
         slot.folder_id = folder_id
-        # The check above reads the store unlocked, so a delete can land between it
-        # and here. _unhide_folder re-checks existence under the store lock, which
-        # is the only place the answer cannot go stale — reject rather than persist a
-        # placement into a folder that no longer exists.
-        if not await _unhide_folder(state, folder_id):
-            slot.folder_id = previous
-            slot._folder_changed = previous_changed
-            return web.json_response(
-                {"error": "folder not found", "code": "folder_not_found"}, status=400
-            )
         if not await save_slot_off_loop(
             state, slot, force=True, expected_history_key=authorized_history_key
         ):

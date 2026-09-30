@@ -324,9 +324,16 @@ class TestWhatThisSetGrants:
     A spec that references this server gets every tool in it — there is no
     per-tool granularity in the mount. That is sound for the current tools: they
     grant no read the agent lacks (``list_sessions`` in core already returns every
-    session's title and key) and delete nothing. It stops being sound the moment a
-    capability with real blast radius is added to this same set, because granting
-    the folder tools would silently grant that too.
+    session's title and key), and the one delete among them --
+    ``chat_folder_delete`` -- is bounded by its endpoint rather than by this set:
+    an app agent and a crew member are refused outright (``folder_delete_forbidden``
+    / the member gate admits no DELETE on the folder routes), so for every agent
+    principal it deletes nothing, and for the person's own sessions its
+    ``delete_contents`` cascade removes folder rows and ARCHIVES sessions through
+    the same ``close_slot`` path ``session_close`` in this very set already grants
+    -- never a transcript. It stops being sound the moment a capability with real
+    blast radius for an agent principal is added to this same set, because
+    granting the folder tools would silently grant that too.
 
     This ratchet pins the set, so such a capability fails here until the author
     puts it in a server of its own with the gate it actually needs.
@@ -336,6 +343,7 @@ class TestWhatThisSetGrants:
         "chat_folder_tree",
         "chat_folder_create",
         "chat_folder_move",
+        "chat_folder_delete",
         "chat_folder_move_session",
         "chat_folder_file_self",
     }

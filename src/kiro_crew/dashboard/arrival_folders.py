@@ -361,10 +361,26 @@ async def arrival_folder_id(
                 # an adopted row already happens.
                 hidden_rows.append(str(group.get("id", "")))
         group_id = str(group.get("id", ""))
+        if folder_is_deleting(state, group_id):
+            # A delete running on the group has frozen its subtree: a child
+            # appended now would be born outside the set that delete walks and
+            # commits, and outlive it re-parented to the top level with this
+            # arrival filed into it -- the same rule create_folder_record applies
+            # to a frozen parent. Nothing was appended on this branch (a group
+            # created above is new and cannot be frozen), so the empty filing
+            # leaves the tree as it was -- including the group's hidden flag: an
+            # un-hide deferred above is owed only by a filing that lands.
+            hidden_rows.clear()
+            return changed, ""
         if not child_name:
             # No sender to name: file directly under the group.
             return changed, group_id
         child = _find(folders, child_name, group_id)
+        if child is not None and folder_is_deleting(state, str(child.get("id", ""))):
+            # The sender's own folder is going; the delete decides it, not a
+            # filing made now. No filing, no deferred un-hide either.
+            hidden_rows.clear()
+            return changed, ""
         if child is None:
             if len(folders) >= MAX_CHAT_FOLDERS:
                 # Reachable only when ``Imported`` already existed and the store

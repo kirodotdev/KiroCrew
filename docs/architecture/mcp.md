@@ -1362,7 +1362,7 @@ Managed servers, registered by `agent._MANAGED_MCP_SERVERS` and installed into
 | `kirocrew-cron` | `kirocrew mcp-cron` (`mcp_cron.py`) | `cron_add`, `cron_list`, `cron_update`, `cron_remove`, `cron_remove_all`, `cron_pause`, `cron_resume`, `cron_trigger`, `cron_secret_request` |
 | `kirocrew-core` | `kirocrew mcp-core` (`mcp_core.py` + `mcp_tools/`) | spawn/subagent, learn, task, messaging, artifact, workflow, knowledge and session-directive tools (see below) |
 | `kirocrew-computer` | `kirocrew mcp-computer` (`mcp_computer.py`) | `computer_list_apps`, `computer_launch_app`, `computer_get_state`, `computer_click`, `computer_drag`, `computer_type_text`, `computer_press_key`, `computer_set_value`, `computer_scroll`, `computer_perform_action`, `computer_end_turn` |
-| `kirocrew-dashboard` | `kirocrew mcp-dashboard` (`mcp_dashboard.py`) | `chat_folder_tree`, `chat_folder_create`, `chat_folder_move`, `chat_folder_move_session`, `chat_folder_file_self`, `chat_tag_list`, `chat_tag_create`, `chat_tag_update`, `chat_tag_assign`, `chat_tag_column_list`, `chat_tag_column_create`, `chat_tag_column_move`, `chat_session_pin`, `session_create`, `session_fork`, `session_stop`, `session_end_wait`, `session_set_model`, `session_reload`, `session_close`, `session_revive`, `session_send`, `session_broadcast`, `session_status`, `session_adopt`, `session_release`, `session_read_message`, `session_summary` |
+| `kirocrew-dashboard` | `kirocrew mcp-dashboard` (`mcp_dashboard.py`) | `chat_folder_tree`, `chat_folder_create`, `chat_folder_delete`, `chat_folder_move`, `chat_folder_move_session`, `chat_folder_file_self`, `chat_tag_list`, `chat_tag_create`, `chat_tag_update`, `chat_tag_assign`, `chat_tag_column_list`, `chat_tag_column_create`, `chat_tag_column_move`, `chat_session_pin`, `session_create`, `session_fork`, `session_stop`, `session_end_wait`, `session_set_model`, `session_reload`, `session_close`, `session_revive`, `session_send`, `session_broadcast`, `session_status`, `session_adopt`, `session_release`, `session_read_message`, `session_summary` |
 | `kirocrew-work` | `kirocrew mcp-work` (`mcp_work.py`) | `work_brief`, `work_report`, `work_ledger_read`, `work_ledger_record` |
 | `kirocrew-crew-log` | `kirocrew mcp-crew-log` (`mcp_crew_log.py`) | `crew_log_list`, `crew_log_read`, `crew_log_projection` |
 | `kirocrew-debug` | `kirocrew mcp-debug` (`mcp_debug.py`) | `debug_gateway`, `debug_refusals`, `debug_threads`, `debug_processes`, `debug_snapshots` |
@@ -1700,11 +1700,13 @@ neither sharing a lock with it -- so "is this folder empty?" cannot be establish
 atomically with the removal. Successively narrower rules each leaked through
 another seam: a session filed while the archive scan awaited, a child created while
 the lock was acquired, a session closing after the scan and writing its `folder_id`
-on the way out. Each was closable alone; the class was not, so the verb is withheld
-instead. Nothing shipped loses a capability -- no MCP tool exposes deletion and the
-only client of the route is the dashboard UI -- and an app organizes its work by
-creating, renaming and reparenting its own folders and filing its own sessions. The
-person deletes a full folder exactly as before.
+on the way out. Each was closable alone; the class was not, so the verb is refused
+for every agent principal instead. The person's own sessions delete a full folder
+exactly as before -- through the dashboard UI, or through `chat_folder_delete`, a
+thin wrapper over the same route under the caller's own session identity, so an app
+agent's call gets the endpoint's refusal and a crew member's is refused by the
+member gate (no DELETE is admitted on the folder routes). An app organizes its work
+by creating, renaming and reparenting its own folders and filing its own sessions.
 
 The policy lives in the endpoints, not in the MCP server. Only the endpoint holds
 the store lock and sees the authoritative tree, so a second copy of the rule in

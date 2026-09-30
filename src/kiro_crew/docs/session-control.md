@@ -5,7 +5,7 @@ change its model, reload its agent process, and take another one under itself in
 the sidebar. The tools come from the
 `kirocrew-dashboard` MCP server, so an agent that does not mount that server
 never has them — exactly like any other MCP server. This page is the reference
-for all 28 of its tools, written for the agent that is about to use them.
+for all 29 of its tools, written for the agent that is about to use them.
 
 The server is defined in `src/kiro_crew/mcp_dashboard.py`. Two halves:
 
@@ -13,7 +13,7 @@ The server is defined in `src/kiro_crew/mcp_dashboard.py`. Two halves:
   `session_read_message`, `session_summary`, `session_stop`, `session_end_wait`,
   `session_set_model`, `session_reload`, `session_close`, `session_revive`, `session_broadcast`,
   `session_status`, `session_adopt`, `session_release`. These reach another session.
-- **Sidebar shape** — `chat_folder_tree`, `chat_folder_create`,
+- **Sidebar shape** — `chat_folder_tree`, `chat_folder_create`, `chat_folder_delete`,
   `chat_folder_move`, `chat_folder_move_session`, `chat_folder_file_self`,
   `chat_tag_list`, `chat_tag_create`, `chat_tag_update`, `chat_tag_assign`,
   `chat_tag_column_list`, `chat_tag_column_create`, `chat_tag_column_move`,
@@ -519,6 +519,7 @@ The sidebar tree the person organizes their sessions in.
 |---|---|---|
 | `chat_folder_tree` | none | Every folder (id, human path, project dir, default agent) with the live sessions nested under it, plus an `(unfiled)` group. Listed in **sidebar order**, not alphabetically |
 | `chat_folder_create` | `name` (required), `parent` | Create a folder. `parent` is an id or a `/`-separated path; missing segments are created (`mkdir -p`). Omit or pass `root` for top level. Creating never moves anything |
+| `chat_folder_delete` | `folder` (required), `delete_contents` | Delete a folder. Default: unfile its live sessions and re-parent its child folders to the top level, remove the one row. `delete_contents=true` removes the whole subtree and ARCHIVES every live session in it (the tab-close path, resumable from History) — echo the affected count to the person first. The person's own sessions may delete; an app agent or crew member is refused by the endpoint |
 | `chat_folder_move` | `folder` (required), `new_parent`, `before`, `after` | Reparent a folder and/or set its position among siblings. Moves everything inside it; cycle-guarded |
 | `chat_folder_move_session` | `session` (required), `folder` | File another live session into a folder, or omit `folder` to unfile it to the top level |
 | `chat_folder_file_self` | `folder` | File **this** session — the caller — into a folder. Writes only its own placement |

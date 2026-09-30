@@ -58,6 +58,9 @@ from kiro_crew.dashboard.chat_delivery import (
 )
 from kiro_crew.dashboard.chat_folders import (
     _unhide_folder,
+    folder_is_deleting,
+    folder_is_gone,
+    is_folder_id,
     resolve_folder_project_dir_off_loop,
 )
 from kiro_crew.dashboard.chat_persistence import (
@@ -4490,21 +4493,22 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             # model believing the session is still in its old folder.
             # Harmless on the new-slot path: that turn is `is_new`, so the
             # breadcrumb fires regardless and the flag is consumed there.
-            previous_folder = slot.folder_id
-            previous_changed = slot._folder_changed
-            if folder_id != slot.folder_id:
-                slot._folder_changed = True
-            slot.folder_id = folder_id
-            # Existence is only reliable inside the store lock. If the folder
-            # went away, abandon THIS assignment and leave the slot as it was —
-            # `name` can address an already-used slot, so clearing outright would
-            # unfile a conversation that was sitting in a perfectly good folder
-            # of its own. This is a chat turn, so declining the move beats
-            # failing the turn.
-            if not await _unhide_folder(state, folder_id):
-                slot.folder_id = previous_folder
-                slot._folder_changed = previous_changed
-            else:
+            # Existence is only reliable inside the store lock, and the verdict
+            # comes FIRST: nothing on the slot is assigned until the store has
+            # answered. `name` can address an already-used, live slot, and a
+            # provisional folder_id written before this await would be read by
+            # a delete cascade running meanwhile (its membership pass, and
+            # close_slot's synchronous point of no return) -- it would archive
+            # a session on a filing this turn then declines. If the folder went
+            # away, abandon THIS assignment and leave the slot as it was:
+            # clearing outright would unfile a conversation that was sitting in
+            # a perfectly good folder of its own. This is a chat turn, so
+            # declining the move beats failing the turn. On True the coroutine
+            # resumes without suspending, so the answer holds at the assignment.
+            if await _unhide_folder(state, folder_id):
+                if folder_id != slot.folder_id:
+                    slot._folder_changed = True
+                slot.folder_id = folder_id
                 folder_applied = True
                 if is_new_slot:
                     # Folder-tag inheritance, creation-only. A brand-new
@@ -12975,12 +12979,27 @@ def _hydrate_slot_from_history(
         # made outside it can go stale, so re-deriving one here against
         # ``state._folders`` is the race its own docstring warns about; and it
         # cannot simply be re-run, because a second await here would reopen the
-        # publish-to-hydrate window this ordering exists to close. Holding no
-        # verdict for a newly filed id, we KEEP it: a dangling id is visible and
-        # self-corrects on the next folder operation, whereas erasing a live
-        # filing is silent and indistinguishable from the user unfiling the
-        # session -- and the dirty-slot flush would then persist that erasure.
-        if not folder_unhidden and meta["folder_id"] == folder_checked_id:
+        # publish-to-hydrate window this ordering exists to close. The resume
+        # re-asks synchronously about the id it binds right before this build
+        # (``folder_is_gone``) and passes that as the verdict, so a folder that
+        # went away during its awaits lands here as ``folder_unhidden=False`` for
+        # this very id. Holding no verdict for the id (the import path passes
+        # none), we KEEP it: erasing a live filing is silent and
+        # indistinguishable from the user unfiling the session, and the
+        # dirty-slot flush would then persist that erasure; a dangling id renders
+        # unfiled and is replaced by the slot's next folder write.
+        #
+        # And NEVER for a FROZEN folder, whatever the verdict says: a delete is
+        # running on it and may abort with the tree untouched, so the stored
+        # filing is the delete's to unfile (its commit-time sweep, on success),
+        # not this hydrate's. The slot payload projects the filing as unfiled
+        # while the folder is frozen; ``folder_id`` is a clearable field the
+        # next save writes, so clearing it here would erase the filing durably.
+        if (
+            not folder_unhidden
+            and meta["folder_id"] == folder_checked_id
+            and not folder_is_deleting(state, meta["folder_id"])
+        ):
             slot.folder_id = ""
     if meta.get("pinned"):
         slot.pinned = True
@@ -13422,9 +13441,13 @@ async def resume_slot_from_history(
     if meta.get("folder_id"):
         folder_checked_id = meta["folder_id"]
         # ``frozen_is_present``: a folder a running delete has frozen still
-        # exists, so the stored filing is KEPT rather than erased below -- the
-        # delete's own commit-time sweep unfiles the slot if it commits, and an
-        # aborted delete leaves a folder this session is still rightly in.
+        # exists, so this verdict does not erase the stored filing -- a delete
+        # that then aborts leaves a folder this session is still rightly in.
+        # Whether the folder is still THERE is asked again synchronously, right
+        # before the build below (``folder_is_gone``): gone by then, the session
+        # publishes unfiled; frozen, it publishes with its filing kept, which the
+        # slot payload projects as unfiled while the delete runs and the delete's
+        # own commit-time sweep unfiles if the delete commits.
         folder_unhidden = await _unhide_folder(state, folder_checked_id, frozen_is_present=True)
     cleared_closed: bool = False
     cleared_closed_at: Any = meta.get("closed_at")
@@ -13796,6 +13819,25 @@ async def resume_slot_from_history(
                 "this session is being resumed elsewhere; try again", "resume_in_progress", 409
             )
         )
+    # The folder verdict above was earned BEFORE the awaits between it and here
+    # (the reopen write, the agent restore, the binding read). A folder delete
+    # committing inside one of them ran its commit-time sweep over the live slot
+    # table while this slot did not exist yet, so a filing it would have unfiled
+    # is about to be built and published with a folder that is gone. Ask again
+    # HERE, synchronously, about the id the hydrate binds (the post-await
+    # snapshot's, which a reconciliation may have changed since the verdict):
+    # GONE, the session publishes unfiled. FROZEN is not gone: the filing is kept
+    # -- the slot registers with it, so the delete's commit-time sweep unfiles it
+    # if the delete commits, the payload projects it unfiled meanwhile, and an
+    # abort leaves it standing. Nothing suspends between this read and the build.
+    # Only a folder id is re-asked about. A stored value of another shape (a
+    # hand-edited metadata line) already holds the ``_unhide_folder`` verdict
+    # False for that very value, which the hydrate clears; coercing it to a
+    # string here would make the two ids differ and keep the value instead.
+    stored_folder_id = meta.get("folder_id")
+    bound_folder_id = stored_folder_id if is_folder_id(stored_folder_id) else ""
+    if bound_folder_id and folder_is_gone(state, bound_folder_id):
+        folder_checked_id, folder_unhidden = bound_folder_id, False
     slot = _materialise_slot_from_history(
         state,
         name=name,
@@ -14041,6 +14083,13 @@ async def resume_slot_from_history(
                 refusal = final_check(slot)
                 if refusal is not None:
                     return ResumeOutcome(refusal=(await _discard()) or refusal)
+            # The slot sat OUTSIDE the table across the hook's awaits, so a folder
+            # delete committing meanwhile swept without seeing it. Same synchronous
+            # re-ask as before the build, on the folder the built slot carries:
+            # gone, it publishes unfiled; frozen, it keeps the filing for the
+            # delete's sweep to decide.
+            if slot.folder_id and folder_is_gone(state, slot.folder_id):
+                slot.folder_id = ""
             state._slots[slot.key] = slot
         except BaseException:
             await asyncio.shield(_discard())

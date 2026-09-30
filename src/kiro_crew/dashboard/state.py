@@ -9183,17 +9183,51 @@ class DashboardState:
             return links, True, visible_slack_channel, slack_ts or ""
         return links, False, "", ""
 
+    def _known_folder_ids(self) -> set[str]:
+        """The ids a slot's ``folder_id`` must be in to project as filed: the ids
+        the loaded folder store carries, minus the ones a running delete has frozen
+        (``chat_folders._deleting_folder_ids``, attached to this state as
+        ``_folders_deleting``). ``getattr``: read on ``__new__``-built states."""
+        frozen = getattr(self, "_folders_deleting", None) or ()
+        return {str(f.get("id")) for f in getattr(self, "_folders", None) or ()} - set(frozen)
+
     def serialize_slot(
         self,
         slot: _ChatSlot,
         *,
         include_check_status: bool = False,
         dashboard_user: bool = False,
+        known_folder_ids: set[str] | None = None,
     ) -> dict[str, Any]:
-        """Serialize one slot with state-backed channel-link metadata."""
+        """Serialize one slot with state-backed channel-link metadata.
+
+        ``known_folder_ids`` lets a caller serializing many slots compute the
+        folder-id set once (:meth:`serialize_slots`); omitted, it is read here.
+        """
         payload = slot.to_dict(
             include_check_status=include_check_status, dashboard_user=dashboard_user
         )
+        # A dangling folder id -- one no folder record carries -- projects as
+        # UNFILED, and so does a filing into a folder a running delete has
+        # FROZEN. Every slot payload the sidebar reads passes through here (the
+        # full list, the ``slot_patch`` frame, the single-slot answers), so this
+        # is the one place the reading is made harmless: the sidebar files a
+        # session by its folder id and would otherwise draw a dangling one in no
+        # lane at all (its folder block does not exist, and the unfiled lane
+        # excludes it). For a frozen folder this is what "the session surfaces
+        # unfiled while the delete runs" means: the stored filing is untouched
+        # -- the delete's commit-time sweep unfiles it if the delete commits, and
+        # an abort thaws and re-publishes, after which the filing renders again.
+        # A projection only: ``slot.folder_id`` is left as stored, nothing is
+        # written from this read path, and a dangling id is replaced by the slot's
+        # next folder write. ``getattr``: this runs on ``__new__``-built states too.
+        # The stored value is restored from a file an agent's tools can edit, so a
+        # shape that is not a string is a dangling id too, not a crash of the feed.
+        folder_id = payload.get("folder_id")
+        if folder_id:
+            known = self._known_folder_ids() if known_folder_ids is None else known_folder_ids
+            if not isinstance(folder_id, str) or folder_id not in known:
+                payload["folder_id"] = ""
         links, slack_linked, slack_channel, slack_thread_ts = self._slot_links(slot)
         payload.update(
             {
@@ -9234,6 +9268,7 @@ class DashboardState:
         from kiro_crew.dashboard.chat_utils import effective_session_key
 
         under_construction = getattr(self, "_slots_under_construction", None) or ()
+        known_folder_ids = self._known_folder_ids()
         for s in self._slots.values():
             if s.key in under_construction:
                 continue
@@ -9242,6 +9277,7 @@ class DashboardState:
                 s,
                 include_check_status=include_check_status,
                 dashboard_user=dashboard_user,
+                known_folder_ids=known_folder_ids,
             )
             d["subagents_running"] = bool(
                 subs and subs.running_agents_for(effective_session_key(s))

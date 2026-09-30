@@ -478,6 +478,56 @@ class TestFilingOnSurface:
         # Surfacing pushes a slots update, which serializes the whole state.
         dashboard_state.push_slots_update = lambda: None  # type: ignore[method-assign]
 
+    @pytest.fixture(autouse=True)
+    def _folders_exist(self, dashboard_state: Any) -> None:
+        # The assignment re-asks whether the folder exists (and is not frozen by
+        # a running delete) right before it lands, so the ids this class files
+        # into are real rows; a dangling one surfaces unfiled, tested below.
+        for order, fid in enumerate(("f1", "user-choice")):
+            dashboard_state._folders.append(
+                {"id": fid, "name": fid, "parent_id": "", "order": order}
+            )
+
+    def test_a_stored_filing_into_a_folder_that_is_gone_surfaces_unfiled(
+        self, dashboard_state: Any
+    ) -> None:
+        """The channel-restore half of the late-assignment window: the stored
+        ``folder_id`` was never checked here, and a delete that committed while the
+        reconcile awaited swept the live table before this slot existed. Re-asked at
+        the assignment, a folder that is gone leaves the session unfiled; its next
+        save replaces the stored id."""
+        slot = channel_slots.surface_channel_session(
+            dashboard_state, self._info(), {"folder_id": "gone-folder"}, []
+        )
+        assert slot is not None
+        assert slot.folder_id == ""
+
+    def test_a_filing_into_a_folder_a_running_delete_has_frozen_is_kept_for_the_sweep(
+        self, dashboard_state: Any
+    ) -> None:
+        """Frozen is not gone. The folder still exists and its delete may abort, so
+        both the stored and the just-written filing are applied: the slot registers
+        with the folder, the delete's commit-time sweep unfiles it if the delete
+        commits, and the payload projects it as unfiled while the folder is frozen
+        -- filed again once an abort thaws it."""
+        chat_folders._deleting_folder_ids(dashboard_state).add("f1")
+        try:
+            stored = channel_slots.surface_channel_session(
+                dashboard_state, self._info("discord:kirocrew:direct:U2"), {"folder_id": "f1"}, []
+            )
+            fresh = channel_slots.surface_channel_session(
+                dashboard_state, self._info(), {}, [], folder_id="f1", folder_tags=["t1"]
+            )
+            assert stored is not None and stored.folder_id == "f1"
+            assert fresh is not None and fresh.folder_id == "f1"
+            assert fresh._channel_folder_filed is True and fresh.tags == ["t1"]
+            assert dashboard_state.serialize_slot(stored)["folder_id"] == ""
+            assert dashboard_state.serialize_slot(fresh)["folder_id"] == ""
+        finally:
+            chat_folders._deleting_folder_ids(dashboard_state).discard("f1")
+        assert dashboard_state.serialize_slot(stored)["folder_id"] == "f1"
+        assert dashboard_state.serialize_slot(fresh)["folder_id"] == "f1"
+
     def test_files_a_newly_surfaced_session(self, dashboard_state: Any) -> None:
         slot = channel_slots.surface_channel_session(
             dashboard_state, self._info(), {}, [], folder_id="f1"
@@ -879,6 +929,183 @@ class TestReconcilePassFiling:
         )
         assert not log.get_metadata(key).get("channel_folder_filed")
 
+    def test_a_filing_write_stalled_across_the_folders_delete_lands_no_deleted_id(
+        self, dashboard_state: Any
+    ) -> None:
+        """The filing write waits on the transcript's cross-process lock, and a
+        folder delete can commit while it waits -- its live-slot sweep and its
+        archived-row pass both done before this write ever runs. The folder is
+        therefore re-asked at the write's commit boundary, under the lock: gone,
+        the write is skipped, so no deleted id lands as a durable assignment and
+        the record carries no marker either (the next pass may file it into
+        whatever folder the channel then has)."""
+        _write_config("discord", "Discord")
+        key = "discord:kirocrew:direct:U1"
+        fid = asyncio.run(
+            channel_folders.ensure_channel_folder(dashboard_state, "discord", "Discord")
+        )
+        log = _FakeLog([key])
+        dashboard_state.conversation_log = log
+        dashboard_state.push_slots_update = lambda: None  # type: ignore[method-assign]
+        real_write = log.update_metadata_if
+
+        def _delete_commits_while_the_write_waits(key_: str, fields: dict, guard: Any) -> bool:
+            # What a committed cascade leaves behind by the time the stalled write
+            # acquires the lock: the folder out of the store, the freeze released.
+            dashboard_state._folders[:] = [f for f in dashboard_state._folders if f["id"] != fid]
+            return real_write(key_, fields, guard)
+
+        log.update_metadata_if = _delete_commits_while_the_write_waits  # type: ignore[assignment]
+
+        asyncio.run(channel_slots.reconcile_channel_slots(dashboard_state, 0))
+
+        assert "folder_id" not in log.get_metadata(key), "the deleted folder id landed durably"
+        assert "channel_folder_filed" not in log.get_metadata(key)
+        slot = dashboard_state._slots[channel_slots.channel_slot_name(key)]
+        assert slot.folder_id == ""
+
+    def test_a_filing_write_stalled_across_a_running_delete_is_skipped(
+        self, dashboard_state: Any
+    ) -> None:
+        """Same boundary, the delete still running: a frozen folder refuses the
+        write too. A delete that then aborts leaves the folder and a record that
+        carries no marker, still eligible for default filing; a delete that
+        commits never sees a filing to sweep."""
+        _write_config("discord", "Discord")
+        key = "discord:kirocrew:direct:U1"
+        fid = asyncio.run(
+            channel_folders.ensure_channel_folder(dashboard_state, "discord", "Discord")
+        )
+        log = _FakeLog([key])
+        dashboard_state.conversation_log = log
+        dashboard_state.push_slots_update = lambda: None  # type: ignore[method-assign]
+        real_write = log.update_metadata_if
+
+        def _freeze_while_the_write_waits(key_: str, fields: dict, guard: Any) -> bool:
+            chat_folders._deleting_folder_ids(dashboard_state).add(fid)
+            try:
+                return real_write(key_, fields, guard)
+            finally:
+                chat_folders._deleting_folder_ids(dashboard_state).discard(fid)
+
+        log.update_metadata_if = _freeze_while_the_write_waits  # type: ignore[assignment]
+
+        asyncio.run(channel_slots.reconcile_channel_slots(dashboard_state, 0))
+
+        assert "folder_id" not in log.get_metadata(key)
+        assert "channel_folder_filed" not in log.get_metadata(key)
+        assert dashboard_state._slots[channel_slots.channel_slot_name(key)].folder_id == ""
+        # No marker was written, so the record stays eligible for default filing
+        # the next time this conversation is surfaced (the reconcile files pending
+        # conversations, not live slots): a delete that aborts costs nothing durable.
+        assert channel_slots.needs_default_filing(log.get_metadata(key))
+
+    @pytest.mark.parametrize("what", ["gone", "frozen-then-committed", "frozen-then-aborted"])
+    def test_a_filing_that_landed_as_its_folder_was_deleted_is_withdrawn(
+        self, dashboard_state: Any, what: str
+    ) -> None:
+        """The guard reads the folder under the record's lock right before the
+        write, but the folder store has its own lock: a delete can freeze, commit
+        and finish its archived-row pass while the write itself is in flight, and
+        that pass lists rows before this one lands. Re-asked on the loop the moment
+        the write is known to have landed, a gone folder withdraws the filing: the
+        record names no folder and carries no marker, so the conversation surfaces
+        unfiled and stays eligible. A FROZEN folder is not gone: the pass waits for
+        the running delete's verdict -- a commit withdraws the filing exactly like
+        gone, an abort keeps it, since the filing is as good as any other the
+        abort retains."""
+        _write_config("discord", "Discord")
+        key = "discord:kirocrew:direct:U1"
+        fid = asyncio.run(
+            channel_folders.ensure_channel_folder(dashboard_state, "discord", "Discord")
+        )
+        log = _FakeLog([key])
+        dashboard_state.conversation_log = log
+        dashboard_state.push_slots_update = lambda: None  # type: ignore[method-assign]
+        real_write = log.update_metadata_if
+        landed: list[dict[str, Any]] = []
+
+        def _remove_the_folder() -> None:
+            dashboard_state._folders[:] = [f for f in dashboard_state._folders if f["id"] != fid]
+
+        def _write_then_the_delete_lands(key_: str, fields: dict, guard: Any) -> bool:
+            # The guard passes and the write lands with the folder still standing...
+            ok = real_write(key_, fields, guard)
+            if ok and not landed:
+                landed.append(dict(log.get_metadata(key_)))
+                # ...and the delete gets in before the loop resumes this pass.
+                if what == "gone":
+                    _remove_the_folder()
+                else:
+                    chat_folders._deleting_folder_ids(dashboard_state).add(fid)
+            return ok
+
+        log.update_metadata_if = _write_then_the_delete_lands  # type: ignore[assignment]
+
+        async def _run() -> None:
+            pass_ = asyncio.ensure_future(channel_slots.reconcile_channel_slots(dashboard_state, 0))
+            if what != "gone":
+                # The pass is parked on the freeze; the delete then ends one way or
+                # the other and thaws, which is what lets it decide.
+                for _ in range(20):
+                    await asyncio.sleep(0.01)
+                    if landed:
+                        break
+                assert landed and not pass_.done(), "the pass waited for the verdict"
+                if what == "frozen-then-committed":
+                    _remove_the_folder()
+                chat_folders._deleting_folder_ids(dashboard_state).discard(fid)
+            await pass_
+
+        try:
+            asyncio.run(_run())
+        finally:
+            chat_folders._deleting_folder_ids(dashboard_state).discard(fid)
+
+        assert landed and landed[0].get("folder_id") == fid, "fixture: the filing did land"
+        slot = dashboard_state._slots[channel_slots.channel_slot_name(key)]
+        if what == "frozen-then-aborted":
+            assert log.get_metadata(key).get("folder_id") == fid, "an abort lost the filing"
+            assert log.get_metadata(key).get("channel_folder_filed")
+            assert slot.folder_id == fid
+            return
+        assert not log.get_metadata(key).get("folder_id"), "a filing into a lost folder stood"
+        assert not log.get_metadata(key).get("channel_folder_filed")
+        assert channel_slots.needs_default_filing(log.get_metadata(key))
+        assert slot.folder_id == ""
+
+    def test_the_withdrawal_is_a_compare_and_set_on_what_this_pass_wrote(
+        self, dashboard_state: Any
+    ) -> None:
+        """A placement the user made in between is not the one withdrawn."""
+        _write_config("discord", "Discord")
+        key = "discord:kirocrew:direct:U1"
+        fid = asyncio.run(
+            channel_folders.ensure_channel_folder(dashboard_state, "discord", "Discord")
+        )
+        dashboard_state._folders.append(
+            {"id": "theirs", "name": "Theirs", "parent_id": "", "order": 9}
+        )
+        log = _FakeLog([key])
+        dashboard_state.conversation_log = log
+        dashboard_state.push_slots_update = lambda: None  # type: ignore[method-assign]
+        real_write = log.update_metadata_if
+        once: list[int] = []
+
+        def _write_then_user_moves_then_delete(key_: str, fields: dict, guard: Any) -> bool:
+            ok = real_write(key_, fields, guard)
+            if ok and not once:
+                once.append(1)
+                log.update_metadata(key_, {"folder_id": "theirs"})
+                dashboard_state._folders[:] = [
+                    f for f in dashboard_state._folders if f["id"] != fid
+                ]
+            return ok
+
+        log.update_metadata_if = _write_then_user_moves_then_delete  # type: ignore[assignment]
+        asyncio.run(channel_slots.reconcile_channel_slots(dashboard_state, 0))
+        assert log.get_metadata(key).get("folder_id") == "theirs"
+
     def test_a_session_surfaced_before_filing_was_on_is_not_filed_later(
         self, dashboard_state: Any
     ) -> None:
@@ -1182,6 +1409,121 @@ class TestReconcilePassFiling:
         # next restart restores from.
         slot = dashboard_state._slots[channel_slots.channel_slot_name(key)]
         assert slot.folder_id == ""
+
+
+class TestFilingWriteBoundary:
+    """The two halves of the filing writers' commit boundary, on their own."""
+
+    def test_the_write_guard_reads_the_freeze_the_loop_owns(self, dashboard_state: Any) -> None:
+        """The frozen set is attached lazily; the guard resolves it on the loop when
+        it is built and the worker only reads it -- a first attach from a worker
+        thread racing the loop's first freeze would otherwise leave two sets."""
+        dashboard_state._folders.append({"id": "f1", "name": "F1", "parent_id": "", "order": 0})
+        guard = channel_slots._filing_write_guard(dashboard_state, "f1", lambda current: True)
+        assert guard({}) is True
+        # The loop freezes the folder through its own accessor: the guard sees it.
+        chat_folders._deleting_folder_ids(dashboard_state).add("f1")
+        try:
+            assert guard({}) is False
+        finally:
+            chat_folders._deleting_folder_ids(dashboard_state).discard("f1")
+        assert guard({}) is True
+        # The worker side never attaches a set of its own.
+        del dashboard_state._folders_deleting
+        assert guard({}) is True
+        assert not hasattr(dashboard_state, "_folders_deleting")
+        # Gone reads as refused, frozen or not.
+        dashboard_state._folders.clear()
+        assert guard({}) is False
+        # The placement rule still decides first.
+        assert (
+            channel_slots._filing_write_guard(dashboard_state, "f1", lambda c: False)({}) is False
+        )
+
+    def test_a_withdrawal_reads_its_verdict_back_from_the_row(self, dashboard_state: Any) -> None:
+        """A refusal is not a commit. The conditional write's False is not taken
+        at face value: the row is re-read, and a row still naming this folder
+        (a transient refusal) is withdrawn on the retry."""
+        key = "discord:kirocrew:direct:U1"
+        log = _FakeLog([key], {key: {"folder_id": "gone", "channel_folder_filed": True}})
+        real = log.update_metadata_if
+        refusals: list[int] = []
+
+        def _refuse_once(k: str, fields: dict[str, Any], guard: Any, **kw: Any) -> bool:
+            if not refusals:
+                refusals.append(1)
+                return False  # the store balked once; the row is still ours
+            return real(k, fields, guard, **kw)
+
+        log.update_metadata_if = _refuse_once  # type: ignore[method-assign]
+        stands = asyncio.run(
+            channel_slots._filing_stands_after_the_write(dashboard_state, log, key, "gone")
+        )
+        assert stands is False
+        assert log.get_metadata(key) == {"folder_id": "", "channel_folder_filed": False}
+
+    def test_a_row_settled_by_another_writer_is_left_alone(self, dashboard_state: Any) -> None:
+        key = "discord:kirocrew:direct:U1"
+        # The delete's archived-row pass already cleared the folder; the marker is
+        # its business, as for every archived session the cascade unfiles.
+        log = _FakeLog([key], {key: {"folder_id": "", "channel_folder_filed": True}})
+        stands = asyncio.run(
+            channel_slots._filing_stands_after_the_write(dashboard_state, log, key, "gone")
+        )
+        assert stands is False
+        assert log.get_metadata(key) == {"folder_id": "", "channel_folder_filed": True}
+
+    def test_a_withdrawal_that_cannot_land_is_logged_by_key(
+        self, dashboard_state: Any, caplog: Any
+    ) -> None:
+        key = "discord:kirocrew:direct:U1"
+        log = _FakeLog([key], {key: {"folder_id": "gone", "channel_folder_filed": True}})
+        log.update_metadata_if = lambda *a, **k: False  # type: ignore[method-assign]
+        with caplog.at_level("ERROR"):
+            stands = asyncio.run(
+                channel_slots._filing_stands_after_the_write(dashboard_state, log, key, "gone")
+            )
+        assert stands is None, "an unconfirmed withdrawal is not reported as one"
+        assert any(key in r.getMessage() and "gone" in r.getMessage() for r in caplog.records)
+
+    def test_a_frozen_folder_is_waited_for_not_guessed(self, dashboard_state: Any) -> None:
+        """Frozen is not gone. The helper parks on the freeze and reads the verdict
+        the thaw reveals: the folder still there -> the filing stands; the folder
+        removed -> withdrawn like gone."""
+        dashboard_state._folders.append({"id": "f1", "name": "F1", "parent_id": "", "order": 0})
+        key = "discord:kirocrew:direct:U1"
+        log = _FakeLog([key], {key: {"folder_id": "f1", "channel_folder_filed": True}})
+
+        async def _run(commit: bool) -> bool | None:
+            chat_folders._deleting_folder_ids(dashboard_state).add("f1")
+            task = asyncio.ensure_future(
+                channel_slots._filing_stands_after_the_write(dashboard_state, log, key, "f1")
+            )
+            await asyncio.sleep(0.12)
+            assert not task.done(), "the verdict was guessed while the folder was frozen"
+            if commit:
+                dashboard_state._folders[:] = [
+                    f for f in dashboard_state._folders if f["id"] != "f1"
+                ]
+            chat_folders._deleting_folder_ids(dashboard_state).discard("f1")
+            return await task
+
+        try:
+            assert asyncio.run(_run(commit=False)) is True
+            assert log.get_metadata(key)["folder_id"] == "f1"
+            assert asyncio.run(_run(commit=True)) is False
+            assert log.get_metadata(key) == {"folder_id": "", "channel_folder_filed": False}
+        finally:
+            chat_folders._deleting_folder_ids(dashboard_state).discard("f1")
+
+    def test_a_standing_folder_leaves_the_filing_alone(self, dashboard_state: Any) -> None:
+        dashboard_state._folders.append({"id": "f1", "name": "F1", "parent_id": "", "order": 0})
+        key = "discord:kirocrew:direct:U1"
+        log = _FakeLog([key], {key: {"folder_id": "f1", "channel_folder_filed": True}})
+        assert asyncio.run(
+            channel_slots._filing_stands_after_the_write(dashboard_state, log, key, "f1")
+        )
+        assert log.get_metadata(key)["folder_id"] == "f1"
 
 
 class TestStampIsTheIdentity:
@@ -1639,6 +1981,75 @@ class TestBackfillChannelFolder:
 
         assert [m["key"] for m in report["moved"]] == [good]
 
+    def test_a_filing_that_landed_as_its_folder_was_deleted_is_withdrawn_and_not_counted(
+        self, dashboard_state: Any
+    ) -> None:
+        """The backfill's write can land while a delete of the folder is committing on
+        the loop; re-asked the moment the write is known to have landed, a gone folder
+        withdraws the filing (no folder, marker taken back) and the conversation is
+        neither mirrored onto its tab nor reported as moved."""
+        fid = self._folder(dashboard_state)
+        key = "discord:kirocrew:direct:U1"
+        log = _ModifiedLog([key], {key: {"channel_origin": True}})
+        dashboard_state.conversation_log = log
+        tab = dashboard_state.get_or_create_slot(channel_slots.channel_slot_name(key))
+        original = log.update_metadata_if
+        once: list[int] = []
+
+        def _write_then_delete(k: str, fields: dict[str, Any], guard: Any, **kwargs: Any) -> bool:
+            ok = original(k, fields, guard, **kwargs)
+            if ok and not once:
+                once.append(1)
+                dashboard_state._folders[:] = [
+                    f for f in dashboard_state._folders if f["id"] != fid
+                ]
+            return ok
+
+        log.update_metadata_if = _write_then_delete  # type: ignore[method-assign]
+
+        report = asyncio.run(channel_slots.backfill_channel_folder(dashboard_state, "discord"))
+
+        assert report["moved"] == []
+        assert not log.get_metadata(key).get("folder_id")
+        assert not log.get_metadata(key).get("channel_folder_filed")
+        assert tab.folder_id == "" and tab._channel_folder_filed is False
+
+    def test_an_unconfirmed_withdrawal_is_a_failed_write_in_the_report(
+        self, dashboard_state: Any
+    ) -> None:
+        """The filing landed, the folder is gone, and the compensating write cannot
+        be confirmed: the record may still name the folder, so the report carries
+        it as a failure rather than as a move -- an operator sees it, nothing
+        pretends the filing settled."""
+        fid = self._folder(dashboard_state)
+        key = "discord:kirocrew:direct:U1"
+        log = _ModifiedLog([key], {key: {"channel_origin": True}})
+        dashboard_state.conversation_log = log
+        real_write = log.update_metadata_if
+        landed: list[str] = []
+
+        def _land_then_lose_the_folder_and_the_store(
+            key_: str, fields: dict, guard: Any, **kw: Any
+        ) -> bool:
+            if landed:
+                return False  # the withdrawal is refused, and refused again
+            ok = real_write(key_, fields, guard, **kw)
+            if ok:
+                landed.append(key_)
+                dashboard_state._folders[:] = [
+                    f for f in dashboard_state._folders if f["id"] != fid
+                ]
+            return ok
+
+        log.update_metadata_if = _land_then_lose_the_folder_and_the_store  # type: ignore[assignment]
+        report = asyncio.run(channel_slots.backfill_channel_folder(dashboard_state, "discord"))
+        assert landed, "fixture: the filing did land"
+        assert report["moved"] == []
+        assert report["failed"] == 1
+        assert report["remaining"] >= 1
+        # The record still names the folder: the helper could not take it back.
+        assert log.get_metadata(key).get("folder_id") == fid
+
     def test_a_folder_deleted_mid_pass_strands_nothing(self, dashboard_state: Any) -> None:
         """A dead ``folder_id`` beside the filing marker has NO recovery.
 
@@ -1667,9 +2078,12 @@ class TestBackfillChannelFolder:
         report = asyncio.run(channel_slots.backfill_channel_folder(dashboard_state, "discord"))
 
         # Whatever it managed before the deletion is reported; nothing after it
-        # is stamped with the dead id. Its OWN reason: a folder DELETED mid-pass
-        # needs the opposite sentence from one that was never created, and the
-        # panel must not have to infer which it had from the counts.
+        # is stamped with the dead id -- including the very write the deletion
+        # landed in front of: the guard re-asks the folder at the commit boundary,
+        # under the record's lock, and skips a write into a folder that is gone.
+        # Its OWN reason: a folder DELETED mid-pass needs the opposite sentence
+        # from one that was never created, and the panel must not have to infer
+        # which it had from the counts.
         assert report["reason"] == "folder_gone"
         stranded = [
             k
@@ -1680,7 +2094,7 @@ class TestBackfillChannelFolder:
                 for f in dashboard_state._folders
             )
         ]
-        assert len(stranded) <= 1, stranded
+        assert stranded == [], stranded
         assert len(report["moved"]) == len(stranded)
 
     def test_a_drag_during_the_write_is_not_reverted_in_memory(self, dashboard_state: Any) -> None:

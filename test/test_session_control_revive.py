@@ -298,6 +298,39 @@ def test_revive_files_into_the_requested_folder(tmp_path):
     assert state.conversation_log.get_metadata(f"dashboard:{key}").get("folder_id") == "f1"
 
 
+def test_revive_assigns_the_folder_only_after_its_verdict(tmp_path, monkeypatch):
+    """While the destination's verdict is pending the revived slot is live and
+    published; a provisional folder_id there would be read by a delete cascade's
+    membership pass and at close_slot's point of no return. So nothing is assigned
+    until the store has answered, and a refusal leaves nothing to roll back."""
+    state = _make_state(tmp_path)
+    _folder(state, "f1", "Gamma")
+    caller = _slot(state, "chat-1")
+    key = _archive(state, caller, _slot(state, "chat-2"))
+    real = sc._unhide_folder
+    seen: list[str] = []
+    verdict = {"answer": True}
+
+    async def _record_then_answer(state_, folder_id, **kw):
+        seen.append(state._slots[key].folder_id)
+        if not verdict["answer"]:
+            return False
+        return await real(state_, folder_id, **kw)
+
+    monkeypatch.setattr(sc, "_unhide_folder", _record_then_answer)
+    result = _revive(state, caller, key, folder_id="f1")
+    assert seen == [""], "the filing was live before its verdict"
+    assert result["filed"] is True and state._slots[key].folder_id == "f1"
+
+    # And a refusal at the verdict: nothing assigned, nothing rolled back, revived.
+    key2 = _archive(state, caller, _slot(state, "chat-3"))
+    verdict["answer"] = False
+    result = _revive(state, caller, key2, folder_id="f1")
+    assert result["filed"] is False and result["folder_id"] == ""
+    assert state._slots[key2].folder_id == ""
+    assert not state.conversation_log.get_metadata(f"dashboard:{key2}").get("folder_id")
+
+
 def test_revive_refuses_an_unknown_folder_before_touching_history(tmp_path):
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")
@@ -324,6 +357,47 @@ def test_revive_without_a_folder_keeps_the_previous_placement(tmp_path):
     assert result["folder_id"] == "f1"
     assert result["filed"] is False
     assert state._slots[key].folder_id == "f1"
+
+
+def test_a_folder_deleted_while_the_hook_awaits_is_not_published_on_the_revived_slot(
+    tmp_path, monkeypatch
+):
+    """The hook path of the late-assignment window. The core builds the slot with
+    its stored filing, RETRACTS it from the table while the containment hook
+    awaits, and publishes it afterwards. A folder delete committing inside the
+    hook's awaits sweeps the live table without seeing the retracted slot, so the
+    publish is re-asked synchronously about the folder the built slot carries:
+    gone, the session publishes unfiled."""
+    state = _make_state(tmp_path)
+    _folder(state, "f1", "Gamma")
+    caller = _slot(state, "chat-1")
+    peer = _slot(state, "chat-2")
+    peer.folder_id = "f1"
+    key = _archive(state, caller, peer)
+    real_probe = sc._has_channel_mirror
+    seen: dict[str, object] = {}
+
+    def delete_the_folder_then_probe(state_, built):
+        # Inside the hook's await window: the slot is built (its filing bound)
+        # and out of the table. ``_has_channel_mirror(state, built)`` is the one
+        # probe the hook alone runs on the BUILT slot (the caller-surface check
+        # runs it on the caller's slot too, hence the key test).
+        if built.key == key and "built_folder" not in seen:
+            seen["built_folder"] = built.folder_id
+            assert (
+                key not in state_._slots
+            ), "fixture: the built slot is retracted while the hook runs"
+            state_._folders[:] = [f for f in state_._folders if f.get("id") != "f1"]
+        return real_probe(state_, built)
+
+    monkeypatch.setattr(sc, "_has_channel_mirror", delete_the_folder_then_probe)
+
+    result = _revive(state, caller, key)
+
+    assert seen["built_folder"] == "f1", "fixture: the slot was built with its stored filing"
+    assert result["folder_id"] == ""
+    assert state._slots[key].folder_id == "", "a filing into a deleted folder was published"
+    assert "f1" not in {f["id"] for f in state._folders}
 
 
 # ── Resolution refusals ──────────────────────────────────────────────────────

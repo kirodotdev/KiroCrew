@@ -57,6 +57,7 @@ import asyncio
 import logging
 import time
 import weakref
+from collections.abc import Callable
 from itertools import islice
 from typing import TYPE_CHECKING, Any
 
@@ -451,6 +452,133 @@ def needs_backfill_filing(meta: dict[str, Any]) -> bool:
     return not (meta.get("folder_id") or meta.get("channel_folder_filed"))
 
 
+def _filing_write_guard(
+    state: "DashboardState",
+    folder_id: str,
+    placement_guard: Callable[[dict[str, Any]], bool],
+) -> Callable[[dict[str, Any]], bool]:
+    """The ``update_metadata_if`` guard for a filing write into *folder_id*.
+
+    *placement_guard* is the placement rule (``needs_default_filing`` /
+    ``needs_backfill_filing``), re-made against the locked record as before. On
+    top of it, the folder must still STAND at the write's commit boundary:
+    neither frozen by a running delete nor gone from the store. The write takes
+    the transcript's cross-process lock and can stall on it; a folder delete
+    committing while it waits -- its commit-time sweep of live slots and its
+    history pass over archived rows both already done -- would otherwise be
+    followed by this write landing the deleted id as a durable assignment that no
+    later pass corrects. Asked under the lock, right before the write, so the
+    answer is the newest the writer can have; a refusal skips the write, and the
+    conversation surfaces unfiled (a frozen folder that then aborts its delete is
+    filed by the next pass, since the record carries no marker).
+
+    Runs off the loop, where the write runs, reading a list and a set the loop
+    mutates: a read here can trail the loop by one step, so a stale answer costs
+    at most one skipped filing the next pass retries -- never a filing into a
+    folder the store has already committed away. The frozen set is RESOLVED HERE,
+    on the loop, and only read by the worker: ``_deleting_folder_ids`` attaches
+    the set lazily, and a first attach from a worker thread racing the loop's own
+    first freeze would leave two sets, one of them empty and winning.
+    """
+    # circular import: chat_folders -> chat_persistence -> this module.
+    from kiro_crew.dashboard.chat_folders import _deleting_folder_ids
+
+    deleting = _deleting_folder_ids(state)
+
+    def _guard(current: dict[str, Any]) -> bool:
+        if not placement_guard(current):
+            return False
+        if folder_id in deleting:
+            return False
+        return any(str(f.get("id")) == folder_id for f in getattr(state, "_folders", None) or ())
+
+    return _guard
+
+
+# How often a landed filing re-asks a FROZEN folder for the running delete's
+# verdict (see _filing_stands_after_the_write). The delete's own duration bounds
+# the wait, so this only sets how promptly the thaw is noticed.
+_FREEZE_VERDICT_POLL_SECS = 0.05
+
+
+async def _filing_stands_after_the_write(
+    state: "DashboardState", log: Any, key: str, folder_id: str
+) -> bool | None:
+    """Whether a filing write that just LANDED still names a standing folder.
+
+    :func:`_filing_write_guard` reads the folder under the record's lock right
+    before the write, but the folder store has its own lock, and the write itself
+    -- a transcript rewrite, off the loop -- takes long enough for a delete to
+    freeze, commit and finish its archived-row pass on the loop meanwhile. That
+    pass lists rows before the write lands, so it never sees this filing, and the
+    record would keep a folder id that is gone beside the marker that stops every
+    later pass from filing it again. So the folder is asked once more, on the
+    loop, the moment the write is known to have landed and before anything else
+    runs. Gone, the filing is WITHDRAWN: a compare-and-set on the very value this
+    pass wrote clears the folder and takes the marker back, leaving the
+    conversation unfiled and eligible, and a committed delete never sees a filing
+    to sweep. FROZEN is not gone: the running delete decides, so its verdict is
+    WAITED for rather than guessed -- withdrawing on the freeze would erase a
+    filing the abort keeps for every other writer, leaving it would strand the id
+    if the delete commits. The route thaws its ids in a ``finally`` whichever way
+    it ends, so the wait is bounded by the delete itself.
+
+    Returns True when the filing stands, False when it is withdrawn or another
+    writer settled the row, and None when the withdrawal could not be CONFIRMED:
+    the record may still name the folder, and the caller carries that as a
+    failure rather than as a filing.
+    """
+    # circular import: chat_folders -> chat_persistence -> this module.
+    from kiro_crew.dashboard.chat_folders import folder_is_deleting, folder_is_gone
+
+    while folder_is_deleting(state, folder_id):
+        await asyncio.sleep(_FREEZE_VERDICT_POLL_SECS)
+    if not folder_is_gone(state, folder_id):
+        return True
+
+    def _ours(current: dict[str, Any]) -> bool:
+        return current.get("folder_id") == folder_id
+
+    # The withdrawal is a conditional write, and a refusal is not a commit: the
+    # verdict is read back from the row, never from the boolean alone. A row
+    # that names another folder, or none, was settled by another writer (the user's
+    # own move, or the delete's archived-row pass clearing it), and that writer's
+    # outcome stands -- withdrawing over it would be wrong. A row that still names
+    # it is still this pass's to fix (the write raised, or the store could not be
+    # read), so the withdrawal is tried once more; a filing that stands after
+    # that is logged at error level by key, since nothing later revisits it.
+    for attempt in range(2):
+        try:
+            if await asyncio.to_thread(
+                log.update_metadata_if,
+                key,
+                {"folder_id": "", "channel_folder_filed": False},
+                _ours,
+            ):
+                return False
+            current = await asyncio.to_thread(log.get_metadata, key)
+        except Exception:
+            if attempt == 0:
+                logger.warning(
+                    "channel filing: withdrawing the filing of %s failed once; retrying",
+                    key,
+                    exc_info=True,
+                )
+                continue
+            break
+        if not _ours(current):
+            # Another writer settled the row; its outcome stands.
+            return False
+    logger.error(
+        "channel filing: %s still names folder %s, which a delete took while the "
+        "filing wrote, and the withdrawal could not be confirmed; the record keeps "
+        "a folder id no folder carries",
+        key,
+        folder_id,
+    )
+    return None
+
+
 def _rebind_unbound_channel_slot(
     state: "DashboardState", slot: "_ChatSlot", session_key: str
 ) -> bool:
@@ -659,8 +787,22 @@ def surface_channel_session(
         if tid not in slot.tags:
             slot.tags.append(tid)
             tags_changed = True
+    # Both assignments below are the "channel restore" half of the late-assignment
+    # window: the existence of a STORED ``folder_id`` was never asked here, and the
+    # default filing's folder was resolved before the reconcile's record write
+    # awaited. A folder delete committing in either gap ran its commit-time sweep
+    # before this slot existed. So the folder is re-asked synchronously at the
+    # assignment: GONE, the session surfaces unfiled and its next save replaces
+    # the stored id. FROZEN is not gone -- the filing is applied, the slot
+    # registers with it for the delete's commit-time sweep to unfile if the delete
+    # commits, the payload projects it unfiled meanwhile, and an abort leaves it
+    # standing. Local import: chat_folders reaches this module through
+    # chat_persistence, so a module-level import would be circular.
+    from kiro_crew.dashboard.chat_folders import folder_is_gone
+
     if meta.get("folder_id"):
-        slot.folder_id = meta["folder_id"]
+        if not folder_is_gone(state, str(meta["folder_id"])):
+            slot.folder_id = meta["folder_id"]
     elif folder_id and needs_default_filing(meta):
         # Per-channel filing (off by default), applied on the pass that first
         # surfaces the conversation. Re-tested here rather than trusting the
@@ -670,16 +812,21 @@ def surface_channel_session(
         # user moved it. `folder_id` is omitted from the metadata line when
         # empty, so the marker is the only thing that distinguishes "moved to the
         # top level" from "never filed".
-        slot.folder_id = folder_id
+        #
+        # The marker is set even when the folder is gone: the reconcile's record
+        # write already carries it, and a slot without it would be filed again by
+        # the next pass.
         slot._channel_folder_filed = True
-        # First filing = this chat's birth into the folder: copy the folder's
-        # tags by value, the same creation-only inheritance the dashboard
-        # slot-create path applies. The restore branch above deliberately does
-        # not — a persisted folder_id means the filing already happened.
-        for tid in folder_tags or []:
-            if tid not in slot.tags:
-                slot.tags.append(tid)
-                tags_changed = True
+        if not folder_is_gone(state, folder_id):
+            slot.folder_id = folder_id
+            # First filing = this chat's birth into the folder: copy the folder's
+            # tags by value, the same creation-only inheritance the dashboard
+            # slot-create path applies. The restore branch above deliberately does
+            # not — a persisted folder_id means the filing already happened.
+            for tid in folder_tags or []:
+                if tid not in slot.tags:
+                    slot.tags.append(tid)
+                    tags_changed = True
     # "tags changed => revision changed": the slot was constructed with an empty
     # list under its birth revision, and a concurrent slots GET may already have
     # snapshotted that; the surfaced list must carry a revision of its own.
@@ -1286,7 +1433,10 @@ async def _reconcile_channel_slots_locked(state: "DashboardState", window_minute
                         log.update_metadata_if,
                         key,
                         filing_meta,
-                        needs_default_filing,
+                        # The folder is re-asked at the commit boundary too, under
+                        # the record's lock: a delete committing while this write
+                        # waited must not be followed by its id landing here.
+                        _filing_write_guard(state, to_file, needs_default_filing),
                     )
             except Exception:
                 # Could not record it, so do not apply it in memory either:
@@ -1300,6 +1450,20 @@ async def _reconcile_channel_slots_locked(state: "DashboardState", window_minute
                 )
                 to_file = ""
             else:
+                if (
+                    filed
+                    and await _filing_stands_after_the_write(state, log, key, to_file) is not True
+                ):
+                    # The write landed, but the folder went away while it was in
+                    # flight; the filing is withdrawn again (or its withdrawal is
+                    # unconfirmed, which the helper logs), so this pass surfaces
+                    # the conversation unfiled and eligible either way.
+                    logger.debug(
+                        "channel reconcile: the folder of %s was deleted while the filing "
+                        "wrote; filing withdrawn",
+                        key,
+                    )
+                    filed = False
                 if not filed:
                     # The guard rejected it under the lock: the record gained a
                     # placement or a filing marker while this write queued. That
@@ -1654,9 +1818,24 @@ async def backfill_channel_folder(state: "DashboardState", namespace: str) -> di
                     log.update_metadata_if,
                     key,
                     filing_meta,
-                    needs_backfill_filing,
+                    # Placement rule AND the folder still standing, both read at
+                    # the commit boundary under the record's lock: a stalled write
+                    # must not land a folder id a delete committed away meanwhile.
+                    _filing_write_guard(state, folder_id, needs_backfill_filing),
                     require_existing=True,
                 )
+                # Landed, but into a folder a delete removed while the write was
+                # in flight? Then the filing is withdrawn again and this
+                # conversation is neither mirrored nor counted as moved. A
+                # withdrawal that could not be confirmed leaves a record that may
+                # still name the folder: that is a failed write in the report,
+                # not a silent success.
+                if filed:
+                    stands = await _filing_stands_after_the_write(state, log, key, folder_id)
+                    if stands is not True:
+                        filed = False
+                    if stands is None:
+                        write_failures += 1
                 # Mirror the persisted placement onto the open tab, INSIDE the
                 # lock and against a freshly read slot. Without this the tab keeps
                 # showing the conversation at the top level until a restart
@@ -1695,12 +1874,15 @@ async def backfill_channel_folder(state: "DashboardState", namespace: str) -> di
             write_failures += 1
             continue
         if not filed:
-            # Two refusals reach here and neither is retried. The guard saw a
-            # placement or a filing marker that landed while this pass ran --
-            # the user's own action, so it stands. Or the conversation was
-            # DELETED while this pass ran, in which case there is nothing left
-            # to file. Neither is counted as a failure: both are decisions, not
-            # errors, and no write was attempted.
+            # Three refusals reach here and none is retried by this click. The
+            # guard saw a placement or a filing marker that landed while this pass
+            # ran -- the user's own action, so it stands. Or the conversation was
+            # DELETED while this pass ran, in which case there is nothing left to
+            # file. Or the write landed but the folder was frozen or gone by then
+            # and the filing was withdrawn again: the folder this button files
+            # into is going or gone, so another click against it would be a dead
+            # end (the pass above reports ``folder_gone`` once it sees that).
+            # None is counted as a failure: all are decisions, not errors.
             continue
         report["moved"].append(
             {

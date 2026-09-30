@@ -346,6 +346,150 @@ class TestFolderCreate:
             _call_tool_inner("chat_folder_create", {"parent": "kirocrew"})
 
 
+class TestFolderDelete:
+    """``chat_folder_delete`` is a thin wrapper over ``DELETE /api/chat/folders/{id}``:
+    the endpoint owns the rules (the frozen-subtree cascade, the app and member
+    refusals); this server resolves the reference, passes the flag through and
+    reports the endpoint's counts."""
+
+    def test_default_is_the_safe_delete_and_names_what_moved(self) -> None:
+        with (
+            patch("kiro_crew.mcp_dashboard._get", side_effect=_rows),
+            patch("kiro_crew.mcp_dashboard._delete", return_value={"ok": True}) as mock_delete,
+        ):
+            out = _call_tool_inner("chat_folder_delete", {"folder": "kirocrew/0811"})
+        assert mock_delete.call_args.args == ("/api/chat/folders/bbbbbbbbbbbb",)
+        # The verified caller key rides on the write, as on every tree-shaping
+        # write here: the endpoint judges the delete against it.
+        assert mock_delete.call_args.kwargs["session_key"] == "dashboard:chat-1-100"
+        assert "kirocrew/0811" in out and "bbbbbbbbbbbb" in out
+        assert "unfiled" in out and "top level" in out
+
+    def test_delete_contents_passes_the_flag_and_reports_the_counts(self) -> None:
+        answer = {
+            "ok": True,
+            "delete_contents": True,
+            "deleted_folder_ids": ["aaaaaaaaaaaa", "bbbbbbbbbbbb"],
+            "unfiled_sessions": 0,
+            "archived_sessions": 2,
+            "unfiled_history_sessions": 3,
+        }
+        with (
+            patch("kiro_crew.mcp_dashboard._get", side_effect=_rows),
+            patch("kiro_crew.mcp_dashboard._delete", return_value=answer) as mock_delete,
+        ):
+            out = _call_tool_inner(
+                "chat_folder_delete", {"folder": "aaaaaaaaaaaa", "delete_contents": True}
+            )
+        assert mock_delete.call_args.args == (
+            "/api/chat/folders/aaaaaaaaaaaa?delete_contents=true",
+        )
+        assert mock_delete.call_args.kwargs["session_key"] == "dashboard:chat-1-100"
+        # A cascade archives every session in the subtree before answering.
+        assert mock_delete.call_args.kwargs["timeout"] > 10
+        assert "2 folders removed" in out
+        assert "2 live session(s) archived" in out
+        assert "3 stored session filing(s) cleared" in out
+        assert "0 filing(s) cleared from live sessions" in out
+
+    def test_the_resolved_id_travels_as_one_path_segment(self) -> None:
+        """A stored id is a string the store minted, but the file it lives in can
+        be edited: an id carrying ``?`` or ``/`` must not rewrite the request's
+        path or query -- a safe delete must never become a cascade."""
+        odd = dict(_FOLDERS[0], id="victim?delete_contents=true", name="Odd")
+        rows = [odd] + [dict(f) for f in _FOLDERS]
+
+        def _get(path: str) -> list[dict]:
+            return rows if path == "/api/chat/folders" else _rows(path)
+
+        with (
+            patch("kiro_crew.mcp_dashboard._get", side_effect=_get),
+            patch("kiro_crew.mcp_dashboard._delete", return_value={"ok": True}) as mock_delete,
+        ):
+            _call_tool_inner(
+                "chat_folder_delete",
+                {"folder": "victim?delete_contents=true", "delete_contents": False},
+            )
+        assert mock_delete.call_args.args == ("/api/chat/folders/victim%3Fdelete_contents%3Dtrue",)
+
+    def test_a_false_flag_is_the_safe_delete(self) -> None:
+        with (
+            patch("kiro_crew.mcp_dashboard._get", side_effect=_rows),
+            patch("kiro_crew.mcp_dashboard._delete", return_value={"ok": True}) as mock_delete,
+        ):
+            _call_tool_inner("chat_folder_delete", {"folder": "Travel", "delete_contents": False})
+        assert mock_delete.call_args.args == ("/api/chat/folders/cccccccccccc",)
+
+    def test_root_is_not_deletable(self) -> None:
+        with (
+            patch("kiro_crew.mcp_dashboard._get", side_effect=_rows),
+            patch("kiro_crew.mcp_dashboard._delete") as mock_delete,
+        ):
+            out = _call_tool_inner("chat_folder_delete", {"folder": "root"})
+        assert out.startswith("Error:")
+        mock_delete.assert_not_called()
+
+    def test_an_unknown_folder_is_refused_before_the_write(self) -> None:
+        with (
+            patch("kiro_crew.mcp_dashboard._get", side_effect=_rows),
+            patch("kiro_crew.mcp_dashboard._delete") as mock_delete,
+        ):
+            out = _call_tool_inner("chat_folder_delete", {"folder": "kirocrew/nope"})
+        assert out.startswith("Error:")
+        mock_delete.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "refusal",
+        [
+            {
+                "error": "an app cannot delete folders - ask the person, or move your "
+                "sessions out and leave the folder",
+                "code": "folder_delete_forbidden",
+            },
+            {
+                "error": "This operation requires the owner. Use the member's scoped tools instead.",
+                "code": "member_scope_denied",
+            },
+        ],
+        ids=["app-agent", "crew-member"],
+    )
+    def test_the_ownership_refusal_is_the_endpoints_and_is_surfaced(self, refusal: dict) -> None:
+        """An app agent and a crew member are refused by the endpoint whoever created
+        the folder (an app's 403 ``folder_delete_forbidden``; the member gate admits no
+        DELETE on the folder routes). The wrapper decides nothing of its own and
+        hands the refusal back verbatim, in both modes."""
+        for args in ({"folder": "Travel"}, {"folder": "Travel", "delete_contents": True}):
+            with (
+                patch("kiro_crew.mcp_dashboard._get", side_effect=_rows),
+                patch("kiro_crew.mcp_dashboard._delete", return_value=refusal),
+            ):
+                out = _call_tool_inner("chat_folder_delete", args)
+            assert out == f"Error: {refusal['error']}"
+
+    def test_an_unverifiable_caller_is_refused_before_any_read_or_write(self) -> None:
+        with (
+            patch("kiro_crew.mcp_core._resolve_session_key_strict", return_value=""),
+            patch("kiro_crew.mcp_dashboard._get") as mock_get,
+            patch("kiro_crew.mcp_dashboard._delete") as mock_delete,
+        ):
+            out = _call_tool_inner("chat_folder_delete", {"folder": "Travel"})
+        assert out.startswith("Error:") and "deleting a folder" in out
+        mock_get.assert_not_called()
+        mock_delete.assert_not_called()
+
+    def test_folder_is_required_and_the_flag_must_be_a_boolean(self) -> None:
+        with pytest.raises(ValidationError):
+            _call_tool_inner("chat_folder_delete", {"delete_contents": True})
+        with pytest.raises(ValidationError):
+            _call_tool_inner("chat_folder_delete", {"folder": "Travel", "delete_contents": "yes"})
+
+    def test_the_description_tells_the_agent_to_echo_the_count_first(self) -> None:
+        tool = next(t for t in _list_tools() if t["name"] == "chat_folder_delete")
+        assert "echo the affected count" in tool["description"]
+        assert tool["inputSchema"]["required"] == ["folder"]
+        assert tool["inputSchema"]["properties"]["delete_contents"]["type"] == "boolean"
+
+
 class TestAmbiguousFolderPaths:
     """Folder names are not unique within a parent, so a path can be ambiguous.
 
@@ -1878,6 +2022,7 @@ class TestAdvertisedSet:
         assert names == {
             "chat_folder_tree",
             "chat_folder_create",
+            "chat_folder_delete",
             "chat_folder_move",
             "chat_folder_move_session",
             "chat_folder_file_self",

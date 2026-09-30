@@ -5889,8 +5889,6 @@ async def revive_session(
                 # Re-read under the lock: filed there meanwhile by another writer
                 # means nothing to do, and nothing this call may later roll back.
                 if folder_id != previous:
-                    slot.folder_id = folder_id
-                    slot._folder_changed = True
 
                     def _roll_back() -> None:
                         if slot.folder_id == folder_id:
@@ -5898,26 +5896,35 @@ async def revive_session(
                             slot._folder_changed = previous_changed
 
                     try:
-                        if not await _unhide_folder(state, folder_id):
-                            _roll_back()
-                        elif await save_slot_off_loop(
-                            state,
-                            slot,
-                            force=True,
-                            # Strict, not best-effort: the default swallows a raised
-                            # save and answers True (marking the slot dirty for the
-                            # periodic flush), which would report ``filed: true`` for
-                            # a placement that is not on disk and is lost if the
-                            # gateway restarts before that flush. A raise takes the
-                            # rollback arm below and reports ``filed: false``.
-                            best_effort=False,
-                            expected_history_key=slot_history_key(slot),
-                        ):
-                            note_folder_filed(state, folder_id)
-                            filed = True
-                        else:
-                            _roll_back()
-                            slot._dirty = True
+                        # The destination's verdict before anything is assigned:
+                        # the revived slot is live and published, and a
+                        # provisional folder_id here would be read by a delete
+                        # cascade's membership pass (and close_slot's synchronous
+                        # point of no return) while this await is pending -- a
+                        # session archived on a filing then refused. On True the
+                        # coroutine resumes without suspending before the
+                        # assignment.
+                        if await _unhide_folder(state, folder_id):
+                            slot.folder_id = folder_id
+                            slot._folder_changed = True
+                            if await save_slot_off_loop(
+                                state,
+                                slot,
+                                force=True,
+                                # Strict, not best-effort: the default swallows a raised
+                                # save and answers True (marking the slot dirty for the
+                                # periodic flush), which would report ``filed: true`` for
+                                # a placement that is not on disk and is lost if the
+                                # gateway restarts before that flush. A raise takes the
+                                # rollback arm below and reports ``filed: false``.
+                                best_effort=False,
+                                expected_history_key=slot_history_key(slot),
+                            ):
+                                note_folder_filed(state, folder_id)
+                                filed = True
+                            else:
+                                _roll_back()
+                                slot._dirty = True
                     except Exception:
                         logger.warning(
                             "revive_session: %s revived but filing it into %s failed",

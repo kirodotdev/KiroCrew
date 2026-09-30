@@ -14587,6 +14587,9 @@ class TestFolderCRUD:
     async def test_slots_include_folder_id(self, tmp_path, monkeypatch):
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
+        # The payload carries a folder id only while a folder record carries it
+        # (a dangling id projects as unfiled), so the folder is part of the fixture.
+        state._folders.append({"id": "f-abc", "name": "ABC", "parent_id": "", "order": 0})
         slot = state.get_or_create_slot("s1")
         slot.folder_id = "f-abc"
         app = _make_folder_app(state)

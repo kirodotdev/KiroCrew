@@ -493,6 +493,9 @@ class TestSurfaceChannelSession:
         assert dashboard_state._slots == {}
 
     def test_applies_metadata(self, dashboard_state: Any) -> None:
+        # A stored filing is restored only for a folder that exists (a dangling
+        # id surfaces unfiled), so the folder is part of the fixture.
+        dashboard_state._folders.append({"id": "f1", "name": "F1", "parent_id": "", "order": 0})
         slot = channel_slots.surface_channel_session(
             dashboard_state,
             _session("slack:1.1"),
