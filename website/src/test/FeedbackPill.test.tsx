@@ -203,4 +203,26 @@ describe('FeedbackPill', () => {
     expect(tip.textContent).not.toMatch(/inference/i)
     expect(button).toHaveAccessibleName(/request a feature/i)
   })
+
+  it('a touch tap still shows the usage warning (openOnTap), since the bubble is the only place it appears', () => {
+    // The shared hook ignores a tap's replayed mouseenter/focus by default so a
+    // bubble does not cost iOS the click. This anchor opts out: the warning
+    // exists so a phone user sees "this spends monthly usage" BEFORE the tap
+    // starts the metered turn (#13342), and nothing else on the pill says so.
+    // Same event order as the `tap()` helper in InstantTip.test.tsx: the touch
+    // pointer's own events, the replayed mouse events (mousedown -> focus),
+    // then the click.
+    const { onRequestFeature } = mount()
+    const button = screen.getByRole('button', { name: /request a feature/i })
+    fireEvent.pointerEnter(button, { pointerType: 'touch' })
+    fireEvent.pointerDown(button, { pointerType: 'touch' })
+    fireEvent.pointerUp(button, { pointerType: 'touch' })
+    fireEvent.mouseEnter(button)
+    fireEvent.mouseDown(button)
+    fireEvent.focus(button)
+    fireEvent.mouseUp(button)
+    fireEvent.click(button)
+    expect(screen.getByTestId('feedback-pill-request-feature-tip')).toBeInTheDocument()
+    expect(onRequestFeature).toHaveBeenCalledTimes(1)
+  })
 })

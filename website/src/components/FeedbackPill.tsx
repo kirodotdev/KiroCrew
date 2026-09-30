@@ -104,7 +104,16 @@ export default function FeedbackPill({
   // not above -- the pill sits in the top bar, so "above" is off-screen. The
   // visible label stays the action, so the accessible NAME is unchanged and
   // every caller that finds the button by it keeps working.
-  const { tip, tipHandlers, tipId } = useInstantTip({ placement: 'below' })
+  //
+  // `openOnTap`: the hook otherwise ignores a touch tap's replayed
+  // mouseenter/focus so a bubble does not cost iOS the click. Here the bubble
+  // is the ONLY place the usage warning appears, and the click it protects is
+  // the metered action the warning is about -- a phone user who never sees it
+  // is exactly the #13342 user. So a tap keeps showing the tip, as it did
+  // before the touch gate existed. On iOS the tip opening during the tap can
+  // still cost that click, so the action may take a second tap; that is the
+  // cost of having read the warning.
+  const { tip, tipHandlers, tipId } = useInstantTip({ placement: 'below', openOnTap: true })
 
   return (
     // The pill IS a Liquid Glass pane (components/Glass.tsx, chip recipe): the

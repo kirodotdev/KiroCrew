@@ -32,6 +32,25 @@ describe('FollowUpBar', () => {
       expect(onSelect).toHaveBeenCalledWith('Ship it', expect.any(Object))
     })
 
+    it('a touch tap selects on the first tap and mounts no tooltip (iOS drops a click whose tap reveals one)', () => {
+      vi.useFakeTimers()
+      try {
+        const onSelect = vi.fn()
+        render(<FollowUpBar options={['Ship it']} picked={new Set()} onSelect={onSelect} />)
+        const chip = screen.getByRole('button', { name: 'Ship it' })
+        fireEvent.pointerEnter(chip, { pointerType: 'touch' })
+        fireEvent.pointerDown(chip, { pointerType: 'touch' })
+        fireEvent.pointerUp(chip, { pointerType: 'touch' })
+        fireEvent.mouseEnter(chip)
+        fireEvent.click(chip)
+        act(() => { vi.advanceTimersByTime(500) })
+        expect(onSelect).toHaveBeenCalledTimes(1)
+        expect(screen.queryByRole('tooltip')).toBeNull()
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
     it('fires onSelect for both picked and unpicked chips', () => {
       const onSelect = vi.fn()
       render(<FollowUpBar options={['A', 'B']} picked={new Set(['A'])} onSelect={onSelect} />)

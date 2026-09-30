@@ -105,7 +105,12 @@ function PasteTokenChip({ block, nodeKey }: { block: PasteBlock; nodeKey: NodeKe
           if (previewOpen) closePreview()
           else openPreview()
         }}
-        onMouseEnter={schedulePreview}
+        // Opened from the pointer's own enter, not from mouseenter: a tap's
+        // replayed mouseenter would open the preview mid-tap (iOS then drops
+        // the click), and a touch pointerenter is skipped here. A mouse or pen
+        // still previews on hover, on a touch device too; the tap toggles the
+        // preview through onClick, and keyboard focus still previews.
+        onPointerEnter={(event) => { if (event.pointerType !== 'touch') schedulePreview() }}
         onMouseLeave={closePreview}
         onFocus={schedulePreview}
         onBlur={closePreview}

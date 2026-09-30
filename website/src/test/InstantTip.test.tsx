@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { useState } from 'react'
 import { render, screen, fireEvent, act } from '@testing-library/react'
-import { InstantTip, useInstantTip, OPEN_DELAY_MS, scrollMovesAnchor } from '../components/InstantTip'
+import { InstantTip, useInstantTip, OPEN_DELAY_MS, TOUCH_REPLAY_WINDOW_MS, scrollMovesAnchor } from '../components/InstantTip'
 
 /** Minimal consumer: one anchor button + the shared bubble. */
 function Harness() {
@@ -908,5 +908,108 @@ describe('InstantTip', () => {
       expect(tip).toHaveAttribute('data-placement', 'above')
       expect([parseFloat(tip.style.top), parseFloat(tip.style.left)]).toEqual([162, 600])
     })
+  })
+})
+
+/** A consumer with a click action, like every real anchor (a chip, a copy
+ *  button): the tap must reach it on the first try. */
+function ClickHarness({ onClick }: { onClick: () => void }) {
+  const { tip, tipHandlers, tipId } = useInstantTip()
+  return (
+    <>
+      <button type="button" onClick={onClick} {...tipHandlers}>anchor</button>
+      <InstantTip tip={tip} tipId={tipId}>bubble content</InstantTip>
+    </>
+  )
+}
+
+/** An anchor with no click action (`openOnTap`): the bubble is all it shows. */
+function TapOpensHarness() {
+  const { tip, tipHandlers, tipId } = useInstantTip({ openOnTap: true })
+  return (
+    <>
+      <button type="button" {...tipHandlers}>anchor</button>
+      <InstantTip tip={tip} tipId={tipId}>bubble content</InstantTip>
+    </>
+  )
+}
+
+/** The events a browser sends for one finger tap, in order: the touch
+ *  pointer's own events, then the mouse events it replays once the finger
+ *  lifts (mousedown moves focus), then the click. */
+function tap(el: HTMLElement) {
+  fireEvent.pointerEnter(el, { pointerType: 'touch' })
+  fireEvent.pointerDown(el, { pointerType: 'touch' })
+  fireEvent.pointerUp(el, { pointerType: 'touch' })
+  fireEvent.mouseEnter(el)
+  fireEvent.mouseDown(el)
+  fireEvent.focus(el)
+  fireEvent.mouseUp(el)
+  fireEvent.click(el)
+}
+
+// iOS Safari drops the click of a tap whose replayed mouseover makes new
+// content appear, so a hint mounted from mouseenter cost every InstantTip
+// anchor a second tap. The gate reads the tap's own pointer events.
+describe('InstantTip on touch', () => {
+  beforeEach(() => { vi.useFakeTimers() })
+  afterEach(() => { vi.useRealTimers() })
+
+  it('a touch tap runs the anchor\'s click and never mounts the bubble', () => {
+    const onClick = vi.fn()
+    render(<ClickHarness onClick={onClick} />)
+    tap(screen.getByRole('button', { name: 'anchor' }))
+    expect(onClick).toHaveBeenCalledTimes(1)
+    expect(screen.queryByRole('tooltip')).toBeNull()
+    act(() => { vi.advanceTimersByTime(OPEN_DELAY_MS * 5) })
+    expect(screen.queryByRole('tooltip')).toBeNull()
+  })
+
+  it('a mouse on a touch device still hovers: pointerType mouse opens after the delay', () => {
+    render(<Harness />)
+    const anchor = screen.getByRole('button', { name: 'anchor' })
+    fireEvent.pointerEnter(anchor, { pointerType: 'mouse' })
+    fireEvent.mouseEnter(anchor)
+    expect(screen.queryByRole('tooltip')).toBeNull()
+    act(() => { vi.advanceTimersByTime(OPEN_DELAY_MS) })
+    expect(screen.getByRole('tooltip')).toBeInTheDocument()
+  })
+
+  it('a mouse arriving right after a tap on the same anchor hovers normally', () => {
+    render(<Harness />)
+    const anchor = screen.getByRole('button', { name: 'anchor' })
+    tap(anchor)
+    fireEvent.blur(anchor)
+    fireEvent.mouseLeave(anchor)
+    fireEvent.pointerEnter(anchor, { pointerType: 'mouse' })
+    fireEvent.mouseEnter(anchor)
+    act(() => { vi.advanceTimersByTime(OPEN_DELAY_MS) })
+    expect(screen.getByRole('tooltip')).toBeInTheDocument()
+  })
+
+  it('keyboard focus after the tap has settled still shows synchronously', () => {
+    render(<Harness />)
+    const anchor = screen.getByRole('button', { name: 'anchor' })
+    tap(anchor)
+    fireEvent.blur(anchor)
+    act(() => { vi.advanceTimersByTime(TOUCH_REPLAY_WINDOW_MS) })
+    fireEvent.focus(anchor)
+    expect(screen.getByRole('tooltip')).toBeInTheDocument()
+  })
+
+  it('openOnTap: an anchor with no click action opens its bubble on a tap', () => {
+    render(<TapOpensHarness />)
+    tap(screen.getByRole('button', { name: 'anchor' }))
+    expect(screen.getByRole('tooltip')).toBeInTheDocument()
+  })
+
+  it('an outcome the tap produced still opens its held bubble at the tapped anchor', () => {
+    // The copy chip: the tap copies, and "Copied!" is the only sign it did.
+    render(<HoldHarness />)
+    const anchor = screen.getByRole('button', { name: 'anchor' })
+    tap(anchor)
+    expect(screen.queryByRole('tooltip')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'outcome' }))
+    expect(screen.getByRole('tooltip')).toHaveTextContent('held content')
   })
 })

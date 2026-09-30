@@ -89,6 +89,24 @@ describe('ChatInput attachment resize badge', () => {
     expect(screen.getByRole('tooltip')).toBeInTheDocument()
   })
 
+  it('a touch tap opens the tooltip: the badge has no click action, so the bubble is how a phone reads it', () => {
+    vi.useFakeTimers()
+    try {
+      renderWithProviders(
+        <ChatInput {...defaultProps} pendingFiles={[IMG]} resizedInfo={{ [IMG]: RESIZE }} />,
+      )
+      const badge = screen.getByText('RESIZED')
+      fireEvent.pointerEnter(badge, { pointerType: 'touch' })
+      fireEvent.pointerDown(badge, { pointerType: 'touch' })
+      fireEvent.pointerUp(badge, { pointerType: 'touch' })
+      fireEvent.mouseEnter(badge)
+      act(() => { vi.advanceTimersByTime(100) })
+      expect(screen.getByRole('tooltip')).toHaveTextContent('2400×3200 → 1176×1568')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('renders no badge for images that were not resized', () => {
     renderWithProviders(
       <ChatInput {...defaultProps} pendingFiles={[OTHER]} resizedInfo={{ [IMG]: RESIZE }} />,

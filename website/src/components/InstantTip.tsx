@@ -19,6 +19,11 @@ import { createPortal } from 'react-dom'
  * - Keyboard focus shows synchronously. A tab stop is deliberate in a way a
  *   pointer transit is not, and a keyboard user has no second cursor to wave.
  * - Escape hides while open, without requiring blur.
+ * - A touch tap never shows the hint (`TOUCH_REPLAY_WINDOW_MS`): the mouse
+ *   events a browser replays for a tap are ignored, decided by the tap's own
+ *   pointer events so a real mouse on a touch device still hovers. On iOS a
+ *   hint appearing mid-tap cost the click. A held outcome still opens, and an
+ *   anchor may opt in (`openOnTap`) when its bubble outranks its click.
  * - A scroll that can move the anchor hides while open: the position is
  *   captured at show time, so after such a scroll the bubble would sit
  *   detached from its anchor. Capture phase, because the strips that scroll
@@ -159,6 +164,14 @@ function flowFloor(el: HTMLElement): number | undefined {
  *  surface with zero callers. Exported so tests advance exactly this. */
 export const OPEN_DELAY_MS = 100
 
+/** How long after a touch pointer event on the anchor a `mouseenter` or
+ *  `focus` there is read as the browser replaying that tap as mouse events,
+ *  not as a real hover or tab stop. A tap sends its pointer events first and
+ *  the compatibility mouse events (mouseover, mouseenter, mousedown -> focus,
+ *  click) right after the finger lifts, so a second is ample for the replay
+ *  and short enough that a later keyboard focus is not mistaken for it. */
+export const TOUCH_REPLAY_WINDOW_MS = 1000
+
 /**
  * Whether a `scroll` event that fired on `target` can have moved `anchor` on
  * screen: the page itself scrolled (window / document), or a scroll container
@@ -209,9 +222,18 @@ function resumeYieldedHints() {
  * when no enter or focus fires for that press (the pointer was already resting
  * on the chip after an Escape). `placement`: which side of the anchor the
  * bubble opens on (`TipPos.placement`), or `flow` to decide per show from the
- * anchor's line in its flow container (`flowPlacement`).
+ * anchor's line in its flow container (`flowPlacement`). `openOnTap`: let a
+ * touch tap open the bubble as a hover would, so touch users can still read
+ * it. For an anchor with no click action, whose bubble is the only thing a
+ * press shows (ChatInput's resize badge), a tap has no click to lose. For an
+ * anchor whose bubble is the only place a warning the user must see BEFORE the
+ * action appears (FeedbackPill's "Request a Feature": the tip says the click
+ * spends monthly usage), the warning outranks the click -- a tap shows it,
+ * and on iOS the action may then take a second tap, which is the pre-gate
+ * behaviour that anchor had. Every other anchor keeps the default: its bubble
+ * is a hint the click does not need, and the tap must land first time.
  */
-export function useInstantTip({ hold = 0, placement = 'above' }: { hold?: boolean | number; placement?: TipPlacementOption } = {}) {
+export function useInstantTip({ hold = 0, placement = 'above', openOnTap = false }: { hold?: boolean | number; placement?: TipPlacementOption; openOnTap?: boolean } = {}) {
   const [tip, setTip] = useState<TipPos | null>(null)
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const anchorRef = useRef<HTMLElement | null>(null)
@@ -228,6 +250,18 @@ export function useInstantTip({ hold = 0, placement = 'above' }: { hold?: boolea
   // without it (a tab stop) holds the bubble open after the flash.
   const pointerInRef = useRef(false)
   const keyboardFocusRef = useRef(false)
+  // Until when a mouseenter or focus on the anchor is a touch tap's replay
+  // (`TOUCH_REPLAY_WINDOW_MS`). A tap must never open the bubble: iOS Safari
+  // treats content that appears during the tap's replayed mouseover as a hover
+  // and drops the click, so the user has to tap twice; elsewhere a tip opened
+  // by a tap has no leave to close it. Read from the tap's own pointer events,
+  // not from the device, so a mouse on a touch laptop or tablet still gets the
+  // hover: its pointerenter carries pointerType 'mouse' and clears this first.
+  const touchUntilRef = useRef(0)
+  const notePointer = (e: React.PointerEvent) => {
+    touchUntilRef.current = e.pointerType === 'touch' ? Date.now() + TOUCH_REPLAY_WINDOW_MS : 0
+  }
+  const fromTouch = () => !openOnTap && Date.now() < touchUntilRef.current
   // Links the anchor to the bubble (`aria-describedby` -> `role="tooltip"`),
   // restoring what the native `title` gave screen readers for free. Applied
   // unconditionally: a described-by pointing at a not-yet-rendered id is
@@ -374,7 +408,13 @@ export function useInstantTip({ hold = 0, placement = 'above' }: { hold?: boolea
 
   const tipHandlers = {
     'aria-describedby': tipId,
+    onPointerEnter: notePointer,
+    onPointerDown: notePointer,
+    onPointerUp: notePointer,
     onMouseEnter: (e: React.MouseEvent) => {
+      // A tap's replayed enter: no bubble, and no "pointer is here" either,
+      // since a finger that lifted has left.
+      if (fromTouch()) return
       cancelPending()
       const el = e.currentTarget as HTMLElement
       anchorRef.current = el
@@ -400,6 +440,9 @@ export function useInstantTip({ hold = 0, placement = 'above' }: { hold?: boolea
       const el = e.currentTarget as HTMLElement
       anchorRef.current = el
       lastAnchorRef.current = el
+      // The focus a tap leaves behind is not a tab stop: remember the anchor
+      // (a held outcome still opens there) but paint no hint.
+      if (fromTouch()) { keyboardFocusRef.current = false; return }
       keyboardFocusRef.current = !pointerInRef.current
       showFor(el)
     },

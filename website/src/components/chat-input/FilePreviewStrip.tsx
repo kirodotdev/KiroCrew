@@ -12,7 +12,8 @@ import { i18nT } from '../../i18n/t'
  *  (portal-rendered above the chip so the strip's overflow-x-auto can't clip
  *  it; see that module for the show/hide gesture semantics). */
 function ResizeBadge({ resize }: { resize: ResizeInfo }) {
-  const { tip, tipHandlers, tipId } = useInstantTip()
+  // No click action here: the bubble is all a press shows, so a tap opens it.
+  const { tip, tipHandlers, tipId } = useInstantTip({ openOnTap: true })
   return (
     <>
       {/* In flow under the thumbnail, not overlaid on it. The tile is a fixed
