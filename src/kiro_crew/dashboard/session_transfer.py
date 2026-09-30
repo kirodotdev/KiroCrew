@@ -229,6 +229,32 @@ _GZIP_MAGIC = b"\x1f\x8b"
 _SNAPSHOT_ATTEMPTS = 4
 
 
+class TranscriptWithheld(RuntimeError):
+    """The transcript the bundle read is restricted (or its line is unreadable).
+
+    An incognito or temporary transcript is kept for the user's own History and
+    nothing is produced from it, so a copy of it (a file export, a tunnel send)
+    is refused. Not retryable: the restriction is a ratchet.
+    """
+
+
+def _line_withheld(state: DashboardState, key: str) -> bool:
+    """True when the on-disk line of *key* is restricted, or unreadable.
+
+    Read from disk because the live slot can lag it: another writer on the key
+    (a same-key hand-over, a second gateway on this data home) can tighten the
+    line while the slot still reads persistent.
+    """
+    from kiro_crew.history import is_incognito_transcript
+
+    log = getattr(state, "conversation_log", None)
+    if not log:
+        # No log, no rows: ``_read_chained_history`` read nothing to withhold.
+        return False
+    line, readable = log.get_metadata_status(key)
+    return not readable or is_incognito_transcript(line.get("memory_mode"))
+
+
 class SnapshotUnstable(RuntimeError):
     """No consistent view of the source transcript could be taken.
 
@@ -1028,6 +1054,12 @@ async def build_transfer_bundle_async(
                 slot.key,
             )
             raise SnapshotUnstable("the session was permanently deleted")
+        # The line was checked in the read thread; the live slot is checked here,
+        # after the read, because a hand-over save can tighten it in process.
+        from kiro_crew.history import is_incognito_transcript
+
+        if is_incognito_transcript(getattr(slot, "memory_mode", "persistent")):
+            raise TranscriptWithheld("the transcript is incognito or temporary")
         if (
             slot._dirty_gen == gen_before
             and slot._disk_window_len == boundary_before
@@ -1084,6 +1116,11 @@ def _read_and_assemble(
     loop — so it is safe off-loop. Only the file reads happen here.
     """
     history = _read_chained_history(state, session_key)
+    # Privacy, read after the rows: they came from ``session_key``, so its line is
+    # checked once they are in hand -- a tightening that landed before or during
+    # the read is then seen.
+    if _line_withheld(state, session_key):
+        raise TranscriptWithheld("the transcript is incognito or temporary")
     history.extend(tail)
     layer_b = _read_layer_b(layer_b_sid)
     if layer_b_sid and layer_b is None:

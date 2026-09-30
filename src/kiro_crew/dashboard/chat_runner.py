@@ -8017,6 +8017,53 @@ def _emit_ttft_metric(t0: float, session_key: str, *, is_new: bool, resumed: boo
         logger.debug("TTFT metric emission failed", exc_info=True)
 
 
+async def _ratchet_slot_to_its_line(state, slot) -> None:
+    """Tighten *slot* to its transcript line's mode before the turn binds.
+
+    The turn's execution is built from ``slot.memory_mode``; a persistent slot
+    on a line another writer already tightened (a same-key recreate before its
+    first save) would otherwise run a persistent turn over a restricted
+    conversation. Only tightens; an unreadable line leaves the slot as it is and
+    the binder's own line read refuses it.
+    """
+    from kiro_crew.dashboard.chat_persistence import _tighten_live_slot
+    from kiro_crew.dashboard.chat_utils import slot_history_key
+    from kiro_crew.execution_context import canonical_memory_mode, stricter_memory_mode
+
+    log = getattr(state, "conversation_log", None)
+    if log is None:
+        return
+    line, readable = await asyncio.to_thread(log.get_metadata_status, slot_history_key(slot))
+    if not readable:
+        return
+    slot_mode = canonical_memory_mode(getattr(slot, "memory_mode", "persistent"))
+    mode = stricter_memory_mode(canonical_memory_mode(line.get("memory_mode")), slot_mode)
+    if mode != slot_mode:
+        _tighten_live_slot(state, slot, mode)
+
+
+async def _refuse_a_rebound_restricted_member(session_key: str, execution) -> None:
+    """Refuse a restricted session whose ``agent`` alias now names another member.
+
+    A restricted line keeps no durable carrier, so the first turn after a
+    restart re-selects the member from ``agent``. The line records the member id
+    the session ran as (``RESTRICTED_MEMBER_ID_KEY``); when the alias has since
+    been reassigned, binding what it resolves to now would hand this chat a
+    different member's memory. An unreadable line fails closed.
+    """
+    from kiro_crew.history import RESTRICTED_MEMBER_ID_KEY, ConversationLog
+
+    line, readable = await asyncio.to_thread(ConversationLog().get_metadata_status, session_key)
+    if not readable:
+        raise _MemoryUnavailable("memory_unavailable: this conversation's record is unreadable")
+    pinned = line.get(RESTRICTED_MEMBER_ID_KEY)
+    if pinned and pinned != execution.member_id:
+        raise _MemoryUnavailable(
+            "memory_unavailable: this conversation's member binding changed; "
+            "open a new conversation"
+        )
+
+
 class _MemoryUnavailable(RuntimeError):
     """A memory refusal whose display code must not be inferred from prose."""
 
@@ -9636,6 +9683,7 @@ async def _run_chat(
                 resolve_member_execution,
             )
 
+            await _ratchet_slot_to_its_line(state, slot)
             previous_execution = await asyncio.to_thread(read_session_execution, session_key)
             _require_current_binding()
             if previous_execution is not None:
@@ -9653,6 +9701,7 @@ async def _run_chat(
                     app=slot._app or "",
                     validate_memory_files=False,
                 )
+                await _refuse_a_rebound_restricted_member(session_key, execution_context)
             else:
                 execution_context = ExecutionContext(
                     None,

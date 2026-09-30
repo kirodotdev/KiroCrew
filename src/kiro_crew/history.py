@@ -164,6 +164,14 @@ _COMPACT_OWNED_META_KEYS: frozenset[str] = frozenset(
 # line from the slot's in-memory state, so for THESE absence is meaningful (a
 # cleared title, an un-pinned slot, a reopened tab) — hence they are named here
 # and not preserved, while everything else survives the save.
+# The member a RESTRICTED session ran as. A restricted line carries no
+# ``execution_context`` and no ``memory_store`` (its carrier is live-only), so
+# after a restart the member is re-selected from the ``agent`` alias. This field
+# is the immutable member id that alias resolved to while the session ran; the
+# turn-start binder refuses a re-selection that resolves to a different member
+# (an alias since reassigned), instead of binding that member's memory.
+RESTRICTED_MEMBER_ID_KEY = "restricted_member_id"
+
 SLOT_OWNED_META_KEYS: frozenset[str] = frozenset(
     {
         "_type",

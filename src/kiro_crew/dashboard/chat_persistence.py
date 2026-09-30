@@ -65,12 +65,14 @@ from kiro_crew.dashboard.state import (
 )
 from kiro_crew.effort import EFFORT_LEVELS, EFFORT_VALUES
 from kiro_crew.execution_context import (
+    EXECUTION_CONTEXT_KEY,
     MEMORY_MODES,
     canonical_memory_mode,
     read_session_execution,
     stricter_memory_mode,
 )
 from kiro_crew.history import (
+    RESTRICTED_MEMBER_ID_KEY,
     ROWS_ONLY_DEFERRED_META_KEYS,
     ROWS_ONLY_OWNED_META_KEYS,
     SLOT_OWNED_META_KEYS,
@@ -3359,6 +3361,50 @@ def _frozen_prefix_and_foreign_appends(
     return (prefix, foreign, dedup_dropped)
 
 
+def _tighten_live_slot(state: DashboardState, target: _ChatSlot, mode: str) -> None:
+    """Carry a ratcheted line *mode* onto a live slot and its restricted marker.
+
+    The line can be stricter than a live slot that holds it: a persistent slot
+    recreated on a key whose line a restricted slot already tightened, or a
+    restricted tail landing under a persistent replacement's line. Every
+    in-process gate that reads ``slot.memory_mode`` or the key's restricted
+    marker (session summary, export, memory and artifact routes, the next
+    turn's execution carrier) must then see the restriction the file carries,
+    or it hands the restricted rows to a model or a file. The ratchet only
+    tightens, so a slot is never loosened here.
+    """
+    if mode == "persistent":
+        return
+    if canonical_memory_mode(getattr(target, "memory_mode", "persistent")) != mode:
+        target.memory_mode = mode
+    restricted = getattr(state, "_restricted_keys", None)
+    key = getattr(target, "key", "")
+    if isinstance(restricted, set) and key:
+        restricted.add(f"dashboard:{key}")
+
+
+def _tighten_carried_execution(meta_line: dict, mode: str) -> None:
+    """Fold *mode* into a carried durable execution record on ``meta_line``.
+
+    A persistent session's execution carrier is durable: ``bind_session_execution``
+    writes it into the metadata line under ``execution_context`` with a
+    ``memory_mode`` of its own, and ``read_session_execution`` answers from that
+    record. The save carries the record rather than owning it, so when the line's
+    ``memory_mode`` is ratcheted the record would keep the looser mode. The record
+    is a ratchet like the line: only its mode is tightened, its identity is left
+    untouched, and a malformed record is left for the read path to refuse.
+    """
+    if mode == "persistent":
+        return
+    payload = meta_line.get(EXECUTION_CONTEXT_KEY)
+    if not isinstance(payload, dict):
+        return
+    record_mode = canonical_memory_mode(payload.get("memory_mode"))
+    retained = stricter_memory_mode(record_mode, mode)
+    if retained != record_mode:
+        meta_line[EXECUTION_CONTEXT_KEY] = {**payload, "memory_mode": retained}
+
+
 def _save_slot_to_history(
     state: DashboardState,
     slot: _ChatSlot,
@@ -3596,7 +3642,11 @@ def _save_slot_to_history(
             return slot_mode
         if execution is None:
             return slot_mode
+        if execution.member_id:
+            retained_member["id"] = execution.member_id
         return stricter_memory_mode(slot_mode, execution.memory_mode)
+
+    retained_member: dict[str, str] = {}
 
     def line_memory_mode(meta: dict) -> str:
         """The ``memory_mode`` the on-disk line already carries, canonicalised.
@@ -3612,6 +3662,9 @@ def _save_slot_to_history(
         """
         line_mode = str(meta.get("memory_mode") or "persistent").lower()
         return line_mode if line_mode in MEMORY_MODES else "persistent"
+
+    def tighten_slot_to(mode: str) -> None:
+        _tighten_live_slot(state, slot, mode)
 
     if expected_history_key is not None and history_key != expected_history_key:
         # The caller authorized a write against a specific transcript and the
@@ -3704,6 +3757,7 @@ def _save_slot_to_history(
                 # ``meta`` is the line as the guard read it under the lock, so
                 # the ratchet folds the CURRENT on-disk mode, not a snapshot.
                 _mode = stricter_memory_mode(line_memory_mode(meta), retained_memory_mode())
+                tighten_slot_to(_mode)
                 fields: dict = {
                     "folder_id": slot.folder_id or "",
                     "tags": list(slot.tags),
@@ -3767,6 +3821,8 @@ def _save_slot_to_history(
                 fields["memory_store"] = (
                     named_store_or_empty(slot.memory_store) if _mode == "persistent" else ""
                 )
+                if _mode != "persistent" and retained_member.get("id"):
+                    fields[RESTRICTED_MEMBER_ID_KEY] = retained_member["id"]
                 # Clearable like memory_store: a name-only pick after a template
                 # pick must not keep advertising the template namespace.
                 fields["agent_kind"] = slot.agent_kind
@@ -4120,6 +4176,7 @@ def _save_slot_to_history(
             # must not relabel them by rebuilding the line from its own state.
             _mode = stricter_memory_mode(line_memory_mode(existing_meta), retained_memory_mode())
             meta_line["memory_mode"] = _mode
+            tighten_slot_to(_mode)
             if slot.title and slot.title != slot.key:
                 meta_line["title"] = slot.title
                 # Persist the title's provenance next to it (mirrors
@@ -4164,6 +4221,12 @@ def _save_slot_to_history(
             # ``agent_kind`` stays: it is a display fact, not an owner claim.
             if _mode == "persistent" and (_named := named_store_or_empty(slot.memory_store)):
                 meta_line["memory_store"] = _named
+            # What it keeps instead is the member id the live carrier ran as
+            # (see ``RESTRICTED_MEMBER_ID_KEY``). Unowned by this writer, so a
+            # save with no live carrier (before the first turn after a restart)
+            # carries the recorded id through rather than erasing it.
+            if _mode != "persistent" and retained_member.get("id"):
+                meta_line[RESTRICTED_MEMBER_ID_KEY] = retained_member["id"]
             if slot.agent_kind:
                 meta_line["agent_kind"] = slot.agent_kind
             if slot.project:
@@ -4390,32 +4453,33 @@ def _save_slot_to_history(
             # Decided at the stale-queue guard above, which needs the same answer
             # to know whether this save is deciding the queue at all.
             if rows_only and existing_meta and not line_is_this_slots:
-                # The deferred fields include ``memory_mode``, and that one is the
-                # line's privacy contract: every reader that learns from the file
-                # gates on it. A restricted original handing its unsaved tail to a
-                # PERSISTENT same-key replacement would file private rows under a
-                # line that says persistent, and consolidation, the history tools
-                # and the summary would then treat them as ordinary content. The
-                # line cannot be tightened from here either: it is the live
-                # replacement's own, describing that slot's persistent rows, and a
-                # rows-only write owns none of its fields. So the write is refused
-                # -- ``False``, nothing written -- and the drain reports the rows
-                # as lost, which is the loss the mode chose over disclosure. Only
-                # a STRICTER source refuses: ``_mode`` already folds the line's
-                # value in, so it differs from the line exactly when the source is
-                # stricter; a persistent original over a restricted replacement's
-                # line keeps the line's stricter value, as stricter-wins requires.
+                # The deferred fields include ``memory_mode``, the line's privacy
+                # contract, and that contract is a RATCHET any writer may tighten.
+                # A restricted original handing its unsaved tail to a PERSISTENT
+                # same-key replacement must not file private rows under a line
+                # that says persistent, and must not drop them either: they are
+                # the reply the user was watching, and a refused rows-only write
+                # has no retry path (the slot is popped). So the line is tightened
+                # to the stricter mode, its store name goes with the loosening, and
+                # the live replacement is tightened before the rows are written.
+                # Both race orders then reach the same file. ``_mode`` already
+                # folds the line's value in, so it differs from the line exactly
+                # when the source is stricter.
                 line_mode = line_memory_mode(existing_meta)
-                if _mode != line_mode:
-                    logger.warning(
-                        "Slot %s save refused: %d unsaved %s row(s) would be filed under "
-                        "another holder's %s line",
+                tighten_line = _mode != line_mode
+                if tighten_line:
+                    logger.info(
+                        "Slot %s save tightened another holder's %s line to %s: %d "
+                        "unsaved %s row(s) land under the stricter mode",
                         slot.key,
+                        line_mode,
+                        _mode,
                         len(window),
                         _mode,
-                        line_mode,
                     )
-                    return False
+                    holder = state._slots.get(slot.key)
+                    if holder is not None and holder is not slot:
+                        _tighten_live_slot(state, holder, _mode)
                 # A rows-only write does not own the slot-owned fields: the line
                 # describes whichever OTHER live slot published it, and this one is
                 # only here to get its messages down. Drop the rebuild for every
@@ -4432,8 +4496,14 @@ def _save_slot_to_history(
                 for meta_key in ROWS_ONLY_DEFERRED_META_KEYS:
                     meta_line.pop(meta_key, None)
                 carry_unowned_metadata(meta_line, existing_meta, ROWS_ONLY_OWNED_META_KEYS)
+                if tighten_line:
+                    meta_line["memory_mode"] = _mode
+                    meta_line.pop("memory_store", None)
             else:
                 carry_unowned_metadata(meta_line, existing_meta, SLOT_OWNED_META_KEYS)
+            # The carried durable execution record must never read looser than
+            # the line it sits on. A no-op on a record already at least as strict.
+            _tighten_carried_execution(meta_line, _mode)
             meta_str = json.dumps(meta_line) + "\n"
 
             # ── Frozen prefix (never rewritten) + freshly serialized window ──

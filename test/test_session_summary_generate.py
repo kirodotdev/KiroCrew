@@ -172,6 +172,22 @@ class TestGating:
         assert called == []
         assert state.conversation_log.get_cached_intent_summary(state.hkey) is None
 
+    @pytest.mark.parametrize("mode", ["incognito", "temporary", "Incognito"])
+    async def test_a_restricted_disk_line_is_refused_under_a_persistent_slot(
+        self, env, monkeypatch, mode
+    ):
+        """The rows come from disk, so the file's own mode gates them: a line
+        another writer tightened must not be summarized by a slot that still
+        reads persistent."""
+        state, slot = env
+        state.conversation_log.update_metadata(state.hkey, {"memory_mode": mode})
+        assert slot.memory_mode == "persistent"
+        called = []
+        _stub_llm(monkeypatch, _GOOD_REPLY, called)
+        assert await chat_summary.generate_session_summary(state, slot, cfg=_cfg()) is False
+        assert called == []
+        assert state.conversation_log.get_cached_intent_summary(state.hkey) is None
+
     async def test_an_unclean_stop_reason_skips(self, env, monkeypatch):
         """A turn cut short by a timeout or stall did not really finish."""
         state, slot = env

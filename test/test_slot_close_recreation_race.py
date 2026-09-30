@@ -1528,27 +1528,38 @@ async def test_delete_handover_keeps_the_replacement_published_metadata(tmp_path
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["incognito", "temporary"])
-async def test_delete_handover_refuses_a_restricted_tail_onto_a_persistent_line(
-    tmp_path, caplog, mode
+async def test_delete_handover_of_a_restricted_tail_tightens_a_persistent_line(
+    tmp_path, caplog, monkeypatch, mode
 ) -> None:
-    """Private rows are never filed under another holder's persistent line.
+    """A restricted tail draining under a persistent replacement's line tightens it.
 
     The rows-only drain defers ``memory_mode`` to the line the replacement
     published, and that field is what every learning reader gates on. Writing
-    the restricted original's tail there would make consolidation, the history
-    tools and the summary treat private content as ordinary. The line cannot be
-    tightened from the drain (it is the live replacement's own, over that slot's
-    persistent rows), so the write is refused and the loss is reported like any
-    other failed hand-over: a 500 for the close, a log line naming the rows, the
-    replacement untouched, and the file holding exactly what the replacement
-    committed.
+    the restricted original's tail under a line that says persistent would make
+    consolidation, the history tools and the summary treat private content as
+    ordinary; refusing the write would lose the reply the user was watching, with
+    no retry path (the slot is popped). The line is a ratchet any writer may
+    tighten, so the drain lands the rows under the stricter value -- the same
+    file the other race order reaches (see
+    ``test_delete_handover_of_a_restricted_tail_lands_under_the_ratcheted_line``).
+    A restricted line names no store; the replacement's title and folder stay.
 
-    The original committed NOTHING before the close: a line it had published
-    would ratchet the replacement's save down to the restricted mode (see
-    ``test_delete_handover_of_a_restricted_tail_lands_under_the_ratcheted_line``),
-    so the persistent line here is the replacement's alone.
+    The replacement is live and has bound a persistent durable execution record
+    on the same line, and the summary and export gate on the live slot. So the
+    save tightens the replacement slot, its restricted marker and the carried
+    execution record along with the line.
+
+    The original committed NOTHING before the close, so the persistent line is
+    the replacement's alone -- the only shape in which the drain meets a looser
+    line. The replacement's first row is floored after the original's rows so
+    the file order asserted below does not depend on the host clock.
     """
+    from kiro_crew.config.loader import KiroCrewConfig, SessionSummaryConfig
+    from kiro_crew.dashboard import chat_summary
+
+    summary_cfg = KiroCrewConfig(session_summary=SessionSummaryConfig(enabled=True))
     state = _make_state(tmp_path)
+    monkeypatch.setattr(history_mod, "_sessions_dir", lambda: tmp_path)
     original = state.get_or_create_slot(NAME, memory_mode=mode)
     original.append("user", "TAIL-1")
     original.append("assistant", "TAIL-2")
@@ -1558,37 +1569,63 @@ async def test_delete_handover_refuses_a_restricted_tail_onto_a_persistent_line(
     entered = asyncio.Event()
     release = asyncio.Event()
     _arm_running_turn(original, entered, release)
-    caplog.set_level(logging.WARNING)
+    caplog.set_level(logging.INFO)
 
     close = asyncio.create_task(handlers.api_chat_slot_delete(_Req(state, NAME)))
     await _reached(entered, close, seam="the shielded task-cancel wait")
     replacement = state.get_or_create_slot(NAME)
     assert replacement is not original
     assert replacement.memory_mode == "persistent"
+    replacement.note_disk_tail(*(m.get("ts") for m in original.messages))
     replacement.append("user", "REPLACEMENT-1")
     replacement.drain()
     await _publish_metadata(state, replacement, title="REPLACEMENT TITLE", folder="f-r")
-    assert state.conversation_log.get_metadata(HKEY).get("memory_mode") == "persistent"
+    persistent = execution_context.ExecutionContext(
+        None,
+        execution_context.MemoryStoreRef("default"),
+        "template",
+        "kirocrew",
+    )
+    await asyncio.to_thread(execution_context.bind_session_execution, HKEY, persistent)
+    meta = state.conversation_log.get_metadata(HKEY)
+    assert meta.get("memory_mode") == "persistent"
+    assert "memory_store" in meta, "the persistent binding wrote no store field to drop"
+    assert meta[execution_context.EXECUTION_CONTEXT_KEY]["memory_mode"] == "persistent"
+    assert not chat_summary._should_summarize(summary_cfg, replacement, 4, force=True)
     release.set()
     resp = await close
 
-    assert resp.status == 500, "restricted rows were filed under a persistent line"
-    assert _json(resp)["code"] == "history_save_failed"
+    assert resp.status == 200, "the restricted tail was refused instead of landing"
     assert state._slots.get(NAME) is replacement
     meta = state.conversation_log.get_metadata(HKEY)
-    assert meta.get("memory_mode") == "persistent"
+    assert meta.get("memory_mode") == mode, "the drain filed private rows under a persistent line"
+    assert "memory_store" not in meta, "the tightened line still names a store"
     assert meta.get("title") == "REPLACEMENT TITLE"
-    assert _disk_contents(state) == [
-        "REPLACEMENT-1"
-    ], "the restricted tail reached a line that says persistent"
+    assert meta.get("folder_id") == "f-r"
+    assert _disk_contents(state) == ["TAIL-1", "TAIL-2", "REPLACEMENT-1"]
+    assert replacement.memory_mode == mode, "the live replacement still reads persistent"
+    assert HKEY in state._restricted_keys, "the key-scoped marker was not re-derived"
+    record = meta[execution_context.EXECUTION_CONTEXT_KEY]
+    assert record["memory_mode"] == mode, "the carried execution record still says persistent"
+    assert execution_context.read_session_execution(HKEY).memory_mode == mode
+    assert (
+        chat_summary._should_summarize(summary_cfg, replacement, 4, force=True) == "memory_mode"
+    ), "the summary would still read the private rows off disk for the replacement"
     messages = [record.getMessage() for record in caplog.records]
+    assert not any(
+        "unpersisted row(s) were not written" in message for message in messages
+    ), "the drain reported rows lost that it wrote"
     assert any(
-        "2 unpersisted row(s) were not written" in message for message in messages
-    ), "the refused hand-over was not reported by the drain"
-    assert any(
-        f"unsaved {mode} row(s) would be filed under another holder's persistent line" in message
-        for message in messages
-    ), "the save did not name the mode mismatch as its reason"
+        f"tightened another holder's persistent line to {mode}" in message for message in messages
+    ), "the save did not report the tightening"
+
+    replacement.append("user", "REPLACEMENT-2")
+    replacement.drain()
+    assert await handlers.save_slot_off_loop(state, replacement, best_effort=False)
+    meta = state.conversation_log.get_metadata(HKEY)
+    assert meta.get("memory_mode") == mode, "the replacement's full save loosened the line"
+    assert "memory_store" not in meta
+    assert _disk_contents(state) == ["TAIL-1", "TAIL-2", "REPLACEMENT-1", "REPLACEMENT-2"]
 
 
 @pytest.mark.asyncio
@@ -1676,6 +1713,76 @@ async def test_same_key_persistent_recreate_cannot_relabel_a_restricted_line(
     assert meta.get("memory_mode") == mode, "the full save relabeled the line"
     assert "memory_store" not in meta, "the full save named a store on a restricted line"
     assert _disk_contents(state) == ["PRIVATE-1", "PRIVATE-2", "REPLACEMENT-3"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["incognito", "temporary"])
+async def test_same_key_persistent_recreate_is_restricted_like_its_line(tmp_path, mode) -> None:
+    """A replacement that saves onto a restricted line runs restricted too.
+
+    The in-process gates (session summary, file export, the next turn's
+    carrier) read ``slot.memory_mode``, so the ratchet that keeps the line
+    restricted must reach the live slot, or those gates would hand the
+    original's private rows to a model or a file. Both writers are driven.
+    """
+    from kiro_crew.dashboard.chat_utils import slot_history_key
+    from kiro_crew.dashboard.session_export import _disk_line_withholds_export
+
+    state = _make_state(tmp_path)
+    original = state.get_or_create_slot(NAME, memory_mode=mode)
+    original.append("user", "PRIVATE-1")
+    original.drain()
+    resp = await handlers.api_chat_slot_delete(_Req(state, NAME))
+    assert resp.status == 200
+
+    replacement = state.get_or_create_slot(NAME)
+    assert replacement.memory_mode == "persistent"
+    assert _disk_line_withholds_export(state, slot_history_key(replacement))
+    await _publish_metadata(state, replacement, title="REPLACEMENT TITLE", folder="f-r")
+    assert replacement.memory_mode == mode, "the empty-window merge left the slot persistent"
+
+    fresh = state.get_or_create_slot(NAME + "-b")
+    fresh.append("user", "PERSISTENT-1")
+    fresh.drain()
+    assert await handlers.save_slot_off_loop(state, fresh, best_effort=False)
+    assert fresh.memory_mode == "persistent", "a persistent line tightened its slot"
+    assert not _disk_line_withholds_export(state, slot_history_key(fresh))
+
+    replacement.memory_mode = "persistent"
+    replacement.append("user", "REPLACEMENT-2")
+    replacement.drain()
+    assert await handlers.save_slot_off_loop(state, replacement, best_effort=False)
+    assert replacement.memory_mode == mode, "the full save left the slot persistent"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["incognito", "temporary"])
+async def test_turn_start_ratchets_a_persistent_slot_to_its_restricted_line(tmp_path, mode) -> None:
+    """A persistent slot on a restricted line runs its turn restricted.
+
+    The turn's execution is built from ``slot.memory_mode``, and a same-key
+    recreate can reach its first turn before any save of its own folds the line
+    in. The turn-start ratchet reads the line first, so the binder never builds
+    a persistent execution over a restricted conversation.
+    """
+    from kiro_crew.dashboard import chat_runner
+
+    state = _make_state(tmp_path)
+    original = state.get_or_create_slot(NAME, memory_mode=mode)
+    original.append("user", "PRIVATE-1")
+    original.drain()
+    resp = await handlers.api_chat_slot_delete(_Req(state, NAME))
+    assert resp.status == 200
+
+    replacement = state.get_or_create_slot(NAME)
+    assert replacement.memory_mode == "persistent"
+    await chat_runner._ratchet_slot_to_its_line(state, replacement)
+    assert replacement.memory_mode == mode
+    assert HKEY in state._restricted_keys
+
+    fresh = state.get_or_create_slot(NAME + "-c")
+    await chat_runner._ratchet_slot_to_its_line(state, fresh)
+    assert fresh.memory_mode == "persistent", "a line with no mode tightened its slot"
 
 
 @pytest.mark.asyncio

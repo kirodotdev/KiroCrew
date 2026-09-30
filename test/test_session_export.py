@@ -37,8 +37,15 @@ class _FakeLog:
     def __init__(self, messages):
         self._messages = messages
 
+        self.meta: dict = {}
+        self.metas: dict[str, dict] = {}
+        self.meta_readable = True
+
     def read_messages_chained(self, _key):
         return list(self._messages)
+
+    def get_metadata_status(self, key):
+        return dict(self.metas.get(key, self.meta)), self.meta_readable
 
 
 def _slot(messages, *, title="My session", memory_mode="persistent", app="", **over):
@@ -445,6 +452,48 @@ async def test_incognito_and_temporary_sessions_are_refused():
 
         assert resp.status == 400, mode
         assert json.loads(resp.body)["code"] == "export_slot_not_persistent"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("line", [{"memory_mode": "incognito"}, {"memory_mode": "Temporary"}, None])
+async def test_a_restricted_or_unreadable_disk_line_is_refused_under_a_persistent_slot(line):
+    """The bundle's rows come from disk, so the file's own mode gates them: a
+    line another writer tightened (or one that cannot be read) must not be
+    exported by a slot that still reads persistent."""
+    slot = _slot(MSGS)
+    state = _state(MSGS, slots={"slot-1": slot})
+    if line is None:
+        state.conversation_log.meta_readable = False
+    else:
+        state.conversation_log.meta = line
+
+    resp = await se.api_chat_slot_export(_request(state))
+
+    assert resp.status == 400
+    assert json.loads(resp.body)["code"] == "export_slot_not_persistent"
+
+
+@pytest.mark.asyncio
+async def test_a_rebind_during_the_build_cannot_move_the_line_check(monkeypatch):
+    """The line checked after the build includes the transcript named before it:
+    a slot rebound mid-build onto a persistent key must not export rows the
+    build read from a restricted one."""
+    slot = _slot(MSGS)
+    state = _state(MSGS, slots={"slot-1": slot})
+    state.conversation_log.metas["dashboard:slot-1"] = {"memory_mode": "incognito"}
+    real_build = se.build_transfer_bundle_async
+
+    async def rebinding_build(*args, **kwargs):
+        bundle = await real_build(*args, **kwargs)
+        slot.linked_session_key = "dashboard:elsewhere"
+        return bundle
+
+    monkeypatch.setattr(se, "build_transfer_bundle_async", rebinding_build)
+
+    resp = await se.api_chat_slot_export(_request(state))
+
+    assert resp.status == 400
+    assert json.loads(resp.body)["code"] == "export_slot_not_persistent"
 
 
 @pytest.mark.asyncio

@@ -25,6 +25,7 @@ from kiro_crew.dashboard.chat_persistence import (
 )
 from kiro_crew.dashboard.handlers import agents
 from kiro_crew.execution_context import read_session_execution
+from kiro_crew.history import RESTRICTED_MEMBER_ID_KEY
 from kiro_crew.member_memory_auth import read_private_session_store
 from kiro_crew.memory import MemoryStore
 from kiro_crew.memory_stores import (
@@ -1899,6 +1900,9 @@ async def test_restricted_member_session_persists_transcript_but_no_owner_record
     assert meta.get("agent_kind") == "member"
     assert "memory_store" not in meta
     assert "execution_context" not in meta
+    # The member the session ran as is pinned by id, so the restart can tell a
+    # reassigned alias apart from the member it re-selects.
+    assert meta.get(RESTRICTED_MEMBER_ID_KEY) == captured.member_id
 
     # Restart: the live carrier is gone and only the record remains.
     _LIVE_EXECUTIONS.pop(_live_key(key), None)
@@ -1918,3 +1922,17 @@ async def test_restricted_member_session_persists_transcript_but_no_owner_record
     assert rebound.memory_mode == mode
     assert rebound.store.store_id == member_store
     assert "memory_store" not in restarted.conversation_log.get_metadata(key)
+    assert (
+        restarted.conversation_log.get_metadata(key).get(RESTRICTED_MEMBER_ID_KEY)
+        == captured.member_id
+    ), "a save with no live carrier erased the pinned member"
+
+    # The alias now resolving to ANOTHER member is refused, not bound.
+    await chat_runner._refuse_a_rebound_restricted_member(key, rebound)
+    other = replace(
+        rebound,
+        member_id="another-member",
+        store=replace(rebound.store, member_id="another-member"),
+    )
+    with pytest.raises(chat_runner._MemoryUnavailable, match="member binding changed"):
+        await chat_runner._refuse_a_rebound_restricted_member(key, other)

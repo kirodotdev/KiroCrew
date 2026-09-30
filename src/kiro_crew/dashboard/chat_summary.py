@@ -343,6 +343,15 @@ async def _generate_locked(
     # the same source the history endpoint serves, and extract_turns bounds
     # what the model actually reads.
     records = await asyncio.to_thread(log.read_messages_chained, key)
+    # The rows came from disk, so the file's own ``memory_mode`` gates them too,
+    # not only the live slot's: another writer on this key can have tightened the
+    # line while this slot still reads persistent. Read after the rows, so a
+    # tightening that landed before or during the read is seen; an unreadable
+    # line fails closed.
+    line, readable = await asyncio.to_thread(log.get_metadata_status, key)
+    if not readable or is_incognito_transcript(line.get("memory_mode")):
+        logger.debug("Session summary skipped for %s: memory_mode (on-disk line)", key)
+        return False
     turns = extract_turns(
         records,
         assistant_excerpt_chars=cfg.session_summary.assistant_excerpt_chars,

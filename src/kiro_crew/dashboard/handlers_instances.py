@@ -39,6 +39,7 @@ from kiro_crew.dashboard.handlers._shared import (
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 from kiro_crew.dashboard.session_transfer import (
     SnapshotUnstable,
+    TranscriptWithheld,
     build_transfer_bundle_async,
     local_instance_label,
 )
@@ -1064,6 +1065,15 @@ async def api_instances_send_session(request: web.Request) -> web.Response:
     # every unsaved turn twice in the copy.
     try:
         bundle = await build_transfer_bundle_async(state, slot, origin=local_instance_label())
+    except TranscriptWithheld:
+        _audit("send_session", "denied", request_id=instance_id, error="non-persistent line")
+        return web.json_response(
+            {
+                "error": "cannot transfer a non-persistent session",
+                "code": "transfer_slot_not_persistent",
+            },
+            status=400,
+        )
     except SnapshotUnstable:
         # No consistent view of the source: either a flush landed inside every
         # retry, or a rewind/regenerate rewrite is still owed so disk is stale.

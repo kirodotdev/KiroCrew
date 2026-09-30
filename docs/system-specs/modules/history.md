@@ -810,7 +810,11 @@ writer:
   the store name is what the restart would read as a legacy owner claim and
   refuse. The member is re-selected from `agent` on the next turn. The store is
   gated on the FOLDED mode above, so a persistent slot writing under a
-  ratcheted restricted line names none either.
+  ratcheted restricted line names none either. What it keeps instead is
+  `restricted_member_id`, the member id the live carrier ran as: the
+  turn-start binder refuses a re-selection from `agent` that resolves to a
+  different member (an alias since reassigned) rather than bind that member's
+  memory, and fails closed on an unreadable line.
 - **A title-born header carries the mode too.** `_persist_title` can be the
   FIRST writer of a session's line (the on-send titling attempt runs before the
   turn-end save and the periodic flush), and a header with no `memory_mode`
@@ -826,18 +830,22 @@ writer:
   unsaved tail with `rows_only=True`, which defers every slot-owned field —
   `memory_mode` included — to the line a same-key replacement published. A
   restricted original draining onto a PERSISTENT replacement's line would
-  therefore put private rows under a line that says persistent, and the line
-  cannot be tightened from the drain (it is the live replacement's own line,
-  over that slot's persistent rows, and a rows-only write owns none of its
-  fields). The save refuses that write (`False`, nothing written) when the
-  retained mode is stricter than the line's, and the drain reports the rows as
-  lost exactly as it reports a failed write — a 500 `history_save_failed` on
-  the close, a log line naming the count. The reverse (a persistent tail onto a
-  restricted line) commits and keeps the line's stricter mode, as
-  stricter-wins requires. The refusal is reachable only when the original
-  committed nothing before the close: a line it had published ratchets the
-  replacement's own save down to the restricted mode, so the drain then lands
-  the tail under it.
+  therefore put private rows under a line that says persistent. The line is a
+  ratchet any writer may tighten, so when the retained mode is stricter than
+  the line's the save TIGHTENS the line — `memory_mode` becomes the stricter
+  value and a carried `memory_store` is dropped, since a restricted line names
+  no store — and the rows land under it; the replacement's title, folder, tags
+  and pin stay. The live replacement slot and its restricted marker are
+  tightened by the same save before the write (`_tighten_live_slot`), and the
+  carried durable `execution_context` record is folded to the line's mode
+  (`_tighten_carried_execution`). The session summary and the shared transfer
+  bundle (file export and tunnel send) also check the on-disk line of the
+  transcript they read, after the read, and refuse a restricted or unreadable
+  one (`TranscriptWithheld`); the bundle re-checks the live slot too. A turn
+  first ratchets its slot to the line (`_ratchet_slot_to_its_line`), so the
+  binder never builds a persistent execution over a restricted conversation. The
+  reverse (a persistent tail onto a restricted line) commits and keeps the
+  line's stricter mode, as stricter-wins requires.
 - **The suggestions builder skips restricted transcripts.**
   `suggestions._build_context` walks `list_sessions()` and pulls each
   session's last user messages into a prompt shipped to the model and cached

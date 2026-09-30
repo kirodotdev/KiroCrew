@@ -35,6 +35,9 @@ from kiro_crew.dashboard.session_transfer import (
 
 
 class _FakeLog:
+    def get_metadata_status(self, _key):
+        return {}, True
+
     def __init__(self, messages):
         self._messages = messages
 
@@ -162,6 +165,9 @@ async def test_send_handler_sends_each_turn_exactly_once(monkeypatch):
     disk = {"messages": [persisted]}
 
     class _Log:
+        def get_metadata_status(self, _key):
+            return {}, True
+
         def read_messages_chained(self, _key):
             return list(disk["messages"])
 
@@ -262,6 +268,9 @@ async def test_snapshot_retries_when_a_flush_lands_during_the_read():
     reads: list[int] = []
 
     class _Log:
+        def get_metadata_status(self, _key):
+            return {}, True
+
         def read_messages_chained(self, _key):
             reads.append(len(disk["messages"]))
             return list(disk["messages"])
@@ -628,6 +637,9 @@ async def test_bundle_reads_the_transcript_key_not_the_session_key():
     reads: list[str] = []
 
     class _Log:
+        def get_metadata_status(self, _key):
+            return {}, True
+
         def read_messages_chained(self, key):
             reads.append(key)
             return [{"role": "user", "content": "older turn", "ts": ""}]
@@ -666,6 +678,9 @@ async def test_bundle_flushes_a_dirty_slot_so_in_place_edits_travel(monkeypatch)
     disk = {"messages": [{"role": "assistant", "content": "the old variant", "ts": ""}]}
 
     class _Log:
+        def get_metadata_status(self, _key):
+            return {}, True
+
         def read_messages_chained(self, _key):
             return list(disk["messages"])
 
@@ -4517,3 +4532,43 @@ async def test_a_folder_store_failure_leaves_the_session_filed_nowhere(monkeypat
     assert resp.status == 200, resp.body
     assert json.loads(resp.body)["ok"] is True
     assert _filed_folder(state) == ""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("line", [{"memory_mode": "incognito"}, {"memory_mode": "Temporary"}, None])
+async def test_bundle_refuses_a_restricted_or_unreadable_line(line):
+    """The builder gates on the line it READ: a line another writer tightened
+    (or one that cannot be read) is refused for every caller -- the file export
+    and the tunnel send alike -- even while the slot still reads persistent."""
+    from kiro_crew.dashboard import session_transfer as st
+
+    class _Log:
+        def get_metadata_status(self, _key):
+            return (dict(line), True) if line is not None else ({}, False)
+
+        def read_messages_chained(self, _key):
+            return [{"role": "user", "content": "private turn", "ts": ""}]
+
+    slot = _slot([])
+    with pytest.raises(st.TranscriptWithheld):
+        await build_transfer_bundle_async(SimpleNamespace(conversation_log=_Log()), slot)
+
+
+@pytest.mark.asyncio
+async def test_bundle_refuses_a_slot_tightened_during_the_read():
+    """A hand-over save can tighten the live slot while the builder reads; the
+    check after the read sees it."""
+    from kiro_crew.dashboard import session_transfer as st
+
+    slot = _slot([])
+
+    class _Log:
+        def get_metadata_status(self, _key):
+            return {}, True
+
+        def read_messages_chained(self, _key):
+            slot.memory_mode = "incognito"
+            return [{"role": "user", "content": "private turn", "ts": ""}]
+
+    with pytest.raises(st.TranscriptWithheld):
+        await build_transfer_bundle_async(SimpleNamespace(conversation_log=_Log()), slot)
