@@ -67,8 +67,9 @@ export interface SidebarRowFilters {
   /** The search box. `folderMatches` is the folders (with their subtrees) whose NAME
    *  the query matched, or null when none did. */
   search: { text: string; folderMatches: ReadonlySet<string> | null }
-  /** The status chips. A paused set keeps its chips and narrows nothing. */
-  status: { active: ReadonlySet<SessionFilterKey>; paused: boolean; recentWindowMs: number }
+  /** The status chips. A paused set keeps its chips and narrows nothing. `hidden` is
+   *  the chips whose eye button is on: their matches are dropped, paused or not. */
+  status: { active: ReadonlySet<SessionFilterKey>; hidden: ReadonlySet<SessionFilterKey>; paused: boolean; recentWindowMs: number }
   /** The filter menu's folder hides. `active` is false while the search box holds
    *  text, so a hidden folder never becomes a search dead end. */
   folders: { hiddenSubtree: ReadonlySet<string>; active: boolean }
@@ -81,6 +82,8 @@ export interface SidebarRowClears {
   status: () => void
   /** Un-hide this folder and its ancestor chain; a no-op for `undefined`. */
   folder: (folderId: string | undefined) => void
+  /** Drop every status hide. */
+  hides: () => void
 }
 
 export interface SidebarRowInputs {
@@ -297,6 +300,11 @@ export interface SidebarRows {
    *  person's choice in the filter menu, and it is off entirely while the search box
    *  has text, so a hidden folder never becomes a search dead-end. */
   isRowFolderHidden: (slot: Slot) => boolean
+  /** Does a status hide (the eye on Unread, In progress or Pinned) conceal this row?
+   *  The one predicate the hides dimension filters with. The conductor lane asks it
+   *  where it builds its population, so "hide In progress" cannot put a running
+   *  conductor back on screen as a dimmed anchor above a stopped child. */
+  isRowStatusHidden: (slot: Slot) => boolean
   lanes: {
     /** The rows the `Local` lanes draw: every filtered row no shown crew group holds
      *  (all of them while no group shows). Every lane below, and the folder index,
@@ -355,6 +363,7 @@ interface BuildMemos {
   isRunning: Memo<SidebarRows['isRunning']>
   laneOrder: Memo<SidebarRows['laneOrder']>
   statusMatches: Memo<Record<SessionFilterKey, (slot: Slot) => boolean>>
+  isRowStatusHidden: Memo<SidebarRows['isRowStatusHidden']>
   dimensions: Memo<FilterDimension[]>
   statusCounts: Memo<Record<SessionFilterKey, number>>
   filteredSlots: Memo<Slot[]>
@@ -450,6 +459,14 @@ function makeStatusMatches(
   }
 }
 
+/** A hide drops exactly the rows its chip's predicate matches. Not paused by the
+ *  pause, and not exempting pinned rows: like a folder hide, it means "hide all of
+ *  these". */
+function makeIsRowStatusHidden(hidden: ReadonlySet<SessionFilterKey>, matches: StatusMatches): SidebarRows['isRowStatusHidden'] {
+  const hiddenKeys = (Object.keys(matches) as SessionFilterKey[]).filter(key => hidden.has(key))
+  return slot => hiddenKeys.some(key => matches[key](slot))
+}
+
 /**
  * THE single declaration of every filter dimension. `filteredSlots`, `listNarrowed`
  * and `revealBlockingFilters` all derive from this list, so adding a dimension is one
@@ -466,6 +483,7 @@ function makeStatusMatches(
 function makeDimensions(
   filters: SidebarRowFilters,
   matches: StatusMatches,
+  isRowStatusHidden: SidebarRows['isRowStatusHidden'],
   searchRanks: ReadonlyMap<string, number> | null,
   folderOf: SidebarRows['folderOf'],
   clears: SidebarRowClears,
@@ -546,6 +564,21 @@ function makeDimensions(
         return !!folderId && folderFilter.hiddenSubtree.has(folderId)
       },
       clear: slot => clears.folder(folderOf(slot)),
+    },
+    {
+      // Status-chip HIDES. A separate dimension from the include chips because it
+      // composes the other way: include chips OR together, while a hide drops its
+      // matches from whatever the rest of the list kept, so "Unread + hide In
+      // progress" is unread AND not running. Being its own entry also means revealing
+      // a hidden row clears only the hide, not the include chips set alongside it.
+      filtersRow: slot => !isRowStatusHidden(slot),
+      narrows: () => status.hidden.size > 0,
+      // Unlike search and the include chips, a hide CAN answer for one row on its
+      // own: it hides exactly the rows its predicates match. Asking list membership
+      // instead would let a row the search dropped clear every hide on reveal, even
+      // hides that never matched it.
+      hides: slot => isRowStatusHidden(slot),
+      clear: () => clears.hides(),
     },
   ]
 }
@@ -693,11 +726,13 @@ export function buildSidebarRows(inputs: SidebarRowInputs, previous?: SidebarRow
     makeLaneOrder(searchRanks, sortKey, pinned, pinnedRank, isPinned))
   const statusMatches = reuse(prev?.statusMatches, [unread, running, recent, status.recentWindowMs, clock], () =>
     makeStatusMatches(unread, isRunning, recent, status.recentWindowMs, clock))
+  const isRowStatusHidden = reuse(prev?.isRowStatusHidden, [status.hidden, statusMatches.value], () =>
+    makeIsRowStatusHidden(status.hidden, statusMatches.value))
   const dimensions = reuse(prev?.dimensions, [
-    status.active, status.paused, tags.resolved, tags.raw, search.text, search.folderMatches, searchRanks,
-    statusMatches.value, folderFilter.hiddenSubtree, slotFolders,
-    clears.tags, clears.search, clears.status, clears.folder,
-  ], () => makeDimensions(filters, statusMatches.value, searchRanks, folderOf, clears))
+    status.active, status.paused, status.hidden, tags.resolved, tags.raw, search.text, search.folderMatches, searchRanks,
+    statusMatches.value, isRowStatusHidden.value, folderFilter.hiddenSubtree, slotFolders,
+    clears.tags, clears.search, clears.status, clears.folder, clears.hides,
+  ], () => makeDimensions(filters, statusMatches.value, isRowStatusHidden.value, searchRanks, folderOf, clears))
 
   // Before the filter pass, as the chip counts always were: both read the clock for a
   // peer row's recency, and this keeps the two reads in their order.
@@ -740,6 +775,7 @@ export function buildSidebarRows(inputs: SidebarRowInputs, previous?: SidebarRow
     statusCounts: statusCounts.value,
     laneOrder: laneOrder.value,
     isRowFolderHidden: hidden,
+    isRowStatusHidden: isRowStatusHidden.value,
     lanes: {
       main: lane,
       crew: crew.value,
@@ -758,7 +794,7 @@ export function buildSidebarRows(inputs: SidebarRowInputs, previous?: SidebarRow
   }
   memosOf.set(result, {
     folderOf: folderOfMemo, isPinned: isPinnedMemo, isRunning: isRunningMemo,
-    laneOrder, statusMatches, dimensions, statusCounts, filteredSlots, revealBlockingFilters,
+    laneOrder, statusMatches, isRowStatusHidden, dimensions, statusCounts, filteredSlots, revealBlockingFilters,
     isRowFolderHidden, crewRows, main, crew, crewRowCount, flat, ungrouped, board, boardPeerCount, folderTree,
   })
   return result

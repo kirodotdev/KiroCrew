@@ -2483,6 +2483,7 @@ function ChatSidebar({
     filterHiddenFolders, setFilterHiddenFolders, toggleFolderFilter, unhideFolderChain,
     showAllFolders, filterTagIds, toggleTagFilter, clearTagFilter, foldersShelved, setFoldersShelved,
     toggleFoldersShelved, toggleFilter, disableFilter, enableFilter,
+    hiddenFilters, toggleHideFilter, clearHiddenFilters,
   } = useSessionFilterState()
   const {
     slotsLoaded, workflowActiveSet, automationRunningSet, subagentCounts, subagentStartedCounts, subagentApprovalCounts, unreadSet,
@@ -2836,17 +2837,17 @@ function ChatSidebar({
     filters: {
       tags: { resolved: activeTagIds, raw: filterTagIds },
       search: { text: slotFilter, folderMatches: folderNameMatchIds },
-      status: { active: activeFilters, paused: filtersPaused, recentWindowMs },
+      status: { active: activeFilters, hidden: hiddenFilters, paused: filtersPaused, recentWindowMs },
       folders: { hiddenSubtree: filterHiddenSubtree, active: folderFilterActive },
     },
-    clears: { tags: clearTagFilter, search: clearSearch, status: clearAllFilters, folder: clearFolderHide },
+    clears: { tags: clearTagFilter, search: clearSearch, status: clearAllFilters, folder: clearFolderHide, hides: clearHiddenFilters },
     crewGroups: shownCrewGroups,
     sortKey,
     clock: Date.now,
     frozen: dragFrozen,
   }, previousRowsRef.current)
   previousRowsRef.current = sidebarRows
-  const { listNarrowed, revealBlockingFilters, laneOrder, isRowFolderHidden } = sidebarRows
+  const { listNarrowed, revealBlockingFilters, laneOrder, isRowFolderHidden, isRowStatusHidden } = sidebarRows
   // `laneSlots` is the Local lanes' rows: `filteredSlots` minus every row a crew
   // group holds. `shownCrewRows` is each crew group's rows, the folder hide applied.
   const {
@@ -2920,7 +2921,7 @@ function ChatSidebar({
   const {
     citedCreatorExists, conductorRows, conductorMatching, lineage, conductorExpanded, toggleConductorExpanded,
     expandConductorAncestors,
-  } = useConductorLane({ conductorLaneActive, allRows, allLiveSlots, isRowFolderHidden, laneOrder, flatSlots })
+  } = useConductorLane({ conductorLaneActive, allRows, allLiveSlots, isRowFolderHidden, isRowStatusHidden, laneOrder, flatSlots })
   // The rows the conductor lane may show, by identity: every match, plus each
   // ancestor a match needs to hang from. The lane draws exactly these, the ✕
   // label counts exactly these, and the tree close plans over exactly these, so
@@ -4797,6 +4798,7 @@ function ChatSidebar({
                 <FilterMenuLabel>{i18nT('pages.chatSidebar.filter')}</FilterMenuLabel>
                 {SESSION_FILTERS.map(filterDef => {
                   const active = activeFilters.has(filterDef.key)
+                  const hidden = hiddenFilters.has(filterDef.key)
                   const slotCount = filterCounts[filterDef.key] ?? 0
                   const isRecent = filterDef.key === 'recent'
                   if (isRecent) {
@@ -4931,17 +4933,72 @@ function ChatSidebar({
                       </DropdownMenuSub>
                     )
                   }
-                  return (
+                  const filterLabel = i18nT(FILTER_LABEL_KEY[filterDef.key])
+                  const canHide = !!filterDef.hideStorageKey
+                  const showRow = (
                     <DropdownMenuItem
                       key={filterDef.key}
                       title={i18nT(FILTER_DESCRIPTION_KEY[filterDef.key])}
                       // Keep the menu open so multiple filters can be toggled.
                       onSelect={e => { e.preventDefault(); toggleFilter(filterDef.key) }}
+                      className={canHide ? 'flex-1 min-w-0' : undefined}
                     >
                       {filterDef.icon(active)}
-                      <span className="flex-1 truncate">{i18nT(FILTER_LABEL_KEY[filterDef.key])}{slotCount > 0 ? ` (${slotCount})` : ''}</span>
+                      <span className="flex-1 truncate">{filterLabel}{slotCount > 0 ? ` (${slotCount})` : ''}</span>
                       {active && <Check size={14} className="text-accent shrink-0" />}
                     </DropdownMenuItem>
+                  )
+                  if (!canHide) return showRow
+                  // Two menu items drawn as one row, not a button nested in one: a
+                  // focusable control inside a menuitem is skipped by the menu's
+                  // roving focus and read as part of the row's name. The second
+                  // item sits where the check mark would go and is offered only
+                  // while show-only is OFF: with it on, the row carries its check
+                  // like every other filter row, so a click anywhere on it, the
+                  // check included, turns show-only off as it always did, and going
+                  // from show-only straight to a hide is two clicks on purpose.
+                  // While the chip is hiding the item draws the lit hide icon;
+                  // otherwise the icon appears on row hover or focus, and always on
+                  // touch screens, which have no hover. The wrapper stays in place
+                  // either way so the row is not remounted, which would drop the
+                  // menu's focus from it, when show-only flips. The styling sits on
+                  // the wrapper and the icon slot, not on the menu primitives.
+                  // The wrapper fades with the same `transition-colors` the menu
+                  // items carry: an instant wrapper over fading items leaves the
+                  // eye item's own padded focus box behind for a beat when the
+                  // pointer leaves the row.
+                  const hideLabel = hidden
+                    ? i18nT('pages.chatSidebar.filter_unhide_named', { filter: filterLabel })
+                    : i18nT('pages.chatSidebar.filter_hide_named', { filter: filterLabel })
+                  return (
+                    <div
+                      key={filterDef.key}
+                      role="group"
+                      className="group/filter flex items-center rounded-md transition-colors hover:bg-bg-hover focus-within:bg-bg-hover"
+                    >
+                      {showRow}
+                      {!active && (
+                        <DropdownMenuItem
+                          aria-label={hideLabel}
+                          title={hideLabel}
+                          onSelect={e => { e.preventDefault(); toggleHideFilter(filterDef.key) }}
+                          className="group/hide shrink-0"
+                          data-testid={`filter-hide-${filterDef.key}`}
+                          data-filter-hidden={hidden ? 'true' : undefined}
+                        >
+                          <span
+                            className={hidden
+                              ? 'inline-flex size-3.5 items-center justify-center rounded bg-accent-subtle text-accent ring-4 ring-accent-subtle'
+                              : 'inline-flex size-3.5 items-center justify-center text-muted group-focus/hide:text-text'}
+                          >
+                            <EyeOff
+                              size={12}
+                              className={hidden ? undefined : 'opacity-0 group-hover/filter:opacity-100 group-focus-within/filter:opacity-100 [@media(hover:none)]:opacity-100'}
+                            />
+                          </span>
+                        </DropdownMenuItem>
+                      )}
+                    </div>
                   )
                 })}
                 {/* Lift every active status filter at once, for a look at the
@@ -5311,6 +5368,35 @@ function ChatSidebar({
               />
             )
           })}
+        </div>
+      )}
+      {/* The hides, as ONE aggregate chip in their own row, for the same reason as
+          the tag chip: the row above holds the base branch's filter chips and must
+          not grow, and a chip per hidden status would add up to three more buttons
+          to it. Neutral like every clear-several pill (`FilterChip` doc): the one
+          click drops every hide at once. Counts ride inside the label the way the
+          roster's chip carries its own, and the accessible name says what the
+          click does. After the include chips so the strip reads what is kept,
+          then what is dropped. */}
+      {hiddenFilters.size > 0 && (
+        <div className="px-3 pb-1">
+          <FilterChip
+            aggregate
+            label={i18nT('pages.chatSidebar.hiding_named_filter', {
+              filter: fmtList(
+                SESSION_FILTERS.filter(filterDef => hiddenFilters.has(filterDef.key)).map(filterDef => {
+                  const slotCount = filterCounts[filterDef.key] ?? 0
+                  return `${i18nT(FILTER_LABEL_KEY[filterDef.key])}${slotCount > 0 ? ` (${slotCount})` : ''}`
+                }),
+                { type: 'unit', style: 'short' },
+              ),
+            })}
+            clearLabel={i18nT('pages.chatSidebar.filter_unhide_named', {
+              filter: fmtList(SESSION_FILTERS.filter(filterDef => hiddenFilters.has(filterDef.key)).map(filterDef => i18nT(FILTER_LABEL_KEY[filterDef.key]))),
+            })}
+            onClear={clearHiddenFilters}
+            testId="hidden-filter-chip"
+          />
         </div>
       )}
       {seedError && (
