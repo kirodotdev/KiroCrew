@@ -83,6 +83,7 @@ from kiro_crew.config.loader import (
     refresh_materialized_agents,
     resolve_agent_bindings,
     resolve_effective_model,
+    resolved_claim_cwd,
 )
 from kiro_crew.config.sections import ResolvedBindings
 from kiro_crew.connections import get_visible_providers
@@ -7497,6 +7498,10 @@ async def _spawn_admitted_prefetch(
         # resumed=True observation is armed for the real turn. See
         # get_or_create's docstring.
         _requested_model = slot.model or agent_model or default_model or ""
+        # The same seam the side turn reads: a cleared slot states a concrete
+        # directory here rather than an empty one, or this eager spawn lands on
+        # the factory's "no cwd" branch and can inherit the removed directory.
+        _spawn_cwd = await resolved_claim_cwd(slot.claim_cwd, session_key)
         _, is_new, resumed = await sessions.get_or_create(
             session_key,
             agent=kiro_agent or slot.agent or None,
@@ -7507,7 +7512,7 @@ async def _spawn_admitted_prefetch(
             # alias applied, so no override applies.
             crew_agent=crew_alias,
             model=_requested_model or None,
-            cwd=slot.project or None,
+            cwd=_spawn_cwd,
             speculative=True,
             speculative_resume=allow_resume,
             reasoning_effort_override=slot.reasoning_effort or None,
@@ -11832,6 +11837,15 @@ async def _run_chat(
         # which decides whether to send it, and the crew log's `session/opened`,
         # which records the choice.
         _requested_model = slot.model or agent_model or default_model or ""
+        # Same seam as the eager-spawn path above, for the same reason: the two
+        # must agree or a cleared slot's turn allocation would bind a directory
+        # the eager session did not.
+        # Snapshotted, not merely resolved: this reading is compared again after
+        # the allocation registers, because the marker it encodes can move in
+        # between. Held as the CLAIM rather than the resolved directory so the
+        # comparison sees a clear that leaves the resolved default unchanged.
+        _pre_alloc_claim = slot.claim_cwd
+        _turn_cwd = await resolved_claim_cwd(_pre_alloc_claim, session_key)
         _allocation_kwargs: dict[str, Any] = dict(
             agent=kiro_agent or slot.agent or None,
             # Same canonical crew identity as the eager-spawn path — the two
@@ -11839,7 +11853,7 @@ async def _run_chat(
             # carry different watchdog windows.
             crew_agent=crew_alias,
             model=_requested_model or None,
-            cwd=slot.project or None,
+            cwd=_turn_cwd,
             # The persisted channel stays separate from the dashboard-owned key
             # so provider startup can distinguish a linked dispatcher from a
             # direct dashboard turn.
@@ -11917,40 +11931,79 @@ async def _run_chat(
         # latch prefers: this process's `session/opened` is queued to the writer
         # thread, so a second allocation inside that window finds no unit on disk and
         # only the record can name the store it must cite.
-        _previous = await _slot_predecessor_store(state.sessions, slot, session_key)
-        slot.latch_crew_log_previous(
-            _previous.sid,
-            undecided=_previous.undecided,
-            from_mapping=_previous.from_mapping,
-        )
-
-        # ONE allocation site (the crew-log latch above must sit right before
-        # it): the cold-start branch claims under the lock without waiting for
-        # a lease; a busy refusal there means a session registered underneath
-        # us, so drop the lock and claim again with the normal lease wait. The
-        # re-projection below claims through the same site; the latch is
-        # write-once, so the store it cites stays the one this turn found.
-        async def _claim_session(wait_if_busy: bool) -> tuple[Any, bool, bool]:
-            return await state.sessions.get_or_create(
-                session_key, wait_if_busy=wait_if_busy, **_allocation_kwargs
+        # TWO nested bounded retries, for two different races. The OUTER one
+        # rejects an allocation whose cleared state moved while it was
+        # registering: the claim read above is a snapshot, and a clear landing
+        # during the await below arms a teardown that is consumed at the NEXT
+        # turn, so a turn that registered on the pre-clear reading would keep
+        # running in the directory the user removed. Re-reading after
+        # registration is what turns that into a rejected allocation instead.
+        # Bounded at one retry rather than spun: a second move during the
+        # replacement's own registration is left to the armed teardown, which is
+        # the pre-existing next-turn recovery.
+        #
+        # ONE allocation site, and the crew-log latch sits right ABOVE it: the
+        # cold-start branch claims under the lock without waiting for a lease; a
+        # busy refusal there means a session registered underneath us, so drop
+        # the lock and claim again with the normal lease wait. The re-projection
+        # below claims through the same site; the latch is write-once, so the
+        # store it cites stays the one this turn found. Reading
+        # ``_allocation_kwargs`` at CALL time is what lets a rejected
+        # allocation's replacement claim on the re-resolved cwd.
+        #
+        # The closure is bound INSIDE the loop, below the latch, so the one
+        # textual allocation site stays preceded by a latch -- the property the
+        # site sweep reads, and the one that keeps a superseded store cited.
+        _claim_session: Callable[[bool], Awaitable[tuple[Any, bool, bool]]]
+        for _rebind in (0, 1):
+            _previous = await _slot_predecessor_store(state.sessions, slot, session_key)
+            slot.latch_crew_log_previous(
+                _previous.sid,
+                undecided=_previous.undecided,
+                from_mapping=_previous.from_mapping,
             )
 
-        for _claim in (0, 1):
-            try:
-                client, is_new, resumed = await _claim_session(_wait_if_busy)
+            async def _claim_session(wait_if_busy: bool) -> tuple[Any, bool, bool]:
+                return await state.sessions.get_or_create(
+                    session_key, wait_if_busy=wait_if_busy, **_allocation_kwargs
+                )
+
+            for _claim in (0, 1):
+                try:
+                    client, is_new, resumed = await _claim_session(_wait_if_busy)
+                    break
+                except SessionBusyError:
+                    if _wait_if_busy or _claim:
+                        raise
+                    _release_dispatch_lock()
+                    _wait_if_busy = True
+            # Registered: the switch handlers' busy scan sees this session from
+            # here on, so the lock has done its job and the turn must not hold it.
+            _release_dispatch_lock()
+            if slot.claim_cwd == _pre_alloc_claim:
                 break
-            except SessionBusyError:
-                if _wait_if_busy or _claim:
-                    raise
-                _release_dispatch_lock()
-                _wait_if_busy = True
-        # Registered: the switch handlers' busy scan sees this session from
-        # here on, so the lock has done its job and the turn must not hold it.
-        _release_dispatch_lock()
+            # The cleared state moved: reject this allocation by consuming the
+            # clear's own deferred teardown here, then re-resolve and claim again.
+            #
+            # THE LEASE GOES BACK FIRST, and the order is load-bearing. A claim
+            # that returns owns the session's semaphore; the teardown below asks
+            # ``skip_if_busy``, which counts a held lease as busy; and the lease it
+            # would refuse on is the one THIS task holds. Leaving it held makes the
+            # teardown decline, the session stay registered, and the next claim
+            # wait on a permit that can never be handed to it -- permanently, the
+            # semaphore being non-reentrant. The teardown pops the session and
+            # disposes of the provider this iteration was handed, so the rejected
+            # client needs no separate shutdown; a release the teardown then
+            # supersedes is absorbed rather than over-released.
+            state.sessions.release(session_key)
+            _pre_alloc_claim = slot.claim_cwd
+            _allocation_kwargs["cwd"] = await resolved_claim_cwd(_pre_alloc_claim, session_key)
+            await _consume_pending_reset(state, slot)
+            _wait_if_busy = True
         # The pre-claim reset is declined for a session another turn holds, and
         # this claim may have waited for exactly that turn. So the decision is made
         # again on the session this turn now holds, under its lease, before any of
-        # its tools run.
+        # its tools run. Once, on the session the loop above settled on.
         try:
             client, is_new, resumed = await reproject_claimed_session(
                 state.sessions,

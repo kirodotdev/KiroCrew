@@ -87,6 +87,7 @@ from kiro_crew.config.migration import (  # noqa: F401
 from kiro_crew.config.paths import (  # noqa: F401, kiro_agents_dir
     _WORKSPACE_DIR_NAME,
     CONFIG_DIR_NAME,
+    CWD_CLEARED,
     OUTBOX_DIR_NAME,
     _default_workspace_base,
     _safe_dir_name,
@@ -683,12 +684,43 @@ def workspace_root(*, create: bool = True) -> Path:
     return _resolve_workspace_root(base / _WORKSPACE_DIR_NAME, create=create)
 
 
-def _session_work_dir(session_key: str | None) -> Path:
-    """Return a per-session subdirectory under workspace_root()."""
+def session_default_cwd(session_key: str | None) -> Path:
+    """The directory a provider for *session_key* binds when given no ``cwd``.
+
+    The provider factory binds this, and a caller resolving a CLEARED project has to answer
+    the SAME directory or it compares against one no provider binds -- so both go through
+    this one symbol rather than agreeing by convention.
+    """
     root = workspace_root()
     if session_key:
         return root / _safe_dir_name(session_key)
     return root / "_default"
+
+
+# This module is a compatibility facade, and its contract is that it keeps every name
+# it has ever exported: the refactor contract test enumerates them and fails on a
+# missing one. So the private spelling stays bound to the same object rather than being
+# deleted along with the rename -- callers outside this package still reach for it, and
+# dropping it turns each of them into an ImportError.
+_session_work_dir = session_default_cwd
+
+
+async def resolved_claim_cwd(claim: str | None, session_key: str | None) -> str | None:
+    """The directory a spawn should bind for a slot stating *claim*.
+
+    ``CWD_CLEARED`` is EMPTY, so handing it to a spawn lands on the provider factory's
+    "no cwd stated" branch -- the same branch that lets an expired session's stored
+    directory be restored, which is the directory the user just removed. A cleared claim
+    therefore resolves to the session's own default here instead of passing through, and
+    every spawn site goes through this one symbol so the pairing cannot drift.
+
+    A claim that is not the cleared sentinel is returned unchanged: a chosen directory
+    stands, and ``None`` (never chosen) keeps stating nothing.
+    """
+    if claim != CWD_CLEARED:
+        return claim
+    # Resolution creates the workspace root, so it stays off the event loop.
+    return str(await asyncio.to_thread(session_default_cwd, session_key))
 
 
 def outbox_dir() -> Path:
@@ -5036,7 +5068,7 @@ class KiroCrewConfig:
             on_gate_queued: Callable[[], None] | None = None,
             **_kwargs: object,
         ) -> AcpProvider:
-            wdir = Path(cwd) if cwd else _session_work_dir(session_key)
+            wdir = Path(cwd) if cwd else session_default_cwd(session_key)
             # Canonical crew identity for the session (keys per-agent watchdog
             # windows on the handle) — one shared resolution rule, see
             # resolve_crew_identity.

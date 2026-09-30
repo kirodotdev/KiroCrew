@@ -1258,9 +1258,9 @@ def _toolless_turn_work_dir(session_key: str) -> Any:
     use, owned by this session key alone, and never a project checkout, so no
     ``.kiro/agents`` entry there can shadow the tool-less spec.
     """
-    from kiro_crew.config.loader import _session_work_dir
+    from kiro_crew.config.loader import session_default_cwd
 
-    path = _session_work_dir(session_key)
+    path = session_default_cwd(session_key)
     path.mkdir(parents=True, exist_ok=True)
     return path
 
