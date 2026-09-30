@@ -115,7 +115,8 @@ Design:
   removal, never once for the whole list.
 * **A refused delete is not a commit.** The delete re-tests the row inside
   the base config lock: the base row must still carry the same ``kiro_agent``,
-  source identity and fresh-sync shape; the bound spec is re-read from disk
+  source identity and fresh-sync shape; for a row bound to an installed spec,
+  that spec is re-read from disk
   under ``agents_spec_lock`` (nested inside the config lock, the order every
   other spec writer keeps) and must still declare the bound name, remain
   non-private and not ``kirocrew_owned``, and have the same canonical
@@ -151,12 +152,13 @@ import errno
 import json
 import logging
 import os
+import re
 import stat
 import time
 from collections.abc import Callable
 from pathlib import Path
 
-from kiro_crew.agent_spec_format import is_native_skill_alias_name
+from kiro_crew.agent_spec_format import NATIVE_SKILL_ALIAS_PREFIX
 from kiro_crew.config.loader import (
     ConfigReadError,
     KiroCrewAgentConfig,
@@ -174,6 +176,18 @@ from kiro_crew.jsonl_util import OversizedRecord, UnreadableRecord, strict_raw_r
 from kiro_crew.platform_compat import file_lock, open_file_no_reparse, open_lock_file
 
 logger = logging.getLogger(__name__)
+
+#: The exact name the skill projection writes for an alias: the reserved
+#: prefix plus the first 24 hex digits of its digest. A row is judged as an
+#: alias row only on a full match, so a crewmate someone named with the prefix
+#: but any other tail is judged as an ordinary row and needs an installed spec.
+_SKILL_VIEW_ALIAS_NAME_RE = re.compile(re.escape(NATIVE_SKILL_ALIAS_PREFIX) + r"[0-9a-f]{24}")
+
+
+def _is_skill_view_alias_row(name: str) -> bool:
+    """Whether *name* is exactly a projection-written skill-view alias name."""
+    return _SKILL_VIEW_ALIAS_NAME_RE.fullmatch(name) is not None
+
 
 #: Written under the config directory once a pass completes. Its body is the
 #: record of what the pass did, so an operator can see which crewmates left
@@ -325,8 +339,9 @@ def _synced_candidates(
     whatever it says about it. ``teamed`` is every name some team lists
     (:func:`_teamed_names`); a teamed crewmate is the owner's and is excluded.
 
-    A row bound to a skill-view alias (``kirocrew-skill-view-*``) is judged on
-    the row alone. The alias is a file the runtime writes to project one spec's
+    A row bound to a skill-view alias -- exactly the name the projection
+    writes, the prefix plus 24 lowercase hex digits -- is judged on the row
+    alone; a prefixed name with any other tail is an ordinary row. The alias is a file the runtime writes to project one spec's
     skills, never an agent a person installs or names, and discovery leaves it
     out of the roster -- so an older sync that walked the agents directory
     before that exclusion enrolled one crewmate per alias, and no installed spec
@@ -346,7 +361,7 @@ def _synced_candidates(
         raw = raw_agents.get(name)
         if not isinstance(raw, dict) or name != agent.kiro_agent:
             continue
-        if is_native_skill_alias_name(agent.kiro_agent):
+        if _is_skill_view_alias_row(agent.kiro_agent):
             alias_source = raw.get("source")
             if (
                 isinstance(alias_source, str)
@@ -597,10 +612,11 @@ def remove_never_chatted(
     config lock: the base row must carry the same ``kiro_agent``, source
     identity and fresh-sync shape (:func:`_is_fresh_sync_shape`);
     ``config.local.json`` must still not name it, read under the overlay's own
-    sidecar lock; the bound spec, re-read from disk under
-    ``agents_spec_lock``, must still declare ``kiro_agent``, remain non-private,
-    not be one of the runtime's own (``kirocrew_owned``) and have the same
-    canonical discovery source; and no team may list it, the team document
+    sidecar lock; for a row bound to an installed spec, that spec, re-read from
+    disk under ``agents_spec_lock``, must still declare ``kiro_agent``, remain
+    non-private, not be one of the runtime's own (``kirocrew_owned``) and have
+    the same canonical discovery source (a skill-view alias row has no spec, so
+    its exact alias name and row shape are the whole test); and no team may list it, the team document
     re-read under ``crew_teams.document_lock``. The three inner locks are
     taken inside the base lock, overlay then spec then team document -- the
     first two in the order every binding writer keeps, the team lock last
@@ -705,7 +721,7 @@ def remove_never_chatted(
                     # No spec to re-read: discovery never lists an alias. The
                     # row's own identity and shape, checked above, are the
                     # whole test.
-                    if not is_native_skill_alias_name(_bound):
+                    if not _is_skill_view_alias_row(_bound):
                         return None
                 else:
                     spec_identity = _read_discovered_spec_identity(_file)

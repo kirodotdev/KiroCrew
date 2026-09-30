@@ -931,7 +931,8 @@ UI — removal only; nothing is created or rebound:
   the owner's own act, so a teamed crewmate is never removed whatever its
   shape. A created crewmate has a `member_id` and is never removed. No memory
   directory is inspected. A row bound to a skill-view alias
-  (`kirocrew-skill-view-*`, `agent_spec_format.is_native_skill_alias_name`) is
+  (exactly the prefix `kirocrew-skill-view-` plus 24 lowercase hex digits, the
+  name the projection writes; any other tail is an ordinary row) is
   the one exception to the installed-spec test: the runtime writes those files
   to project a spec's skills, discovery never lists them, and an older sync
   that walked the agents directory enrolled one crewmate per alias file. Such

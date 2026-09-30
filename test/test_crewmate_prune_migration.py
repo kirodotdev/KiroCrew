@@ -386,6 +386,29 @@ class TestThePass:
         assert report.removed == [plain] and report.refused == []
         assert {chatted, created, tuned, runtime} <= KiroCrewConfig.load().agents.keys()
 
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "kirocrew-skill-view-mine",
+            "kirocrew-skill-view-" + "a" * 23,
+            "kirocrew-skill-view-" + "a" * 25,
+            "kirocrew-skill-view-" + "A" * 24,
+            "kirocrew-skill-view-" + "g" * 24,
+        ],
+    )
+    def test_a_prefixed_row_that_is_not_an_exact_alias_name_needs_a_spec(
+        self, bindings_dir, log, name
+    ):
+        # Only the name the projection writes (prefix + 24 lowercase hex) is
+        # judged on the row alone; any other tail is an ordinary row, and with
+        # no installed spec it is kept.
+        cfg = KiroCrewConfig.load()
+        cfg.agents[name] = _synced(name)
+        cfg.save()
+        report = _run({}, log)
+        assert report.removed == []
+        assert name in KiroCrewConfig.load().agents
+
     def test_a_created_crewmate_is_never_removed(self, bindings_dir, log):
         cfg = KiroCrewConfig.load()
         cfg.agents["created"] = _synced("created")
