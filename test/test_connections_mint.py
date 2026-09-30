@@ -23,7 +23,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from dashboard_owner_helpers import as_owner
 from oauth_url_corpus import OPERATOR_EXTENSION_OAUTH_URLS
 
-from conftest import requires_symlinks
+from conftest import make_dir_link, requires_symlinks
 from kiro_crew import hooks, mcp_grant
 from kiro_crew.connections import mint
 from kiro_crew.dashboard.handlers import connections
@@ -2326,6 +2326,29 @@ def test_a_relative_row_is_never_unlinked():
     # Relative paths resolve against the process cwd, which is not a property the
     # gateway controls; only the absolute form the writer recorded is reapable.
     assert mint._is_reapable_spec("kirocrew-mint-notion-4242-abcdef01.json") is False
+
+
+def test_a_junction_at_a_mint_spec_name_is_never_unlinked(tmp_path, monkeypatch):
+    # A directory JUNCTION is the only directory link an unprivileged Windows
+    # writer can plant, and it answers is_symlink() False while is_dir() True, so
+    # a leaf ``is_symlink()`` guard read a junction planted at a mint-spec name as
+    # our own spec and unlinked it -- removing a link into a target this module
+    # does not own. make_dir_link plants a junction on Windows and a directory
+    # symlink on POSIX, so the guard is pinned on every shard. Its name matches
+    # the mint shape, so only the link check can refuse it.
+    agents_dir = tmp_path / "agents"
+    agents_dir.mkdir(exist_ok=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep.txt").write_text("not ours", encoding="utf-8")
+    monkeypatch.setattr(mint._agent, "kiro_agents_dir_path", lambda: agents_dir)
+
+    planted = agents_dir / "kirocrew-mint-notion-4242-abcdef01.json"
+    make_dir_link(planted, outside)
+
+    assert mint._is_reapable_spec(str(planted)) is False
+    # The link and its target are untouched by the refusal.
+    assert (outside / "keep.txt").read_text(encoding="utf-8") == "not ours"
 
 
 @pytest.mark.asyncio
