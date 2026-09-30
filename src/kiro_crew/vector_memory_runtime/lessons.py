@@ -1212,7 +1212,7 @@ def _lexical_lesson_scores(
 
     Each shared token is weighted by how rare it is among *entries*
     (``log((N + 1) / (df + 0.5))``), and the sum is divided by the square root
-    of the row's token count.
+    of the row's number of distinct words.
 
     The hybrid score's keyword half, ``_keyword_score``, saturates at ten shared
     tokens, so a long first message would tie nearly every stored rule at the top
@@ -1232,10 +1232,11 @@ def _lexical_lesson_scores(
     sizes: list[int] = []
     document_frequency: dict[str, int] = {}
     for _, text in entries:
-        tokens = row_tokens(text.lower())
+        normalized_text = text.lower()
+        tokens = row_tokens(normalized_text)
         shared = tokens & query_words
         shared_by_row.append(shared)
-        sizes.append(len(tokens))
+        sizes.append(len(set(re.findall(r"\w+", normalized_text))))
         for token in shared:
             document_frequency[token] = document_frequency.get(token, 0) + 1
     rows = len(entries)
