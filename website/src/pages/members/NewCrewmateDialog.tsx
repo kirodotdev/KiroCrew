@@ -6,10 +6,9 @@
  * the crew manager's create form uses; the two stay one write path with two
  * front doors. The difference is what the user is asked first: a name, what
  * it is built from, and — in plain words — what it looks after. Everything
- * the crew manager's form also asks (workspace, model, routing triggers,
- * session colour) sits behind an "Advanced" disclosure, rendered by the SAME
- * `Field` frame and field components the editor mounts, so the two forms
- * cannot drift.
+ * the crew manager's form also asks (workspace, model, routing triggers) sits
+ * behind an "Advanced" disclosure, rendered by the SAME `Field` frame and
+ * field components the editor mounts, so the two forms cannot drift.
  *
  * "Built from" lists the installed kiro agents (the templates a crew can
  * boot), never the configured default CREW: a crew named `default` is an
@@ -52,7 +51,6 @@ import {
   Field,
   INHERIT_MODEL,
   ModelField,
-  SessionColorField,
   TriggersField,
   WorkspaceField,
   WorkspaceModal,
@@ -126,7 +124,6 @@ export default function NewCrewmateDialog({ open, onClose, onCreated, existingNa
   const [pendingWorkspace, setPendingWorkspace] = useState<string | null>(null)
   const [model, setModel] = useState(INHERIT_MODEL)
   const [triggers, setTriggers] = useState('')
-  const [sessionColor, setSessionColor] = useState('')
   // The nested New workspace dialog: whether it is open, and the GENERATION
   // of that opening. `WorkspaceForm`'s create is an awaited POST whose
   // continuation calls `onCreated` when the answer lands — after Radix has
@@ -180,7 +177,7 @@ export default function NewCrewmateDialog({ open, onClose, onCreated, existingNa
   useEffect(() => {
     if (!open) return
     setName(''); setBuiltFrom(''); setJob(''); setAdvanced(false)
-    setWorkspace('default'); setModel(INHERIT_MODEL); setTriggers(''); setSessionColor('')
+    setWorkspace('default'); setModel(INHERIT_MODEL); setTriggers('')
     setHint(''); setError(''); setNameRefused(false); setUnconfirmed(false); setPendingWorkspace(null)
     // The nested workspace form too: a draft left in it belongs to the
     // dismissed open, and `atStake` must not count it against the next one.
@@ -278,7 +275,7 @@ export default function NewCrewmateDialog({ open, onClose, onCreated, existingNa
   // template or an Advanced pick is as lost on an accidental dismissal as a
   // typed name, and the reset-on-open above means there is no way back.
   const dirty = Boolean(
-    name || job || builtFrom || workspace !== 'default' || model !== INHERIT_MODEL || triggers || sessionColor,
+    name || job || builtFrom || workspace !== 'default' || model !== INHERIT_MODEL || triggers,
   )
 
   // The mutation callbacks below outlive the dialog. A route change the user
@@ -473,7 +470,9 @@ export default function NewCrewmateDialog({ open, onClose, onCreated, existingNa
       memory_store: 'default',
       description: job.trim(),
       triggers,
-      session_color: sessionColor,
+      // No control picks a colour at create, here or in the crew manager's
+      // form; the key stays so both forms post the same body.
+      session_color: '',
       ...(model !== INHERIT_MODEL ? { model } : {}),
     })
   }
@@ -609,7 +608,6 @@ export default function NewCrewmateDialog({ open, onClose, onCreated, existingNa
                     hint={t('pages.kiroCrewAgentsPage.model_inherited_from_default')}
                   />
                   <TriggersField value={triggers} onChange={setTriggers} subject="member" />
-                  <SessionColorField value={sessionColor} onChange={setSessionColor} subject="member" />
                 </motion.div>
               )}
             </AnimatePresence>

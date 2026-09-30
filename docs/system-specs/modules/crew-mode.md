@@ -735,9 +735,9 @@ when navigation permits. The cached conversation and its drafts remain available
 
 The Crewmates page (`/members`, titled "Crewmates") creates a crewmate in place.
 Its "New crewmate" dialog — name, Built from (the default agent or an installed
-custom agent), "What it looks after", and an Advanced fold with workspace, model,
-triggers and session colour — posts to the same `POST /api/agents` the crew
-manager's create form uses: one write path, two front doors. "What it looks
+custom agent), "What it looks after", and an Advanced fold with workspace, model
+and triggers — posts to the same `POST /api/agents` the crew manager's create
+form uses: one write path, two front doors. "What it looks
 after" is stored as the crew record's `description`. After the create the page
 re-reads the roster, opens the new crewmate's chat through the verified
 thread-opening endpoint, and seeds one first user turn into that chat over the

@@ -3373,7 +3373,7 @@ describe('New crewmate dialog', () => {
     // The body is sent; a value typed now would never reach it and would be
     // lost when success closes the dialog — so nothing under the form takes
     // input: one disabled fieldset covers the fields that have no `disabled`
-    // prop of their own (workspace / model / triggers / colour) as well.
+    // prop of their own (workspace / model / triggers) as well.
     expect(screen.getByTestId('crewmate-create-fieldset')).toBeDisabled()
     expect(triggers).toBeDisabled()
     expect(screen.getByTestId('crewmate-create-advanced-toggle')).toBeDisabled()
@@ -4613,9 +4613,8 @@ describe('New crewmate dialog', () => {
     const advanced = await screen.findByTestId('crewmate-create-advanced')
     // The same field components the editor mounts: workspace and model.
     expect(within(advanced).getByLabelText('Workspace')).toBeInTheDocument()
-    const colorInput = advanced.querySelector('input[type="color"]')
-    expect(colorInput).not.toBeNull()
-    expect(colorInput).toHaveValue('#4f8ef7')
+    // The editor carries no session-colour picker, so neither does Advanced.
+    expect(advanced.querySelector('input[type="color"]')).toBeNull()
     expect(within(advanced).getByLabelText('Edit default model')).toBeInTheDocument()
   })
 

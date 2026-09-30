@@ -5,7 +5,7 @@
  *   02-dialog-<theme>   the real New crewmate dialog, opened from the hero,
  *                       Name + job typed into the real form
  *   02b-dialog-advanced-<theme>  the same dialog with Advanced unfolded
- *                       (workspace / model / triggers / session colour)
+ *                       (workspace / model / triggers)
  *   02c-dialog-new-workspace-<theme>  nested New workspace form over the
  *                       inert New crewmate parent
  *   03-created-<theme>  Radar is the only row; its chat is open with the
@@ -267,9 +267,9 @@ for (const theme of ['dark', 'light']) {
     await page.screenshot({ path: `${OUT}/02-dialog-${theme}.png` })
     await page.close()
   }
-  // 02b — the same dialog, Advanced unfolded. Taller viewport: the unfolded
-  // dialog is ~810px and the modal caps at 90vh, so at 900 the last field
-  // (session colour) sits below the fold inside the modal's own scroll.
+  // 02b — the same dialog, Advanced unfolded. Taller viewport: the modal caps
+  // at 90vh, so at 900 the last field (Triggers) can sit below the fold inside
+  // the modal's own scroll.
   {
     const page = await newPage(theme, 'empty', { width: 1440, height: 1100 })
     await page.locator('section [data-testid=crewmate-empty-cta]').click()
@@ -286,10 +286,8 @@ for (const theme of ['dark', 'light']) {
     check(`02b-dialog-advanced-${theme} triggers`, await adv.getByLabel('Triggers').isVisible(), 'triggers field')
     check(`02b-dialog-advanced-${theme} triggers hint`, await adv.getByText(/^Situations when Kiro Crew should hand a task to this crewmate/).isVisible(), 'HEAD wording of the triggers hint (when-to-use, no schedule contrast)')
     check(`02b-dialog-advanced-${theme} no stale hint`, (await dlg.getByText(/not a schedule/).count()) === 0, 'old routing-vs-schedule sentence gone')
-    const colour = adv.getByLabel('Session color hex value')
-    check(`02b-dialog-advanced-${theme} colour`, await colour.isVisible(), 'session colour field')
-    const box = await colour.boundingBox()
-    check(`02b-dialog-advanced-${theme} colour in frame`, !!box && box.y + box.height <= 1100, `colour bottom=${box ? Math.round(box.y + box.height) : 'n/a'}`)
+    const colour = await adv.locator('input[type="color"], input[aria-label="Session color hex value"]').count()
+    check(`02b-dialog-advanced-${theme} no colour`, colour === 0, `session colour controls=${colour}`)
     const legacy = await dlg.getByText(/this member|member color|crew member/i).count()
     check(`02b-dialog-advanced-${theme} vocabulary`, legacy === 0, `legacy-noun hits=${legacy}`)
     await page.waitForTimeout(500) // disclosure + modal motion

@@ -34,7 +34,7 @@ page before you switch it on.
 | Description | One line about what it is for | no description shown |
 | Triggers (`triggers`) | Free text saying when work should go to it | never auto-selected, and delegation to it is refused |
 | Avatar | A ghost face with chosen traits, or an uploaded picture | a face derived from its name |
-| Session color | Tints the sessions it starts | no color of its own |
+| Session color (`session_color`) | Tints the sessions it starts. No dashboard control sets it; a stored color is cleared by removing the key from the crewmate's entry in `config.json` | no color of its own |
 
 A per-session pick always wins over the crewmate's model and reasoning effort,
 and the crewmate's values win over the global defaults.
@@ -103,7 +103,7 @@ render as floors (`12+ chats`) instead of asserting a total.
 roster header once one exists (its rows are **New crewmate** and **New team**)
 — opens an in-page dialog on the Crew Members page. It asks for a **Name** and what the crewmate is **Built from** (the
 starting setup it copies), plus an optional line on **what it looks after**;
-**Advanced** unfolds the workspace, model, triggers and session color. Creating
+**Advanced** unfolds the workspace, model and triggers. Creating
 opens the new crewmate's chat with a first greeting seeded for you. The name is
 free-form display text — spaces, punctuation, any script, emoji (`Dr. Eggbot 🥚`
 is a name) — and the dialog only refuses a blank name or one already on the
@@ -120,7 +120,7 @@ row, a roster preference stored on the crewmate. (Opening a member writes too,
 but only its own thread binding.) Both **Edit** affordances still navigate to
 the crew manager — **Agent Capabilities → Crews** (`/capabilities?tab=crews`) —
 which remains the editor for an existing crewmate's name, template, model,
-reasoning effort, workspace, triggers, avatar and session color.
+reasoning effort, workspace, triggers and avatar.
 
 From the CLI:
 

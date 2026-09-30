@@ -20,7 +20,7 @@
  *   - changed call sites: Display, schedule, comments, Issue Radar suggestion
  *     and crew stat, jump-to-bottom, Restart, memory record, AWS metric caption,
  *     Folder settings colour/tag controls, session colours, Tag manager,
- *     Library colour/no-colour controls, and Crew session colour;
+ *     and Library colour/no-colour controls;
  *   - both FeaturedSpotlight image render paths: full and compact collection;
  *   - the rail-row press scene is a negative control proving press feedback
  *     remains. SessionColorPicker is intentionally absent because it has no
@@ -653,17 +653,6 @@ const SCENES = [
     setupRoutes: installHoverArt,
     settleMs: 2200,
     pad: 12,
-  },
-  {
-    name: '24-crew-color-swatch-hovered',
-    url: '/capabilities',
-    selector: '[role="dialog"] button[class*="h-5"][class*="w-5"]',
-    claim: 'a Crew session-colour swatch paints without growing',
-    genericAffordance: true,
-    prepare: async page => {
-      await page.locator('[data-testid="new-crew"]').click()
-    },
-    pad: 38,
   },
 ]
 

@@ -7203,7 +7203,6 @@
       "routing": "Routing",
       "runtime_binding": "What this agent uses",
       "save_changes": "Save changes",
-      "session_color_hint_member": "Sessions this crewmate starts use this color unless the session has a color of its own. Leave empty for no crewmate color.",
       "shared_lower": "shared",
       "shown_across_the_dashboard_instead_of_the_name_l": "Shown across the dashboard instead of the name ({{name}}). Leave empty to show the name itself.",
       "the_agent_definition_it_boots_from_tools_mcp_ser": "The starting setup this agent uses — its tools, connections and instructions.",
