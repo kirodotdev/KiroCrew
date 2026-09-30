@@ -89,6 +89,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import stat
@@ -100,11 +101,13 @@ from pathlib import Path
 from typing import Any, Callable, Iterator
 
 from kiro_crew import pipeline_board_contract, platform_compat
-from kiro_crew.atomic_write import atomic_write
+from kiro_crew.atomic_write import atomic_write, read_json_or
 from kiro_crew.config.paths import data_home
 from kiro_crew.platform_compat import release_lock, try_acquire_lock
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.validation import sanitize_string
+
+logger = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 1
 
@@ -921,10 +924,11 @@ def read(slug: str) -> dict[str, Any] | None:
         path = panel_path(slug)
         if path.stat().st_size > _MAX_RECORD_BYTES:
             return None
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    # ``MemberSlugError`` is a ``ValueError``, so a bad slug is caught here too.
+    # ``MemberSlugError`` is a ``ValueError``, so a bad slug is caught here too;
+    # a stat that fails (absent file) reads as "no panel published".
     except (OSError, ValueError):
         return None
+    raw = read_json_or(path, None, logger=logger, what="crew panel record")
     if not isinstance(raw, dict) or not isinstance(raw.get("data"), dict):
         return None
     if not TEMPLATE_ID_RE.match(str(raw.get("template", ""))):

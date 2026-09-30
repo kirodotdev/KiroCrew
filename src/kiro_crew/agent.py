@@ -71,7 +71,7 @@ from kiro_crew.agent_spec_format import (
     is_markdown_spec,
     iter_agent_spec_files,
 )
-from kiro_crew.atomic_write import replace_with_retry
+from kiro_crew.atomic_write import read_json_or, replace_with_retry
 from kiro_crew.config import config_dir
 from kiro_crew.config import config_path as _mc_config_path
 from kiro_crew.config.paths import (
@@ -1551,12 +1551,11 @@ def _all_skill_paths() -> list[str]:
                     manifest = pkg / ".aim" / ".version-manifest.json"
                     current_event = ""
                     if manifest.is_file():
-                        try:
-                            manifest_data = json.loads(manifest.read_text(encoding="utf-8"))
-                            if isinstance(manifest_data, dict):
-                                current_event = manifest_data.get("currentEventId", "")
-                        except (json.JSONDecodeError, OSError):
-                            pass
+                        manifest_data = read_json_or(
+                            manifest, None, logger=logger, what="AIM version manifest"
+                        )
+                        if isinstance(manifest_data, dict):
+                            current_event = manifest_data.get("currentEventId", "")
                     for sub in pkg.iterdir():
                         if not sub.is_dir() or sub.name.startswith("."):
                             continue

@@ -9,6 +9,7 @@ that surface campaign rows and findings, scrubbed through ``untrusted``.
 from __future__ import annotations
 
 import json
+import logging
 import re
 import sqlite3
 import threading
@@ -17,10 +18,13 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from kiro_crew.apps.builtins.auto_research.campaign import untrusted
+from kiro_crew.apps.builtins.auto_research.campaign import LOGGER_NAME, untrusted
 from kiro_crew.apps.builtins.auto_research.session_keys import is_campaign_id
+from kiro_crew.atomic_write import read_json_or
 from kiro_crew.config.paths import data_home
 from kiro_crew.on_loop_db import OnLoopDBGuard
+
+logger = logging.getLogger(LOGGER_NAME)
 
 # Resolved per call, never captured at import: an import-time binding freezes
 # the data home and defeats pod isolation, the lazy legacy-home migration and
@@ -435,10 +439,7 @@ def _read_finding_file(path: Path) -> dict:
     console, so the watchdog saw zero new findings and failed a healthy
     campaign as stalled.
     """
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
-        return {}
+    data = read_json_or(path, {}, logger=logger, what="research finding")
     if not isinstance(data, dict):
         return {}
     return untrusted._redact_finding(data)

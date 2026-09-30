@@ -60,6 +60,20 @@ try:
 except ImportError:  # pragma: no cover - standalone fallback
     redact_credentials = redact_exfiltration_urls = None  # type: ignore
 
+# The shared read-degrade helper is also a Kiro Crew runtime dep. Standalone the
+# fallback keeps today's silent tolerance so `python3 sage_lib/review_driver.py`
+# still runs; under the gateway the real helper adds the one warning.
+try:
+    from kiro_crew.atomic_write import read_json_or  # type: ignore
+except ImportError:  # pragma: no cover - standalone fallback
+
+    def read_json_or(path, default, *, logger=None, what=None):  # type: ignore
+        try:
+            return json.loads(Path(path).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return default
+
+
 # Every loopback call below carries X-Internal-Secret, and urlopen honours
 # HTTP_PROXY for loopback addresses, so a proxied environment would send the
 # secret to the proxy in cleartext. The fallback must therefore stay
@@ -623,7 +637,8 @@ def _candidate_ports() -> list[int]:
     try:
         cfg = store.crew_home() / "config.json"
         if cfg.exists():
-            _d = json.loads(cfg.read_text(encoding="utf-8")).get("dashboard") or {}
+            _cfg = read_json_or(cfg, {}, logger=logger, what="dashboard config")
+            _d = (_cfg.get("dashboard") if isinstance(_cfg, dict) else None) or {}
             url = _d.get("url") or ""
             m = re.search(r":(\d+)", url)
             if m:

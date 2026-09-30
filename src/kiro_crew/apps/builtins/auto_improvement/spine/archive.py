@@ -25,9 +25,14 @@ Docs: 02_architecture.md §3, §4.2 (resume reads this), 10_roadmap M0
 from __future__ import annotations
 
 import json
+import logging
 import time
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
+
+from kiro_crew.atomic_write import read_json_or
+
+logger = logging.getLogger(__name__)
 
 # The spine fixes these control columns; the ruler contributes the primary-metric,
 # per-stage and guardrail columns (02_arch §3.3). For M0 we write the control set
@@ -143,10 +148,7 @@ class Archive:
     def read_meta(self) -> dict:
         if not self.meta_path.exists():
             return {}
-        try:
-            return json.loads(self.meta_path.read_text(encoding="utf-8"))
-        except Exception:  # noqa: BLE001
-            return {}
+        return read_json_or(self.meta_path, {}, logger=logger, what="run archive meta")
 
     # ── per-candidate detail + the append-only TSV row ──────────────────
 

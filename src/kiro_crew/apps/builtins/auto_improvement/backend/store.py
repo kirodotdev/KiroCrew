@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew.apps.manager import app_data_dir
+from kiro_crew.atomic_write import read_json_or
 
 logger = logging.getLogger(__name__)
 
@@ -211,10 +212,7 @@ def write_json_atomic(path: Path, payload: Any) -> None:
 
 def read_json(path: Path, default: Any = None) -> Any:
     """Read JSON, returning ``default`` on a missing or corrupt file."""
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return default
+    return read_json_or(path, default, logger=logger, what="auto-improvement record")
 
 
 # ── chat-session records (requirement 3) ─────────────────────────────────────
