@@ -5,13 +5,14 @@ change its model, reload its agent process, and take another one under itself in
 the sidebar. The tools come from the
 `kirocrew-dashboard` MCP server, so an agent that does not mount that server
 never has them — exactly like any other MCP server. This page is the reference
-for all 30 of its tools, written for the agent that is about to use them.
+for all 31 of its tools, written for the agent that is about to use them.
 
 The server is defined in `src/kiro_crew/mcp_dashboard.py`. Two halves:
 
 - **Session control** — `session_create`, `session_fork`, `session_send`,
   `session_read_message`, `session_summary`, `session_stop`, `session_end_wait`,
-  `session_set_model`, `session_reload`, `session_close`, `session_revive`, `session_broadcast`,
+  `session_set_model`, `session_set_project`, `session_reload`, `session_close`,
+  `session_revive`, `session_broadcast`,
   `session_status`, `session_adopt`, `session_release`. These reach another session.
 - **Sidebar shape** — `chat_folder_tree`, `chat_folder_create`,
   `chat_folder_move`, `chat_folder_update`, `chat_folder_move_session`, `chat_folder_delete`,
@@ -511,6 +512,37 @@ If the old process fails while shutting down after it was removed, the reload
 still counts as done: the notice is written, the process starts again, and the
 reply carries a `warning`. A failure before anything was removed answers
 `reload_failed`, and nothing was torn down.
+
+### `session_set_project`
+
+| Argument | Required | Meaning |
+|---|---|---|
+| `target` | yes | Session key or exact title |
+| `path` | yes | Absolute path to the new project directory |
+
+Sets the project directory of a session you created, for example to point a
+worker at a new git worktree after `session_create`. The target's session
+resets at its next turn boundary: its next message cold-starts a new process with
+the new CWD and project-level `.kiro/steering`. The transcript and conversation
+history are kept, the same as when `set_project` changes a session's own project.
+Setting the project it already has changes nothing and resets nothing.
+
+The reach is narrower than the other session verbs, because of that reset:
+
+- Only a session this session created (`not_creator` otherwise). That holds even
+  when `agent.session_control` is on, so the person's own sessions are never
+  reachable.
+- A pinned session is refused (`pinned_target`).
+- A target with a turn in flight, sub-agents attached or messages queued is
+  refused (`target_busy`) and nothing changes. Stop it with `session_stop` or
+  wait for it to go idle, then retry.
+- Only open sessions resolve; a closed (archived) one is `target_not_found`.
+
+The path gets exactly the checks `set_project` applies to its own session: a
+sensitive path such as `~/.aws` or `~/.ssh` is refused before and after
+`realpath` (`sensitive_path`), the path must be an existing directory
+(`not_a_directory`), and a directory that overlaps the Kiro Crew data home is
+refused (`workspace_overlaps_data_home`).
 
 ### `session_revive`
 

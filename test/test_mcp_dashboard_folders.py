@@ -1697,6 +1697,7 @@ class TestAdvertisedSet:
             "session_end_wait",
             "session_set_model",
             "session_reload",
+            "session_set_project",
             "session_close",
             "session_revive",
             "session_send",

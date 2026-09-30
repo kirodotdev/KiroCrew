@@ -377,6 +377,9 @@ class TestWhatThisSetGrants:
         "session_end_wait",
         "session_set_model",
         "session_reload",
+        # Moves a created session's CWD; the gateway confines it to unpinned,
+        # idle sessions the caller created.
+        "session_set_project",
         "session_close",
         "session_revive",
         "session_send",
