@@ -121,7 +121,8 @@ class TestFormatRuntimeRpcError:
 
         assert f"'{agent}.json'" in text  # names the file that is missing
         assert str(tmp_path) in text  # names where it was looked for
-        assert "kirocrew setup --agent-only --clean" in text  # names the repair
+        assert "kirocrew setup --agent-only`" in text  # names the repair
+        assert "--clean" not in text  # which would drop the operator's own config
         assert "-32603" not in text and "Mode" not in text  # no raw protocol noise
 
     def test_skill_view_alias_does_not_send_the_user_to_setup(self, tmp_path):

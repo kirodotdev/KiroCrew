@@ -988,18 +988,24 @@ def _format_runtime_rpc_error(error: object) -> str:
                 # setup cannot restore it, and "Mode not found" does not mean the
                 # file is missing: kiro-cli also answers it for a spec that was
                 # published after the process started.
+                from kiro_crew.acp.skill_projection import remembered_view_source
+
+                source = remembered_view_source(name)
+                who = f"agent '{source}'" if source else "this agent"
                 return (
                     f"kiro-cli could not switch to the skill view '{name}' that Kiro "
-                    f"Crew generated for this agent. It may be on disk in "
+                    f"Crew generated for {who}. It may be on disk in "
                     f"{kiro_agents_dir()} but not loaded by this kiro-cli process. "
                     f"Start a new session to retry. If it keeps failing, set "
                     f"KIROCREW_NATIVE_SKILL_PROJECTION=0 in the gateway's environment "
                     f"and restart the gateway."
                 )
+            # ``--clean`` is not the repair: it skips merging the existing
+            # config, so it drops the operator's own MCP servers and tools.
             return (
                 f"Agent spec '{name}' is not installed: kiro-cli found no "
                 f"'{name}.json' in {kiro_agents_dir()}. Every turn fails until it "
-                f"is restored — repair with `kirocrew setup --agent-only --clean`, "
+                f"is restored — repair with `kirocrew setup --agent-only`, "
                 f"then restart the gateway."
             )
     return f"RPC error: {error}"
@@ -2509,6 +2515,9 @@ class AcpRuntime:
         """Spawn and initialize after the caller has acquired cold-start admission."""
         if self._process is not None:
             raise AcpRuntimeError("Runtime already spawned")
+        # A stored skill-view name is never the agent to spawn: map it to the
+        # agent it was built from before anything reads ``self._agent``.
+        self._agent = await self._source_agent(self._agent) or self._agent
 
         # Let this host narrow the configured recycle thresholds before the
         # process it governs exists. The operator's values go IN, so a host that
@@ -6322,6 +6331,28 @@ class AcpRuntime:
             return [*entries, *mount.elements]
         return entries
 
+    @staticmethod
+    async def _source_agent(agent: str | None) -> str | None:
+        """*agent*, or the agent a stored skill-view name was built from.
+
+        Every mode name that reaches ``session/set_mode`` enters through the spawn
+        agent, ``create_session`` / ``load_session``, or a handle's ``set_mode``,
+        and each maps it here first. A view name the source of which nothing
+        records is refused with the user's sentence rather than sent, because
+        kiro-cli would only answer that it is not found.
+        """
+        if not agent:
+            return agent
+        from kiro_crew.acp.skill_projection import RetiredSkillView, resolve_source_agent
+
+        try:
+            source = await resolve_source_agent(agent)
+        except RetiredSkillView as exc:
+            raise AcpRuntimeError(str(exc)) from exc
+        if source != agent:
+            logger.info("skill view %s maps back to agent %s", agent, source)
+        return source
+
     async def create_session(
         self,
         cwd: str | Path | None = None,
@@ -6373,6 +6404,7 @@ class AcpRuntime:
         """
         if memory_mode not in {"persistent", "incognito", "temporary"}:
             raise ValueError("Invalid session memory mode")
+        agent = await self._source_agent(agent)
         if memory_mode != "persistent":
             # A mixed runtime cannot attribute every raw diagnostic frame to a
             # session. Latch recording off before session/new can emit a payload.
@@ -7240,6 +7272,7 @@ class AcpRuntime:
             raise AcpRuntimeError("Runtime not initialized — call spawn() first")
         if not self._can_load_session:
             raise AcpRuntimeError("Backend does not advertise session/load support")
+        agent = await self._source_agent(agent)
 
         # Re-declare the pooled broker stubs so a resumed session keeps talking
         # to the broker — same injection as create_session() and the AcpClient
