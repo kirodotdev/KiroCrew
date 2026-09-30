@@ -653,10 +653,15 @@ class TestSessionPrincipalExtraction:
 
 
 class _StubTransport:
-    """A transport whose outbound-authz answer the test controls."""
+    """A transport whose outbound-authz answer the test controls.
 
-    def __init__(self, permitted: bool | Exception) -> None:
+    *peers* is what its ``direct_peer_of`` attests for a conversation id: the
+    ladder confirms a link's recorded principal against it before handing one in.
+    """
+
+    def __init__(self, permitted: bool | Exception, peers: dict[str, str] | None = None) -> None:
         self._permitted = permitted
+        self._peers = dict(peers or {})
         self.capabilities = type("Caps", (), {"supports_proactive_send": True})()
         self.calls: list[tuple[str | None, str | None, str]] = []
 
@@ -667,6 +672,9 @@ class _StubTransport:
         if isinstance(self._permitted, Exception):
             raise self._permitted
         return self._permitted
+
+    def direct_peer_of(self, conversation_id: str) -> str:
+        return self._peers.get(conversation_id, "")
 
 
 class _StubState:
@@ -728,6 +736,58 @@ class TestTheLadderConsultsTheTransport:
         self._resolve(transport, link, key="discord:kirocrew:direct:42")
         assert transport.calls == [("dm-chan-1", None, "42")]
 
+    def test_the_link_principal_reaches_the_transport_for_a_dashboard_key(self) -> None:
+        """A ``dashboard:chat-*`` key names nobody; the record the gateway admitted
+        on the link does, and the transport's own pairing does not object.
+
+        The record is written by the dashboard link handler and the ``!sessions``
+        pick beside the conversation id it describes and signed by the map under
+        the gateway's admission key, which is what lets a Discord DM mirror of a
+        dashboard-born session pass the recipient leg -- with or without the
+        transport having seen the DM in this process.
+        """
+        link = _admitted(
+            "dashboard:chat-1-1700000000",
+            ChannelLink(channel_type="discord", channel_id="dm-chan-1", principal="42"),
+        )
+        agreeing = _StubTransport(True, peers={"dm-chan-1": "42"})
+        self._resolve(agreeing, link, key="dashboard:chat-1-1700000000")
+        assert agreeing.calls == [("dm-chan-1", None, "42")]
+        unaware = _StubTransport(True)
+        self._resolve(unaware, link, key="dashboard:chat-1-1700000000")
+        assert unaware.calls == [("dm-chan-1", None, "42")]
+
+    def test_a_link_principal_the_gateway_did_not_admit_is_withheld(self) -> None:
+        """The transport is told nobody, not the row's word: a row with no admission
+        (a claim from something that is not the gateway), or one the transport's own
+        record of the DM contradicts (a rewritten row)."""
+        unsigned = ChannelLink(channel_type="discord", channel_id="dm-chan-1", principal="42")
+        transport = _StubTransport(True, peers={"dm-chan-1": "42"})
+        self._resolve(transport, unsigned, key="dashboard:chat-1-1700000000")
+        assert transport.calls == [("dm-chan-1", None, "")]
+        admitted = _admitted("dashboard:chat-1-1700000000", unsigned)
+        contradicted = _StubTransport(True, peers={"dm-chan-1": "77"})
+        self._resolve(contradicted, admitted, key="dashboard:chat-1-1700000000")
+        assert contradicted.calls == [("dm-chan-1", None, "")]
+
+    def test_the_key_outranks_the_link_principal(self) -> None:
+        """A key that names a peer keeps its reading whatever the link records."""
+        transport = _StubTransport(True, peers={"dm-chan-1": "77"})
+        link = ChannelLink(channel_type="discord", channel_id="dm-chan-1", principal="77")
+        self._resolve(transport, link, key="discord:kirocrew:direct:42")
+        assert transport.calls == [("dm-chan-1", None, "42")]
+
+    def test_an_explicit_principal_outranks_both(self) -> None:
+        """The caller that already established the recipient is taken verbatim."""
+        from kiro_crew.dashboard.chat_runner import _resolve_channel_target
+
+        transport = _StubTransport(True)
+        link = ChannelLink(channel_type="discord", channel_id="dm-chan-1", principal="77")
+        _resolve_channel_target(
+            _StubState(transport), "discord:kirocrew:direct:42", link, principal="5"
+        )
+        assert transport.calls == [("dm-chan-1", None, "5")]
+
     def test_a_raising_transport_fails_closed(self) -> None:
         """An allow-list check that errored has authorized nobody."""
         transport = _StubTransport(RuntimeError("roster unavailable"))
@@ -771,6 +831,725 @@ class TestTheLadderConsultsTheTransport:
         assert recorded[0]["outcome"] == "denied"
         assert recorded[0]["source"] == "telegram"
         assert recorded[0]["operation"] == "channel.proactive_send_authorize"
+
+
+class _MirrorState(_StubState):
+    """A state whose session store answers ``get_mirror_link`` with one link."""
+
+    def __init__(self, transport: Any, link: ChannelLink | None) -> None:
+        super().__init__(transport)
+        self.sessions = type("Sessions", (), {"get_mirror_link": staticmethod(lambda key: link)})()
+
+
+def _admitted(session_key: str, link: ChannelLink) -> ChannelLink:
+    """*link* as the gateway stores it: signed for *session_key* and its location."""
+    import dataclasses
+
+    from kiro_crew.mirror_admission import sign_mirror_admission
+
+    return dataclasses.replace(link, admission=sign_mirror_admission(session_key, link))
+
+
+class TestADashboardSessionMirroredToADiscordDm:
+    """The reported defect, decided by the REAL transports through the real ladder.
+
+    A dashboard-born session's key (``dashboard:chat-<n>-<ts>``) names no peer, and
+    a Discord DM channel id is unrelated to the user snowflake the roster holds, so
+    a link that carried only the conversation gave the recipient leg nothing to
+    consult: every dashboard-driven reply into the mirror was refused and dropped,
+    silently, while the same link on Telegram delivered because there the
+    conversation id IS the user id.
+
+    The peer now comes from the record the GATEWAY wrote when it admitted the
+    mirror -- ``ChannelLink.principal`` under ``ChannelLink.admission``, a MAC only
+    the gateway can mint over the session key and the whole location. The session
+    map is writable by in-sandbox code, so an unsigned or rewritten row fails to
+    verify and is refused; the transport's own pairing (``direct_peer_of``) must
+    agree whenever it has one; and the roster then decides -- per send -- whether the
+    admitted peer is allow-listed.
+    """
+
+    _KEY = "dashboard:chat-1-1700000000"
+
+    @pytest.fixture(autouse=True)
+    def _permit_governance(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            "kiro_crew.platform.governance_profiles.vet_and_audit",
+            lambda *a, **k: type("D", (), {"permitted": True})(),
+        )
+
+    @staticmethod
+    def _discord(allowed: list[str], pairings: dict[str, str] | None = None) -> Any:
+        """A real transport over a real client whose pairing store holds *pairings*."""
+        from kiro_crew.discord.client import DiscordClient
+        from kiro_crew.discord.transport import DiscordTransport
+
+        client = DiscordClient(token="bot-secret")
+        for channel_id, user_id in (pairings or {}).items():
+            client.remember_dm_recipient(channel_id, user_id)
+        return DiscordTransport(client, allowed_user_ids=allowed)
+
+    @staticmethod
+    def _telegram(allowed: list[str]) -> Any:
+        from kiro_crew.telegram.transport import TelegramTransport
+
+        return TelegramTransport(object(), allowed_user_ids=allowed)
+
+    def _resolve(self, transport: Any, link: ChannelLink | None) -> Any:
+        from kiro_crew.dashboard.chat_runner import _resolve_mirror_target
+
+        return _resolve_mirror_target(_MirrorState(transport, link), self._KEY)
+
+    def test_a_genuine_link_delivers_right_after_a_restart(self) -> None:
+        """The pairing store is empty -- the ordinary state after a gateway restart,
+        before the peer has written anything -- and the admitted record alone
+        carries the send: no inbound DM, nothing re-linked."""
+        transport = self._discord(["42"])
+        link = _admitted(
+            self._KEY, ChannelLink(channel_type="discord", channel_id="dm-chan-9", principal="42")
+        )
+        assert self._resolve(transport, link) == (link, transport)
+
+    def test_a_peer_removed_from_the_roster_is_refused(self) -> None:
+        """Revocation still lands: the record names the peer, the roster judges it."""
+        transport = self._discord(["99"])
+        link = _admitted(
+            self._KEY, ChannelLink(channel_type="discord", channel_id="dm-chan-9", principal="42")
+        )
+        assert self._resolve(transport, link) is None
+
+    def test_a_row_rewritten_to_another_allowed_users_dm_is_refused(self) -> None:
+        """The forgery the round before this one still admitted: a consistent
+        rewrite of (channel_id, principal) to ANOTHER allow-listed user's DM, whose
+        pairing the client even has cached. The MAC was minted over the original
+        location, so the rewritten row does not verify and nothing else is asked."""
+        transport = self._discord(["42", "55"], {"dm-chan-55": "55"})
+        genuine = _admitted(
+            self._KEY, ChannelLink(channel_type="discord", channel_id="dm-chan-9", principal="42")
+        )
+        rewritten = ChannelLink(
+            channel_type="discord",
+            channel_id="dm-chan-55",
+            principal="55",
+            admission=genuine.admission,
+        )
+        assert self._resolve(transport, rewritten) is None
+
+    def test_a_row_naming_an_allowed_peer_for_a_revoked_users_dm_is_refused(self) -> None:
+        """The other forgery: a revoked user's DM channel with an allow-listed
+        principal. Signed for the genuine location, the MAC does not cover the
+        swapped channel id; and even a row the forger could not sign is caught
+        twice, since the transport pairs that channel with the revoked user."""
+        transport = self._discord(["42"], {"dm-chan-revoked": "77"})
+        genuine = _admitted(
+            self._KEY, ChannelLink(channel_type="discord", channel_id="dm-chan-9", principal="42")
+        )
+        forged = ChannelLink(
+            channel_type="discord",
+            channel_id="dm-chan-revoked",
+            principal="42",
+            admission=genuine.admission,
+        )
+        assert self._resolve(transport, forged) is None
+
+    def test_a_row_moved_to_another_session_is_refused(self) -> None:
+        """The MAC binds the SESSION too: a valid record copied onto another
+        session's row does not verify there, so one session's admission cannot be
+        laundered into another's replies."""
+        transport = self._discord(["42"])
+        signed_elsewhere = _admitted(
+            "dashboard:chat-2-1700000000",
+            ChannelLink(channel_type="discord", channel_id="dm-chan-9", principal="42"),
+        )
+        assert self._resolve(transport, signed_elsewhere) is None
+
+    def test_a_row_without_an_admission_is_refused(self) -> None:
+        """A principal with no MAC is a claim from something that is not the
+        gateway. Refused, whatever the transport knows."""
+        transport = self._discord(["42"], {"dm-chan-9": "42"})
+        unsigned = ChannelLink(channel_type="discord", channel_id="dm-chan-9", principal="42")
+        assert self._resolve(transport, unsigned) is None
+
+    def test_a_transport_that_knows_another_peer_wins_over_the_record(self) -> None:
+        """Defense in depth: when the client's own pairing names someone else for
+        the conversation, the send is refused even though the record verifies."""
+        transport = self._discord(["42"], {"dm-chan-9": "77"})
+        link = _admitted(
+            self._KEY, ChannelLink(channel_type="discord", channel_id="dm-chan-9", principal="42")
+        )
+        assert self._resolve(transport, link) is None
+        # And the same record is served once the pairing agrees.
+        transport.client.remember_dm_recipient("dm-chan-9", "42")
+        assert self._resolve(transport, link) == (link, transport)
+
+    def test_a_rotated_signing_key_refuses_until_re_linked(self, monkeypatch) -> None:
+        """A token-key rotation invalidates every admission at once; the mirror is
+        refused until the session is re-linked, which mints a fresh record."""
+        import secrets
+
+        from kiro_crew.dashboard import token_secret
+
+        transport = self._discord(["42"])
+        link = _admitted(
+            self._KEY, ChannelLink(channel_type="discord", channel_id="dm-chan-9", principal="42")
+        )
+        assert self._resolve(transport, link) == (link, transport)
+        rotated = secrets.token_bytes(32)
+        monkeypatch.setattr(token_secret, "_get_secret", lambda: rotated)
+        assert self._resolve(transport, link) is None
+        relinked = _admitted(
+            self._KEY, ChannelLink(channel_type="discord", channel_id="dm-chan-9", principal="42")
+        )
+        assert self._resolve(transport, relinked) == (relinked, transport)
+
+    def test_a_refusal_is_audited_and_said_once(self, monkeypatch, caplog) -> None:
+        recorded: list[dict[str, Any]] = []
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_runner.sel",
+            lambda: type("S", (), {"log_api_access": lambda self, **kw: recorded.append(kw)})(),
+        )
+        from kiro_crew.dashboard import chat_runner
+
+        monkeypatch.setattr(chat_runner, "_RECIPIENT_LOGGED", set())
+        transport = self._discord(["42"])
+        unsigned = ChannelLink(channel_type="discord", channel_id="dm-chan-9", principal="42")
+        with caplog.at_level("WARNING", logger="kiro_crew.dashboard.chat_runner"):
+            assert self._resolve(transport, unsigned) is None
+            assert self._resolve(transport, unsigned) is None
+        admission_rows = [kw for kw in recorded if kw["operation"] == "channel.mirror_admission"]
+        assert [kw["outcome"] for kw in admission_rows] == ["unverified", "unverified"]
+        # The row's ids come from a file in-sandbox code can write; the two SEL fields
+        # stored verbatim carry in-tree constants only, and the ids ride in the
+        # redacted ``resources`` field.
+        assert {kw["caller"] for kw in admission_rows} == {"cross-surface"}
+        assert {kw["source"] for kw in admission_rows} == {"session_map"}
+        assert all("dm-chan-9" in kw["resources"] for kw in admission_rows)
+        said = [r for r in caplog.records if "no valid gateway admission" in r.getMessage()]
+        assert len(said) == 1 and "Re-link" in said[0].getMessage()
+        assert "dm-chan-9" not in said[0].getMessage() and "42" not in said[0].getMessage()
+
+    def test_the_said_once_set_retains_a_fixed_size_digest_not_the_id(
+        self, monkeypatch, caplog
+    ) -> None:
+        """The said-once set is capped at 512 entries, and a cap bounds every field it
+        retains: a conversation id comes off a row in a file in-sandbox code can write
+        at any length, so 512 refusals with successively larger ids would otherwise
+        hold unbounded memory under the cap. Each entry is a fixed-length digest of
+        the marker; the raw id is never retained, and distinct ids stay distinct."""
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_runner.sel",
+            lambda: type("S", (), {"log_api_access": lambda self, **kw: None})(),
+        )
+        from kiro_crew.dashboard import chat_runner
+
+        monkeypatch.setattr(chat_runner, "_RECIPIENT_LOGGED", set())
+        transport = self._discord(["42"])
+        huge_a = "a" * (1 << 20)
+        huge_b = "b" * (1 << 20)
+        with caplog.at_level("WARNING", logger="kiro_crew.dashboard.chat_runner"):
+            for channel_id in (huge_a, huge_b, huge_a):
+                unsigned = ChannelLink(
+                    channel_type="discord", channel_id=channel_id, principal="42"
+                )
+                assert self._resolve(transport, unsigned) is None
+        retained = chat_runner._RECIPIENT_LOGGED
+        assert len(retained) == 2, "two distinct ids, two markers; the repeat adds nothing"
+        assert all(isinstance(entry, str) and len(entry) == 64 for entry in retained), retained
+        assert sum(len(entry) for entry in retained) < 1 << 12
+        joined = "".join(retained)
+        assert "aaaa" not in joined and "bbbb" not in joined
+        # Distinct ids are still said once EACH, and the repeat is demoted to DEBUG.
+        warned = [r for r in caplog.records if "no valid gateway admission" in r.getMessage()]
+        assert [r.levelname for r in warned] == ["WARNING", "WARNING"]
+
+    def test_a_link_that_records_no_peer_stays_refused(self) -> None:
+        """A row that names no peer has nothing to admit: a link written before the
+        peer was recorded, or a unified bucket bound from inside the channel."""
+        transport = self._discord(["42"], {"dm-chan-9": "42"})
+        link = ChannelLink(channel_type="discord", channel_id="dm-chan-9")
+        assert self._resolve(transport, link) is None
+
+    def test_an_ordinary_unlinks_displaced_link_still_resolves_its_recipient(
+        self, tmp_path, monkeypatch, caplog
+    ) -> None:
+        """The unbind notice is sent AFTER the clear, to the link the clear displaced:
+        by then the row is gone from the store. The recipient check judges the link it
+        is handed -- the admission covers the session and the location, nothing the
+        store has to be consulted for -- so a genuine, peer-named DM mirror the user
+        simply unlinked resolves its recipient for the notice: no false `unverified`
+        audit row, no WARNING blaming a rewritten row, and the said-once set is not
+        latched for the conversation, so a later real forgery still warns.
+        """
+        import dataclasses
+        from unittest.mock import patch
+
+        from kiro_crew.dashboard import chat_runner
+        from kiro_crew.dashboard.chat_runner import _resolve_channel_target
+        from kiro_crew.mirror_admission import sign_mirror_admission
+        from kiro_crew.session_map import SessionMap, set_unbind_listener
+
+        recorded: list[dict[str, Any]] = []
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_runner.sel",
+            lambda: type("S", (), {"log_api_access": lambda self, **kw: recorded.append(kw)})(),
+        )
+        monkeypatch.setattr(chat_runner, "_RECIPIENT_LOGGED", set())
+        transport = self._discord(["42"])
+        state = _StubState(transport)
+        with patch("kiro_crew.session_map.config_dir", return_value=tmp_path):
+            sessions = SessionMap()
+        state.sessions = sessions
+        link = ChannelLink(channel_type="discord", channel_id="dm-chan-9", principal="42")
+        signed = dataclasses.replace(link, admission=sign_mirror_admission(self._KEY, link))
+        sessions.set_mirror_link(self._KEY, signed, accepts_inbound=True)
+        displaced: list[ChannelLink] = []
+        set_unbind_listener(lambda key, gone, reason: displaced.append(gone))
+        try:
+            with caplog.at_level("WARNING", logger="kiro_crew.dashboard.chat_runner"):
+                assert sessions.clear_mirror_link(self._KEY) is True
+                assert sessions.get_mirror_link(self._KEY) is None  # the row is gone
+                assert len(displaced) == 1 and displaced[0].admission == signed.admission
+                # What the unbind notice does with the displaced link, after the clear.
+                resolved = _resolve_channel_target(state, self._KEY, displaced[0])
+        finally:
+            set_unbind_listener(None)
+        assert resolved == (displaced[0], transport)
+        assert [kw for kw in recorded if kw["operation"] == "channel.mirror_admission"] == []
+        assert not [r for r in caplog.records if "no valid gateway admission" in r.getMessage()]
+        # Not latched: the next genuine forgery at this conversation still warns.
+        forged = ChannelLink(
+            channel_type="discord", channel_id="dm-chan-9", principal="42", admission="f" * 64
+        )
+        with caplog.at_level("WARNING", logger="kiro_crew.dashboard.chat_runner"):
+            assert _resolve_channel_target(state, self._KEY, forged) is None
+        said = [r for r in caplog.records if "no valid gateway admission" in r.getMessage()]
+        assert [r.levelname for r in said] == ["WARNING"]
+
+
+class TestRecipientPrincipal:
+    """``_recipient_principal``: the key first, then the gateway-admitted record --
+    verified, and unopposed by the transport -- and never a guess."""
+
+    _KEY = "dashboard:chat-1-1700000000"
+
+    class _Attesting:
+        def __init__(self, peers: dict[str, str]) -> None:
+            self._peers = peers
+
+        def direct_peer_of(self, conversation_id: str) -> str:
+            return self._peers.get(conversation_id, "")
+
+    def _principal(self, key: str, link: Any, transport: Any = None) -> str:
+        from kiro_crew.dashboard.chat_runner import _recipient_principal
+
+        return _recipient_principal(key, link, transport or self._Attesting({}))
+
+    def test_the_key_wins_when_it_names_a_peer(self) -> None:
+        link = ChannelLink(channel_type="discord", channel_id="dm-1", principal="77")
+        transport = self._Attesting({"dm-1": "77"})
+        assert self._principal("discord:kirocrew:direct:42", link, transport) == "42"
+
+    def test_an_admitted_record_answers_when_the_key_names_nobody(self) -> None:
+        link = _admitted(
+            self._KEY, ChannelLink(channel_type="discord", channel_id="dm-1", principal="42")
+        )
+        assert self._principal(self._KEY, link) == "42"
+        assert self._principal(self._KEY, link, self._Attesting({"dm-1": "42"})) == "42"
+
+    def test_an_unverified_record_names_nobody(self) -> None:
+        """No admission, an admission for another location, an admission for
+        another session: each is a claim the gateway did not make for this row."""
+        bare = ChannelLink(channel_type="discord", channel_id="dm-1", principal="42")
+        assert self._principal(self._KEY, bare) == ""
+        elsewhere = _admitted(
+            self._KEY, ChannelLink(channel_type="discord", channel_id="dm-2", principal="42")
+        )
+        moved = ChannelLink(
+            channel_type="discord", channel_id="dm-1", principal="42", admission=elsewhere.admission
+        )
+        assert self._principal(self._KEY, moved) == ""
+        other_session = _admitted("dashboard:chat-2-1700000000", bare)
+        assert self._principal(self._KEY, other_session) == ""
+
+    def test_a_transport_that_contradicts_the_record_names_nobody(self) -> None:
+        link = _admitted(
+            self._KEY, ChannelLink(channel_type="discord", channel_id="dm-1", principal="42")
+        )
+        assert self._principal(self._KEY, link, self._Attesting({"dm-1": "77"})) == ""
+
+    def test_nothing_named_yields_nothing(self) -> None:
+        bare = ChannelLink(channel_type="discord", channel_id="dm-1")
+        assert self._principal(self._KEY, bare) == ""
+        assert self._principal("unified:kirocrew", bare) == ""
+        # A link double that predates the field, no link at all, and a transport
+        # without the hook all name nobody rather than raising in the send path.
+        admitted = _admitted(
+            self._KEY, ChannelLink(channel_type="discord", channel_id="dm-1", principal="42")
+        )
+        assert self._principal(self._KEY, object()) == ""
+        assert self._principal(self._KEY, None) == ""
+        assert self._principal(self._KEY, admitted, object()) == "42"
+
+    def test_a_raising_hook_is_read_as_not_on_record(self) -> None:
+        """An attestation that could not be read contradicts nothing; the verified
+        record still answers (the hook is defense in depth, not the authority)."""
+
+        class _Broken:
+            def direct_peer_of(self, conversation_id: str) -> str:
+                raise RuntimeError("pairing store unavailable")
+
+        admitted = _admitted(
+            self._KEY, ChannelLink(channel_type="discord", channel_id="dm-1", principal="42")
+        )
+        assert self._principal(self._KEY, admitted, _Broken()) == "42"
+
+    def test_the_session_key_extractor_is_untouched(self) -> None:
+        """The key-only derivation keeps its contract; the link is read beside it,
+        not through it."""
+        from kiro_crew.dashboard.chat_runner import _session_principal
+
+        assert _session_principal(self._KEY) == ""
+        assert _session_principal("discord:kirocrew:direct:42") == "42"
+
+
+class TestMirrorAdmission:
+    """``kiro_crew.mirror_admission``: the gateway's MAC over a principal-bearing row."""
+
+    def test_signs_only_a_row_that_names_a_peer(self) -> None:
+        from kiro_crew.mirror_admission import sign_mirror_admission
+
+        assert (
+            sign_mirror_admission("dashboard:chat-1", ChannelLink("discord", channel_id="dm-1"))
+            == ""
+        )
+        signed = sign_mirror_admission(
+            "dashboard:chat-1", ChannelLink("discord", channel_id="dm-1", principal="42")
+        )
+        assert len(signed) == 64 and int(signed, 16) >= 0
+
+    @pytest.mark.parametrize(
+        "planted",
+        [
+            {"admission": "\u00fc" * 64},
+            {"admission": "\u00e9" + "a" * 63},
+            {"admission": 123},
+            {"admission": ["f" * 64]},
+            {"admission": b"f" * 64},
+            {"admission": "F" * 64},
+            {"principal": ["42"]},
+            {"principal": 42},
+            {"channel_id": {"id": "dm-1"}},
+            {"channel_id": 7},
+            {"thread_id": object()},
+            {"channel_type": None},
+        ],
+        ids=[
+            "non-ascii-admission",
+            "one-non-ascii-char",
+            "int-admission",
+            "list-admission",
+            "bytes-admission",
+            "uppercase-hex",
+            "list-principal",
+            "int-principal",
+            "dict-channel-id",
+            "int-channel-id",
+            "object-thread-id",
+            "none-channel-type",
+        ],
+    )
+    def test_a_malformed_planted_row_refuses_and_never_raises(self, planted: dict) -> None:
+        """The row comes from a file in-sandbox code can write, and this check sits on
+        the send path of a dashboard turn: every shape it can take is a refusal, never
+        an exception -- the constant-time comparison alone raises on a non-ASCII
+        string, which would have aborted the turn on exactly the row it exists to
+        reject. ``restorable_link`` strips such a row rather than raising too."""
+        import dataclasses
+
+        from kiro_crew.mirror_admission import restorable_link, verify_mirror_admission
+
+        genuine = _admitted(
+            "dashboard:chat-1", ChannelLink("discord", channel_id="dm-1", principal="42")
+        )
+        row = dataclasses.replace(genuine, **planted)
+        assert verify_mirror_admission("dashboard:chat-1", row) is False
+        restored = restorable_link("dashboard:chat-1", row)
+        assert restored.principal is None and restored.admission is None
+
+    @pytest.mark.parametrize(
+        "field, value",
+        [
+            ("channel_type", "webex"),
+            ("channel_id", "dm-2"),
+            ("thread_id", "t-1"),
+            ("principal", "77"),
+        ],
+    )
+    def test_every_field_of_the_location_is_covered(self, field: str, value: str) -> None:
+        import dataclasses
+
+        from kiro_crew.mirror_admission import verify_mirror_admission
+
+        original = ChannelLink("discord", channel_id="dm-1", thread_id=None, principal="42")
+        signed = _admitted("dashboard:chat-1", original)
+        assert verify_mirror_admission("dashboard:chat-1", signed) is True
+        altered = dataclasses.replace(signed, **{field: value})
+        assert verify_mirror_admission("dashboard:chat-1", altered) is False
+        assert verify_mirror_admission("dashboard:chat-2", signed) is False
+
+    def test_the_session_key_is_canonicalized_on_both_sides(self) -> None:
+        """The map stores rows under the canonical key; the ladder is handed the
+        session's key. Both spellings of one session verify the same record."""
+        from kiro_crew.messaging.link import canonical_key
+        from kiro_crew.mirror_admission import verify_mirror_admission
+
+        raw = "dashboard:chat-1-1700000000"
+        signed = _admitted(
+            canonical_key(raw), ChannelLink("discord", channel_id="dm-1", principal="42")
+        )
+        assert verify_mirror_admission(raw, signed) is True
+
+    def test_a_tampered_or_missing_admission_does_not_verify(self) -> None:
+        from kiro_crew.mirror_admission import verify_mirror_admission
+
+        signed = _admitted(
+            "dashboard:chat-1", ChannelLink("discord", channel_id="dm-1", principal="42")
+        )
+        assert (
+            verify_mirror_admission(
+                "dashboard:chat-1",
+                ChannelLink("discord", channel_id="dm-1", principal="42"),
+            )
+            is False
+        )
+        flipped = ("0" if signed.admission[0] != "0" else "1") + signed.admission[1:]  # type: ignore[index]
+        assert (
+            verify_mirror_admission(
+                "dashboard:chat-1",
+                ChannelLink("discord", channel_id="dm-1", principal="42", admission=flipped),
+            )
+            is False
+        )
+        assert (
+            verify_mirror_admission(
+                "dashboard:chat-1",
+                ChannelLink("discord", channel_id="dm-1", principal="42", admission="not-hex"),
+            )
+            is False
+        )
+
+    def test_an_unreadable_key_admits_nobody(self, monkeypatch) -> None:
+        from kiro_crew.dashboard import token_secret
+        from kiro_crew.mirror_admission import verify_mirror_admission
+
+        signed = _admitted(
+            "dashboard:chat-1", ChannelLink("discord", channel_id="dm-1", principal="42")
+        )
+
+        def _boom() -> bytes:
+            raise OSError("key store unreadable")
+
+        monkeypatch.setattr(token_secret, "_get_secret", _boom)
+        assert verify_mirror_admission("dashboard:chat-1", signed) is False
+
+    def test_the_purpose_key_is_not_the_signing_secret_itself(self) -> None:
+        """Domain separation: the admission key is derived from the token signing
+        secret under a purpose label, so an admission is never a valid token MAC
+        and a token is never a valid admission."""
+        import hashlib
+        import hmac
+
+        from kiro_crew.dashboard import token_secret
+        from kiro_crew.mirror_admission import _material, sign_mirror_admission
+
+        link = ChannelLink("discord", channel_id="dm-1", principal="42")
+        under_raw_secret = hmac.new(
+            token_secret._get_secret(), _material("dashboard:chat-1", link), hashlib.sha256
+        ).hexdigest()
+        assert sign_mirror_admission("dashboard:chat-1", link) != under_raw_secret
+
+    def test_only_the_two_authorized_creation_paths_mint_an_admission(self) -> None:
+        """A generic writer that signed whatever it was handed would launder a forged
+        row into a trusted one the moment any path re-set it -- a rollback, a
+        restore, a migration. So the signer has exactly two call sites in the
+        package: the dashboard mirror-link handler and the resume controller's pick
+        commit, the two paths that authorize a peer for a conversation. Pinned by
+        AST over every module, so a third writer is a named failure here rather than
+        a quiet widening.
+        """
+        import ast as _ast
+
+        import kiro_crew
+
+        pkg = Path(kiro_crew.__file__).resolve().parent
+        sites: set[tuple[str, str]] = set()
+        for path in pkg.rglob("*.py"):
+            if "_vendor" in path.parts or path.name == "mirror_admission.py":
+                continue
+            src = path.read_text(encoding="utf-8")
+            if "sign_mirror_admission" not in src:
+                continue
+            tree = _ast.parse(src)
+            parents: dict[_ast.AST, _ast.AST] = {}
+            for node in _ast.walk(tree):
+                for child in _ast.iter_child_nodes(node):
+                    parents[child] = node
+            for node in _ast.walk(tree):
+                if not (isinstance(node, _ast.Call) and isinstance(node.func, _ast.Name)):
+                    continue
+                if node.func.id != "sign_mirror_admission":
+                    continue
+                cur: _ast.AST | None = node
+                while cur is not None and not isinstance(
+                    cur, (_ast.FunctionDef, _ast.AsyncFunctionDef)
+                ):
+                    cur = parents.get(cur)
+                fn = (
+                    cur.name
+                    if isinstance(cur, (_ast.FunctionDef, _ast.AsyncFunctionDef))
+                    else "<module>"
+                )
+                sites.add((path.relative_to(pkg).as_posix(), fn))
+        assert sites == {
+            ("dashboard/chat_mirror.py", "api_chat_slot_mirror_link"),
+            ("messaging/session_resume.py", "commit_binding"),
+        }, sites
+
+    def test_the_map_itself_never_signs(self) -> None:
+        """The store's writer carries bytes through; it does not import the signer."""
+        import kiro_crew.session_map as session_map_mod
+
+        src = Path(session_map_mod.__file__).read_text(encoding="utf-8")
+        assert "sign_mirror_admission(" not in src
+
+    def test_every_mirror_writer_is_a_signer_a_sanitized_rollback_or_peerless(self) -> None:
+        """The convention every writer of a mirror row has to keep, made a named
+        failure rather than a memory: a site that stores a link naming a peer either
+        MINTS its admission (the two creation paths) or is a rollback that re-sets a
+        row it read back through ``restorable_link``; every other site stores a
+        location with no peer and no admission. The three sets are enumerated by AST
+        and pinned, so a new ``set_mirror_link`` caller must be classified here --
+        and a rollback that forgot ``restorable_link`` fails this test, not just an
+        audit line.
+        """
+        import ast as _ast
+
+        import kiro_crew
+
+        pkg = Path(kiro_crew.__file__).resolve().parent
+        signers: set[tuple[str, str]] = set()
+        sanitized: set[tuple[str, str]] = set()
+        others: set[tuple[str, str]] = set()
+        for path in pkg.rglob("*.py"):
+            if "_vendor" in path.parts:
+                continue
+            src = path.read_text(encoding="utf-8")
+            if "set_mirror_link" not in src:
+                continue
+            tree = _ast.parse(src)
+            parents: dict[_ast.AST, _ast.AST] = {}
+            for node in _ast.walk(tree):
+                for child in _ast.iter_child_nodes(node):
+                    parents[child] = node
+            for node in _ast.walk(tree):
+                if not (
+                    isinstance(node, _ast.Call)
+                    and isinstance(node.func, _ast.Attribute)
+                    and node.func.attr == "set_mirror_link"
+                ):
+                    continue
+                cur: _ast.AST | None = node
+                while cur is not None and not isinstance(
+                    cur, (_ast.FunctionDef, _ast.AsyncFunctionDef)
+                ):
+                    cur = parents.get(cur)
+                assert cur is not None, f"{path}: set_mirror_link at module level"
+                site = (path.relative_to(pkg).as_posix(), cur.name)
+                innermost_src = _ast.get_source_segment(src, cur) or ""
+                # The enclosing chain, innermost first: the dashboard handler signs
+                # in its body and stores from a nested claim closure, so the signer
+                # test reads every enclosing function while the rollback discipline
+                # is judged on the closure that performs the write.
+                chain: list[str] = []
+                scope: _ast.AST | None = cur
+                while scope is not None:
+                    if isinstance(scope, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+                        chain.append(_ast.get_source_segment(src, scope) or "")
+                    scope = parents.get(scope)
+                if "restorable_link(" in innermost_src:
+                    sanitized.add(site)
+                elif any("sign_mirror_admission(" in fn_src for fn_src in chain):
+                    signers.add(site)
+                else:
+                    others.add(site)
+        assert signers == {
+            ("dashboard/chat_mirror.py", "_claim_binding"),
+            ("messaging/session_resume.py", "commit_binding"),
+        }, signers
+        assert sanitized == {
+            ("dashboard/chat_mirror.py", "_release_binding"),
+            ("messaging/session_resume.py", "release"),
+            ("messaging/session_resume.py", "rollback_binding"),
+        }, sanitized
+        # Peer-less writers: the origin binds and in-channel links (a bare location),
+        # and the manager's passthrough. None of these may grow a principal without
+        # moving into one of the two sets above.
+        assert others == {
+            ("messaging/link.py", "bind_origin_mirror"),
+            ("messaging/link.py", "rebind_conversation_location"),
+            ("session.py", "set_mirror_link"),
+            ("webex/transport_dispatch.py", "_rebind"),
+            ("wecom/transport_dispatch.py", "_handle_link"),
+        }, others
+
+    def test_restorable_link_carries_a_verified_row_and_strips_an_unverified_one(
+        self, monkeypatch, caplog
+    ) -> None:
+        """What a rollback may put back: a row whose admission verifies goes back
+        verbatim; a row naming a peer under a missing or wrong admission goes back
+        as its location alone, audited once, so the send is refused rather than a
+        forged row laundered into a trusted one."""
+        from kiro_crew.mirror_admission import restorable_link
+
+        recorded: list[dict[str, Any]] = []
+        monkeypatch.setattr(
+            "kiro_crew.mirror_admission.sel",
+            lambda: type("S", (), {"log_api_access": lambda self, **kw: recorded.append(kw)})(),
+        )
+        key = "dashboard:chat-1-1700000000"
+        bare = ChannelLink("discord", channel_id="dm-1")
+        assert restorable_link(key, bare) is bare
+        signed = _admitted(key, ChannelLink("discord", channel_id="dm-1", principal="42"))
+        assert restorable_link(key, signed) is signed
+        forged = ChannelLink("discord", channel_id="dm-1", principal="42", admission="f" * 64)
+        unsigned = ChannelLink("discord", channel_id="dm-1", principal="42")
+        moved = _admitted("dashboard:chat-2-1700000000", unsigned)
+        with caplog.at_level("WARNING", logger="kiro_crew.mirror_admission"):
+            for row in (forged, unsigned, moved):
+                restored = restorable_link(key, row)
+                assert restored == bare
+                assert restored.principal is None and restored.admission is None
+        assert [kw["outcome"] for kw in recorded] == ["stripped_on_restore"] * 3
+        assert {kw["caller"] for kw in recorded} == {"mirror-rollback"}
+        assert {kw["source"] for kw in recorded} == {"session_map"}
+        said = [r for r in caplog.records if "restoring the binding without it" in r.getMessage()]
+        assert len(said) == 3 and all("dm-1" not in r.getMessage() for r in said)
+        # A row whose ids are attacker-shaped never reaches the verbatim fields or the
+        # log line; only the redacted ``resources`` field carries them.
+        planted = ChannelLink(
+            "AKIAIOSFODNN7EXAMPLE",
+            channel_id="ghp_" + "b" * 36,
+            principal="42",
+            admission="f" * 64,
+        )
+        recorded.clear()
+        with caplog.at_level("WARNING", logger="kiro_crew.mirror_admission"):
+            restorable_link(key, planted)
+        assert recorded[0]["caller"] == "mirror-rollback" and recorded[0]["source"] == "session_map"
+        assert "ghp_" not in recorded[0]["caller"] + recorded[0]["source"]
+        assert all(
+            "ghp_" not in r.getMessage() and "AKIA" not in r.getMessage() for r in caplog.records
+        )
 
 
 def _send_returns_only_empty(channel: str, class_name: str) -> bool:

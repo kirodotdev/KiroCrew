@@ -232,6 +232,9 @@ def _make_state(tmp_path, **kwargs):
         if isinstance(channel_id, ChannelLink):
             if _mirror_links.get(key) != channel_id or key not in _mirror_nonces:
                 _mirror_nonces[key] = _mint_nonce()
+            # Parity with ``SessionMap.set_mirror_link``: the link is stored as
+            # handed over, admission included when the caller signed it, and the
+            # store never mints one -- only the two authorized creation paths do.
             _mirror_links[key] = channel_id
             if accepts_inbound:
                 _inbound_keys.add(key)

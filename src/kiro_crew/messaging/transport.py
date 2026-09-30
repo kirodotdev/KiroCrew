@@ -354,8 +354,8 @@ class MessagingTransport(ABC):
         :meth:`authorize` gates a turn the user drove; this gates a message
         nobody asked for -- a cron result, a compaction notice, a subagent
         completion. Those resolve their destination from a **persisted**
-        ``ChannelLink``, which records a conversation but not the principal that
-        authorized it, so removing a recipient from the roster and restarting
+        ``ChannelLink``, and a persisted record cannot re-check the roster that
+        admitted it, so removing a recipient from the roster and restarting
         leaves the link intact and the sends still flowing. Revocation has to be
         re-decided at egress, and only the transport can decide it: the roster
         holds principals while the link holds a conversation id, and whether
@@ -363,13 +363,19 @@ class MessagingTransport(ABC):
         ``chat_id`` IS the ``user_id``; a Discord DM channel id is not).
 
         *principal* is the peer's platform id when the session key positively
-        names one (a 1:1 DM under the default scope), else ``""``. It is what
-        makes the answer reachable for a transport whose conversation id is
-        opaque: check it against the same roster :meth:`authorize` uses. Empty
-        means "the key does not name one principal" -- a room-audience route or a
-        unified bucket -- NOT that nobody is authorized, so a transport that can
-        only answer via the principal should permit rather than deny when it is
-        absent, or it would refuse every group and unified-scope send.
+        names one (a 1:1 DM under the default scope); else, when the key names
+        nobody, the peer the gateway admitted on the link
+        (``ChannelLink.principal``) -- handed in only when the row's gateway-minted
+        admission verifies (``ChannelLink.admission``) and this transport's own
+        record of the conversation (:meth:`direct_peer_of`), if it has one, agrees;
+        else ``""``. It is what makes the answer reachable for a transport whose
+        conversation id is opaque: check it against the same roster
+        :meth:`authorize` uses. Empty means "nothing names one principal the
+        gateway or the transport can vouch for" -- a room-audience route, a unified
+        bucket bound in-channel, an unsigned or rewritten row -- NOT that nobody is
+        authorized, so a transport that can only answer via the principal should
+        permit rather than deny when it is absent, or it would refuse every group
+        and unified-scope send.
 
         A transport whose conversation id already IS the roster identity (Telegram,
         iMessage, WeCom, Weixin) can ignore *principal* and answer from
@@ -400,6 +406,36 @@ class MessagingTransport(ABC):
         overrides synchronously and in memory, matching :meth:`may_send_to`.
         """
         return bool(self.capabilities.supports_session_resume)
+
+    def direct_peer_of(self, conversation_id: str) -> str:
+        """The platform identity of the ONE human in *conversation_id*, or ``""``.
+
+        Answers only when this transport can attest FROM ITS OWN STATE that
+        *conversation_id* is a 1:1 direct conversation and which person it is
+        with: the DM it opened for that person (:meth:`resolve_conversation`), or
+        one an authorized message arrived from. ``""`` means "cannot attest" and
+        covers a room, a thread, a group, an id this process never placed, and a
+        transport that keeps no such record -- never "nobody is authorized".
+
+        The reader is the cross-surface send ladder's per-send recipient leg
+        (``dashboard.chat_runner._recipient_principal``), as defense in depth. A
+        persisted mirror ``ChannelLink`` records a conversation id and, when its
+        writer could name one, the peer it was admitted for
+        (``ChannelLink.principal``) under a MAC only the gateway can mint
+        (``ChannelLink.admission``, :mod:`kiro_crew.mirror_admission`); the ladder
+        hands :meth:`may_send_to` that peer only when the MAC verifies AND this hook,
+        if it names anyone for the conversation, names the same person. Whether a
+        conversation id and a user id are the same string is a per-platform fact (a
+        Telegram private ``chat_id`` IS the ``user_id``; a Discord DM channel id is
+        not). This hook names the peer and decides nothing about authorization
+        itself; the roster does.
+
+        Synchronous and in-memory like :meth:`may_send_to`: it runs inside gates
+        that must not suspend, so a transport that would need a round trip to
+        answer returns ``""`` instead. Default ``""`` is the fail-closed answer, so
+        a transport that does not override it confirms nothing.
+        """
+        return ""
 
     # -- Inbound adapter ----------------------------------------------------
     @abstractmethod

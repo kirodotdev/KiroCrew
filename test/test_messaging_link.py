@@ -523,3 +523,66 @@ class TestUnbindReasonVocabulary:
             "unbind reasons must come from messaging.link's UNBIND_REASON_* "
             f"constants, not bare literals: {offenders}"
         )
+
+
+class TestChannelLinkPrincipal:
+    """``ChannelLink.principal``: recorded beside the location, never part of it."""
+
+    def test_equality_is_the_location_alone(self) -> None:
+        """Every binding match in the map and the resume paths compares links by
+        value, so a recorded peer must not make one location read as two."""
+        bare = ChannelLink("discord", channel_id="dm-9")
+        recorded = ChannelLink("discord", channel_id="dm-9", principal="42")
+        other_peer = ChannelLink("discord", channel_id="dm-9", principal="77")
+        assert bare == recorded == other_peer
+        assert recorded != ChannelLink("discord", channel_id="dm-8", principal="42")
+
+    def test_the_record_serializes_only_when_present(self) -> None:
+        bare = ChannelLink("discord", channel_id="dm-9")
+        assert bare.to_dict() == {
+            "channel_type": "discord",
+            "channel_id": "dm-9",
+            "thread_id": None,
+        }
+        recorded = ChannelLink("discord", channel_id="dm-9", principal="42")
+        assert recorded.to_dict()["principal"] == "42"
+
+    def test_the_record_survives_a_round_trip(self) -> None:
+        recorded = ChannelLink("discord", channel_id="dm-9", principal="42")
+        back = ChannelLink.from_dict(recorded.to_dict())
+        assert back == recorded and back.principal == "42"
+
+    def test_a_row_written_without_the_field_reads_as_naming_nobody(self) -> None:
+        legacy = {"channel_type": "discord", "channel_id": "dm-9", "thread_id": None}
+        assert ChannelLink.from_dict(legacy).principal is None
+        # An empty string stored by any writer is the same absence, not a peer.
+        assert ChannelLink.from_dict({**legacy, "principal": ""}).principal is None
+
+    def test_the_admission_rides_with_the_record_and_outside_equality(self) -> None:
+        """The gateway's MAC over the row travels like the principal: emitted only
+        when set, read back verbatim, and never part of the location's identity."""
+        bare = ChannelLink("discord", channel_id="dm-9")
+        assert "admission" not in bare.to_dict()
+        signed = ChannelLink("discord", channel_id="dm-9", principal="42", admission="ab" * 32)
+        assert signed.to_dict()["admission"] == "ab" * 32
+        back = ChannelLink.from_dict(signed.to_dict())
+        assert back.admission == "ab" * 32 and back.principal == "42"
+        assert back == bare
+        assert ChannelLink.from_dict({**bare.to_dict(), "admission": ""}).admission is None
+
+    def test_same_row_is_the_whole_row_where_equality_is_the_location(self) -> None:
+        """A rollback's ownership guard asks "is this still the row I wrote?", and
+        two rows at one location under different admissions -- a re-link after a key
+        rotation -- are different rows even though they are the same binding."""
+        mine = ChannelLink("discord", channel_id="dm-9", principal="42", admission="ab" * 32)
+        refreshed = ChannelLink("discord", channel_id="dm-9", principal="42", admission="cd" * 32)
+        other_peer = ChannelLink("discord", channel_id="dm-9", principal="55", admission="ab" * 32)
+        bare = ChannelLink("discord", channel_id="dm-9")
+        assert mine == refreshed == other_peer == bare, "location equality is unchanged"
+        assert mine.same_row(ChannelLink.from_dict(mine.to_dict()))
+        assert bare.same_row(ChannelLink("discord", channel_id="dm-9"))
+        assert not mine.same_row(refreshed)
+        assert not mine.same_row(other_peer)
+        assert not mine.same_row(bare) and not bare.same_row(mine)
+        assert not mine.same_row(ChannelLink("discord", channel_id="dm-10", principal="42"))
+        assert not mine.same_row(None) and not mine.same_row(mine.to_dict())

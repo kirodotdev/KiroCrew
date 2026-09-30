@@ -3272,6 +3272,11 @@ class SessionManager:
         """True iff this session's mirror is a session-resume (two-way) binding."""
         return self._session_map.mirror_accepts_inbound(key)
 
+    def has_mirror_row(self, key: str) -> bool:
+        """Whether an explicit ``mirror`` row is stored under exactly *key* (no Slack
+        synthesis, no legacy-row fallback); see ``SessionMap.has_mirror_row``."""
+        return self._session_map.has_mirror_row(key)
+
     def mirror_link_nonce(self, key: str) -> str:
         """The per-binding nonce of the mirror ``get_mirror_link`` returns (``""`` for none)."""
         return self._session_map.mirror_link_nonce(key)

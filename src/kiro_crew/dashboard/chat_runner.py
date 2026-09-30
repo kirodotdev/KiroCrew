@@ -332,6 +332,7 @@ from kiro_crew.messaging.renderer import chunk_for_transport
 from kiro_crew.metrics.events import TURN_TIMEOUT_CAUSE, emit_counter
 from kiro_crew.metrics.provider import get_recorder
 from kiro_crew.metrics.turns import emit_turn_duration, emit_turn_usage, turn_outcome
+from kiro_crew.mirror_admission import verify_mirror_admission
 from kiro_crew.monitoring.completion import (
     MonitorCompletionHook,
     disposition_for_stop_reason,
@@ -4279,9 +4280,9 @@ def _safe_native_crew_debug_title(title: str) -> str:
 def _session_principal(session_key: str) -> str:
     """The platform user id a DIRECT session key names, or ``""``.
 
-    The persisted ``ChannelLink`` records a conversation, not a principal, which is
+    The persisted ``ChannelLink`` records a conversation, and a conversation id is
     what made a revoked recipient unanswerable for the transports whose conversation
-    id is not their user id. The session KEY carries it: the canonical grammar is
+    id is not their user id. The session KEY carries the peer: the canonical grammar is
     ``{surface}:{agent}:{chat_type}:{scope…}`` and for a 1:1 DM the scope is exactly
     the peer's platform id. Parsing goes through ``messaging.link.parse_session_key``
     because that module is the ONE canonical address parser (RFC §9 rule 4); a second
@@ -4306,11 +4307,177 @@ def _session_principal(session_key: str) -> str:
     is authorized". A transport whose other rosters can still judge the route (a
     Discord thread against its thread allow-list) uses them; one with nothing left to
     consult refuses, because this feeds a network egress boundary.
+
+    A third source IS consulted, but by the ladder rather than here, and only when
+    this returns ``""``: the peer the mirror link recorded when the GATEWAY admitted
+    it (``ChannelLink.principal``), under a MAC the gateway alone can mint over the
+    session key and the whole location (``ChannelLink.admission``, see
+    :func:`_recipient_principal`). That record is free of the drift above because
+    it is written in the same write as the conversation id it describes and signed
+    together with it, so a row rewritten, moved or unsigned by anything but the
+    gateway fails to verify; the transport's own record of the conversation
+    (``MessagingTransport.direct_peer_of``) must agree with it whenever the
+    transport has one. That is what serves a dashboard-born session mirrored to a
+    Discord DM, whose key names nobody and whose DM channel id cannot be tested
+    against a user roster.
     """
     parsed = parse_session_key(session_key)
     if parsed is None or parsed.chat_type != CHAT_TYPE_DIRECT or len(parsed.scope) != 1:
         return ""
     return parsed.scope[0]
+
+
+def _link_principal(link: Any) -> str:
+    """The peer a mirror link records as the one its conversation was admitted for,
+    or ``""`` when the link names none (or predates the field). Trusted only under
+    the row's gateway admission: see :func:`_recipient_principal`."""
+    return str(getattr(link, "principal", None) or "")
+
+
+def _attested_peer(transport: Any, conversation_id: str) -> str:
+    """What the transport itself attests about who *conversation_id* belongs to.
+
+    ``MessagingTransport.direct_peer_of`` -- for Discord the ``dm_channel_id ->
+    user_id`` pairing its client learns when it opens a DM or an authorized message
+    arrives in one. ``""`` for a transport without the hook, one that keeps no such
+    record, an id it never placed, and a hook that raised: "not on record", which the
+    ladder treats as no contradiction rather than as a refusal, since the admitted
+    record is what it is checking against. Defense in depth over that record, never
+    a substitute for it.
+    """
+    attest = getattr(transport, "direct_peer_of", None)
+    if attest is None or not conversation_id:
+        return ""
+    try:
+        return str(attest(conversation_id) or "")
+    except Exception:
+        logger.debug(
+            "cross-surface: DM peer attestation failed; treating as unrecorded", exc_info=True
+        )
+        return ""
+
+
+def _recipient_principal(session_key: str, link: Any, transport: Any) -> str:
+    """The principal the per-send recipient check is handed for *link*.
+
+    The session KEY first, exactly as :func:`_session_principal` reads it, so every
+    key that names a peer keeps its established reading. When the key names nobody
+    -- a dashboard-born ``chat-*`` key, the shape a mirror made from the dashboard
+    menu or a Discord ``!sessions`` pick hangs off -- the answer is the peer the
+    link recorded when the gateway admitted it (:func:`_link_principal`), and it is
+    handed in only under two conditions:
+
+    * the row's ADMISSION verifies (:func:`verify_mirror_admission`): a MAC the
+      gateway alone can mint, over this session key and the whole location. The
+      session map is writable by in-sandbox code, so without it a row rewritten to
+      name an allow-listed user for a revoked user's DM, or to aim one session's
+      replies at another allow-listed user's DM, would be authorized against the
+      wrong person and pass. A row with no admission, one that does not verify, and
+      one signed under a rotated key are refused, audited, and logged once, and the
+      remedy is named: re-link the session, which mints a fresh record;
+    * the transport's own record of the conversation, when it has one, AGREES
+      (:func:`_attested_peer`, defense in depth): a pairing the client learned on its
+      authorized paths that names someone else refuses the send whatever the record
+      says. A transport that knows nothing -- the ordinary state right after a
+      restart, before the peer has written into the DM -- confirms nothing and
+      contradicts nothing, so the verified record stands and this leg admits the
+      mirror across a restart with no inbound message. (Discord's REST ladder keeps
+      its own mid-send re-check over the pairing alone, so a send that hits one of
+      that ladder's waits before the pairing is re-learned is still refused there;
+      a send that never waits is delivered.)
+
+    The roster still decides, per send, whether the named peer is admitted.
+    """
+    named = _session_principal(session_key)
+    if named:
+        return named
+    hint = _link_principal(link)
+    if not hint:
+        return ""
+    channel_type = str(getattr(link, "channel_type", "") or "channel")
+    channel_id = str(getattr(link, "channel_id", "") or "")
+    if not verify_mirror_admission(session_key, link):
+        _audit_admission_refusal(session_key, link)
+        _log_once(
+            ("unadmitted", channel_type, channel_id),
+            logging.WARNING,
+            "cross-surface: the %s mirror link names a peer but carries no valid gateway "
+            "admission (an unsigned or rewritten row, or a rotated signing key); refusing "
+            "the send. Re-link the session from the dashboard to restore delivery",
+            channel_type,
+        )
+        return ""
+    attested = _attested_peer(transport, channel_id)
+    if attested and attested != hint:
+        # The transport learned, on its own authorized paths, that this conversation
+        # belongs to someone else. Its record outranks the admitted one -- a wrong
+        # record here is stale at best -- and the disagreement is worth a louder
+        # line than the ordinary refusal. Ids stay out of the log, as everywhere on
+        # this path.
+        _audit_admission_refusal(session_key, link, outcome="contradicted")
+        _log_once(
+            ("contradicted", channel_type, channel_id),
+            logging.WARNING,
+            "cross-surface: the %s mirror link's admitted peer disagrees with the "
+            "transport's own record of the conversation; refusing the send",
+            channel_type,
+        )
+        return ""
+    return hint
+
+
+def _audit_admission_refusal(session_key: str, link: Any, *, outcome: str = "unverified") -> None:
+    """SEL-record a mirror admission that did not hold. Guarded like every other
+    audit write on this path: a failed audit must not crash the send leg.
+
+    ``caller`` and ``source`` are in-tree constants, never values off the row: the
+    row comes from a file in-sandbox code can write, and those two fields land in
+    the append-only log verbatim, so a credential planted in a ``channel_id`` would
+    be published unredacted. The identifiers go into ``resources``, which is
+    redacted and clipped on the way in.
+    """
+    try:
+        sel().log_api_access(
+            caller="cross-surface",
+            operation="channel.mirror_admission",
+            outcome=outcome,
+            source="session_map",
+            resources=(
+                f"{session_key} -> {getattr(link, 'channel_type', '')}:"
+                f"{getattr(link, 'channel_id', '') or 'unknown'}"
+            ),
+        )
+    except Exception:
+        logger.debug("SEL logging failed for a mirror admission refusal", exc_info=True)
+
+
+#: Refusal grounds already reported for a conversation in this process, so the
+#: per-send leg says each once at its own level and at DEBUG afterwards. Bounded
+#: in BOTH dimensions: cleared when full, so a churn of conversation ids cannot
+#: grow it without limit, and each entry is a fixed-length digest of its marker,
+#: never the marker itself -- a conversation id comes off a mirror row in a file
+#: in-sandbox code can write at any length, so retaining it verbatim would let
+#: 512 refusals with successively larger ids hold unbounded memory under the cap.
+_RECIPIENT_LOGGED: set[str] = set()
+_RECIPIENT_LOGGED_CAP = 512
+
+
+def _marker_digest(marker: tuple[str, str, str]) -> str:
+    """The fixed-length key the said-once set retains for *marker*."""
+    material = b"\x00".join(part.encode("utf-8", "surrogatepass") for part in marker)
+    return hashlib.sha256(material).hexdigest()
+
+
+def _log_once(marker: tuple[str, str, str], level: int, message: str, *args: Any) -> None:
+    """Log *message* at *level* the first time *marker* is seen, at DEBUG after."""
+    key = _marker_digest(marker)
+    if key in _RECIPIENT_LOGGED:
+        logger.debug(message, *args)
+        return
+    if len(_RECIPIENT_LOGGED) >= _RECIPIENT_LOGGED_CAP:
+        _RECIPIENT_LOGGED.clear()
+    _RECIPIENT_LOGGED.add(key)
+    logger.log(level, message, *args)
 
 
 #: The ONE off-loop entry point to the name-grant check, promoted to
@@ -4540,6 +4707,13 @@ def _resolve_channel_target(
     # Skipped only under check_recipient=False (see the docstring): a link that
     # carries a configured-target id instead of a conversation id cannot be
     # judged here, and its caller re-decides against the resolved id.
+    #
+    # The derived principal reads the session key first and, when that names
+    # nobody, the peer the GATEWAY admitted on the link -- trusted only under the
+    # row's admission MAC, with the transport's own pairing as defense in depth
+    # (``_recipient_principal``): a dashboard-born key names nobody, and for a
+    # Discord DM the conversation id alone cannot answer, so without that record
+    # every dashboard-driven reply into such a mirror would be refused right here.
     if not check_recipient:
         return link, transport
     if not _authorize_recipient(
@@ -4547,7 +4721,9 @@ def _resolve_channel_target(
         link.channel_type,
         link.channel_id,
         link.thread_id,
-        principal=(_session_principal(session_key) if principal is None else principal),
+        principal=(
+            _recipient_principal(session_key, link, transport) if principal is None else principal
+        ),
         session_key=session_key,
     ):
         logger.info(
