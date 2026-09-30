@@ -807,7 +807,7 @@ class TestGateTripwire:
         """The three loops that read session updates each run the tripwire."""
         for reader in (
             AcpClient.send_message_stream,
-            AcpClient._dispatch_events,
+            AcpClient._dispatch_events_loop,
             AcpClient._read_prompt_response,
         ):
             assert "await self._tripwire_pi_gate(msg)" in inspect.getsource(reader), reader

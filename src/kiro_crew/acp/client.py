@@ -160,6 +160,7 @@ from kiro_crew.acp.types import (
     ACP_BACKENDS_SEED_LOCAL_SETTINGS,
     ACP_BACKENDS_SESSION_MCP_ARRAY,
     ACP_BACKENDS_STEER,
+    ACP_BACKENDS_STEERING_REQUEST,
     ACP_BACKENDS_STRUCTURED_REFUSAL,
     ACP_CLIENT_CAPABILITIES,
     EVENT_AGENT_SWITCHED,
@@ -169,6 +170,7 @@ from kiro_crew.acp.types import (
     EVENT_MCP_OAUTH_REQUEST,
     EVENT_MCP_SERVER_INIT_FAILURE,
     EVENT_MCP_SERVER_INITIALIZED,
+    EVENT_STEER_CONSUMED,
     EVENT_SUBAGENT_ACTIVITY,
     EVENT_SUBAGENT_LIST,
     EVENT_TEXT_CHUNK,
@@ -178,6 +180,8 @@ from kiro_crew.acp.types import (
     EVENT_TOOL_RESULT,
     JSONRPC_METHOD_NOT_FOUND,
     KNOWN_SESSION_UPDATES,
+    MAX_STEERING_ANSWERS,
+    MAX_STEERING_TEXT_CHARS,
     MCP_ROSTER_COMPLETE_NOTE,
     METHOD_AGENT_SWITCHED,
     METHOD_CANCEL,
@@ -195,6 +199,7 @@ from kiro_crew.acp.types import (
     METHOD_SESSION_LOAD,
     METHOD_SESSION_NEW,
     METHOD_SESSION_RESUME,
+    METHOD_SESSION_STEERING,
     METHOD_SESSION_UPDATE,
     METHOD_SET_MODE,
     METHOD_SET_MODEL,
@@ -204,6 +209,8 @@ from kiro_crew.acp.types import (
     OPTION_ALLOW_ONCE,
     OUTCOME_CANCELLED,
     OUTCOME_SELECTED,
+    STEERING_INJECTED,
+    STEERING_STARTED_NEW_TURN,
     STOP_REASON_COMPACTION_FAILED,
     STOP_REASON_END_TURN,
     TERMINAL_TOOL_STATUSES,
@@ -221,6 +228,7 @@ from kiro_crew.acp.types import (
     effort_config_option_value,
     model_registry_namespace,
     overlay_project_scope,
+    steering_outcome,
 )
 from kiro_crew.agent import (
     DerivedSpecSnapshot,
@@ -3292,6 +3300,17 @@ async def _run_preflight_bounded(
         ) from None
 
 
+def _steering_advertised(init_resp: dict) -> bool:
+    """Whether an ``initialize`` result advertises ``_meta.steering.supported``.
+
+    Adapter-authored JSON, so any shape other than ``true`` at that path reads as
+    not advertised.
+    """
+    init_meta = init_resp.get("_meta")
+    steering = init_meta.get("steering") if isinstance(init_meta, dict) else None
+    return isinstance(steering, dict) and steering.get("supported") is True
+
+
 class AcpClient:
     """JSON-RPC 2.0 client over stdio with kiro-cli acp."""
 
@@ -3526,6 +3545,20 @@ class AcpClient:
         self._resume_session_id: str | None = None
         self._resumed = False
         self._can_load_session = False
+        # ``initialize._meta.steering.supported`` from the handshake: whether the
+        # adapter takes the ``_session/steering`` request at all. Consulted only
+        # for a backend in ``ACP_BACKENDS_STEERING_REQUEST`` (see ``steer``).
+        self._steering_supported: bool = False
+        # Unanswered ``_session/steering`` requests: request id -> (steer text, the
+        # prompt request id the steer was aimed at). Settled by the turn dispatch
+        # loop, the only reader of this client's stdout (``_dispatch_events``).
+        self._steering_requests: dict[int, tuple[str, int]] = {}
+        # The prompt request id the last dispatch loop served, kept past the loop's
+        # exit to bound ``_steering_requests`` (``_begin_steering_turn``).
+        self._steering_prompt_id: int = 0
+        # The prompt request id a dispatch loop is serving right now, None outside
+        # one. A steering request is sent only while it is set, and is aimed at it.
+        self._steering_serving: int | None = None
         # agentInfo.version from the initialize response — the version the
         # spawned process runs, not the file on disk. "" until the handshake.
         self._agent_version = ""
@@ -8873,6 +8906,7 @@ class AcpClient:
             )
         else:
             self._can_load_session = bool(capabilities.get("loadSession", False))
+        self._steering_supported = _steering_advertised(init_resp)
         # No harness this core drives narrows the session MCP array against the
         # advertised ``mcpCapabilities``: every one of them either reads no array
         # or accepts the shapes Crew already sends, opencode being the measured
@@ -10006,11 +10040,24 @@ class AcpClient:
     def _process_message(self, msg: JsonRpcMessage, req_id: int) -> str:
         """Classify a message into an action string.
 
-        Actions: "complete", "error", "permission", "update", "metadata",
-        "server_request_unknown", "skip".
+        Actions: "complete", "error", "steering_response", "permission", "update",
+        "metadata", "server_request_unknown", "skip".
         """
         if msg.is_response_for(req_id):
             return "error" if msg.error else "complete"
+
+        # The answer to a ``_session/steering`` request this client wrote (see
+        # ``_steer_via_steering_request``): a response, so no method, whose id is
+        # registered. Read with a default because test doubles skip ``__init__``.
+        # The id is adapter JSON and the registered ids are ints: any other shape
+        # (an array or object would not even hash) is not one of ours.
+        if (
+            msg.method is None
+            and isinstance(msg.id, int)
+            and not isinstance(msg.id, bool)
+            and msg.id in getattr(self, "_steering_requests", {})
+        ):
+            return "steering_response"
 
         if msg.is_method(METHOD_REQUEST_PERMISSION):
             return "permission"
@@ -10546,7 +10593,33 @@ class AcpClient:
         *,
         extract_agent_from_result: bool = False,
     ) -> AsyncIterator[AcpEvent]:
-        """Shared event dispatch loop for prompts and commands."""
+        """Shared event dispatch loop for prompts and commands.
+
+        Marks *req_id* as the served prompt for the loop's lifetime: that mark is
+        what admits a steering request (``_steer_via_steering_request``), and it is
+        cleared however the loop ends. The loop itself is
+        :meth:`_dispatch_events_loop`.
+        """
+        self._begin_steering_turn(req_id)
+        try:
+            async with aclosing(
+                self._dispatch_events_loop(
+                    req_id, timeout, extract_agent_from_result=extract_agent_from_result
+                )
+            ) as events:
+                async for event in events:
+                    yield event
+        finally:
+            self._end_steering_turn(req_id)
+
+    async def _dispatch_events_loop(
+        self,
+        req_id: int,
+        timeout: float,
+        *,
+        extract_agent_from_result: bool = False,
+    ) -> AsyncGenerator[AcpEvent, None]:
+        """The body of :meth:`_dispatch_events`, which callers go through."""
         self.last_prompt_stats = self.last_prompt_stats.carry_over()
         self._tool_call_inputs.clear()
         self._tool_call_input_redacted.clear()
@@ -10569,6 +10642,10 @@ class AcpClient:
         self._active_tool_calls.clear()
         got_complete = False
         saw_agent_switch = False
+        # Texts of this turn's steering requests answered ``injected``. Local, so
+        # every exit of this loop discards whatever was not released at a clean
+        # terminal (``_release_proven_steers``).
+        proven_steers: list[str] = []
 
         async for action, msg in self._prompt_loop(req_id, timeout):
             if action != "update":
@@ -10628,6 +10705,8 @@ class AcpClient:
                 # Turn is over — disarm the stall watchdog.
                 self._tool_dispatched = False
                 self._last_stop_reason = reason
+                for _steer_text in self._release_proven_steers(proven_steers, reason, _refusal):
+                    yield AcpEvent(kind=EVENT_STEER_CONSUMED, text=_steer_text)
                 self._turn_done.set()
                 yield AcpEvent(
                     kind=EVENT_COMPLETE,
@@ -10678,6 +10757,8 @@ class AcpClient:
                     yield permission_event
             elif action == "server_request_unknown":
                 await self._reject_unknown_server_request(msg)
+            elif action == "steering_response":
+                await self._settle_steering_answer(msg, req_id, proven_steers)
             elif action == "update":
                 self._track_usage_update(msg)
                 # codex reports compaction as a marked tool_call pair rather than
@@ -11285,10 +11366,16 @@ class AcpClient:
         the authoritative signal is the ``steering_consumed`` notification; the
         steered reply streams back inside the SAME in-flight prompt. Returns
         False for an empty message or when there is no active session.
+
+        A backend in ``ACP_BACKENDS_STEERING_REQUEST`` (claude on this client) is
+        steered over the ACP ``_session/steering`` request instead, by
+        :meth:`_steer_via_steering_request`.
         """
         text = (message or "").strip()
         if not text or not self._session_id:
             return False
+        if self.backend in ACP_BACKENDS_STEERING_REQUEST:
+            return await self._steer_via_steering_request(text)
         wrapped = f"<user_message>\n{text}\n</user_message>"
         await self._send_request(
             "_session/steer", {"sessionId": self._session_id, "message": wrapped}
@@ -11296,6 +11383,193 @@ class AcpClient:
         # See AcpSessionHandle.steer for why the stamp is taken at the write.
         self._last_steer_monotonic = time.monotonic()
         return True
+
+    async def _steer_via_steering_request(self, text: str) -> bool:
+        """Deliver a user steer over the ACP ``_session/steering`` request.
+
+        See ``ACP_BACKENDS_STEERING_REQUEST`` for what was measured. Fire-and-forget
+        like the kiro verb: the running turn's dispatch loop is the only reader of
+        this client's stdout, so the answer cannot be awaited here. The request id
+        is registered with the text and the prompt it is aimed at, and the loop
+        settles it (:meth:`_settle_steering_answer`): an ``injected`` answer read
+        before the turn's clean terminal is reported as ``EVENT_STEER_CONSUMED``
+        at that terminal, and anything else leaves the caller's pending entry to
+        be queued by the turn's teardown.
+
+        ``idleBehavior: "promptRequired"``: a steer that reaches the adapter after
+        the turn has ended is answered ``promptRequired`` and starts nothing, so
+        no adapter-owned turn runs outside a prompt of ours.
+
+        False (the caller queues) when the adapter did not advertise
+        ``initialize._meta.steering.supported``, when no dispatch loop is serving
+        a prompt (``_steering_serving``: before the loop starts, while the prompt
+        frame is still being written, and after it exits), when the turn has
+        ended or been cancelled, and for a steer past ``MAX_STEERING_TEXT_CHARS``
+        or while ``MAX_STEERING_ANSWERS`` requests are unanswered. Refusing before
+        the loop starts matters: a request written then could reach the adapter
+        after the new prompt and be injected into it while registered against the
+        previous one.
+
+        A write that fails keeps the registration and still returns True: the
+        adapter may have read the request, and the caller's pending entry then
+        settles once, consumed if an ``injected`` answer is read before a clean
+        terminal and otherwise queued by the turn's teardown. Returning False
+        there would queue a steer the adapter may already be running.
+
+        Delivery is at-least-once: an ``injected`` answer read after the terminal,
+        or a steer the adapter acted on in a turn that then ended uncleanly, is
+        queued as well and runs a second time as its own turn.
+        """
+        serving = self._steering_serving
+        if serving is None or not self._steering_supported or not self.has_active_turn():
+            return False
+        if len(text) > MAX_STEERING_TEXT_CHARS or (
+            len(self._steering_requests) >= MAX_STEERING_ANSWERS
+        ):
+            return False
+        if not self._process or not self._process.stdin:
+            return False
+        # Registered BEFORE the write: ``_send_request`` allocates this id
+        # synchronously, and the dispatch loop can read the answer while the write
+        # is suspended in ``drain()``.
+        request_id = self._next_id
+        self._steering_requests[request_id] = (text, serving)
+        try:
+            await self._send_request(
+                METHOD_SESSION_STEERING,
+                {
+                    "sessionId": self._session_id,
+                    "prompt": [{"type": "text", "text": text}],
+                    "_meta": {"steering": {"idleBehavior": "promptRequired"}},
+                },
+            )
+        except Exception as exc:
+            logger.warning(
+                "steering request %s on %s: write failed (%s%s); left for the turn to settle",
+                request_id,
+                self._session_id,
+                type(exc).__name__,
+                ", the ACP process died" if isinstance(exc, AcpProcessDied) else "",
+            )
+        # See AcpSessionHandle.steer for why the stamp is taken at the write.
+        self._last_steer_monotonic = time.monotonic()
+        return True
+
+    def _begin_steering_turn(self, req_id: int) -> None:
+        """Mark *req_id* as served, aim new steering requests at it, and bound the
+        unanswered map.
+
+        Entries aimed at the previous prompt stay registered, so an answer that
+        arrives late is still recognised (and dropped) rather than read as a
+        stray response; entries aimed at anything older are forgotten.
+        """
+        previous = getattr(self, "_steering_prompt_id", 0)
+        self._steering_prompt_id = req_id
+        pending = getattr(self, "_steering_requests", None)
+        if pending:
+            for request_id, (_text, aimed_at) in list(pending.items()):
+                if aimed_at != previous:
+                    del pending[request_id]
+        self._steering_serving = req_id
+
+    def _end_steering_turn(self, req_id: int) -> None:
+        """Clear the served-prompt mark when *req_id*'s dispatch loop exits by any
+        path, so no steering request is sent until the next loop starts."""
+        if self._steering_serving == req_id:
+            self._steering_serving = None
+
+    async def _settle_steering_answer(
+        self, msg: JsonRpcMessage, req_id: int, proven_steers: list[str]
+    ) -> None:
+        """Settle the answer to one ``_session/steering`` request.
+
+        claude-agent-acp sends no ``steering_consumed`` echo, so the answer is the
+        delivery evidence. An ``injected`` answer to a steer aimed at the prompt
+        this loop serves adds its text to *proven_steers*, which the loop reports
+        only at a clean terminal (:meth:`_release_proven_steers`). Any other
+        outcome (``promptRequired``, ``startedNewTurn``, ``failed``, an error)
+        settles nothing, and an answer to a steer aimed at an earlier prompt is
+        dropped: that turn's teardown already queued it. A ``startedNewTurn``
+        answer also cancels the turn the adapter started
+        (:meth:`_cancel_unowned_steering_turn`).
+        """
+        text, aimed_at = self._steering_requests.pop(msg.id)
+        if aimed_at != req_id:
+            logger.debug(
+                "steering answer %s aimed at prompt %s arrived during prompt %s; dropped",
+                msg.id,
+                aimed_at,
+                req_id,
+            )
+            return
+        outcome = "" if msg.error else steering_outcome(msg.result)
+        if outcome == STEERING_INJECTED:
+            proven_steers.append(text)
+            return
+        if outcome == STEERING_STARTED_NEW_TURN:
+            # ``idleBehavior: "promptRequired"`` rules this answer out, so an adapter
+            # that sends it has started a turn no prompt of ours owns.
+            logger.warning(
+                "steering request %s answered startedNewTurn despite promptRequired",
+                msg.id,
+            )
+            await self._cancel_unowned_steering_turn()
+            return
+        logger.info(
+            "steering request %s not injected (outcome=%s error=%s); left pending",
+            msg.id,
+            outcome or None,
+            bool(msg.error),
+        )
+
+    async def _cancel_unowned_steering_turn(self) -> None:
+        """Cancel the turn a ``startedNewTurn`` steering answer says the adapter began.
+
+        That turn runs outside any prompt of ours, so nothing would read or bound
+        it; the steer stays unsettled and the caller queues it. ``session/cancel``
+        names no turn, so it is only safe while no NEWER prompt of ours is
+        running: :meth:`_settle_steering_answer` calls this only for an answer
+        aimed at the prompt its loop serves, which the adapter has just reported
+        ended. An answer aimed at an earlier prompt is dropped without a cancel.
+
+        Written directly rather than through :meth:`cancel_session`, which would
+        mark the serving turn cancelled. Best-effort: a failed write is logged and
+        never raised into the dispatch loop.
+        """
+        if not self._process or not self._process.stdin:
+            return
+        notification = {
+            "jsonrpc": "2.0",
+            "method": METHOD_CANCEL,
+            "params": {"sessionId": self._session_id},
+        }
+        try:
+            await write_notification_best_effort(
+                self._process.stdin,
+                self._stdin_write_lock(),
+                (json.dumps(notification) + "\n").encode(),
+                bound_secs=transport_framing._RESPONSE_WRITE_BOUND_SECS,
+            )
+        except Exception as exc:
+            logger.warning(
+                "cancel of adapter-owned turn on %s failed: %s",
+                self._session_id,
+                type(exc).__name__,
+            )
+
+    def _release_proven_steers(
+        self, proven_steers: list[str], reason: str, refusal: Any
+    ) -> list[str]:
+        """The proven steers to report consumed, at a clean terminal only.
+
+        The same allowlist as the session handle's: not cancelled, no refusal,
+        and a stop reason of exactly ``end_turn``. On any other ending nothing is
+        reported, and the caller's pending entry for each steer is queued by the
+        turn's teardown, so the text runs again rather than being lost.
+        """
+        if self._cancelled or refusal or reason != STOP_REASON_END_TURN:
+            return []
+        return list(proven_steers)
 
     # Monotonic stamp of the last steer handed to the backend, 0.0 when never
     # steered. Mirrors AcpSessionHandle.last_steer_monotonic — the dashboard's
@@ -11309,27 +11583,32 @@ class AcpClient:
 
     @property
     def supports_steer(self) -> bool:
-        """True when the backend implements ``_session/steer`` (mid-turn steer).
+        """True when the backend takes a mid-turn steer: ``_session/steer``, or the
+        ``_session/steering`` request.
 
-        Membership in ``ACP_BACKENDS_STEER`` (harness-parity H6), so a harness
-        added later does not inherit the extension from ``not _is_claude``.
+        Membership in ``ACP_BACKENDS_STEER`` or ``ACP_BACKENDS_STEERING_REQUEST``
+        (harness-parity H6), so a harness added later does not inherit a steer
+        verb from ``not _is_claude``.
         """
-        return self.backend in ACP_BACKENDS_STEER
+        return self.backend in ACP_BACKENDS_STEER or self.backend in ACP_BACKENDS_STEERING_REQUEST
 
     @property
     def supports_refusal_steer(self) -> bool:
         """True when a deny notice steered into the refused turn reaches the model.
 
-        The same set as :attr:`supports_steer` on this client, which speaks only
-        kiro-cli's ``_session/steer``. The session handle answers the two apart.
+        ``ACP_BACKENDS_STEER`` only: a backend steered over the
+        ``_session/steering`` request keeps the refusal-recovery path for its deny
+        notices (see ``ACP_BACKENDS_STEERING_REQUEST``).
         """
         return self.backend in ACP_BACKENDS_STEER
 
     @property
     def steer_needs_loss_recovery(self) -> bool:
-        """Always False: this client speaks only kiro-cli's ``_session/steer``,
-        whose clean reject keeps the turn and every steer delivered into it."""
-        return False
+        """True for a backend in ``ACP_BACKENDS_STEERING_REQUEST``: its steer is
+        reported consumed only at a clean terminal, so only a caller that keeps a
+        pending entry for the text (the dashboard composer) may steer it. kiro-cli's
+        ``_session/steer`` keeps every steer delivered into the turn."""
+        return self.backend in ACP_BACKENDS_STEERING_REQUEST
 
     def turn_finished_cleanly(self) -> bool:
         """Whether the last turn reached its own end boundary uncancelled.

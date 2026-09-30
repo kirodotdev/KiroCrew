@@ -1619,13 +1619,13 @@ the text stream at the exact fold point.
 
 Two preconditions gate the steer, and both matter:
 
-- `provider.supports_steer` — membership in `ACP_BACKENDS_STEER`, since the
-  dormant Claude backend seam has none. On this path `provider` is the
-  registry's `AcpProvider`, which reports False for a backend with
-  `steer_needs_loss_recovery` (codex, `ACP_BACKENDS_STEERING_REQUEST`) and
-  refuses its steer, so a mid-turn channel message on a codex session always
-  queues; codex's `_session/steering` is spoken only for the dashboard composer,
-  which steers the inner handle. When false the message falls through to the
+- `provider.supports_steer` — membership in `ACP_BACKENDS_STEER` or
+  `ACP_BACKENDS_STEERING_REQUEST`. On this path `provider` is the registry's
+  `AcpProvider`, which reports False for a backend with
+  `steer_needs_loss_recovery` (codex and claude, `ACP_BACKENDS_STEERING_REQUEST`)
+  and refuses its steer, so a mid-turn channel message on a codex or claude
+  session always queues; their `_session/steering` is spoken only for the
+  dashboard composer, which steers the inner handle or client. When false the message falls through to the
   queue path.
 - `provider.has_active_turn()`, **not** `sessions.is_busy()`. `is_busy` stays
   true through post-turn bookkeeping (success record, turn persist, threshold

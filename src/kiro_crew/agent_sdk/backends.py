@@ -93,7 +93,7 @@ with no row here.
    * - ``ACP_BACKENDS_STEER``
      - pre-session registry query (whether ``_session/steer`` exists)
    * - ``ACP_BACKENDS_STEERING_REQUEST``
-     - pre-session registry query (whether a user steer travels on codex-acp's
+     - pre-session registry query (whether a user steer travels on the ACP
        ``_session/steering`` request instead)
    * - ``ACP_BACKENDS_COMPACT``
      - pre-session registry query (whether manual ``/compact`` is offered at all)
@@ -1062,8 +1062,10 @@ ACP_BACKENDS_MEMBER_PANEL = frozenset(
 # off separate properties (``supports_steer`` and ``supports_refusal_steer``).
 ACP_BACKENDS_STEER = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
 
-# Backends that take a USER's mid-turn message over codex-acp's
-# ``_session/steering`` request rather than kiro-cli's ``_session/steer``.
+# Backends that take a USER's mid-turn message over the ACP ``_session/steering``
+# request rather than kiro-cli's ``_session/steer``. codex runs on the session
+# handle and claude on ``AcpClient``; each driver speaks it the way its transport
+# allows.
 #
 # Measured against a live codex-acp 1.11.0: a steer sent while a prompt is in
 # flight is answered ``{outcome: "injected"}`` within milliseconds and the running
@@ -1080,22 +1082,36 @@ ACP_BACKENDS_STEER = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
 # ``startedNewTurn`` is cancelled first so the text cannot run twice. The result
 # is at-least-once: codex orders the answer against the turn's terminal in no
 # way, so a steer injected just as its turn ends can be queued as well and run a
-# second time, visibly, as its own turn. Only the
-# shared-runtime path speaks it -- ``AcpSessionHandle`` -- because only there can
-# a request be awaited without competing with the turn for the adapter's stdout.
+# second time, visibly, as its own turn. The handle can await because a request
+# there does not compete with the turn for the adapter's stdout.
+#
+# Measured against a live claude-agent-acp 0.81.2: it advertises
+# ``initialize._meta.steering.supported: true`` and answers ``injected`` within
+# milliseconds while a turn runs. The steer is sent with ``idleBehavior:
+# "promptRequired"``, so with no turn running it is answered ``promptRequired``
+# and starts nothing. Its delivery is ``now``, pre-empting the generation, except
+# while a permission request is pending, which makes it ``later``. A steer at the first tool call and one during a text-only
+# answer were both injected and followed, and their turns ended ``end_turn``. A
+# denied tool is a clean reject (the turn continues) and a cancel ends the turn.
+# ``AcpClient``'s turn dispatch loop is the only reader of that adapter's stdout,
+# so its steer is fire-and-forget: the loop reads the answer by request id, and
+# an ``injected`` answer read before a clean terminal settles the steer at that
+# terminal. The request is sent only when the adapter advertised the extension.
 #
 # Deliberately NOT ``ACP_BACKENDS_STEER``: the deny-notice path needs a steer
 # that survives the refusal, and codex discards an injected steer with a turn
-# its approval answer cancels (see the note above).
+# its approval answer cancels (see the note above). claude's delivery after a
+# denied permission is unverified, so its deny notices keep the refusal-recovery
+# path as well.
 #
 # The same discard reaches a user steer already accepted into the turn, when a
-# LATER approval is denied or the turn is cancelled. So a codex steer is reported
-# consumed only when its turn ends cleanly, and otherwise the caller's pending
-# entry for it is queued by the turn's teardown. Only the dashboard composer keeps
-# such an entry, so membership here also means ``steer_needs_loss_recovery``: the
-# provider wrapper that the messaging channels, Side Chat and ``spawn_steer``
-# steer refuses, so those queue instead.
-ACP_BACKENDS_STEERING_REQUEST = frozenset({ACP_BACKEND_CODEX})
+# LATER approval is denied or the turn is cancelled. So a steer on a member is
+# reported consumed only when its turn ends cleanly, and otherwise the caller's
+# pending entry for it is queued by the turn's teardown. Only the dashboard
+# composer keeps such an entry, so membership here also means
+# ``steer_needs_loss_recovery``: the provider wrapper that the messaging channels,
+# Side Chat and ``spawn_steer`` steer refuses, so those queue instead.
+ACP_BACKENDS_STEERING_REQUEST = frozenset({ACP_BACKEND_CODEX, ACP_BACKEND_CLAUDE})
 
 # Backends that can serve a MANUAL ``/compact`` (the user-typed slash command).
 # Every member acts on the ``/compact`` prompt that ``AcpProvider.compact()``

@@ -50,6 +50,7 @@ from kiro_crew.acp.client import (
 from kiro_crew.acp.types import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
+    ACP_BACKEND_OPENCODE,
     EVENT_AGENT_SWITCHED,
     EVENT_COMPLETE,
     EVENT_MCP_OAUTH_REQUEST,
@@ -464,7 +465,9 @@ class TestClientAccessors:
 
     def test_supports_steer_is_backend_dependent(self, tmp_path):
         assert _client(tmp_path).supports_steer is True
-        assert _client(tmp_path, acp_backend=ACP_BACKEND_CLAUDE).supports_steer is False
+        # claude steers over ``_session/steering`` (test_acp_claude_steering.py).
+        assert _client(tmp_path, acp_backend=ACP_BACKEND_CLAUDE).supports_steer is True
+        assert _client(tmp_path, acp_backend=ACP_BACKEND_OPENCODE).supports_steer is False
 
     def test_rekey_rebinds_and_drops_previous_context(self, tmp_path):
         client = _client(tmp_path, session_key="old", channel_id="C-old")

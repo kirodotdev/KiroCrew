@@ -20,6 +20,7 @@ from kiro_crew.acp import session_handle as sh
 from kiro_crew.acp.runtime import AcpRuntime, AcpRuntimeError
 from kiro_crew.acp.session_handle import AcpSessionHandle
 from kiro_crew.acp.types import (
+    ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
     ACP_BACKEND_KIRO,
     METHOD_CANCEL,
@@ -312,10 +313,10 @@ async def test_a_malformed_answer_is_undelivered_and_never_raises(result):
 async def test_retained_steers_are_bounded_in_count_and_size():
     rt = _Runtime()
     handle = _handle(rt)
-    assert await handle.steer("x" * (sh._MAX_STEERING_TEXT_CHARS + 1)) is False
+    assert await handle.steer("x" * (sh.MAX_STEERING_TEXT_CHARS + 1)) is False
     assert rt.requests == []
     fut = asyncio.get_running_loop().create_future()
-    handle._steering_answers = [(fut, handle._prompt_starts, "t")] * sh._MAX_STEERING_ANSWERS
+    handle._steering_answers = [(fut, handle._prompt_starts, "t")] * sh.MAX_STEERING_ANSWERS
     assert await handle.steer("hello") is False
     assert rt.requests == []
 
@@ -325,16 +326,19 @@ async def test_proven_steers_awaiting_the_terminal_count_toward_the_cap():
     """Text held for the clean-terminal report is bounded by the same cap."""
     rt = _Runtime()
     handle = _handle(rt)
-    handle._steers_proven = ["t"] * sh._MAX_STEERING_ANSWERS
+    handle._steers_proven = ["t"] * sh.MAX_STEERING_ANSWERS
     assert await handle.steer("hello") is False
     assert rt.requests == []
 
 
-def test_only_codex_takes_the_steering_request():
-    """A mutation pin: a backend added here would inherit this steer transport."""
+def test_the_steering_request_members_are_pinned():
+    """A mutation pin: a backend added here would inherit this steer transport.
+
+    claude is a member on ``AcpClient``, not on this handle.
+    """
     from kiro_crew.agent_sdk.backends import ACP_BACKENDS_STEERING_REQUEST
 
-    assert ACP_BACKENDS_STEERING_REQUEST == frozenset({ACP_BACKEND_CODEX})
+    assert ACP_BACKENDS_STEERING_REQUEST == frozenset({ACP_BACKEND_CODEX, ACP_BACKEND_CLAUDE})
 
 
 @pytest.mark.asyncio
@@ -796,7 +800,7 @@ async def test_answers_still_awaited_after_their_turn_share_the_bound():
     assert await _steer_then_end_turn(handle) is False
     assert handle._abandoned_steering == [rt.answer]
     handle._steering_answers = [(rt.answer, handle._prompt_starts, "t")] * (
-        sh._MAX_STEERING_ANSWERS - 1
+        sh.MAX_STEERING_ANSWERS - 1
     )
     handle._turn_done.clear()
     sent = len(rt.requests)

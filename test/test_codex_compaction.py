@@ -351,7 +351,7 @@ class TestEveryPromptLoopAppliesIt:
     @pytest.mark.parametrize(
         "func",
         [
-            AcpClient._dispatch_events,
+            AcpClient._dispatch_events_loop,
             AcpClient.send_message_stream,
             AcpClient._read_prompt_response,
         ],

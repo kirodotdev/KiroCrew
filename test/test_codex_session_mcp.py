@@ -1422,7 +1422,7 @@ class TestSpecDisabledToolRefusal:
 
         from kiro_crew.acp import client as client_mod
 
-        for site in ("_dispatch_events", "_read_prompt_response"):
+        for site in ("_dispatch_events_loop", "_read_prompt_response"):
             body = inspect.getsource(getattr(client_mod.AcpClient, site))
             assert "_extract_tool_call_update(msg)" in body
             assert "_tripwire_spec_disabled_tool(" in body, site
@@ -1491,7 +1491,7 @@ class TestSpecDisabledToolRefusal:
         builds = source.count("self._build_permission_event(")
         # One per answering site; `_build_permission_event` is defined once more.
         assert builds == 2, "a site that answers a permission request was added or removed"
-        for site in ("_dispatch_events", "_handle_permission"):
+        for site in ("_dispatch_events_loop", "_handle_permission"):
             body = inspect.getsource(getattr(client_mod.AcpClient, site))
             assert "_build_permission_event(" in body and "_deny_spec_disabled_tool(" in body, site
         # And the two other loops answer ONLY through _handle_permission.

@@ -134,12 +134,15 @@ from kiro_crew.acp.types import (
     EVENT_TOOL_CALL,
     EVENT_TOOL_RESULT,
     JSONRPC_METHOD_NOT_FOUND,
+    MAX_STEERING_ANSWERS,
+    MAX_STEERING_TEXT_CHARS,
     METHOD_CANCEL,
     METHOD_COMMANDS_EXECUTE,
     METHOD_KAS_MCP_STATUS,
     METHOD_MCP_OAUTH_REQUEST,
     METHOD_PROMPT,
     METHOD_REQUEST_PERMISSION,
+    METHOD_SESSION_STEERING,
     METHOD_SET_CONFIG_OPTION,
     METHOD_SET_MODE,
     METHOD_SET_MODEL,
@@ -152,6 +155,8 @@ from kiro_crew.acp.types import (
     STATUS_EXTENSION_KEY,
     STATUS_ORIGIN_LIVENESS_ORACLE,
     STATUS_PHASE_WAITING,
+    STEERING_INJECTED,
+    STEERING_STARTED_NEW_TURN,
     STOP_REASON_CANCELLED,
     STOP_REASON_COMPACTION_FAILED,
     STOP_REASON_CONTENT_FILTERED_WIRE,
@@ -170,6 +175,7 @@ from kiro_crew.acp.types import (
     JsonRpcMessage,
     StructuredStatus,
     effort_config_option_id,
+    steering_outcome,
 )
 from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.agent_sdk.drivers.acp import EntitlementRevalidating  # noqa: F401 - raised here
@@ -522,15 +528,6 @@ def _watchdog_evidence_class(evidence: str) -> str:
 # AcpClient's _CANCEL_GRACE_SECS floor without the process-kill (which is
 # impossible on a multiplexed runtime).
 _CANCEL_GRACE_SECS = 10.0
-# codex-acp's ``_session/steering`` request (``ACP_BACKENDS_STEERING_REQUEST``) and
-# the two outcomes that decide delivery.
-METHOD_SESSION_STEERING = "_session/steering"
-STEERING_INJECTED = "injected"
-STEERING_STARTED_NEW_TURN = "startedNewTurn"
-# Bounds on what a session holds for codex steers it has sent and not settled: at
-# most this many at once, each at most this long. A steer past either bound takes
-# the caller's queue path instead, which has its own limits.
-_MAX_STEERING_ANSWERS = 16
 # How long a new prompt waits for codex steering answers still owed from the
 # previous turn, so an adapter-owned turn one of them started is cancelled before
 # our prompt goes out (``_settle_abandoned_steering``).
@@ -540,19 +537,6 @@ _STEERING_SETTLE_SECS = 5.0
 # (``SEND_ABORT_MS``), so an answer slower than this sends the steer down the
 # caller's queue path instead of leaving the request to time out.
 _STEERING_ANSWER_WAIT_SECS = 8.0
-_MAX_STEERING_TEXT_CHARS = 64_000
-
-
-def _steering_outcome(result: object) -> str:
-    """The ``outcome`` of a ``_session/steering`` answer; "" for any other shape.
-
-    The answer is adapter-authored JSON: a result that is not an object is read as
-    no outcome (undelivered) rather than trusted to have ``.get``.
-    """
-    if not isinstance(result, dict):
-        return ""
-    outcome = result.get("outcome")
-    return outcome if isinstance(outcome, str) else ""
 
 
 # Commands that must stay on the PROMPT transport even where native
@@ -2656,8 +2640,8 @@ class AcpSessionHandle:
         what was injected with it (see ``ACP_BACKENDS_STEER``), so a steer settled
         there would be reported delivered and never run. Returning False sends it
         down the queue path instead, and it runs as the next turn. The same goes
-        for a steer past ``_MAX_STEERING_TEXT_CHARS`` or while
-        ``_MAX_STEERING_ANSWERS`` are held (the cap counts unanswered, abandoned
+        for a steer past ``MAX_STEERING_TEXT_CHARS`` or while
+        ``MAX_STEERING_ANSWERS`` are held (the cap counts unanswered, abandoned
         and proven-but-unreported steers).
         """
         if not self.is_turn_active or not self._prompt_written or self._awaiting_permission:
@@ -2665,7 +2649,7 @@ class AcpSessionHandle:
         held = (
             len(self._steering_answers) + len(self._abandoned_steering) + len(self._steers_proven)
         )
-        if len(text) > _MAX_STEERING_TEXT_CHARS or held >= _MAX_STEERING_ANSWERS:
+        if len(text) > MAX_STEERING_TEXT_CHARS or held >= MAX_STEERING_ANSWERS:
             return False
         session_id = self._session_id
         aimed_at = self._prompt_starts
@@ -2756,7 +2740,7 @@ class AcpSessionHandle:
         def _late_answer(fut: "asyncio.Future[dict[str, Any]]") -> None:
             if fut.cancelled() or fut.exception() is not None:
                 return
-            outcome = _steering_outcome(fut.result())
+            outcome = steering_outcome(fut.result())
             if outcome == STEERING_STARTED_NEW_TURN:
                 _cancel_unowned_turn()
             elif outcome == STEERING_INJECTED:
@@ -2811,7 +2795,7 @@ class AcpSessionHandle:
                 "cancelled" if answer.cancelled() else type(answer.exception()).__name__,
             )
             return False
-        outcome = _steering_outcome(answer.result())
+        outcome = steering_outcome(answer.result())
         if outcome == STEERING_STARTED_NEW_TURN:
             _unregister()
             _cancel_unowned_turn()
@@ -2911,7 +2895,7 @@ class AcpSessionHandle:
                 waiting.append((answer, aimed_at, wrapped))
                 continue
             elif not answer.cancelled() and answer.exception() is None:
-                ok = _steering_outcome(answer.result()) == STEERING_INJECTED
+                ok = steering_outcome(answer.result()) == STEERING_INJECTED
             if ok:
                 settled.append(wrapped)
             if flag is not None and not flag.done():

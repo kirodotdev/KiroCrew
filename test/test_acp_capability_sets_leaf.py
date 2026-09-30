@@ -49,6 +49,7 @@ from kiro_crew.acp_backends import (
     ACP_BACKENDS_SESSION_SHARING,
     ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE,
     ACP_BACKENDS_STEER,
+    ACP_BACKENDS_STEERING_REQUEST,
     model_registry_namespace,
 )
 from kiro_crew.agent_sdk.host_auth import backends_retired_by_host_logout
@@ -185,6 +186,7 @@ def test_membership_is_unchanged_by_the_move() -> None:
     )
     assert ACP_BACKENDS_INTERNAL_SANDBOX == frozenset({ACP_BACKEND_KIRO})
     assert ACP_BACKENDS_STEER == frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
+    assert ACP_BACKENDS_STEERING_REQUEST == frozenset({ACP_BACKEND_CODEX, ACP_BACKEND_CLAUDE})
     assert ACP_BACKENDS_ACP_RUNTIME == frozenset(
         {ACP_BACKEND_KIRO, ACP_BACKEND_KAS, ACP_BACKEND_CODEX}
     )

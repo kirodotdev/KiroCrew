@@ -1533,7 +1533,7 @@ def test_the_drift_refusals_run_on_both_answering_sites() -> None:
     """Structural, in the codex file's idiom: the event-yielding loop and the auto-approve
     site both run ``_refuse_identity_drift`` beside the spec refusal, and the streaming
     loop writes the cache it reads."""
-    for site in ("_dispatch_events", "_handle_permission"):
+    for site in ("_dispatch_events_loop", "_handle_permission"):
         body = inspect.getsource(getattr(AcpClient, site))
         assert "self._refuse_identity_drift(" in body, site
         assert "self._deny_spec_disabled_tool(" in body, site

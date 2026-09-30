@@ -272,7 +272,7 @@ USER_FACING_LINES: Tuple[_LineSpec, ...] = (
     _LineSpec(LINE_SIDE_CHAT_TOOLS, ("ACP_BACKENDS_SIDE_READONLY",)),
     _LineSpec(LINE_SUBAGENT_CONTINUATION, ("ACP_BACKENDS_SESSION_SHARING",)),
     # Two verbs carry a user's mid-turn message: kiro-cli's ``_session/steer`` and
-    # codex-acp's ``_session/steering``. A user asks "can I add to a running turn?",
+    # the ACP ``_session/steering`` request. A user asks "can I add to a running turn?",
     # and either verb answers yes, so the line is their union.
     _LineSpec(LINE_MID_TURN_STEER, ("ACP_BACKENDS_STEER", "ACP_BACKENDS_STEERING_REQUEST")),
     _LineSpec(LINE_MANUAL_COMPACT, ("ACP_BACKENDS_COMPACT",)),

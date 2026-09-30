@@ -277,11 +277,34 @@ def test_member_capabilities_are_opt_in() -> None:
 
 
 def test_steer_is_opt_in() -> None:
-    """H6: the ``_session/steer`` extension is claimed by membership."""
-    source = inspect.getsource(acp_client.AcpClient.supports_steer.fget)
-    assert "ACP_BACKENDS_STEER" in source
+    """H6: each steer verb is claimed by membership.
+
+    claude has no ``_session/steer``; it takes the ``_session/steering`` request.
+    """
+    for prop in ("supports_steer", "steer_needs_loss_recovery"):
+        source = inspect.getsource(getattr(acp_client.AcpClient, prop).fget)
+        assert "ACP_BACKENDS_STEERING_REQUEST" in source
+    source = inspect.getsource(acp_client.AcpClient.supports_refusal_steer.fget)
+    assert source.rstrip().endswith("return self.backend in ACP_BACKENDS_STEER")
     assert ACP_BACKEND_KIRO in ACP_BACKENDS_STEER
     assert ACP_BACKEND_CLAUDE not in ACP_BACKENDS_STEER
+    assert ACP_BACKEND_CLAUDE in ACP_BACKENDS_STEERING_REQUEST
+
+
+@pytest.mark.parametrize("backend", sorted(ACP_BACKENDS_KNOWN))
+def test_client_steer_capabilities_match_the_steer_tables(backend, tmp_path):
+    """H6: ``AcpClient`` answers each steer question from the tables.
+
+    User steer reads ``ACP_BACKENDS_STEER`` or ``ACP_BACKENDS_STEERING_REQUEST``, a
+    deny notice reads ``ACP_BACKENDS_STEER`` alone, and a steering-request member
+    needs the composer's loss recovery.
+    """
+    client = acp_client.AcpClient(work_dir=tmp_path, acp_backend=backend)
+    assert client.supports_steer is (
+        backend in ACP_BACKENDS_STEER or backend in ACP_BACKENDS_STEERING_REQUEST
+    )
+    assert client.supports_refusal_steer is (backend in ACP_BACKENDS_STEER)
+    assert client.steer_needs_loss_recovery is (backend in ACP_BACKENDS_STEERING_REQUEST)
 
 
 def test_mcp_config_hot_reload_is_opt_in() -> None:
@@ -383,6 +406,7 @@ def test_capability_sets_are_subsets_of_known_backends() -> None:
         ("ACP_BACKENDS_MEMBER_CAPABILITIES", ACP_BACKENDS_MEMBER_CAPABILITIES),
         ("ACP_BACKENDS_SESSION_SHARING", ACP_BACKENDS_SESSION_SHARING),
         ("ACP_BACKENDS_STEER", ACP_BACKENDS_STEER),
+        ("ACP_BACKENDS_STEERING_REQUEST", ACP_BACKENDS_STEERING_REQUEST),
         ("ACP_BACKENDS_INTERNAL_SANDBOX", ACP_BACKENDS_INTERNAL_SANDBOX),
         ("ACP_BACKENDS_ACP_RUNTIME", ACP_BACKENDS_ACP_RUNTIME),
         ("ACP_BACKENDS_COMPACT", ACP_BACKENDS_COMPACT),

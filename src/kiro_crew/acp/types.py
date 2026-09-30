@@ -159,6 +159,17 @@ METHOD_KAS_SESSION_DELETE = "_kiro/session/delete"
 #: ``test_codex_session_mcp.py::test_real_codex_acp_session_close_evicts`` re-runs
 #: that measurement on every install that has the adapter.
 METHOD_SESSION_CLOSE = "session/close"
+#: The ACP steering request (``ACP_BACKENDS_STEERING_REQUEST``) and the two
+#: outcomes of its answer that decide delivery. Spoken by the session handle
+#: (codex) and by ``AcpClient`` (claude).
+METHOD_SESSION_STEERING = "_session/steering"
+STEERING_INJECTED = "injected"
+STEERING_STARTED_NEW_TURN = "startedNewTurn"
+#: Bounds on what a session holds for steering requests it has sent and not
+#: settled: at most this many at once, each at most this long. A steer past
+#: either bound takes the caller's queue path instead, which has its own limits.
+MAX_STEERING_ANSWERS = 16
+MAX_STEERING_TEXT_CHARS = 64_000
 METHOD_COMPACTION_STATUS = "_kiro.dev/compaction/status"
 METHOD_CLEAR_STATUS = "_kiro.dev/clear/status"
 METHOD_AGENT_SWITCHED = "_kiro.dev/agent/switched"
@@ -552,6 +563,18 @@ def classify_stop_reason(
 
 APPROVAL_AUTO = "auto"
 APPROVAL_INTERACTIVE = "interactive"
+
+
+def steering_outcome(result: object) -> str:
+    """The ``outcome`` of a ``_session/steering`` answer; "" for any other shape.
+
+    The answer is adapter-authored JSON: a result that is not an object is read as
+    no outcome (undelivered) rather than trusted to have ``.get``.
+    """
+    if not isinstance(result, dict):
+        return ""
+    outcome = result.get("outcome")
+    return outcome if isinstance(outcome, str) else ""
 
 
 @dataclass

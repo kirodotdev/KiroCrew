@@ -267,7 +267,8 @@ model-inference boundary — the one right after the rejected tool resolves — 
 the model adapts inside the SAME turn. It is opt-in by positive capability
 (`supports_refusal_steer`, i.e. `ACP_BACKENDS_STEER`), so a harness without mid-turn
 steer is unchanged, and so is codex: its user steer rides `_session/steering`, but its
-approval answer cancels the turn and drops what was injected into it.
+approval answer cancels the turn and drops what was injected into it. claude's user
+steer rides the same request, and its deny notices keep the recovery path too.
 
 `should_queue_refusal_recovery` then suppresses the extra turn only when every
 refusal got a notice AND a `steering_consumed` echo accounted for all of them. An
