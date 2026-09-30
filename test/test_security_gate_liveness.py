@@ -126,12 +126,18 @@ def _url_payload_command(n: int) -> str:
 #: Three incomplete dumps in a row log one warning, so a host whose table never
 #: reads can be told apart from a target that is really this machine.
 #:
+#: Re-pinned from 27,942 for the NUL blanking in ``inline_payload._lex``: one line
+#: that swaps each NUL for a space before tokenizing, plus the docstring saying why.
+#: CPython 3.12 raises ``SystemError`` for a NUL after an indented block, which
+#: escaped the lexer and crashed the gate on an ordinary ``b'\0'`` in a payload.
+#: No new rule and no new matching pass.
+#:
 #: The number IS the package's measured total, carrying no spare room: a ratchet with
 #: headroom admits exactly the unreviewed growth it exists to catch, so the next line
 #: added here fails this gate and has to be re-pinned deliberately, with its reason
 #: written above. The guards that detect a monolith growing back are the per-file cap
 #: and the facade's share below, and both must stay untouched.
-_PACKAGE_LINE_BUDGET = 27_942
+_PACKAGE_LINE_BUDGET = 27_948
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
