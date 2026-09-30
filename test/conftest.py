@@ -934,6 +934,40 @@ def _restore_autonudge_singleton():
 
 
 @pytest.fixture(autouse=True)
+def _reset_member_eventlog_singleton():
+    """Reset ``eventlog.service`` process-global singleton at each test boundary.
+
+    ``get_service()`` memoises one ``MemberEventLogService`` for the process,
+    rebuilding it only when the crew-log root changes. The root is derived from
+    ``KIROCREW_HOME``, which the autouse ``_isolate_kirocrew_home`` fixture points
+    at a fresh per-test tmp dir -- so a test that touches the service (directly, or
+    through a dashboard handler / ``members.record_activity``) leaves a live
+    singleton BOUND TO THAT TEST'S HOME, and the next test on the same xdist worker
+    inherits it after that home has been torn down. Its cached ``MemberLog`` objects
+    hold open OS handles under the dead directory, which is harmless on POSIX (the
+    rebuild against the new home just works) but not on Windows: the stale handles
+    block the tmp-dir teardown and the very first write in the inheriting test then
+    fails, so ``record_activity`` returns ``False`` -- exactly the shard-only red on
+    ``TestMemberActivityRoute`` that only Windows CI runs.
+
+    Reset at BOTH ends: teardown so a test's own service does not outlive it, and
+    setup so a test that runs after a leak from an OLDER build (or a test that skips
+    the module-level ``set_service(None)`` helper, as ``test_members_roster_recency``
+    does) still starts on a clean singleton bound to its own home. Silent, like the
+    other singleton floors here -- production genuinely publishes this reference, and
+    a test driving that code cannot avoid inheriting it; stopping the leak from
+    reaching the next test is the part that is not optional.
+    """
+    from kiro_crew.eventlog import service as _svc
+
+    _svc.set_service(None)
+    try:
+        yield
+    finally:
+        _svc.set_service(None)
+
+
+@pytest.fixture(autouse=True)
 def _reset_reasoning_effort_globals():
     """Snapshot + restore the process-global reasoning-effort allowlist around
     each test. The allowlist is union-only/monotonic by design (persistence

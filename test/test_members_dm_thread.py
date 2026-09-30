@@ -2559,6 +2559,60 @@ class TestMemberActivityRoute:
         assert len(data["entries"]) == handler_mod._ACTIVITY_LIMIT
 
 
+class TestEventlogSingletonDoesNotLeakAcrossTests:
+    """The process-wide ``get_service()`` singleton must not survive a test.
+
+    ``get_service()`` memoises one service per process and rebuilds it only when
+    the crew-log root moves. The root follows ``KIROCREW_HOME``, which the autouse
+    ``_isolate_kirocrew_home`` fixture repoints at a fresh tmp dir per test -- so a
+    test that touches the service leaves a live singleton BOUND TO ITS OWN HOME,
+    and the next test on the same xdist worker inherits it after that home is torn
+    down. On POSIX ``get_service()`` then rebuilds against the new home and the
+    inheritor is fine; on Windows the leaked ``MemberLog`` handles under the dead
+    directory block teardown and the inheritor's first ``record_activity`` write
+    fails, returning ``False`` -- the Windows-only shard-8 red on the class above,
+    reproduced by any predecessor that used the service without resetting it
+    (``test_members_roster_recency``'s roster-read tests do exactly that).
+
+    These two tests run in order WITHOUT a local reset fixture, so they exercise
+    only the ``_reset_member_eventlog_singleton`` floor in ``conftest.py``. The
+    first builds a service bound to its own home; the second asserts it did NOT
+    inherit that binding. Platform-independent: it pins the leak's CAUSE (a
+    singleton crossing the boundary) rather than the Windows-only SYMPTOM, so it is
+    a real regression guard on Linux CI too.
+    """
+
+    #: Set by the first test to the home its service bound to, read by the second
+    #: to prove the singleton did not carry that binding across the boundary.
+    _bound_home: str = ""
+
+    def test_a_service_built_here_binds_to_this_home(self, tmp_path):
+        from kiro_crew.eventlog import service as svc_mod
+        from kiro_crew.members import record_activity, slug_for_name
+
+        # Touch the service the way a real test does, leaving it live at teardown.
+        assert record_activity(CREW, "dashboard_chat-1", "persistent", via="chat")
+        svc = svc_mod.get_service()
+        assert slug_for_name(CREW) in set(svc.slugs())
+        type(self)._bound_home = str(svc.root)
+        # The singleton is live now; the conftest floor must clear it at teardown.
+        assert svc_mod._singleton is not None
+
+    def test_the_next_test_does_not_inherit_that_service(self, tmp_path):
+        from kiro_crew.eventlog import service as svc_mod
+
+        # The floor reset the singleton at the previous test's teardown (and this
+        # test's setup), so nothing is inherited: the first read here rebuilds
+        # against THIS test's own home, never the previous, torn-down one.
+        assert svc_mod._singleton is None, (
+            "eventlog service leaked across the test boundary; a Windows worker "
+            "would then write into the previous test's torn-down home"
+        )
+        # And a fresh read binds to this test's home, not the leaked one.
+        svc = svc_mod.get_service()
+        assert str(svc.root) != type(self)._bound_home
+
+
 # The briefing read fails CLOSED on platforms without O_NOFOLLOW (Windows) --
 # see read_member_briefing. Tests asserting briefing CONTENT through the
 # endpoint are therefore POSIX-only; the fail-closed flag itself is what the
