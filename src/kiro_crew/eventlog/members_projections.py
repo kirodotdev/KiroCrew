@@ -30,6 +30,18 @@ _CONFIG_FIELDS = (
 
 _ACTIVITY_RING = 50
 
+# The furthest ahead of the fold's own wall clock a `member/message` timestamp
+# may push `last_active_ts`. The monotone rule (see `RosterProjection.apply`)
+# has no upper bound of its own: it latches the greatest `ts` it has ever seen
+# and, being an append-only fold, has nothing that can ever walk that value
+# back down. A `ts` from a jumped-forward clock -- a VM resume, an NTP step, a
+# hand-edited ISO string -- is therefore permanent, and pins its member above
+# every genuinely-active crewmate for the life of the store. A small tolerance
+# absorbs ordinary clock skew between the hosts that stamp and fold the event;
+# anything past it is clamped down to the ceiling so the member still reads as
+# active now (the event did happen) without ranking ahead of the present.
+_FUTURE_TS_SKEW = 300.0
+
 
 def scope_activity_view(view: dict, owner: str) -> dict:
     """An activity view holding only *owner*'s records, with counts to match.
@@ -137,8 +149,19 @@ class RosterProjection:
             # where the quote was from. Taking the greater keeps both writers
             # honest: the correction still lands its quote, and no writer has to
             # know what the recency was before it.
+            #
+            # CEILING. Monotone-greatest has no upper bound of its own, so a `ts`
+            # from a jumped-forward clock would latch permanently and pin the
+            # member atop Recent for good (see `_FUTURE_TS_SKEW`). Clamp the
+            # candidate to the fold's own wall clock plus a skew tolerance before
+            # the monotone compare: a future `ts` still advances a staler recency
+            # to now (the activity is real) but can never rank ahead of it.
             ts = _parse_ts(data.get("ts"))
             if ts is not None and ts > 0:
+                now = datetime.now(timezone.utc).timestamp()
+                ceiling = now + _FUTURE_TS_SKEW
+                if ts > ceiling:
+                    ts = ceiling
                 held = _parse_ts(state.get("last_active_ts")) or 0.0
                 new["last_active_ts"] = ts if ts > held else state.get("last_active_ts")
             # A machinery row (tool call, patrol turn) bumps recency but carries

@@ -18,6 +18,7 @@ list. Three things had to be true at once for that, and each is pinned here:
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -120,6 +121,36 @@ class TestTheFoldNeverWalksRecencyBackwards:
         assert isinstance(out["last_active_ts"], float)
         assert out["last_active_ts"] > 0
 
+    def test_a_future_ts_is_clamped_to_the_present(self) -> None:
+        """A jumped-forward clock must not latch a recency into the future.
+
+        The fold is monotone-greatest with no upper bound, and append-only, so a
+        ``ts`` far ahead of the wall clock -- a VM resume, an NTP step, a
+        hand-edited ISO string -- would be latched permanently and pin its
+        member atop Recent for the life of the store. The candidate is clamped
+        to now plus a skew tolerance before the monotone compare: the member
+        still reads as active now (the event is real) but its recency cannot
+        rank ahead of the present, so it never wedges above a live crewmate.
+        """
+        far_future = time.time() + 86_400.0  # a day ahead of the fold's clock
+        out = self._apply({"last_active_ts": 100.0}, {"ts": far_future})
+        now = time.time()
+        assert out["last_active_ts"] <= now + 300.0
+        # It still advanced past the stale held value -- the activity happened.
+        assert out["last_active_ts"] > 100.0
+
+    def test_a_ts_within_the_skew_tolerance_is_kept_as_is(self) -> None:
+        """Ordinary clock skew between the stamping and folding hosts is fine.
+
+        The ceiling only trims a ``ts`` past the tolerance; a value a few
+        seconds ahead of the fold's clock is a normal two-host disagreement and
+        must survive unchanged, or the fold would quantise every recency to its
+        own read time.
+        """
+        near = time.time() + 5.0
+        out = self._apply({"last_active_ts": 100.0}, {"ts": near})
+        assert out["last_active_ts"] == pytest.approx(near, abs=1.0)
+
     def test_the_state_version_retires_a_pre_monotone_savepoint(self) -> None:
         """A savepoint from a fold without the monotone rule must be DISCARDED.
 
@@ -194,19 +225,22 @@ class TestRosterReadTakesTheFoldedRecency:
         svc = get_service()
         svc.ensure(slug, CREW)
         # A machinery row: recency only, no preview -- exactly what the roster
-        # must order by while still quoting the last thing said.
-        svc.append(slug, types.MEMBER_MESSAGE, {"ts": 4_000_000_000.0})
+        # must order by while still quoting the last thing said. A recent epoch
+        # (not a far-future sentinel, which the fold's future-ts ceiling clamps)
+        # so the value passes through unchanged and stays newer than the speech.
+        machinery_ts = time.time() + 60.0
+        svc.append(slug, types.MEMBER_MESSAGE, {"ts": machinery_ts})
 
         app = _members_app(state)
         async with TestClient(TestServer(app)) as client:
             data = await (await client.get("/api/members")).json()
         row = next(r for r in data["members"] if r["name"] == CREW)
-        assert row["last_active_ts"] == 4_000_000_000.0
+        assert row["last_active_ts"] == machinery_ts
         # The preview still comes from the transcript's speech-only read.
         assert row["last_message"] == "Triaged 7 new issues."
         # The row and the projection block it ships agree, so the client's
         # higher-seq-wins merge has one value to reconcile rather than two.
-        assert row["projections"]["values"]["roster"]["last_active_ts"] == 4_000_000_000.0
+        assert row["projections"]["values"]["roster"]["last_active_ts"] == machinery_ts
 
     @pytest.mark.asyncio
     async def test_a_member_with_no_log_keeps_the_transcript_reading(
