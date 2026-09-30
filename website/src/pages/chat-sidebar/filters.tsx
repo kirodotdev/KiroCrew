@@ -6,7 +6,7 @@ import { useState, useCallback, useMemo, useEffect, useRef } from 'react'
 import { shallowEqual } from 'react-redux'
 import type { SessionFilterKey, Slot } from './types'
 import { safeSetItem } from '../../utils/safeStorage'
-import { readStoredHiddenFolders, HIDDEN_FOLDERS_LS_KEY, readStoredTagFilter, TAG_FILTER_LS_KEY, FOLDERS_SHELVED_LS_KEY, readStoredRecentWindow, RECENT_WINDOW_LS_KEY } from './persistence'
+import { readStoredHiddenFolders, HIDDEN_FOLDERS_LS_KEY, readStoredTagFilter, TAG_FILTER_LS_KEY, FOLDERS_SHELVED_LS_KEY, readStoredRecentWindow, RECENT_WINDOW_LS_KEY, UNREAD_HIDDEN_LS_KEY, RUNNING_HIDDEN_LS_KEY, PINNED_HIDDEN_LS_KEY } from './persistence'
 import { useAppSelector } from '../../store'
 import { selectSidebarWorkflowActiveKeys, selectSidebarAutomationRunningKeys, selectSidebarSubagentCounts, selectSidebarApprovalCounts } from '../../store/chatSlice'
 import { decomposeRecentWindow, type RecentUnit, clampRecentAmount, customRecentWindowMs, recentTickIntervalMs, isWithinRecentWindow } from '../recentWindow'
@@ -18,25 +18,29 @@ import { isPeerRow } from './rowIdentity'
 interface SessionFilterDef {
   key: SessionFilterKey
   storageKey: string
+  /** Persisted flag for the chip's HIDE state (drop matching rows). Absent on a
+   *  chip that cannot hide: Recent's row is already a flyout for its window, and
+   *  "hide recent" would only mean "older than the window", which nobody asked for. */
+  hideStorageKey?: string
   color: string
   icon: (active: boolean) => React.ReactNode
 }
 
 export const SESSION_FILTERS: SessionFilterDef[] = [
   {
-    key: 'unread', storageKey: 'mc-session-unread-only',
+    key: 'unread', storageKey: 'mc-session-unread-only', hideStorageKey: UNREAD_HIDDEN_LS_KEY,
     // Status token, not brand accent: this chip is the legend/toggle for the
     // same unread state whose row dot reads `var(--ok)` in SessionRow (#10479).
     color: 'var(--ok)',
     icon: (active) => <Circle size={12} className={active ? 'text-[var(--ok)]' : 'text-muted'} {...(active ? { strokeWidth: 0, fill: 'var(--ok)' } : {})} />,
   },
   {
-    key: 'running', storageKey: 'mc-session-running-only',
+    key: 'running', storageKey: 'mc-session-running-only', hideStorageKey: RUNNING_HIDDEN_LS_KEY,
     color: 'var(--warn)',
     icon: (active) => <Zap size={12} className={active ? 'text-[var(--warn)]' : 'text-muted'} {...(active ? { fill: 'var(--warn)', stroke: 'none' } : {})} />,
   },
   {
-    key: 'pinned', storageKey: 'mc-session-pinned-only',
+    key: 'pinned', storageKey: 'mc-session-pinned-only', hideStorageKey: PINNED_HIDDEN_LS_KEY,
     color: 'var(--accent)',
     icon: (active) => <Pin size={12} className={active ? 'text-accent' : 'text-muted'} {...(active ? { fill: 'var(--accent)', stroke: 'none' } : {})} />,
   },
@@ -98,6 +102,32 @@ export function useSessionFilterState() {
   const toggleFoldersShelved = useCallback(() => {
     setFoldersShelved(v => { const next = !v; safeSetItem(FOLDERS_SHELVED_LS_KEY, next ? '1' : '0'); return next })
   }, [])
+  // Chips whose HIDE state is on: their matching rows are dropped from the list.
+  // Include chips OR together ("unread or pinned"), but a hide is an AND over
+  // the result, so "Unread + hide In progress" reads as unread sessions that are
+  // not running. A chip is either showing-only or hiding, never both: the two
+  // togglers below each clear the other state for their key.
+  const [hiddenFilters, setHiddenFilters] = useState<Set<SessionFilterKey>>(() => {
+    const initialHidden = new Set<SessionFilterKey>()
+    for (const filterDef of SESSION_FILTERS) {
+      if (!filterDef.hideStorageKey) continue
+      // A stored pair of '1's (hand-edited storage) resolves to show-only.
+      if (localStorage.getItem(filterDef.storageKey) === '1') continue
+      if (localStorage.getItem(filterDef.hideStorageKey) === '1') initialHidden.add(filterDef.key)
+    }
+    return initialHidden
+  })
+  /** Drop `key`'s hide, persisted. A no-op when it is not hidden. */
+  const clearHideFor = useCallback((key: SessionFilterKey) => {
+    setHiddenFilters(prev => {
+      if (!prev.has(key)) return prev
+      const next = new Set(prev)
+      next.delete(key)
+      const filterDef = SESSION_FILTERS.find(sf => sf.key === key)!
+      if (filterDef.hideStorageKey) safeSetItem(filterDef.hideStorageKey, '0')
+      return next
+    })
+  }, [])
   const toggleFilter = useCallback((key: SessionFilterKey) => {
     setActiveFilters(prev => {
       const next = new Set(prev)
@@ -106,7 +136,10 @@ export function useSessionFilterState() {
       else { next.add(key); safeSetItem(filterDef.storageKey, '1') }
       return next
     })
-  }, [])
+    // If the chip was hiding, show-only was off, so this toggle turned it ON and
+    // the hide must go. If the chip was not hiding, clearing is a no-op.
+    clearHideFor(key)
+  }, [clearHideFor])
   const disableFilter = useCallback((key: SessionFilterKey) => {
     setActiveFilters(prev => {
       if (!prev.has(key)) return prev
@@ -126,11 +159,36 @@ export function useSessionFilterState() {
       safeSetItem(filterDef.storageKey, '1')
       return next
     })
+    clearHideFor(key)
+  }, [clearHideFor])
+  const toggleHideFilter = useCallback((key: SessionFilterKey) => {
+    const filterDef = SESSION_FILTERS.find(sf => sf.key === key)!
+    const hideStorageKey = filterDef.hideStorageKey
+    if (!hideStorageKey) return
+    setHiddenFilters(prev => {
+      const next = new Set(prev)
+      if (next.has(key)) { next.delete(key); safeSetItem(hideStorageKey, '0') }
+      else { next.add(key); safeSetItem(hideStorageKey, '1') }
+      return next
+    })
+    // Mirror of toggleFilter: turning the hide on must drop show-only; turning
+    // it off finds show-only already off, so this is a no-op then.
+    disableFilter(key)
+  }, [disableFilter])
+  const clearHiddenFilters = useCallback(() => {
+    setHiddenFilters(prev => {
+      if (prev.size === 0) return prev
+      for (const filterDef of SESSION_FILTERS) {
+        if (filterDef.hideStorageKey && prev.has(filterDef.key)) safeSetItem(filterDef.hideStorageKey, '0')
+      }
+      return new Set()
+    })
   }, [])
   return {
     activeFilters, setActiveFilters, filterHiddenFolders, setFilterHiddenFolders, toggleFolderFilter,
     showAllFolders, filterTagIds, toggleTagFilter, clearTagFilter, foldersShelved, setFoldersShelved,
     toggleFoldersShelved, toggleFilter, disableFilter, enableFilter,
+    hiddenFilters, toggleHideFilter, clearHiddenFilters,
   }
 }
 

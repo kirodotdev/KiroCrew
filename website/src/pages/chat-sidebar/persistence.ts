@@ -51,6 +51,11 @@ export function readStoredStaleCollapse(): number {
 
 /** Whether the filter menu's Folders section is rolled up to its heading. */
 export const FOLDERS_SHELVED_LS_KEY = 'mc-filter-folders-shelved'
+// A status chip's HIDE state ('1' = drop its matching rows). One per chip that
+// can hide; referenced from that chip's `SESSION_FILTERS` entry in ./filters.
+export const UNREAD_HIDDEN_LS_KEY = 'mc-session-unread-hidden'
+export const RUNNING_HIDDEN_LS_KEY = 'mc-session-running-hidden'
+export const PINNED_HIDDEN_LS_KEY = 'mc-session-pinned-hidden'
 
 /** Read the persisted hidden-folder ids. Runs in a useState initializer during
  *  render, so a throwing localStorage (private mode / disabled storage) or a

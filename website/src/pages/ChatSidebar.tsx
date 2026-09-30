@@ -2620,6 +2620,7 @@ function ChatSidebar({
     activeFilters, setActiveFilters, filterHiddenFolders, setFilterHiddenFolders, toggleFolderFilter,
     showAllFolders, filterTagIds, toggleTagFilter, clearTagFilter, foldersShelved, setFoldersShelved,
     toggleFoldersShelved, toggleFilter, disableFilter, enableFilter,
+    hiddenFilters, toggleHideFilter, clearHiddenFilters,
   } = useSessionFilterState()
   const {
     slotsLoaded, workflowActiveSet, automationRunningSet, subagentCounts, subagentApprovalCounts, unreadSet,
@@ -2971,6 +2972,7 @@ function ChatSidebar({
    */
   const filterDimensions = useMemo<FilterDimension[]>(() => {
     const activeFilterDefs = SESSION_FILTERS.filter(filterDef => activeFilters.has(filterDef.key))
+    const hiddenFilterDefs = SESSION_FILTERS.filter(filterDef => hiddenFilters.has(filterDef.key))
     return [
       {
         // Tags. Unlike the folder filter this does NOT go inert while
@@ -3032,6 +3034,18 @@ function ChatSidebar({
         },
       },
       {
+        // Status-chip HIDES. A separate dimension from the include chips above
+        // because it composes the other way: include chips OR together, while a
+        // hide drops its matches from whatever the rest of the list kept, so
+        // "Unread + hide In progress" is unread AND not running. Being its own
+        // entry also means revealing a hidden row clears only the hide, not the
+        // include chips the person set alongside it.
+        filtersRow: slot => hiddenFilterDefs.length === 0 || !hiddenFilterDefs.some(filterDef => _derivedLookup[filterDef.key](slot)),
+        narrows: () => hiddenFilters.size > 0,
+        hides: (slot, excluded) => hiddenFilters.size > 0 && excluded(slot),
+        clear: () => clearHiddenFilters(),
+      },
+      {
         // Folder filter. It filters no rows and never narrows (see the memo
         // doc above). The folder-EXPANSION step lives outside the reveal
         // registry on purpose: it runs whether or not this filter was hiding
@@ -3061,7 +3075,7 @@ function ChatSidebar({
         },
       },
     ]
-  }, [activeFilters, activeTagIds, filterTagIds, clearTagFilter, slotFilter, folderNameMatchIds, searchRanked, _derivedLookup, filterHiddenSubtree, folders, slotFolders, setActiveFilters, setFilterHiddenFolders])
+  }, [activeFilters, hiddenFilters, clearHiddenFilters, activeTagIds, filterTagIds, clearTagFilter, slotFilter, folderNameMatchIds, searchRanked, _derivedLookup, filterHiddenSubtree, folders, slotFolders, setActiveFilters, setFilterHiddenFolders])
 
   // State and in the memo deps on purpose, not a ref: a frozen run caches its
   // stale list against new deps, so clearing a ref would invalidate nothing.
@@ -4989,6 +5003,7 @@ function ChatSidebar({
                 <FilterMenuLabel>{i18nT('pages.chatSidebar.filter')}</FilterMenuLabel>
                 {SESSION_FILTERS.map(filterDef => {
                   const active = activeFilters.has(filterDef.key)
+                  const hidden = hiddenFilters.has(filterDef.key)
                   const slotCount = filterCounts[filterDef.key] ?? 0
                   const isRecent = filterDef.key === 'recent'
                   if (isRecent) {
@@ -5123,17 +5138,69 @@ function ChatSidebar({
                       </DropdownMenuSub>
                     )
                   }
-                  return (
+                  const filterLabel = i18nT(FILTER_LABEL_KEY[filterDef.key])
+                  const canHide = !!filterDef.hideStorageKey
+                  const showRow = (
                     <DropdownMenuItem
                       key={filterDef.key}
                       title={i18nT(FILTER_DESCRIPTION_KEY[filterDef.key])}
                       // Keep the menu open so multiple filters can be toggled.
                       onSelect={e => { e.preventDefault(); toggleFilter(filterDef.key) }}
+                      className="flex-1 min-w-0"
                     >
                       {filterDef.icon(active)}
-                      <span className="flex-1 truncate">{i18nT(FILTER_LABEL_KEY[filterDef.key])}{slotCount > 0 ? ` (${slotCount})` : ''}</span>
-                      {active && <Check size={14} className="text-accent shrink-0" />}
+                      <span className="flex-1 truncate">{filterLabel}{slotCount > 0 ? ` (${slotCount})` : ''}</span>
+                      {active && !canHide && <Check size={14} className="text-accent shrink-0" />}
                     </DropdownMenuItem>
+                  )
+                  if (!canHide) return showRow
+                  // Two menu items drawn as one row, not a button nested in one: a
+                  // focusable control inside a menuitem is skipped by the menu's
+                  // roving focus and read as part of the row's name. The second
+                  // item sits where the check mark goes. It shows the check while
+                  // show-only is on and swaps to the hide icon when pointed at or
+                  // focused; while off, the icon appears on row hover or focus, and
+                  // always on touch screens, which have no hover. The styling sits
+                  // on the wrapper and the icon slot, not on the menu primitives.
+                  const hideLabel = hidden
+                    ? i18nT('pages.chatSidebar.filter_unhide_named', { filter: filterLabel })
+                    : i18nT('pages.chatSidebar.filter_hide_named', { filter: filterLabel })
+                  return (
+                    <div
+                      key={filterDef.key}
+                      role="group"
+                      className="group/filter flex items-center rounded-md hover:bg-bg-hover focus-within:bg-bg-hover"
+                    >
+                      {showRow}
+                      <DropdownMenuItem
+                        aria-label={hideLabel}
+                        title={hideLabel}
+                        onSelect={e => { e.preventDefault(); toggleHideFilter(filterDef.key) }}
+                        className="group/hide shrink-0"
+                        data-testid={`filter-hide-${filterDef.key}`}
+                        data-filter-hidden={hidden ? 'true' : undefined}
+                      >
+                        <span
+                          className={hidden
+                            ? 'inline-flex size-3.5 items-center justify-center rounded bg-accent-subtle text-accent ring-4 ring-accent-subtle'
+                            : 'inline-flex size-3.5 items-center justify-center text-muted group-focus/hide:text-text'}
+                        >
+                          {hidden ? (
+                            <EyeOff size={12} />
+                          ) : active ? (
+                            <>
+                              <Check size={14} className="text-accent group-focus/hide:hidden" />
+                              <EyeOff size={12} className="hidden group-focus/hide:block" />
+                            </>
+                          ) : (
+                            <EyeOff
+                              size={12}
+                              className="opacity-0 group-hover/filter:opacity-100 group-focus-within/filter:opacity-100 [@media(hover:none)]:opacity-100"
+                            />
+                          )}
+                        </span>
+                      </DropdownMenuItem>
+                    </div>
                   )
                 })}
                 <DropdownMenuSeparator />
@@ -5464,7 +5531,7 @@ function ChatSidebar({
           </button>
         </div>
       )}
-      {activeFilters.size > 0 && (
+      {(activeFilters.size > 0 || hiddenFilters.size > 0) && (
         <div className={FILTER_CHIP_ROW_CLS}>
           {SESSION_FILTERS.filter(filterDef => activeFilters.has(filterDef.key)).map(filterDef => {
             const slotCount = filterCounts[filterDef.key] ?? 0
@@ -5481,6 +5548,22 @@ function ChatSidebar({
                 color={filterDef.color}
                 clearLabel={clearLabel}
                 onClear={() => toggleFilter(filterDef.key)}
+              />
+            )
+          })}
+          {SESSION_FILTERS.filter(filterDef => hiddenFilters.has(filterDef.key)).map(filterDef => {
+            const slotCount = filterCounts[filterDef.key] ?? 0
+            const filterLabel = i18nT(FILTER_LABEL_KEY[filterDef.key])
+            return (
+              <FilterChip
+                key={`hide-${filterDef.key}`}
+                label={`${i18nT('pages.chatSidebar.hiding_named_filter', { filter: filterLabel })}${slotCount > 0 ? ` (${slotCount})` : ''}`}
+                // Warn for every hide, whatever the chip's own colour: it marks
+                // rows kept off screen, the same meaning the funnel's warn tint has.
+                color="var(--warn)"
+                clearLabel={i18nT('pages.chatSidebar.filter_unhide_named', { filter: filterLabel })}
+                onClear={() => toggleHideFilter(filterDef.key)}
+                testId={`filter-chip-hide-${filterDef.key}`}
               />
             )
           })}
