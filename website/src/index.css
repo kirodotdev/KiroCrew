@@ -1707,11 +1707,6 @@ html[data-font-family="custom"][data-custom-ligatures="off"] body{font-variant-l
    Scoped to kiro-light: in every other theme --panel is the page colour, not a shell colour. */
 [data-theme="kiro-light"] .focus-chrome-rail,[data-theme="kiro-light"] .sidebar-inner{background-color:var(--panel)}
 [data-theme="kiro-light"] .user-bubble{background-color:var(--bg-hover)}
-/* Kiro light: the two top-bar capsules (status readout, Request a Feature) are borderless bg-card
-   fills like the bubble, and the bar behind them is --chrome, which follows the white canvas — so
-   they too would vanish. An inset 1px ring in --border gives them the same edge the neighbouring
-   search field draws with a real border, without changing the box's size. */
-[data-theme="kiro-light"] .tb-capsule,[data-theme="kiro-light"] .feedback-pill{box-shadow:inset 0 0 0 1px var(--border)}
 /* Kiro theme: lift unselected nav labels + section headers to Prey/300 (#c1bec6, ~9.8:1) per the
    Figma settings-panel guideline (was Prey/400 #938f9b ~5.7:1). Inactive icons inherit this color
    (they only carry opacity-70), lifting them from ~3.4:1 to ~5.6:1. Active items keep .nav-active. */
@@ -2163,15 +2158,20 @@ file-tree-container{
   @container (max-width:738px){ .tb-has-update .tb-drop-metrics{display:none} }
   @container (max-width:600px){ .tb-has-update .tb-drop-usage{display:none} }
   @container (max-width:548px){ .tb-has-update .tb-drop-feedback{display:none} }
-  @container (max-width:408px){ .tb-has-update .tb-capsule > *:not(:first-child){display:none} }
+  @container (max-width:408px){ .tb-has-update .tb-capsule > :not([data-liquid-glass-layer]) ~ :not([data-liquid-glass-layer]){display:none} }
 }
 /* Terminal rung: the capsule keeps only its first child, the connection dot.
    The rungs above name the built-in readouts one by one, but the capsule is also
    an extension slot (`getCapsuleSegments`) whose registered segments cannot be
    enumerated here, so the floorless track needs one rung that bounds the group
-   whatever it holds. Structural (`> *:not(:first-child)`) rather than by class
-   for exactly that reason. Budget documented in docs/extension-seams.md. */
-@container (max-width:200px){ .tb-capsule > *:not(:first-child){display:none} }
+   whatever it holds. Structural rather than by class for exactly that reason:
+   every non-layer child that has a non-layer sibling before it. The capsule is
+   a Liquid Glass host (components/Glass.tsx) whose effect layers are its FIRST
+   children (`data-liquid-glass-layer`), so a plain `:first-child` would keep a
+   layer and hide the dot; skipping the layers on both sides of `~` keeps the
+   first segment whatever the layer count. Budget documented in
+   docs/extension-seams.md. */
+@container (max-width:200px){ .tb-capsule > :not([data-liquid-glass-layer]) ~ :not([data-liquid-glass-layer]){display:none} }
 /* The counterpart: a form that exists ONLY on the narrow rungs (e.g. the metric
    readout's icon stand-in). Both forms ship in the DOM because the rung is a
    container query — no JS branch here can observe the group's own width. With
@@ -3012,7 +3012,8 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
  * element, so there is no CSS copy of the
  * material. What a call site says is only WHICH tint step its pane is on:
  * `glass-accent` (a picked chip, an attached card, a progress bar) and
- * `glass-warn` (the incognito chip, a queued message) mix a hue INTO the glass
+ * `glass-warn` (the incognito chip, a queued message) and `glass-danger` (the
+ * top-bar readout capsule while the gateway is offline) mix a hue INTO the glass
  * tint so the pane stays a glass, and
  * `glass-hover` brightens an interactive pane a step on hover, as the old chip
  * border-color change did, and `glass-faded` thins the tint to 55% for a pane
@@ -3024,10 +3025,11 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
  * primitive's frost box reads the token, so the pane repaints without a rule
  * of its own. The mixed values are computed once on :root (from the polarity's
  * own `--glass-tint`), so a swap on the host cannot reference itself. */
-:root { --glass-tint-accent: color-mix(in srgb, var(--accent) 14%, var(--glass-tint)); --glass-tint-warn: color-mix(in srgb, var(--warn) 12%, var(--glass-tint)); --glass-tint-hover: color-mix(in srgb, var(--text) 8%, var(--glass-tint)); --glass-tint-faded: color-mix(in srgb, var(--glass-tint) 55%, transparent); }
+:root { --glass-tint-accent: color-mix(in srgb, var(--accent) 14%, var(--glass-tint)); --glass-tint-warn: color-mix(in srgb, var(--warn) 12%, var(--glass-tint)); --glass-tint-danger: color-mix(in srgb, var(--danger) 12%, var(--glass-tint)); --glass-tint-hover: color-mix(in srgb, var(--text) 8%, var(--glass-tint)); --glass-tint-faded: color-mix(in srgb, var(--glass-tint) 55%, transparent); }
 .glass-accent { --glass-tint: var(--glass-tint-accent); }
 .glass-faded { --glass-tint: var(--glass-tint-faded); }
 .glass-warn { --glass-tint: var(--glass-tint-warn); }
+.glass-danger { --glass-tint: var(--glass-tint-danger); }
 .glass-hover:hover { --glass-tint: var(--glass-tint-hover); }
 
 /* The context shelf (agent, project, branch, model chips) sits BELOW the glass
@@ -3139,6 +3141,7 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
      their hue on the solid surface. */
   .liquid-glass.glass-accent{ background:color-mix(in srgb, var(--accent) 14%, var(--bg-elevated)) !important }
   .liquid-glass.glass-warn{ background:color-mix(in srgb, var(--warn) 12%, var(--bg-elevated)) !important }
+  .liquid-glass.glass-danger{ background:color-mix(in srgb, var(--danger) 12%, var(--bg-elevated)) !important }
   .liquid-glass>[data-liquid-glass-layer]{ display:none !important }
   /* Floating notification panes (the banner, the bell popover's rows) sit OVER
      page content, so they solidify to the card color, not the page background.
@@ -3200,6 +3203,7 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
   .liquid-glass:focus-visible{ outline:2px solid var(--accent) !important; outline-offset:2px !important }
   .liquid-glass.glass-accent{ background:color-mix(in srgb, var(--accent) 14%, var(--bg-elevated)) !important }
   .liquid-glass.glass-warn{ background:color-mix(in srgb, var(--warn) 12%, var(--bg-elevated)) !important }
+  .liquid-glass.glass-danger{ background:color-mix(in srgb, var(--danger) 12%, var(--bg-elevated)) !important }
   .liquid-glass>[data-liquid-glass-layer]{ display:none !important }
 }
 /* The same rules, on the user's own switch (Settings -> Display -> View ->
@@ -3220,6 +3224,7 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
   html[data-reduce-transparency="on"] .liquid-glass:focus-visible{ outline:2px solid var(--accent) !important; outline-offset:2px !important }
   html[data-reduce-transparency="on"] .liquid-glass.glass-accent{ background:color-mix(in srgb, var(--accent) 14%, var(--bg-elevated)) !important }
   html[data-reduce-transparency="on"] .liquid-glass.glass-warn{ background:color-mix(in srgb, var(--warn) 12%, var(--bg-elevated)) !important }
+  html[data-reduce-transparency="on"] .liquid-glass.glass-danger{ background:color-mix(in srgb, var(--danger) 12%, var(--bg-elevated)) !important }
   html[data-reduce-transparency="on"] .liquid-glass>[data-liquid-glass-layer]{ display:none !important }
 }
 @media (prefers-contrast: more){
@@ -3231,6 +3236,7 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
   .liquid-glass{ outline:1px solid var(--text) !important; outline-offset:-1px }
   .liquid-glass.glass-accent{ outline-color:var(--accent) !important }
   .liquid-glass.glass-warn{ outline-color:var(--warn) !important }
+  .liquid-glass.glass-danger{ outline-color:var(--danger) !important }
   /* The pane outline above is !important, so it would beat the base-layer
      :focus-visible ring on the chips / memory chip / jump button, which are
      glass buttons; keyboard focus re-asserts the ring inside the same block. */
