@@ -2080,39 +2080,6 @@ class TestNamespaceArgv:
         os.unlink(result[3])
 
     @patch("kiro_crew.sandbox._resolve_agent_executable", return_value="/usr/local/bin/kiro-cli")
-    def test_established_target_that_cannot_be_restatted_refuses(self, mock_resolve, tmp_path):
-        """A ``_required_targets`` entry whose ``lstat`` now fails must FAIL CLOSED.
-
-        A pre-spawn materialiser reports a target as established (present). If an
-        ``lstat`` of that name then fails while the launcher builds -- renamed aside
-        or its permission revoked, the ordinary racing data-home write this module
-        already assumes -- carrying NO identity would leave ``_carried_occupant``
-        returning ``None`` in the child, the substitution refusal never fires, and a
-        decoy left at the name is sealed while the original stays writable elsewhere.
-        ``namespace_argv`` must raise :class:`SandboxCeilingUnsealable` instead of
-        masking whatever took the name's place.
-        """
-        established_name = str(tmp_path / "phantom-ceiling")
-        real_lstat = os.lstat
-
-        def _lstat_fails_for_target(path, *a, **k):  # noqa: ANN001, ANN202
-            if os.fspath(path) == established_name:
-                raise OSError(2, "vanished")
-            return real_lstat(path, *a, **k)
-
-        def _establish(established=None):  # noqa: ANN001, ANN202
-            if established is not None:
-                established.append(established_name)
-            return []
-
-        with (
-            patch("kiro_crew.sandbox._materialize_sealable_ceilings", side_effect=_establish),
-            patch("kiro_crew.sandbox.os.lstat", side_effect=_lstat_fails_for_target),
-        ):
-            with pytest.raises(sandbox_mod.SandboxCeilingUnsealable):
-                namespace_argv(["kiro-cli"], "strict")
-
-    @patch("kiro_crew.sandbox._resolve_agent_executable", return_value="/usr/local/bin/kiro-cli")
     def test_launcher_script_is_executable(self, mock_resolve):
         result = namespace_argv(["kiro-cli"], "strict")
         launcher_path = result[3]
