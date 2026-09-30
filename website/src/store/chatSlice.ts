@@ -860,7 +860,7 @@ export {
   slotSwitchFetchLimit, slotCoverageShortfall, countMatchedFetchLimit, isSupersededPagingRejection,
   abortActiveOlderFetch, type CoverageRow,
 } from './chat/paging'
-export type { FollowupItem, SideMessage, SideQueueEntry, SideState, SlotStatusDetail, WorkflowRunProgress } from './chat/state'
+export type { FollowupItem, SideMessage, SideQueueEntry, SideState, SlotState, SlotStatusDetail, WorkflowRunProgress } from './chat/state'
 export { FOLDER_SUGGESTION_MAX_TURNS, capturePendingAskId, pendingQuestionFor, shouldResolveAskOnSend } from './chat/composerCards'
 export { mcpAppKey } from './chat/mcpApps'
 export {

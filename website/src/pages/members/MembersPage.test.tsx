@@ -8,6 +8,8 @@ import { NavigationLeaveGuardProvider, useMayLeaveForNavigation } from '../../co
 import { ApiError } from '../../api/apiError'
 import { memberProjectionStore } from '../../state/memberProjectionStore'
 import { markSlotUnread, sseConnected, sseDisconnected, sseSlots } from '../../store/dashboardSlice'
+import { setSlotStatusDetail, sseChatMessage, sseToolActivity, sseToolResult, syncSlotRunningFromServer } from '../../store/chatSlice'
+import { PILL_ACTIVITY_MAX_CHARS } from './pillActivity'
 import { MEMBERS_ROSTER_QUERY_KEY, memberBriefingQueryKey, memberThreadQueryKey } from '../../api/membersQuery'
 import { __resetPaneDraftsForTests, readPaneDraft, writePaneDraft } from '../../utils/chatPaneDrafts'
 import { getViewedThreadSlot, _resetViewedThreadForTests } from '../../lib/viewedThread'
@@ -3117,6 +3119,89 @@ describe('MembersPage member edit entry (issue #9425)', () => {
     // row inside that editor, not where an "edit this member" click lands.
     expect(navigateSpy).toHaveBeenCalledWith(EDIT_LINK)
     expect(navigateSpy).not.toHaveBeenCalledWith(expect.stringContaining('avatar=1'))
+  })
+
+  it('the pill\'s second line says what the crewmate is doing: text only, always present, out of the button\'s name', async () => {
+    const { store } = await renderPage([row({ bound: true, slot_key: 'member-oncall', last_active_ts: Math.floor(Date.now() / 1000) - 180 })])
+    act(() => {
+      store.dispatch(sseSlots([{ key: 'member-oncall', mode: 'member', running: false, messages: 0 }] as never))
+    })
+    fireEvent.click(await rosterRow('oncall'))
+    const pill = await screen.findByTestId('member-identity-pill')
+    const line = screen.getByTestId('member-pill-activity')
+    // Inside the pill, under the title row — the title row is not widened
+    // sideways for it.
+    expect(pill).toContainElement(line)
+    expect(screen.getByTestId('member-title-row')).not.toContainElement(line)
+    // Resting: the line is still there (one pill height in every state) and
+    // says how long ago the thread last moved. No dot, no glyph: text only.
+    expect(line).toHaveAttribute('data-activity', 'idle')
+    expect(line.textContent).toMatch(/^Idle · /)
+    expect(line.querySelector('svg, span')).toBeNull()
+    // The button is still named by the crewmate alone — a line that changes
+    // several times a turn is not part of WHO the thread is with. The same
+    // text is in the reading order OUTSIDE the button for assistive tech, and
+    // is not a live region.
+    expect(line).toHaveAttribute('aria-hidden', 'true')
+    expect(pill).toHaveAccessibleName(expect.not.stringContaining('Idle'))
+    const sr = screen.getByTestId('member-pill-activity-sr')
+    expect(pill).not.toContainElement(sr)
+    expect(sr.className).toContain('sr-only')
+    expect(sr).not.toHaveAttribute('aria-live')
+    expect(sr.textContent).toBe(line.textContent)
+
+    // A tool call: the line is the SHARED status label for that slot — the
+    // same record the sessions sidebar renders — which in simplified mode is
+    // the call's own purpose, verbatim when short.
+    act(() => {
+      store.dispatch(sseSlots([{ key: 'member-oncall', mode: 'member', running: true, messages: 1 }] as never))
+      store.dispatch(sseToolActivity({ slot: 'member-oncall', tool: 'shell', kind: 'shell', purpose: 'Look up the glass pill code', input_preview: 'grep -n Glass', tool_call_id: 't1' }))
+      store.dispatch(setSlotStatusDetail({ slot: 'member-oncall', kind: 'tool', purpose: 'Look up the glass pill code', toolName: 'grep -n Glass', toolCallId: 't1', ts: Date.now() }))
+      store.dispatch(sseChatMessage({ slot: 'member-oncall', role: 'tool', content: '🔧 shell', meta: { tool_call_id: 't1' } }))
+    })
+    expect(line).toHaveAttribute('data-activity', 'tool')
+    expect(line.textContent).toBe('Look up the glass pill code')
+    expect(sr.textContent).toBe('Look up the glass pill code')
+
+    // Once the call returns (matched by ITS id; an empty output still counts)
+    // the model is reading it: thinking, not the stale purpose.
+    act(() => {
+      store.dispatch(sseToolResult({ slot: 'member-oncall', output: '', tool_call_id: 't1' }))
+    })
+    expect(line).toHaveAttribute('data-activity', 'thinking')
+    expect(line.textContent).toBe('Thinking…')
+
+    // A long purpose is cut at the cap with one ellipsis, so the centred pill
+    // never grows to the header's width. At most the cap: a cut landing on a
+    // space drops the space too.
+    const long = 'Rebuild the whole site and then take a screenshot of every page in both themes'
+    expect(Array.from(long).length).toBeGreaterThan(PILL_ACTIVITY_MAX_CHARS)
+    act(() => {
+      store.dispatch(setSlotStatusDetail({ slot: 'member-oncall', kind: 'tool', purpose: long, toolName: 'npm run build', toolCallId: 't2', ts: Date.now() }))
+    })
+    expect(line).toHaveAttribute('data-activity', 'tool')
+    expect(Array.from(line.textContent ?? '').length).toBeLessThanOrEqual(PILL_ACTIVITY_MAX_CHARS)
+    expect(line.textContent?.endsWith('…')).toBe(true)
+    expect(line.textContent?.startsWith('Rebuild the whole site')).toBe(true)
+
+    // Visible output streaming: the pill's own word, not the seam's
+    // "Streaming" (transport jargon on a line that says what the crewmate
+    // is doing).
+    act(() => {
+      store.dispatch(setSlotStatusDetail({ slot: 'member-oncall', kind: 'streaming', ts: Date.now() }))
+    })
+    expect(line).toHaveAttribute('data-activity', 'writing')
+    expect(line.textContent).toBe('Writing…')
+
+    // The turn ends — status idle, run state settled (as `chat_done` does),
+    // slots frame no longer running: back to idle, whatever the last status
+    // said.
+    act(() => {
+      store.dispatch(setSlotStatusDetail({ slot: 'member-oncall', kind: 'idle', ts: Date.now() }))
+      store.dispatch(syncSlotRunningFromServer({ slot: 'member-oncall', running: false, stopping: false }))
+      store.dispatch(sseSlots([{ key: 'member-oncall', mode: 'member', running: false, messages: 2 }] as never))
+    })
+    expect(line).toHaveAttribute('data-activity', 'idle')
   })
 
   it('there is no separate pencil: the pill is the only edit control in the header', async () => {

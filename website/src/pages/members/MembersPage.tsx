@@ -77,12 +77,17 @@ import { usePersistedBool } from '../../hooks/usePersistedBool'
 import { usePersistedString } from '../../hooks/usePersistedString'
 import { findReport, type ErrorReport } from '../../utils/errorReport'
 import { useAppDispatch, useAppSelector } from '../../store'
+import { selectSlotStreamState, selectSlotToolLog } from '../../store/chatSlice'
+import { toolStatusLabel, type ToolStatusDetail } from '../../utils/toolStatusLabel'
+import { useSimplifiedToolNames } from '../../hooks/useSimplifiedToolNames'
+import { useLanguage } from '../../i18n/LanguageProvider'
 import { markSlotRead } from '../../store/dashboardSlice'
 import { emitSlotRead, flushSlotRead } from '../../lib/slotReadRelay'
 import { setViewedThreadSlot, clearViewedThreadSlot } from '../../lib/viewedThread'
 import CrewAvatar from '../../components/CrewAvatar'
 import CrewStateAvatar from '../../components/CrewStateAvatar'
 import Glass from '../../components/Glass'
+import { resolvePillActivity, type PillActivityKind } from './pillActivity'
 import ChatPane from '../../components/ChatPane'
 import type { ThreadHooks } from '../../app-sdk/messageRenderers'
 import { threadsApi, threadsQueryKey } from '../../api/threads'
@@ -390,6 +395,23 @@ const PATROL_STOPPED_REASON: Record<string, string> = {
   runtime_budget: 'pages.membersPage.patrol_stopped_runtime_budget',
   approval_stalled: 'pages.membersPage.patrol_stopped_approval_stalled',
   interrupted: 'pages.membersPage.patrol_stopped_interrupted',
+}
+/** The identity pill's second line, per activity kind (`pillActivity.ts`),
+ *  for the kinds the page owns the copy of. `tool` and `thinking` are absent
+ *  on purpose: their text comes from the shared status seam
+ *  (`toolStatusLabel`), the same string the sessions sidebar paints for that
+ *  moment. `writing` has its own word — the seam's "Streaming" is transport
+ *  jargon, and this line says what the crewmate is doing. `idle` has two
+ *  spellings — with the time since the thread last moved when one is known,
+ *  bare when it is not. File-scope and indexed in place so the key checker
+ *  resolves every entry. */
+const PILL_ACTIVITY_KEY: Record<Exclude<PillActivityKind, 'tool' | 'thinking'>, string> = {
+  writing: 'pages.membersPage.pill_writing',
+  compacting: 'pages.membersPage.pill_compacting',
+  stopping: 'pages.membersPage.pill_stopping',
+  working: 'pages.membersPage.drawer_working',
+  delegated: 'pages.membersPage.drawer_delegated_working',
+  idle: 'pages.membersPage.pill_idle',
 }
 /** How often the "next wake in …" countdown in the drawer re-reads the clock.
  *  Coarser than the popover's per-second tick on purpose: the drawer line is
@@ -2139,6 +2161,72 @@ export default function MembersPage() {
   const activeSlotLastTs = useAppSelector(
     (s) => (activeSlot ? s.dashboard.slots.find(sl => sl.key === activeSlot)?.last_ts : undefined),
   )
+  // The identity pill's second line — what the crewmate is doing now. Its
+  // busy readings are the slot's live status line (`slotStatusDetail`), the
+  // SAME record the sessions sidebar and the command palette render through
+  // `toolStatusLabel`, so the pill names a moment the way the sidebar row
+  // does and honours the `simplifiedToolNames` preference. Each read is
+  // memo-safe on its own (a string, a boolean or a stable entry ref), so the
+  // header does not re-render on every WS frame; `resolvePillActivity` folds
+  // them at render time. The key falls back to the roster's slot_key the same
+  // way the avatar does, so a thread whose confirmed slot has not resolved yet
+  // still reads live.
+  const pillSlotKey = activeSlot || active?.slot_key || ''
+  const pillStreamState = useAppSelector((s) => (pillSlotKey ? selectSlotStreamState(s, pillSlotKey) : 'idle'))
+  const pillDetail = useAppSelector((s) => (pillSlotKey ? s.chat.slotStatusDetail[pillSlotKey] : undefined))
+  // Whether the tool call the status describes has RETURNED: the status seam
+  // keeps the call's label until the next status frame, but once its output
+  // is in the tool log the model is reading it, and the pill says so. Matched
+  // by the call's own id, so parallel calls cannot be confused, and tested
+  // with `!== undefined`: an empty output is still a return.
+  const pillToolReturned = useAppSelector((s) => {
+    const d = pillSlotKey ? s.chat.slotStatusDetail[pillSlotKey] : undefined
+    if (d?.kind !== 'tool' || !d.toolCallId) return false
+    const entry = selectSlotToolLog(s, pillSlotKey).findLast((e) => e.type === 'tool' && e.tool_call_id === d.toolCallId)
+    return entry !== undefined && entry.output !== undefined
+  })
+  const pillLiveSlot = useAppSelector((s) => (pillSlotKey ? s.dashboard.slots.find((sl) => sl.key === pillSlotKey) : undefined))
+  const simplifiedToolNames = useSimplifiedToolNames()
+  const uiLang = useLanguage().resolved
+  const pillLabelOf = useCallback(
+    (detail: ToolStatusDetail) => toolStatusLabel(detail, simplifiedToolNames, uiLang),
+    [simplifiedToolNames, uiLang],
+  )
+  // The resting line's age ("Idle · 6m ago") is on screen for as long as the
+  // thread rests, so it must move on its own: re-read the clock on the
+  // drawer's coarse tick while the pill is resting, and not at all while it is
+  // busy (the busy line carries no age). Same shape as the patrol countdown's
+  // `nowTs` below; a separate clock because it runs under a different
+  // condition.
+  const pillResting = !!active && !isRunning(active) && pillStreamState === 'idle'
+  const pillLastActive = (activeView ?? active)?.last_active_ts
+  const [pillIdleAge, setPillIdleAge] = useState('')
+  useEffect(() => {
+    if (!pillResting || !pillLastActive) { setPillIdleAge(''); return }
+    const read = () => setPillIdleAge(timeAgo(pillLastActive))
+    read()
+    const timer = setInterval(read, PATROL_TICK_MS)
+    return () => clearInterval(timer)
+    // `uiLang` is a deliberate extra dep: the age is a formatted string in the
+    // UI language, so a language switch must re-read it at once rather than on
+    // the next tick.
+  }, [pillResting, pillLastActive, uiLang])
+  const pillActivity = useMemo(() => {
+    const act = resolvePillActivity({
+      streamState: pillStreamState,
+      detail: pillDetail,
+      toolReturned: pillToolReturned,
+      running: !!active && !!isRunning(active),
+      delegatedOnly: !!pillLiveSlot?.subagents_running && !pillLiveSlot?.running,
+      labelOf: pillLabelOf,
+    })
+    const label = act.text !== undefined
+      ? act.text
+      : act.kind === 'idle' && pillIdleAge
+        ? t('pages.membersPage.pill_idle_since', { when: pillIdleAge })
+        : t(PILL_ACTIVITY_KEY[act.kind as Exclude<PillActivityKind, 'tool' | 'thinking'>])
+    return { kind: act.kind, label }
+  }, [pillStreamState, pillDetail, pillToolReturned, active, isRunning, pillLiveSlot, pillLabelOf, t, pillIdleAge])
   // Reactive document visibility AND focus, so the read effect below re-runs
   // when the user returns to a hidden tab or focuses the window — a plain
   // document.hidden read would leave the effect settled and the reveal
@@ -3419,14 +3507,32 @@ export default function MembersPage() {
                   size={30}
                   working="full"
                 />
-                {/* Title row = name (+ the ID when a label covers it). */}
-                <div className="min-w-0 flex items-center gap-1.5" data-testid="member-title-row">
-                  <div className="text-[13.5px] font-semibold truncate max-w-[24rem]">{crewDisplayName(active)}</div>
-                  {/* The ID stays visible when a label covers it — routes, crons
-                      and spawn params address the ID, never the label. */}
-                  {crewDisplayName(active) !== active.name && (
-                    <div className="text-[11px] font-mono text-muted truncate max-w-[11rem]" title={t('components.agentSelector.agent_id_tooltip', { name: active.name })}>{active.name}</div>
-                  )}
+                <div className="min-w-0 leading-tight">
+                  {/* Title row = name (+ the ID when a label covers it). */}
+                  <div className="min-w-0 flex items-center gap-1.5" data-testid="member-title-row">
+                    <div className="text-[13.5px] font-semibold truncate max-w-[24rem]">{crewDisplayName(active)}</div>
+                    {/* The ID stays visible when a label covers it — routes, crons
+                        and spawn params address the ID, never the label. */}
+                    {crewDisplayName(active) !== active.name && (
+                      <div className="text-[11px] font-mono text-muted truncate max-w-[11rem]" title={t('components.agentSelector.agent_id_tooltip', { name: active.name })}>{active.name}</div>
+                    )}
+                  </div>
+                  {/* Activity line — what the crewmate is doing right now, text
+                      only (the face above already carries presence, so no dot
+                      here). Always rendered, so the pill keeps one height
+                      whether the crewmate is busy or resting: a resting line
+                      says how long ago the thread last moved. A busy line is
+                      the shared status label, clamped in `pillActivity.ts`;
+                      `truncate` is the belt to that cap's braces. Out of the
+                      button's accessible name: the name is WHO the thread is
+                      with, and this line changes several times a turn — the
+                      screen-reader copy sits outside the button, below. */}
+                  <div
+                    className="text-[11px] text-muted truncate max-w-[24rem]"
+                    data-testid="member-pill-activity"
+                    data-activity={pillActivity.kind}
+                    aria-hidden="true"
+                  >{pillActivity.label}</div>
                 </div>
               </Glass>
               {/* The panel's opener. Same icon and hit-target as the chat
@@ -3442,6 +3548,12 @@ export default function MembersPage() {
                   never be otherwise. The member's edit entry is not a peer of
                   this toggle: it is the identity pill in the middle. */}
               <div className="flex items-center justify-end min-w-0">
+                {/* The activity line for assistive tech: the same text, outside
+                    the button so it never joins the crewmate's name, and NOT a
+                    live region — a line that changes several times a turn
+                    would otherwise be announced on every change. It is in the
+                    reading order for a reader who asks. */}
+                <span className="sr-only" data-testid="member-pill-activity-sr">{pillActivity.label}</span>
                 {showOpener && (
                   <button
                     onClick={togglePanel}

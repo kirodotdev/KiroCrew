@@ -3,9 +3,10 @@
  * (`kirocrew pod up <worktree> --json`) and need one crew to exist.
  *
  * Used by `capture-avatar-entry-affordance.mjs` (the crew editor's avatar
- * entries, #9103) and `capture-members-header-identity-pill.mjs` (the Crew
- * Members page's edit entry, #9425). Both prime the pod the same way — preview
- * flag, theme, a crew created through the real API — so the recipe lives once.
+ * entries, #9103), `capture-members-header-identity-pill.mjs` (the Crew
+ * Members page's edit entry, #9425) and `capture-members-pill-activity.mjs`
+ * (the pill's activity line). All prime the pod the same way — preview flag,
+ * theme, a crew created through the real API — so the recipe lives once.
  */
 
 /** Read the JSON line `kirocrew pod up <wt> --json` printed, from `POD_INFO`. */
@@ -97,4 +98,34 @@ export async function openMembersDm(page, authed, BASE, member, { theme = 'dark'
   await row.waitFor({ state: 'visible', timeout: 20000 })
   await row.click()
   await page.getByTestId('member-title-row').waitFor({ state: 'visible', timeout: 10000 })
+}
+
+/**
+ * Open one crewmate's DM on a primed pod and return its header identity pill.
+ * Shared by the two pill harnesses so the boot dance is not inlined twice
+ * (jscpd flags the copy). A fresh pod home fires the Meet CrewMates first-run
+ * chapter over the page once the pod has a crewmate; mark it seen server-side
+ * and dismiss by name if it is already up, never by a blind Escape. Refuses to
+ * return while any dialog is open: a first-run gate over the page would still
+ * pass every DOM check while hiding the header in the frame.
+ */
+export async function openMemberPill(page, BASE, crew) {
+  await page.evaluate(async () => {
+    localStorage.setItem('mc-crewmates-onboarded', '1')
+    await fetch('/api/config/theme', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ crewmates_onboarded: true }) })
+  })
+  await page.goto(`${BASE}/members`, { waitUntil: 'domcontentloaded' })
+  const notNow = page.getByTestId('meet-crewmates-not-now')
+  if (await notNow.waitFor({ state: 'visible', timeout: 2500 }).then(() => true, () => false)) {
+    await notNow.click()
+    await notNow.waitFor({ state: 'hidden', timeout: 10000 })
+  }
+  const row = page.locator('#main-content li button', { hasText: crew }).first()
+  await row.waitFor({ state: 'visible', timeout: 20000 })
+  await row.click()
+  const pill = page.getByTestId('member-identity-pill')
+  await pill.waitFor({ state: 'visible', timeout: 10000 })
+  await page.waitForTimeout(600) // the glass layers size themselves after mount
+  check('no dialog is open over the page', (await page.getByRole('dialog').count()) === 0)
+  return pill
 }

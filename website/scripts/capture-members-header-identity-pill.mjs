@@ -27,7 +27,7 @@
 import { chromium, devices } from 'playwright'
 import { mkdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { check, podInfo, primeCrewPod } from './lib/crew-pod-harness.mjs'
+import { check, openMemberPill, podInfo, primeCrewPod } from './lib/crew-pod-harness.mjs'
 
 const OUT = process.argv[2] || '../temp-screenshots/members-header-identity-pill'
 const CREW = 'oncall'
@@ -35,31 +35,8 @@ mkdirSync(OUT, { recursive: true })
 
 const { BASE, authed } = podInfo(readFileSync)
 
-async function openMember(page) {
-  // A fresh pod home fires the Meet CrewMates first-run chapter over the page
-  // once the pod has a crewmate; mark it seen server-side and dismiss by name
-  // if it is already up, never by a blind Escape.
-  await page.evaluate(async () => {
-    localStorage.setItem('mc-crewmates-onboarded', '1')
-    await fetch('/api/config/theme', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ crewmates_onboarded: true }) })
-  })
-  await page.goto(`${BASE}/members`, { waitUntil: 'domcontentloaded' })
-  const notNow = page.getByTestId('meet-crewmates-not-now')
-  if (await notNow.waitFor({ state: 'visible', timeout: 2500 }).then(() => true, () => false)) {
-    await notNow.click()
-    await notNow.waitFor({ state: 'hidden', timeout: 10000 })
-  }
-  const row = page.locator('#main-content li button', { hasText: CREW }).first()
-  await row.waitFor({ state: 'visible', timeout: 20000 })
-  await row.click()
-  const pill = page.getByTestId('member-identity-pill')
-  await pill.waitFor({ state: 'visible', timeout: 10000 })
-  await page.waitForTimeout(600) // the glass layers size themselves after mount
-  // A first-run gate sitting over the page would still pass every DOM check
-  // above while hiding the header in the frame — refuse to shoot through one.
-  check('no dialog is open over the page', (await page.getByRole('dialog').count()) === 0)
-  return pill
-}
+/** This crewmate's header pill on a primed pod (shared boot dance). */
+const openMember = (page) => openMemberPill(page, BASE, CREW)
 
 /** |pill centre − header centre| in CSS px. */
 async function offCentre(page) {
