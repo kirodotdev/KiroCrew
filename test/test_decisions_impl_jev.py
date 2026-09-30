@@ -108,13 +108,20 @@ async def _run(
     api_key=VAULT_REF,
     state="hi",
     model="jev-latest",
+    host="localhost",
 ):
-    """Serve *recorder* on loopback and ask *questions* through a real socket."""
-    server = TestServer(recorder.app())
+    """Serve *recorder* on loopback and ask *questions* through a real socket.
+
+    *host* defaults to the NAME ``localhost``, which reaches the same socket but is
+    not a literal loopback address, so the client treats it as a remote provider and
+    sends the key. Pass ``127.0.0.1`` to exercise the local-model path, which sends
+    none.
+    """
+    server = TestServer(recorder.app(), host="127.0.0.1")
     await server.start_server()
     try:
         provider = DecisionProviderConfig(
-            endpoint=str(server.make_url("/v1/systemone")),
+            endpoint=f"http://{host}:{server.port}/v1/systemone",
             api_key=api_key,
             model=model,
             timeout_ms=timeout_ms,
@@ -263,6 +270,41 @@ class TestSuccessfulParse:
 # ---------------------------------------------------------------------------
 # Failures: each raises, so the gate can convert it into None + a logged reason
 # ---------------------------------------------------------------------------
+
+
+class TestLocalModelServer:
+    """A literal loopback endpoint is a local model server: it gets no credential."""
+
+    def test_no_authorization_header_is_sent(self, fake_vault):
+        fake_vault("sk-live-abc")
+        rec = _Recorder(body=_ok_body({"is_urgent": _yes()}))
+        answers = asyncio.run(_run(rec, [URGENT], host="127.0.0.1"))
+        assert answers["is_urgent"].value == "yes"
+        assert "Authorization" not in rec.headers[0]
+
+    def test_the_vault_is_never_read(self, monkeypatch):
+        """Not merely left out of the header: the key is never fetched at all."""
+        import kiro_crew.decisions.impl_jev as mod
+
+        def _boom(_raw):
+            raise AssertionError("the vault was read for a local server")
+
+        monkeypatch.setattr(mod, "resolve_api_key", _boom)
+        rec = _Recorder(body=_ok_body({"is_urgent": _yes()}))
+        asyncio.run(_run(rec, [URGENT], host="127.0.0.1"))
+        assert rec.requests, "the request still went out"
+
+    def test_no_key_is_not_a_refusal_locally(self):
+        rec = _Recorder(body=_ok_body({"is_urgent": _yes()}))
+        asyncio.run(_run(rec, [URGENT], host="127.0.0.1", api_key=""))
+        assert rec.requests
+
+    def test_the_name_localhost_still_needs_the_key(self):
+        """A name can resolve anywhere, so it is treated as a remote provider."""
+        rec = _Recorder(body=_ok_body({"is_urgent": _yes()}))
+        with pytest.raises(JevProtocolError, match="no api key"):
+            asyncio.run(_run(rec, [URGENT], host="localhost", api_key=""))
+        assert rec.requests == []
 
 
 class TestFailures:

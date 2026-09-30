@@ -171,6 +171,10 @@ def register(app: web.Application) -> None:
     # authorization the agent must not be able to grant itself.
     app.router.add_get("/api/decisions/consent", handlers.api_decisions_consent_get)
     app.router.add_put("/api/decisions/consent", handlers.api_decisions_consent_put)
+    # Which System One server the seam asks: hosted Jev or a local preset. Owner-gated
+    # in the handler and the only dashboard writer of `decisions.provider.*`.
+    app.router.add_get("/api/decisions/provider", handlers.api_decisions_provider_get)
+    app.router.add_put("/api/decisions/provider", handlers.api_decisions_provider_put)
     # The decision strip's own pair, owner-gated in the same handler module: a
     # verdict on one turn (a WRITE of the decision log) and the folded report the
     # strip's tooltip reads. Browser-called by the chat surface, like the consent

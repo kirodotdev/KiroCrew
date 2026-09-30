@@ -1030,6 +1030,8 @@ from kiro_crew.dashboard.handlers.decisions import (  # noqa: E402, F401
     api_decisions_consent_get,
     api_decisions_consent_put,
     api_decisions_feedback,
+    api_decisions_provider_get,
+    api_decisions_provider_put,
 )
 
 # Flagged-file delivery consent — owner-gated, and the ONLY writer of

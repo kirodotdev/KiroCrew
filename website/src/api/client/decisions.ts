@@ -85,12 +85,45 @@ export type DecisionFeedbackSide = 'jev' | 'baseline'
 /** A reader's verdict on one side. `null` retracts an earlier one. */
 export type DecisionVerdictValue = 'right' | 'wrong' | null
 
+/** One local System One model the card offers (`decisions/local_models.py`). */
+export interface DecisionsLocalModel {
+  id: string
+  name: string
+  model: string
+  default_port: number
+  /** Correct answers matched, as a percentage of Jev's, over all public items. */
+  jev_relative_pct: number
+  /** The same ratio on the hard tier alone. */
+  hard_relative_pct: number
+  peak_ram_gb: number
+  /** Total machine memory at or above which the card recommends this preset. */
+  recommended_total_ram_gb: number
+  p50_secs: number
+  p95_secs: number
+  timeout_ms: number
+  setup_doc: string
+  /** Contains a literal `{port}` the card fills in. */
+  serve_command: string
+}
+
+export interface DecisionsProviderData {
+  presets: DecisionsLocalModel[]
+  /** `jev`, a preset id, or `custom` for an address set by hand in config.json. */
+  active: string
+  configured_endpoint: string
+  configured_timeout_ms: number | null
+  /** Set on a PUT: whether a standing consent followed the switch. */
+  consent_carried?: boolean
+}
+
 export function createDecisionsEndpoints({ get, post, put, j }: ClientTransport) {
   const consentRead = {
     // Decision-seam consent (Settings > Developer > Feature Previews). The switch
     // is a KEYSTONE, not a config path: see decisionsPreview.ts. The PUT returns
     // the state written so the card re-renders from server truth.
     getDecisionsConsent: () => get('/api/decisions/consent').then(j) as Promise<DecisionsConsentData>,
+    // Which System One server the seam asks, and the local presets on offer.
+    getDecisionsProvider: () => get('/api/decisions/provider').then(j) as Promise<DecisionsProviderData>,
   }
 
   const scopesAndFeedback = {
@@ -118,6 +151,11 @@ export function createDecisionsEndpoints({ get, post, put, j }: ClientTransport)
     // is nullable rather than absent — the server records the retraction.
     sendDecisionsFeedback: (turnId: string, verdict: DecisionVerdictValue, side: DecisionFeedbackSide) =>
       post('/api/decisions/feedback', { turn_id: turnId, verdict, side }).then(j) as Promise<unknown>,
+    // Switch the provider to hosted Jev or a local preset. A preset id and a port,
+    // never a URL: the gateway builds the address itself, which is what keeps the
+    // dashboard from choosing an arbitrary destination for decision state.
+    saveDecisionsProvider: (preset: string, port?: number) =>
+      put('/api/decisions/provider', port === undefined ? { preset } : { preset, port }).then(j) as Promise<DecisionsProviderData>,
   }
 
   return { consentRead, scopesAndFeedback }

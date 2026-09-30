@@ -4,6 +4,9 @@ Requests map options to nullable rubric text in ``criteria``. Responses must
 carry the matching ``choice`` type and a finite probability for the chosen
 option. The gate validates answer domains before a skill selection is consumed.
 Transport and protocol failures raise; the gate supplies fallback, not retries.
+
+The same client serves a local System One server (``decisions/local_models.py``):
+an endpoint on a literal loopback address is sent no credential at all.
 """
 
 from __future__ import annotations
@@ -14,6 +17,7 @@ import math
 from typing import Any
 
 from kiro_crew.config.sections import DECISION_PROVIDER_MODEL_DEFAULT
+from kiro_crew.decisions.local_models import is_loopback_endpoint
 from kiro_crew.decisions.types import Answer, Answers, Choice, Question, is_model_id
 
 logger = logging.getLogger(__name__)
@@ -170,9 +174,15 @@ class JevOracle:
         """
         if not questions:
             raise JevProtocolError("no questions to ask")
-        api_key = await asyncio.to_thread(resolve_api_key, self._api_key_setting)
-        if not api_key:
-            raise JevProtocolError("no api key configured")
+        headers = {"Content-Type": "application/json"}
+        # A local model server gets NO credential. Whatever listens on a loopback
+        # port is not TypeSafe, and handing it the Jev key would give that key to
+        # any process on this machine that bound the port first.
+        if not is_loopback_endpoint(self._endpoint):
+            api_key = await asyncio.to_thread(resolve_api_key, self._api_key_setting)
+            if not api_key:
+                raise JevProtocolError("no api key configured")
+            headers["Authorization"] = f"Bearer {api_key}"
 
         import aiohttp
 
@@ -188,10 +198,7 @@ class JevOracle:
                 self._endpoint,
                 json=body,
                 allow_redirects=False,
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                },
+                headers=headers,
             ) as resp:
                 if resp.status < 200 or resp.status >= 300:
                     raise JevHttpError(f"HTTP {resp.status}")

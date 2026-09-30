@@ -28,6 +28,7 @@ import {
   type DecisionPointRow,
 } from './decisionsPreview'
 import { fmtPercent } from '../../i18n/format'
+import { DECISIONS_PROVIDER_QUERY_KEY, DecisionsProviderPicker } from './DecisionsProviderPicker'
 import { i18nT } from '../../i18n/t'
 
 /**
@@ -197,6 +198,13 @@ export function DecisionsCard() {
     queryFn: () => api.secretsList(),
   })
   const view = readDecisions(consentQ.data, configQ.data)
+  // Shared with the picker through the query key: the card reads it only to decide
+  // whether the hand-edited-address pointer applies.
+  const providerQ = useQuery({
+    queryKey: DECISIONS_PROVIDER_QUERY_KEY,
+    queryFn: () => api.getDecisionsProvider(),
+    retry: false,
+  })
   const modelsQ = useAvailableModelsQuery()
 
   /* ── Which row the panel belongs to ──────────────────────────────────────── */
@@ -492,7 +500,13 @@ export function DecisionsCard() {
         id={EGRESS_NOTE_ID}
         className={backendMissing ? 'text-[12px] text-muted opacity-40' : 'text-[12px] text-text'}
       >
-        {i18nT('pages.developer.featurePreviewsTab.decisions_egress')}
+        {/* A local preset is the one provider the card can vouch for: the gateway
+            built its address on 127.0.0.1, so the "over the internet" sentence would
+            be false. A hand-written address keeps the general wording, since nothing
+            here can tell where it leads. */}
+        {providerQ.data?.presets.some(p => p.id === providerQ.data?.active)
+          ? i18nT('pages.developer.featurePreviewsTab.decisions_egress_local')
+          : i18nT('pages.developer.featurePreviewsTab.decisions_egress')}
       </p>
       {/* The sampling share, stated in BOTH switch states and OUTSIDE the disclosure.
         * The decisions module spec under docs/system-specs/modules pins it there: the
@@ -516,17 +530,20 @@ export function DecisionsCard() {
           <span className="font-mono break-all">{view.configuredEndpoint}</span>
         </p>
       )}
-      {/* And where that address is changed. The card offers no control for it: `PATCH
-          /api/config/kirocrew` excludes `decisions.provider.*`, so a dashboard caller
-          cannot choose where the state a decision point collects is sent, and a field
-          here would be one whose every save is refused. Its own paragraph, so the
-          address line stays the one short fact a reader compares against their
-          provider. */}
-      {view.supported && view.configuredEndpoint && (
+      {/* Where an address set by hand is changed. `PATCH /api/config/kirocrew`
+          excludes `decisions.provider.*`, so no generic field here can choose where
+          the state a decision point collects is sent. The picker below switches
+          between hosted Jev and a local preset through its own owner-only route,
+          which takes a preset id and a port and builds the address itself; an
+          address that is neither is the one case it cannot name, so only then does
+          this pointer say where it lives. Shown too while the provider read has not
+          answered, since that is the state in which the picker says nothing. */}
+      {view.supported && view.configuredEndpoint && (providerQ.data === undefined || providerQ.data.active === 'custom') && (
         <p className="text-[12px] text-muted">
           {i18nT('pages.developer.featurePreviewsTab.decisions_endpoint_pointer')}
         </p>
       )}
+      {view.supported && <DecisionsProviderPicker frozen={frozen} />}
       {/* The redirected-config state: consent stands for one address, config.json now
           names another, so nothing is sent. A WARNING, not a paragraph: it is the one
           state where the switch reads "on" and the truth is "off". */}
