@@ -62,6 +62,116 @@ class TestApplySecurityHeaders:
         assert "Content-Security-Policy" in resp.headers
         assert "Permissions-Policy" in resp.headers
 
+    def test_worker_assets_use_short_lived_not_immutable_or_no_store(self) -> None:
+        """A same-origin worker takes its CSP from its OWN cached response
+        header, and Vite content-hashes a chunk by content only — so a build
+        that changes just a header (a CSP directive) keeps the worker's hashed
+        filename identical. Under ``immutable`` a browser replays the stale
+        header for up to a year and the worker runs on a header that differs
+        from the one the running build serves (WASM refused, every diff/highlight
+        surface dead until a hard refresh). Worker chunks therefore use a
+        SHORT-LIVED cacheable policy: a small ``max-age`` picks up a header-only
+        build within a minute AND keeps the bytes cache-servable across a brief
+        gateway-down window, which a bare ``no-store`` would break by evicting
+        them. It must NOT carry ``no-cache``/``must-revalidate`` (those forbid
+        the cache reuse the gateway-down survival depends on) — the header
+        contradiction Opus flagged."""
+        for name in (
+            "diffWorker-DcdnVVDz.js",
+            "hljsWorker-D29BrEM0.js",
+            "subset-worker.chunk-D4w07nYk.js",
+            "worker-portable-ogdEFvyx.js",
+            # Case-insensitive: a future capitalised spelling is still caught.
+            "MyWorker-abc123.js",
+        ):
+            resp = _make_response()
+            _apply_security_headers(resp, _make_app(), path=f"/assets/{name}")
+            cc = resp.headers["Cache-Control"]
+            assert "immutable" not in cc, name
+            assert "no-store" not in cc, name
+            # Cacheable with a bounded lifetime — NOT a stale-prohibiting policy.
+            assert "max-age=60" in cc, name
+            assert "no-cache" not in cc, name
+            assert "must-revalidate" not in cc, name
+
+    def test_non_worker_assets_stay_immutable(self) -> None:
+        """The worker exemption is surgical: a plain JS/CSS chunk runs under the
+        DOCUMENT's CSP (served no-store, so always fresh) and keeps the year-long
+        immutable policy that spares the ~6MB entry bundle a re-download on every
+        load."""
+        for name in (
+            "index-D9K94z8J.js",
+            "vendor-a1b2c3d4.css",
+            "chunk-CQNSW5MT-B8S09OIh.js",
+        ):
+            resp = _make_response()
+            _apply_security_headers(resp, _make_app(), path=f"/assets/{name}")
+            cc = resp.headers["Cache-Control"]
+            assert "immutable" in cc, name
+            assert "no-store" not in cc, name
+
+    def test_every_built_worker_chunk_carries_the_marker(self) -> None:
+        """Guard the ``worker`` naming convention the serving layer keys on: the
+        worker entry files this project loads with ``new Worker(new URL(...))``
+        or Vite's ``?worker`` import must resolve, in the built dist, to a chunk
+        carrying the ``worker`` substring — otherwise it silently regains the
+        year-long ``immutable`` cache and re-strands its CSP.
+
+        Detection is independent of the marker so this is not tautological: the
+        worker SOURCE modules are found by scanning the frontend source for the
+        two worker-construction shapes, and each source basename is required to
+        appear (as a substring, pre-hash) in some emitted chunk that carries the
+        marker. Skipped when either tree is absent (python-only checkout)."""
+        import re
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[1] / "website"
+        assets = root / "dist" / "assets"
+        src = root / "src"
+        if not assets.is_dir() or not src.is_dir():
+            return  # python-only checkout (sdist/wheel): nothing built to scan.
+
+        # Worker source modules, found by the two construction shapes Vite turns
+        # into a worker chunk: `new Worker(new URL('./x.ts', import.meta.url))`
+        # and a `?worker` / `?worker&url` import. This does NOT look at the
+        # marker, so a worker named without it is still discovered here.
+        new_worker_url = re.compile(
+            r"new\s+Worker\(\s*new\s+URL\(\s*['\"]([^'\"]+?)['\"]", re.MULTILINE
+        )
+        worker_import = re.compile(r"['\"]([^'\"]+?)\?worker(?:&url)?['\"]")
+        worker_stems: set[str] = set()
+        for ts in src.rglob("*.ts*"):
+            if ts.name.endswith((".test.ts", ".test.tsx")):
+                continue
+            text = ts.read_text(encoding="utf-8", errors="ignore")
+            for m in (*new_worker_url.finditer(text), *worker_import.finditer(text)):
+                # Basename without extension, e.g. './diffWorker.ts' -> 'diffWorker'.
+                worker_stems.add(Path(m.group(1)).stem)
+        if not worker_stems:
+            return  # no worker constructions in this checkout — nothing to guard.
+
+        emitted = [p.name for p in assets.glob("*.js")]
+        if not emitted:
+            return  # dist present but not built in this run — nothing to scan.
+        marked = [n for n in emitted if "worker" in n.lower()]
+        # Every worker source resolves to an emitted chunk that carries the
+        # marker. A worker Vite renamed to drop the marker would leave its stem
+        # only in an UNmarked chunk (or in none), failing this — which is the
+        # regression the exemption depends on catching.
+        unmarked = {
+            stem
+            for stem in worker_stems
+            if not any(stem in n for n in marked)
+            # An entry Vite may inline rather than emit as a standalone chunk is
+            # tolerated only if it appears nowhere as a separate /assets/ script.
+            and any(stem in n for n in emitted)
+        }
+        assert not unmarked, (
+            f"worker source(s) {sorted(unmarked)} emitted a chunk WITHOUT the "
+            "'worker' marker the cache-control exemption keys on — it would "
+            "regain the immutable policy and re-strand its CSP"
+        )
+
     def test_non_200_under_assets_stays_no_store(self) -> None:
         """During cold-start, /assets/* may return 404 or 503. Caching that
         with immutable would be a permanent black screen. Only success
