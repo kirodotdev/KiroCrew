@@ -745,6 +745,38 @@ def test_fire_time_vet_still_allows_a_clean_command(monkeypatch):
     assert mcp_cron.vet_job_at_fire_time(clean) is None
 
 
+def test_fire_time_vet_evaluates_the_command_ceiling_once(monkeypatch):
+    """One fire-time pass evaluates the governance ceiling exactly once.
+
+    ``vet_job_at_fire_time`` evaluates and audits the ceiling under its own
+    ``commands`` scope, then runs the composition scan. The scan must not
+    evaluate the ceiling again: the same pass also runs at claim time inside the
+    ``claim_vet_bound`` allowance, where a repeated decision spends budget a
+    short-``timeout_secs`` job does not have. The storage-time path still
+    evaluates it (asserted second), because there nothing evaluated it before.
+    """
+    from kiro_crew.cron import CronJob
+
+    calls: list[str] = []
+    real = mcp_cron._vet_command_governance
+
+    def _counting(command: str):
+        calls.append(command)
+        return real(command)
+
+    monkeypatch.setattr(mcp_cron, "_vet_command_governance", _counting)
+    monkeypatch.setattr(mcp_cron, "_vet_cron_capability_governance", lambda **_kw: None)
+    monkeypatch.setattr(mcp_cron, "_audit_fire_time_decision", lambda *a, **k: None)
+
+    job = CronJob(id="once1", name="once", message="", command="df -h")
+    assert mcp_cron.vet_job_at_fire_time(job) is None
+    assert calls == ["df -h"], f"ceiling evaluated {len(calls)} times in one fire-time pass"
+
+    calls.clear()
+    assert _vet_shell_command("df -h") is None
+    assert calls == ["df -h"], "the storage-time vet must still evaluate the ceiling"
+
+
 def test_brace_scan_cost_is_bounded_and_refuses_rather_than_hangs():
     """The brace scan is quadratic on a hostile shape, and one caller is uncapped.
 

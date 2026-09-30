@@ -1507,7 +1507,9 @@ def _vet_at_claim_then(
     occupying a cron worker for the queue's duration, and it leaves the gate's
     starvation/retention plumbing (``gate_starved`` ->
     ``run_never_started``) untouched.  The cost is one extra governance
-    evaluation, and for scripts one extra capped body read, per EXECUTED run.
+    evaluation per EXECUTED run, plus for a command one extra composition scan of
+    its body (length-capped by ``mcp_cron._CRON_MAX_COMMAND_SCAN``) and for a
+    script one extra capped body read.
     That work runs inside a worker this job already holds, so unlike gating on
     this pool it puts no policy check behind other jobs' queue -- the property
     the governance-pool split at the call sites protects.  It does count against

@@ -1345,7 +1345,9 @@ class TestRunCommandSandboxed:
 
         assert result["status"] == "error"
         assert result["exit_code"] == -1
-        assert "No POSIX shell available" in result["output"]
+        # Both platform wordings lead with this; each one's body is pinned in
+        # test_cron_script.TestCommandCronShellResolution.
+        assert "POSIX shell" in result["output"]
         assert "script cron" in result["output"]
 
     def test_success_passes_the_command_to_the_shell(self, command_run):
