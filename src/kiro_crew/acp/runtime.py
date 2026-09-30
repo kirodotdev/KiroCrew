@@ -872,6 +872,33 @@ class _MirroredSessionMcp(NamedTuple):
     """
 
 
+def _point_private_state_at_scratch(
+    env: dict[str, str], env_var: str | None, scratch: Path | None
+) -> None:
+    """Point the host's private-state variable at this process's scratch dir.
+
+    *env_var* is :attr:`SpawnPlan.private_state_env`: ``None`` for a host whose
+    state tolerates concurrent processes, so nothing is set. A non-empty value
+    already in *env* is the caller's (the operator's environment, or a cron or
+    workflow ``extra_env``): they chose that location, and it reaches the child
+    as set. Otherwise the variable names the per-process scratch directory: no
+    other process uses it, and it is reclaimed once this one is dead
+    (``agent_scratch.sweep_dead_scratch``). Without scratch the child gets the
+    host's shared default and a warning says so: a shared database home is
+    better than a refused spawn.
+    """
+    if env_var is None or env.get(env_var):
+        return
+    if scratch is None:
+        logger.warning(
+            "AcpRuntime: no per-process scratch to point %s at; the child shares the "
+            "host's default, so concurrent processes may lock each other out",
+            env_var,
+        )
+        return
+    env[env_var] = str(scratch)
+
+
 async def _retrying_spawn_factory(
     factory: "Callable[..., Awaitable[asyncio.subprocess.Process]]", **kwargs: Any
 ) -> asyncio.subprocess.Process:
@@ -2104,6 +2131,9 @@ class AcpRuntime:
             # Own allocation failed (inherited temp) but the tree's work
             # directory is mounted: the prompt-visible name still points there.
             env["KIROCREW_SCRATCH"] = str(self._shared_scratch)
+        # A host whose state cannot be shared between processes (codex's SQLite
+        # databases) keeps its own copy under this process's scratch directory.
+        _point_private_state_at_scratch(env, plan.private_state_env, self._scratch_dir)
         # Memory-aware cap for pytest-xdist's ``-n auto`` (subagent spawn path —
         # mirrors acp/client.py): xdist sizes auto to the CPU count, ignoring
         # memory; PYTEST_XDIST_AUTO_NUM_WORKERS bounds ONLY auto resolution.
