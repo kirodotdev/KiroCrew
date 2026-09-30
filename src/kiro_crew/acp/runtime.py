@@ -124,6 +124,7 @@ from kiro_crew.agent_sdk.tool_search import (
     spec_grants_tool_search,
     with_client_meta_settings,
 )
+from kiro_crew.agent_spec_format import NATIVE_SKILL_ALIAS_PREFIX
 from kiro_crew.browser_cli.launch import browser_session_env, browser_socket_env
 from kiro_crew.config import live
 from kiro_crew.config.paths import kiro_agents_dir
@@ -948,9 +949,10 @@ _RSS_PROBE_MIN_AGE_SECS = 300.0  # 5 minutes
 
 # ── Awaited-request error formatting ──
 #
-# kiro-cli returns this when session/set_mode names an agent it cannot resolve,
-# i.e. no ``<name>.json`` in its agents directory. The wire shape is a bare
-# -32603 "Internal error", so nothing about the frame itself says "missing file".
+# kiro-cli returns this when session/set_mode names an agent it cannot resolve:
+# no ``<name>.json`` in its agents directory, or one published after the process
+# started, which kiro-cli 2.26.0 does not pick up. The wire shape is a
+# bare -32603 "Internal error", so nothing about the frame says which.
 # The name charset is bounded to what a real spec filename can hold (see
 # validation of agent names elsewhere) rather than a greedy match, so a hostile
 # or malformed backend string is not echoed back into a user-facing message.
@@ -967,17 +969,33 @@ def _format_runtime_rpc_error(error: object) -> str:
     The two are deliberately separate rather than merged: their inputs come from
     different protocol phases and share no shape.
 
-    Exactly one shape is rewritten today: a missing agent spec. Left raw it
+    Exactly one shape is rewritten today: ``Mode '<name>' not found``. Left raw it
     surfaces to the user as ``RPC error: {'code': -32603, 'message': 'Internal
     error', 'data': "Mode 'kirocrew' not found"}`` — which names an internal ACP
-    concept, reads as a backend bug, and hides that the cause is a local file and
-    the fix is one command. Every other shape falls through to the raw dict, so a
-    shape nobody has classified is surfaced rather than swallowed.
+    concept and reads as a backend bug. For an authored spec the cause is a local
+    file and the fix is one command. For a skill-view alias it is neither: the
+    alias is generated, so setup does not restore it, and the file may be on
+    disk but unloaded by this process, so that text names the retry and the
+    projection switch instead. Every other shape falls through to the raw dict,
+    so a shape nobody has classified is surfaced rather than swallowed.
     """
     if isinstance(error, dict):
         match = _MODE_NOT_FOUND_RE.search(str(error.get("data", "") or ""))
         if match:
             name = match.group("name")
+            if name.startswith(NATIVE_SKILL_ALIAS_PREFIX):
+                # A skill-view alias is Crew-generated, not an installed spec, so
+                # setup cannot restore it, and "Mode not found" does not mean the
+                # file is missing: kiro-cli also answers it for a spec that was
+                # published after the process started.
+                return (
+                    f"kiro-cli could not switch to the skill view '{name}' that Kiro "
+                    f"Crew generated for this agent. It may be on disk in "
+                    f"{kiro_agents_dir()} but not loaded by this kiro-cli process. "
+                    f"Start a new session to retry. If it keeps failing, set "
+                    f"KIROCREW_NATIVE_SKILL_PROJECTION=0 in the gateway's environment "
+                    f"and restart the gateway."
+                )
             return (
                 f"Agent spec '{name}' is not installed: kiro-cli found no "
                 f"'{name}.json' in {kiro_agents_dir()}. Every turn fails until it "

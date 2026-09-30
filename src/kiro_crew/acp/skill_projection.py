@@ -1463,6 +1463,31 @@ def _is_current_publication(
     return managed is not None and managed[0].get(_MANAGED_CREW_HOME) == crew_home_id
 
 
+def _alias_identity(view: dict[str, Any]) -> dict[str, Any]:
+    """The part of *view* an alias is named by: the view minus MCP env values.
+
+    A launcher that re-injects a per-write value into each agent file's server
+    env (a fresh id every sandbox start) changes the view on every spawn, and
+    naming the alias by it mints a new file per spawn without bound. Env keys
+    stay in the identity, so adding or removing a variable still names a new
+    alias; a changed value reuses the alias and publication rewrites the file,
+    which still carries the full view.
+    """
+    servers = view.get("mcpServers")
+    if not isinstance(servers, dict):
+        return view
+    identity = dict(view)
+    identity["mcpServers"] = {
+        name: (
+            {**entry, "env": sorted(str(key) for key in entry["env"])}
+            if isinstance(entry, dict) and isinstance(entry.get("env"), dict)
+            else entry
+        )
+        for name, entry in servers.items()
+    }
+    return identity
+
+
 def prepare_native_skill_projection(
     work_dir: Path, *, enabled: bool | None = None, per_session_element: bool = True
 ) -> NativeSkillProjection | None:
@@ -1682,13 +1707,24 @@ def prepare_native_skill_projection(
                 # workspace. The agent name is hashed too, so two agents with
                 # identical specs still get distinct aliases, and so is the Crew
                 # data home, so two homes sharing one agents directory never
-                # contend for (and re-own) the same file.
+                # contend for (and re-own) the same file. MCP server env VALUES
+                # are left out of the name (see _alias_identity): a tool that
+                # rewrites a fresh per-write value into every agent file would
+                # otherwise mint a new alias on every spawn. The source spec's
+                # path is in the name instead, so two agent files that differ
+                # only in env values -- the same project agent copied into two
+                # workspaces with its own token each -- never share one alias.
                 ownership: dict[str, dict[str, Any]] = {}
                 for agent_name, view in list(specs.items()):
                     view.pop("name", None)
                     digest = hashlib.sha256(
                         json.dumps(
-                            {"agent": agent_name, "home": crew_home_id, "view": view},
+                            {
+                                "agent": agent_name,
+                                "home": crew_home_id,
+                                "source": sources[agent_name],
+                                "view": _alias_identity(view),
+                            },
                             ensure_ascii=False,
                             sort_keys=True,
                             separators=(",", ":"),
