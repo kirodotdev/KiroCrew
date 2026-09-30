@@ -1,17 +1,12 @@
-"""Regression test for issue #13872.
+"""``open_task_session`` dispatches a task step on backend membership.
 
-With ``agent.acp_backend`` set to a backend OUTSIDE
-``ACP_BACKENDS_ACP_RUNTIME`` (e.g. ``claude``), a task-run step must NOT open
-its per-step session on the task run's shared multiplexed runtime. That shared
-runtime is always a kiro-family process, so bootstrapping one for a non-runtime
-backend spawns ``kiro-cli`` under a foreign backend label -- and fails outright
-(``kiro-cli not found``) on an install that has no kiro-cli, making the whole
-task runner unusable on a claude-configured install.
-
-``open_task_session`` must dispatch on the SAME membership rule
-``get_bg_session`` uses and route a non-runtime backend down the dedicated
-per-session path (``get_or_create``) instead, so no ``kiro-cli`` argv is ever
-built for it.
+A task-run step opens its per-step session on the task run's shared
+multiplexed runtime only for a backend in ``ACP_BACKENDS_ACP_RUNTIME``; that
+shared runtime is a kiro-family process. A backend outside that set
+(e.g. ``claude``) has no such runtime to share, so ``open_task_session``
+dispatches on the same membership rule ``get_bg_session`` uses and routes it
+down the dedicated per-session path (``get_or_create``), building no
+``kiro-cli`` argv for it.
 """
 
 from __future__ import annotations
@@ -102,8 +97,7 @@ class TestTaskSessionClaudeBackendDispatch:
 
     @pytest.mark.asyncio
     async def test_runtime_capable_backend_still_uses_shared_runtime(self, cfg):
-        """Guard against over-broadening the fix: the default kiro backend must
-        still take the shared-runtime path (dispatch unchanged for it)."""
+        """The default kiro backend takes the shared-runtime path."""
         cfg.agent.acp_backend = ACP_BACKEND_KIRO  # "" == kiro, in ACP_BACKENDS_ACP_RUNTIME
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         try:
