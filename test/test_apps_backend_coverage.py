@@ -588,6 +588,14 @@ class TestNvmResolution:
         assert bmod._resolve_nvm_path("node") is None
 
     def _nvm_dir(self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
+        """An ``NVM_DIR`` with ``nvm.sh`` present, on the POSIX branch.
+
+        The resolver is POSIX-only: on Windows it returns None before the
+        ``nvm.sh`` probe (``test_apps_backend_nvm_windows.py`` covers that
+        arm). These tests exercise the shell lookup, so they pin the platform
+        flag rather than letting the Windows runner skip the code under test.
+        """
+        monkeypatch.setattr(bmod.platform_compat, "IS_WINDOWS", False)
         nvm = tmp_path / "nvm"
         nvm.mkdir()
         (nvm / "nvm.sh").write_text("# nvm\n")
