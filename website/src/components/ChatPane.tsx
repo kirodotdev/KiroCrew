@@ -125,6 +125,9 @@ export default function ChatPane({
   onOpenCrewWorkLog,
   onOpenCommandCenter,
   threads,
+  onSessionOpen,
+  sessions,
+  activeSession,
 }: {
   slotKey: string
   onOpenCommandCenter?: () => void
@@ -203,6 +206,20 @@ export default function ChatPane({
    *  crewmate's chat (the Members page) passes it; absent, the rows draw no
    *  thread footer and no "Reply in thread" action. */
   threads?: ThreadHooks
+  /** Session routing for this pane's transcript: switch to the session a
+   *  `/chat?sid=…` link, a slot-key chip or a short name names, plus the roster
+   *  that decides whether such a chip is offered at all and the key the reader
+   *  is already in. Capability by omission, like `onFileOpen`: a host that
+   *  passes none of it renders those links exactly as before, because the
+   *  markdown renderer gates on (`onSessionOpen` AND `sessions`) -- so a side
+   *  chat and an embedded chat are unchanged. `sessions` must be WITHHELD, not
+   *  emptied, while the host does not know which sessions exist (see
+   *  `markdown/contexts.ts`), and it should hold only slots the handler can
+   *  actually land on (`utils/sessionRoster.sessionTitleRoster`): a chip to a
+   *  destination the switch clears is worse than plain text. */
+  onSessionOpen?: (key: string) => void
+  sessions?: ReadonlyMap<string, string>
+  activeSession?: string
 }) {
   // One instance covers both dropdown filter inputs (never open at once).
   const dispatch = useAppDispatch()
@@ -1461,8 +1478,14 @@ export default function ChatPane({
       onFileOpen,
       crewmate,
       crewmateTranscript,
+      // Session links resolve through the SAME renderer path the single-chat
+      // page uses; there is no second resolver. Absent from the host = the
+      // renderer's own gate leaves them plain.
+      onSessionOpen,
+      sessions,
+      activeSession,
     }),
-    [slotKey, toolDisclosure, setToolDisclosureFor, busyMode, onFileOpen, crewmate, crewmateTranscript],
+    [slotKey, toolDisclosure, setToolDisclosureFor, busyMode, onFileOpen, crewmate, crewmateTranscript, onSessionOpen, sessions, activeSession],
   )
 
   // Quote / Ask on selected assistant text — the same chat-core seam the main

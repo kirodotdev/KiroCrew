@@ -98,6 +98,7 @@ import CrewNotesTab from './CrewNotesTab'
 import { CrewLogTab } from '../chat/CrewLogPanel'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import { useConnected } from '../../hooks/useConnected'
+import { sessionTitleRoster } from '../../utils/sessionRoster'
 import { SearchFilterBar, FilterMenuButton, FilterChip, FILTER_CHIP_ROW_CLS, FilterMenuLabel, FilterMenuContent } from '../../components/SearchFilterBar'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '../../components/ui/dropdown-menu'
 import {
@@ -1544,6 +1545,26 @@ export default function MembersPage() {
     if (beside) setDockedOpen(true)
     else setOverlayOpen(true)
   }, [tabsCtl, beside, setDockedOpen])
+  // Session routing inside the DM transcript. A crewmate's prose names sessions
+  // constantly -- "picked this up in `chat-2235-…`", a `/chat?sid=…` link to the
+  // worker it dispatched -- and until now every one of those was inert here
+  // while the same text on the chat page resolved.
+  //
+  // The roster is the WS `slots` frame this page already subscribes to, narrowed
+  // by the shared builder to the slots the DESTINATION can render: the handler
+  // navigates to the unified chat view, so a chip to anything that view drops
+  // would clear itself on arrival. Withheld -- not emptied -- until a real
+  // snapshot has arrived and the socket is up: absent means "this surface does
+  // not know which sessions exist", which is the honest answer then, and it
+  // leaves the link plain rather than live-looking and dead.
+  const sessionRoster = useMemo(() => sessionTitleRoster(liveSlots), [liveSlots])
+  // A foreign slot is NOT hosted in this page's own pane -- it belongs to the
+  // chat page, with its sidebar, its history paging and its composer. Same
+  // primitive the Driving-sessions rows use.
+  const openSessionOnChatPage = useCallback(
+    (key: string) => { navigate(`/chat?sid=${encodeURIComponent(key)}`) },
+    [navigate],
+  )
   // Reply threads (screen 07). The footer data per message is one small read
   // beside the transcript; the open thread takes over the side panel while it
   // is on screen, and closing it hands the panel's tabs back. Keyed on the
@@ -3192,6 +3213,9 @@ export default function MembersPage() {
                     }}
                     threads={threadHooks}
                     onFileOpen={openFile}
+                    onSessionOpen={openSessionOnChatPage}
+                    sessions={connected && slotsLoaded ? sessionRoster : undefined}
+                    activeSession={activeSlot}
                   />
                 </ErrorBoundary>
               </div>

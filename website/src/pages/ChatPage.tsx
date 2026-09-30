@@ -356,6 +356,7 @@ import WorkflowProgressBar from './chat/WorkflowProgressBar'
 import { tryQuickSend } from '../lib/quickSend'
 import { rewindWithRollback } from '../lib/rewindCall'
 import { isChatPageSurface, slotChannelLabel } from '../utils/channelOrigin'
+import { sessionTitleRoster } from '../utils/sessionRoster'
 import { findSurfaceBySlotMode, surfaceLabel } from '../surfaces/registry'
 import { errMessage } from '../utils/thunkError'
 
@@ -2367,10 +2368,13 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   }, [dispatch])
 
   // `filteredSlots`, not `slots`: a surface this page cannot render would chip to a
-  // destination the switch clears. Signature because heartbeats remint slot objects.
+  // destination the switch clears. That narrowing IS the shared builder's rule
+  // (`utils/sessionRoster`), which the Members page's crewmate DM also uses --
+  // its chips navigate here, so the two must agree on which slots may chip.
+  // Signature because heartbeats remint slot objects.
   const sessionTitleSig = JSON.stringify(filteredSlots.map(s => [s.key, s.title || s.key]))
   const sessionTitles = useMemo(
-    () => new Map(filteredSlots.map(s => [s.key, s.title || s.key] as const)),
+    () => sessionTitleRoster(filteredSlots),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the value-equal pair signature, not the slot objects (see above)
     [sessionTitleSig],
   )

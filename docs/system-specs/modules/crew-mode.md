@@ -1173,6 +1173,36 @@ exists. The reply thread's own panel
 crewmate's replies on the same `crewmateRunPosition` / `crewmateBubbleClass`
 rule; the user's replies are always singles.
 
+**Session links resolve.** A crewmate's prose names sessions constantly — the
+worker it dispatched, the session it is answering about — as a `/chat?sid=…`
+link, a bare slot key, or a short name (`chat-1380`). In this chat those behave
+exactly as they do on the single-chat page: a plain click switches to that
+session, a key chip is an affordance, and an unresolvable one stays muted text
+with its href intact (the #9914 rule). There is no second resolver — the
+markdown renderer's own `SessionActionCtx` does the work on both surfaces, and it
+gates on (`onSessionOpen` AND `sessions`), so what changed is only who supplies
+them. `ChatPane` takes the triple as optional props and hands it to
+`createTranscriptRenderers`, which spreads it across every row it draws: the
+crewmate bubble (through `renderAssistantBubble`'s host options, with the row's
+`ts` so the short form can refuse a slot minted after the text naming it), the
+steer-only user row (through `renderUserContent`), and the sub-agent / workflow
+completion cards. A pane host that passes none of it — a side chat, an embedded
+chat — renders those links plainly, as before.
+
+What the Members page supplies is deliberate on all three counts. `sessions` is
+built by `utils/sessionRoster.sessionTitleRoster` from the WS `slots` frame the
+page already subscribes to, narrowed to the slots the DESTINATION can render
+(`isChatPageSurface`) — the same builder `ChatPage` uses for its own roster,
+because a chip offered here navigates there, and two copies of "which slots may
+chip" is how the affordance and the destination drift apart. It is WITHHELD, not
+emptied, until the socket is up and a real slots snapshot has arrived: absent
+means "this surface does not know which sessions exist", which leaves the link
+plain rather than live-looking and dead. `activeSession` is the DM's own slot
+key, so a link naming the thread you are reading is inert. And `onSessionOpen`
+navigates to `/chat?sid=…` — the same primitive the drawer's Driving-sessions
+rows use — because a foreign slot belongs to the chat page with its sidebar,
+history paging and composer; the DM never hosts one in its own pane.
+
 ## Selection: the `select_crew` contract
 
 Discovery importing a provider template as a configured member does not rebind
