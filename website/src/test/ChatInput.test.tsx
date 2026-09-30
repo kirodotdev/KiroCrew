@@ -974,6 +974,22 @@ describe('ChatInput', () => {
       expect(chip).toHaveAttribute('title', chip.getAttribute('aria-label'))
     })
 
+    it('marks a model picked for the user as auto, never as default', () => {
+      renderWithProviders(
+        <ChatInput {...defaultProps}
+          providerId="acp"
+          modelName="claude-sonnet-5"
+          modelIsAutoChosen
+          onModelClick={vi.fn()}
+        />
+      )
+      const chip = screen.getByTestId('composer-model-chip')
+      expect(chip).toHaveTextContent('claude-sonnet-5·auto')
+      expect(chip).not.toHaveTextContent('default')
+      expect(chip).toHaveAccessibleName('Model: claude-sonnet-5 · auto')
+      expect(chip).toHaveAttribute('title', 'Model: claude-sonnet-5 · auto')
+    })
+
     it('invokes onModelClick with click rect', () => {
       const onModelClick = vi.fn()
       renderWithProviders(

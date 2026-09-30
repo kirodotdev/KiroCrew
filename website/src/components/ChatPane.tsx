@@ -82,7 +82,8 @@ import { resolveAskAfterSend } from '../lib/resolveAskAfterSend'
 import { classifyDrop } from '../utils/dropClassify'
 import { prepareSendPayload, serializeDirTokens, spliceDirTokens, VIDEO_EXT } from '../utils/fileTokens'
 import { Composer, type ComposerHandle, type ComposerVoiceOptions } from '../chat-core/composer/Composer'
-import { displayModel } from '../lib/model'
+import { displayModel, modelChipMarker } from '../lib/model'
+import { useSettingsDefaultModel } from '../hooks/useSettingsDefaultModel'
 import { slotApprovalMode } from '../utils/slotApprovalMode'
 
 
@@ -717,6 +718,9 @@ export default function ChatPane({
     _modelsDegraded,
     paneSlot?.model_withheld,
   )
+  // `default` only for the Settings default (see ChatPage).
+  const settingsDefaultModel = useSettingsDefaultModel(paneRemoteCrew.isRemote)
+  const modelMarker = modelChipMarker(paneSlot?.model || '', shownModel, _pinShownModel, settingsDefaultModel)
 
   // One-time hydrate of this slot's message history via React Query + the api
   // client (caching + cross-pane dedup; staleTime Infinity keeps it one-shot —
@@ -1974,7 +1978,8 @@ export default function ChatPane({
           // Effort is edited inside the model picker below; the chip only
           // names the level in force.
           hasEffort={effortSupported}
-          modelIsInheritedDefault={shownModel !== 'auto' && shownModel !== _pinShownModel}
+          modelIsInheritedDefault={modelMarker === 'default'}
+          modelIsAutoChosen={modelMarker === 'auto'}
           // See ChatPage: the slot's RAW model, because `shownModel` substitutes
           // the served id and would hide every routed turn.
           modelIsJevRouted={jevRouteOn && isUnpinnedModel(paneSlot?.model)}

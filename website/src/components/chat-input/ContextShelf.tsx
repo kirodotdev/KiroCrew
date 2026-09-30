@@ -290,10 +290,11 @@ export function ContextUsageControl({ contextPct, contextUsedTokens, contextWind
 /** The model chip. It names the level in force beside the model; the level is
  *  CHANGED inside the model picker the chip opens (model and effort are one
  *  control, docs/decisions/2026-06-14-chat-composer-model-and-effort-are-one-control.md). */
-export function ModelChip({ modelName, modelIsJevRouted, modelIsInheritedDefault, reasoningEffort, effortIsDefault, hasEffort, isRunning, shelfCompact, shelfTiny, composerControl, modelChipPressedFromComposerRef, onModelClick }: {
+export function ModelChip({ modelName, modelIsJevRouted, modelIsInheritedDefault, modelIsAutoChosen, reasoningEffort, effortIsDefault, hasEffort, isRunning, shelfCompact, shelfTiny, composerControl, modelChipPressedFromComposerRef, onModelClick }: {
   modelName: string
   modelIsJevRouted?: boolean
   modelIsInheritedDefault?: boolean
+  modelIsAutoChosen?: boolean
   reasoningEffort?: string
   effortIsDefault: boolean
   hasEffort?: boolean
@@ -322,7 +323,9 @@ export function ModelChip({ modelName, modelIsJevRouted, modelIsInheritedDefault
       ? i18nT('pages.chatPage.model_auto_jev_description')
       : modelIsInheritedDefault
         ? i18nT('components.chatInput.model_inherited_default', { name: modelName })
-        : i18nT('components.chatInput.model_2', { name: modelName })}${effortSuffix}`
+        : modelIsAutoChosen
+          ? `${i18nT('components.chatInput.model_2', { name: modelName })} · ${i18nT('components.jobForm.auto')}`
+          : i18nT('components.chatInput.model_2', { name: modelName })}${effortSuffix}`
   return (
   <button
     className="inline-flex items-center gap-1.5 h-7 min-w-0 text-[12px] text-muted hover:text-text px-2 rounded-md bg-transparent hover:bg-[color-mix(in_srgb,var(--bg-elevated)_84%,var(--text))] transition-colors border-none cursor-pointer disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-muted"
@@ -357,10 +360,12 @@ export function ModelChip({ modelName, modelIsJevRouted, modelIsInheritedDefault
         word next to it would be a marker on a name that is not a model.
         So the two unpinned states differ by KIND (a policy vs an id with
         a marker), not by two adjectives a reader has to tell apart. */}
-    {!modelIsJevRouted && modelIsInheritedDefault && (
+    {!modelIsJevRouted && (modelIsInheritedDefault || modelIsAutoChosen) && (
       <>
         <span className="opacity-30 select-none shrink-0" aria-hidden="true">·</span>
-        <span className="opacity-60 shrink-0">{i18nT('components.agentSelector.default')}</span>
+        <span className="opacity-60 shrink-0">{modelIsInheritedDefault
+          ? i18nT('components.agentSelector.default')
+          : i18nT('components.jobForm.auto')}</span>
       </>
     )}
     {/* A default and an override show the same level, and a glance

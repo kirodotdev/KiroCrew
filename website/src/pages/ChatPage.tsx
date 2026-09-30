@@ -270,7 +270,8 @@ import { anchorForSlot, loadLayout, sessionSlots } from '../hooks/splitLayoutSto
 import { modelSupportsEffort } from '../lib/effort'
 import { mcpAppTabTitle } from '../lib/mcpAppSrcdoc'
 import { countCompletedTurns } from '../lib/completedTurns'
-import { displayModel, pinIsWithheld } from '../lib/model'
+import { displayModel, modelChipMarker, pinIsWithheld } from '../lib/model'
+import { useSettingsDefaultModel } from '../hooks/useSettingsDefaultModel'
 import { slotApprovalMode } from '../utils/slotApprovalMode'
 import FollowUpCard from '../components/FollowUpCard'
 import FolderSuggestionCard from './chat/FolderSuggestionCard'
@@ -4652,6 +4653,24 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     displayModels,
     _modelsDegraded,
     currentSlot?.model_withheld,
+  )
+  // The chip says `default` only for the Settings default; a model picked for
+  // the user (Auto router, withheld pin's fallback) is marked `auto` instead.
+  const settingsDefaultModel = useSettingsDefaultModel(remoteCrew.isRemote)
+  // Whether the slot's agent pins its own model: an agent pin equal to the
+  // Settings default does not move when the default does, so it is no default.
+  const { data: _slotAgentResolved } = useQuery<{ pinned?: boolean }>({
+    queryKey: ['agent-resolved-model', _slotAgentName],
+    queryFn: () => api.agentResolvedModel(_slotAgentName),
+    enabled: !!_slotAgentName && !remoteCrew.isRemote,
+  })
+  const modelMarker = modelChipMarker(
+    currentSlot?.model || '',
+    shownModel,
+    _pinShownModel,
+    // An unanswered pin read is not "unpinned": claim nothing until it lands.
+    _slotAgentName && !_slotAgentResolved ? null : settingsDefaultModel,
+    !!_slotAgentResolved?.pinned,
   )
   // Context-window fallback for a peer-bound session BEFORE its first turn. Once a
   // turn has run the real number arrives with the relayed `context_usage` frame and
@@ -9101,9 +9120,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               agentIsInheritedDefault={!currentSlot?.agent && !!effectiveDefaultAgent}
               agentSource={effectiveAgents.find(a => a.name === activeAgentName)?.source}
               modelName={shownModel}
-              // The served default is shown exactly when the pin alone would
-              // have read `auto`; that is the inherited case the marker names.
-              modelIsInheritedDefault={shownModel !== 'auto' && shownModel !== _pinShownModel}
+              modelIsInheritedDefault={modelMarker === 'default'}
+              modelIsAutoChosen={modelMarker === 'auto'}
               // The turn's model is Jev's to pick exactly when the routing gate
               // says so: the slot names no model, and the preview is on. Reads the
               // slot's RAW model, not `shownModel` -- that one substitutes the

@@ -133,6 +133,12 @@ export interface ChatInputProps {
    * specifically. */
   modelIsInheritedDefault?: boolean
   /**
+   * True when `modelName` was picked FOR the user -- an Auto router's choice, or
+   * a withheld pin's fallback -- and is not the Settings default. The chip then
+   * carries an ` · auto` marker, so it never reads as a pin or as the default.
+   * Yields to `modelIsJevRouted` and `modelIsInheritedDefault`. */
+  modelIsAutoChosen?: boolean
+  /**
    * True when THIS turn's model is Jev's to pick: the slot names no model
    * (`auto`, or the empty string a freshly dispatched slot carries) and the Jev
    * preview is on, so `model.route` puts the turn in a tier and runs it on that
