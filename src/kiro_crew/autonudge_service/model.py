@@ -72,6 +72,33 @@ _START_FAILURE_BACKOFF_AFTER = 3
 _START_FAILURE_STANDDOWN_AFTER = 5
 
 
+# Persisted reason for a loop stood down because its own delivered cycles kept
+# FAILING -- turns that reached a model session and dispatched but died (a
+# backend error after retries were spent, a persistent tool error, a prompt
+# timeout), the turn outcome ``error`` or ``timeout``. The three narrower bounds
+# each cover one deterministic sub-case: ``structural_terminal`` a malformed
+# payload the backend rejects by shape, ``approval_stalled`` an unanswered
+# approval, ``session_start_failures`` a cycle that never got a session at all.
+# A cycle that got a session, dispatched, and then errored is none of those, so
+# without this bound a loop firing every interval into a turn that always fails
+# spends its whole cycle cap producing nothing -- the exact waste
+# ``session_start_failures`` was built to end, for the broader class the three
+# narrow bounds leave uncovered. System-imposed like them (the remedy -- the
+# backend recovering, the tool being fixed -- is not something the loop can
+# arrange), so it is re-armable, and evidence-driven: only a DELIVERED cycle of
+# this loop's own that ended in a fault advances it, and a single landed turn on
+# the slot clears it, so a loop that recovers is never held back.
+CONSECUTIVE_FAILURE_REASON = "consecutive_failures"
+
+
+# Consecutive failed own-cycles before the loop stands down. Higher than the
+# start-failure stand-down because a failed turn is a broader, noisier signal
+# than a session that never started -- a couple of transient backend errors are
+# weather, five in a row with nothing landing between them is a loop that cannot
+# make progress and is only spending turns to keep failing.
+_CONSECUTIVE_FAILURE_STANDDOWN_AFTER = 5
+
+
 # Persisted reason for a loop stopped because its LAST delivered cycle ended on
 # a STRUCTURAL terminal error -- the backend rejected the prompt's shape as
 # malformed, deterministically, so re-firing the identical context every
@@ -134,6 +161,7 @@ _TERMINAL_BOUND_REASONS = _BUDGET_EXHAUSTED_REASONS | {
     APPROVAL_STALL_REASON,
     STRUCTURAL_TERMINAL_REASON,
     SESSION_START_FAILURE_REASON,
+    CONSECUTIVE_FAILURE_REASON,
 }
 
 
@@ -428,6 +456,20 @@ class NudgeLoop:
     # that produces it routinely outlives a restart, and cleared on every revival
     # so a recovered loop is not stood down by stale evidence.
     consecutive_start_failures: int = 0
+    # How many of this loop's OWN delivered cycles in a row ended in a fault --
+    # a turn that reached a model session and dispatched but died (turn outcome
+    # ``error`` or ``timeout``). Raised by ``notify_cycle_failed`` and zeroed by
+    # ``notify_cycle_landed`` (any landed turn on the slot proves progress is
+    # possible), both driven by evidence from the slot's own turns. Consumed by
+    # ``_timer``: past ``_CONSECUTIVE_FAILURE_STANDDOWN_AFTER`` the loop stops
+    # with ``CONSECUTIVE_FAILURE_REASON``. Distinct from
+    # ``consecutive_start_failures`` because the two measure different failures
+    # with different remedies -- a cycle that never got a session versus one that
+    # ran and errored -- and a loop can hit either. Persisted, because the
+    # condition that produces it (a wedged backend, a broken tool) routinely
+    # outlives a restart, and cleared on every revival so a recovered loop is not
+    # stood down by stale evidence.
+    consecutive_failed_cycles: int = 0
     # Absolute wall-clock deadline for the next fire (0 = unset: the next arm
     # starts a fresh full countdown). This is what makes the countdown
     # deadline-preserving — user turns cancel the pending timer TASK but never
