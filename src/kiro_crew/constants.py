@@ -26,6 +26,26 @@ KIROCREW_SPAWNED_VALUE = "1"
 # this one says WHICH spawn, so a teardown that has lost its root can still tell
 # the root's own tree from a fresh spawn that took the root's recycled pid.
 KIROCREW_SPAWN_INSTANCE_ENV = "KIROCREW_SPAWN_INSTANCE"
+# Set on every tree spawned through ``sandbox.sandboxed_spawn_argv`` -- a build, an
+# ``npx`` install, a ``git``/``gh`` read, a provisioning run -- and inherited by that
+# whole tree exactly as KIROCREW_SPAWNED is. It says what KIROCREW_SPAWNED does not:
+# this tree was spawned as TOOL work rather than as a session leader Kiro Crew owns
+# and tears down. ``session_pid._env_is_sandbox_tool`` reads it back out of the
+# kernel's exec-time copy, which lets the runtime reconciler leave such a tree out of
+# its kill-candidate population on evidence a same-uid process cannot forge on
+# another process, where an argv0 basename is merely a name.
+#
+# It is a claim about the TREE, not about each process in it. The chokepoint has
+# callers whose argv0 is itself a managed harness -- a pod child probe, an unattended
+# fix-authoring agent -- and the marker is inherited, so a harness can carry it
+# without being tool work. The reconciler therefore pairs this marker with the
+# managed-argv test and excludes only a pid that is marked AND is not a harness.
+#
+# Kept DISTINCT from KIROCREW_SPAWNED because that marker is the reconciler's
+# kill-ENABLING condition: an exclusion overloaded onto the same flag would have to
+# weaken the ownership test to express itself.
+KIROCREW_SANDBOX_TOOL_ENV = "KIROCREW_SANDBOX_TOOL"
+KIROCREW_SANDBOX_TOOL_VALUE = "1"
 
 # Canonical truthy set for boolean environment variables (KIROCREW_NO_JAIL,
 # KIROCREW_DEV_MODE, …).  Use ``env_flag_enabled`` rather than ``bool(os.environ

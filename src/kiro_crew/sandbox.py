@@ -58,7 +58,12 @@ from typing import TYPE_CHECKING, Literal, NamedTuple
 from kiro_crew import platform_compat
 from kiro_crew.atomic_write import fsync_dir, refuse_linked_parent
 from kiro_crew.config.paths import config_dir, kiro_agents_dir
-from kiro_crew.constants import KIROCREW_SPAWNED_ENV, KIROCREW_SPAWNED_VALUE
+from kiro_crew.constants import (
+    KIROCREW_SANDBOX_TOOL_ENV,
+    KIROCREW_SANDBOX_TOOL_VALUE,
+    KIROCREW_SPAWNED_ENV,
+    KIROCREW_SPAWNED_VALUE,
+)
 from kiro_crew.identity_stores import AUTH_SQLITE_DB, AUTH_SQLITE_SIDECAR_SUFFIXES
 from kiro_crew.pinned_fs import fd_real_path
 from kiro_crew.platform import current_context
@@ -14884,6 +14889,23 @@ def sandboxed_spawn_argv(
     # as KiroCrew-spawned even when its cmdline carries no KiroCrew fingerprint
     # (e.g. ``npx @playwright/mcp``).
     scrubbed[KIROCREW_SPAWNED_ENV] = KIROCREW_SPAWNED_VALUE
+    # Marks this tree as TOOL work -- a build, an ``npx`` install, a ``git``/``gh``
+    # read, a provisioning run. The runtime reconciler reads it back from the kernel's
+    # exec-time copy to leave such a tree out of its kill-candidate population: a tool
+    # subprocess lands in the agent slice that reconciler compares against, carries the
+    # inherited KIROCREW_SPAWNED marker, and is in no membership record, so once it
+    # outlives the age floor the argv0 basename test is the only thing between it and a
+    # signal. This marker is exec-time evidence instead: a same-uid process can set its
+    # own argv or write any file, and cannot alter a running process's environment.
+    #
+    # It describes the TREE, not each process in it, and this function is not limited
+    # to non-harness argv: ``is_kiro_cli`` exists precisely so a DELEGATING spawn can
+    # route here, and callers do (a pod child probe, an unattended fix-authoring
+    # agent). Since the marker is inherited, a harness can carry it without being tool
+    # work, so the reconciler's exclusion requires this marker AND a non-harness argv0
+    # -- see ``runtime_reconcile.RuntimeReconciler._unowned``. Stamping it here is
+    # therefore safe for any argv: it never decides an exclusion on its own.
+    scrubbed[KIROCREW_SANDBOX_TOOL_ENV] = KIROCREW_SANDBOX_TOOL_VALUE
     return wrapped, scrubbed, cleanup
 
 
