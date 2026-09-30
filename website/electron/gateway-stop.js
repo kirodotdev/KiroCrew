@@ -16,6 +16,22 @@ const path = require("path");
 
 const KIROCREW_EXE_NAMES = new Set(["kirocrew", "kirocrew-backend"]);
 const PYTHON_EXE_RE = /^(?:python(?:\d+(?:\.\d+)*)?w?|py)$/i;
+// The module a `python -m <module>` gateway is booted from. `kiro_crew` is the
+// core. A composed edition boots from its companion's own top-level module so
+// the composition root runs instead of the core CLI, and the companion is named
+// `kirocrew_<edition>` (the `kirocrew.plugins` entry-point convention the Python
+// side reads in `port_resolution._gateway_module_roots()`). This process has no
+// installed-entry-point view of that Python environment, so it matches the
+// naming convention instead; the core never learns any edition's name. Exact
+// top-level module only: a dotted submodule is not a gateway entry point.
+const KIROCREW_MODULE_RE = /^(?:kiro_crew|kirocrew_[a-z0-9][a-z0-9_]*)$/;
+// A gateway module is only a gateway when argparse's first positional after it
+// is a server subcommand -- the same set `port_resolution._KIROCREW_SERVER_SUBCOMMANDS`
+// gates `kirocrew stop` on. Without this the module name alone would authorize a
+// SIGKILL of any process that merely imports a `kirocrew_*` module on our port.
+// Both constants are pinned to their Python twins by
+// `test/test_cli.py::TestDesktopGatewayIdentityParity`; change them together.
+const KIROCREW_SERVER_SUBCOMMANDS = new Set(["gateway", "dashboard", "start"]);
 
 function commandLineTokens(commandLine) {
   const tokens = [];
@@ -72,9 +88,11 @@ function executableSelector(tokens) {
 
 /**
  * Match only a Kiro Crew executable, or a Python process whose first execution
- * selector invokes the `kiro_crew` module or a Kiro Crew script. Later process
- * arguments never establish ownership, so SSH aliases and unrelated script
- * arguments cannot authorize a kill.
+ * selector invokes a Kiro Crew gateway module (`kiro_crew`, or a composed
+ * edition's `kirocrew_<edition>` companion — `KIROCREW_MODULE_RE`) followed by
+ * a server subcommand (`KIROCREW_SERVER_SUBCOMMANDS`), or a Kiro Crew script.
+ * Later process arguments never establish ownership, so SSH aliases and
+ * unrelated script arguments cannot authorize a kill.
  *
  * An absolute Windows executable is additionally path-bound: it must be a
  * file the launch resolver selected. Both sides of the path comparison go
@@ -127,7 +145,13 @@ function isKirocrewCommand(
 
   while (index < tokens.length) {
     const token = tokens[index];
-    if (token === "-m") return tokens[index + 1] === "kiro_crew";
+    if (token === "-m") {
+      // Module AND server subcommand, both in their fixed argparse slots. The
+      // subcommand is the first positional after the module, so only that slot
+      // is read: a later argument (`-m kiro_crew run gateway`) never qualifies.
+      return KIROCREW_MODULE_RE.test(tokens[index + 1] || "")
+        && KIROCREW_SERVER_SUBCOMMANDS.has(tokens[index + 2]);
+    }
     if (token === "-c" || token === "-") return false;
     if (token === "--") {
       index += 1;

@@ -1292,7 +1292,18 @@ that must not change, because the SPA's per-origin `localStorage` is keyed on it
    matched against `port_resolution._gateway_module_roots()`: always `kiro_crew`, plus
    the top-level module of every installed `kirocrew.plugins` entry point, so a composed
    edition whose launcher execs its own module with `-m` classifies without the core
-   knowing any edition's name. When a listener exists but none of the pids classify,
+   knowing any edition's name. The desktop launcher's own port-owner matcher
+   (`isKirocrewCommand` in `website/electron/gateway-stop.js`) has no view of the
+   Python environment's entry points, so it matches the companion naming convention
+   instead — `-m kiro_crew` or an exact top-level `-m kirocrew_<edition>`, each followed
+   by one of the same server subcommands — which is
+   what lets the app reuse a composed edition's gateway rather than refuse it as a
+   foreign holder. The legacy dotted spawn (`-m kiro_crew.gateway`) is recognised by
+   `stop` only; the desktop launcher does not match it and never has, so a service
+   unit spelled that way reads as a foreign holder on the desktop.
+   `test/test_cli.py::TestDesktopGatewayIdentityParity` pins the desktop copy of the
+   subcommand set and module pattern to the Python side, so widening one without the
+   other fails a test instead of a user. When a listener exists but none of the pids classify,
    `stop` names the pid(s) — with the cmdline basename when cheap — and exits 1 with SEL
    `reason=unrecognized_listener`, rather than reporting "no gateway running" for a port
    that is occupied.
