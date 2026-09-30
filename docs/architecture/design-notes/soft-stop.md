@@ -162,8 +162,8 @@ deliberately **not** treated as a failure:
 `POST /api/chat/slots/{slot}/stop` (`dashboard/chat_handlers.py`), with an optional
 `?force=true`.
 
-**First press** sets `slot._stop_state = "soft_pending"`, turns off auto-run
-(SEL-audited as `auto_run_stopped`), inserts a `stop_event` transcript message, and
+**First press** sets `slot._stop_state = "soft_pending"`, inserts a `stop_event`
+transcript message, and
 calls `stop_turn(..., force=False, preserve_queue=True, on_soft=, on_hard=)`. The
 queue is deliberately preserved here: a stop should cancel the running turn and
 leave queued messages for the user to process or dismiss individually. If the

@@ -60,20 +60,12 @@ from kiro_crew.dashboard.chat_folders import (
     _unhide_folder,
     resolve_folder_project_dir_off_loop,
 )
-from kiro_crew.dashboard.chat_orchestrator import (
-    _cancel_stage_subagents,
-    _capture_stage_cancellation_scope,
-    _queue_consumed_stage_resume,
-    _release_cancelled_plan_boundary,
-    _reserve_stage_cancellation_scopes,
-    _settle_discarded_stage_deliveries,
-    _stage_loop,
-)
 from kiro_crew.dashboard.chat_persistence import (
     _FLUSH_SNAPSHOT_RETRIES,
     _TRANSIENT_ROLES,
     COLOR_HEX_RE,
     _attach_variants,
+    _coerce_requested_mode,
     _local_turn_generation,
     _local_turn_prompt,
     _rebase_rehydrated_refresh_mark,
@@ -222,7 +214,7 @@ from kiro_crew.security import (
     redact_credentials,
     redact_exfiltration_urls,
 )
-from kiro_crew.sel import SecurityEvent, sel
+from kiro_crew.sel import sel
 from kiro_crew.session_agent_selection import (
     SelectionChange,
     record_agent_selection,
@@ -840,27 +832,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
             {"error": "message is required", "code": "message_required"}, status=400
         )
 
-    _pending_control_text = message.strip().lower()
-    _pending_control_words = _pending_control_text.split()
-    _widget_origin = user_meta is not None and user_meta.get("origin") == "widget"
-    _stop_words = {"stop", "cancel", "abort"}
-    _orchestrator_mode = getattr(slot, "mode", "") == "orchestrator"
-    _is_go = _pending_control_text in ("go", "go all")
-    _is_go_all = _pending_control_text == "go all"
-    tracker = slot._orch_tracker
-    _pending_escalated_stop = bool(
-        tracker is not None
-        and tracker.has_escalated
-        and not tracker.stopped
-        and _pending_control_words
-        and _pending_control_words[0] in _stop_words
-    )
-    _pending_stage_control = _orchestrator_mode and (
-        (_is_go and not _widget_origin) or _pending_escalated_stop
-    )
-    _pending_stage_boundary = (
-        stage_boundary_for(slot).stage is not None and not _pending_stage_control
-    )
+    _pending_stage_boundary = stage_boundary_for(slot).stage is not None
     if slot.turn_running or slot._in_stage_execution or _pending_stage_boundary:
         # Mid-turn steer: inject into the RUNNING turn instead of queueing for
         # the next turn. Gated on an explicit `steer` flag + a live, steer-capable
@@ -1105,7 +1077,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     # row in local history, and the user's retry would append a SECOND one while
     # only the retry ever reaches the peer — the local and peer transcripts then
     # diverge. Every turn-refusing validation (member reserve, app
-    # ownership, agent conflict, busy/steer/queue, crew and orchestrator modes)
+    # ownership, agent conflict, busy/steer/queue, crew and app-worker modes)
     # has already run above, so a remote slot that reaches here is otherwise
     # cleared to dispatch.
     #
@@ -1254,127 +1226,6 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
             _autonudge.notify_user_input(slot.key)
     except Exception:
         logger.warning("autonudge.notify_user_input failed", exc_info=True)
-
-    # ── Orchestrator "Go All" detection ─────────────────────────────
-    # Deny-by-default trust boundary: a turn tagged origin="widget" was
-    # pre-filled into the composer by an LLM-emitted <mcwidget> postMessage.
-    # Even though the frontend requires a human gesture to send it, the
-    # message TEXT is still attacker-controlled — an
-    # injected widget can pre-fill "go all" and socially engineer the user
-    # into pressing Enter. "go"/"go all" is the only chat-text-reachable
-    # privilege escalation (it flips the orchestrator into unattended
-    # per-stage auto-approval via slot._auto_run + _stage_loop), so we refuse
-    # to honour it for widget-origin turns and let the text fall through to a
-    # normal, fully-gated _run_chat turn instead. Mode changes and tool
-    # approvals live on separate endpoints a widget iframe cannot reach.
-    # `is not None` (not truthiness): user_meta is normalized to dict-or-None
-    # above, and with the body typed by read_bounded_json, mypy narrows the
-    # Optional only through an explicit None check. `_widget_origin` is computed
-    # before pending-stage admission so rejected control text cannot bypass that
-    # boundary and fall through as an ordinary turn.
-    if _orchestrator_mode and _is_go and _widget_origin:
-        sel().log(
-            SecurityEvent(
-                event_id=uuid.uuid4().hex,
-                timestamp=datetime.now(tz=timezone.utc).isoformat(),
-                event_type="auto_run_denied",
-                caller_identity=f"dashboard:{slot.key}",
-                agent=getattr(slot, "agent", ""),
-                source="dashboard",
-                operation="go_typed_widget_origin",
-                outcome="denied",
-                resources=f"slot={slot.key}",
-                error="orchestrator go/go-all refused for widget-origin turn",
-            )
-        )
-        logger.warning(
-            "Refused orchestrator auto-run escalation for widget-origin turn on slot %s",
-            slot.key,
-        )
-    elif _orchestrator_mode and _is_go:
-        _is_auto = _is_go_all
-        if _is_auto:
-            slot._auto_run = True
-            logger.info("Auto-run enabled for slot %s", slot.key)
-            sel().log(
-                SecurityEvent(
-                    event_id=uuid.uuid4().hex,
-                    timestamp=datetime.now(tz=timezone.utc).isoformat(),
-                    event_type="auto_run_enabled",
-                    caller_identity=f"dashboard:{slot.key}",
-                    agent=getattr(slot, "agent", ""),
-                    source="dashboard",
-                    operation="go_all_typed",
-                    outcome="approved",
-                    resources=f"slot={slot.key}",
-                )
-            )
-        sel().log(
-            SecurityEvent(
-                event_id=uuid.uuid4().hex,
-                timestamp=datetime.now(tz=timezone.utc).isoformat(),
-                event_type="stage_approved",
-                caller_identity=f"dashboard:{slot.key}",
-                agent=getattr(slot, "agent", ""),
-                source="dashboard",
-                operation="go_typed",
-                outcome="approved",
-                resources=f"slot={slot.key}",
-            )
-        )
-        # Use Python-controlled stage loop instead of _run_chat
-        if stage_boundary_for(slot).stage is not None:
-            _queue_consumed_stage_resume(
-                state,
-                slot,
-                directive_user_origin=not bool(request.get("app", "")),
-            )
-            slot._last_turn_auth_required = False
-        task = asyncio.create_task(
-            _stage_loop(state, slot, auto_run=_is_auto),
-            name=f"dashboard-stage:{slot.key}",
-        )
-        slot.track_stage_controller(task)
-        slot.task = task
-        # S4: one accepted Go resets the recovery budget shared by its stages.
-        stage_boundary_for(slot).recovery_retrigger_count = 0
-        state._background_tasks.add(task)
-        task.add_done_callback(state._background_tasks.discard)
-        state.push_slots_update()
-        # All output delivered via WebSocket — return JSON like api_chat_plan_action
-        return web.json_response({"ok": True, "slot": slot.key})
-
-    # ── Orchestrator stop detection ─────────────────────────────────
-    if _pending_escalated_stop and tracker is not None:
-        tracker.stop()
-        # Same latch as the plan-action Cancel handler: tracker.stopped
-        # alone does not survive the Slack gateway lazily re-creating a fresh
-        # unstopped tracker on this slot, so without the latch a later Go could
-        # resurrect a plan the user stopped by word. One revocation semantics
-        # across both cancel surfaces.
-        scope = _capture_stage_cancellation_scope(slot)
-        slot._plan_cancelled = True
-        slot._auto_run = False
-        reservation_reason = _reserve_stage_cancellation_scopes(state, scope)
-        await _cancel_stage_controller(slot)
-        release_boundary = await _cancel_stage_subagents(
-            state,
-            slot,
-            scope=scope,
-            reservation_reason=reservation_reason,
-        )
-        if release_boundary:
-            await _release_cancelled_plan_boundary(
-                state,
-                slot,
-                terminal_message="🛑 [SYSTEM] Orchestration stopped by user.",
-            )
-        return web.json_response({"ok": True, "stopped": True})
-
-    # ── Reset rounds after user guidance (not a stop) ───────────────
-    if tracker is not None and tracker.has_escalated:
-        tracker.reset_after_guidance()
-        logger.info("Rounds reset after user guidance for slot %s", slot.key)
 
     # Drain stale pending messages from previous turns that completed
     # after their SSE reader disconnected. Must happen BEFORE _run_chat
@@ -3962,11 +3813,11 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
 # allowlist (chat_folders._VALID_MODES) and the fork override allowlist
 # (chat_fork): "design-critique" is an app-worker mode assigned at birth by the
 # Design Critique app's openSlot() — the custom mode keeps its throwaway dc-*
-# slots off the chat sidebar, which renders only "" and "orchestrator"
+# slots off the chat sidebar, which renders only plain "" slots
 # (ChatPage.tsx filteredSlots). Switching an existing session INTO an app-worker
 # mode, or forking one with it as an override, is not a real flow, so those two
 # allowlists deliberately stay narrower — do not "sync" them to this one.
-_CREATABLE_MODES = ("", "orchestrator", "design-critique")
+_CREATABLE_MODES = ("", "design-critique")
 
 # Deferral is an optimization, so a request shape added later must stay on the
 # synchronous path until its publication ordering has been reviewed explicitly.
@@ -4127,12 +3978,11 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
     memory_mode = body.get("memory_mode", "persistent")
     if memory_mode not in ("persistent", "incognito", "temporary"):
         return web.json_response({"error": "invalid memory_mode"}, status=400)
-    _mode = body.get("mode", "")
+    _mode = _coerce_requested_mode(body.get("mode", ""))
     if _mode not in _CREATABLE_MODES:
         return web.json_response({"error": "invalid mode", "code": "invalid_mode"}, status=400)
-    # A crew-bound session runs PLAIN chat only. A non-plain mode (orchestrator,
-    # design-critique) is consumed by an EARLIER dispatch branch in ``api_chat``
-    # — the orchestrator stage loop — not by the remote arm, which only replaces
+    # A crew-bound session runs PLAIN chat only. A non-plain mode
+    # (design-critique) is not handled by the remote arm, which only replaces
     # the plain ``_run_chat`` dispatch. So a remote slot created with a mode
     # would run that mode's tools and filesystem work on THIS machine instead of
     # the crew the user picked. Refused here, alongside the other pre-peer
@@ -5890,19 +5740,34 @@ def _app_cancel_denied(
     return _slot_not_found()
 
 
-async def _cancel_stage_controller(slot: "_ChatSlot") -> None:
-    """Cancel and boundedly join the outer Autopilot controller, if live."""
-    controller = getattr(slot, "_stage_controller_task", None)
-    if controller is None or controller is asyncio.current_task() or controller.done():
+async def _settle_discarded_stage_deliveries(
+    state: "DashboardState",
+    slot: "_ChatSlot",
+    contents: list[str],
+) -> None:
+    """Settle queued completion and boundary report debt through one seam."""
+    manager = getattr(state, "subagents", None)
+    if manager is None:
         return
-    controller.cancel()
-    try:
-        await asyncio.wait_for(
-            asyncio.gather(controller, return_exceptions=True),
-            timeout=2.0,
-        )
-    except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
-        pass
+    owed = slot.take_pending_subagent_deliveries(contents)
+    if owed:
+        try:
+            settlement = manager.settle_queued_delivery(owed)
+            if asyncio.iscoroutine(settlement):
+                await settlement
+        except Exception:
+            logger.warning(
+                "Could not settle discarded stage deliveries for slot %s",
+                slot.key,
+                exc_info=True,
+            )
+    boundary = stage_boundary_for(slot)
+    owner = boundary.owner or boundary.generation
+    parents = tuple(boundary.parent_session_keys) or (effective_session_key(slot),)
+    discard_failures = getattr(manager, "discard_report_failures", None)
+    if owner and callable(discard_failures):
+        for parent in parents:
+            discard_failures(parent, owner)
 
 
 async def stop_slot_turn(
@@ -6026,7 +5891,6 @@ async def stop_slot_turn(
         # reports success and cancels nothing. The SEL record below stays on the
         # slot-derived key, which identifies the tab the operator pressed.
         await state.sessions.stop_turn(cancel_key, force=True, on_hard=_on_hard_force)
-        await _cancel_stage_controller(slot)
         sel().log_tool_invocation(
             session_key=_history_key_for(name),
             agent=getattr(slot, "agent", "") or "kirocrew",
@@ -6076,22 +5940,6 @@ async def stop_slot_turn(
     # NOTE: Do NOT clear the queue here — stop should only cancel the
     # currently running turn, leaving queued messages intact for the user
     # to process or dismiss individually.
-    _was_auto = slot._auto_run
-    slot._auto_run = False
-    if _was_auto:
-        sel().log(
-            SecurityEvent(
-                event_id=uuid.uuid4().hex,
-                timestamp=datetime.now(tz=timezone.utc).isoformat(),
-                event_type="auto_run_stopped",
-                caller_identity=f"dashboard:{slot.key}",
-                agent=getattr(slot, "agent", ""),
-                source="dashboard",
-                operation="stop",
-                outcome="stopped",
-                resources=f"slot={slot.key}",
-            )
-        )
 
     # One card per press: re-arm an orphaned card in place or append a fresh
     # one (see _open_stop_event_card for why sweeping the orphan rendered two
@@ -6115,7 +5963,6 @@ async def stop_slot_turn(
         on_soft=_on_soft,
         on_hard=_on_hard,
     )
-    await _cancel_stage_controller(slot)
     # Resolve orphaned card when provider reports no active turn
     if outcome == "idle" and slot._stop_event_id:
         _resolve_stop_event(slot, "soft")
@@ -6661,7 +6508,6 @@ async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
     # _stop_state == "idle" and slip past the guard (double stop_turn +
     # double SEL audit for one logical press). /stop is race-safe because it
     # has no await between guard and claim; this makes /interrupt match.
-    prev_auto_run = slot._auto_run
     slot._stop_state = "soft_pending"
     # Per-attempt identity for the claim itself. The stand-down guard below
     # cannot rely on the state VALUE alone: a concurrent /stop can escalate,
@@ -6671,14 +6517,11 @@ async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
     # identity that survives card reuse); the claim above bumped it, so any
     # later initiation moves it again.
     claim_generation = slot._stop_generation
-    slot._auto_run = False
 
     # Optionally promote a specific queue item to front. The except is not a
     # parse guard (read_bounded_json owns that): it rolls the claimed stop
     # state back when the body read fails in transit, and the refused-body
-    # branch below rolls it back the same way. Both paths also restore
-    # _auto_run: a refused request must not leave orchestrator auto-run
-    # disabled when no interrupt actually happened. The rollback is
+    # branch below rolls it back the same way. The rollback is
     # conditional on our claim being intact: a concurrent /stop arriving
     # during the body await may escalate _stop_state (e.g. to "killing"),
     # and an unconditional reset to "idle" would erase that escalation and
@@ -6693,12 +6536,10 @@ async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
         # re-enable auto-run under a real stop.
         if slot._stop_state == "soft_pending" and slot._stop_generation == claim_generation:
             slot._stop_state = "idle"
-            slot._auto_run = prev_auto_run
         raise
     if body_err is not None:
         if slot._stop_state == "soft_pending" and slot._stop_generation == claim_generation:
             slot._stop_state = "idle"
-            slot._auto_run = prev_auto_run
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
     queue_id = body.get("queue_id")
@@ -6729,8 +6570,7 @@ async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
     # marker-clear would erase a LIVE escalation marker, letting a late
     # cooperative ack relabel the hard kill as a clean stop. The other stop
     # owns the posture now: stand down and answer like the idempotent-repeat
-    # branch above. `_auto_run` stays disabled — a stop was initiated either
-    # way. This also fires when the superseding stop has ALREADY settled
+    # branch above. This also fires when the superseding stop has ALREADY settled
     # (state back to "idle"), including the benign case where the running
     # turn simply ended during the body read; queue promotion already
     # happened above, so nothing of the user's intent is dropped.
@@ -7670,11 +7510,7 @@ async def _close_slot(
     # was claimed), while a cancel landing mid-removal would interrupt
     # provider.shutdown() after the registry entry was already popped and
     # leak the process holding kiro-cli's native session lock.
-    _teardown_tasks = {
-        task
-        for task in (slot.task, slot._stage_controller_task)
-        if task is not None and not task.done()
-    }
+    _teardown_tasks = {task for task in (slot.task,) if task is not None and not task.done()}
     if _teardown_tasks:
         for task in _teardown_tasks:
             task.cancel()

@@ -53,7 +53,6 @@ SECTION_CLASS: dict[str, str] = {
     "agent": "AgentConfig",
     "session": "SessionConfig",
     "task_runner": "TaskRunnerConfig",
-    "orchestrator": "OrchestratorConfig",
     "messaging": "MessagingConfig",
     "cron_history": "CronHistoryConfig",
     "memory": "MemoryConfig",

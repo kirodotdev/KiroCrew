@@ -24,7 +24,9 @@ logger = logging.getLogger("kiro_crew.config.loader")
 # save, never warned about and never resurrected.
 #   * agent_template_pane — retired: the agent editor's Template pane renders
 #     unconditionally now, so a stale materialized ``false`` must not warn.
-CONFIG_RESERVED_TOP_KEYS: frozenset = frozenset({"meta", "agent_template_pane"})
+#   * orchestrator — retired with chat Autopilot mode; its stage and plan
+#     budgets have no reader, so a stale section loads as nothing.
+CONFIG_RESERVED_TOP_KEYS: frozenset = frozenset({"meta", "agent_template_pane", "orchestrator"})
 
 # Top-level config.json sections this core models AND round-trips through
 # to_dict(). Any other top-level key found at load() is captured into
@@ -69,7 +71,6 @@ _KNOWN_CONFIG_SECTIONS: frozenset = frozenset(
         "mcp_gateway",
         "mcp",
         "taskrunner",
-        "orchestrator",
         "watchdog",
         "resource_limits",
         "messaging",

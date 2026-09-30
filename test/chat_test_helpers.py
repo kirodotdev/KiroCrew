@@ -299,7 +299,6 @@ def _make_app(state: DashboardState) -> web.Application:
     from kiro_crew.dashboard.chat import (
         api_chat,
         api_chat_mode,
-        api_chat_plan_action,
         api_chat_slot_approve,
         api_chat_slot_color,
         api_chat_slot_delete,
@@ -346,7 +345,6 @@ def _make_app(state: DashboardState) -> web.Application:
     app.router.add_post("/api/chat/slots/{slot}/rewind", api_chat_slot_rewind)
     app.router.add_post("/api/chat/slots/{slot}/switch-variant", api_chat_slot_switch_variant)
     app.router.add_post("/api/chat/mode", api_chat_mode)
-    app.router.add_post("/api/chat/slots/{slot}/plan-action", api_chat_plan_action)
     return app
 
 

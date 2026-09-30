@@ -1094,7 +1094,6 @@ the finding: an unnamed site records `user`.
 | `chat_runner` synthesis dispatch | the sub-agent synthesis prompt | `subagent` |
 | `issue_radar.crew_runtime` | a crew-composed prompt | `crew` |
 | `handlers/taskrunner` (plan, result) | a task-runner summary | `gateway` |
-| `chat_orchestrator` stage loop | orchestrator stage context | `gateway` |
 
 One shared helper passes no actor on purpose: `spec_builder.runtime.enqueue_or_run_prompt`
 takes both the message and its origin as parameters, so its actor is its CALLER's fact and

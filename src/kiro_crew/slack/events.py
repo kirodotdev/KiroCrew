@@ -1253,7 +1253,7 @@ async def _publish_home_tab(orch: GatewayOrchestrator, user_id: str) -> None:
             )
         blocks.append({"type": "divider"})
 
-        # ── Sessions (main chat + autopilot/task runner) ──
+        # ── Sessions (main chat + task runner) ──
         blocks.append({"type": "header", "text": {"type": "plain_text", "text": "🧵 Sessions"}})
         # Deny-by-default authorization gate (defense-in-depth).
         #
@@ -1331,7 +1331,7 @@ async def _publish_home_tab(orch: GatewayOrchestrator, user_id: str) -> None:
                             {
                                 "type": "context",
                                 "elements": [
-                                    {"type": "mrkdwn", "text": "*Autopilot / task runner*"}
+                                    {"type": "mrkdwn", "text": "*Task runner*"}
                                 ],
                             }
                         )

@@ -91,14 +91,12 @@ from kiro_crew.config.memory_sections import (  # noqa: F401
 from kiro_crew.config.resolution import _OBSERVED_DEGRADED_SECTIONS, DEGRADED_TAILSCALE
 from kiro_crew.config.service_sections import (  # noqa: F401
     DEFAULT_MAX_PARALLEL_STEPS,
-    DEFAULT_MAX_PLAN_DURATION,
     DEFAULT_RUNTIME_CEILING_SECS,
     MAX_RUNTIME_CEILING_SECS,
     CronHistoryConfig,
     HeartbeatConfig,
     MessagingConfig,
     MonitoringConfig,
-    OrchestratorConfig,
     TaskRunnerConfig,
     WatchdogConfig,
 )
@@ -1976,7 +1974,7 @@ class SlackConfig:
         default=5,
         metadata=_meta(
             "Home Tab Sessions Per Kind",
-            "Max sessions shown per category (main chat / autopilot) in the Slack Home Tab.",
+            "Max sessions shown per category (main chat / task runner) in the Slack Home Tab.",
             tags=["slack"],
         ),
     )

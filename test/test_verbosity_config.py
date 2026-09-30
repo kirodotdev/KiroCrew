@@ -544,7 +544,7 @@ class TestTokenRetired:
 
     def test_no_shipped_prompt_file_carries_the_token(self):
         cfg_dir = Path(kiro_crew.__file__).parent / "config"
-        for name in ("prompt.md", "prompt-orchestrator.md"):
+        for name in ("prompt.md",):
             assert "{{VERBOSITY_BLOCK}}" not in (cfg_dir / name).read_text(encoding="utf-8"), name
 
     def test_no_builtin_agent_prompt_carries_the_token(self):

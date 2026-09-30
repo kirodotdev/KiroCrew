@@ -109,7 +109,6 @@ from kiro_crew.config.service_sections import (
     CronHistoryConfig,
     MessagingConfig,
     MonitoringConfig,
-    OrchestratorConfig,
     TaskRunnerConfig,
     WatchdogConfig,
 )
@@ -153,24 +152,6 @@ def _build_taskrunner_config(taskrunner_data: dict) -> TaskRunnerConfig:
     return TaskRunnerConfig(
         max_parallel_steps=taskrunner_data.get("max_parallel_steps", DEFAULT_MAX_PARALLEL_STEPS),
         workspace_dir=str(taskrunner_data.get("workspace_dir", "")),
-    )
-
-
-def _build_orchestrator_config(orchestrator_data: dict) -> OrchestratorConfig:
-    return OrchestratorConfig(
-        stage_timeout_seconds=_safe_int(orchestrator_data.get("stage_timeout_seconds", 1800), 1800),
-        # Default read off the dataclass rather than imported: the loader's
-        # re-export list from config.sections is a frozen boundary snapshot
-        # (test_config_module_boundaries), and this keeps
-        # DEFAULT_MAX_PLAN_DURATION as the single source of truth without
-        # adding an alias to it.
-        max_plan_duration_seconds=_safe_int(
-            orchestrator_data.get(
-                "max_plan_duration_seconds",
-                OrchestratorConfig.max_plan_duration_seconds,
-            ),
-            OrchestratorConfig.max_plan_duration_seconds,
-        ),
     )
 
 

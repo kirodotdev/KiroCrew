@@ -773,14 +773,12 @@ Data-driven — no code changes needed:
 
 Note: there IS a top-level `agents/` directory used at runtime for project-level overrides, but the bundled source lives in `src/kiro_crew/config/`.
 
-The normal and orchestrator prompts are alternative, self-contained inputs, not
-layers concatenated together; custom/app agents can supply their own prompts.
-Their compact tool directories retain exact callable syntax, session ownership,
+The shipped prompt is a self-contained input; custom/app agents can supply
+their own prompts. Its compact tool directory retain exact callable syntax, session ownership,
 privacy boundaries, stop conditions and output formats. Shared wording is not
 moved into a common include: source deduplication alone would not reduce the
 selected prompt sent to the model. `test/test_prompt_compact_contract.py` checks
-each file's UTF-8 size budget, template slots, critical operational clauses and
-the orchestrator example against the real plan parser. The size budget is an
+each file's UTF-8 size budget, template slots and critical operational clauses. The size budget is an
 absolute UTF-8 byte ceiling per selectable prompt: a context-cost guard, not a
 token count and not a permanent ban on new rules. A maintainer may raise a
 ceiling in a reviewed change when a rule earns its bytes; the clause tests, not

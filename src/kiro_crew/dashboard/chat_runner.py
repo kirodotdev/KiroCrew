@@ -99,12 +99,6 @@ from kiro_crew.context_blocks import (
     attributable_user_chars,
     split_blocks,
 )
-from kiro_crew.context_management import (
-    ensure_go_all_option,
-    looks_like_plan,
-    strip_plan_markers,
-    validate_plan_format,
-)
 from kiro_crew.crew_log import emit as crew_log_emit
 from kiro_crew.dashboard import directive_queue
 from kiro_crew.dashboard.chat_delivery import (
@@ -130,9 +124,6 @@ from kiro_crew.dashboard.chat_summary import generate_session_summary
 from kiro_crew.dashboard.chat_tag_grants import refresh_cache as refresh_tag_grants_cache
 from kiro_crew.dashboard.chat_tags import resolve_board_tags
 from kiro_crew.dashboard.chat_title import (
-    _extract_and_redact_plan_metadata,
-    _rephrase_plan_lite,
-    _reset_auto_run_for_new_plan,
     title_then_refresh,
 )
 from kiro_crew.dashboard.chat_utils import (
@@ -8933,7 +8924,7 @@ async def _start_next_queued_turn(
         owned_stage_delivery_entry(stage_boundary_for(slot), slot._queue) if in_stage else None
     )
     if in_stage and preferred_stage_delivery is None:
-        # S1: an active stage may consume only delivery owned by its boundary.
+        # An active stage may consume only delivery owned by its boundary.
         # The generic system fallback would pull another parent's completion into
         # this stage; leave it queued until stage execution releases the gate.
         return False
@@ -10307,21 +10298,6 @@ async def _run_chat(
     # chunk of this one (see _ChatSlot._chunk_seq).
     chunk_seq = slot._chunk_seq
     in_tool_group = False
-    # Whole-turn assistant-text buffer for orchestrator plan detection. Unlike
-    # `assistant_text` (reset on every tool-call boundary), this is NEVER reset
-    # mid-turn, so a plan emitted BEFORE further tool calls is still visible at
-    # end-of-turn. Only accumulated on a planning turn (see `_orch_planning`).
-    _orch_plan_buf = ""
-    # Set True when the final-segment detector below arms a plan, so the
-    # whole-turn-buffer fallback doesn't arm a second time.
-    _armed_final = False
-    # A turn is a "planning turn" iff it's orchestrator mode AND not a stage
-    # execution turn driven by _stage_loop. Only planning turns detect/arm a
-    # plan; stage-execution turns must never re-arm (that corrupted the stage
-    # total). `_in_stage_execution` is set by _stage_loop around its _run_chat.
-    _orch_planning = getattr(slot, "mode", "") == "orchestrator" and not getattr(
-        slot, "_in_stage_execution", False
-    )
     # Rolling-buffer redactor for the live chat_chunk wire stream. Per-chunk
     # redaction misses a credential split across streaming boundaries;
     # this withholds the trailing credential-class run until it is confirmed safe
@@ -13651,11 +13627,6 @@ async def _run_chat(
                     # and leave the request unanswered — the exact hang this PR
                     # exists to fix.
                     _compaction_notice_chunks.append(safe_chunk)
-                # Mirror into the never-reset whole-turn buffer so a plan
-                # emitted before later tool calls survives the tool-boundary
-                # reset of assistant_text above (planning turn only).
-                if _orch_planning:
-                    _orch_plan_buf += safe_chunk
                 # Set BEFORE the `_turn_emitted` flip: the consumption report
                 # below must stay adjacent to that flip (pinned by
                 # test_subagent_delivery_ttl_anchor), so a diagnostic flag goes
@@ -17579,64 +17550,6 @@ async def _run_chat(
             _flush_segment(state, slot, assistant_text, broadcast=False)
 
         if _answer_text:
-            # Get the withheld tail onto the wire BEFORE any plan reformat, so
-            # the answer is visible while the bounded, cosmetic round-trip runs
-            # instead of leaving the turn blank for the whole of it. No-op when
-            # the redactor holds nothing.
-            _flush_text_stream()
-            # ── Plan format validation (planning turn only) ─────
-            # `_orch_planning` excludes stage-execution turns, so a stage turn
-            # whose output contains plan-like text can never re-arm/re-count.
-            if _orch_planning:
-
-                has_plan, valid, issues = validate_plan_format(assistant_text)
-                if not has_plan and looks_like_plan(assistant_text):
-                    # Cheap regex thinks it's a plan — let LLM confirm/reformat
-                    logger.info(
-                        "Detected plan-like response without header, asking LLM to reformat"
-                    )
-                    issues = [
-                        "No '📋 Plan for:' header",
-                        "No 'Stage N:' lines found",
-                        "Missing [OPTION: Go | Go All | Cancel] footer",
-                    ]
-                    rephrased = await _rephrase_plan_lite(
-                        state,
-                        assistant_text,
-                        issues,
-                        might_not_be_plan=True,
-                    )
-                    if rephrased:
-                        has_plan = True
-                        _, valid, issues = validate_plan_format(rephrased)
-                        if valid:
-                            logger.info("LLM reformatted plan-like response into valid plan")
-                            assistant_text = rephrased
-                if has_plan and not valid:
-                    logger.info("Plan format invalid (%s), attempting rephrase", issues)
-                    rephrased = await _rephrase_plan_lite(state, assistant_text, issues)
-                    if rephrased:
-                        _, valid2, issues2 = validate_plan_format(rephrased)
-                        if valid2:
-                            logger.info("Plan rephrased successfully")
-                            assistant_text = rephrased
-                        else:
-                            logger.warning("Rephrase still invalid (%s), stripping plan", issues2)
-                            assistant_text = strip_plan_markers(assistant_text)
-                            has_plan = False
-                    else:
-                        logger.warning("Rephrase failed, stripping plan markers")
-                        assistant_text = strip_plan_markers(assistant_text)
-                        has_plan = False
-                if has_plan:
-                    _armed_final = True
-                    _reset_auto_run_for_new_plan(slot)
-                    stage_boundary_for(slot).clear()
-                    assistant_text = ensure_go_all_option(assistant_text)
-                    # Store stage count for _stage_loop
-                    slot._stage_titles, slot._plan_goal, slot._stage_descriptions = (
-                        _extract_and_redact_plan_metadata(assistant_text)
-                    )
             _flush_text_stream()
             _flush_segment(state, slot, assistant_text, broadcast=False)
             if _stop_reason == STOP_REASON_REFUSAL:
@@ -17736,7 +17649,7 @@ async def _run_chat(
                     _refusal_card,
                     "msg msg-err",
                 )
-        elif not _armed_final and should_continue_after_compaction(
+        elif should_continue_after_compaction(
             # The context window filled mid-turn, the backend summarized, and the
             # turn then ended without finishing the request — the "hangs after
             # Compacting..." symptom. kiro-cli self-heals (it re-sends the pending
@@ -18011,31 +17924,11 @@ async def _run_chat(
                 _empty_activity.had_thinking,
                 _empty_activity.billed,
             )
-        # Fallback arm: a plan emitted BEFORE further tool calls was flushed out
-        # of `assistant_text` (reset on each tool boundary), so the final-segment
-        # detector above missed it and no [OPTION] gate would register — the
-        # model appears to "skip the plan and keep working". Recover the plan
-        # from the never-reset whole-turn buffer and arm the gate from it
-        # (planning turn only; skipped if the final-segment path already armed).
-        if _orch_planning and not _armed_final and _orch_plan_buf:
-            _hp_buf, _valid_buf, _ = validate_plan_format(_orch_plan_buf)
-            if _hp_buf and _valid_buf:
-                logger.info(
-                    "Arming plan gate from whole-turn buffer for slot %s "
-                    "(plan was followed by tool calls)",
-                    slot.key,
-                )
-                _reset_auto_run_for_new_plan(slot)
-                stage_boundary_for(slot).clear()
-                slot._stage_titles, slot._plan_goal, slot._stage_descriptions = (
-                    _extract_and_redact_plan_metadata(_orch_plan_buf)
-                )
         # Diagnostic-only drift sensor: exact matching stays the replay authority,
         # while a blocker-adjacent near miss after proven read-only Kiro work is
         # observable for future grammar decisions. Never log the model text.
         if (
-            not _armed_final
-            and _stop_reason == STOP_REASON_END_TURN
+            _stop_reason == STOP_REASON_END_TURN
             and not _refusal_reasons
             and tool_calls_are_read_only_preparation(
                 _turn_tool_calls,
@@ -18066,7 +17959,7 @@ async def _run_chat(
         # full: should_notice_leaked_tool_call's docstring. Checked BEFORE the
         # promise-only guard: a leaked block is machine syntax, not a promise
         # sentence, and the more specific detector must own the turn.
-        if not _armed_final and should_notice_leaked_tool_call(
+        if should_notice_leaked_tool_call(
             stop_reason=_stop_reason,
             end_turn_reason=STOP_REASON_END_TURN,
             final_segment_text=assistant_text,
@@ -18152,7 +18045,6 @@ async def _run_chat(
             # serves the slot, and a provider (or test stand-in) that exposes an
             # auto-created attribute must not be read as a verdict.
             and isinstance(getattr(client, "last_infra_error", None), InfraError)
-            and not _armed_final
             and not slot._in_stage_execution
             and not _should_suppress_requeue(slot)
             and getattr(slot, "_stop_generation", _stop_gen_turn_start) == _stop_gen_turn_start
@@ -18267,13 +18159,12 @@ async def _run_chat(
         # tells the model to carry out the announced action now. `assistant_text`
         # here is the post-last-tool segment (reset at each tool boundary), so a
         # turn that DID call a tool then summarised has a summary — not a promise —
-        # and never matches. A plan turn (`_armed_final`) is a legitimate landing
-        # (the [OPTION] gate is the action), so it is excluded. Bounded to one
+        # and never matches. Bounded to one
         # attempt via slot._promise_only_retries; a second promise-only ending
         # falls through and lands normally rather than looping.
         # Chained as `elif` off the leaked-tool-call notice above: at most one
         # of the two unacted-turn paths may claim a turn.
-        elif not _armed_final and should_recover_promise_only(
+        elif should_recover_promise_only(
             stop_reason=_stop_reason,
             end_turn_reason=STOP_REASON_END_TURN,
             # `_produced_visible_output` is set True ONLY on the paths that reset
@@ -18327,8 +18218,7 @@ async def _run_chat(
             # A stage-execution turn (the orchestrator running one plan stage) must
             # NOT trigger async recovery: the stage loop records the stage complete
             # and advances before the injected continuation finishes, corrupting
-            # stage attribution. Excluded like `_armed_final` (the plan turn itself)
-            # is.
+            # stage attribution.
             in_stage_execution=slot._in_stage_execution,
         ):
             if state.is_yolo_active() or _slot_is_trusted(slot):
@@ -18432,8 +18322,7 @@ async def _run_chat(
                 slot._promise_only_session_key = effective_session_key(slot)
                 _recovering_promise = True
         elif (
-            not _armed_final
-            and not slot._in_stage_execution
+            not slot._in_stage_execution
             and _prompt_depth == 0
             and slot._promise_only_retries >= 1
             # Same derivation as the recovery arm above: the raw
@@ -18491,8 +18380,7 @@ async def _run_chat(
         # lifecycle. The same notice covers present-progressive claims with no
         # tool calls, which are outside the narrow "I'll do it now" detector.
         elif (
-            not _armed_final
-            and not slot._in_stage_execution
+            not slot._in_stage_execution
             and _prompt_depth == 0
             and (bool(assistant_text.strip()) or _produced_visible_output)
             and _stop_reason == STOP_REASON_END_TURN

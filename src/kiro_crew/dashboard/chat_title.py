@@ -1,9 +1,8 @@
-"""Title generation — auto-title, rename, plan rephrase."""
+"""Title generation — auto-title and rename."""
 
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import re
 import unicodedata
@@ -11,9 +10,8 @@ from typing import Any
 
 from aiohttp import web
 
-from kiro_crew.config.loader import KiroCrewConfig, config_dir
+from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.context import ui_language_tag
-from kiro_crew.context_management import extract_plan_metadata, rephrase_plan
 from kiro_crew.dashboard.chat_folder_suggest import maybe_suggest_folder
 from kiro_crew.dashboard.chat_utils import (
     apply_pending_slot_memory_mode,
@@ -30,7 +28,7 @@ from kiro_crew.label_guard import (
     looks_like_prose,
     unspaced_script_chars,
 )
-from kiro_crew.llm_helpers import background_turn, run_bg_oneliner
+from kiro_crew.llm_helpers import run_bg_oneliner
 from kiro_crew.memory_stores import UnknownMemoryStore
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
@@ -665,94 +663,6 @@ def _build_refresh_prompt(
         language=language,
         truncation=_TITLE_TRUNCATION_NOTE if truncated else "",
     )
-
-
-def _reset_auto_run_for_new_plan(slot: "_ChatSlot") -> None:
-    """Clear auto-run state so a new plan requires fresh user approval."""
-    session_dir = config_dir() / "sessions" / slot.key
-    if session_dir.exists():
-        for f in session_dir.glob("stage_*_result.md"):
-            try:
-                f.unlink()
-            except OSError:
-                pass
-    slot._orch_tracker = None
-    slot._auto_run = False
-    # A freshly armed plan starts un-cancelled. This is the ONLY clear site for
-    # the latch — deliberately not Go (api_chat_plan_action): clearing on Go
-    # would let a Go racing a Cancel resurrect the cancelled plan, which is the
-    # same race inverted.
-    slot._plan_cancelled = False
-
-
-def _extract_and_redact_plan_metadata(text: str) -> tuple[list[str], str, list[list[str]]]:
-    """Extract stage titles, goal, and descriptions from plan text, redacted."""
-    titles, goal, descriptions = extract_plan_metadata(text)
-    titles = [redact_credentials(redact_exfiltration_urls(t)[0])[0] for t in titles]
-    if goal:
-        goal = redact_credentials(redact_exfiltration_urls(goal)[0])[0]
-    descriptions = [
-        [redact_credentials(redact_exfiltration_urls(d)[0])[0] for d in stage_descs]
-        for stage_descs in descriptions
-    ]
-    return titles, goal, descriptions
-
-
-#: Bound on the plan-reformat round-trip. The rephrase is cosmetic: when it
-#: does not return inside this window the turn keeps the model's original text
-#: rather than holding the answer -- and the turn's own finalize -- behind a
-#: second LLM call that a slow or flaky backend can stall indefinitely.
-_PLAN_REPHRASE_TIMEOUT = 20.0
-
-
-async def _rephrase_plan_lite(
-    state: DashboardState,
-    text: str,
-    issues: list[str],
-    *,
-    might_not_be_plan: bool = False,
-) -> str | None:
-    """Rephrase a plan using the cheap background session (kirocrew-lite).
-
-    Bounded END TO END. Acquiring the shared background session can itself
-    block behind another background turn, so a bound around only the prompt
-    left the caller held at the acquire: the rephrase logged "asking LLM to
-    reformat" and then produced nothing until a manual Stop, and the
-    prompt-level timeout never fired.
-    """
-    try:
-        return await asyncio.wait_for(
-            _rephrase_plan_turn(state, text, issues, might_not_be_plan=might_not_be_plan),
-            timeout=_PLAN_REPHRASE_TIMEOUT,
-        )
-    except asyncio.TimeoutError:
-        logger.warning(
-            "Plan rephrase timed out after %.0fs; keeping the original text",
-            _PLAN_REPHRASE_TIMEOUT,
-        )
-        return None
-
-
-async def _rephrase_plan_turn(
-    state: DashboardState,
-    text: str,
-    issues: list[str],
-    *,
-    might_not_be_plan: bool,
-) -> str | None:
-    async with contextlib.AsyncExitStack() as stack:
-        try:
-            bg = await stack.enter_async_context(
-                background_turn(state.sessions, task="plan_rephrase")
-            )
-        except Exception:
-            logger.warning("Failed to get background session for plan rephrase", exc_info=True)
-            return None
-        result = await rephrase_plan(text, issues, bg, might_not_be_plan=might_not_be_plan)
-    if result:
-        result, _ = redact_exfiltration_urls(result)
-        result, _ = redact_credentials(result)
-    return result
 
 
 def _clean_title(s: str) -> str:

@@ -1428,24 +1428,8 @@ def run_first_run_setup() -> None:
         logger.warning("First-run: stale MCP purge failed", exc_info=True)
 
 
-def _prompt_path(mode: str = "") -> Path:
-    """Return user prompt if it exists, otherwise shipped prompt.
-
-    When mode="orchestrator", uses the orchestrator prompt.
-    """
-    if mode == "orchestrator":
-        user_orch = _user_dir() / "prompt-orchestrator.md"
-        if user_orch.is_file():
-            return user_orch
-        proj = _project_dir()
-        if proj:
-            candidate = proj / "agents" / "prompt-orchestrator.md"
-            if candidate.is_file():
-                return candidate
-        bundled_orch = _BUNDLED_CFG_DIR / "prompt-orchestrator.md"
-        if bundled_orch.is_file():
-            return bundled_orch
-
+def _prompt_path() -> Path:
+    """Return user prompt if it exists, otherwise shipped prompt."""
     user_prompt = _user_prompt_path()
     if user_prompt.is_file():
         return user_prompt

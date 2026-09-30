@@ -966,7 +966,7 @@ reaches a digest, parent route, or channel injection after cancellation. The
 full durable read-and-cancel pass runs through `TaskStore.run` on the store's
 single writer thread. A store failure leaves the scope held in memory, keeps its
 existing window rows parked, prevents matching store-only rows from refilling,
-surfaces a mirrored Autopilot halt notice, and is retried in insertion order
+and is retried in insertion order
 before dispatch on the next pump settlement pass. Only a successful store pass
 clears the retained scope. A
 writer-thread claim that crossed cancellation revalidates both its exact durable
@@ -975,8 +975,7 @@ cancellation authority immediately before registration; no await separates that
 check from registration. A cancelled claim returns the same stopped result as a
 claim the store refused initially, and the reserved slot is released. Store-only
 rows are filtered by `_stage_boundary_owner`; another owner under the same parent
-remains eligible. Autopilot calls this once per captured parent before clearing
-the UI boundary.
+remains eligible.
 
 ### `cancel_all() -> None`
 Cancels all running subagents, stops the reaper loop, and awaits their cleanup. Handles `CancelledError` gracefully — sessions released, count decremented.
@@ -1112,7 +1111,7 @@ A record's terminal outcome is three-way, with a **single canonical source**: th
 - A user stop is neutral **in the record itself**: `cancel()` sets `user_stopped=True` and neither it nor `_force_reap` ever synthesizes an `error` for it.
 - **A reap's echo is recorded as the reap, never as a runtime death.** `_force_reap` tears a dedicated run's session down (`sessions.reset` → `provider.shutdown()` → `runtime.kill(reason="provider shutdown")`) BEFORE it cancels the run task, so the in-flight `client.stream` observes the kill first and raises `AcpProcessDied` — `Runtime process died during prompt — killed (provider shutdown) [returncode=<not reaped>]` — inside `_run`'s `except Exception` arm, ahead of the reaper's own record. That arm reads `_reap_started` together with `agent_sdk.drivers.acp_vocab.is_runtime_death(exc)` (the `AcpProcessDied` test, offered from the driver vocabulary so application code never names the ACP class): both true, the exception is the ECHO of our own teardown; any other exception under a reap is the run's own fault and keeps the existing failure path and traceback and the record names the stop — `_stop_origin` ("stopped by user", "parent conversation ended (<verb>)", "reaped after Ns (<reason>)", written by `cancel()` / `cancel_for_teardown` / `_force_reap` next to the `_reap_started` marker) and the reap's own tombstone cause `_reap_reason` (`user_stop` / `parent_end` / `stage_cancel` / `reaped` / `startup_timeout`; the parent-end teardown and the stage-boundary cancel write it before calling `cancel`, a bare `cancel` is the user's Stop, and `_force_reap` fills in its own reason only when none is set — nothing is inferred from the origin text, and every writer assigns only when the field is still empty, so the FIRST stopper keeps the attribution when a user Stop, a parent end and a stage cancel race). `tombstone_terminal_state` maps `parent_end` / `stage_cancel` to the task queue's CANCELLED like `user_stop`, so boot reconciliation settles such a row instead of recovering a deliberately ended run. Neutrality is decided by the FIRST stopper, `SubagentInfo.stop_is_neutral` (`_reap_reason in _NEUTRAL_REAP_REASONS` = `user_stop` / `parent_end` / `stage_cancel`), never by `user_stopped` alone: a Stop that lands while a deadline reap is already tearing the run down sets `user_stopped` too, and both the echo arm and `_force_reap`'s own record put the flag back so the late Stop cannot convert a claimed deadline failure into a neutral stop. A user stop, a parent end and a stage cancel stay neutral (`error` unset, `outcome == "stopped"`, partial output preserved); a deadline reap is a failure whose `error` names the deadline. The gateway log gets ONE line — INFO for a user's own stop, WARNING for a parent end or a deadline reap — never `Subagent X failed` at ERROR with a traceback. Recording the death text as the run's error, tombstoned `cause="error"`, sends every reader of a run "dying at random" (a user Stop-all, an identity-sweep parent end) to the provider, the OOM killer and the leak reaper in turn. `_reap_started` (not `reaped`) is the gate because the reaper sets `reaped` late, after the awaits; the record is still first-arrival (`if not info.done`) so the reaper's own synthesis is never duplicated. Pinned by `test_subagent_reap_attribution.py`.
 - Every emission carries the flag explicitly: live `subagent_done` events, the `_run` finally emit, `_force_reap`'s emit, WS **reconnect replay** (managed and native), `native_subagent_snapshots`, and the `/api/spawn` listing all include `stopped`. Cancelling a native card persists `stopped` on the slot tracker record so replay reconstructs it as stopped.
-- The gateway completion consumer (`_subagent_done`) classifies three-way: a stopped agent is announced ⏹ with the record's own `_stop_origin` as its status ("stopped by user" when a user pressed Stop; a parent-end verb or a stage cancel otherwise, so the announce never credits the user with a stop they did not press), partial output flagged, and in orchestrator mode records **neither** `record_success` nor `record_failure`.
+- The gateway completion consumer (`_subagent_done`) classifies three-way: a stopped agent is announced ⏹ with the record's own `_stop_origin` as its status ("stopped by user" when a user pressed Stop; a parent-end verb or a stage cancel otherwise, so the announce never credits the user with a stop they did not press), and partial output flagged.
 - **Intentional-cancel rule**: every code path that cancels a subagent task on purpose MUST set a terminal marker first — `cancel()` → `user_stopped`, `cancel_all()` → `_shutting_down`, `_force_reap` → `reaped`. An unmarked cancel is treated as unexpected and recovered once (below). Enforced MECHANICALLY, not by convention: all in-module intentional cancels route through the `_cancel_task_intentionally(task, info, reason=...)` chokepoint, which verifies a marker is visible before cancelling (a missing marker logs an error and consumes the recovery budget defensively so a mis-marked cancel can never zombie-respawn), and a source-scan test asserts no raw `.cancel()` on a managed run task exists outside the chokepoint.
 
 ## Stop reason → state (`classify_stop_reason`)
@@ -1349,10 +1348,9 @@ Native kiro-cli subagents run inside the parent ACP turn and are owned by the pa
 After a fan-out of sub-agents, a single dedicated **synthesis turn** produces
 the user-facing summary (restate goal → synthesize across all results →
 recommend next actions), instead of leaving the last visible message as a
-per-sub-agent completion note. Dashboard chat only (orchestrator mode has its
-own stage synthesis).
+per-sub-agent completion note. Dashboard chat only.
 
-- **Arm** — in `_subagent_done` (chat mode, `not _is_orchestrator`), when the
+- **Arm** — in `_subagent_done`, when the
   last outstanding sub-agent for the parent completes
   (`running_agents_for(parent_key) == []`), set `slot._pending_synthesis = True`.
 - **Fire** — in `chat_runner._run_chat`'s drain/idle branch, once the queue is
@@ -1945,8 +1943,7 @@ new dispatch. A failed/cancelled child is terminal for the barrier, not a
 successful task. Parent verifies artifacts and actual execution evidence,
 revalidates stale results against new instructions, and checks side effects
 before retrying. Dispatch, yielding and a child's success claim are not final
-task completion. The default and Autopilot prompts share this policy while
-Autopilot keeps its existing approval/stage boundaries. Conductor skills retain
+task completion. The default prompt carries this policy. Conductor skills retain
 their explicitly selected coordination role; this policy does not convert them
 into implementation workers.
 
@@ -2240,7 +2237,7 @@ the hint the parent re-spawns from scratch and pays for the same tool calls twic
 Retrieves live status and a redacted partial transcript for a running subagent, or
 the retained full transcript for a completed subagent. The completion event carries
 a **summary + the `result_path`** whenever the completion copy was truncated
-(`result_truncated`) or in orchestrator mode, so the parent reads the full transcript
+(`result_truncated`), so the parent reads the full transcript
 on demand instead of re-running the subagent.
 
 For a running in-memory record, `GET /api/spawn/{id}` keeps `done: false` and
@@ -2304,9 +2301,8 @@ When truncation drops content (`SubagentInfo.result_truncated`), the completion
 event is not a raw truncated blob: it carries a **first+last-words preview + the
 `result_path`** (via `context_management.summarize_result`) so the parent reads
 the full transcript on demand (read / grep / `spawn_status`) instead of
-re-running the subagent. This is the same shape orchestrator-mode deliveries
-have always used, now applied to chat mode too (gated on `result_truncated` so
-small results still inline in full).
+re-running the subagent. It is gated on `result_truncated`, so small results
+still inline in full.
 
 | Config key | Values | Default | Effect |
 |------------|--------|---------|--------|

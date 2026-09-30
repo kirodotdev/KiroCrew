@@ -626,8 +626,8 @@ against sweep completeness, and are torn down at `close_all`.
      counter below 1 while the flag is only set with it at 2 or more, so the flag is
      already clear on that path. The second clear is what makes
      the flag independent of the several controls that discard a queued
-     continuation without landing a turn (the hard-kill Stop's queue clear, a plan
-     Cancel's owner-scoped discard, a rewind commit's rebuild). None of those
+     continuation without landing a turn (the hard-kill Stop's queue clear, a rewind
+     commit's rebuild). None of those
      resets the recovery counter, so a spent counter can still route a LATER
      request into rung 2, and that request's own turns must not inherit this
      episode's evidence. The counter's own staleness across those controls is
@@ -2630,7 +2630,7 @@ so absence clears it.
 - **Durability does not depend on the mutation site.** `_queue_persisted_sig`
   records what the last committed save wrote and `slot.queue_persist_pending`
   compares it against the live queue, so an in-place rewrite — a reorder, a
-  plan-approval filter, a force-stop clear — is picked up by the periodic flush
+  force-stop clear — is picked up by the periodic flush
   without each site marking the slot dirty. The flush and the resumed-slot no-op
   guard both read it beside `_dirty`.
 - **A rows-only handover save defers the key** (it is in

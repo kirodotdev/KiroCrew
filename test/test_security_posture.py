@@ -261,7 +261,6 @@ _BASELINE_LOG_SITE_CENSUS: dict[str, int] = {
     "acp/transport_errors.py": 1,
     "apps/builtins/pptx_maker/backend/routes.py": 1,
     "dashboard/chat_nav.py": 1,
-    "dashboard/chat_orchestrator.py": 1,
     "dashboard/chat_runner.py": 9,
     "dashboard/chat_title.py": 1,
     "dashboard/handlers/discover.py": 3,

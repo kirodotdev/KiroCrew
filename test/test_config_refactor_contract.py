@@ -41,7 +41,7 @@ ComputerUseConfig CronHistoryConfig DECISION_BUCKET_MAX DECISION_BUCKET_MIN
 DECISION_HISTORY_BUDGET_DEFAULT DECISION_MODEL_ROUTE_DEFAULT DECISION_MODEL_ROUTE_TIERS
 DECISION_PROVIDER_ENDPOINT_DEFAULT DECISION_PROVIDER_MODEL_DEFAULT DEDUP_EVERY_N_SWEEPS_MAX
 DEFAULT_AUTOCOMPACT_PCT DEFAULT_AUTO_INGEST_ARTIFACT_KINDS DEFAULT_CWD_ALLOWED_ROOTS
-DEFAULT_MAX_PARALLEL_STEPS DEFAULT_MAX_PLAN_DURATION DEFAULT_MODEL DEFAULT_POOL_SIZE
+DEFAULT_MAX_PARALLEL_STEPS DEFAULT_MODEL DEFAULT_POOL_SIZE
 DEFAULT_RUNTIME_CEILING_SECS DEFAULT_SESSION_TIMEOUT DEFAULT_WATCHDOG_RSS_MAX_MB
 DEGRADED_TAILSCALE DashboardConfig DecisionProviderConfig DecisionsConfig DiscordConfig
 EFFORT_LEVELS EMBED_RATE_LIMIT_MAX EMPTY_RESPONSE_MAX_CONTINUES_MAX
@@ -55,7 +55,7 @@ LINK_PATTERN_URL_MAX_LEN LOOP_STALL_EXIT_AFTER_DEFAULT LOOP_STALL_EXIT_AFTER_MAN
 LOOP_STALL_EXIT_AFTER_MAX LOOP_STALL_EXIT_AFTER_MIN LinkPatternRule MAX_RUNTIME_CEILING_SECS
 MAX_SUBAGENTS_FIXED_FLOOR MCP_PROBE_TIMEOUT_MAX MCP_PROBE_TIMEOUT_MIN McpConfig McpGatewayConfig
 MemoryConfig MemoryStoreConfig MessagingConfig MonitoringConfig NudgeWakeConfig
-OrchestratorConfig POOL_SIZE_MAX POOL_TTL_SECS_MAX POOL_TTL_SECS_MIN Path PublishConfig
+POOL_SIZE_MAX POOL_TTL_SECS_MAX POOL_TTL_SECS_MIN Path PublishConfig
 RECENT_TINT_COUNT_MAX RECENT_TINT_COUNT_MIN ROLE_MODEL_KEYS ResolvedBindings
 ResourceLimitsConfig SECRET_URI_PREFIX SESSION_FOLDER_NAME_MAX SESSION_START_TIMEOUT_MAX
 SESSION_START_TIMEOUT_MIN SESSION_TIMEOUT_MAX SESSION_TIMEOUT_MIN SOFT_STOP_BUDGET_MAX
@@ -126,7 +126,7 @@ LOOP_STALL_EXIT_AFTER_MIN Literal MANAGED_VAULT_FIXED_CONSUMERS MAX_SUBAGENTS_FI
 MCP_PROBE_TIMEOUT_MAX MCP_PROBE_TIMEOUT_MIN MIGRATE_AGENTS MIGRATE_CONNECTIONS_UI
 MIGRATE_DEFAULT_AGENT MIGRATE_SUPERSEDED_DEFAULTS MIGRATE_WORKSPACES MISSING MODEL_NAMESPACE_ACP
 Mapping McpConfig McpGatewayConfig MemoryConfig MemoryStoreConfig MessagingConfig
-MonitoringConfig MutableMapping OUTBOX_DIR_NAME OrchestratorConfig POOL_SIZE_MAX
+MonitoringConfig MutableMapping OUTBOX_DIR_NAME POOL_SIZE_MAX
 POOL_TTL_SECS_MAX POOL_TTL_SECS_MIN Path PublishConfig RECENT_TINT_COUNT_MAX
 RECENT_TINT_COUNT_MIN ROLE_MODEL_KEYS ResolvedBindings ResourceLimitsConfig
 SESSION_FOLDER_NAME_MAX SESSION_START_TIMEOUT_MAX SESSION_START_TIMEOUT_MIN SESSION_TIMEOUT_MAX
@@ -166,7 +166,7 @@ _apply_document_migrations _apply_field_default _archive_retention_days _build_a
 _build_computer_use_config _build_cron_history_config _build_dashboard_config
 _build_discord_config _build_feishu_config _build_imessage_config _build_instances_config
 _build_knowledge_config _build_mcp_config _build_mcp_gateway_config _build_memory_config
-_build_messaging_config _build_monitoring_config _build_orchestrator_config
+_build_messaging_config _build_monitoring_config
 _build_publish_config _build_session_config _build_session_summary_config _build_skills_config
 _build_slack_config _build_stt_config _build_taskrunner_config _build_teams_config
 _build_telegram_config _build_telemetry_config _build_tunnel_config _build_wakatime_config
@@ -477,7 +477,7 @@ class TestLoaderSeamsReachTheOwners:
 
     def test_moved_builders_are_the_loader_names(self) -> None:
         moved = sorted(n for n in vars(section_builders) if n.startswith("_build_"))
-        assert len(moved) == 28
+        assert len(moved) == 27
         assert [n for n in moved if getattr(loader, n) is not getattr(section_builders, n)] == []
         loader_owned = sorted(
             n

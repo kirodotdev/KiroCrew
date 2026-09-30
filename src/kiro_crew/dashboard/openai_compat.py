@@ -383,10 +383,7 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
                 status=409,
             )
         # Busy check — prevent concurrent writes to the same slot. ``running``
-        # includes the outer Autopilot controller while no child turn occupies
-        # ``slot.task``; the pending marker keeps the same isolation after an
-        # authentication pause has ended that controller but before Stage N is
-        # settled and captured.
+        # also covers a pending stage boundary while no turn occupies ``slot.task``.
         if slot.running is True:
             sel().log_api_access(
                 caller=request.remote or "",
@@ -396,25 +393,6 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
                 resources=f"slot={slot_id}",
                 error="slot busy",
             )
-            if (
-                slot.stage_boundary.stage is not None
-                and not slot.turn_running
-                and not slot._plan_cancelled
-            ):
-                return web.json_response(
-                    {
-                        "error": {
-                            "message": (
-                                f"slot {slot_id!r} is paused at an Autopilot stage gate; "
-                                "continue from the dashboard (Go)"
-                            ),
-                            "type": "slot_busy",
-                            "code": "stage_gate_paused",
-                        },
-                        "code": "stage_gate_paused",
-                    },
-                    status=409,
-                )
             return web.json_response(
                 {
                     "error": {

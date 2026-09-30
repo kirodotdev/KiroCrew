@@ -2414,8 +2414,7 @@ class TestInitSubagents:
 
 class TestSubagentDoneStoppedClassification:
     """A user-stopped subagent (error-free record) must never be classified as
-    a successful completion by _subagent_done — not in the announce text and
-    not in the orchestration tracker."""
+    a successful completion by _subagent_done in the announce text."""
 
     def _capture_on_done(self, orch):
         with patch("kiro_crew.slack.handler.is_yolo_mode", return_value=False):
@@ -2488,33 +2487,6 @@ class TestSubagentDoneStoppedClassification:
         assert "partial notes so far" in body
 
     @pytest.mark.asyncio
-    async def test_stopped_agent_records_neither_success_nor_failure(self):
-        """Orchestrator mode: a user stop must not advance orchestration —
-        no record_success (killed work is not done work) and no
-        record_failure (a deliberate stop is not a retryable failure)."""
-        orch = _make_orchestrator()
-        orch.sessions = _mock_sessions()
-        orch.ctx_builder = _mock_context_builder()
-        orch.ctx_builder.hooks = MagicMock()
-        orch.dashboard_state = _mock_dashboard_state()
-
-        tracker = MagicMock()
-        tracker.stopped = False
-        slot = MagicMock()
-        slot.mode = "orchestrator"
-        slot._orch_tracker = tracker
-        slot.running = False
-        orch.dashboard_state.get_slot = MagicMock(return_value=slot)
-        on_done = self._capture_on_done(orch)
-        # Injection path launches _run_chat on the idle slot — stub it out.
-        with patch("kiro_crew.slack.gateway._run_chat", new_callable=AsyncMock):
-            await on_done(self._stopped_info())
-            await asyncio.sleep(0)
-
-        tracker.record_success.assert_not_called()
-        tracker.record_failure.assert_not_called()
-
-    @pytest.mark.asyncio
     async def test_boundary_cancelled_completion_is_not_routed(self):
         """A completion that lost stage authority never reaches its parent."""
         orch = _make_orchestrator()
@@ -2523,12 +2495,8 @@ class TestSubagentDoneStoppedClassification:
         orch.ctx_builder.hooks = MagicMock()
         orch.dashboard_state = _mock_dashboard_state()
 
-        tracker = MagicMock()
-        tracker.stopped = False
         slot = MagicMock()
         slot.key = "gone"
-        slot.mode = "orchestrator"
-        slot._orch_tracker = tracker
         slot.running = False
         slot.task = None
         slot._subagent_deliveries_inflight = 0
@@ -2563,12 +2531,8 @@ class TestSubagentDoneStoppedClassification:
         orch.dashboard_state = _mock_dashboard_state()
 
         owner = "owner-a"
-        tracker = MagicMock()
-        tracker.stopped = False
         slot = MagicMock()
         slot.key = "gone"
-        slot.mode = "orchestrator"
-        slot._orch_tracker = tracker
         slot.running = False
         slot.task = None
         slot._in_stage_execution = False
@@ -6394,107 +6358,6 @@ class TestInjectWithRetry:
             await on_done(info)
 
         orch.subagent_mgr.notify_injection_failed.assert_called()
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# Tests: Orchestration guard in _subagent_done
-# ═══════════════════════════════════════════════════════════════════════════
-
-
-class TestOrchestrationGuard:
-    """Orchestration tracker in _subagent_done."""
-
-    def _setup(self):
-        orch = _make_orchestrator()
-        orch.sessions = _mock_sessions()
-        orch.ctx_builder = _mock_context_builder()
-        orch.ctx_builder.hooks = MagicMock()
-        orch.ctx_builder.build_message = MagicMock(return_value=("msg", None))
-        orch.dashboard_state = _mock_dashboard_state()
-        with patch("kiro_crew.slack.handler.is_yolo_mode", return_value=False):
-            with patch("kiro_crew.slack.gateway.SubagentManager") as mock_sm:
-                mock_sm_inst = MagicMock()
-                mock_sm_inst.start_reaper = MagicMock()
-                mock_sm_inst.running = []
-                mock_sm_inst.queued_count_for = MagicMock(return_value=0)
-                mock_sm_inst.queued_count_for_async = AsyncMock(return_value=0)
-                mock_sm_inst.has_pending_work_for = MagicMock(return_value=False)
-                mock_sm_inst.has_pending_work_for_async = AsyncMock(return_value=False)
-                mock_sm_inst.running_agents_for = MagicMock(return_value=[])
-                mock_sm_inst.get = MagicMock(return_value=None)
-                mock_sm_inst.notify_injection_failed = MagicMock()
-                mock_sm.return_value = mock_sm_inst
-                orch._init_subagents()
-        return orch, mock_sm
-
-    @pytest.mark.asyncio
-    async def test_orchestrator_mode_failure_guard(self):
-        """Orchestrator mode tracks failures."""
-        orch, mock_sm = self._setup()
-        on_done = mock_sm.call_args[1]["on_done"]
-
-        # Create a slot in orchestrator mode
-        slot = MagicMock()
-        slot.running = False
-        slot.task = None
-        slot.key = "orch-slot"
-        slot.mode = "orchestrator"
-        slot._recovery_chat_triggered = False
-        slot._pending_subagent_failures = []
-        slot._orch_tracker = None
-        orch.dashboard_state.get_slot = MagicMock(return_value=slot)
-
-        info = MagicMock()
-        info.id = "agent-orch"
-        info.parent_session_key = "dashboard:orch-slot"
-        info.error = "task failed"
-        info.result = None
-        info.result_path = ""
-        info.task = "orchestrated task"
-        info.agent = "coder"
-        info.silent = False
-        info.elapsed = 5.0
-        info.started = 0.0
-
-        with patch("kiro_crew.dashboard.chat_runner._run_chat", new_callable=AsyncMock):
-            await on_done(info)
-
-        # Tracker should have been created
-        assert slot._orch_tracker is not None
-
-    @pytest.mark.asyncio
-    async def test_orchestrator_result_with_path(self):
-        """Orchestrator mode with result_path shows summary."""
-        orch, mock_sm = self._setup()
-        on_done = mock_sm.call_args[1]["on_done"]
-
-        slot = MagicMock()
-        slot.running = False
-        slot.task = None
-        slot.key = "orch-slot2"
-        slot.mode = "orchestrator"
-        slot._recovery_chat_triggered = False
-        slot._pending_subagent_failures = []
-        slot._orch_tracker = None
-        orch.dashboard_state.get_slot = MagicMock(return_value=slot)
-
-        info = MagicMock()
-        info.id = "agent-orch2"
-        info.parent_session_key = "dashboard:orch-slot2"
-        info.error = None
-        info.result = "word " * 300  # long result
-        info.result_path = "/tmp/result.txt"
-        info.task = "big task"
-        info.agent = ""
-        info.silent = False
-        info.elapsed = 10.0
-        info.started = 0.0
-
-        with patch("kiro_crew.dashboard.chat_runner._run_chat", new_callable=AsyncMock):
-            with patch("os.path.getsize", return_value=5000):
-                await on_done(info)
-
-        orch.dashboard_state.notify.assert_not_called()
 
 
 # ═══════════════════════════════════════════════════════════════════════════

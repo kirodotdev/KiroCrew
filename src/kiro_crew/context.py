@@ -4781,7 +4781,7 @@ class ContextBuilder:
             # kiro-cli *branding* references are rewritten to claude code.
             # A custom agent keeps its own prompt on every provider.
             try:
-                pp = _prompt_path(mode=mode)
+                pp = _prompt_path()
                 agent_prompt = pp.read_text(encoding="utf-8")
                 agent_prompt = agent_prompt.replace("kiro-cli", "claude code")
                 agent_prompt = re.sub(r"\bKiro\b", "Claude", agent_prompt)
@@ -4795,7 +4795,7 @@ class ContextBuilder:
             )
         else:
             try:
-                pp = _prompt_path(mode=mode)
+                pp = _prompt_path()
                 logger.debug("Prompt selection: mode=%r → %s", mode, pp)
                 agent_prompt = pp.read_text(encoding="utf-8")
             except OSError:

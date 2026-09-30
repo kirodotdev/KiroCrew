@@ -3012,11 +3012,7 @@ async def _remove_slot_for_history_key(
                 slot.key,
             )
     if slot:
-        teardown_tasks = {
-            task
-            for task in (slot.task, slot._stage_controller_task)
-            if task is not None and not task.done()
-        }
+        teardown_tasks = {task for task in (slot.task,) if task is not None and not task.done()}
         if teardown_tasks:
             for task in teardown_tasks:
                 task.cancel()

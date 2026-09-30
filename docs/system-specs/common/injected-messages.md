@@ -91,7 +91,7 @@ Usage: <credits> credits · <elapsed>
   The agent-name parenthetical is present only when the sub-agent ran under a named
   agent.
 - The detail is the trimmed result when it fits. When the completion copy dropped
-  content, or in orchestrator mode, it is a summary plus a `result_path` pointer, so
+  content, it is a summary plus a `result_path` pointer, so
   the parent reads the full transcript on demand (`read`, `grep`, `spawn_status`)
   instead of re-running the sub-agent.
 - Usage is cumulative across all attempted turns in the run, including billed
@@ -587,11 +587,9 @@ the parent requires an explicit human gesture, so a widget action can never beco
 a user-role turn on its own.
 
 When the user does send the pre-filled text, the turn is tagged
-`meta.origin = 'widget'`. The backend then refuses the one chat-text-reachable
-privilege escalation for such turns: orchestrator `go` / `go all` auto-run is
-denied (audited as `auto_run_denied`) and the text falls through to a normal, fully
-gated turn. Mode changes and tool approvals live on separate endpoints an iframe
-cannot reach.
+`meta.origin = 'widget'` and runs as a normal, fully gated turn. No chat text
+grants a privilege: mode changes and tool approvals live on separate endpoints
+an iframe cannot reach.
 
 So there is no `[Widget action event]` envelope. What reaches the session is an
 ordinary user message beginning `[UI] `, sent by a human, carrying an origin tag.

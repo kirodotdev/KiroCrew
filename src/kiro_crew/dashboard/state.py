@@ -2743,17 +2743,10 @@ class _ChatSlot:
         "_dirty_gen",
         "_metadata_persist_inflight",
         "_guarded_history_writes",
-        "_orch_tracker",
-        "_plan_cancelled",
-        "_auto_run",
         "_in_stage_execution",
-        "_stage_controller_task",
         "stage_boundary",
         "_last_turn_auth_required",
         "_recovery_chat_triggered",
-        "_stage_titles",
-        "_stage_descriptions",
-        "_plan_goal",
         "_slack_linked",
         "_slack_channel",
         "_slack_thread_ts",
@@ -2988,7 +2981,7 @@ class _ChatSlot:
         # the global session.autocompact_pct. Persisted with the slot and
         # re-seeded into the SessionManager after restore.
         self.autocompact_pct: float | None = None
-        # "" = default chat, "orchestrator" = orchestrated chat
+        # "" = default chat; app workers may carry their own mode (design-critique)
         self.mode = mode
         self.workspace = workspace
         # The crew's memory silo, or "" for the global store. Held on the slot
@@ -3399,18 +3392,6 @@ class _ChatSlot:
         # retraction of this slot's name must order itself after the real write,
         # so it waits on these futures, which complete with the worker.
         self._guarded_history_writes: set[Any] = set()
-        self._orch_tracker: Any = None  # OrchestrationTracker, set by gateway
-        # Plan-cancel latch closing the cancel/Go race: the Cancel
-        # handler can only stop a tracker that exists, but _stage_loop creates
-        # the tracker lazily, so a cancel processed between a Go POST being
-        # accepted and its _stage_loop coroutine starting would no-op on the
-        # tracker and the plan would advance anyway. The handler sets this flag
-        # unconditionally; _stage_loop checks it before creating a tracker and
-        # exits without advancing. Cleared ONLY when a new plan is armed
-        # (_reset_auto_run_for_new_plan) — never on Go, so a Go on a cancelled
-        # plan cannot resurrect it (that would just invert the race).
-        self._plan_cancelled: bool = False
-        self._auto_run: bool = False  # "Go All" — skip stage gates
         # True only while _stage_loop is driving a stage-execution turn. Gates
         # the end-of-turn plan detector so a stage turn whose output happens to
         # contain plan-like text cannot re-arm / re-count the plan (which
@@ -3422,9 +3403,6 @@ class _ChatSlot:
         # queue/chip path. After the controller exits, an uncancelled pending
         # boundary keeps ``running`` true until guarded Go settles or reruns it.
         self._in_stage_execution: bool = False
-        # Outer Python stage driver, kept separately while ``task`` names the
-        # active LLM turn so slot teardown can cancel both lifetimes.
-        self._stage_controller_task: asyncio.Task[Any] | None = None
         # Atomic owner of the active stage's delivery, recovery, parent-session,
         # and cancellation state. Compatibility properties below expose the old
         # names to focused tests, but production paths mutate this object.
@@ -3435,9 +3413,6 @@ class _ChatSlot:
         # must not pop the held follow-up into another auth failure).
         self._last_turn_auth_required: bool = False
         self._recovery_chat_triggered: bool = False  # guard against concurrent failure recovery
-        self._stage_titles: list[str] = []  # stage titles extracted from plan
-        self._stage_descriptions: list[list[str]] = []  # bullet points per stage
-        self._plan_goal: str = ""  # goal from 📋 Plan for: header
         self._slack_linked: bool = False  # True when linked to a Slack thread
         self._slack_channel: str = ""
         self._slack_thread_ts: str = ""
@@ -4175,10 +4150,6 @@ class _ChatSlot:
             # impossible and a missed bump can only cause an extra (harmless)
             # flush, never a skipped one.
             self._dirty_gen += 1
-
-    @property
-    def _plan_stage_count(self) -> int:
-        return len(self._stage_titles)
 
     @property
     def _stop_state(self) -> str:
@@ -5076,16 +5047,6 @@ class _ChatSlot:
         """
         return queue_persist_signature(self.durable_queue_entries()) != self._queue_persisted_sig
 
-    def track_stage_controller(self, task: asyncio.Task[Any]) -> None:
-        """Keep the outer stage driver reachable while ``task`` names a child turn."""
-        self._stage_controller_task = task
-
-        def _clear(done: asyncio.Task[Any]) -> None:
-            if self._stage_controller_task is done:
-                self._stage_controller_task = None
-
-        task.add_done_callback(_clear)
-
     @property
     def task(self) -> asyncio.Task[Any] | None:
         return self._task
@@ -5098,13 +5059,9 @@ class _ChatSlot:
 
     @property
     def turn_running(self) -> bool:
-        """Whether an active model turn or stage controller still owns the slot."""
+        """Whether an active model turn still owns the slot."""
         task = self.task
-        controller = self._stage_controller_task
-        return bool(
-            (task is not None and not task.done())
-            or (controller is not None and not controller.done())
-        )
+        return bool(task is not None and not task.done())
 
     @property
     def running(self) -> bool:
