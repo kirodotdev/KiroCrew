@@ -306,6 +306,45 @@ class TestLocalModelServer:
             asyncio.run(_run(rec, [URGENT], host="localhost", api_key=""))
         assert rec.requests == []
 
+    def test_a_hand_written_loopback_address_says_once_that_no_key_is_sent(
+        self, monkeypatch, caplog
+    ):
+        """A tunnel to hosted Jev would get 401s; the log names the withheld key, once."""
+        import kiro_crew.decisions.impl_jev as mod
+
+        monkeypatch.setattr(mod, "_keyless_loopback_warned", set())
+        mod._warn_keyless_custom_loopback("http://127.0.0.1:9001/v1/systemone", "jev-latest")
+        mod._warn_keyless_custom_loopback("http://127.0.0.1:9001/v1/systemone", "jev-latest")
+        hits = [r for r in caplog.records if "no Jev API key is sent" in r.getMessage()]
+        assert len(hits) == 1
+
+    def test_query_variants_of_one_address_warn_once_and_the_set_stays_bounded(
+        self, monkeypatch, caplog
+    ):
+        import kiro_crew.decisions.impl_jev as mod
+
+        monkeypatch.setattr(mod, "_keyless_loopback_warned", set())
+        for n in range(200):
+            mod._warn_keyless_custom_loopback(
+                f"http://127.0.0.1:9001/v1/systemone?n={n}", "jev-latest"
+            )
+        hits = [r for r in caplog.records if "no Jev API key is sent" in r.getMessage()]
+        assert len(hits) == 1
+        for port in range(9002, 9200):
+            mod._warn_keyless_custom_loopback(f"http://127.0.0.1:{port}/v1/systemone", "jev-latest")
+        assert len(mod._keyless_loopback_warned) <= mod._KEYLESS_WARNED_MAX
+
+    def test_a_local_preset_is_not_warned_about(self, monkeypatch, caplog):
+        import kiro_crew.decisions.impl_jev as mod
+        from kiro_crew.decisions import local_models
+
+        monkeypatch.setattr(mod, "_keyless_loopback_warned", set())
+        preset = local_models.LOCAL_MODELS[0]
+        mod._warn_keyless_custom_loopback(
+            local_models.endpoint_for(preset.default_port), preset.model
+        )
+        assert not [r for r in caplog.records if "no Jev API key is sent" in r.getMessage()]
+
 
 class TestFailures:
     @pytest.mark.parametrize("status", [429, 500, 502, 529, 401, 422])

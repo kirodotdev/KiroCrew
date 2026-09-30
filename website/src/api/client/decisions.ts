@@ -111,9 +111,8 @@ export interface DecisionsProviderData {
   /** `jev`, a preset id, or `custom` for an address set by hand in config.json. */
   active: string
   configured_endpoint: string
-  configured_timeout_ms: number | null
-  /** Set on a PUT: whether a standing consent followed the switch. */
-  consent_carried?: boolean
+  /** The configured address is a literal loopback one, so no Jev key is sent to it. */
+  loopback?: boolean
 }
 
 export function createDecisionsEndpoints({ get, post, put, j }: ClientTransport) {

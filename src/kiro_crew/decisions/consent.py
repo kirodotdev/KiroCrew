@@ -495,3 +495,24 @@ def save_enabled(
         state[STATE_KEY_NUDGE_EVIDENCE] = nudge_evidence is True if enabled else False
         atomic_write(consent_path(), json.dumps(state, indent=2) + "\n", mode=_STATE_FILE_MODE)
     return state
+
+
+def rebind_if_enabled(endpoint: str) -> bool:
+    """Move a STANDING consent to *endpoint*; whether it moved. Filesystem IO.
+
+    The check and the write happen under :data:`_SAVE_LOCK`, the lock every consent
+    write holds, so a revoking PUT that lands between a caller's read and this write
+    cannot be undone: a keystone found off here stays off and nothing is written.
+    Only the address changes; every scope and ceiling is left exactly as recorded.
+    Raises :class:`ConsentCorruptError` rather than clobbering a corrupt file.
+    """
+    target = normalize_endpoint(endpoint)
+    if not target:
+        raise ValueError("a re-bind needs the endpoint it moves to")
+    with _SAVE_LOCK:
+        state: dict[str, Any] = dict(read_state_strict())
+        if not is_enabled(state):
+            return False
+        state[STATE_KEY_ENDPOINT] = target
+        atomic_write(consent_path(), json.dumps(state, indent=2) + "\n", mode=_STATE_FILE_MODE)
+    return True

@@ -34,12 +34,52 @@ class TestIsLoopbackEndpoint:
             "http://127.9.9.9:8102/v1/systemone",
             "https://127.0.0.1:8443/v1/systemone",
             "http://[::1]:8104/v1/systemone",
+            "http://[::ffff:127.0.0.1]:8102/v1/systemone",
+            "http://[::ffff:7f00:1]:8102/v1/systemone",
+            "http://127.1:8102/v1/systemone",
+            "http://0x7f.1:8102/v1/systemone",
+            "http://2130706433:8102/v1/systemone",
+            "http://0177.0.0.1:8102/v1/systemone",
             "http://127.0.0.1/v1/systemone",
             "  http://127.0.0.1:8102/v1/systemone  ",
+            # IDNA-normalised by yarl, which is what aiohttp dials.
+            "http://127\u30020\u30020\u30021:8102/v1/systemone",
+            "http://127\uff0e0\uff0e0\uff0e1:8102/v1/systemone",
+            "http://127\uff610\uff610\uff611:8102/v1/systemone",
+            "http://\u2460\u2461\u2466.0.0.1:8102/v1/systemone",
         ],
     )
     def test_a_literal_loopback_address_is_local(self, endpoint):
         assert local_models.is_loopback_endpoint(endpoint) is True
+
+    def test_mapped_loopback_is_local_even_where_ipaddress_says_otherwise(self, monkeypatch):
+        """Older Pythons report ``::ffff:127.0.0.1`` as not loopback; the guard must not."""
+        import ipaddress
+
+        monkeypatch.setattr(
+            ipaddress.IPv6Address,
+            "is_loopback",
+            property(lambda self: int(self) == 1),
+        )
+        assert (
+            local_models.is_loopback_endpoint("http://[::ffff:127.0.0.1]:8102/v1/systemone") is True
+        )
+
+    @pytest.mark.parametrize(
+        "endpoint",
+        ["http://0.0.0.0:8102/v1/systemone", "http://[::]:8102/v1/systemone"],
+        ids=["any-address-v4", "any-address-v6"],
+    )
+    def test_the_unspecified_address_dials_this_machine_and_is_local(self, endpoint):
+        assert local_models.is_loopback_endpoint(endpoint) is True
+
+    @pytest.mark.parametrize(
+        "endpoint",
+        ["http://[127.0.0.1:8102/v1/systemone", "http://[::1:8102/v1/systemone"],
+        ids=["unbalanced-bracket-v4", "unbalanced-bracket-v6"],
+    )
+    def test_a_malformed_hand_written_address_is_custom_not_a_crash(self, endpoint):
+        assert local_models.active_id(endpoint, None) == "custom"
 
     @pytest.mark.parametrize(
         "endpoint",
@@ -50,7 +90,9 @@ class TestIsLoopbackEndpoint:
             "http://user@127.0.0.1:8102/v1/systemone",
             "ftp://127.0.0.1:8102/v1/systemone",
             "http://10.0.0.5:8102/v1/systemone",
-            "http://0.0.0.0:8102/v1/systemone",
+            "http://[::ffff:10.0.0.5]:8102/v1/systemone",
+            "http://10.1:8102/v1/systemone",
+            "http://deadbeef:8102/v1/systemone",
             "http://127.0.0.1:99999/v1/systemone",
             "127.0.0.1:8102",
             "",
@@ -64,7 +106,9 @@ class TestIsLoopbackEndpoint:
             "userinfo",
             "not-http",
             "private-not-loopback",
-            "any-address",
+            "mapped-private-not-loopback",
+            "shorthand-private-not-loopback",
+            "hex-looking-name",
             "port-out-of-range",
             "no-scheme",
             "empty",
@@ -137,6 +181,19 @@ class TestActiveId:
         endpoint = local_models.endpoint_for(9000)
         assert local_models.active_id(endpoint, "plumb-4b") == "plumb-4b"
         assert local_models.active_id(endpoint, "english") == "laya"
+
+    def test_a_hand_written_loopback_spelling_of_a_preset_is_custom(self):
+        """Only the address the route builds is a preset; ``127.1`` or a query string
+        naming the same server is hand-written and keeps the custom guidance."""
+        preset = local_models.LOCAL_MODELS[0]
+        built = local_models.endpoint_for(preset.default_port)
+        assert local_models.active_id(built, preset.model) == preset.id
+        for hand in (
+            built.replace("127.0.0.1", "127.1"),
+            built + "?x=1",
+            built.replace("http://", "https://"),
+        ):
+            assert local_models.active_id(hand, preset.model) == "custom", hand
 
     def test_anything_else_is_custom(self):
         assert local_models.active_id("https://proxy.example/v1/systemone", "x") == "custom"
@@ -234,6 +291,7 @@ class TestProviderRouteGet:
         assert [p["id"] for p in payload["presets"]] == [m.id for m in local_models.LOCAL_MODELS]
         assert payload["active"] == "jev"
         assert payload["configured_endpoint"] == DEFAULT_ENDPOINT
+        assert payload["loopback"] is False
 
 
 class TestProviderRoutePut:
@@ -276,6 +334,20 @@ class TestProviderRoutePut:
         assert resp.status == 400
         assert json.loads(resp.text)["code"] == "decisions_provider_invalid_body"
         assert config_file[1]() == {}
+
+    @pytest.mark.asyncio
+    async def test_an_unparseable_body_is_refused_and_audited(self, audit, config_file):
+        from kiro_crew.dashboard.handlers.decisions import api_decisions_provider_put
+
+        req = _request()
+        req.json = AsyncMock(side_effect=json.JSONDecodeError("bad", "{", 0))
+        resp = await api_decisions_provider_put(req)
+        assert resp.status == 400
+        assert json.loads(resp.text)["code"] == "invalid_json"
+        assert config_file[1]() == {}
+        rows = [r for r in audit if r["operation"] == "decisions_provider_put"]
+        assert rows and rows[-1]["outcome"] == "denied"
+        assert rows[-1]["error"] == "invalid_json"
 
     @pytest.mark.asyncio
     async def test_a_local_preset_writes_the_endpoint_it_built(
@@ -361,8 +433,7 @@ class TestConsentCarry:
         from kiro_crew.dashboard.handlers.decisions import api_decisions_provider_put
 
         self._consent(keystone, DEFAULT_ENDPOINT)
-        resp = await api_decisions_provider_put(_request(body={"preset": "laya"}))
-        assert json.loads(resp.text)["consent_carried"] is True
+        await api_decisions_provider_put(_request(body={"preset": "laya"}))
         state = consent.load_state()
         assert consent.consented_endpoint(state) == local_models.endpoint_for(8104)
         assert consent.consented_tool_args(state) is True, "a recorded scope is kept"
@@ -375,10 +446,58 @@ class TestConsentCarry:
 
         local = local_models.endpoint_for(8104)
         self._consent(keystone, local)
-        resp = await api_decisions_provider_put(_request(body={"preset": "jev"}))
-        assert json.loads(resp.text)["consent_carried"] is False
+        await api_decisions_provider_put(_request(body={"preset": "jev"}))
         assert consent.consented_endpoint(consent.load_state()) == local
         assert consent.permits(DEFAULT_ENDPOINT, consent.load_state()) is False
+
+    @pytest.mark.asyncio
+    async def test_two_switches_never_interleave_write_and_carry(
+        self, audit, config_file, keystone, not_denied, monkeypatch
+    ):
+        """Each switch's config write and consent carry land together, so the config
+        and the keystone always end naming the same address."""
+        import asyncio
+        import time
+
+        import kiro_crew.dashboard.handlers.decisions as mod
+        from kiro_crew.dashboard.handlers.decisions import api_decisions_provider_put
+
+        self._consent(keystone, DEFAULT_ENDPOINT)
+        events: list[str] = []
+        real_write, real_carry = mod._write_provider, mod._carry_consent
+
+        def write(endpoint, *a, **k):
+            events.append(f"write {endpoint}")
+            return real_write(endpoint, *a, **k)
+
+        def carry(endpoint):
+            time.sleep(0.2)  # a slow carry is the window another switch would use
+            events.append(f"carry {endpoint}")
+            return real_carry(endpoint)
+
+        monkeypatch.setattr(mod, "_write_provider", write)
+        monkeypatch.setattr(mod, "_carry_consent", carry)
+        await asyncio.gather(
+            api_decisions_provider_put(_request(body={"preset": "laya"})),
+            api_decisions_provider_put(_request(body={"preset": "plumb-4b"})),
+        )
+        assert [e.split()[0] for e in events] == ["write", "carry", "write", "carry"]
+        assert events[0].split()[1] == events[1].split()[1]
+        assert consent.consented_endpoint(consent.load_state()) == config_file[1]()["endpoint"]
+
+    @pytest.mark.asyncio
+    async def test_a_revocation_racing_the_switch_is_not_undone(
+        self, audit, config_file, keystone, not_denied, monkeypatch
+    ):
+        """The keystone is re-read under the write lock, so a consent the owner turned
+        off after this PUT last looked at it stays off."""
+        from kiro_crew.dashboard.handlers.decisions import api_decisions_provider_put
+
+        # What a stale read outside the lock would have seen: consent still on.
+        stale = {"enabled": True, "endpoint": DEFAULT_ENDPOINT}
+        monkeypatch.setattr(consent, "load_state", lambda: dict(stale))
+        await api_decisions_provider_put(_request(body={"preset": "laya"}))
+        assert consent.is_enabled(consent.read_state_strict()) is False
 
     @pytest.mark.asyncio
     async def test_no_consent_is_created_where_none_stood(
@@ -386,8 +505,7 @@ class TestConsentCarry:
     ):
         from kiro_crew.dashboard.handlers.decisions import api_decisions_provider_put
 
-        resp = await api_decisions_provider_put(_request(body={"preset": "laya"}))
-        assert json.loads(resp.text)["consent_carried"] is False
+        await api_decisions_provider_put(_request(body={"preset": "laya"}))
         assert consent.is_enabled(consent.load_state()) is False
 
     @pytest.mark.asyncio
@@ -403,12 +521,12 @@ class TestConsentCarry:
         def _refuse(*_a, **_k):
             raise consent.ConsentCorruptError("unreadable")
 
-        monkeypatch.setattr(consent, "save_enabled", _refuse)
+        monkeypatch.setattr(consent, "rebind_if_enabled", _refuse)
         resp = await api_decisions_provider_put(_request(body={"preset": "laya"}))
         assert resp.status == 200
         payload = json.loads(resp.text)
         assert payload["active"] == "laya"
-        assert payload["consent_carried"] is False
+        assert payload["loopback"] is True
         assert config_file[1]()["endpoint"] == local_models.endpoint_for(8104)
         assert consent.consented_endpoint(consent.load_state()) == DEFAULT_ENDPOINT
         errors = [r["error"] for r in audit if r["outcome"] == "error"]
@@ -421,6 +539,5 @@ class TestConsentCarry:
 
         monkeypatch.setattr(capability, "is_decisions_denied", lambda *a, **k: True)
         self._consent(keystone, DEFAULT_ENDPOINT)
-        resp = await api_decisions_provider_put(_request(body={"preset": "laya"}))
-        assert json.loads(resp.text)["consent_carried"] is False
+        await api_decisions_provider_put(_request(body={"preset": "laya"}))
         assert consent.consented_endpoint(consent.load_state()) == DEFAULT_ENDPOINT

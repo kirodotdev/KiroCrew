@@ -28,7 +28,7 @@ import {
   type DecisionPointRow,
 } from './decisionsPreview'
 import { fmtPercent } from '../../i18n/format'
-import { DECISIONS_PROVIDER_QUERY_KEY, DecisionsProviderPicker } from './DecisionsProviderPicker'
+import { DECISIONS_PROVIDER_QUERY_KEY } from './decisionsProviderQuery'
 import { i18nT } from '../../i18n/t'
 
 /**
@@ -46,6 +46,14 @@ import { i18nT } from '../../i18n/t'
  */
 const DecisionsPointPanel = lazy(async () => ({
   default: (await import('./DecisionsPointPanel')).DecisionsPointPanel,
+}))
+
+/**
+ * The decision-model picker, on the same kind of boundary: none of its controls is
+ * in the settings registry, so search never probes for it.
+ */
+const DecisionsProviderPicker = lazy(async () => ({
+  default: (await import('./DecisionsProviderPicker')).DecisionsProviderPicker,
 }))
 
 /**
@@ -500,11 +508,12 @@ export function DecisionsCard() {
         id={EGRESS_NOTE_ID}
         className={backendMissing ? 'text-[12px] text-muted opacity-40' : 'text-[12px] text-text'}
       >
-        {/* A local preset is the one provider the card can vouch for: the gateway
-            built its address on 127.0.0.1, so the "over the internet" sentence would
-            be false. A hand-written address keeps the general wording, since nothing
-            here can tell where it leads. */}
-        {providerQ.data?.presets.some(p => p.id === providerQ.data?.active)
+        {/* Any address the gateway classifies as this machine -- a local preset or a
+            hand-written loopback address -- makes the "over the internet" sentence
+            false. The local wording names only the first hop ("the server at the
+            address below, on this machine") and leaves where that server forwards it
+            to the server, which holds for a hand-written tunnel too. */}
+        {providerQ.data?.loopback === true
           ? i18nT('pages.developer.featurePreviewsTab.decisions_egress_local')
           : i18nT('pages.developer.featurePreviewsTab.decisions_egress')}
       </p>
@@ -543,7 +552,19 @@ export function DecisionsCard() {
           {i18nT('pages.developer.featurePreviewsTab.decisions_endpoint_pointer')}
         </p>
       )}
-      {view.supported && <DecisionsProviderPicker frozen={frozen} />}
+      {/* A hand-written loopback address is sent no Jev key; a tunnel to hosted Jev
+          would then fail with 401 and decisions would quietly stop, so say it here,
+          where the owner is looking, not only in the gateway log. */}
+      {view.supported && providerQ.data?.active === 'custom' && providerQ.data.loopback === true && (
+        <p className="text-[12px] text-warn">
+          {i18nT('pages.developer.featurePreviewsTab.decisions_custom_loopback_no_key')}
+        </p>
+      )}
+      {view.supported && (
+        <Suspense fallback={<div className="h-24" aria-hidden />}>
+          <DecisionsProviderPicker frozen={frozen} cardReadFailed={readFailed} />
+        </Suspense>
+      )}
       {/* The redirected-config state: consent stands for one address, config.json now
           names another, so nothing is sent. A WARNING, not a paragraph: it is the one
           state where the switch reads "on" and the truth is "off". */}

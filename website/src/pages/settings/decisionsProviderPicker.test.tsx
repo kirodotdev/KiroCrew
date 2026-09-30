@@ -46,7 +46,6 @@ function providerOf(active: string): DecisionsProviderData {
     presets: [PLUMB, LAYA],
     active,
     configured_endpoint: 'https://api.typesafe.ai/v1/systemone',
-    configured_timeout_ms: 1000,
   }
 }
 
@@ -72,6 +71,9 @@ describe('recommendedPreset', () => {
   it('picks the first preset whose memory threshold the machine meets', () => {
     expect(recommendedPreset([PLUMB, LAYA], 32)).toBe('plumb-4b')
     expect(recommendedPreset([PLUMB, LAYA], 24)).toBe('plumb-4b')
+    // A 24 GB / 12 GB machine as the gateway reports it, in GiB after reserve.
+    expect(recommendedPreset([PLUMB, LAYA], 23.4)).toBe('plumb-4b')
+    expect(recommendedPreset([PLUMB, LAYA], 11.2)).toBe('laya')
     expect(recommendedPreset([PLUMB, LAYA], 16)).toBe('laya')
   })
 
@@ -94,7 +96,7 @@ describe('DecisionsProviderPicker', () => {
   it('marks the model this machine is suited to, and the one in use', async () => {
     renderPicker({ active: 'jev', memGb: 16 })
     const laya = (await screen.findByText('Laya')).closest('label') as HTMLElement
-    expect(laya.textContent).toMatch(/Recommended for this machine \(16\s*GB\)/)
+    expect(laya.textContent).toMatch(/Recommended for this machine's 16\s*GB of memory/)
     const plumb = screen.getByText('Plumb-4B').closest('label') as HTMLElement
     expect(plumb.textContent).not.toMatch(/Recommended/)
     const jev = screen.getByText('Jev, hosted by TypeSafe').closest('label') as HTMLElement
@@ -139,6 +141,8 @@ describe('DecisionsProviderPicker', () => {
     fireEvent.change(screen.getByRole('textbox'), { target: { value: '80' } })
     expect(screen.getByRole('alert').textContent).toMatch(/1024 to 65535/)
     expect((screen.getByRole('button', { name: 'Use this model' }) as HTMLButtonElement).disabled).toBe(true)
+    // No start command naming a port other than the one typed.
+    expect(screen.queryByText(/laya-serve/)).toBeNull()
     expect(save).not.toHaveBeenCalled()
   })
 
@@ -178,6 +182,22 @@ describe('DecisionsProviderPicker', () => {
     )
     expect(await screen.findByText('Could not read which decision model is configured.')).toBeTruthy()
     expect(screen.getByRole('button', { name: /Ask the agent/i })).toBeTruthy()
+  })
+
+  it('says so when the machine memory cannot be read, and still offers the models', async () => {
+    vi.spyOn(api, 'getDecisionsProvider').mockResolvedValue(providerOf('jev'))
+    vi.spyOn(api, 'system').mockRejectedValue(Object.assign(new Error('boom'), { status: 500 }))
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={client}>
+        <DecisionsProviderPicker frozen={false} />
+      </QueryClientProvider>,
+    )
+    expect(
+      await screen.findByText("Could not read this machine's memory, so no model is marked as recommended."),
+    ).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Ask the agent/i })).toBeTruthy()
+    expect(screen.getByRole('radio', { name: 'Plumb-4B' })).toBeTruthy()
   })
 
   it('starts the preset in use from the port its configured address names', async () => {

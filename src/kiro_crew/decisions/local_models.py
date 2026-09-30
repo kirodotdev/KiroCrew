@@ -26,7 +26,10 @@ import ipaddress
 from dataclasses import asdict, dataclass
 from urllib.parse import urlsplit
 
+import yarl
+
 from kiro_crew.config.sections import DECISION_PROVIDER_ENDPOINT_DEFAULT
+from kiro_crew.security import canonicalize_ip
 
 #: Preset id that means "hosted Jev at the shipped default endpoint".
 PRESET_JEV = "jev"
@@ -145,17 +148,47 @@ def is_loopback_endpoint(endpoint: object) -> bool:
         return False
     if parts.scheme not in ("http", "https") or "@" in parts.netloc:
         return False
+    # The host is read the way aiohttp dials it: ``yarl.URL.raw_host`` applies IDNA
+    # normalisation, which turns ``127。0。0。1``, fullwidth dots and circled digits
+    # into ``127.0.0.1``. Then the same canonicalisation the browser and link-unfurl
+    # host checks use: every spelling the resolver reads as a number without a
+    # lookup -- ``127.1``, ``0x7f.1``, ``2130706433``, ``[::ffff:127.0.0.1]`` --
+    # becomes the dotted quad it reaches. A name is left as it is and so is never
+    # resolved.
     try:
-        return ipaddress.ip_address(parts.hostname or "").is_loopback
+        dialed = yarl.URL(endpoint.strip()).raw_host or ""
+        addr = ipaddress.ip_address(canonicalize_ip(dialed))
     except ValueError:
         return False
+    # The unspecified address is dialled as this machine: connecting to 0.0.0.0 or
+    # [::] reaches whatever listens on the local port, so it is local for the key.
+    return addr.is_loopback or addr.is_unspecified
+
+
+def _is_route_built(endpoint: object) -> bool:
+    """Whether *endpoint* has exactly the shape :func:`endpoint_for` builds."""
+    if not isinstance(endpoint, str):
+        return False
+    try:
+        # ``urlsplit`` itself raises on an unbalanced ``[`` in a hand-written address.
+        port = urlsplit(endpoint.strip()).port
+    except ValueError:
+        return False
+    if port is None or not PORT_MIN <= port <= PORT_MAX:
+        return False
+    return endpoint.strip() == endpoint_for(port)
 
 
 def active_id(endpoint: object, model: object) -> str:
-    """Which preset the configured provider matches: a local id, ``jev``, or ``custom``."""
+    """Which preset the configured provider matches: a local id, ``jev``, or ``custom``.
+
+    A preset is only ever the address the provider route builds itself; any other
+    loopback spelling is a hand-written address and is reported as ``custom``, so
+    the card keeps showing where it is set and that no key is sent to it.
+    """
     if isinstance(endpoint, str) and endpoint.strip() == DECISION_PROVIDER_ENDPOINT_DEFAULT:
         return PRESET_JEV
-    if is_loopback_endpoint(endpoint):
+    if _is_route_built(endpoint):
         for m in LOCAL_MODELS:
             if model == m.model:
                 return m.id

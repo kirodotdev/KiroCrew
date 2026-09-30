@@ -15,12 +15,43 @@ import asyncio
 import logging
 import math
 from typing import Any
+from urllib.parse import urlsplit
 
 from kiro_crew.config.sections import DECISION_PROVIDER_MODEL_DEFAULT
-from kiro_crew.decisions.local_models import is_loopback_endpoint
+from kiro_crew.decisions.local_models import active_id, is_loopback_endpoint
 from kiro_crew.decisions.types import Answer, Answers, Choice, Question, is_model_id
 
 logger = logging.getLogger(__name__)
+
+#: Hand-written loopback addresses already warned about, so the withheld key is
+#: said once per address rather than once per decision. Keyed on scheme, host and
+#: port -- not the raw string, which a config writer could vary without end -- and
+#: bounded, so no sequence of writes can grow it past a handful of entries.
+_keyless_loopback_warned: set[str] = set()
+_KEYLESS_WARNED_MAX = 32
+
+
+def _warn_keyless_custom_loopback(endpoint: str, model: str) -> None:
+    """Say once that a hand-written loopback address is sent no Jev key.
+
+    A preset is a local model server and needs none. An address the owner wrote by
+    hand may be a tunnel to hosted Jev, which then answers 401 and the decisions
+    quietly stop; this line is what names the cause.
+    """
+    if active_id(endpoint, model) != "custom":
+        return
+    parts = urlsplit(endpoint.strip())
+    key = f"{parts.scheme}://{parts.hostname}:{parts.port}"
+    if key in _keyless_loopback_warned:
+        return
+    if len(_keyless_loopback_warned) >= _KEYLESS_WARNED_MAX:
+        _keyless_loopback_warned.clear()
+    _keyless_loopback_warned.add(key)
+    logger.warning(
+        "decisions: no Jev API key is sent to a loopback endpoint; a local proxy to "
+        "hosted Jev must add the credential itself"
+    )
+
 
 # Bound the complete body, including chunked responses, before JSON parsing.
 _MAX_RESPONSE_BYTES = 2 * 1024 * 1024
@@ -183,6 +214,8 @@ class JevOracle:
             if not api_key:
                 raise JevProtocolError("no api key configured")
             headers["Authorization"] = f"Bearer {api_key}"
+        else:
+            _warn_keyless_custom_loopback(self._endpoint, self._model)
 
         import aiohttp
 

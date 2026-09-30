@@ -87,7 +87,7 @@ Instead of Jev, decisions can be answered by an open-weight model running on you
 
 "Accuracy vs Jev" is how many of Jev's correct answers the model also got right on the 231 public items of [JevBench](https://github.com/fstandhartinger/jevbench), measured on a 10-core CPU with no GPU. A machine below 12 GB is better served by hosted Jev, and the card recommends it there.
 
-A local model is slower than Jev, and each decision point waits only a few seconds for an answer. A slower answer is skipped and the point does what it does without Jev, so a slow model makes fewer decisions, not worse ones. Plumb-4B is the better choice for the background points (risky tool calls, recalled memories, compaction scoring); Laya is fast enough for everything but misses more of the hard judgements.
+A local model is slower than Jev, and each decision point waits only a few seconds for an answer. A slower answer is skipped and the point does what it does without Jev, so a slow model makes fewer decisions, not worse ones. Two points do wait in front of you: picking the model for a turn, and placing a message you send mid-turn. With Plumb-4B each can add up to 5 seconds, and up to 2 seconds with Laya. The accuracy figures on the card were measured with no time limit, and the answers that take longest are mostly the hard ones, so treat them as an upper bound: with its 5-second limit, Plumb-4B skips many of the long, hard decisions its "hard" figure counts. Plumb-4B is the better choice for the background points (risky tool calls, recalled memories, compaction scoring); Laya is fast enough for everything but misses more of the hard judgements.
 
 You install and start the model's server yourself; Kiro Crew only sends it requests. Use a separate Python 3.12 virtual environment for each.
 
@@ -95,25 +95,29 @@ You install and start the model's server yourself; Kiro Crew only sends it reque
 
 ```bash
 python3.12 -m venv ~/plumb && source ~/plumb/bin/activate
-pip install "jevk5 @ git+https://github.com/allebee/jevk5@v0.2.0"
+pip install "jevk5 @ git+https://github.com/allebee/jevk5@85238d7be5527370c43206fe54cd752eb3134c1b"
 cat > plumb_serve_cpu.py <<'PY'
 import argparse
 from http.server import ThreadingHTTPServer
 
 import torch
+from huggingface_hub import snapshot_download
 from jevk5.runtime import JevK5
 from jevk5.server import make_handler
 
 p = argparse.ArgumentParser()
 p.add_argument("--port", type=int, default=8102)
 a = p.parse_args()
-model = JevK5("crh225/plumb-4b", device="cpu", dtype=torch.bfloat16, graphs=False)
+weights = snapshot_download(
+    "crh225/plumb-4b", revision="24f7bf77e7ee258a2d158c61ea2dce2b60321010"
+)
+model = JevK5(weights, device="cpu", dtype=torch.bfloat16, graphs=False)
 ThreadingHTTPServer(("127.0.0.1", a.port), make_handler(model, "crh225/plumb-4b")).serve_forever()
 PY
 python plumb_serve_cpu.py --port 8102
 ```
 
-The first start downloads about 8 GB of weights.
+The first start downloads about 8 GB of weights. Both the package and the weights are pinned to the exact commits the card's figures were measured with (`v0.2.0` of `jevk5`; the weights are unchanged since the `Plumb-4B v5` commit), so a later push to either repository cannot change what runs. Laya is pinned to its PyPI release.
 
 **Laya.**
 
