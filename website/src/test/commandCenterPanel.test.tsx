@@ -1,12 +1,13 @@
-import { useState } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { api } from '../api/client'
 import * as transport from '../chat-core/transport/sendTurn'
 import { createTestStore, renderWithProviders } from './helpers'
-import CommandCenterPanel, { PANEL_HEADING_ATTR } from '../pages/chat/command-center/CommandCenterPanel'
+import { sseConnected, sseDisconnected, sseSlots } from '../store/dashboardSlice'
+import CommandCenterPanel from '../pages/chat/command-center/CommandCenterPanel'
 import CommandCenterDock from '../pages/chat/command-center/CommandCenterDock'
 import { REQUEST_PUBLISHED_VIEW } from '../pages/chat/command-center/commandCenter.prompt'
+import { __resetSettledLatchesForTests } from '../pages/chat/command-center/useCommandCenter'
 
 vi.mock('../pages/chat/command-center/TaskDashboardFrame', () => ({
   default: ({ artifact }: { artifact: { name: string } }) => <div data-testid="published-task-view">{artifact.name}</div>,
@@ -20,26 +21,11 @@ function taskStore() {
   ] } })
 }
 
-// The DOM test environment has no layout. Model heading boxes independently of
-// the focus helper, including CSS-hidden ancestors, and restore the spy per test.
-function mockPanelHeadingRects() {
-  function isRendered(el: HTMLElement): boolean {
-    return !el.hidden && getComputedStyle(el).display !== 'none'
-      && (!el.parentElement || isRendered(el.parentElement))
-  }
-  vi.spyOn(HTMLElement.prototype, 'getClientRects').mockImplementation(function (this: HTMLElement) {
-    const rects: DOMRect[] = []
-    if (this.hasAttribute(PANEL_HEADING_ATTR) && isRendered(this)) {
-      rects.push(new DOMRect(0, 0, 100, 20))
-    }
-    return Object.assign(rects, { item: (index: number) => rects[index] ?? null })
-  })
-}
-
 describe('task dashboard host controls', () => {
-  afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks() })
+  afterEach(() => vi.unstubAllGlobals())
   beforeEach(() => {
     vi.restoreAllMocks()
+    __resetSettledLatchesForTests()
     vi.spyOn(api, 'kirocrewConfig').mockResolvedValue({ dashboard: { dynamic_dashboard_cards: false } })
     vi.spyOn(api, 'dashboardCard').mockResolvedValue({ card: null, status: 'waiting', published_at: null, content_event_at: null, stale: false })
     localStorage.clear()
@@ -58,10 +44,13 @@ describe('task dashboard host controls', () => {
   it('says a part is missing, not that fresh decisions are stale, when an optional source fails', async () => {
     vi.mocked(api.workflowRuns).mockRejectedValue(new Error('workflows not available'))
     renderWithProviders(<><CommandCenterPanel slot="root" active /><CommandCenterDock slot="root" onOpen={() => {}} /></>, { store: taskStore() })
-    expect(await screen.findAllByText('Some sources could not be loaded: workflow runs under “Live activity”. Anything that needs you is still current, and this notice clears once they load.')).toHaveLength(2)
+    expect(await screen.findAllByText('Some sources could not be loaded: workflow runs under “Progress”. Anything that needs you is still current, and this notice clears once they load.')).toHaveLength(2)
     // The exact text above names only the failed source; the others are not listed.
     expect(screen.queryByText(/The last known state may be out of date/)).not.toBeInTheDocument()
-    expect(screen.getAllByText(/Running/).length).toBeGreaterThan(0)
+    // The sources that did load still render: the board's items and the panel
+    // header's Blocked readout, not a stale placeholder.
+    expect(screen.getByText('Accepted contract')).toBeInTheDocument()
+    expect(screen.getByTestId('status-tile-blocked')).toHaveTextContent('1')
   })
 
   it('shows accepted progress and requests an authored dashboard only after a click', async () => {
@@ -126,6 +115,22 @@ describe('task dashboard host controls', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('Runner unavailable')
     expect(screen.getByText('Preparing checks')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Ask the agent/ })).not.toBeInTheDocument()
+  })
+
+  it('lists every running run, uncapped, when no work board stands in for them', async () => {
+    vi.mocked(api.sessionWorkProjection).mockResolvedValue({ value: { items: [] } })
+    const initial = createTestStore().getState()
+    const workers = Array.from({ length: 7 }, (_, i) => ({ key: `worker-${i + 1}`, title: `Worker ${i + 1}`, created_by: 'root', messages: 0, running: true }))
+    const store = createTestStore({ ...initial, dashboard: { ...initial.dashboard, connected: true, slots: [
+      { key: 'root', title: 'Conductor', messages: 0, running: true }, ...workers,
+    ] } })
+    renderWithProviders(<CommandCenterPanel slot="root" active />, { store })
+    expect(await screen.findByText('Worker 7')).toBeInTheDocument()
+    for (const title of ['Conductor', ...workers.map(w => w.title)]) expect(screen.getByText(title)).toBeInTheDocument()
+    expect(screen.getAllByTestId('panel-section-header').some(h => h.textContent === 'Progress')).toBe(true)
+    // The dock's list caps at six and hands the rest here; the panel caps nothing.
+    expect(screen.queryByRole('button', { name: /more in the Dashboard/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Open Dashboard' })).not.toBeInTheDocument()
   })
 
   it('keeps every section accessible with compact labels in a 320px panel', async () => {
@@ -242,125 +247,417 @@ describe('task dashboard host controls', () => {
   it('names approval-only session state Needs input, not Questions', async () => {
     const initial = taskStore().getState()
     const store = createTestStore({ ...initial, dashboard: { ...initial.dashboard, slots: initial.dashboard.slots.map(s => ({ ...s, pending_approval: s.key === 'worker' })) } })
-    renderWithProviders(<CommandCenterPanel slot="root" active />, { store })
-    expect(await screen.findByText('Needs input')).toBeVisible()
-    expect(screen.getByRole('radio', { name: /Questions/ })).toBeVisible()
+    renderWithProviders(<><CommandCenterPanel slot="root" active /><CommandCenterDock slot="root" onOpen={vi.fn()} /></>, { store })
+    expect(await screen.findByRole('radio', { name: 'Approvals 1' })).toBeVisible()
+    expect(screen.getByRole('radio', { name: 'Questions' })).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Needs you 1' }))
+    expect(within(screen.getByRole('region', { name: 'Needs you' })).getByText('Approval')).toBeInTheDocument()
   })
 
-  it('names the one-time outcome on the card, has no collapse toggle, and opens the existing panel', async () => {
+  it('opens one tile at a time, closes it on a second click, hides to a dot that keeps the count, and opens the existing panel', async () => {
     const open = vi.fn()
     vi.mocked(api.approvals).mockResolvedValue([{ id: 'permission', slot: 'worker', tool: 'shell', tool_input: 'git status' }])
     renderWithProviders(<CommandCenterDock slot="root" onOpen={open} />, { store: taskStore() })
-    await screen.findByText('Needs you: 1')
-    // Nothing is collapsible: the card is a hint that goes away once used.
-    expect(screen.queryByRole('button', { name: /summary/i })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { expanded: true })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { expanded: false })).not.toBeInTheDocument()
-    expect(screen.getByText('Running 1 · Blocked 1 · Approvals 1')).toBeVisible()
-    // The outcome is announced with the button, not just printed beside it.
-    const button = screen.getByRole('button', { name: 'Dashboard Needs you: 1' })
-    const hint = screen.getByText("Opens the Dashboard panel. This hint won't show again.")
-    expect(hint).toBeVisible()
-    expect(button).toHaveAttribute('aria-describedby', hint.id)
-    expect(button).toHaveAccessibleDescription("Opens the Dashboard panel. This hint won't show again.")
-    fireEvent.click(button)
+    const needsYou = await screen.findByRole('button', { name: 'Needs you 1' })
+    expect(screen.getByRole('group', { name: 'Dashboard' })).toContainElement(needsYou)
+    expect(screen.getByRole('button', { name: 'Progress 1/2' })).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.getByRole('button', { name: 'Blocked 1' })).toBeVisible()
+    // Two actions beside the three disclosures, so the row stays under the button cap.
+    expect(screen.getByTestId('status-tiles').querySelectorAll(':scope > button, :scope > div:not([role=group]) button')).toHaveLength(2)
+    // No explanatory sentence on the dock: numbers, a disclosure, two controls.
+    expect(screen.queryByText(/Running \d/)).not.toBeInTheDocument()
+    fireEvent.click(needsYou)
+    expect(needsYou).toHaveAttribute('aria-expanded', 'true')
+    expect(needsYou).toHaveAttribute('aria-controls', screen.getByRole('region', { name: 'Needs you' }).id)
+    // The row titles the command the way the transcript does; the control stays in the panel.
+    expect(screen.getByText('Git status')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Approve once' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Blocked 1' }))
+    expect(needsYou).toHaveAttribute('aria-expanded', 'false')
+    expect(needsYou).not.toHaveAttribute('aria-controls')
+    expect(screen.getByText('Needs evidence')).toBeInTheDocument()
+    // The row itself is the hand-off, named by its item; no row carries an Open
+    // Dashboard of its own, so the dock-level button stays the one labelled hand-off.
+    const blockedRow = within(screen.getByRole('region', { name: 'Blocked' })).getByRole('button', { name: 'Review changes' })
+    expect(blockedRow).toHaveAccessibleDescription('Needs evidence')
+    expect(screen.getAllByRole('button', { name: 'Open Dashboard' })).toHaveLength(1)
+    // A blocked item belongs to the Blocked tile alone, never to Progress.
+    fireEvent.click(screen.getByRole('button', { name: 'Progress 1/2' }))
+    expect(within(screen.getByRole('region', { name: 'Progress' })).queryByText('Review changes')).not.toBeInTheDocument()
+    // With a board the number is work done, so the list needs no sentence about runs.
+    expect(within(screen.getByRole('region', { name: 'Progress' })).queryByText(/showing what’s running now/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: 'Blocked' })).not.toBeInTheDocument()
+    // Clicking the open tile closes its list.
+    fireEvent.click(screen.getByRole('button', { name: 'Progress 1/2' }))
+    expect(screen.getByRole('button', { name: 'Progress 1/2' })).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByRole('region')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Hide status tiles' }))
+    expect(screen.queryByRole('button', { name: 'Needs you 1' })).not.toBeInTheDocument()
+    // The pill's name carries its visible title and the count, so a screen reader
+    // hears what is waiting; its visible text names what was hidden beside the count.
+    const dot = screen.getByRole('button', { name: 'Dashboard: Needs you: 1' })
+    expect(dot).toHaveTextContent('1')
+    expect(dot).toHaveTextContent('Dashboard')
+    expect(localStorage.getItem('mc-task-dashboard-hidden')).toBe('1')
+    fireEvent.click(dot)
+    fireEvent.click(within(screen.getByTestId('status-tiles')).getByRole('button', { name: 'Open Dashboard' }))
     expect(open).toHaveBeenCalledTimes(1)
-    await waitFor(() => expect(screen.queryByTestId('command-center-dock')).not.toBeInTheDocument())
   })
 
-  // The chat mounts the panel when its tab opens; the Crew page and a revisited
-  // chat tab keep it mounted and merely un-hide it. Focus must land in it either way.
-  it.each(['mounts on open', 'is un-hidden on open'])('moves focus from the clicked card into the opened panel when the panel %s', async mode => {
-    mockPanelHeadingRects()
-    vi.mocked(api.approvals).mockResolvedValue([{ id: 'permission', slot: 'worker', tool: 'shell', tool_input: 'git status' }])
-    function Host() {
-      const [open, setOpen] = useState(false)
-      return <>
-        <CommandCenterDock slot="root" onOpen={() => setOpen(true)} />
-        {(open || mode === 'is un-hidden on open') && <div hidden={!open}><CommandCenterPanel slot="root" active={open} /></div>}
-      </>
-    }
-    renderWithProviders(<Host />, { store: taskStore() })
-    const button = await screen.findByRole('button', { name: 'Dashboard Needs you: 1' })
-    // A keyboard user activates the focused button; the card then unmounts under them.
-    button.focus()
-    expect(document.activeElement).toBe(button)
-    fireEvent.click(button)
-    await waitFor(() => expect(screen.queryByTestId('command-center-dock')).not.toBeInTheDocument())
-    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('heading', { level: 2, name: 'Dashboard' })))
-    expect(document.activeElement).not.toBe(document.body)
-  })
-
-  it('skips a CSS-hidden heading and retries until the visible panel mounts', async () => {
-    mockPanelHeadingRects()
-    function Host() {
-      const [open, setOpen] = useState(false)
-      return <>
-        <CommandCenterDock slot="root" onOpen={() => setOpen(true)} />
-        <div style={{ display: 'none' }}>
-          <h2 tabIndex={-1} {...{ [PANEL_HEADING_ATTR]: '' }}>Hidden dashboard</h2>
-        </div>
-        {open && <CommandCenterPanel slot="root" active />}
-      </>
-    }
-    renderWithProviders(<Host />, { store: taskStore() })
-    const hiddenHeading = screen.getByText('Hidden dashboard')
-    const focusHidden = vi.spyOn(hiddenHeading, 'focus')
-    expect(hiddenHeading.closest('[hidden]')).toBeNull()
-    expect(hiddenHeading.getClientRects()).toHaveLength(0)
-    expect(screen.queryByRole('heading', { name: 'Dashboard' })).not.toBeInTheDocument()
-    const button = await screen.findByRole('button', { name: 'Dashboard' })
-    button.focus()
-    fireEvent.click(button)
-    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Dashboard' })))
-    expect(focusHidden).not.toHaveBeenCalled()
-  })
-
-  it('does not come back for that session once clicked, but still shows for another session', async () => {
-    const open = vi.fn()
-    vi.mocked(api.approvals).mockResolvedValue([{ id: 'permission', slot: 'worker', tool: 'shell', tool_input: 'git status' }])
-    const store = taskStore()
-    const view = renderWithProviders(<CommandCenterDock slot="root" onOpen={open} />, { store })
-    fireEvent.click(await screen.findByRole('button', { name: 'Dashboard Needs you: 1' }))
-    expect(open).toHaveBeenCalledTimes(1)
-    await waitFor(() => expect(screen.queryByTestId('command-center-dock')).not.toBeInTheDocument())
-    view.unmount()
-    // A remount (reload, session switch and back) reads the stored dismissal.
-    renderWithProviders(<CommandCenterDock slot="root" onOpen={open} />, { store })
-    await act(async () => { await Promise.resolve() })
-    expect(screen.queryByTestId('command-center-dock')).not.toBeInTheDocument()
-    expect(localStorage.getItem('mc-task-dashboard-dismissed:root')).toBe('1')
-    expect(localStorage.getItem('mc-task-dashboard-dismissed:other')).toBeNull()
-  })
-
-  it('still hides the clicked card for this mount when the dismissal cannot be persisted', async () => {
-    const open = vi.fn()
-    vi.mocked(api.approvals).mockResolvedValue([{ id: 'permission', slot: 'worker', tool: 'shell', tool_input: 'git status' }])
-    // Storage full or blocked: safeSetItem swallows the throw and returns false.
-    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new DOMException('quota', 'QuotaExceededError') })
-    renderWithProviders(<CommandCenterDock slot="root" onOpen={open} />, { store: taskStore() })
-    fireEvent.click(await screen.findByRole('button', { name: 'Dashboard Needs you: 1' }))
-    expect(open).toHaveBeenCalledTimes(1)
-    await waitFor(() => expect(screen.queryByTestId('command-center-dock')).not.toBeInTheDocument())
-    expect(localStorage.getItem('mc-task-dashboard-dismissed:root')).toBeNull()
-  })
-
-  it('issues no command-center reads for a dismissed session, while an undismissed one still reads', async () => {
-    localStorage.setItem('mc-task-dashboard-dismissed:root', '1')
-    const store = taskStore()
-    const view = renderWithProviders(<CommandCenterDock slot="root" onOpen={vi.fn()} />, { store })
-    await act(async () => { await Promise.resolve() })
-    expect(screen.queryByTestId('command-center-dock')).not.toBeInTheDocument()
-    expect(api.pendingQuestions).not.toHaveBeenCalled()
-    expect(api.approvals).not.toHaveBeenCalled()
-    expect(api.workflowRuns).not.toHaveBeenCalled()
-    expect(api.sessionWorkProjection).not.toHaveBeenCalled()
-    expect(api.artifacts).not.toHaveBeenCalled()
-    view.unmount()
-    // Control: the same spies fire for a session that was never dismissed.
-    localStorage.removeItem('mc-task-dashboard-dismissed:root')
+  it('lists running sessions when an omitted work board cannot supply progress', async () => {
+    vi.mocked(api.sessionWorkProjection).mockResolvedValue({ value: { items: [
+      { item_id: 'hidden-work', title: 'Omitted board item', state: 'dispatched' },
+    ], omitted: 1 } })
     renderWithProviders(<CommandCenterDock slot="root" onOpen={vi.fn()} />, { store: taskStore() })
-    await waitFor(() => expect(api.approvals).toHaveBeenCalled())
-    expect(api.pendingQuestions).toHaveBeenCalled()
+    fireEvent.click(await screen.findByRole('button', { name: 'Progress 1 running' }))
+    const progress = screen.getByRole('region', { name: 'Progress' })
+    expect(within(progress).getByText('Conductor')).toBeInTheDocument()
+    expect(within(progress).queryByText('Omitted board item')).not.toBeInTheDocument()
+  })
+
+  it('keeps the partial board items in the panel beside the running runs the dock lists', async () => {
+    vi.mocked(api.sessionWorkProjection).mockResolvedValue({ value: { items: [
+      { item_id: 'partial-work', title: 'Tracked board item', state: 'dispatched' },
+    ], omitted: 1 } })
+    const initial = taskStore().getState()
+    const both = createTestStore({ ...initial, dashboard: { ...initial.dashboard, slots: initial.dashboard.slots.map(s => ({ ...s, running: true })) } })
+    renderWithProviders(<CommandCenterPanel slot="root" active />, { store: both })
+    // The board still tracks this item, so the panel must not hide it merely
+    // because an omission keeps the board from being the progress source.
+    expect(await screen.findByText('Tracked board item')).toBeInTheDocument()
+    expect(screen.getByText('Conductor')).toBeInTheDocument()
+    expect(screen.getByText('Review worker')).toBeInTheDocument()
+    expect(screen.getAllByTestId('panel-section-header').some(h => h.textContent === 'Progress')).toBe(true)
+  })
+
+  it('shows the board items alone, without a run list, when the board is the progress source', async () => {
+    renderWithProviders(<CommandCenterPanel slot="root" active />, { store: taskStore() })
+    expect(await screen.findByText('Accepted contract')).toBeInTheDocument()
+    // The blocked item is listed under Blocked and stays on the board list too.
+    expect(screen.getAllByText('Review changes')).toHaveLength(2)
+    expect(screen.queryByText('Conductor')).not.toBeInTheDocument()
+  })
+
+  it('shows the dock for a lone session as soon as a question waits on the user', async () => {
+    const initial = createTestStore().getState()
+    const lone = createTestStore({ ...initial, dashboard: { ...initial.dashboard, connected: true, slots: [{ key: 'root', title: 'Solo', messages: 0, running: true }] } })
+    vi.mocked(api.sessionWorkProjection).mockResolvedValue({ value: { items: [] } })
+    vi.mocked(api.pendingQuestions).mockResolvedValue([{ slot: 'root', ask_id: 'q1', questions: [{ question: 'Which scope?', options: [{ label: 'A' }] }] }])
+    renderWithProviders(<CommandCenterDock slot="root" onOpen={vi.fn()} />, { store: lone })
+    expect(await screen.findByRole('button', { name: 'Needs you 1' })).toBeVisible()
+  })
+
+  it('disappears once every run rests and the plan is complete, but not while a plan is open', async () => {
+    vi.mocked(api.sessionWorkProjection).mockResolvedValue({ value: { items: [
+      { item_id: 'one', title: 'Accepted contract', state: 'accepted' },
+      { item_id: 'two', title: 'Review changes', state: 'accepted' },
+    ] } })
+    const initial = taskStore().getState()
+    const rest = createTestStore({ ...initial, dashboard: { ...initial.dashboard, slots: initial.dashboard.slots.map(s => ({ ...s, running: false })) } })
+    const { unmount } = renderWithProviders(<CommandCenterDock slot="root" onOpen={vi.fn()} />, { store: rest })
+    // Mounted while the inventory loads: an empty half-read must not count as settled.
+    expect(screen.getByTestId('command-center-dock')).toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByTestId('command-center-dock')).not.toBeInTheDocument())
+    unmount()
+    vi.mocked(api.sessionWorkProjection).mockResolvedValue({ value: { items: [
+      { item_id: 'one', title: 'Accepted contract', state: 'accepted' },
+      { item_id: 'two', title: 'Review changes', state: 'dispatched' },
+    ] } })
+    renderWithProviders(<CommandCenterDock slot="root" onOpen={vi.fn()} />, { store: rest })
+    expect(await screen.findByRole('button', { name: 'Progress 1/2' })).toBeVisible()
+  })
+
+  it('reads the board for a lone slot whose published view keeps the dock on screen, and settles only on what it holds', async () => {
+    const initial = createTestStore().getState()
+    const lone = createTestStore({ ...initial, dashboard: { ...initial.dashboard, connected: true, slots: [{ key: 'root', title: 'Solo', messages: 0, running: false }] } })
+    const openItem = [{ item_id: 'one', title: 'Review changes', state: 'dispatched' }]
+    vi.mocked(api.sessionWorkProjection).mockResolvedValue({ value: { items: openItem } } as never)
+    // No view and no team: the whole-log fold stays unread, so the open item
+    // costs nothing here and the dock has no reason to show.
+    const bare = renderWithProviders(<CommandCenterDock slot="root" onOpen={vi.fn()} />, { store: lone })
+    await waitFor(() => expect(api.artifacts).toHaveBeenCalled())
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)) })
+    expect(api.sessionWorkProjection).not.toHaveBeenCalled()
+    expect(screen.queryByTestId('command-center-dock')).not.toBeInTheDocument()
+    bare.unmount()
+    // A published view for this slot keeps the dock relevant on its own, so the
+    // board is read too: its open item is what stops the verdict.
+    vi.mocked(api.artifacts).mockResolvedValue({ artifacts: [{ slug: 'release', name: 'Release pipeline', kind: 'html', tags: ['task-dashboard'], session_key: 'dashboard:root' }] } as never)
+    const open = renderWithProviders(<CommandCenterDock slot="root" onOpen={vi.fn()} />, { store: lone })
+    expect(await screen.findByRole('button', { name: 'Progress 0/1' })).toBeVisible()
+    expect(api.sessionWorkProjection).toHaveBeenCalledTimes(1)
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)) })
+    expect(screen.getByTestId('command-center-dock')).toBeInTheDocument()
+    open.unmount()
+    vi.mocked(api.sessionWorkProjection).mockResolvedValue({ value: { items: [{ item_id: 'one', title: 'Review changes', state: 'accepted' }] } })
+    renderWithProviders(<CommandCenterDock slot="root" onOpen={vi.fn()} />, { store: lone })
+    // The dock is not on screen until the view lands, so wait for the read it
+    // triggers rather than for an absence that holds vacuously at mount.
+    await waitFor(() => expect(api.sessionWorkProjection).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(screen.queryByTestId('command-center-dock')).not.toBeInTheDocument())
+  })
+
+  it('opens the Progress list with the sentence its number needs: the plan, the runs, or nothing for a board', async () => {
+    const initial = taskStore().getState()
+    const running = initial.dashboard.slots.map(s => ({ ...s, running: true }))
+    // A plan supplies the number while the rows are the runs, so the lead says so.
+    vi.mocked(api.sessionWorkProjection).mockResolvedValue({ value: { items: [] } })
+    const plan = { tasks: [{ id: '1', text: 'Build', completed: true }, ...['2', '3', '4', '5'].map(id => ({ id, text: `Step ${id}`, completed: false }))], total: 5, completed: 1 }
+    const planned = createTestStore({ ...initial, dashboard: { ...initial.dashboard, slots: running.map(s => s.key === 'root' ? { ...s, todo: plan } : s) } })
+    const first = renderWithProviders(<CommandCenterDock slot="root" onOpen={vi.fn()} />, { store: planned })
+    fireEvent.click(await screen.findByRole('button', { name: 'Progress 1/5' }))
+    const planList = screen.getByRole('region', { name: 'Progress' })
+    expect(within(planList).getByText('Progress counts the plan; this list shows what’s running now.')).toBeInTheDocument()
+    expect(within(planList).queryByText('No task list yet — showing what’s running now.')).not.toBeInTheDocument()
+    expect(within(planList).getByText('Conductor')).toBeInTheDocument()
+    first.unmount()
+    // A board supplies both the number and the rows: no sentence to reconcile.
+    vi.mocked(api.sessionWorkProjection).mockResolvedValue({ value: { items: [
+      { item_id: 'one', title: 'Accepted contract', state: 'accepted' },
+      { item_id: 'two', title: 'Review changes', state: 'dispatched' },
+    ] } })
+    const second = renderWithProviders(<CommandCenterDock slot="root" onOpen={vi.fn()} />, { store: planned })
+    fireEvent.click(await screen.findByRole('button', { name: 'Progress 1/2' }))
+    const boardList = screen.getByRole('region', { name: 'Progress' })
+    expect(within(boardList).getByText('Review changes')).toBeInTheDocument()
+    expect(within(boardList).queryByText(/Progress counts the plan/)).not.toBeInTheDocument()
+    expect(within(boardList).queryByText(/No task list yet/)).not.toBeInTheDocument()
+    second.unmount()
+    // Neither: the number is the running count, and the lead says that.
+    vi.mocked(api.sessionWorkProjection).mockResolvedValue({ value: { items: [] } })
+    renderWithProviders(<CommandCenterDock slot="root" onOpen={vi.fn()} />, { store: createTestStore({ ...initial, dashboard: { ...initial.dashboard, slots: running } }) })
+    fireEvent.click(await screen.findByRole('button', { name: 'Progress 2 running' }))
+    const runList = screen.getByRole('region', { name: 'Progress' })
+    expect(within(runList).getByText('No task list yet — showing what’s running now.')).toBeInTheDocument()
+    expect(within(runList).queryByText(/Progress counts the plan/)).not.toBeInTheDocument()
+  })
+
+  it.each(['pending', 'errored'])('does not settle while an optional source is %s, and settles once it answers', async outcome => {
+    vi.mocked(api.sessionWorkProjection).mockResolvedValue({ value: { items: [
+      { item_id: 'one', title: 'Accepted contract', state: 'accepted' },
+      { item_id: 'two', title: 'Review changes', state: 'accepted' },
+    ] } })
+    let answer: (value: { artifacts: never[] }) => void = () => {}
+    if (outcome === 'pending') vi.mocked(api.artifacts).mockReturnValue(new Promise(resolve => { answer = resolve }))
+    else vi.mocked(api.artifacts).mockRejectedValue(new Error('views not available'))
+    const initial = taskStore().getState()
+    const rest = createTestStore({ ...initial, dashboard: { ...initial.dashboard, slots: initial.dashboard.slots.map(s => ({ ...s, running: false })) } })
+    const { queryClient } = renderWithProviders(<CommandCenterDock slot="root" onOpen={vi.fn()} />, { store: rest })
+    // Every run rests and the board is complete, so the model is settled and
+    // both decision sources have answered. The verdict still waits on the
+    // published views, an optional source.
+    expect(await screen.findByRole('button', { name: 'Progress 2/2' })).toBeVisible()
+    if (outcome === 'errored') expect(await screen.findByRole('alert')).toHaveTextContent('Some sources could not be loaded')
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)) })
+    expect(screen.getByTestId('command-center-dock')).toBeInTheDocument()
+    vi.mocked(api.artifacts).mockResolvedValue({ artifacts: [] })
+    if (outcome === 'pending') act(() => answer({ artifacts: [] }))
+    else await act(async () => { await queryClient.refetchQueries({ queryKey: ['command-center', 'artifacts'] }) })
+    await waitFor(() => expect(screen.queryByTestId('command-center-dock')).not.toBeInTheDocument())
+  })
+
+  it('keeps a settled dock gone through a connection drop, and brings it back for a new question', async () => {
+    vi.mocked(api.sessionWorkProjection).mockResolvedValue({ value: { items: [
+      { item_id: 'one', title: 'Accepted contract', state: 'accepted' },
+      { item_id: 'two', title: 'Review changes', state: 'accepted' },
+    ] } })
+    const initial = taskStore().getState()
+    const rest = createTestStore({ ...initial, dashboard: { ...initial.dashboard, slots: initial.dashboard.slots.map(s => ({ ...s, running: false })) } })
+    const { queryClient } = renderWithProviders(<CommandCenterDock slot="root" onOpen={vi.fn()} />, { store: rest })
+    await waitFor(() => expect(screen.queryByTestId('command-center-dock')).not.toBeInTheDocument())
+    // A websocket drop makes the inventory stale, which is not evidence of new
+    // work: the task that was over stays over.
+    act(() => { rest.dispatch(sseDisconnected()) })
+    expect(screen.queryByTestId('command-center-dock')).not.toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    // A question waiting on the user is: the dock returns with its Needs you tile.
+    vi.mocked(api.pendingQuestions).mockResolvedValue([{ slot: 'root', ask_id: 'q1', questions: [{ question: 'Which scope?', options: [{ label: 'A' }] }] }])
+    await act(async () => { await queryClient.refetchQueries({ queryKey: ['command-center', 'questions'] }) })
+    expect(await screen.findByRole('button', { name: 'Needs you 1' })).toBeVisible()
+  })
+
+  it('keeps a settled dock gone after a disconnected remount until a complete read shows new work', async () => {
+    vi.mocked(api.sessionWorkProjection).mockResolvedValue({ value: { items: [
+      { item_id: 'one', title: 'Accepted contract', state: 'accepted' },
+      { item_id: 'two', title: 'Review changes', state: 'accepted' },
+    ] } })
+    const initial = taskStore().getState()
+    const store = createTestStore({ ...initial, dashboard: { ...initial.dashboard, slots: initial.dashboard.slots.map(s => ({ ...s, running: false })) } })
+    const first = renderWithProviders(<CommandCenterDock slot="root" onOpen={vi.fn()} />, { store })
+    await waitFor(() => expect(screen.queryByTestId('command-center-dock')).not.toBeInTheDocument())
+    first.unmount()
+
+    vi.mocked(api.sessionWorkProjection).mockClear()
+    act(() => { store.dispatch(sseDisconnected()) })
+    renderWithProviders(<CommandCenterDock slot="root" onOpen={vi.fn()} />, { store })
+    await waitFor(() => expect(api.sessionWorkProjection).toHaveBeenCalledTimes(1))
+    expect(screen.queryByTestId('command-center-dock')).not.toBeInTheDocument()
+
+    act(() => {
+      store.dispatch(sseConnected())
+      store.dispatch(sseSlots([
+        { key: 'root', title: 'Conductor', messages: 0, running: true },
+        { key: 'worker', title: 'Review worker', created_by: 'root', messages: 0, running: true },
+      ]))
+    })
+    expect(await screen.findByTestId('command-center-dock')).toBeVisible()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('does not apply one root settled latch to another root', async () => {
+    vi.mocked(api.sessionWorkProjection).mockResolvedValue({ value: { items: [
+      { item_id: 'one', title: 'Accepted contract', state: 'accepted' },
+      { item_id: 'two', title: 'Review changes', state: 'accepted' },
+    ] } })
+    const initial = taskStore().getState()
+    const store = createTestStore({ ...initial, dashboard: { ...initial.dashboard, slots: initial.dashboard.slots.map(s => ({ ...s, running: false })) } })
+    const first = renderWithProviders(<CommandCenterDock slot="root" onOpen={vi.fn()} />, { store })
+    await waitFor(() => expect(screen.queryByTestId('command-center-dock')).not.toBeInTheDocument())
+    first.unmount()
+
+    act(() => {
+      store.dispatch(sseDisconnected())
+      store.dispatch(sseSlots([
+        { key: 'root', title: 'Conductor', messages: 0, running: false },
+        { key: 'other', title: 'Other conductor', messages: 0, running: true },
+        { key: 'other-worker', title: 'Other worker', created_by: 'other', messages: 0, running: true },
+      ]))
+    })
+    renderWithProviders(<CommandCenterDock slot="other" onOpen={vi.fn()} />, { store })
+    expect(await screen.findByRole('button', { name: 'Progress 2 running' })).toBeVisible()
+    expect(screen.getByRole('alert')).toHaveTextContent('Some sources are unavailable')
+  })
+
+  it('keeps a lone session dock settled while the panel beside it still holds an open board item', async () => {
+    // The dock of a lone slot with no published view leaves the board unread;
+    // the panel always reads it. Their verdicts can legitimately differ, so each
+    // latches its own: the panel's open item must not erase the dock's rest.
+    vi.mocked(api.workflowRuns).mockResolvedValue({ runs: [{ run_id: 'wf-1', name: 'Nightly audit', status: 'finished', session_key: 'root' }] } as never)
+    const initial = createTestStore().getState()
+    const store = createTestStore({ ...initial, dashboard: { ...initial.dashboard, connected: true, slots: [
+      { key: 'root', title: 'Conductor', messages: 0, running: false },
+    ] } })
+    renderWithProviders(<><CommandCenterDock slot="root" onOpen={vi.fn()} /><CommandCenterPanel slot="root" active /></>, { store })
+    // The panel reads the board and lists its blocked item; the dock, which does
+    // not, has only a finished run to show and settles away.
+    expect((await screen.findAllByText('Review changes')).length).toBeGreaterThan(0)
+    await waitFor(() => expect(screen.queryByTestId('command-center-dock')).not.toBeInTheDocument())
+    expect(api.sessionWorkProjection).toHaveBeenCalledTimes(1)
+    // A connection drop makes every read incomplete. The dock's latch, had the
+    // panel released it, would let the drop bring a finished dock back.
+    act(() => { store.dispatch(sseDisconnected()) })
+    expect(screen.queryByTestId('command-center-dock')).not.toBeInTheDocument()
+    expect(screen.getAllByText('Review changes').length).toBeGreaterThan(0)
+  })
+
+  it('says what the Progress tile counts without a plan, under the same label', async () => {
+    vi.mocked(api.sessionWorkProjection).mockResolvedValue({ value: { items: [] } })
+    const initial = taskStore().getState()
+    // Two running sessions and no board: the number is runs, not work done.
+    const both = createTestStore({ ...initial, dashboard: { ...initial.dashboard, slots: initial.dashboard.slots.map(s => ({ ...s, running: true })) } })
+    renderWithProviders(<CommandCenterDock slot="root" onOpen={vi.fn()} />, { store: both })
+    const progress = await screen.findByRole('button', { name: 'Progress 2 running' })
+    expect(progress).toHaveTextContent('2 running')
+    expect(within(progress).getByText('Progress')).toBeInTheDocument()
+    // The cell says what it counts; the title says why no done count shows.
+    expect(progress).toHaveAttribute('title', 'No task list yet — showing what’s running now.')
+    // The disclosed list opens with that same sentence as a row, not a hover.
+    fireEvent.click(progress)
+    const list = screen.getByRole('region', { name: 'Progress' })
+    expect(within(list).getByText('No task list yet — showing what’s running now.')).toBeInTheDocument()
+    expect(within(list).getByText('Conductor')).toBeInTheDocument()
+    fireEvent.click(progress)
+    // Blocked and Needs you both read as "stuck": each title names who acts.
+    expect(screen.getByRole('button', { name: 'Blocked 0' })).toHaveAttribute('title', 'Waiting on the agent — runs or items that are stuck')
+    expect(screen.getByRole('button', { name: 'Needs you 0' })).toHaveAttribute('title', 'Waiting on you — questions and approvals')
+    // The panel readout agrees with the dock.
+    renderWithProviders(<CommandCenterPanel slot="root" active />, { store: both })
+    const readout = await screen.findByTestId('status-tile-progress')
+    expect(readout).toHaveTextContent('2 running')
+    expect(within(readout).getByText('Progress')).toBeInTheDocument()
+  })
+
+  it('labels the open button beside its icon and keeps the row at two actions', async () => {
+    renderWithProviders(<CommandCenterDock slot="root" onOpen={vi.fn()} />, { store: taskStore() })
+    await screen.findByRole('button', { name: 'Progress 1/2' })
+    const tiles = screen.getByTestId('status-tiles')
+    const open = within(tiles).getByRole('button', { name: 'Open Dashboard' })
+    expect(open).toHaveTextContent('Open Dashboard')
+    expect(open.querySelector('svg')).not.toBeNull()
+    expect(tiles.querySelectorAll(':scope > div:not([role=group]) button')).toHaveLength(2)
+  })
+
+  it('shows the dock for work that arrives while disconnected, arming the settled latch only after a real read', async () => {
+    vi.mocked(api.sessionWorkProjection).mockResolvedValue({ value: { items: [] } })
+    const initial = createTestStore().getState()
+    // Mounted before any slot list has landed, with the socket down: nothing is
+    // readable yet, so the empty model must not count as a settled task.
+    const store = createTestStore({ ...initial, dashboard: { ...initial.dashboard, connected: false, slots: [] } })
+    renderWithProviders(<CommandCenterDock slot="root" onOpen={vi.fn()} />, { store })
+    expect(screen.queryByTestId('command-center-dock')).not.toBeInTheDocument()
+    // Running work lands while still disconnected: the inventory is stale, and
+    // stale is not settled, so the dock shows with its stale notice.
+    act(() => { store.dispatch(sseSlots([
+      { key: 'root', title: 'Conductor', messages: 0, running: true },
+      { key: 'worker', title: 'Review worker', created_by: 'root', messages: 0, running: true },
+    ])) })
+    expect(await screen.findByRole('button', { name: 'Progress 2 running' })).toBeVisible()
+    expect(screen.getByRole('alert')).toHaveTextContent('Some sources are unavailable')
+    // Reconnected with everything resting: the first complete read settles it.
+    act(() => {
+      store.dispatch(sseConnected())
+      store.dispatch(sseSlots([
+        { key: 'root', title: 'Conductor', messages: 0, running: false },
+        { key: 'worker', title: 'Review worker', created_by: 'root', messages: 0, running: false },
+      ]))
+    })
+    await waitFor(() => expect(screen.queryByTestId('command-center-dock')).not.toBeInTheDocument())
+  })
+
+  it('opens the panel from a Needs-you row, which is named by its request and mounts no control', async () => {
+    const open = vi.fn()
+    vi.mocked(api.approvals).mockResolvedValue([{ id: 'permission', slot: 'worker', tool: 'shell', tool_input: 'git status' }])
+    renderWithProviders(<CommandCenterDock slot="root" onOpen={open} />, { store: taskStore() })
+    fireEvent.click(await screen.findByRole('button', { name: 'Needs you 1' }))
+    const row = within(screen.getByRole('region', { name: 'Needs you' })).getByRole('button', { name: 'Git status' })
+    // One request, one singular badge; the plural "Approvals" stays a tab name.
+    expect(row).toHaveAccessibleDescription('Approval')
+    // The trailing open-panel glyph says the click shows the item rather than
+    // performing it, and adds nothing to the row's name.
+    expect(row.querySelector('svg.lucide-panel-right-open')).toHaveAttribute('aria-hidden', 'true')
+    expect(row).toHaveAccessibleName('Git status')
+    expect(screen.queryByRole('button', { name: 'Approve once' })).not.toBeInTheDocument()
+    fireEvent.click(row)
+    expect(open).toHaveBeenCalledTimes(1)
+  })
+
+  it('mentions the agent-designed page in the panel help only once a published view exists', async () => {
+    const first = renderWithProviders(<CommandCenterPanel slot="root" active />, { store: taskStore() })
+    await screen.findByText('Accepted contract')
+    expect(screen.getByRole('button', { name: 'More information' })).toHaveAttribute('title', expect.not.stringContaining('agent-designed page'))
+    first.unmount()
+    vi.mocked(api.artifacts).mockResolvedValue({ artifacts: [{ slug: 'release', name: 'Release pipeline', kind: 'html', tags: ['task-dashboard'], session_key: 'dashboard:root' }] } as never)
+    renderWithProviders(<CommandCenterPanel slot="root" active />, { store: taskStore() })
+    await screen.findByTestId('published-task-view')
+    expect(screen.getByRole('button', { name: 'More information' })).toHaveAttribute('title', expect.stringContaining('The agent-designed page cannot approve actions.'))
+  })
+
+  it('hands focus to the counterpart control when the tiles are hidden or shown from the dock', async () => {
+    // A mount that starts hidden takes nothing: only the dock's own toggle moves focus.
+    localStorage.setItem('mc-task-dashboard-hidden', '1')
+    const first = renderWithProviders(<CommandCenterDock slot="root" onOpen={vi.fn()} />, { store: taskStore() })
+    expect(await screen.findByRole('button', { name: 'Dashboard: Show status tiles' })).not.toHaveFocus()
+    first.unmount()
+    localStorage.clear()
+    renderWithProviders(<CommandCenterDock slot="root" onOpen={vi.fn()} />, { store: taskStore() })
+    const hide = await screen.findByRole('button', { name: 'Hide status tiles' })
+    hide.focus()
+    fireEvent.click(hide)
+    const dot = screen.getByRole('button', { name: 'Dashboard: Show status tiles' })
+    expect(dot).toHaveFocus()
+    // Quiet form: no count, but the pill still says what it stands for.
+    expect(dot).toHaveTextContent('Dashboard')
+    fireEvent.click(dot)
+    expect(screen.getByRole('button', { name: 'Hide status tiles' })).toHaveFocus()
   })
 })

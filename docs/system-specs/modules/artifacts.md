@@ -54,8 +54,7 @@ native controls. Disabling automatic content does not disable those controls.
 
 An HTML/widget artifact tagged `task-dashboard` is a model-authored task view,
 not a fixed dashboard schema. The chat's **Dynamic Dashboard** side-panel tab
-(labelled **Dashboard**; a one-time hint card above the composer opens it once
-and then stays gone for that session, the tab being the way back) and Crew's
+(labelled **Dashboard**; the three-tile dock above the composer opens it) and Crew's
 single **Dashboard** tab select
 only artifacts whose recorded originating slot is the current slot or a durable
 `created_by` descendant. A presentation-only child session can therefore publish
@@ -128,13 +127,60 @@ session summaries are active on a page, with one automatic card and at most one
 selected saved view each: at most 24 iframe documents, not twelve mounted wrappers.
 Native attention controls remain mounted independently to preserve drafts across
 filters and pages. The task panel
-mounts at most twelve session frames (workers among them carry no automatic card)
-plus its selected task publication; Crew's
+mounts its own session's automatic card (a worker carries none) plus its selected
+task publication. Under Progress it shows the work items whenever the board has
+any, and adds the running runs, uncapped, only when the board is not the progress
+source (absent, or with omitted entries): that is when the dock's Progress
+list shows runs, and that list caps its rows and hands its overflow to the panel,
+so the rest must be readable there. It carries no live run roster beyond that; idle and done runs
+stay with the sidebar's Subagents and Workflows tabs; Crew's
 existing protected-template renderer retains its own lifecycle.
 The optional creation request is a model-facing English prompt; translated UI
 copy names the published view, and the artifacts skill owns its technical
 publishing contract. Source failures render through the shared error notice in
 both the dock and panel, with no navigation hand-off beside unsent answer drafts.
+The chat dock above the composer, in the composer's own column, is three tiles
+and nothing else: progress (accepted or checked-off count, else the running
+count written as "N running", under one Progress label either way), blocked, and Needs you. Each tile
+is a disclosure button for its own short list (`aria-expanded`; the open tile
+points at its region with `aria-controls`, and a second click closes it), grouped
+under the Dashboard name; in a narrow column the tiles wrap onto further rows
+rather than truncating their labels. Beside them sit two actions, open the
+Dashboard tab (icon plus its "Open Dashboard" text) and hide. A tile discloses a list read from the same source as its
+number: the running work items when a board exists (a blocked item is the
+Blocked tile's row, a waiting one is nobody's progress), else the running runs;
+the blocked runs and items; the requests. Each row hands off to the panel (the
+row is the button, named by its item) and never mounts an answer or approval
+control, so a draft has one home: the panel, which the dock's labelled Open
+Dashboard button also reaches. The panel loads lazily with its tab, so the shell chunk carries only the
+dock; a panel chunk that fails to load is caught by a boundary local to the tab,
+which says so through the shared error notice with no navigation hand-off, and
+never reaches the route boundary that would replace the chat page. Opening the
+panel moves focus to the panel heading once it shows, unless the user
+has moved focus elsewhere meanwhile. The dock hides to a single pill that
+carries the hide glyph, or a red count while something needs the user (persisted
+per browser as `mc-task-dashboard-hidden`), and it is one element in both forms;
+the toggle unmounts the pressed control, so a hide or show made from the dock's
+own controls hands focus to the counterpart (hide lands on the pill, show on the
+hide button), while a mount or a persisted value takes no focus. It is removed
+once a complete, current read shows every run at rest, no request waiting and
+the plan complete; a paused workflow rests (no tile counts it), a queued worker
+or an item's open question does not; a work board settles when every item is
+accepted, rejected or abandoned, a half-loaded or disconnected inventory is
+never settled, and a session with an open plan stays shown even when a board
+supplies the progress number. That verdict is retained in page memory per
+root across dock remounts, but is not persisted across a page reload: one entry
+per root that ever settled in this page lifetime, released when that root shows
+new work, cleared by reload; it arms only
+after a complete read of a readable scope: before the first slot list lands
+nothing is loading or stale and the empty model is vacuously settled, which
+must not count. Once a
+complete read has settled the task, a later connection drop, source error or
+remount's loading window does not bring the dock back, and only evidence of new
+work releases it — a complete read showing something running, blocked or asking,
+or a live slot state that already says someone is waiting on the user. The panel header carries the same three
+tiles; its explanatory copy (scope, permission-mode note, containment statement,
+last-checked time) lives behind one info control.
 No command-center source polls. The dock, panel and all-session view read each
 source once and re-read it on the frame that announces its change: `approval` and
 `approval_resolved` for both approval systems, `question_card` and its retirement
@@ -145,7 +191,9 @@ the workflow snapshot the store's live runs are laid over, and the store's own
 workflow heal read replacing that snapshot; a reconnect re-reads all of them.
 Window focus re-reads a command-center source only while it has failed, since the frame
 that would refresh it may never come; a healthy source is left to its frames. The dock, mounted in every chat, reads the work
-board only for a team (a slot with sessions created under it); the panel always
+board only for a team (a slot with sessions created under it) or whenever a published
+view keeps the dock relevant for that slot, so a verdict never settles over an item the
+unread board still holds open; the panel always
 does. Only questions and approvals decide the stale notice and the "updated"
 clock, so an optional source that fails (workflows answer 503 while their service
 starts) cannot hide a fresh decision; the dock, panel and all-session view show
@@ -155,7 +203,11 @@ so a missing source is never read as an empty one. A work board the dock does no
 open panel cached one. Approvals share the app shell's
 `global-approvals` cache, which keeps its own 30-second refresh and is re-read on
 reconnect. A `slot_projection` frame never cancels a work read in flight; one
-more read follows it once it settles. The all-session view takes its sort order
+more read follows it once it settles. The shared model's session-state rule — a
+session is running while its turn runs or while subagents run, it is
+orchestrating, or it holds queued messages; a paused workflow waits and a planning
+one runs — also governs the all-session view's Running badge and its sort
+priority, which read the same model rather than the slot's turn flag alone. The all-session view takes its sort order
 when the set of sessions, what needs attention, the filter or the page changes,
 not on activity, since moving a card reloads its iframes and their single-use
 documents; a card shows the published views of its whole

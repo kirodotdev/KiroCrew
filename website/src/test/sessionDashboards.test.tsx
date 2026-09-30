@@ -89,6 +89,24 @@ describe('all session dashboards', () => {
     await waitFor(() => expect(domOrder()[0]).toBe('slot-2'))
   })
 
+  it.each([['subagents_running', { subagents_running: true }], ['queue_depth', { queue_depth: 1 }]] as const)(
+    'shows Running and sorts ahead of an idle session for a turn-idle slot with %s', async (_flag, delegated) => {
+      vi.mocked(api.pendingQuestions).mockResolvedValue([])
+      vi.mocked(api.approvals).mockResolvedValue([])
+      const initial = createTestStore().getState()
+      // Neither slot has a turn in flight; the second one still has work going.
+      const fleet = createTestStore({ ...initial, dashboard: { ...initial.dashboard, connected: true, slotsLoaded: true, slots: [
+        { key: 'idle', title: 'Idle session', messages: 2, running: false, last_turn_ts: '2030-01-01T00:00:00Z' },
+        { key: 'delegated', title: 'Delegating session', messages: 2, running: false, ...delegated },
+      ] } })
+      renderWithProviders(<SessionDashboardsPage />, { store: fleet })
+      await screen.findByText('Summary for delegated')
+      const cards = visualCards()
+      expect(cards.map(c => c.getAttribute('data-slot'))).toEqual(['delegated', 'idle'])
+      expect(within(cards[0]).getByText('Running')).toBeVisible()
+      expect(within(cards[1]).getByText('Idle')).toBeVisible()
+    })
+
   it('counts requests, not distinct sessions, consistently in the filter and inbox', async () => {
     vi.mocked(api.pendingQuestions).mockResolvedValue([
       { slot: 'slot-1', ask_id: 'one', questions: [{ question: 'First decision?', options: [{ label: 'Stable' }] }] },

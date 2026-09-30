@@ -120,9 +120,12 @@ describe('task dashboard sources and containment', () => {
     expect(teamRoots(slots, 'a')).toEqual(['a', 'b'])
   })
 
-  it('reads the work board from the dock only for a team, and never refetches on focus', async () => {
+  it('reads the work board from the dock only for a team or a slot with a published view, and never refetches on focus', async () => {
     const initial = store().getState()
     const solo = createTestStore({ ...initial, dashboard: { ...initial.dashboard, slots: [{ key: 'root', messages: 0, running: true }] } })
+    // A lone slot with no published view: nothing keeps the dock on screen, so
+    // the whole-log fold stays unread.
+    vi.mocked(api.artifacts).mockResolvedValue({ artifacts: [] })
     const dock = renderHookWithProviders(() => ({ ...useCommandCenter('root', true, 'task', { dock: true }), queryClient: useQueryClient() }), { store: solo })
     await waitFor(() => expect(dock.result.current.loading).toBe(false))
     expect(api.sessionWorkProjection).not.toHaveBeenCalled()
@@ -136,6 +139,14 @@ describe('task dashboard sources and containment', () => {
     }
     expect(observers.every(o => onFocus(o) === false)).toBe(true)
     dock.unmount()
+    // The same lone slot with its own published view: the dock is on screen for
+    // that view, so its verdict needs the board too.
+    vi.mocked(api.artifacts).mockResolvedValue({ artifacts: [artifact('own', 'dashboard:root')] })
+    const viewed = renderHookWithProviders(() => useCommandCenter('root', true, 'task', { dock: true }), { store: solo })
+    await waitFor(() => expect(viewed.result.current.loading).toBe(false))
+    expect(api.sessionWorkProjection).toHaveBeenCalledWith('root')
+    viewed.unmount()
+    vi.mocked(api.sessionWorkProjection).mockClear()
     const team = renderHookWithProviders(() => useCommandCenter('root', true, 'task', { dock: true }), { store: store() })
     await waitFor(() => expect(team.result.current.loading).toBe(false))
     expect(api.sessionWorkProjection).toHaveBeenCalledWith('root')
@@ -149,6 +160,7 @@ describe('task dashboard sources and containment', () => {
   it('never shows a board the panel cached once the dock stops reading it', async () => {
     const initial = store().getState()
     const solo = createTestStore({ ...initial, dashboard: { ...initial.dashboard, slots: [{ key: 'root', messages: 0, running: true }] } })
+    vi.mocked(api.artifacts).mockResolvedValue({ artifacts: [] })
     vi.mocked(api.sessionWorkProjection).mockResolvedValue({ value: { items: [{ item_id: 'one', title: 'Old item', state: 'accepted' }] } })
     const both = renderHookWithProviders(() => ({ panel: useCommandCenter('root'), dock: useCommandCenter('root', true, 'task', { dock: true }) }), { store: solo })
     await waitFor(() => expect(both.result.current.panel.workItems).toHaveLength(1))

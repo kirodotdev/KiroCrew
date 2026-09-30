@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback, useMemo, Fragment, type ReactNode } from 'react'
+import { useState, useRef, useEffect, useCallback, useMemo, Fragment, Suspense, lazy, type ReactNode } from 'react'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import { useRailWidth } from '../../hooks/useRailWidth'
 import { useDevMode } from '../../hooks/useDevMode'
@@ -8,7 +8,9 @@ import { Reorder } from 'framer-motion'
 import { FileText, Bot, Workflow, ScrollText, MessageCircleQuestionMark, TerminalSquare, GitCompare, GitPullRequest, GitBranch, History, Plus, MoreHorizontal, X, Hash, Pen, Columns2, Component, Globe, CircleDot, Folder, Folders, Link as LinkIcon, PanelRight, PanelBottom, Layers, ListTree, Pin } from 'lucide-react'
 import { PanelRightLight } from '../../components/icons/panels'
 import ActivityViewer from './ActivityViewer'
-import CommandCenterPanel from './command-center/CommandCenterPanel'
+// Loaded with its tab, not the shell: the panel (attention cards, tile lists,
+// the session card frame) is only mounted once a Dashboard tab exists.
+const CommandCenterPanel = lazy(() => import('./command-center/CommandCenterPanel'))
 import DiffPanel from '../../components/DiffPanel'
 import DetailPanel from '../../components/DetailPanel'
 import MarkdownPanel, { type MarkdownPanelHandle } from '../../components/MarkdownPanel'
@@ -36,6 +38,7 @@ import {
 } from '../../components/ui/dropdown-menu'
 import { ContentSkeleton } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
+import ErrorBoundary from '../../components/ErrorBoundary'
 import { fetchFileRead, fileReadQueryKey, FILE_READ_STALE_MS, isPartialRead } from '../../utils/fileReadQuery'
 import { errMessage } from '../../utils/thunkError'
 import { useReducedMotion } from '../../hooks/useReducedMotion'
@@ -1272,7 +1275,17 @@ export default function SidePanel({
           // Keep the authored document and per-question drafts alive on tab switches.
           if (t.kind === 'command-center') return (
             <div key={`${t.id}:${slot}`} className="absolute inset-0" hidden={!isActive}>
-              <CommandCenterPanel slot={slot ?? null} active={isActive && !panelHidden} />
+              {/* Local boundary: the panel is a lazy chunk, and a chunk that fails
+                  to load after main.tsx's preload-reload heal declined would
+                  otherwise reject up to the ROUTE boundary and replace the whole
+                  chat page with an error card. The fallback is the shared error
+                  surface, not nothing, so the tab says why it is empty; the dock
+                  above the composer keeps working from its own chunk. */}
+              {/* No hand-off: the adjacent chat composer holds unsent text and the
+                  panel's own answer drafts live in this tab. */}
+              <ErrorBoundary scope="command-center" fallback={<ErrorNotice className="m-3" message={i18nT('commandCenter.panel_load_failed')} />}>
+                <Suspense fallback={null}><CommandCenterPanel slot={slot ?? null} active={isActive && !panelHidden} /></Suspense>
+              </ErrorBoundary>
             </div>
           )
           // The pinned Files tab renders the file-browser home directly — it

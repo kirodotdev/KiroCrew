@@ -883,11 +883,9 @@ auto-patrol status, and the DM thread's own Crew Log record under the heading
 driven sessions listed above it.
 
 **Dashboard** is the single dashboard entrance for the crewmate. Dynamic
-Dashboard adds native task progress, descendant-session summaries, questions
-and approvals to this tab. The chat's one-time **Dashboard** hint card above the
-composer opens this tab and moves keyboard focus into it, then does not return
-for that session; the tab itself is the way back, and the panel's + menu offers
-no parallel Dynamic Dashboard tab. The existing published
+Dashboard adds native task progress, questions and approvals to this tab. The
+chat's three-tile dock above the composer opens this tab from its open-panel
+action; the panel's + menu offers no parallel Dynamic Dashboard tab. The existing published
 webview (`GET /api/members/{slug}/panel?member=<exact-name>`) remains a view inside
 it, selectable alongside task-dashboard artifacts. A pipeline-specific board is
 one published view, not a separate dashboard product. The existing publisher,

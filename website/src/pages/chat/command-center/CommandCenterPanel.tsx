@@ -1,26 +1,24 @@
 import { useState, type ReactNode } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
-import { Link } from 'react-router-dom'
-import { Activity, ArrowUpRight, LayoutDashboard, MessageSquare, ShieldCheck } from 'lucide-react'
+import { LayoutDashboard, MessageSquare, ShieldCheck } from 'lucide-react'
 import { PanelSectionHeader, Btn } from '../../../components/ui'
 import SegmentedControl from '../../../components/SegmentedControl'
 import SimpleSelect from '../../../components/SimpleSelect'
 import ErrorNotice from '../../../components/ErrorNotice'
-import { fmtDateTime, fmtNumber } from '../../../i18n/format'
+import InfoTip from '../../../components/InfoTip'
+import { fmtDateTime } from '../../../i18n/format'
 import { missingSourcesNotice, useCommandCenter } from './useCommandCenter'
 import TaskDashboardFrame from './TaskDashboardFrame'
 import SessionStatusFrame from './SessionStatusFrame'
 import AutomaticCardSetting from './AutomaticCardSetting'
 import AttentionCard from './AttentionCard'
+import StatusTiles from './StatusTiles'
+import TileList from './TileList'
 import { APPROVAL_MODE_KEYS, runTitle, type RunState } from './model'
+import { PANEL_HEADING_ATTR } from './panelHeading'
 import { sendTurn } from '../../../chat-core/transport/sendTurn'
 import { REQUEST_PUBLISHED_VIEW } from './commandCenter.prompt'
-
-/** Marks the panel heading the chat's one-time Dashboard card moves focus to
- * once it has opened the panel: the card unmounts on click, so focus needs a
- * home that exists afterwards, and the heading names where the user landed. */
-export const PANEL_HEADING_ATTR = 'data-command-center-heading'
 
 const STATE_KEYS: Record<RunState, string> = {
   running: 'commandCenter.running', idle: 'commandCenter.idle', done: 'commandCenter.done',
@@ -39,6 +37,10 @@ export default function CommandCenterPanel({ slot, active, publishedView, sessio
 }) {
   const { t } = useTranslation()
   const data = useCommandCenter(slot, active && sessionReady)
+  // Same predicate as TileList's Progress rows: a board stands in for the runs
+  // only when it is the progress source (present and nothing omitted). It
+  // decides only whether the running runs are listed; work items always are.
+  const boardStands = data.progress?.source === 'work'
   const [selected, setSelected] = useState<string | null>(null)
   const views = [
     ...(publishedView ? [{ id: 'crew', title: publishedView.title }] : []),
@@ -47,7 +49,6 @@ export default function CommandCenterPanel({ slot, active, publishedView, sessio
   const selectedView = views.find(view => view.id === selected)?.id ?? views[0]?.id
   const [section, setSection] = useState<'dashboard' | 'attention' | 'approvals'>('dashboard')
   const showingOverview = section === 'dashboard' || !sessionReady
-  const framedSessions = new Set(data.nodes.filter(node => node.kind === 'session').slice(0, 12).map(node => node.id))
   const requestDashboard = useMutation({
     retry: false,
     mutationFn: async () => {
@@ -58,23 +59,25 @@ export default function CommandCenterPanel({ slot, active, publishedView, sessio
       }
     },
   })
+  const about = [
+    t('commandCenter.description'),
+    sessionReady && data.approvalMode === 'normal' ? t('commandCenter.normal_help') : '',
+    // Only once there is an agent-designed page to be contained: the same
+    // `views` that decide whether a published frame renders below.
+    views.length > 0 ? t('commandCenter.contained') : '',
+    sessionReady && data.updatedAt > 0 ? t('commandCenter.updated', { time: fmtDateTime(data.updatedAt) }) : '',
+  ].filter(Boolean).join(' ')
   return <div className="h-full flex flex-col min-w-0 bg-bg text-text" data-testid="command-center-panel">
     <header className="shrink-0 p-3 border-b border-border space-y-3">
       <div className="flex gap-2 items-center flex-wrap"><LayoutDashboard size={17} className="text-accent" /><h2 tabIndex={-1} {...{ [PANEL_HEADING_ATTR]: '' }} className="font-semibold text-sm outline-hidden">{t('commandCenter.title')}</h2>
+        {/* Every explanatory sentence lives behind this one control, so the
+            panel itself shows only numbers, requests and the published view. */}
+        <InfoTip text={about} />
         {sessionReady && <span className="ml-auto text-[11px] text-muted inline-flex items-center gap-1"><ShieldCheck size={12} />{t('commandCenter.permission_mode', { mode: t(APPROVAL_MODE_KEYS[data.approvalMode]) })}</span>}
       </div>
-      <p className="text-[12px] text-muted">{t('commandCenter.description')}</p>
       <div hidden={!sessionReady} className="space-y-3">
-      {data.approvalMode === 'normal' && <p className="text-[12px] text-muted">{t('commandCenter.normal_help')}</p>}
-      <div className="grid grid-cols-2 gap-2" aria-live="polite">
-        {([['commandCenter.running', data.running], ['commandCenter.blocked', data.blocked]] as const).map(([key, count]) => <div key={key} className="rounded-lg border border-border bg-card p-2">
-          <div className="font-mono text-lg font-semibold">{fmtNumber(count)}</div><div className="text-[11px] text-muted">{t(key)}</div>
-        </div>)}
-      </div>
-      {data.progress && <div className="space-y-1">
-        <p className="text-[12px] text-muted">{t('commandCenter.progress', { done: fmtNumber(data.progress.done), total: fmtNumber(data.progress.total) })}</p>
-        <progress className="w-full h-1.5 accent-accent" value={data.progress.done} max={data.progress.total} aria-label={t('commandCenter.progress_label')} />
-      </div>}
+      <StatusTiles data={data} />
+      {data.progress && <progress className="w-full h-1.5 accent-accent" value={data.progress.done} max={data.progress.total} aria-label={t('commandCenter.progress_label')} />}
       <SegmentedControl value={section} onChange={setSection} collapse={false} wrap layoutId={`task-dashboard-section-${slot}`} segments={[
         { key: 'dashboard', label: t('commandCenter.dashboard'), icon: <LayoutDashboard size={14} /> },
         { key: 'attention', label: t('commandCenter.needs_input'), icon: <MessageSquare size={14} />, count: data.attention.length - data.approvalCount },
@@ -115,29 +118,29 @@ export default function CommandCenterPanel({ slot, active, publishedView, sessio
           {/* No hand-off: pending QuestionCard answer drafts remain mounted below. */}
           <ErrorNotice message={requestDashboard.error?.message} />
         </div>}
-      <div hidden={!sessionReady}>
-      <PanelSectionHeader label={t('commandCenter.live_activity')} />
+      <div hidden={!sessionReady} className="space-y-3">
+      {/* The task's own automatic card. Workers carry none. Under Progress the
+          panel shows the work items whenever the board has any, partial or
+          not; the running runs are added only when the board is not the
+          progress source (absent, or with omitted entries), because that is
+          when the dock's Progress list shows runs, and that list caps its rows
+          and its overflow lands here, so the rest must be readable somewhere.
+          Idle and done runs stay with the sidebar's Subagents and Workflows
+          tabs; this is not a roster. */}
+      {slot && <SessionStatusFrame slot={slot} title={t('commandCenter.title')} active={active && sessionReady && showingOverview} />}
+      {data.blocked > 0 && <>
+        <PanelSectionHeader label={t('commandCenter.blocked')} count={data.blocked} />
+        <TileList tile="blocked" data={data} />
+      </>}
+      {(data.loading || data.workItems.length > 0 || (!boardStands && data.running > 0)) && <PanelSectionHeader label={t('commandCenter.tile_progress')} />}
       {data.loading && <p role="status" className="text-sm text-muted">{t('commandCenter.loading')}</p>}
-      {data.nodes.map(node => <div key={node.id} className="flex items-start gap-2 py-2 border-b border-border last:border-0">
-        <Activity size={14} className={node.state === 'blocked' ? 'text-warn mt-1 shrink-0' : 'text-muted mt-1 shrink-0'} />
-        <div className="flex-1 min-w-0"><p className="text-[13px] font-medium break-words">{runTitle(node)}</p>
-          {node.detail && <p className="text-[12px] text-muted break-words line-clamp-2">{node.detail}</p>}
-          {/* No hand-off: pending QuestionCard answer drafts remain mounted in this panel. */}
-          <ErrorNotice message={node.error} />
-          <p className="text-[11px] text-muted mt-1">{t(STATE_KEYS[node.state])}</p>
-          {framedSessions.has(node.id) && <SessionStatusFrame slot={node.slot} title={runTitle(node)} active={active && sessionReady && showingOverview} />}
-        </div>
-        <Link to={`/chat?sid=${encodeURIComponent(node.slot)}`} aria-label={t('commandCenter.open_session')} className="text-accent p-1"><ArrowUpRight size={14} /></Link>
-      </div>)}
       {data.workItems.map(item => <div key={item.item_id} className="text-[13px] border-l-2 border-border pl-3">
         <p>{item.title}</p><p className="text-muted text-[12px]">{t(STATE_KEYS[item.state])}{item.summary ? ` · ${item.summary}` : ''}</p>
       </div>)}
-      <p className="flex gap-1.5 items-start text-[11px] text-muted"><ShieldCheck size={13} className="shrink-0" />{t('commandCenter.contained')}</p>
+      {/* No `onOpen`: every running row renders, uncapped. */}
+      {!boardStands && data.running > 0 && <TileList tile="progress" data={data} />}
       </div>
     </div>
     </div>
-    <footer hidden={!sessionReady} className="shrink-0 border-t border-border px-3 py-2 text-[11px] text-muted">
-      {data.updatedAt > 0 ? t('commandCenter.updated', { time: fmtDateTime(data.updatedAt) }) : t('commandCenter.loading')}
-    </footer>
   </div>
 }

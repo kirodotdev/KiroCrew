@@ -14,14 +14,16 @@ conventions around them (a11y, data fetching, typography) live in
 ### Dashboard in chat and Crew
 
 Long-run status uses the existing side-panel dock, expansion and narrow-screen
-overlay, not another drawer. In chat, a one-time hint card above the composer
-opens the **Dashboard** tab. It sits in the chat content column like the other
-status bars and carries the Running/Blocked/Approvals summary plus one line
-naming the outcome (“Opens the Dashboard panel. This hint won't show again.”,
-also the button's accessible description); it has no collapse toggle. Once
-clicked it fades out (cut, under reduced motion) and stays dismissed for that
-session (`mc-task-dashboard-dismissed:<slot>`, collected by `storageGc`); the
-panel tab and its + menu are the way back in. Crew reuses its single permanent **Dashboard** tab instead: its compact
+overlay, not another drawer. In chat, a dock above the composer, in the
+composer's own column (`--mc-input-width`), shows three tiles: progress (done/total
+with a plan, else "N running"), blocked
+and Needs you. Each tile is a disclosure button for the short list beneath it (a
+second click closes it), and the row wraps in a narrow column; beside the tiles
+sit two actions, open the **Dashboard** tab (a labelled "Open Dashboard" button) and
+hide. Hidden, the dock is one pill at the row's end. It carries the hide glyph,
+or a red count while something needs the user (`mc-task-dashboard-hidden`, per
+browser); the dock is one element in both forms. It is removed once every run rests,
+no request waits and the plan is complete. Crew reuses its single permanent **Dashboard** tab instead: its compact
 entrance focuses that tab, and its + menu withholds the parallel chat view.
 The existing member publication and task artifacts share a Published view selector, with
 human-readable titles, while retaining their separate renderer sandboxes. A
@@ -36,9 +38,8 @@ tabs, but unload model-authored iframe documents while inactive to cap resources
 This does not change the existing Crew protected-template renderer's lifecycle.
 Approval counts and exact session identity stay outside the
 sandboxed page, so a model redesign cannot hide or impersonate those controls.
-The panel keeps its approval count on the Approvals tab; the hint card shows the
-Needs you count until it is dismissed, after which the panel's Questions and
-Approvals tabs carry it.
+The panel keeps its approval count on the Approvals tab; the dock's Needs you
+tile and its hidden pill carry the same count.
 
 The Sessions header's three-dot menu offers **All Dashboards**, a standalone
 `/session-dashboards` page with currently open sessions' saved summaries and authored

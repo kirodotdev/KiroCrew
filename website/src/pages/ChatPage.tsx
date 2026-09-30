@@ -3573,10 +3573,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // Stable, so the memoized dock does not re-render on every streamed chunk.
   // Close the find pane FIRST, as revealAppInPanel / handleFileOpen /
   // handleOpenDiff do: the find pane owns the right-hand dock exclusively
-  // (shouldMountSidePanel returns false while it is open), and the card persists
-  // its one-time dismissal before calling this -- so without the close the card
-  // would be gone for good while the dashboard opened behind a pane the user
-  // cannot see past. `close()` is safe with nothing open.
+  // (shouldMountSidePanel returns false while it is open), so without the close
+  // the dashboard would open behind a pane the user cannot see past. `close()`
+  // is safe with nothing open.
   const openCommandCenter = useCallback(() => {
     search.close(); dispatch(openActivityPanel()); tabsCtlRef.current.openView('command-center')
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `search.close` is a useCallback([]) in useMessageSearch; the object around it is rebuilt every render
