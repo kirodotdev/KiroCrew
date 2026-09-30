@@ -1746,6 +1746,51 @@ class MemberEventLogService:
                 logger.debug("baseline cursor unreadable for %r, skipped", slug, exc_info=True)
         return out
 
+    def close(self) -> None:
+        """Retire this service: release every cached log's lease and break the cycle.
+
+        A ``MemberEventLogService`` is reachable through a reference cycle -- its
+        projection registry holds ``set_on_change(self._on_change)``, a bound method
+        back to the service -- so dropping the last external reference does NOT free
+        it by refcount; it waits for the cyclic collector, and with it the
+        ``weakref.finalize`` release of every :class:`CrewLog` lease its cached logs
+        hold. That deferral is invisible on POSIX but strands an open descriptor
+        under a torn-down directory on Windows, where the next write on the same
+        inherited process then fails -- which is the whole reason a retiring caller
+        must not depend on GC timing.
+
+        So this releases each cached log's write lease immediately, drops the caches,
+        and clears the registry's back-reference to sever the cycle. Idempotent and
+        best-effort: one log that refuses to close must not keep the rest holding
+        their leases. After it, the service answers reads as empty and holds no
+        lease, which is exactly what a fresh service does -- a caller that keeps
+        using it re-opens on demand rather than serving a released handle.
+
+        The single caller is service RETIREMENT: :func:`set_service` when it replaces
+        the singleton, and :func:`get_service` when a home change forces a rebuild.
+        Neither happens while an append is in flight on the same instance -- the home
+        moves only at a test boundary, never in production -- so nothing here races a
+        writer that still needs the lease.
+        """
+        with self._map_lock:
+            logs = list(self._logs.values())
+            self._logs.clear()
+            self._names.clear()
+        for log in logs:
+            try:
+                log.close()
+            except Exception:
+                logger.debug("member log close failed during service retirement", exc_info=True)
+        # Sever the registry -> bound-method -> service cycle so the collector is not
+        # the only thing that can free this instance. Done last: a close above may
+        # still touch the registry, and after this the service is inert.
+        try:
+            self._registry.set_on_change(None)
+        except Exception:
+            logger.debug(
+                "registry on-change detach failed during service retirement", exc_info=True
+            )
+
 
 def get_service() -> MemberEventLogService:
     """Lazy process-wide singleton rooted at the ``member`` crew log root."""
@@ -1761,11 +1806,27 @@ def get_service() -> MemberEventLogService:
         if _singleton is None or _singleton.root != root:
             previous = _singleton
             _singleton = MemberEventLogService(root, previous.broadcast if previous else None)
+            # Retire the replaced service deterministically. It is reachable only
+            # through its own registry cycle now, so its cached logs' write leases
+            # would otherwise be released whenever the cyclic collector next runs --
+            # which strands an open descriptor under the old (torn-down) root on
+            # Windows. The root moves only at a test boundary, never in production,
+            # so nothing here is mid-write.
+            if previous is not None:
+                previous.close()
         return _singleton
 
 
 def set_service(svc: MemberEventLogService | None) -> None:
-    """Test seam."""
+    """Test seam. Retires the outgoing service so it holds no lease afterwards."""
     global _singleton
     with _singleton_lock:
+        previous = _singleton
         _singleton = svc
+        # Release the replaced service's cached leases NOW rather than at the next
+        # GC pass. A test resets the singleton at each boundary; without this the
+        # retired service's CrewLog descriptors linger (it sits in a reference
+        # cycle, so refcount never frees it), which is harmless on POSIX but blocks
+        # the tmp-home teardown on Windows and fails the next writer on that worker.
+        if previous is not None and previous is not svc:
+            previous.close()
