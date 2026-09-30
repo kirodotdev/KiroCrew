@@ -8455,6 +8455,30 @@ _PINNED_OCCUPANTS = {{}}
 #: filesystem, where a same-UID writer can rename an enumerable stand-in onto a
 #: protected name. Launcher-local: this process is the only writer.
 _OWN_STAND_INS = {{}}
+#: Every NAME this launcher has confirmed reaches one of its own stand-ins, mapped
+#: to that stand-in's ``(dev, ino)``: a name whose mask the loop mounted and then
+#: read back, and a second spelling the pin found already covered. Read by the pin
+#: when a name is ABSENT. A mask list carries a leaf together with a directory
+#: above it -- every crew hidden leaf sits under the whole data home a probe
+#: hides, and both spellings of each -- and once the directory's stand-in is
+#: bound, the leaf is gone from every later look at its name: the directory loop
+#: reaching it after its parent, and the file loop, which is offered every
+#: directory entry and always runs after. That absence is the mask in place, not
+#: the object moved, and it is told apart by asking whether an ancestor of the
+#: name reaches a stand-in recorded here RIGHT NOW. Names, not identities: the
+#: second spelling of a masked directory holds no mount of its own and no
+#: expectation the pin could compare a stand-in against, yet the leaves under it
+#: are covered all the same. Launcher-local: this process is the only writer.
+_MASKED_NAMES = {{}}
+#: Every private window this launcher has BOUND: a directory inside a masked tree
+#: whose real contents are mounted back over the stand-in, read-write, because the
+#: gateway needs them durable. A leaf under a window resolves into that real tree,
+#: not into the ancestor's stand-in, so the ancestor's mask does not cover it: an
+#: absent leaf there is a moved object exactly as it would be with no mask above
+#: it at all, and the nested re-hide that runs after the window is bound must
+#: refuse it. Consulted by the ancestor walk, which stops at the first bound
+#: window it meets. Launcher-local: this process is the only writer.
+_BOUND_WINDOWS = set()
 
 def _register_stand_in(stand_in_id, masked_fd):
     """Record that the stand-in *stand_in_id* masks the object *masked_fd* holds.
@@ -8528,6 +8552,60 @@ def _carried_occupant(target):
     # a referent swapped underneath it.
     _referent = (ident[4], ident[5]) if len(ident) > 5 else None
     return (ident[0], ident[1], bool(ident[2]), _kind, _referent)
+
+def _covered_by_own_mask(target):
+    """Whether an ancestor of *target* reaches a stand-in this launcher placed, now.
+
+    Answers for an ABSENT name only, and only one question: is the name gone
+    because a directory above it is already masked. Lexical ascent picks the
+    candidates -- each proper ancestor of the name that ``_MASKED_NAMES`` holds --
+    and the filesystem decides: the ancestor is resolved once more and must
+    reach the stand-in recorded for it, the same read-back the loop performed
+    when it mounted that mask. A recorded name alone would not do, because the
+    record says what the name reached when the mask was placed, and the
+    question is what covers this leaf at this instant.
+
+    A link at the ancestor is accepted only when it is the link the pin itself
+    followed, as ``_verify_masked_name`` accepts it, so a link planted at a
+    protected name and aimed at a stand-in reads as not covered and the caller
+    refuses as it would for any vanished object.
+
+    A private window met on the way up ends the walk with ``False``: below a
+    window the name resolves into the real tree the window mounted back, so no
+    stand-in above it covers the leaf, and its absence is the leaf having moved.
+    """
+    name = os.fsdecode(target).rstrip("/")
+    while True:
+        parent = os.path.dirname(name)
+        if not parent or parent == name:
+            return False
+        name = parent
+        # A bound window between the leaf and any recorded mask above it puts
+        # the leaf in the REAL tree the window mounted back, where an absence is
+        # a moved object: the mask above covers the window's name, not what the
+        # window exposes beneath it.
+        if name in _BOUND_WINDOWS:
+            return False
+        stand_in_id = _MASKED_NAMES.get(name)
+        if stand_in_id is None:
+            continue
+        try:
+            entry = os.lstat(name)
+            if _mode_is_link(entry.st_mode):
+                pinned = _PINNED_OCCUPANTS.get(name)
+                if (
+                    pinned is None
+                    or not pinned[2]
+                    or (entry.st_dev, entry.st_ino) != tuple(pinned[:2])
+                ):
+                    return False
+                entry = os.stat(name)
+        except OSError:
+            return False
+        # A recorded ancestor that reaches something other than its stand-in is
+        # not "keep looking higher": the record and the filesystem disagree about
+        # a name this launcher masked, and the leaf is judged as vanished.
+        return (entry.st_dev, entry.st_ino) == tuple(stand_in_id)
 
 def _kind_reached(code):
     """A synthetic ``st_mode`` for a recorded referent kind, for a kind predicate."""
@@ -8678,6 +8756,13 @@ def _pin_mount_path(target, kind, require_present=False):
         # same reason the leaf open below uses it.
         parent_fd = os.open(_parent or b".", _O_PATH | os.O_DIRECTORY)
     except FileNotFoundError:
+        # Absent under a directory this launcher has already masked is the mask
+        # in place -- the leaf is unreachable through its parent's stand-in --
+        # and neither a moved object nor a materialised target gone missing.
+        # Decided against the filesystem now, not the mask list: see
+        # ``_covered_by_own_mask``.
+        if _covered_by_own_mask(_t):
+            return None, None
         if require_present:
             _refuse("the directory holding it is absent")
         _refuse_if_established("the directory holding it is absent")
@@ -8693,6 +8778,8 @@ def _pin_mount_path(target, kind, require_present=False):
         )
     except FileNotFoundError:
         os.close(parent_fd)
+        if _covered_by_own_mask(_t):
+            return None, None
         if require_present:
             _refuse("it is absent")
         _refuse_if_established("it is absent")
@@ -8857,6 +8944,10 @@ def _pin_mount_path(target, kind, require_present=False):
         and _OWN_STAND_INS.get(occupant[:2]) == tuple(expect_occupant[:2])
     ):
         os.close(fd)
+        # The second spelling of a masked directory covers every leaf listed
+        # under it exactly as the first does, so it is recorded with the
+        # stand-in it was just confirmed to reach.
+        _MASKED_NAMES[os.fsdecode(_t)] = occupant[:2]
         return None, None
     if not matched:
         os.close(fd)
@@ -9453,12 +9544,14 @@ def main():
             # Checked BEFORE the windows mount, so this answers about the mask
             # itself rather than about anything opened inside it.
             _verify_masked_name(d.encode(), _per_dir_id, d)
+            _MASKED_NAMES[d.rstrip("/")] = _per_dir_id
             # The window targets resolve INSIDE the empty stand-in just mounted,
             # which this launcher created with mkdtemp moments ago, so no other
             # writer can have placed anything at those names.
             for p in _windows:
                 _mount_or_die(_private_stage[p].encode(), p.encode(), _MS_BIND,
                               "opening private window %s" % p)
+                _BOUND_WINDOWS.add(p.rstrip("/"))
             # A window may CONTAIN a masked leaf -- ``apps/meetings/data`` holds the
             # masked ``apps/meetings/data/edits`` -- and the bind above just replaced
             # the empty stand-in that covered it with the real tree. Re-apply those
@@ -9491,6 +9584,7 @@ def main():
                     finally:
                         os.close(_nested_fd)
                     _verify_masked_name(_nested.encode(), _nested_id, _nested)
+                    _MASKED_NAMES[_nested] = _nested_id
         # Every stage is retired HERE, in one place, once every window is bound and every
         # nested mask re-applied -- which is what makes this the earliest point where no
         # stage is still needed, and it is still long before the payload is exec'd. A
@@ -9721,6 +9815,7 @@ def main():
                 finally:
                     os.close(_ssh_fd)
                 _verify_masked_name(SSH_DIR.encode(), _ssh_tmp_id, SSH_DIR)
+                _MASKED_NAMES[SSH_DIR.rstrip("/")] = _ssh_tmp_id
 
         # Scrub sensitive env vars
         for key in list(os.environ):

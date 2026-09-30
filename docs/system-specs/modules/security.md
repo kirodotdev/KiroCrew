@@ -172,6 +172,35 @@ The stand-in registered against this object sits on a mount over this object's o
 which no rename moves (`EBUSY` on a mount point), so a match can only be the launcher's own
 mount reached by another name.
 
+**An ABSENT name under a directory the launcher already masked is that same mask, seen from
+below.** A mask list carries a leaf together with a directory above it -- a readiness probe
+hides the whole data home while every crew hidden leaf under it stays listed, and a
+symlinked `$HOME` lists both spellings of each -- and once the directory's stand-in is bound
+the leaf is gone from every later look at its name: the directory loop reaching it after its
+parent, and the file loop, which is offered every directory entry and always runs after. The
+leaf's expectation is still carried, so the absence branch alone would refuse it as a vanished
+object, and did: with the whole-home hide every probe spawn refused at
+`~/.kiro/crew/diag`, `/api/models` answered 503 and Settings reported `Failed to load config`.
+So the launcher also records, in `_MASKED_NAMES`, every NAME it has confirmed reaches one of
+its own stand-ins -- each mask the loops mount and read back, and each second spelling the
+pin finds already covered -- and an absent name is skipped when a proper ancestor of it is
+recorded there AND, resolved again now, still reaches the stand-in recorded for it
+(`_covered_by_own_mask`). Names rather than identities, because the second spelling of a
+masked directory holds no mount of its own and no expectation to compare a stand-in against,
+yet covers the leaves under it all the same. The re-resolution is load-bearing: the record
+says what the ancestor reached when its mask was placed, and the question is what covers the
+leaf at this instant, so a recorded ancestor that no longer reaches its stand-in refuses the
+leaf rather than walking higher. A link at the ancestor is accepted only when it is the link
+the pin itself followed, as the read-back accepts it. A private window met on the way up ends
+the walk with a refusal: the window mounts the real tree back over the stand-in, read-write, so
+a leaf beneath it (`apps/meetings/data/edits` under the `apps/meetings/data` window) resolves
+into that real tree and no stand-in above covers it -- its absence at the nested re-hide is the
+leaf having moved, and the launcher records every window it binds (`_BOUND_WINDOWS`) so the
+walk can tell. The builder's lexical subtraction of
+nested `REQUIRED_MASK_TARGETS` remains: it answers for a target whose ancestor is in the
+mask LIST, this answers for one whose ancestor has a mask IN PLACE, and the second spelling
+is in the second set but not the first.
+
 The cost of having no exceptions is that EVERY inode change at a protected name refuses,
 and some inode changes are ordinary rather than hostile:
 
