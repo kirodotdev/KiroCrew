@@ -3723,11 +3723,20 @@ or a retained stop that is evidence. Only system-imposed stops are re-armable:
 terminal-subject records
 (a merged or blocked watched subject, including structured `BUDGET`, `SUCCESS`
 and `BLOCKED` outcomes). A `structural_terminal` stop is imposed when a fired
-turn is rejected as structurally malformed (a deterministic "Improperly formed
-request" answer): re-firing the identical context reproduces it, so the loop is
+turn is rejected for its shape or size, deterministically: the backend's
+"Improperly formed request" answer, its image validator's rejection, or
+kiro-cli's own oversized-request refusal ("This message is too large to send,
+and it contains no text that can be shortened ...", emitted when no compaction
+round can make the request fit and the failed message is not appended to the
+native history). Re-firing the identical context reproduces each of them, so
+the loop is
 stopped rather than re-armed, and the remedy is a NEW conversation — which the
 genuine-turn reset in `chat_runner` clears the slot's verdict for — so a later
-directive re-arm may displace it.
+directive re-arm may displace it. The three answers are the ones
+`_raise_acp_error` tags `structural_terminal` (the vocabulary lives in
+`acp/transport_errors.py`, `error-handling.md` lists each); the fire guard reads
+the tag, never the wording, so a fourth deterministic answer joins by extending
+the classifier alone.
 
 A `session_start_failures` stop is imposed when the loop's cycles stop getting a
 model session at all. A delivered cycle whose turn dies on

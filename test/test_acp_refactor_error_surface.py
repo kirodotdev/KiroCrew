@@ -246,6 +246,19 @@ _ERROR_ROWS = [
         id="malformed-request",
     ),
     pytest.param(
+        _frame(
+            "This message is too large to send, and it contains no text that can be "
+            "shortened. Remove or reduce the attached content and try again."
+        ),
+        None,
+        # No curated branch: the provider's own sentence is the guidance, and the
+        # unknown-shape path shows it verbatim (message is the -32603 boilerplate).
+        "This message is too large to send, and it contains no text that can be "
+        "shortened. Remove or reduce the attached content and try again.",
+        _tags(structural=True),
+        id="oversized-request",
+    ),
+    pytest.param(
         _frame("A prompt is already in progress"),
         None,
         "I'm still processing a previous request. Please wait a moment and try again; it "
