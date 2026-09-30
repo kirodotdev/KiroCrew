@@ -57,7 +57,23 @@ Rules, with fixed tuning constants owned by this module:
 
   Both regimes also require the sample to be clear on the hysteresis side
   (lag < 100 ms, memory >= pressure line, no signal at all) and at least one
-  window since the last pressure. An idle track never drifts up.
+  window since the last pressure. An idle track never drifts up PAST the
+  fresh-start cap.
+* **Idle recovery**. A cut is evidence about the work that was running when
+  it fired. Once the exec track has had no demand at all (nothing running or
+  queued) and the host no pressure signal for ``idle_recovery_secs`` (60 s),
+  that evidence is stale, yet the earn rules above can never retire it: they
+  need demand at the cap and completions, and an idle track -- or one whose
+  load runs on the runner lane (workflow ``ctx.agent()`` calls, TaskRunner
+  steps), which the exec track does not count -- produces neither. So a cap
+  below the fresh-start value climbs ``+1`` per clean window while that holds,
+  and a pause whose probe never reported (nothing ran, or it ran where no
+  completion is counted) resumes at ``floor + 1`` (never above the fresh-start
+  cap). The bound is the fresh-start
+  cap, ``min(user_max, adaptive_initial)``: a drained process never holds MORE
+  untested concurrency than a restart would, and everything above it is still
+  earned. Any signal restarts the idle clock; the next corroborated pressure
+  cuts again.
 * **Pause and probe**. Severe pressure (memory below critical, or loop lag
   beyond 2 s) for two consecutive samples pauses dispatch: the exec cap goes
   to 0 grants and the gate to its floor. Running work is untouched. Once the
@@ -67,6 +83,10 @@ Rules, with fixed tuning constants owned by this module:
 * **Provider throttling** never reaches the host caps. Throttled scopes are
   reported on the decision for the dependency coordinator (area L).
 * **Fresh start** is ``min(user_max, 4)``; the process earns its way up.
+* **Why the cap is low** is on the snapshot: ``last_cut`` is the decision that
+  last lowered the exec cap (action, reason, signals, sample time), and a hold
+  names what the next increase is waiting for (demand at the cap, completions,
+  or the idle clock).
 * ``mode == "fixed"`` returns the initial caps forever (Q2 reversal).
 """
 
@@ -117,6 +137,11 @@ DEFAULT_LAG_DECREASE_MS = 250.0
 DEFAULT_LAG_INCREASE_MS = 100.0
 DEFAULT_LAG_SEVERE_MS = 2000.0
 DEFAULT_TIMEOUT_RATE = 0.2
+#: Idle recovery: no exec demand and no pressure signal for this long retires a
+#: cut, and the cap climbs back toward the fresh-start value one clean window
+#: at a time. Two congestion-avoidance windows, so a cap is never restored on
+#: the sample right after the pressure that set it.
+DEFAULT_IDLE_RECOVERY_SECS = 60.0
 
 _NEVER = float("-inf")
 
@@ -139,6 +164,7 @@ class PolicyParams:
     slow_start_clean_secs: float = DEFAULT_SLOW_START_CLEAN_SECS
     slow_start_successes: int = DEFAULT_SLOW_START_SUCCESSES
     slow_start_factor: int = DEFAULT_SLOW_START_FACTOR
+    idle_recovery_secs: float = DEFAULT_IDLE_RECOVERY_SECS
     mode: str = MODE_AIMD
     thresholds: Thresholds = field(default_factory=Thresholds)
 
@@ -153,6 +179,8 @@ class PolicyParams:
             raise ValueError("decrease_factor must be in (0, 1)")
         if self.slow_start_factor < 2:
             raise ValueError("slow_start_factor must be >= 2")
+        if self.idle_recovery_secs <= 0:
+            raise ValueError("idle_recovery_secs must be > 0")
 
     @property
     def exec_floor(self) -> int:
@@ -212,6 +240,12 @@ class AdaptivePolicy:
         self._last_decrease_at = _NEVER
         self._last_increase_at = _NEVER
         self._last_pressure_at = _NEVER
+        # Last sample with exec demand (running + queued > 0): idle recovery
+        # measures its clock from the later of this and the last pressure.
+        self._last_busy_at = _NEVER
+        # The decision that last LOWERED the exec cap, for ``snapshot``: the
+        # answer to "why is the cap low" outlives the 32-entry decision ring.
+        self._last_cut: Optional[dict[str, object]] = None
         # Success counters at the last cap change; increases are earned
         # relative to these. ``sample.completions`` is the controller's own
         # in-process counter, built beside this policy and only incremented, so
@@ -267,6 +301,7 @@ class AdaptivePolicy:
             "gate_floor": self._p.gate_floor,
             "paused": self._paused,
             "probing": self._probing,
+            "last_cut": dict(self._last_cut) if self._last_cut else None,
             "decisions": self._decisions,
             "last": self._last.as_dict() if self._last else None,
         }
@@ -314,6 +349,8 @@ class AdaptivePolicy:
             self._last_increase_at = now
         if report.any:
             self._last_pressure_at = now
+        if sample.demand > 0:
+            self._last_busy_at = now
         self._severe_streak = self._severe_streak + 1 if report.severe else 0
 
         if self._paused:
@@ -391,6 +428,35 @@ class AdaptivePolicy:
         if successes < self._gate_success_base:
             self._gate_success_base = successes
 
+    def _idle_for(self, sample: Sample) -> float:
+        """Seconds this exec track has been idle AND pressure-free, else 0.
+
+        Idle is no demand at all on this sample (nothing running or queued on
+        the exec track) and none since the idle clock started; pressure-free is
+        no signal of any kind in that time. Both reset the clock, so a cap is
+        restored only on samples that could not have been caused by the load
+        that cut it.
+        """
+        if sample.demand > 0:
+            return 0.0
+        since = max(self._last_pressure_at, self._last_busy_at)
+        if since == _NEVER:
+            # No pressure and no demand ever seen: measured from the first
+            # sample, like the first clean window.
+            since = self._last_increase_at
+        return max(0.0, sample.t - since)
+
+    def _idle_recovery_due(self, sample: Sample, report: PressureReport) -> bool:
+        return report.clear_for_increase and self._idle_for(sample) >= self._p.idle_recovery_secs
+
+    def _note_cut(self, sample: Sample, action: str, reason: str, report: PressureReport) -> None:
+        self._last_cut = {
+            "t": sample.t,
+            "action": action,
+            "reason": reason,
+            "signals": sorted(report.signals),
+        }
+
     # -- transitions ---------------------------------------------------------
 
     def _pause(self, sample: Sample, report: PressureReport, why: str) -> Decision:
@@ -403,6 +469,7 @@ class AdaptivePolicy:
         self._gate_cap = self._p.gate_floor
         self._last_decrease_at = sample.t
         self._reset_bases(sample, old_exec, old_gate)
+        self._note_cut(sample, ACTION_PAUSE, f"paused: {why}", report)
         return self._emit(ACTION_PAUSE, f"paused: {why}", report)
 
     def _while_paused(self, sample: Sample, report: PressureReport) -> Decision:
@@ -411,7 +478,9 @@ class AdaptivePolicy:
                 # The probe met severe pressure: take the grant back.
                 self._probing = False
                 self._exec_cap = 0
-                return self._emit(ACTION_PAUSE, "probe met severe pressure; re-paused", report)
+                reason = "probe met severe pressure; re-paused"
+                self._note_cut(sample, ACTION_PAUSE, reason, report)
+                return self._emit(ACTION_PAUSE, reason, report)
             return self._emit(ACTION_HOLD, "paused: severe pressure persists", report)
         if not self._probing:
             self._probing = True
@@ -424,22 +493,43 @@ class AdaptivePolicy:
             self._probing = False
             self._exec_cap = 0
             self._last_decrease_at = sample.t
-            return self._emit(ACTION_PAUSE, "probe met corroborated pressure; re-paused", report)
+            reason = "probe met corroborated pressure; re-paused"
+            self._note_cut(sample, ACTION_PAUSE, reason, report)
+            return self._emit(ACTION_PAUSE, reason, report)
         base = self._probe_base if self._probe_base is not None else sample.completions
-        if sample.completions > base and not report.any:
+        probe_done = sample.completions > base and not report.any
+        # A probe that never reports -- nothing ran, or it ran on the runner
+        # lane, whose completions this track does not count -- would hold the
+        # cap at 1 for the life of the process. Idle and clear for the idle
+        # window is the same verdict a clean probe completion gives.
+        idle_done = not probe_done and self._idle_recovery_due(sample, report)
+        if probe_done or idle_done:
             old_exec, old_gate = self._exec_cap, self._gate_cap
             self._paused = False
             self._probing = False
             self._probe_base = None
-            self._exec_cap = _clamp(
-                self._p.exec_floor + 1, self._p.exec_floor, self._p.exec_ceiling
-            )
-            self._gate_cap = _clamp(
-                self._p.gate_floor + 1, self._p.gate_floor, self._p.gate_ceiling
-            )
+            # Idle recovery never passes the fresh-start cap, including when
+            # ``adaptive_floor`` sits at or above ``adaptive_initial``.
+            target = self._p.exec_floor + 1
+            if idle_done:
+                target = min(target, self._p.exec_start)
+            self._exec_cap = _clamp(target, self._p.exec_floor, self._p.exec_ceiling)
+            if probe_done:
+                # Only a probe that completed is evidence for the gate too; an
+                # idle resume leaves the gate at its floor to earn on inits.
+                self._gate_cap = _clamp(
+                    self._p.gate_floor + 1, self._p.gate_floor, self._p.gate_ceiling
+                )
             self._reset_bases(sample, old_exec, old_gate)
             self._last_increase_at = sample.t
-            return self._emit(ACTION_RESUME, "probe completed; resuming at floor + 1", report)
+            if idle_done:
+                reason = (
+                    f"idle and clear for {self._idle_for(sample):.0f}s with no probe "
+                    f"result; resuming at {self._exec_cap}"
+                )
+            else:
+                reason = "probe completed; resuming at floor + 1"
+            return self._emit(ACTION_RESUME, reason, report)
         return self._emit(ACTION_HOLD, "probe in flight", report)
 
     def _decrease(self, sample: Sample, report: PressureReport) -> Decision:
@@ -454,11 +544,10 @@ class AdaptivePolicy:
         self._gate_cap = new_gate
         self._last_decrease_at = sample.t
         self._reset_bases(sample, old_exec, old_gate)
-        return self._emit(
-            ACTION_DECREASE,
-            "corroborated pressure: " + ",".join(sorted(report.signals)),
-            report,
-        )
+        reason = "corroborated pressure: " + ",".join(sorted(report.signals))
+        if self._exec_cap < old_exec:
+            self._note_cut(sample, ACTION_DECREASE, reason, report)
+        return self._emit(ACTION_DECREASE, reason, report)
 
     def _maybe_increase(self, sample: Sample, report: PressureReport) -> Decision:
         p = self._p
@@ -514,16 +603,45 @@ class AdaptivePolicy:
             self._gate_success_base = gate.successes
             changed = True
 
+        idle_step = False
+        if not changed and self._exec_cap < min(p.exec_start, exec_target):
+            idle_step = self._idle_recovery_due(sample, report)
+            if idle_step:
+                self._exec_cap += 1
+                self._exec_success_base = sample.completions
+                changed = True
+
         if not changed:
-            return self._emit(ACTION_HOLD, "clear; increase not yet earned or no demand", report)
+            return self._emit(ACTION_HOLD, self._hold_reason(sample, exec_successes), report)
         self._last_increase_at = now
-        if probed:
+        if idle_step:
+            reason = (
+                f"idle and clear for {self._idle_for(sample):.0f}s: +1 toward the "
+                f"fresh-start cap {p.exec_start}"
+            )
+        elif probed:
             reason = "fresh progress with host headroom earned one exec probe"
         elif self._slow_start:
             reason = f"clean window earned x{p.slow_start_factor} (slow start)"
         else:
             reason = "clean window earned +1"
         return self._emit(ACTION_INCREASE, reason, report)
+
+    def _hold_reason(self, sample: Sample, exec_successes: int) -> str:
+        """What a clear, in-window hold is waiting for on the exec track."""
+        cap = self._exec_cap
+        if cap >= self._growth_ceiling(sample):
+            return "clear; exec cap at the ceiling"
+        if sample.demand <= 0 and cap < self._p.exec_start:
+            wait = max(0.0, self._p.idle_recovery_secs - self._idle_for(sample))
+            return f"idle; restoring toward {self._p.exec_start} in {wait:.0f}s"
+        if sample.demand < cap:
+            return f"clear; no demand at the cap ({sample.demand} running or queued < {cap})"
+        required = self._required_exec_successes(cap)
+        return (
+            f"clear; increase not yet earned ({max(0, exec_successes)}/{required} "
+            "completions since the last change)"
+        )
 
     def _growth_ceiling(self, sample: Sample) -> int:
         """How high an execution-cap increase may climb on THIS sample.

@@ -69,6 +69,7 @@ Parameters are the `agent.adaptive_*` keys; numbers below are their defaults.
 | **Progress probe** | new stream activity since the previous sample, active work at the cap, queued ready work, measured memory above the pressure line, no provider throttle, and the same clear 5 s / 30 s window as the current regime | at most `+1` exec slot without waiting for a whole task to finish; never doubles or relaxes the init-gate success bar |
 | **Increase (slow start)** | `adaptive_slow_start` is on AND this process has never met corroborated pressure or a pause, AND the sample is clear (as below) AND >= `DEFAULT_SLOW_START_CLEAN_SECS` (5) since the last pressure AND since the last increase AND >= `DEFAULT_SLOW_START_SUCCESSES` (1) since the last change AND demand at the cap. The eased success bar is the **exec track only** -- the gate still owes its flat `increase_successes` (below) | `x DEFAULT_SLOW_START_FACTOR` (2) on the track that qualified, bounded by its growth ceiling (see below) |
 | **Increase (congestion avoidance)** | after the first corroborated pressure or pause: the sample is clear -- no signal at all AND `loop_lag < DEFAULT_LAG_INCREASE_MS` (100) AND `memory >= resource_pressure_gb` (4 GB) -- AND >= `DEFAULT_INCREASE_CLEAN_SECS` (30) since the last pressure AND since the last increase AND enough work since the last change (exec: `min(DEFAULT_INCREASE_SUCCESSES, cap)`, i.e. one wave of the CURRENT cap; gate: `DEFAULT_INCREASE_SUCCESSES` (20) backend inits) AND demand at the cap (exec: `running + queued >= cap`; gate: `queued > 0` or `in_flight >= capacity`) | `+1` on the track that qualified, bounded by its growth ceiling; at most one increase per window |
+| **Idle recovery** | the exec cap is below the fresh-start value `min(user_max, adaptive_initial)`, the sample is clear (as above), the exec track has had NO demand (`running + queued == 0`) and the host no signal of any kind for `DEFAULT_IDLE_RECOVERY_SECS` (60), AND >= one window since the last increase | `+1` toward the fresh-start value, never past it; while paused and probing, a probe that never reported resumes the exec cap at `floor + 1` (at most the fresh-start value) instead of waiting for a completion; the gate stays at its floor and earns on inits. Demand or any signal restarts the idle clock |
 | **Pause** | severe pressure for `severe_samples` (2) consecutive samples | exec cap `0` (no new grants), gate at its floor; running work untouched |
 | **Probe** | paused and the severe condition cleared | exec cap `1`; the gate stays at floor |
 | **Resume** | the probe completed (completions advanced) with no signal | caps to `floor + 1`; normal AIMD resumes. A probe that meets corroborated pressure re-pauses |
@@ -156,6 +157,32 @@ decrease:
   a long task need not finish before the next queued task can begin. Queued,
   parked, stalled and unstarted records do not supply progress evidence. An
   unchanged activity timestamp never buys another probe.
+
+### Idle recovery: a cut the exec track cannot earn back
+
+Every increase rule above is earned on the exec track's own evidence -- demand
+at the cap and completions diffed from `SubagentManager._agents`. A cut is
+evidence about the load that was running when it fired, and two kinds of
+process never produce the evidence that retires it: an idle one, and one whose
+load runs on the runner lane (workflow `ctx.agent()` calls, TaskRunner steps).
+The lane is bounded by the effective cap ([taskq.md](taskq.md) § Runner
+adapters), and its session starts feed `record_start`, so that load can CUT the
+cap -- but its occupancy and completions are not the manager's, so it can never
+earn a step back, and a probe it takes never reports. Overlapping long workflows
+that timed out therefore left the cap at 1 (a probe waiting for a completion
+that was never going to be counted) or 2 (`floor + 1` after one sub-agent
+finished) for the life of the process, however long the host then sat clear.
+
+Idle recovery retires that stale evidence without trusting the host with more
+than a restart would: after `DEFAULT_IDLE_RECOVERY_SECS` with no exec demand
+and no signal, the cap climbs `+1` per clean window back to the fresh-start
+value, and an unreported probe resumes at `floor + 1`, never above the fresh-start
+value even when `adaptive_floor >= adaptive_initial`. Above the fresh-start
+value every step is still earned; the next corroborated pressure cuts as
+before, and one signal of any kind restarts the idle clock. Runner-lane load
+still counts as idle to this track, which is why the bound is the fresh-start
+value and not the user's ceiling. A lowered-then-raised `max_subagents` that
+left the cap below the fresh-start value recovers the same way.
 
 ### Accepted scope: one-way slow-start retirement
 
@@ -252,6 +279,7 @@ These are module constants, not settings. Tests and experiments may pass
 | `DEFAULT_LAG_INCREASE_MS` | 100 ms |
 | `DEFAULT_LAG_SEVERE_MS` | 2000 ms |
 | `DEFAULT_TIMEOUT_RATE` | 0.2 |
+| `DEFAULT_IDLE_RECOVERY_SECS` | 60 seconds |
 
 ## Visibility
 
@@ -262,14 +290,22 @@ actuator values, the last error, the last sample, and `recent_decisions`: the
 last 32 cap-changing decisions, newest last, each with its wall-clock time,
 action, reason, the caps the actuators confirmed after it (a gate update the
 daemon did not answer shows the previous gate cap), and the loop lag of the
-sample that produced it. Cap decreases, pauses and resumes are logged at WARNING (growth at INFO)
-so `gateway.log` keeps them.
+sample that produced it. `last_cut` is the decision that last LOWERED the exec
+cap (action, reason, signals, the sample time `t`, and in `state()` its
+`age_secs`); it is never cleared by an increase, so the answer to "why is the
+cap low" survives both the holds that follow and the decision ring rolling
+over. A clear hold's `reason` says what the next exec step waits for: the
+ceiling, the idle clock ("idle; restoring toward 4 in 25s"), demand at the cap,
+or the completions still owed. Cap decreases, pauses and resumes are logged at
+WARNING (growth at INFO) so `gateway.log` keeps them.
 `resource_status.adaptive_state()` reads it from the registry and
 `adaptive_summary_lines()` renders it at the end of the `resource_status` MCP
 tool's report ("Execution cap: 8/64   MCP spawn gate: 4/8   Dispatch: active",
 then "Growth toward ceiling: slow start (x2/window)", the last decision and
 its signals, throttled provider scopes, and the last five of
-`recent_decisions` under "Recent cap changes").
+`recent_decisions` under "Recent cap changes"). While the exec cap is below the
+ceiling and a cut is on record it adds "Last pressure cut: decrease 42s ago
+(corroborated pressure: loop_lag,timeouts); signals: ...").
 
 **A tool server is not the gateway process,** so that registry is empty there:
 `mcp_tools/spawn.py::_live_adaptive_state` falls back to `GET
@@ -337,7 +373,11 @@ increase side needs the hysteresis band; +1 per clean window with demand and
 successes, no demand no increase, the gate earns on inits; pause -> probe ->
 resume, a probe meeting pressure re-pauses, one severe sample is not a pause;
 the ceiling is never exceeded, a lowered ceiling clamps, `fixed` disables
-adaptation; `Decision.changed` and the snapshot shape. Those cases construct
+adaptation; `TestIdleRecovery`: a cut cap climbs back one step per window to the
+fresh-start value and stops there, an unreported probe resumes once idle and
+clear, demand or a lone soft signal restarts the idle clock, work below the cap
+is not idle, a cap already at the fresh-start value never drifts, and
+`last_cut` names the cut behind a low cap; `Decision.changed` and the snapshot shape. Those cases construct
 their params with slow start OFF, because each one pins a congestion-avoidance
 rule; `TestSlowStart` owns the other regime: doubling per window up to the
 user ceiling with no static host prediction under it, free memory under the
@@ -367,7 +407,9 @@ buckets; the real `SubagentManager` seam (min of user and adaptive, `apply_limit
 moves only the ceiling, a raise pumps the queue, `reconfigure` never shrinks the
 ceiling to the bound); the gatewayd frame clamps and rejects; the manager
 actuator's round trip; `resource_status` rendering and the registry; config
-defaults, parse clamps and that every live path is a schema key. The climb is
+defaults, parse clamps and that every live path is a schema key; an idle
+controller restores the cap after a lag cut and `resource_status` names the cut
+("Last pressure cut") until the cap is back at the ceiling. The climb is
 pinned to the user's ceiling alone: the sizing helpers are not consulted on the
 way up and `probe_host` reads only live signals.
 `test_mcp_core_more_coverage.py::TestResourceStatusTool` /

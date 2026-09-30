@@ -759,6 +759,15 @@ class AdaptiveController:
     def state(self) -> dict[str, Any]:
         """Structured state for ``resource_status`` and the dashboard."""
         last = self._samples[-1] if self._samples else None
+        snapshot = self._policy.snapshot()
+        cut = snapshot.get("last_cut")
+        if isinstance(cut, dict):
+            # The policy stamps a cut with the SAMPLE clock (this controller's
+            # ``_clock``, monotonic); a reader outside the process needs an age.
+            try:
+                cut["age_secs"] = round(max(0.0, self._clock() - float(cut["t"])), 1)
+            except (KeyError, TypeError, ValueError):
+                pass
         return {
             "enabled": self._enabled,
             "sample_secs": self._sample_secs,
@@ -784,7 +793,7 @@ class AdaptiveController:
                 else None
             ),
             "recent_decisions": list(self._recent),
-            **self._policy.snapshot(),
+            **snapshot,
         }
 
 
