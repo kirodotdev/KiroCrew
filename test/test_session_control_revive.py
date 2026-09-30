@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import errno
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -108,6 +109,42 @@ def test_revive_brings_a_closed_peer_back_with_its_transcript(tmp_path):
     assert live.running is False
     # The reopen is durable: the closed flag is cleared so a restart restores it.
     assert not state.conversation_log.get_metadata(f"dashboard:{key}").get("closed")
+
+
+def test_a_revive_in_the_close_clock_reading_keeps_the_marker(tmp_path, monkeypatch):
+    """A revive that starts in the same clock reading as the close is refused,
+    and the session stays archived.
+
+    The resume's compare-and-clear keeps any ``closed`` stamped at or after the
+    moment the resume started. Inside one clock reading it cannot tell the close
+    it read from a new close that landed just after, so keeping the marker is
+    the safe answer. The clock is frozen here so the tie happens on every OS; on
+    Windows CPython 3.12 ``time.time()`` moves every ~15.6 ms, so an unfrozen
+    close and revive tie there by themselves, which is why ``_archive`` backdates
+    the close for every other test in this file."""
+    frozen = [time.time()]
+    monkeypatch.setattr(time, "time", lambda: frozen[0])
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    peer = _slot(state, "chat-2")
+    peer.messages.append({"role": "user", "content": "m0"})
+    peer._dirty = True
+    key = peer.key
+    hk = f"dashboard:{key}"
+    asyncio.run(sc.close_target(state, caller_session_key=_key(caller), target=key))
+    assert state.conversation_log.get_metadata(hk).get("closed_at") == frozen[0]
+
+    with pytest.raises(sc.SessionControlError) as exc:
+        _revive(state, caller, key)
+
+    assert exc.value.code == "resume_conflict"
+    assert key not in state._slots and key not in state._slots_under_construction
+    assert state.conversation_log.get_metadata(hk).get("closed") is True
+
+    # One clock step later the same revive lands and clears the marker.
+    frozen[0] += 1.0
+    assert _revive(state, caller, key)["target"] == key
+    assert "closed" not in state.conversation_log.get_metadata(hk)
 
 
 @pytest.mark.parametrize(
