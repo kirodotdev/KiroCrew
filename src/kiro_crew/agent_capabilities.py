@@ -648,6 +648,9 @@ def _unvouched(snap: dict, spec: dict) -> list[str]:
     (``_REBUILT_FIELDS`` on an owned-template fork; ``permissions`` equal to the
     derivation ``_align_permissions`` would emit) or when nothing reads it
     (``_INERT_FIELDS``). What remains is a hand edit no one has seen.
+
+    A key the last review saw (``reviewed_keys`` on the intent) is compared too,
+    so a key deleted from both the file and its parent still counts as drift.
     """
     vouched = set(SECTIONS) | set(ORDINARY_FIELDS) | _STRUCTURAL_FIELDS | _INERT_FIELDS
     if (
@@ -660,11 +663,14 @@ def _unvouched(snap: dict, spec: dict) -> list[str]:
     ):
         vouched.add("permissions")
     parent = snap["parent_spec"]
+    reviewed = set((snap["intent"] or {}).get("reviewed_keys", ()))
     # A deleted key is drift too: kiro-cli reads an absent key as its default
     # (``includeMcpJson`` absent means true), so a dropped parent key can grant.
+    # A key absent from BOTH the file and the parent is only visible through the
+    # reviewed baseline, so the baseline joins the keys compared.
     return sorted(
         key
-        for key in (set(spec) | set(parent)) - vouched
+        for key in (set(spec) | set(parent) | reviewed) - vouched
         if key not in spec or key not in parent or spec[key] != parent[key]
     )
 
@@ -683,6 +689,7 @@ def _stamp_reviewed(snap: dict, spec: dict, intent: dict) -> bool:
         error.file = snap["target"] + ".json"
         raise error
     intent["materialized"] = _digest(spec)
+    intent["reviewed_keys"] = sorted(spec)
     return drifted
 
 

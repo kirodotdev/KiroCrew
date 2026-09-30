@@ -287,6 +287,11 @@ def _validate_capability_metadata(value: dict) -> None:
         type(value["governance_generation"]) is not int or value["governance_generation"] < 0
     ):
         raise ValueError("capability_state_invalid")
+    if "reviewed_keys" in value and (
+        not isinstance(value["reviewed_keys"], list)
+        or not all(isinstance(key, str) for key in value["reviewed_keys"])
+    ):
+        raise ValueError("capability_state_invalid")
     for field in ("catalog", "ordinary", "ordinary_local"):
         if field not in value:
             continue
