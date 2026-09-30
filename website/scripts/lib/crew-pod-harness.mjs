@@ -90,8 +90,12 @@ export async function openMembersDm(page, authed, BASE, member, { theme = 'dark'
     await fetch('/api/config/theme', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mode: th, language: lg, onboarded: true, import_onboarded: true, privacy_acked: true }),
+      // `crewmates_onboarded` too: without it the Meet CrewMates first-run
+      // dialog opens over the Crewmates page on a fresh pod home and swallows
+      // every click meant for the roster.
+      body: JSON.stringify({ mode: th, language: lg, onboarded: true, import_onboarded: true, privacy_acked: true, crewmates_onboarded: true }),
     })
+    localStorage.setItem('mc-crewmates-onboarded', '1')
   }, [theme, lang])
   await page.goto(`${BASE}/members`, { waitUntil: 'domcontentloaded' })
   const row = page.locator('#main-content li button', { hasText: member }).first()
