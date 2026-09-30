@@ -1761,6 +1761,136 @@ def darwin_process_path(pid: int) -> str | None:
         return None
 
 
+# ``proc_pidinfo(PROC_PIDLISTFDS)`` lists a process's open descriptors as
+# ``proc_fdinfo`` records: an int32 ``proc_fd`` and a uint32 ``proc_fdtype``
+# (8 bytes each). ``PROX_FDTYPE_SOCKET`` marks a socket.
+_DARWIN_PROC_PIDLISTFDS = 1
+_DARWIN_PROC_FDINFO_SIZE = 8
+_DARWIN_PROX_FDTYPE_SOCKET = 2
+# ``proc_pidfdinfo(PROC_PIDFDSOCKETINFO)`` fills a ``socket_fdinfo``: a 24-byte
+# ``proc_fileinfo`` then a ``socket_info``. Inside ``socket_info`` the
+# 136-byte ``vinfo_stat`` is followed by the socket fields, putting ``soi_kind``
+# at 232 and the ``soi_proto`` union at 240; for ``SOCKINFO_TCP`` that union is
+# a ``tcp_sockinfo`` whose ``tcpsi_state`` follows the 80-byte ``in_sockinfo``.
+# The union is sized by ``un_sockinfo`` (528), so the whole record is 792 bytes;
+# the fill size doubles as the layout check, as for the probes above.
+_DARWIN_PROC_PIDFDSOCKETINFO = 3
+_DARWIN_SOCKET_FDINFO_SIZE = 792
+_DARWIN_SOI_KIND_OFFSET = 24 + 232
+_DARWIN_TCPSI_STATE_OFFSET = 24 + 240 + 80
+_DARWIN_SOCKINFO_TCP = 2
+_DARWIN_TSI_S_ESTABLISHED = 4
+# Inside ``in_sockinfo`` (which opens ``tcp_sockinfo``): ``insi_vflag`` at 24,
+# then ``insi_faddr`` at 32, a 16-byte union whose IPv4 form keeps the address
+# in its last four bytes. ``INI_IPV4`` / ``INI_IPV6`` are the vflag bits.
+_DARWIN_INSI_VFLAG_OFFSET = 24 + 240 + 24
+_DARWIN_INSI_FADDR_OFFSET = 24 + 240 + 32
+_DARWIN_INI_IPV4 = 0x1
+_DARWIN_INI_IPV6 = 0x2
+_DARWIN_IN6_LOOPBACK = bytes(15) + b"\x01"
+_DARWIN_IN6_V4MAPPED_PREFIX = bytes(10) + b"\xff\xff"
+# Descriptor-count bound for one listing. A process past it is not enumerated
+# rather than enumerated in part, so a partial answer never reads as "none".
+_DARWIN_MAX_FDS = 16384
+
+_darwin_libproc_fd_bound = False
+
+
+def _darwin_libproc_fd_handle() -> Any:
+    """The cached ``libproc`` handle with ``proc_pidfdinfo`` declared, or None.
+
+    Bound separately so a libproc without the symbol still serves every probe
+    that needs only ``proc_pidinfo``.
+    """
+    global _darwin_libproc_fd_bound
+    lib = _darwin_libproc_handle()
+    if lib is None:
+        return None
+    if _darwin_libproc_fd_bound:
+        return lib
+    try:
+        lib.proc_pidfdinfo.argtypes = [
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            ctypes.c_int,
+        ]
+        lib.proc_pidfdinfo.restype = ctypes.c_int
+    except Exception:
+        return None
+    _darwin_libproc_fd_bound = True
+    return lib
+
+
+def _darwin_peer_is_loopback(record: bytes) -> bool:
+    """Whether a ``socket_fdinfo`` record's foreign address is loopback.
+
+    An unknown address family reads as loopback, so a record this parser does
+    not understand is never counted as a remote call.
+    """
+    vflag = record[_DARWIN_INSI_VFLAG_OFFSET]
+    faddr = record[_DARWIN_INSI_FADDR_OFFSET : _DARWIN_INSI_FADDR_OFFSET + 16]
+    if vflag & _DARWIN_INI_IPV4:
+        return faddr[12] == 127
+    if vflag & _DARWIN_INI_IPV6:
+        if faddr == _DARWIN_IN6_LOOPBACK:
+            return True
+        return faddr[:12] == _DARWIN_IN6_V4MAPPED_PREFIX and faddr[12] == 127
+    return True
+
+
+def darwin_established_tcp_count(pid: int) -> int | None:
+    """How many ESTABLISHED TCP sockets to a non-loopback peer *pid* holds.
+
+    None when unreadable. A loopback peer is a local service, not a remote call.
+
+    The macOS counterpart of reading ``/proc/<pid>/fd`` against
+    ``/proc/<pid>/net/tcp``: in-process, no entitlement for a same-uid process,
+    nothing exec'd. A socket whose record does not come back at the exact
+    ``socket_fdinfo`` size is skipped, and a listing that cannot be read at all
+    is None, so a caller never reads a layout mismatch as "no connections".
+    """
+    lib = _darwin_libproc_fd_handle()
+    if lib is None:
+        return None
+    try:
+        needed = lib.proc_pidinfo(pid, _DARWIN_PROC_PIDLISTFDS, 0, None, 0)
+        if needed <= 0:
+            return None
+        # Headroom for descriptors opened between the size query and the read.
+        size = min(
+            needed + 32 * _DARWIN_PROC_FDINFO_SIZE, _DARWIN_MAX_FDS * _DARWIN_PROC_FDINFO_SIZE
+        )
+        buf = ctypes.create_string_buffer(size)
+        filled = lib.proc_pidinfo(pid, _DARWIN_PROC_PIDLISTFDS, 0, buf, size)
+        if filled <= 0 or filled % _DARWIN_PROC_FDINFO_SIZE:
+            return None
+        if filled >= size:
+            # A full buffer may be a truncated one: refuse rather than undercount.
+            return None
+        info = ctypes.create_string_buffer(_DARWIN_SOCKET_FDINFO_SIZE)
+        count = 0
+        for off in range(0, filled, _DARWIN_PROC_FDINFO_SIZE):
+            fd, fdtype = struct.unpack_from("<iI", buf.raw, off)
+            if fdtype != _DARWIN_PROX_FDTYPE_SOCKET:
+                continue
+            got = lib.proc_pidfdinfo(
+                pid, fd, _DARWIN_PROC_PIDFDSOCKETINFO, info, _DARWIN_SOCKET_FDINFO_SIZE
+            )
+            if got != _DARWIN_SOCKET_FDINFO_SIZE:
+                continue
+            kind = struct.unpack_from("<i", info.raw, _DARWIN_SOI_KIND_OFFSET)[0]
+            if kind != _DARWIN_SOCKINFO_TCP:
+                continue
+            state = struct.unpack_from("<i", info.raw, _DARWIN_TCPSI_STATE_OFFSET)[0]
+            if state == _DARWIN_TSI_S_ESTABLISHED and not _darwin_peer_is_loopback(info.raw):
+                count += 1
+        return count
+    except Exception:
+        return None
+
+
 _darwin_libc_sysctl: Any = None
 _darwin_libc_sysctl_loaded = False
 

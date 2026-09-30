@@ -37,7 +37,10 @@ macOS, no new dependencies):
 - **MCP ``wait`` tool**: declared-duration contract — WORKING until the parsed
   ``seconds`` (+ slack) elapse, then UNKNOWN.
 - **Other MCP tools**: sample the descendant tree's CPU/IO movement across
-  successive checks; moving -> WORKING, flat -> UNKNOWN.
+  successive checks; moving -> WORKING, flat -> UNKNOWN. A flat tree in which a
+  tool-side process holds an established TCP connection carries the
+  :data:`EVIDENCE_REMOTE_FLAT` tag (a tool blocked on its own remote call), read
+  from ``/proc`` on Linux and from libproc's socket fd info on macOS.
 - **Model-wait (no tool in flight)**: sample the tree's IO/CPU counters across
   checks (token/keepalive receipt moves them) and its established TCP sockets.
   Flat counters with NO established backend socket is the done-but-lost-frame
@@ -54,8 +57,9 @@ cmdline the SAME matching rules run against, and ``PROC_PIDTASKINFO`` sums the
 subtree's CPU time. That gives macOS the shell-child match / exit detection /
 absence narrowing and the MCP-subtree movement probe, with movement being
 CPU-only (the evidence string says so — there is no per-process IO counter to
-read). What has no libproc equivalent stays exactly as absent: no socket
-evidence (so a flat model wait is UNKNOWN, never DEAD, and never tagged
+read). libproc's socket fd info feeds only the tool-side ``remote_flat``
+scan. What has no libproc equivalent stays exactly as absent: no model-wait
+socket evidence (so a flat model wait is UNKNOWN, never DEAD, and never tagged
 ``established_flat``), no wchan / blocked-fd evidence (so STUCK_INPUT is never
 claimed — a live tracked child whose subtree is flat is UNKNOWN tagged
 ``platform_limited`` instead of WORKING, so it is bounded rather than deferred
@@ -225,6 +229,30 @@ EVIDENCE_SAMPLING = "sampling"
 # a silent plain UNKNOWN would hide which platform limit produced it.
 EVIDENCE_PLATFORM_LIMITED = "platform_limited"
 
+# Evidence prefix for an opaque MCP tool whose subtree is genuinely flat (a
+# real two-sample delta, not the baseline tick) while a process on the TOOL
+# side of the tree — anything below the kiro-cli runtime itself — holds an
+# established TCP connection to a non-loopback peer. That is the shape of a
+# tool blocked on its own remote call: the MCP server sits in ``recv`` with
+# zero CPU and zero bytes,
+# which is also exactly what a remote call with no client timeout looks like
+# when the peer never answers. The caller narrows the UNKNOWN window on this
+# tag to ``watchdog.remote_flat_probe_secs``, and only once the tree has also
+# shown no movement at any probe for that long, so a slow stream that moves
+# bytes now and then is never cut off between two quiet samples.
+#
+# Deliberately distinct from :data:`EVIDENCE_ESTABLISHED_FLAT`, which is keyed
+# on kiro-cli's OWN backend connection and a model-wrapping tool name. The
+# runtime's own sockets never count here, and neither do those of the
+# sandbox launcher's direct child (the real kiro-cli under the Linux namespace
+# sandbox), so kiro-cli's model connection cannot pass for a tool's remote
+# call. Because the scan reads the whole tree, the tag also needs a declared
+# tenancy of exactly one session (see :data:`EVIDENCE_SHARED_TREE`): on a
+# shared runtime the socket may be a co-tenant's. Where no socket view exists
+# (Windows, a tree that cannot be read) the tag is never set and the
+# build-scale window holds.
+EVIDENCE_REMOTE_FLAT = "remote_flat"
+
 # Tool names that are known to wrap a model call (e.g. kiro-cli's use_subagent
 # which starts a sub-agent turn inside the current tool call). The
 # established_flat narrowing is ONLY applied when the in-flight tool's trusted
@@ -351,6 +379,26 @@ def iter_descendants(proc_root: str, pid: int) -> list[int]:
     return order
 
 
+def direct_children(proc_root: str, pid: int) -> list[int]:
+    """*pid*'s direct children from ``/proc/<pid>/task/<tid>/children``.
+
+    Empty both for a childless process and for an unreadable interface; the one
+    caller only uses it to widen an exclusion, where either reading is safe.
+    """
+    children: list[int] = []
+    try:
+        tids = os.listdir(f"{proc_root}/{pid}/task")
+    except OSError:
+        return children
+    for tid in tids:
+        for tok in (_read_text(f"{proc_root}/{pid}/task/{tid}/children") or "").split():
+            try:
+                children.append(int(tok))
+            except ValueError:
+                continue
+    return children
+
+
 def children_interface_readable(proc_root: str, pid: int) -> bool:
     """Whether *pid*'s child list can be read at all.
 
@@ -460,6 +508,44 @@ def established_inodes(proc_root: str, pid: int) -> set[str]:
     return inodes
 
 
+def _is_loopback_hex(addr: str) -> bool:
+    """Whether a ``/proc/net/tcp{,6}`` address column names a loopback peer.
+
+    IPv4 is one little-endian word, so the first octet is the LAST byte
+    (``0100007F`` is 127.0.0.1). IPv6 is four little-endian words: ``::1`` is
+    ``...01000000`` and a v4-mapped ``::ffff:127.x`` ends in a word whose last
+    byte is ``7F``.
+    """
+    host = addr.split(":", 1)[0].upper()
+    if len(host) == 8:
+        return host.endswith("7F")
+    if len(host) == 32:
+        if host == "00000000000000000000000001000000":
+            return True
+        return host[:24] == "0000000000000000FFFF0000" and host.endswith("7F")
+    return False
+
+
+def remote_established_inodes(proc_root: str, pid: int) -> set[str]:
+    """Inodes of ESTABLISHED TCP sockets whose peer is not loopback.
+
+    Same source as :func:`established_inodes`. A loopback peer is a local
+    service, most often Kiro Crew's own gateway, which the in-tree MCP servers
+    reach over ``127.0.0.1`` and which a long-blocking tool such as
+    ``spawn_sub_agents`` legitimately waits on for its whole run.
+    """
+    inodes: set[str] = set()
+    for name in ("tcp", "tcp6"):
+        raw = _read_text(f"{proc_root}/{pid}/net/{name}")
+        if not raw:
+            continue
+        for line in raw.splitlines()[1:]:
+            parts = line.split()
+            if len(parts) > 9 and parts[3] == "01" and not _is_loopback_hex(parts[2]):
+                inodes.add(parts[9])
+    return inodes
+
+
 def steady_now() -> float | None:
     """A step-immune reading paired with :func:`boottime_now` on darwin.
 
@@ -533,6 +619,9 @@ class DarwinProcessBackend(Protocol):
     process, or answers None for one that is gone, a zombie, or unreadable —
     the shapes the ``/proc`` walk skips as ``stat is None or state == "Z"``.
     ``cpu_nanos`` is the process's total CPU time, None when unreadable.
+    ``established_tcp`` counts the process's ESTABLISHED TCP sockets to a
+    non-loopback peer, None when unreadable. It is optional: the oracle reads a backend without it as having
+    no socket view, so the socket-keyed tag is simply never set.
     """
 
     def descendants(self, root_pid: int) -> list[int] | None: ...
@@ -540,6 +629,8 @@ class DarwinProcessBackend(Protocol):
     def row(self, pid: int) -> ProcessRow | None: ...
 
     def cpu_nanos(self, pid: int) -> int | None: ...
+
+    def established_tcp(self, pid: int) -> int | None: ...
 
 
 class LibprocBackend:
@@ -588,6 +679,9 @@ class LibprocBackend:
 
     def cpu_nanos(self, pid: int) -> int | None:
         return platform_compat.proc_cpu_nanos_for_pid(pid)
+
+    def established_tcp(self, pid: int) -> int | None:
+        return platform_compat.darwin_established_tcp_count(pid)
 
 
 def select_darwin_backend(proc_root: str) -> DarwinProcessBackend | None:
@@ -1149,6 +1243,7 @@ class LivenessOracle:
         wall_now=time.time,
         steady_now_fn=steady_now,
         tenancy: Callable[[], int | None] | None = None,
+        socket_tenancy: Callable[[], int | None] | None = None,
     ) -> None:
         self._proc = str(proc_root)
         self._now = now
@@ -1177,6 +1272,11 @@ class LivenessOracle:
         # about tenancy keeps today's verdicts exactly; a caller whose runtime
         # CAN host a second session is the one that must pass this.
         self._tenancy = tenancy
+        # How many sessions the probed runtime hosts, read ONLY by the
+        # tool-side socket scan behind the opt-in ``remote_flat`` tag. Kept apart
+        # from ``tenancy`` so declaring it leaves the model-wait DEAD reading as
+        # it was. ``None`` here means "not declared", which keeps the tag off.
+        self._socket_tenancy = socket_tenancy
         # sample key -> (ts, counter). Keys: "io", "cpu".
         self._samples: dict[str, tuple[float, int]] = {}
 
@@ -1215,6 +1315,7 @@ class LivenessOracle:
             wall_now=self._wall_now,
             steady_now_fn=self._steady_now,
             tenancy=self._tenancy,
+            socket_tenancy=self._socket_tenancy,
         )
 
     # ── Public checks ──
@@ -1282,8 +1383,9 @@ class LivenessOracle:
         # action. Deliberately NARROWER than the model-wait branch's full-tree
         # ``_any_established``: here the descendants include the tool's own
         # workers, and an MCP server blocked on ITS remote socket (a long
-        # remote call, zero CPU/IO while in recv) must keep the full tool
-        # windows — only kiro-cli's own backend connection is LLM-wait
+        # remote call, zero CPU/IO while in recv) is not a model wait: it is
+        # the remote_flat shape handled below, never this tag. Only
+        # kiro-cli's own backend connection is LLM-wait
         # evidence. Shell-child evidence never reaches this branch (it returns
         # from _check_shell_child above), and a flat subtree without the
         # runtime-held socket keeps the plain evidence. Under the OS sandbox
@@ -1308,7 +1410,82 @@ class LivenessOracle:
                     VERDICT_UNKNOWN,
                     f"{EVIDENCE_ESTABLISHED_FLAT}: mcp subtree flat ({evidence})",
                 )
+        if (
+            evidence
+            not in (
+                EVIDENCE_SAMPLING,
+                "no readable counters",
+            )
+            and self._tree_is_this_sessions()
+        ):
+            holder = self._tool_side_established(runtime_pid)
+            if holder is not None:
+                return (
+                    VERDICT_UNKNOWN,
+                    f"{EVIDENCE_REMOTE_FLAT}: mcp subtree flat, pid {holder} holds an "
+                    f"established TCP connection ({evidence})",
+                )
         return VERDICT_UNKNOWN, f"mcp subtree flat ({evidence})"
+
+    def _tree_is_this_sessions(self) -> bool:
+        """Whether the runtime's tree is DECLARED to hold this session alone.
+
+        The tool-side socket scan reads the whole tree, and the narrowing it
+        feeds is the one that cancels sooner. With a co-tenant (another chat, or
+        a subagent riding this runtime) the socket may be the co-tenant's call,
+        so the tag needs a declared ``socket_tenancy`` of exactly 1. Undeclared,
+        unreadable, raising or above 1 all keep the full window.
+        """
+        if self._socket_tenancy is None:
+            return False
+        try:
+            count = self._socket_tenancy()
+        except Exception:
+            logger.debug("liveness: socket tenancy probe failed", exc_info=True)
+            return False
+        return isinstance(count, int) and count == 1
+
+    def _tool_side_established(self, runtime_pid: int) -> int | None:
+        """A tool-side pid holding an ESTABLISHED TCP socket, or None.
+
+            Only a connection to a NON-loopback peer counts: a loopback peer is a
+        local service (Kiro Crew's gateway above all), not a remote call.
+
+        "Tool side" is the runtime's tree minus the runtime process itself. On
+            ``/proc`` a root that holds no socket at all is read as the namespace
+            sandbox's launcher parent, and its direct children (the real kiro-cli)
+            are excluded too, so kiro-cli's own model connection never counts. A
+            non-sandboxed kiro-cli that happens to hold no socket then excludes its
+            MCP servers as well — the direction that keeps the full window.
+
+            On darwin the runtime pid IS kiro-cli (``sandbox-exec`` execs in place),
+            so only the root is excluded. A backend without ``established_tcp``, and
+            a host with neither backend (Windows), answer None.
+        """
+        if self._darwin is not None:
+            probe = getattr(self._darwin, "established_tcp", None)
+            if probe is None:
+                return None
+            descendants = self._darwin.descendants(runtime_pid)
+            if not descendants:
+                return None
+            for pid in descendants:
+                count = probe(pid)
+                if count:
+                    return pid
+            return None
+        if not os.path.isdir(self._proc):
+            return None
+        excluded = {runtime_pid}
+        if not socket_inodes(self._proc, runtime_pid):
+            excluded.update(direct_children(self._proc, runtime_pid))
+        for pid in iter_descendants(self._proc, runtime_pid):
+            if pid in excluded:
+                continue
+            held = socket_inodes(self._proc, pid)
+            if held and held & remote_established_inodes(self._proc, pid):
+                return pid
+        return None
 
     def _check_shell_child(self, runtime_pid: int, tool: ToolCallState) -> tuple[str, str]:
         if self._darwin is not None:

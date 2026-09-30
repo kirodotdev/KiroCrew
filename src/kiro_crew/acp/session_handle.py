@@ -81,6 +81,7 @@ from kiro_crew.acp.client import (
 from kiro_crew.acp.liveness import (
     EVIDENCE_ESTABLISHED_FLAT,
     EVIDENCE_PLATFORM_LIMITED,
+    EVIDENCE_REMOTE_FLAT,
     EVIDENCE_SHELL_CHILD_ABSENT,
     INTERACTIVE_NARROWING_RISKS,
     INTERACTIVE_NONE,
@@ -292,6 +293,7 @@ class WatchdogSettings:
     tool_stall_suspect_secs: float = 5400.0
     tool_stall_hard_cap_secs: float = 7200.0
     model_silent_probe_secs: float = 1800.0
+    remote_flat_probe_secs: float = 0.0
     wellness_sample_secs: float = 3.0
     # Whether a per-agent watchdog_tool_stall_* override was applied to this
     # snapshot. Telemetry-only (the kirocrew.watchdog.action attr): a BOOLEAN,
@@ -327,6 +329,7 @@ _TURN_BOUNDED_WINDOWS = (
     "tool_stall_suspect_secs",
     "tool_stall_hard_cap_secs",
     "model_silent_probe_secs",
+    "remote_flat_probe_secs",
 )
 
 
@@ -482,7 +485,9 @@ def _watchdog_evidence_class(evidence: str) -> str:
     backend socket, flat subtree), ``mcp_flat`` (opaque MCP tool, moving or
     flat), ``shell_absent`` (shell tool in flight with nothing this dispatch
     could have started still running), ``shell`` (other shell-child evidence),
-    ``wait`` (the declared-duration wait tool), ``platform_limited`` (the
+    ``remote_flat`` (opaque MCP tool, flat subtree, a tool-side process
+    holding an established TCP connection — a tool blocked on its own remote
+    call), ``wait`` (the declared-duration wait tool), ``platform_limited`` (the
     oracle had no platform evidence to sharpen the verdict — a live-but-flat
     shell child on macOS, any tree probe on Windows), ``degraded`` (everything
     else: sampling baseline, unreadable /proc, no pid, oracle error — the
@@ -498,6 +503,9 @@ def _watchdog_evidence_class(evidence: str) -> str:
     if e.startswith(EVIDENCE_PLATFORM_LIMITED):
         # Same ordering reason: its text names the shell child / mcp subtree.
         return "platform_limited"
+    if e.startswith(EVIDENCE_REMOTE_FLAT):
+        # Same ordering reason: its text names the mcp subtree.
+        return "remote_flat"
     if "mcp subtree" in e:
         return "mcp_flat"
     if "shell child" in e:
@@ -1013,7 +1021,10 @@ class AcpSessionHandle:
         # load below is only the fallback for direct constructions (tests).
         self._crew_agent = crew_agent
         self._watchdog = watchdog if watchdog is not None else _load_watchdog_settings(crew_agent)
-        self._oracle = LivenessOracle(sample_min_secs=self._watchdog.wellness_sample_secs)
+        self._oracle = LivenessOracle(
+            sample_min_secs=self._watchdog.wellness_sample_secs,
+            socket_tenancy=self._socket_tenancy,
+        )
         # Keep the executor future, not an await-scoped flag: wait_for can time
         # out while the underlying thread continues its /proc walk. A pending
         # future makes the next watchdog tick answer UNKNOWN instead of
@@ -4020,6 +4031,12 @@ class AcpSessionHandle:
         # construction and narrowing its queue term would change nothing.
         last_own_data_ts = last_data_ts
         parked_at_own_data = parked_at_data
+        # When the tool branch last read the in-flight tool's subtree as
+        # WORKING. The remote_flat narrowing measures its quiet stretch from the
+        # later of this and the last own frame, so a remote call that moves bytes
+        # between quiet samples is judged on its longest silence, not on the one
+        # flat reading that happens to land on a probe tick.
+        tool_moved_ts = float("-inf")
 
         _buffered: list[JsonRpcMessage] = []
         _last_yield = time.monotonic()
@@ -4235,6 +4252,10 @@ class AcpSessionHandle:
                             parked_at_own_data = self._parked_total
                             continue
                         if verdict == VERDICT_WORKING:
+                            # Stamped after the consult returns: the probe
+                            # observed the tool at the end of its await, so
+                            # the pre-consult clock would shorten the window.
+                            tool_moved_ts = time.monotonic()
                             self._log_working_deferral(_tool_idle, evidence, timeout)
                             continue
                         # UNKNOWN acts at the suspect window. The suspect
@@ -4258,6 +4279,10 @@ class AcpSessionHandle:
                         # WORKING was already deferred above; the action below
                         # is the existing non-lethal tool-stall recovery.
                         _suspect = wd.tool_stall_suspect_secs
+                        _full_suspect = min(_suspect, wd.tool_stall_hard_cap_secs)
+                        # Idle measure the chosen window is compared against. Only
+                        # the remote_flat narrowing swaps it for a stricter one.
+                        _window_idle = _tool_idle
                         _narrowed = evidence.startswith(EVIDENCE_ESTABLISHED_FLAT)
                         if _narrowed:
                             _suspect = min(wd.model_silent_probe_secs, _suspect)
@@ -4294,9 +4319,28 @@ class AcpSessionHandle:
                             # bounded, just by the standard budget.
                             _narrowed = True
                             _suspect = min(wd.stale_window_secs, _suspect)
+                        elif (
+                            evidence.startswith(EVIDENCE_REMOTE_FLAT)
+                            and wd.remote_flat_probe_secs > 0
+                        ):
+                            # An MCP tool blocked on its own remote call: the
+                            # tree is flat and a tool-side process holds an
+                            # established TCP connection. With no client timeout
+                            # a peer that never answers holds the call until the
+                            # build-scale window, which is the hang users see as
+                            # a tool that runs forever. Narrowed to the
+                            # remote-call budget, measured as the stretch with
+                            # neither an own frame NOR any WORKING reading of the
+                            # tree, so a stream that moves now and then keeps
+                            # the full window. 0 turns the narrowing off.
+                            _narrowed = True
+                            _suspect = min(wd.remote_flat_probe_secs, _suspect)
+                            _window_idle = max(0.0, min(_tool_idle, now - tool_moved_ts))
                         _suspect = min(_suspect, wd.tool_stall_hard_cap_secs)
                         _acting = (
-                            verdict in (VERDICT_DEAD, VERDICT_STUCK_INPUT) or _tool_idle > _suspect
+                            verdict in (VERDICT_DEAD, VERDICT_STUCK_INPUT)
+                            or _window_idle > _suspect
+                            or _tool_idle > _full_suspect
                         )
                         if not _acting:
                             continue  # UNKNOWN, within budget — keep waiting
@@ -5061,6 +5105,37 @@ class AcpSessionHandle:
             executor_factory=subprocess_executor,
             log_label="oracle consultation",
         )
+
+    def _socket_tenancy(self) -> int | None:
+        """The tenancy declared to the oracle's socket scan, or None while the
+        ``remote_flat`` window is off.
+
+        None reads as undeclared, so with ``watchdog.remote_flat_probe_secs`` at
+        0 the oracle never tags ``remote_flat`` and the evidence, the metric
+        bucket and the window all stay as they were. Read per call, so a config
+        reload that turns the key on or off takes effect on the next probe.
+        """
+        if self._watchdog.remote_flat_probe_secs <= 0:
+            return None
+        return self._runtime_tenancy()
+
+    def _runtime_tenancy(self) -> int | None:
+        """Sessions on this handle's runtime, counting ones still initializing.
+
+        Declared to the liveness oracle for the tool-side socket scan only, so
+        the opt-in ``remote_flat`` tag needs the tree to be this session's alone. None when the runtime exposes no
+        session table, which the oracle reads as unreadable, not as exclusive.
+        """
+        queues = getattr(self._runtime, "_session_queues", None)
+        if not isinstance(queues, dict):
+            return None
+        inits = getattr(self._runtime, "_session_inits_in_flight", 0)
+        # A timed-out session/new leaves a StartCollector that may still own a
+        # second session tree after the init scope has closed; count it, since
+        # an over-count only keeps the full window.
+        starts = getattr(self._runtime, "_start_collectors", None)
+        pending = len(starts) if isinstance(starts, dict) else 0
+        return len(queues) + (inits if isinstance(inits, int) else 0) + pending
 
     def _log_working_deferral(self, idle: float, evidence: str, turn_timeout: float) -> None:
         """Evidence trail for a WORKING deferral, rate-limited to one line per

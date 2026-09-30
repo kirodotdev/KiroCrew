@@ -217,6 +217,7 @@ def _build_watchdog_config(watchdog_data: dict) -> WatchdogConfig:
         model_silent_probe_secs=_safe_float(
             watchdog_data.get("model_silent_probe_secs", 1800.0), 1800.0
         ),
+        remote_flat_probe_secs=_safe_float(watchdog_data.get("remote_flat_probe_secs", 0.0), 0.0),
         wellness_sample_secs=_safe_float(watchdog_data.get("wellness_sample_secs", 3.0), 3.0),
     )
 

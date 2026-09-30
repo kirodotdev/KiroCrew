@@ -299,6 +299,26 @@ class WatchdogConfig:
             "end of an extended-effort think.",
         ),
     )
+    remote_flat_probe_secs: float = field(
+        default=0.0,
+        metadata=_meta(
+            "Remote-call stall window (s)",
+            "Idle seconds before an MCP tool that looks blocked on its own remote "
+            "call is cancelled and the turn routed to tool-stall recovery. The "
+            "shape is a tool whose process tree shows no CPU or IO movement while "
+            "a process below kiro-cli holds an established TCP connection: a "
+            "remote call waiting on a peer that may never answer. The window is "
+            "measured from the last stream frame or the last probe that saw the "
+            "tree move, whichever is later, so a slow stream that moves bytes now "
+            "and then keeps the full tool_stall_suspect_secs window. Linux and "
+            "macOS only; Windows has no socket view and keeps the full window. "
+            "Off (0) by default: the connection cannot yet be tied to the MCP "
+            "server serving the in-flight tool, so another server's persistent "
+            "connection could cut a quiet tool short. 900 is the suggested value "
+            "when opting in. Clamped against the transport's per-prompt timeout "
+            "like the other windows.",
+        ),
+    )
     wellness_sample_secs: float = field(
         default=3.0,
         metadata=_meta(
