@@ -263,6 +263,9 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 # Pre-pick idle check via _switch_target_busy (idle-only tool contract).
                 ("session_control.py", "set_model_target"),
                 ("openai_compat.py", "api_completions"),
+                # Idle-only teardown: the same pre-lock and in-lock probe via
+                # _switch_target_busy, so a reserved slot between stages is busy.
+                ("session_control.py", "reload_target"),
                 ("state.py", "_ChatSlot.enqueue_or_run_prompt"),
                 ("ws.py", "_handle_slot_focused"),
             }

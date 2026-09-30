@@ -4932,6 +4932,242 @@ def _target_busy_error() -> SessionControlError:
     )
 
 
+def _reload_busy_error() -> SessionControlError:
+    """The refusal ``reload_target`` gives a target with work in flight or queued."""
+    return SessionControlError(
+        "session busy, not reloaded: it has a turn, queued messages or sub-agents in "
+        "flight. Wait until it is idle and retry.",
+        code="target_busy",
+        status=409,
+    )
+
+
+def _reload_route_refusal(status: int, body: dict[str, Any]) -> SessionControlError:
+    """Map a ``reload_slot_session`` refusal to what ``session_reload`` reports.
+
+    The two busy codes collapse into ``target_busy`` so a caller sees one code for
+    "not now"; ``slot_not_found`` means the slot was replaced while the request
+    queued on a lock, which for this verb is a replaced target.
+    """
+    code = str(body.get("code") or "")
+    if code in ("turn_in_flight", "slot_subagents_running"):
+        return _reload_busy_error()
+    if code == "slot_not_found":
+        return SessionControlError(
+            "the target session was replaced; not reloaded",
+            code="target_replaced",
+            status=409,
+        )
+    return SessionControlError(
+        str(body.get("error") or "reload refused"), code=code or "reload_failed", status=status
+    )
+
+
+async def reload_target(
+    state: "DashboardState",
+    *,
+    caller_session_key: str,
+    target: str,
+    caller_fenced: bool | None = None,
+) -> dict[str, Any]:
+    """Relaunch *target*'s agent process, as the tab menu's Reload session does.
+
+    The teardown is ``chat_handlers.reload_slot_session``, the same code the
+    dashboard route runs, so the lock order, the rebind and replacement
+    re-checks and the ``skip_if_busy`` reset are shared rather than copied. The
+    transcript is not rewritten: the session is reset and one reload notice is
+    appended, naming the calling session.
+
+    Narrower than the other verbs in three ways:
+
+    * Only a session the caller CREATED, for every caller class. The dashboard
+      owner's own sessions are reachable by ``session_stop`` and the rest, but
+      a reload relaunches a process the person may be in the middle of using,
+      so this verb stays on sessions the caller dispatched itself.
+    * Never the caller itself (``authorize_target``'s default self refusal). A
+      caller is mid-turn by definition, and the teardown refuses a session with
+      a turn in flight, so a self-reload could only ever fail.
+    * Only an IDLE target: ``_switch_target_busy`` (which also sees a turn that
+      is still cold-starting), a non-empty queue, or attached sub-agents refuse
+      it with ``target_busy`` before anything is torn down, and the same probe
+      runs again inside the teardown's locks.
+
+    ``caller_fenced`` has the meaning :func:`stop_target` documents.
+    """
+    # Deferred for the same import cycle `stop_target` documents.
+    from kiro_crew.dashboard.chat_handlers import (
+        _SESSION_RELOAD_NOTICE,
+        _subagents_attached_response,
+        _switch_target_busy,
+        reload_slot_session,
+    )
+
+    # Same prewarm ordering as `stop_target`.
+    try:
+        await asyncio.to_thread(sel)
+    except Exception:  # noqa: BLE001 - a prewarm failure must not fail the reload
+        logger.warning("session-control SEL prewarm failed", exc_info=True)
+    await prewarm_enabled_check()
+    caller_key = caller_slot_key(state, caller_session_key)
+    if caller_fenced is None:
+        caller_fenced = bool(caller_key) and _caller_is_ownership_fenced(state, caller_key)
+
+    def _gate(target_name: str, *, first: bool = False) -> "_ChatSlot":
+        # Synchronous, so it can run inside the teardown's locks with no
+        # suspension between the decision and the act it authorizes. Only the
+        # first pass reads the enabled switch, as in `close_target`'s re-check.
+        found = authorize_target(
+            state,
+            caller_session_key=caller_session_key,
+            target=target_name,
+            operation="reload",
+            skip_enabled_check=not first,
+            precomputed_ownership_fenced=caller_fenced,
+        )
+        with _audit_denials(
+            caller_session_key=caller_session_key, operation="reload", slot_key=found.key
+        ):
+            if not caller_key or _created_by_other(found, caller_key):
+                raise SessionControlError(
+                    "a session can only reload sessions it created itself",
+                    code="not_creator",
+                    status=403,
+                )
+            if found.is_remote or found.executor == "remote":
+                raise SessionControlError(
+                    "that session runs on a remote crew; reloading it from another "
+                    "session is not supported yet",
+                    code="remote_target_unsupported",
+                    status=409,
+                )
+        return found
+
+    def _busy(target_slot: "_ChatSlot", session_key: str) -> bool:
+        provider = state.sessions.get_provider(session_key)
+        return bool(target_slot._queue) or _switch_target_busy(
+            state, target_slot, session_key, provider
+        )
+
+    slot = _gate(target, first=True)
+    slot_key = slot.key
+
+    with _audit_denials(
+        caller_session_key=caller_session_key, operation="reload", slot_key=slot_key
+    ):
+        # Refused up front, before any lock is taken, so a busy target costs the
+        # caller one probe and nothing queues behind the target's own switches.
+        session_key = effective_session_key(slot)
+        if _busy(slot, session_key):
+            raise _reload_busy_error()
+        if await _subagents_attached_response(state, slot, session_key, "reload") is not None:
+            raise _reload_busy_error()
+
+    changed_after_reset: list[SessionControlError] = []
+
+    def _still_ours(after_reset: bool) -> bool:
+        # Re-runs the whole gate after every await inside the teardown: a
+        # replaced slot, a new channel link or mirror, a moved workspace or a
+        # changed creator raises its own refusal out of the lock stack.
+        # ``after_reset`` comes from reload_slot_session itself, so the phase
+        # is never inferred from which callback ran last.
+        if state._slots.get(slot_key) is not slot:
+            if after_reset:
+                changed_after_reset.append(
+                    SessionControlError(
+                        "the target session was replaced", code="slot_replaced", status=409
+                    )
+                )
+            return False
+        try:
+            return _gate(slot_key) is slot
+        except SessionControlError as exc:
+            if not after_reset:
+                raise
+            # The reset already ran. Letting the refusal escape would tell the
+            # caller "nothing happened" about a process that is gone, and would
+            # skip the audit below; record it and answer as a changed target.
+            changed_after_reset.append(exc)
+            return False
+
+    notice = f"{_SESSION_RELOAD_NOTICE} Requested by session `{caller_key}`."
+    try:
+        response = await reload_slot_session(
+            state,
+            slot,
+            slot_key,
+            still_ours=_still_ours,
+            denied=lambda _session_key: None,
+            busy=lambda session_key: _busy(slot, session_key),
+            notice=notice,
+        )
+    except SessionControlError:
+        raise
+    except Exception as exc:
+        # The shared teardown absorbs a raise after the session pop (the
+        # reload happened, degraded) and re-raises only one from before it,
+        # when the old process is still the registered one. Report that as a
+        # failed reload and audit it, rather than escaping as a bare 500.
+        logger.exception("session_reload of %s failed before the reset", slot_key)
+        _audit(
+            caller_session_key=caller_session_key,
+            operation="reload",
+            slot_key=slot_key,
+            outcome="denied",
+            detail={"code": "reload_failed", "error": type(exc).__name__},
+        )
+        raise SessionControlError(
+            "the reload failed before the target's agent process was reset; "
+            "nothing was torn down",
+            code="reload_failed",
+            status=500,
+        ) from exc
+    if changed_after_reset:
+        _audit(
+            caller_session_key=caller_session_key,
+            operation="reload",
+            slot_key=slot_key,
+            outcome="denied",
+            detail={
+                "code": "target_changed_during_reload",
+                "gate_code": changed_after_reset[0].code,
+            },
+        )
+        raise SessionControlError(
+            "the target's agent process was reset, but the session changed during "
+            f"the reload ({changed_after_reset[0].code}); no reload notice was added",
+            code="target_changed_during_reload",
+            status=409,
+        )
+    if response.status != 200:
+        body = json.loads(response.text or "{}")
+        error = _reload_route_refusal(response.status, body)
+        _audit(
+            caller_session_key=caller_session_key,
+            operation="reload",
+            slot_key=slot_key,
+            outcome="denied",
+            detail={"code": error.code},
+        )
+        raise error
+
+    body = json.loads(response.text or "{}")
+    warning = body.get("warning")
+    detail: dict[str, Any] = {"reloaded_by": caller_key}
+    if warning:
+        detail["warning"] = warning
+    _audit(
+        caller_session_key=caller_session_key,
+        operation="reload",
+        slot_key=slot_key,
+        outcome="allowed",
+        detail=detail,
+    )
+    out: dict[str, Any] = {"ok": True, "target": slot_key}
+    if warning:
+        out["warning"] = warning
+    return out
+
+
 async def close_target(
     state: "DashboardState",
     *,

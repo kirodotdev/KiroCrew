@@ -23665,8 +23665,9 @@ class TestSessionReload:
         idle = self._idle_provider()
         busy = MagicMock()
         busy.has_active_turn = MagicMock(return_value=True)
-        # First lookup (fast path) sees idle; second (post-reset re-check) busy.
-        state.sessions.get_provider = MagicMock(side_effect=[idle, busy])
+        # First lookup (fast path) sees idle, as does the teardown's
+        # pre-reset identity capture; the post-reset re-check sees busy.
+        state.sessions.get_provider = MagicMock(side_effect=[idle, idle, busy])
         state.sessions.reset = AsyncMock(return_value=False)
         eager = MagicMock(return_value=None)
         monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.schedule_eager_spawn", eager)

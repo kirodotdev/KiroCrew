@@ -152,6 +152,9 @@ CHANNEL_AGENT_BLOCKED_TOOLS: tuple[str, ...] = (
     # Changing a session's model decides what the user's next turn there runs
     # on and spends; same containment reason as stop.
     "session_set_model",
+    # Reload relaunches another session's agent process; same containment
+    # reason as stop.
+    "session_reload",
     "session_send",
     "session_read_message",
     # A digest of the same transcript `session_read_message` returns, so it is

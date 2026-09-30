@@ -1,16 +1,17 @@
 # Session Control — driving another session
 
 One chat session can open, fork, seed, watch, stop, close and revive another one,
-change its model, and take another one under itself in the sidebar. The tools come from the
+change its model, reload its agent process, and take another one under itself in
+the sidebar. The tools come from the
 `kirocrew-dashboard` MCP server, so an agent that does not mount that server
 never has them — exactly like any other MCP server. This page is the reference
-for all 27 of its tools, written for the agent that is about to use them.
+for all 28 of its tools, written for the agent that is about to use them.
 
 The server is defined in `src/kiro_crew/mcp_dashboard.py`. Two halves:
 
 - **Session control** — `session_create`, `session_fork`, `session_send`,
   `session_read_message`, `session_summary`, `session_stop`, `session_end_wait`,
-  `session_set_model`, `session_close`, `session_revive`, `session_broadcast`,
+  `session_set_model`, `session_reload`, `session_close`, `session_revive`, `session_broadcast`,
   `session_status`, `session_adopt`, `session_release`. These reach another session.
 - **Sidebar shape** — `chat_folder_tree`, `chat_folder_create`,
   `chat_folder_move`, `chat_folder_move_session`, `chat_folder_file_self`,
@@ -446,6 +447,39 @@ Also refused: `auto` and `Auto (Jev)` (`model_owner_only`), because with the Jev
 preview on a slot on `auto` hands each turn's model to Jev routing, which only the
 owner may arm; and a target bound to a remote crew (`remote_target_unsupported`).
 
+### `session_reload`
+
+| Argument | Required | Meaning |
+|---|---|---|
+| `target` | yes | Session key or exact title |
+
+Relaunches the target's agent process, the same as **Reload session** in that
+tab's menu. A running session builds its tool table once, when its process
+starts, so a newly granted or enabled MCP server, an MCP config edit or an
+agent-spec fix only reaches it after a reload. The new process re-reads its
+agent spec, environment and MCP servers and resumes the same conversation. The
+transcript is not rewritten; one reload notice is appended, and it names the
+calling session's key so the person reading that tab can see who reloaded it.
+The agent, model and workspace do not change.
+
+Only sessions you created can be reloaded, whatever kind of session you are.
+Only an idle one: a turn running or starting, queued messages, or attached
+sub-agents refuse the call with `target_busy` ("session busy, not reloaded")
+and nothing is torn down. The tool never stops anything itself. You cannot
+reload yourself (`self_target`): the calling session is mid-turn, and a reload
+under a running turn would orphan it. A target bound to a remote crew is refused
+with `remote_target_unsupported`.
+
+If the target gains a channel link or otherwise leaves your reach while its
+process is being reset, the call answers `target_changed_during_reload`: the
+old process is already gone and will start again on the target's next message,
+but no reload notice was written.
+
+If the old process fails while shutting down after it was removed, the reload
+still counts as done: the notice is written, the process starts again, and the
+reply carries a `warning`. A failure before anything was removed answers
+`reload_failed`, and nothing was torn down.
+
 ### `session_revive`
 
 | Argument | Required | Meaning |
@@ -581,7 +615,9 @@ gateway-issued key counts. Refusals you should expect, by code:
 | `linked_session_target` / `mirrored_target` | A channel-linked or channel-mirrored session is out of scope — reaching it would cross into a thread other people read |
 | `session_control_disabled` | `agent.session_control` is off in config |
 | `create_rate_limited` | Per-caller creation budget spent — a fork spends the same budget |
-| `target_busy` | Model change only: the target has a turn or sub-agents in flight, so its model was not changed |
+| `target_busy` | Model change and reload: the target has a turn, queued messages (reload) or sub-agents in flight, so nothing was changed |
+| `target_changed_during_reload` | Reload: the target left your reach while its process was being reset. The process was reset; no reload notice was written |
+| `reload_failed` | Reload: the teardown failed before the target's process was removed. Nothing was torn down |
 | `invalid_broadcast_mode` | `session_broadcast` needs `mode` to be `queue` or `steer`; there is no default |
 | `caller_changed_mid_broadcast` | The calling session moved workspace while a broadcast was in flight, so its per-target report is withheld. The deliveries already happened — do not re-send |
 | `too_many_targets` | A broadcast reaches at most 50 sessions. Refused, never truncated — name a subset |

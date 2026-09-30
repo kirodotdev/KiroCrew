@@ -939,3 +939,4 @@ def test_no_conductor_is_granted_a_fleet_write_or_a_model_switch() -> None:
             assert f"@kirocrew-dashboard/{verb}" not in grants
     every = conductor_tuples + (agent._MEMBER_DASHBOARD_GRANTS, agent._MEMBER_PANEL_GRANTS)
     assert all("@kirocrew-dashboard/session_set_model" not in grants for grants in every)
+    assert all("@kirocrew-dashboard/session_reload" not in grants for grants in every)

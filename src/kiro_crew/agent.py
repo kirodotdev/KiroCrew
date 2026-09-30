@@ -4137,6 +4137,10 @@ handle immediately.
 #:   session's turn forward (the target's ``wait`` returns early), which is a
 #:   change to state that is not the caller's own, and no conductor step needs it
 #:   unattended.
+#: * ``session_reload`` — WITHHELD. Tears down another session's agent process
+#:   and relaunches it. The conversation survives, but a reload is still a
+#:   process-level action on a session a person may be watching, and no
+#:   conductor step needs it.
 #:
 #: Every withheld verb stays MOUNTED (``@kirocrew-dashboard`` is still in
 #: ``tools``) — it just passes through ``hooks.on_tool_call`` like any ungranted

@@ -124,6 +124,7 @@ from kiro_crew.validation import (
     SESSION_FORK_SCHEMA,
     SESSION_READ_MESSAGE_SCHEMA,
     SESSION_RELEASE_SCHEMA,
+    SESSION_RELOAD_SCHEMA,
     SESSION_REVIVE_SCHEMA,
     SESSION_SEND_SCHEMA,
     SESSION_SET_MODEL_SCHEMA,
@@ -150,6 +151,7 @@ SESSION_CONTROL_TOOLS: tuple[str, ...] = (
     "session_stop",
     "session_end_wait",
     "session_set_model",
+    "session_reload",
     "session_close",
     "session_revive",
     "session_send",
@@ -742,6 +744,31 @@ def _tool_definitions() -> list[dict[str, Any]]:
                     },
                 },
                 "required": ["target", "model"],
+            },
+        },
+        {
+            "name": "session_reload",
+            "description": (
+                "Relaunch the agent process of a session you created, the same thing as "
+                "Reload session in that tab's menu. Use it after a change that a running "
+                "session cannot see: a newly granted or enabled MCP server, an MCP "
+                "config edit, or an agent-spec fix. The new process re-reads its agent "
+                "spec, environment and MCP servers; the conversation is kept, and the "
+                "target's transcript shows a notice naming your session. Only an IDLE "
+                "session can be reloaded: a running or starting turn, queued messages "
+                "or attached sub-agents fail with 'session busy, not reloaded' and "
+                "nothing changes. You cannot reload yourself, and the agent, model and "
+                "workspace stay as they are."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "description": "Session key from list_sessions, or its exact title.",
+                    },
+                },
+                "required": ["target"],
             },
         },
         {
@@ -2489,6 +2516,33 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         target = resp.get("target", args["target"])
         model = resp.get("model") or "auto"
         return redact(f"\U0001f501 `{target}` will switch to `{model}` when its next turn starts.")
+
+    if name == "session_reload":
+        args = validate_tool_args(args, SESSION_RELOAD_SCHEMA)
+        resp = _post(
+            "/api/session-control/reload",
+            {"target": args["target"]},
+            session_key=caller_key,
+        )
+        if resp.get("code") == "target_changed_during_reload":
+            # The process WAS torn down; only the notice was skipped. "Could
+            # not reload" would tell the agent nothing happened.
+            return (
+                "Warning: the target's agent process was reset and starts again on "
+                f"its next message, but no reload notice was added: {resp.get('error', '')}"
+            )
+        if resp.get("error"):
+            return f"Error: could not reload that session: {resp['error']}"
+        target = resp.get("target", args["target"])
+        if resp.get("warning"):
+            return redact(
+                f"\U0001f504 `{target}` is relaunching its agent process with the conversation "
+                f"kept, but the old process's teardown reported an error ({resp['warning']})."
+            )
+        return redact(
+            f"\U0001f504 `{target}` is relaunching its agent process with the conversation "
+            "kept. Its transcript shows the reload notice."
+        )
 
     if name == "session_close":
         args = validate_tool_args(args, SESSION_CLOSE_SCHEMA)
