@@ -436,8 +436,15 @@ def schemas() -> list[dict[str, Any]]:
                     },
                     "max_agent_turns": {
                         "type": "integer",
-                        "minimum": 1,
+                        "minimum": 0,
                         "maximum": MAX_MONITOR_AGENT_TURNS,
+                        "description": (
+                            "How many times this watch may wake its session. Omit it, or "
+                            "pass 0, for no wake ceiling: the watch is then retired by its "
+                            "runtime, token and provider-error budgets instead. Pass a "
+                            "positive number only when a count of wakes is itself the "
+                            "thing you want bounded."
+                        ),
                     },
                     "max_tokens": {
                         "type": "integer",
@@ -744,8 +751,13 @@ def schemas() -> list[dict[str, Any]]:
                     "objective": {"type": "string", "enum": sorted(publicly_armable_objectives())},
                     "max_agent_turns": {
                         "type": "integer",
-                        "minimum": 1,
+                        "minimum": 0,
                         "maximum": MAX_MONITOR_AGENT_TURNS,
+                        "description": (
+                            "New wake ceiling for a structured monitor. 0 removes the "
+                            "ceiling, leaving the runtime, token and provider-error "
+                            "budgets as the watch's only bounds."
+                        ),
                     },
                     "max_tokens": {
                         "type": "integer",
@@ -1732,7 +1744,14 @@ def monitor_watch(name: str, args: dict[str, Any]) -> str:
             args.get("max_runtime_secs")
             or min(DEFAULT_MONITOR_RUNTIME_SECS, runtime_ceiling_secs())
         ),
-        "max_agent_turns": int(args.get("max_agent_turns") or DEFAULT_MONITOR_AGENT_TURNS),
+        # Tested for None rather than truthiness: 0 is the unlimited sentinel here
+        # and is falsy, so `or` would silently replace an explicit "no ceiling"
+        # with the default. The siblings keep `or` because 0 is invalid for them.
+        "max_agent_turns": (
+            DEFAULT_MONITOR_AGENT_TURNS
+            if args.get("max_agent_turns") is None
+            else int(args["max_agent_turns"])
+        ),
         "max_tokens": int(args.get("max_tokens") or DEFAULT_MONITOR_TOKENS),
         "max_provider_errors": int(
             args.get("max_provider_errors") or DEFAULT_MONITOR_PROVIDER_ERRORS

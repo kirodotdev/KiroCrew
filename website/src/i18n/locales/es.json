@@ -9217,6 +9217,8 @@
       "title": "Monitor limitado de solicitudes de extracción",
       "tokens": "Tokens: {{count}}",
       "unknown": "Desconocido",
+      "unlimited": "Sin límite",
+      "wake_budget_zero_hint": "0 = sin límite de activaciones",
       "legacy_notice": "Este ciclo de objetivo invoca al agente en cada ciclo y puede ejecutarse sin límite.",
       "use_legacy_costly": "Volver al ciclo de objetivo",
       "wake_instructions": "Instrucciones para el agente cuando se active",

@@ -8969,6 +8969,8 @@
       "title": "제한형 풀 리퀘스트 모니터",
       "tokens": "토큰: {{count}}",
       "unknown": "알 수 없음",
+      "unlimited": "무제한",
+      "wake_budget_zero_hint": "0 = 호출 횟수 제한 없음",
       "legacy_notice": "이 목표 루프는 매 주기마다 에이전트를 호출하며 제한 없이 실행될 수 있습니다.",
       "use_legacy_costly": "목표 루프로 돌아가기",
       "wake_instructions": "에이전트가 깨어날 때의 지침",

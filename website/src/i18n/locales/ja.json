@@ -8969,6 +8969,8 @@
       "title": "上限付きプルリクエストモニター",
       "tokens": "トークン：{{count}}",
       "unknown": "不明",
+      "unlimited": "無制限",
+      "wake_budget_zero_hint": "0 = 起動回数の上限なし",
       "legacy_notice": "この目標ループはサイクルごとにエージェントを呼び出し、制限なく実行される場合があります。",
       "use_legacy_costly": "目標ループに戻る",
       "wake_instructions": "起動時のエージェントへの指示",

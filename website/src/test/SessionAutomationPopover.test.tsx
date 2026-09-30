@@ -126,7 +126,7 @@ describe('SessionAutomationPopover', () => {
       target: 'https://github.com/kirodotdev/KiroCrew/pull/42',
       cadence_secs: 300,
       max_runtime_secs: 14_400,
-      max_agent_turns: 8,
+      max_agent_turns: 0,
       max_tokens: 250_000,
       max_provider_errors: 3,
       wake_instructions: '',
@@ -452,7 +452,7 @@ describe('SessionAutomationPopover', () => {
   it.each([
     ['Probe cadence in seconds', '86401', 'Enter a whole number from 15 to 86,400.'],
     ['Maximum runtime in seconds', '604801', 'Enter a whole number from 1 to 604,800 (7 days).'],
-    ['Maximum agent turns', '9', 'Enter a whole number from 1 to 8.'],
+    ['Maximum agent turns', '1001', 'Enter a whole number from 0 to 1,000.'],
     ['Maximum tokens', '1000001', 'Enter a whole number from 1 to 1,000,000.'],
     ['Maximum provider errors', '21', 'Enter a whole number from 1 to 20.'],
   ])('shows an inline backend-bound error for %s', async (name, value, message) => {
@@ -622,7 +622,10 @@ describe('SessionAutomationPopover', () => {
     expect(screen.getByRole('spinbutton', { name: 'Probe cadence in seconds' }))
       .toHaveAttribute('max', '86400')
     expect(screen.getByRole('spinbutton', { name: 'Maximum agent turns' }))
-      .toHaveAttribute('max', '8')
+      .toHaveAttribute('max', '1000')
+    // Floor 0: this budget's unlimited sentinel.
+    expect(screen.getByRole('spinbutton', { name: 'Maximum agent turns' }))
+      .toHaveAttribute('min', '0')
     const wake = screen.getByRole('textbox', { name: 'Instructions for the agent when it wakes' })
     expect(wake).toHaveAttribute('maxlength', '1000')
 
@@ -634,6 +637,35 @@ describe('SessionAutomationPopover', () => {
 
     expect(await screen.findByText('Enter no more than 1,000 characters.')).toBeInTheDocument()
     expect(api.monitorCreate).not.toHaveBeenCalled()
+  })
+
+  it('renders an unlimited wake budget as a word, not as 0', () => {
+    // 0 is the sentinel, so the digit says the opposite of the meaning: read under
+    // a "Maximum agent turns" label it claims no wake is allowed.
+    renderPopover({
+      ...activeMonitor,
+      budgets: { ...activeMonitor.budgets, maxAgentTurns: 0 },
+    })
+
+    expect(screen.getByText('Unlimited')).toBeInTheDocument()
+  })
+
+  it('keeps rendering a finite wake budget as its number', () => {
+    renderPopover({
+      ...activeMonitor,
+      budgets: { ...activeMonitor.budgets, maxAgentTurns: 6 },
+    })
+
+    expect(screen.getByText('6')).toBeInTheDocument()
+    expect(screen.queryByText('Unlimited')).not.toBeInTheDocument()
+  })
+
+  it('tells the create form what a wake budget of 0 means', () => {
+    // Entering 0 on a "maximum" reads as "no turns allowed" without this hint,
+    // so the sentinel's meaning is spelled out beside the field.
+    renderPopover(null)
+
+    expect(screen.getByText('0 = no wake ceiling')).toBeInTheDocument()
   })
 
   it('shows monitor evidence and requires confirmation before stopping', async () => {

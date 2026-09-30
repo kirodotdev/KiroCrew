@@ -9217,6 +9217,8 @@
       "title": "Monitor limitato della richiesta pull",
       "tokens": "Token: {{count}}",
       "unknown": "Sconosciuto",
+      "unlimited": "Illimitato",
+      "wake_budget_zero_hint": "0 = nessun limite di attivazioni",
       "legacy_notice": "Questo ciclo di obiettivo richiama l’agente a ogni ciclo e può essere eseguito senza limiti.",
       "use_legacy_costly": "Torna al ciclo di obiettivo",
       "wake_instructions": "Istruzioni per l’agente quando si attiva",

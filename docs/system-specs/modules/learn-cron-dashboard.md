@@ -2350,8 +2350,9 @@ A legacy claim with neither typed delivery nor an evidence deadline
 deactivates with `completion_evidence_unavailable` while retaining the
 acknowledged fingerprint, so restart cannot duplicate the wake. Completion stops
 on the first exhausted runtime, turn, or token bound (in that precedence), and
-the completed-turn bound is validated against the universal eight-turn ceiling
-when constructed or loaded. Approval-stall completion is terminal and budget exhaustion takes
+the completed-turn bound is skipped when it is zero, its unlimited sentinel, and
+otherwise validated against the universal eight-turn ceiling when constructed or
+loaded. Approval-stall completion is terminal and budget exhaustion takes
 precedence when both apply.
 Claim, budget-stop, completion, and pre-turn dispatch-failure mutations are
 applied to a staged copy; the replacement snapshot is persisted before the live
@@ -3383,7 +3384,14 @@ The shared policy is `monitoring.max_runtime_secs` (see [config](config.md)).
 Tools and REST creation/updates use `monitoring.limits`; a budget is checked
 only when it is written, and a persisted budget is left as stored on load.
 Legacy general AutoNudge still allows zero as its pre-existing unbounded value;
-monitor tools and structured monitors require a positive finite budget. Raising
+monitor tools and structured monitors require a positive finite budget for
+`max_runtime_secs`, `max_tokens` and `max_provider_errors`. `max_agent_turns` is
+the one exception and reads zero as unlimited, the same meaning legacy
+`max_cycles` carries: zero is skipped rather than enforced, an explicit positive
+value is bounded by `MAX_MONITOR_AGENT_TURNS`, and MCP schemas, `validation.py`,
+the REST handler, the session directive applier and the dashboard contract all
+publish a minimum of 0 for it alone. Its default stays a positive eight turns.
+Raising
 or lowering the policy never rewrites an existing loop's timestamps, runtime or
 active state; a stored budget above the ceiling runs to its stored deadline.
 
@@ -4171,7 +4179,7 @@ Restart as its sole mutation. Creating a different monitor while terminal eviden
 is retained is disabled until bulk slot cleanup fences every slot before awaiting,
 so an archived slot cannot be repopulated by an in-flight replacement. The form
 enforces the backend bounds: cadence 15–86,400 seconds, runtime 1–604,800 seconds,
-agent turns 1–8, tokens
+agent turns 0–8 where 0 is unlimited, tokens
 1–1,000,000, provider errors 1–20, and at most 1,000 wake-instruction characters.
 Each field exposes the same HTML bound and a localized inline error. Updates
 track dirty fields, reconcile untouched values from same-monitor WebSocket

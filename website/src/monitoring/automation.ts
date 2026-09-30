@@ -198,15 +198,25 @@ function positive(value: unknown, fallback: number): number {
   return Number.isInteger(n) && n > 0 ? n : fallback
 }
 
+// The reader for a budget whose 0 is a meaning rather than a missing value.
+// `positive` would swap that 0 for the fallback, turning an explicit "no wake
+// ceiling" into whatever the default happens to be.
+function unlimitedOrPositive(value: unknown, fallback: number): number {
+  const n = finite(value, fallback)
+  return Number.isInteger(n) && n >= 0 ? n : fallback
+}
+
 function isPositiveInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0
 }
 
+// The floor comes from the contract's own `minimum`, not from positivity: one
+// budget (`maxAgentTurns`) publishes a minimum of 0, where 0 means unlimited.
 function isBoundedInteger(
   value: unknown,
   limits: { minimum: number; maximum: number },
 ): value is number {
-  return isPositiveInteger(value) && value >= limits.minimum && value <= limits.maximum
+  return isCount(value) && value >= limits.minimum && value <= limits.maximum
 }
 
 function isCount(value: unknown): value is number {
@@ -295,7 +305,7 @@ function structuredFallback(
     wakeInstructions: text(monitor?.wake_instructions),
     budgets: {
       maxRuntimeSecs: positive(budgets?.max_runtime_secs, STRUCTURED_MONITOR_DEFAULTS.maxRuntimeSecs),
-      maxAgentTurns: positive(budgets?.max_agent_turns, STRUCTURED_MONITOR_DEFAULTS.maxAgentTurns),
+      maxAgentTurns: unlimitedOrPositive(budgets?.max_agent_turns, STRUCTURED_MONITOR_DEFAULTS.maxAgentTurns),
       maxTokens: positive(budgets?.max_tokens, STRUCTURED_MONITOR_DEFAULTS.maxTokens),
       maxProviderErrors: positive(budgets?.max_provider_errors, STRUCTURED_MONITOR_DEFAULTS.maxProviderErrors),
     },
@@ -456,7 +466,7 @@ export function normalizeAutomationRecord(raw: unknown): AutomationRecord | null
     wakeInstructions: text(monitor.wake_instructions),
     budgets: {
       maxRuntimeSecs: positive(budgets.max_runtime_secs, STRUCTURED_MONITOR_DEFAULTS.maxRuntimeSecs),
-      maxAgentTurns: positive(budgets.max_agent_turns, STRUCTURED_MONITOR_DEFAULTS.maxAgentTurns),
+      maxAgentTurns: unlimitedOrPositive(budgets.max_agent_turns, STRUCTURED_MONITOR_DEFAULTS.maxAgentTurns),
       maxTokens: positive(budgets.max_tokens, STRUCTURED_MONITOR_DEFAULTS.maxTokens),
       maxProviderErrors: positive(budgets.max_provider_errors, STRUCTURED_MONITOR_DEFAULTS.maxProviderErrors),
     },

@@ -8969,6 +8969,8 @@
       "title": "有界拉取请求监控",
       "tokens": "令牌数：{{count}}",
       "unknown": "未知",
+      "unlimited": "不限",
+      "wake_budget_zero_hint": "0 = 不限唤醒次数",
       "legacy_notice": "此目标循环会在每个周期调用代理，并且可能无限期运行。",
       "use_legacy_costly": "返回目标循环",
       "wake_instructions": "代理唤醒时的指令",

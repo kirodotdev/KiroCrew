@@ -9093,6 +9093,8 @@
       "title": "Begrenzter Pull-Request-Monitor",
       "tokens": "Tokens: {{count}}",
       "unknown": "Unbekannt",
+      "unlimited": "Unbegrenzt",
+      "wake_budget_zero_hint": "0 = keine Aufruf-Obergrenze",
       "legacy_notice": "Diese Zielschleife ruft den Agenten in jedem Zyklus auf und kann unbegrenzt laufen.",
       "use_legacy_costly": "Zurück zur Zielschleife",
       "wake_instructions": "Anweisungen für den Agenten beim Aufwachen",

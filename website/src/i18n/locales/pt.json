@@ -9217,6 +9217,8 @@
       "title": "Monitor limitado de solicitação de pull",
       "tokens": "Tokens: {{count}}",
       "unknown": "Desconhecido",
+      "unlimited": "Sem limite",
+      "wake_budget_zero_hint": "0 = sem limite de ativações",
       "legacy_notice": "Este ciclo de meta invoca o agente a cada ciclo e pode ser executado sem limite.",
       "use_legacy_costly": "Voltar ao ciclo de meta",
       "wake_instructions": "Instruções para o agente quando ele for ativado",

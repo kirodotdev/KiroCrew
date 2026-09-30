@@ -9217,6 +9217,8 @@
       "title": "Moniteur limité de demande d’extraction",
       "tokens": "Jetons : {{count}}",
       "unknown": "Inconnu",
+      "unlimited": "Illimité",
+      "wake_budget_zero_hint": "0 = aucune limite de réveils",
       "legacy_notice": "Cette boucle d’objectif invoque l’agent à chaque cycle et peut s’exécuter sans limite.",
       "use_legacy_costly": "Retour à la boucle d’objectif",
       "wake_instructions": "Instructions pour l’agent à son réveil",

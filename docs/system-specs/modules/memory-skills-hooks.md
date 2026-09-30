@@ -3465,8 +3465,9 @@ with the `review_ready` objective it maps the canonical URL to one exact bounded
 `monitor_watch` call and makes retained inspection state authoritative; its
 acknowledgement remains pending until the current turn ends, so agent inspection
 happens only at the start of a later user/wake turn. It also explains that
-reported-token enforcement may be incomplete while runtime and completed-turn
-limits remain hard fallbacks. It does not reproduce provider polling policy in
+reported-token enforcement may be incomplete while the runtime limit remains
+the always-applying hard fallback, with the completed-turn limit a fallback only
+when a positive value is named for it. It does not reproduce provider polling policy in
 the prompt. Its legacy `monitor_start` recipe is limited to unsupported targets
 and requires a positive cadence, cycle cap, and runtime bound while naming the
 full-turn/token cost and ordinary approval policy. A supported provider's setup

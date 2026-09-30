@@ -225,15 +225,24 @@ def test_exhausted_budget_prevents_even_an_actionable_wake(
     ("field", "value"),
     [
         ("max_runtime_secs", 0),
-        ("max_agent_turns", 0),
         ("max_tokens", 0),
         ("max_provider_errors", 0),
     ],
 )
-def test_structured_monitor_budgets_cannot_be_unlimited(field: str, value: int) -> None:
-    """First-class monitors reject legacy goal-loop unlimited values."""
+def test_structured_monitor_cost_budgets_cannot_be_unlimited(field: str, value: int) -> None:
+    """The three cost budgets reject legacy goal-loop unlimited values.
+
+    These are what bound what a watch SPENDS, and an unlimited wake count relies
+    on them to stay affordable, so zero is refused here even though
+    ``max_agent_turns`` admits it.
+    """
     with pytest.raises(ValueError, match=field):
         MonitorBudgets(**{field: value})
+
+
+def test_structured_monitor_wake_budget_reads_zero_as_unlimited() -> None:
+    """``max_agent_turns`` alone carries the legacy unlimited meaning."""
+    assert MonitorBudgets(max_agent_turns=0).max_agent_turns == 0
 
 
 def test_provider_error_observation_requires_an_error_category() -> None:
