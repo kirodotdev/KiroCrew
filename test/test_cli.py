@@ -1728,6 +1728,7 @@ class TestManifest:
         assert manifest["oauth_config"]["scopes"] == {
             "bot": [
                 "app_mentions:read",
+                "assistant:write",
                 "channels:history",
                 "channels:read",
                 "chat:write",

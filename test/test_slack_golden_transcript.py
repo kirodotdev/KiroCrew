@@ -105,9 +105,6 @@ class RecordingSlackClient(SlackClientOps):
     async def set_thread_title(self, channel, thread_ts, title) -> None:
         self._rec("set_thread_title", channel=channel, thread_ts=thread_ts, title=title)
 
-    async def set_suggested_prompts(self, channel, thread_ts, prompts) -> None:
-        self._rec("set_suggested_prompts", channel=channel, thread_ts=thread_ts)
-
     async def fetch_message(self, channel, ts) -> str | None:
         self._rec("fetch_message", channel=channel, ts=ts)
         return None

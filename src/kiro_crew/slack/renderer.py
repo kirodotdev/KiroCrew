@@ -64,6 +64,7 @@ from kiro_crew.messaging.split import repaired_for_delivery, split_markdown_safe
 from kiro_crew.messaging.transport import TransportCapabilities
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
+from kiro_crew.slack.client import SESSION_STATUS_SUSPENDED
 from kiro_crew.slack.files import UPLOAD_LIMITS, upload_outbound_files
 from kiro_crew.slack.format import (
     SLACK_MSG_LIMIT,
@@ -704,6 +705,9 @@ class SlackRenderer(Renderer):
         # Visible text withheld from the append-only stream because a local image
         # reference is in play; released (markup removed) at the seal.
         self._ref_hold = ""
+        # True while the session is paused on a tool-approval prompt (status set
+        # to `suspended`). Cleared when the turn resumes producing output.
+        self._suspended = False
 
     async def on_turn_start(self) -> None:
         # Native sets the working thread-status before streaming and arms the
@@ -742,7 +746,22 @@ class SlackRenderer(Renderer):
             ctrl.set_phase(phase)
             ctrl.on_progress()
 
+    async def _resume_from_suspended(self) -> None:
+        """Restore `working` status once the turn resumes after an approval pause.
+
+        No-op unless a prior ``on_prompt_choice`` set the session `suspended`.
+        Best-effort: MUST NOT raise. Decoration only.
+        """
+        if not self._suspended:
+            return
+        self._suspended = False
+        try:
+            await self.slack.set_thread_status(self.channel, self.thread_ts or "", _STATUS_WORKING)
+        except Exception:
+            logger.warning("Slack set_thread_status failed — skipping status", exc_info=True)
+
     async def _ensure_stream(self) -> str | None:
+        await self._resume_from_suspended()
         if self._stream_ts is None:
             ts = await self._start_stream_if_threaded()
             if ts:
@@ -1598,6 +1617,19 @@ class SlackRenderer(Renderer):
             if self.decider is not None:
                 self.decider.discard(request_id)
             raise
+        # The session is now blocked on the human: reflect it in the agent-session
+        # status (`suspended` = paused, needs user input such as a tool approval).
+        # thread_ts is None in a code channel, so the status call is accepted
+        # (Slack rejects a thread_ts on setStatus there). Restored to "working"
+        # when the turn resumes producing output, and to `active` at turn end.
+        # Best-effort: MUST NOT raise, the prompt is already posted.
+        self._suspended = True
+        try:
+            await self.slack.set_session_status(
+                self.channel, self.thread_ts or None, SESSION_STATUS_SUSPENDED
+            )
+        except Exception:
+            logger.warning("Slack set_session_status failed — skipping status", exc_info=True)
 
     async def on_compaction(self, context_usage_pct: float) -> None:
         # Best-effort: MUST NOT raise. Decoration only.
@@ -1790,10 +1822,12 @@ class SlackRenderer(Renderer):
             cred_count, url_count = count_redaction_tags(self._delivered or clean_text)
             self._redacted_creds += cred_count
             self._redacted_urls += url_count
-        # Clear thread status now that the turn is complete. Best-effort, and
-        # MUST NOT raise: the answer is already delivered above — a
+        # Clear thread status now that the turn is complete (this also clears a
+        # lingering `suspended` from an approval prompt this turn). Best-effort,
+        # and MUST NOT raise: the answer is already delivered above — a
         # raising status clear must not convert a delivered turn into a
         # recorded failure.
+        self._suspended = False
         try:
             await self.slack.set_thread_status(self.channel, self.thread_ts or "", "")
         except Exception:

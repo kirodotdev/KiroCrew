@@ -81,6 +81,9 @@ class TestManifestGrantsNothingMore:
     def test_bot_scopes_are_exactly_the_reviewed_set(self) -> None:
         assert sorted(_bot_scopes(_manifest())) == [
             "app_mentions:read",
+            # Granted by the agent_view feature; the gateway calls
+            # agents.sessions.setStatus / rename through it (slack/client.py).
+            "assistant:write",
             "channels:history",
             "channels:read",
             "chat:write",
@@ -98,6 +101,10 @@ class TestManifestGrantsNothingMore:
 
     def test_bot_events_are_exactly_the_reviewed_set(self) -> None:
         assert sorted(_bot_events(_manifest())) == [
+            # Agent-session lifecycle events (agent_view feature).
+            "agent_session_stopped",
+            "agent_session_title_changed",
+            "app_context_changed",
             "app_home_opened",
             "app_mention",
             "file_change",

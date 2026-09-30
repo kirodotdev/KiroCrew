@@ -38,6 +38,23 @@ _SLACK_FILE_DOMAIN = "slack.com"
 # bounded, where aiohttp's 5-minute default is not.
 _FILE_DOWNLOAD_TIMEOUT_SECS = 60
 
+# ── Agent session lifecycle (agents.sessions.setStatus) ──
+# The four states Slack recognises for an agent session. Slack derives the
+# session-level status from all agents in the session (priority
+# suspended > processing > active > closed). We drive only our own agent.
+SESSION_STATUS_ACTIVE = "active"  # alive, idle, awaiting the next prompt
+SESSION_STATUS_PROCESSING = "processing"  # working; shows the loading UX + stop button
+SESSION_STATUS_SUSPENDED = "suspended"  # paused, needs user input (approval/clarification)
+SESSION_STATUS_CLOSED = "closed"  # finished; does NOT archive a code channel
+SESSION_STATUSES = frozenset(
+    {
+        SESSION_STATUS_ACTIVE,
+        SESSION_STATUS_PROCESSING,
+        SESSION_STATUS_SUSPENDED,
+        SESSION_STATUS_CLOSED,
+    }
+)
+
 
 #: Block Kit fields and block types that make SLACK'S OWN SERVERS fetch remote
 #: media, which the `unfurl_*` flags do not govern: they suppress previews Slack
@@ -220,23 +237,36 @@ class SlackClientOps(ABC):
         """Append a task_update chunk to a streaming message. Returns True on success."""
         return False
 
-    async def set_thread_status(self, channel: str, thread_ts: str, status: str) -> None:
-        """Set assistant thread status via assistant.threads.setStatus.
+    # ── Agent sessions (agents.sessions.*) ──
 
-        Pass an empty string to clear the status indicator.
+    async def set_session_status(self, channel: str, thread_ts: str | None, status: str) -> None:
+        """Set an agent session's lifecycle status via agents.sessions.setStatus.
+
+        ``status`` is one of ``SESSION_STATUSES``. ``thread_ts`` scopes the
+        session to a thread; pass ``None`` for a session channel (code channel),
+        where the whole channel is one session and ``thread_ts`` is not allowed.
+        Creates the session if it does not yet exist. No-op default so mocks and
+        non-agent installs degrade cleanly.
+        """
+
+    async def rename_session(self, channel: str, thread_ts: str | None, title: str) -> None:
+        """Rename an agent session via agents.sessions.rename.
+
+        For a session channel (``thread_ts=None``) this also renames the channel.
+        """
+
+    async def set_thread_status(self, channel: str, thread_ts: str, status: str) -> None:
+        """Set the agent session's loading status for a thread.
+
+        Free-text compatibility shim over :meth:`set_session_status`: an empty
+        string maps to ``active`` (idle/done), any non-empty string to
+        ``processing``. Slack's agent-session loading UX shows a standard
+        "Working…" indicator and does not render custom status text, so the
+        string's content beyond empty/non-empty is advisory only.
         """
 
     async def set_thread_title(self, channel: str, thread_ts: str, title: str) -> None:
-        """Set assistant thread title via assistant.threads.setTitle."""
-
-    async def set_suggested_prompts(
-        self, channel: str, thread_ts: str, prompts: list[dict[str, str]]
-    ) -> None:
-        """Set suggested prompts via assistant.threads.setSuggestedPrompts.
-
-        Each prompt is a dict with 'title' (button label) and 'message'
-        (text sent when clicked).
-        """
+        """Set the agent session's title (delegates to agents.sessions.rename)."""
 
     async def fetch_message(self, channel: str, ts: str) -> str | None:
         """Fetch a single message's text by channel and timestamp.
@@ -750,43 +780,47 @@ class RealSlackClient(SlackClientOps):
             logger.debug("chat.stopStream failed", exc_info=True)
             return False
 
-    async def set_thread_status(self, channel: str, thread_ts: str, status: str) -> None:
-        """Set assistant thread loading status via assistant.threads.setStatus."""
+    async def set_session_status(self, channel: str, thread_ts: str | None, status: str) -> None:
+        """Set an agent session's status via agents.sessions.setStatus.
+
+        Replaces the deprecated assistant.threads.setStatus (Slack sunsets it in
+        Feb 2027). ``thread_ts=None`` omits the argument for a session channel;
+        Slack rejects ``thread_ts`` there with ``thread_ts_not_allowed``.
+        """
+        if status not in SESSION_STATUSES:
+            status = SESSION_STATUS_PROCESSING
+        params: dict[str, Any] = {"channel_id": channel, "status": status}
+        if thread_ts:
+            params["thread_ts"] = thread_ts
         try:
-            await self._web.api_call(
-                "assistant.threads.setStatus",
-                params={"channel_id": channel, "thread_ts": thread_ts, "status": status},
-            )
+            await self._web.api_call("agents.sessions.setStatus", params=params)
         except Exception:
-            logger.debug("assistant.threads.setStatus failed", exc_info=True)
+            logger.debug("agents.sessions.setStatus failed", exc_info=True)
+
+    async def rename_session(self, channel: str, thread_ts: str | None, title: str) -> None:
+        """Rename an agent session via agents.sessions.rename."""
+        params: dict[str, Any] = {"channel_id": channel, "title": title}
+        if thread_ts:
+            params["thread_ts"] = thread_ts
+        try:
+            await self._web.api_call("agents.sessions.rename", params=params)
+        except Exception:
+            logger.debug("agents.sessions.rename failed", exc_info=True)
+
+    async def set_thread_status(self, channel: str, thread_ts: str, status: str) -> None:
+        """Set the thread's agent-session loading status.
+
+        Compatibility shim: empty string -> ``active`` (idle/done), any non-empty
+        string -> ``processing``. The agent-session loading UX shows a standard
+        "Working…" indicator with no custom text, so the free-text callers pass
+        (e.g. "is using bash") only distinguishes idle from working here.
+        """
+        lifecycle = SESSION_STATUS_PROCESSING if status else SESSION_STATUS_ACTIVE
+        await self.set_session_status(channel, thread_ts, lifecycle)
 
     async def set_thread_title(self, channel: str, thread_ts: str, title: str) -> None:
-        """Set assistant thread title via assistant.threads.setTitle."""
-        try:
-            await self._web.api_call(
-                "assistant.threads.setTitle",
-                params={"channel_id": channel, "thread_ts": thread_ts, "title": title},
-            )
-        except Exception:
-            logger.debug("assistant.threads.setTitle failed", exc_info=True)
-
-    async def set_suggested_prompts(
-        self, channel: str, thread_ts: str, prompts: list[dict[str, str]]
-    ) -> None:
-        """Set suggested prompts via assistant.threads.setSuggestedPrompts."""
-        try:
-            import json
-
-            await self._web.api_call(
-                "assistant.threads.setSuggestedPrompts",
-                params={
-                    "channel_id": channel,
-                    "thread_ts": thread_ts,
-                    "prompts": json.dumps(prompts),
-                },
-            )
-        except Exception:
-            logger.debug("assistant.threads.setSuggestedPrompts failed", exc_info=True)
+        """Set the thread's agent-session title (delegates to agents.sessions.rename)."""
+        await self.rename_session(channel, thread_ts, title)
 
     @staticmethod
     def _extract_inline_texts(elements: list[dict[str, Any]]) -> list[str]:

@@ -1019,6 +1019,11 @@ async def init_socket_mode(orch: GatewayOrchestrator, seen: SeenCache) -> None:
                     )
             return
 
+        # ── Agent session lifecycle (agent_view feature) ──
+        if event_type in _AGENT_SESSION_EVENTS:
+            _dispatch_agent_session_event(orch, req.payload or {}, event)
+            return
+
         # ── Messages and mentions ──
         if event_type not in ("message", "app_mention"):
             return
@@ -2136,6 +2141,209 @@ def _extract_shared_text(event: dict) -> str:
     return "\n\n".join(part for part in parts if part).strip()
 
 
+def _resolve_stop_target(
+    orch: GatewayOrchestrator, channel: str, thread_ts: str | None, origin_ts: str
+) -> tuple[str, str | None]:
+    """The session a Slack stop addresses, and the ts its acknowledgements post under.
+
+    Shared by ``!stop`` and the native stop button so both land on the key the
+    turn actually runs under. A single-session DM runs under the channel-scoped
+    flat key, and a DM thread that a dashboard send-to-Slack owns runs under that
+    owner; stopping the bare thread or message ts in either case pops nothing
+    live while the turn keeps going. *origin_ts* is the message that started the
+    stop's context, used when there is no thread.
+    """
+    flat_key = flat_dm_session_key(
+        channel, thread_ts, enabled=_dm_single_session_enabled(orch, channel)
+    )
+    # A dashboard-linked thread wins over the flat key: the running turn lives
+    # under THAT owner (keyed by thread_ts in the thread index), not under the
+    # channel-scoped flat key. A SELF-DERIVED owner (``slack:<thread_ts>``, the
+    # per-thread session the flat feature merges away) is not a real binding and
+    # is ignored, matching handle_message_transport's _resolve_thread_owner.
+    if flat_key and thread_ts and orch.sessions is not None:
+        owner = orch.sessions.get_session_for_thread(thread_ts)
+        if owner is not None and owner != canonical_key(thread_ts):
+            return owner, thread_ts
+    if flat_key:
+        # A single-session DM keys by channel, which Slack rejects as a
+        # thread_ts, so its acks post where the stop came from: inside the
+        # thread if there is one, at channel root otherwise.
+        return flat_key, thread_ts
+    session_key = thread_ts or origin_ts
+    return session_key, session_key
+
+
+async def _stop_session(
+    orch: GatewayOrchestrator,
+    session_key: str,
+    *,
+    on_stopping: Callable[[], Coroutine[Any, Any, None]] | None = None,
+    on_soft: Callable[[], Coroutine[Any, Any, None]] | None = None,
+    on_hard: Callable[[], Coroutine[Any, Any, None]] | None = None,
+) -> str | None:
+    """Stop the turn running under *session_key*; None when nothing was running.
+
+    The stop core shared by ``!stop`` and the native stop button: record the
+    user stop, pop the active task, clear the queue, drop pending pre-session
+    items, run *on_stopping*, then ``stop_turn`` and cancel the task. Returns
+    the ``stop_turn`` outcome, or None as well when there is no session manager.
+    """
+    sessions = orch.sessions
+    if sessions is None:
+        return None
+    # Recorded BEFORE the liveness checks: a turn between its abandoned
+    # attempt and its compaction replay has no session at this moment, and
+    # an interaction-originated turn has no registered task either; the
+    # replay reads this record to stay dropped (``note_user_stop``).
+    # Against the thread's OWNING session, not the bare thread key: a
+    # linked thread's turns -- and their replay -- run under the dashboard
+    # session that owns it, and that is the key the replay reads. For a flat
+    # DM session_key is already the channel-scoped owning key, so the lookup
+    # falls back to it unchanged.
+    note_user_stop(sessions, sessions.get_session_for_thread(session_key) or session_key)
+    has_session = sessions.has_session(session_key)
+    active_task = orch._session_tasks.pop(session_key, None)
+    if not (has_session or active_task):
+        return None
+    sessions.clear_queue(session_key)
+    # Dropped pending (pre-session) entries never reach
+    # _dispatch_queued's cleanup, so unlink their temp files here.
+    for _item in orch._pending_queue.pop(session_key, None) or []:
+        unlink_queued_temp_paths(_item[2])
+    if on_stopping is not None:
+        await on_stopping()
+    try:
+        return await sessions.stop_turn(session_key, on_soft=on_soft, on_hard=on_hard)
+    finally:
+        # The popped task is cancelled even when stop_turn raises, so a failed
+        # stop never leaves the turn's task running unowned.
+        if active_task and not active_task.done():
+            active_task.cancel()
+
+
+async def _handle_agent_session_stopped(orch: GatewayOrchestrator, event: dict) -> None:
+    """Stop the in-flight turn when a user clicks Slack's native stop button.
+
+    Slack fires ``agent_session_stopped`` for the session (a thread, or a whole
+    code channel) with ``channel``, ``thread_ts``, ``user`` and the
+    ``streaming_message_ts`` list. Only an allowed user may stop a turn. The stop
+    resolves its session and stops it through the same helpers as ``!stop``
+    (``_resolve_stop_target`` and ``_stop_session``), so a single-session DM and
+    a dashboard-linked thread stop the key their turn runs under. It then
+    finishes the streams Slack named. Per Slack, the app makes no further
+    ``agents.sessions.*`` call for that context; Slack updates the session
+    status itself.
+    """
+    channel = event.get("channel", "")
+    thread_ts = event.get("thread_ts") or None
+    streams = [ts for ts in (event.get("streaming_message_ts") or []) if ts]
+    user = event.get("user", "")
+    if not is_allowed_user(user):
+        sel().log_api_access(
+            caller=user or "unknown",
+            operation="slack.agent_session_stopped",
+            outcome="denied",
+            source="slack",
+            error="unauthorized sender",
+        )
+        return
+    if not channel or not orch.sessions:
+        return
+    # Without a thread scope the session started at its first streaming message.
+    # A single-session DM turn at channel root carries neither a thread nor a
+    # stream and still resolves to its flat ``slack:<channel>`` key, so the
+    # resolver alone decides whether the stop addresses anything.
+    origin_ts = streams[0] if streams else ""
+    session_key, _post_ts = _resolve_stop_target(orch, channel, thread_ts, origin_ts)
+    if not session_key:
+        logger.debug("agent_session_stopped in %s addresses no session", channel)
+        return
+    sel().log_api_access(
+        caller=user,
+        operation="slack.agent_session_stopped",
+        outcome="allowed",
+        source="slack",
+        resources=session_key,
+    )
+    try:
+        await _stop_session(orch, session_key)
+    except Exception:
+        logger.debug("stop_turn failed for agent_session_stopped", exc_info=True)
+    # Finish the streams Slack named so no message is left mid-stream. Best-effort.
+    if orch.slack:
+        for stream_ts in streams:
+            try:
+                await orch.slack.stop_stream(channel, stream_ts)
+            except Exception:
+                logger.debug("stop_stream failed for agent_session_stopped", exc_info=True)
+
+
+#: The agent-session bot events the manifest subscribes to for ``agent_view``.
+#: Slack's agent setup guide lists ``app_context_changed`` among the events an
+#: agent_view app subscribes to, so it stays subscribed even though nothing here
+#: acts on it yet.
+_AGENT_SESSION_EVENTS = frozenset(
+    {"agent_session_stopped", "agent_session_title_changed", "app_context_changed"}
+)
+
+
+def _dispatch_agent_session_event(orch: GatewayOrchestrator, payload: dict, event: dict) -> None:
+    """Origin-check an agent-session lifecycle event, then handle it.
+
+    These events act on live sessions (a stop cancels a running turn), so they
+    pass the same per-workspace origin gate as a message before anything runs:
+    a workspace dropped from the allowlist mid-turn cannot stop, retitle or
+    otherwise reach a session. Slack puts ``team_id`` on the enclosing
+    ``event_callback`` envelope, which wins over any id on the event itself, the
+    same precedence the message path uses; an event with no workspace id at all
+    is refused. Default-open when no allowlist is configured, as for messages.
+    """
+    event_type = event.get("type", "")
+    caller = event.get("user") or "unknown"
+    team_id = payload.get("team_id") or event.get("team_id") or event.get("team") or ""
+    if not team_id:
+        logger.warning("%s rejected: no team_id on event or envelope", event_type)
+        sel().log_api_access(
+            caller=caller,
+            operation=f"slack.{event_type}",
+            outcome="denied",
+            source="slack",
+            error="missing_team_id",
+        )
+        return
+    if not current_context().slack_gate.check_message_origin(team_id):
+        logger.error(
+            "%s rejected: team_id=%s does not match validated workspace", event_type, team_id
+        )
+        sel().log_api_access(
+            caller=caller,
+            operation=f"slack.{event_type}",
+            outcome="denied",
+            source="slack",
+            resources=f"team_id={team_id} channel={event.get('channel', '')}",
+            error="enterprise_origin_mismatch",
+        )
+        return
+    if event_type == "agent_session_stopped":
+        t = asyncio.create_task(_handle_agent_session_stopped(orch, event))
+        orch._handler_tasks.add(t)
+        t.add_done_callback(orch._handler_tasks.discard)
+        return
+    if event_type == "agent_session_title_changed":
+        # The user retitled a session in Slack. There is no local copy of
+        # session titles to reconcile, so it is recorded for the audit trail.
+        sel().log_api_access(
+            caller=event.get("user", "unknown"),
+            operation="slack.agent_session_title_changed",
+            outcome="allowed",
+            source="slack",
+            resources=event.get("thread_ts", ""),
+        )
+    # app_context_changed reports what the user is viewing; the message events
+    # carry the context the gateway uses, so it is not acted on.
+
+
 async def _route_message(
     orch: GatewayOrchestrator,
     event: dict,
@@ -2625,56 +2833,9 @@ async def _route_message(
             if orch.slack:
                 await orch.slack.post_message(channel, "Nothing running.", thread_ts or msg_ts)
             return
-        _flat_stop_key = flat_dm_session_key(
-            channel, thread_ts, enabled=_dm_single_session_enabled(orch, channel)
-        )
-        # A dashboard-linked thread wins over the flat key. When !stop is typed
-        # inside a DM thread that a dashboard send-to-Slack owns, the running
-        # turn lives under THAT owner (keyed by thread_ts in the thread index),
-        # not under the channel-scoped flat key -- so stopping the flat key would
-        # leave the linked turn's provider running while acking a session that
-        # was never busy. A SELF-DERIVED owner (``slack:<thread_ts>``, the
-        # per-thread session the flat feature merges away) is not a real binding
-        # and is ignored, matching handle_message_transport's _resolve_thread_owner.
-        _linked_owner: str | None = None
-        if _flat_stop_key and thread_ts:
-            _owner = orch.sessions.get_session_for_thread(thread_ts)
-            # A SELF-DERIVED owner (``slack:<thread_ts>``, the per-thread session
-            # the flat feature merges away) is not a real binding and is ignored,
-            # matching handle_message_transport's _resolve_thread_owner. Any OTHER
-            # owner is a real dashboard binding that must keep the stop.
-            if _owner is not None and _owner != canonical_key(thread_ts):
-                _linked_owner = _owner
-        if _linked_owner is not None:
-            session_key = _linked_owner
-            stop_post_ts: str | None = thread_ts
-        else:
-            session_key = _flat_stop_key or (thread_ts or msg_ts)
-            # Where the acknowledgements go. session_key is only a Slack timestamp
-            # while the session is thread-scoped; a single-session DM keys by
-            # channel, and passing that as thread_ts would be rejected. A flat DM
-            # therefore acks where the !stop was typed -- inside its thread if it
-            # had one, at channel root otherwise -- the same split the turn uses.
-            stop_post_ts = thread_ts if _flat_stop_key else session_key
-        # Recorded BEFORE the liveness checks: a turn between its abandoned
-        # attempt and its compaction replay has no session at this moment, and
-        # an interaction-originated turn has no registered task either; the
-        # replay reads this record to stay dropped (``note_user_stop``).
-        # Against the thread's OWNING session, not the bare thread key: a
-        # linked thread's turns -- and their replay -- run under the dashboard
-        # session that owns it, and that is the key the replay reads. For a flat
-        # DM session_key is already the channel-scoped owning key, so the lookup
-        # falls back to it unchanged.
-        note_user_stop(orch.sessions, orch.sessions.get_session_for_thread(session_key) or session_key)
-        has_session = orch.sessions.has_session(session_key)
-        active_task = orch._session_tasks.pop(session_key, None)
-        if has_session or active_task:
-            orch.sessions.clear_queue(session_key)
-            # Dropped pending (pre-session) entries never reach
-            # _dispatch_queued's cleanup, so unlink their temp files here.
-            for _item in orch._pending_queue.pop(session_key, None) or []:
-                unlink_queued_temp_paths(_item[2])
+        session_key, stop_post_ts = _resolve_stop_target(orch, channel, thread_ts, msg_ts)
 
+        async def _on_stopping() -> None:
             # Post ephemeral "Stopping…" block with Kill Now button
             if orch.slack:
                 await orch.slack.post_ephemeral(
@@ -2685,19 +2846,20 @@ async def _route_message(
                     thread_ts=stop_post_ts,
                 )
 
-            async def _on_soft() -> None:
-                if orch.slack:
-                    await orch.slack.post_message(channel, "⏹ Execution stopped.", stop_post_ts)
+        async def _on_soft() -> None:
+            if orch.slack:
+                await orch.slack.post_message(channel, "⏹ Execution stopped.", stop_post_ts)
 
-            async def _on_hard() -> None:
-                if orch.slack:
-                    await orch.slack.post_message(
-                        channel, "⛔ Execution stopped — session reset.", stop_post_ts
-                    )
+        async def _on_hard() -> None:
+            if orch.slack:
+                await orch.slack.post_message(
+                    channel, "⛔ Execution stopped — session reset.", stop_post_ts
+                )
 
-            outcome = await orch.sessions.stop_turn(session_key, on_soft=_on_soft, on_hard=_on_hard)
-            if active_task and not active_task.done():
-                active_task.cancel()
+        outcome = await _stop_session(
+            orch, session_key, on_stopping=_on_stopping, on_soft=_on_soft, on_hard=_on_hard
+        )
+        if outcome is not None:
             # If stop_turn returned "idle" (no active turn), neither callback
             # fired — dismiss the stale "Stopping…" ephemeral explicitly.
             if outcome == "idle" and orch.slack:

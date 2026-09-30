@@ -149,6 +149,7 @@ Go to **Features → OAuth & Permissions → Bot Token Scopes** and add:
 | `files:write` | Upload screenshots |
 | `users:read` | Profile lookups (`users.info`) resolve a sender's real name. Without it the lookup fails and is caught: the display name falls back to the matching `slack.allowed_users` entry, then to the raw Slack member ID |
 | `commands` | Slash commands |
+| `assistant:write` | Agent session status, title, and the native Stop button (`agents.sessions.*`). It needs the app's Agent feature (`agent_view` in the manifest), which also lists the app in Slack's Agents sidebar. An existing install gets it only after a reinstall (see the note below) |
 
 The `emoji:read` bot scope is deliberately **not** in the shipped manifest.
 Add it only if you want custom workspace emojis to appear in the emoji picker.
@@ -181,6 +182,9 @@ and configure that token only in the integration that consumes it.
    - `message.groups`
    - `app_mention`
    - `app_home_opened`
+   - `app_context_changed`
+   - `agent_session_stopped`
+   - `agent_session_title_changed`
    - `file_change`
    - `member_joined_channel`
 3. Click **Save Changes**
