@@ -2621,6 +2621,14 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
    bottom edge, so the dock sets --list-dock-pin-inset to that gap. */
 .sidebar,.folder-row-sticky{--folder-row-sticky-h:32px;--folder-row-sticky-inset:var(--list-dock-pin-inset,0.5rem)}
 .folder-row-sticky{height:var(--folder-row-sticky-h)}
+/* The clickable connector line down an open folder's body (components/FolderRail.tsx).
+   The body's own border-l still draws the line at rest; this is an out-of-flow
+   8px hit strip over it (-5..3 from the body's padding edge, stopping short of
+   the rows) and a 3px accent bar centred on the border on hover. */
+.folder-rail{position:absolute;top:0;bottom:0;left:-5px;z-index:1;width:8px;margin:0;padding:0;background:transparent;border:0;cursor:pointer;outline:none}
+.folder-rail>span{position:absolute;top:0;bottom:0;left:4px;width:1px;border-radius:9999px;pointer-events:none;background:transparent;transition:left 150ms,width 150ms,background-color 150ms}
+.folder-rail:hover>span{left:3px;width:3px;background:color-mix(in srgb,var(--accent) 60%,transparent)}
+@media (prefers-reduced-motion:reduce){.folder-rail>span{transition:none}}
 /* Rows scrolled into view (arrow-key roving, focus, reveal) stop below the
    pinned header stack of their folder block (ChatSidebar renderFolderBlock
    sets --folder-pin-stack); unfiled rows have no stack and keep 0. Chromium's

@@ -277,7 +277,7 @@ afterEach(() => {
 describe('ChatSidebar — list-view folder header', () => {
   it('collapses the folder through the row toggle', async () => {
     renderSidebar()
-    fireEvent.click(screen.getByLabelText('Collapse folder Alpha'))
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse folder Alpha' }))
     await waitFor(() => expect(mocks.updateChatFolder).toHaveBeenCalledWith('f1', { collapsed: true }))
   })
 
