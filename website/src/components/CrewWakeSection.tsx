@@ -140,7 +140,7 @@ type WakeScope =
   | { ownedOnly: true; isDefaultCrew?: never }
   | { ownedOnly?: false; isDefaultCrew: boolean }
 
-export default function CrewWakeSection({ crew, memberId, agentTemplate, isDefaultCrew, ownedOnly = false, dense = false, heading, blurb, emptyLine, onDraftChange, onSavingChange, onRequestCancel }: WakeScope & {
+export default function CrewWakeSection({ crew, memberId, agentTemplate, isDefaultCrew, ownedOnly = false, dense = false, heading, blurb, emptyLine, onDraftChange, onSavingChange, onRequestCancel, onNavigateAway }: WakeScope & {
   crew: string
   /** The crew's IMMUTABLE id (its slug), which is what a private schedule's
    *  `member_id` holds and what a new one is bound to. Separate from `crew`, the
@@ -187,8 +187,14 @@ export default function CrewWakeSection({ crew, memberId, agentTemplate, isDefau
    *  the collapse; the host calls it only when the user confirms. Without a
    *  host (Schedule-page-less embeds, tests), the toggle collapses directly. */
   onRequestCancel?: (proceed: () => void) => void
+  /** How to leave for the Schedule page. A host that mounts this section inside
+   *  an editor with OTHER unsaved panes passes a guarded navigate so the jump
+   *  asks before discarding them; a standalone mount omits it and the section
+   *  navigates directly. */
+  onNavigateAway?: (to: string) => void
 }) {
   const navigate = useNavigate()
+  const leaveFor = onNavigateAway ?? ((to: string) => navigate(to))
   const [creating, setCreatingState] = useState(false)
   const [savingDraft, setSavingDraftState] = useState(false)
   const submitRef = useRef<(() => void) | null>(null)
@@ -254,10 +260,13 @@ export default function CrewWakeSection({ crew, memberId, agentTemplate, isDefau
         // No hand-off while `creating`: the inline JobForm's unsaved fields
         // would be lost. With the form closed nothing in the section is a
         // draft, so the read failure gets the hand-off. Retry sits beside it,
-        // matching the sibling webhooks section on the same page.
+        // matching the sibling webhooks section on the same page. Suppressed
+        // entirely when hosted in the in-place editor (`onNavigateAway` set):
+        // the /chat hand-off would unmount the host modal and its unsaved panes,
+        // which this section cannot see — Retry still works there.
         <div className="flex items-center gap-2">
           <ErrorNotice
-            askAgent={!creating}
+            askAgent={!creating && !onNavigateAway}
             testId="crew-wake-load-error"
             className="flex-1"
             message={i18nT('components.crewWakeSection.could_not_load_this_crew_s_schedules_so_what_wak')}
@@ -331,7 +340,7 @@ export default function CrewWakeSection({ crew, memberId, agentTemplate, isDefau
               silently discard everything typed. */}
           {!creating && (
             <Btn
-              onClick={() => navigate('/schedule')}
+              onClick={() => leaveFor('/schedule')}
               aria-label={i18nT('components.crewWakeSection.open_schedule')}
               title={i18nT('components.crewWakeSection.open_schedule')}
             >

@@ -161,6 +161,7 @@ function WorkspaceForm({
   onCreated,
   onClose,
   onDirtyChange,
+  onSaveChain,
 }: {
   workspaceOptions: string[]
   onCreated: (name: string) => void
@@ -168,6 +169,13 @@ function WorkspaceForm({
   /** Whether the form holds unsaved input; the modal reads it to refuse
    *  Escape / backdrop dismissal while it does. */
   onDirtyChange?: (dirty: boolean) => void
+  /** Register the in-flight create POST with the host so its navigation guard
+   *  tracks it to SETTLEMENT, not to this form's lifetime: a boolean cleared on
+   *  unmount would release the guard the instant the modal closes (Cancel)
+   *  while the request still completes and creates the workspace. The host
+   *  decrements only when the promise settles, so the guard holds across a
+   *  cancel/close. */
+  onSaveChain?: (p: Promise<unknown>) => void
 }) {
   const [wsName, setWsName] = useState('')
   const [wsDir, setWsDir] = useState('workspace')
@@ -203,7 +211,13 @@ function WorkspaceForm({
     try {
       const body: Record<string, string> = { name: n, dir: wsDir }
       if (copyFrom) body.copy_from = copyFrom
-      const r: AgentMutationResult = await api.createWorkspace(body)
+      // Hand the create POST to the host BEFORE awaiting it, so its navigation
+      // guard counts the write until it settles even if this form unmounts
+      // (Cancel / backdrop) mid-request. The host swallows the rejection on its
+      // tracking copy; the real outcome is still handled below.
+      const createWrite = api.createWorkspace(body)
+      onSaveChain?.(createWrite)
+      const r: AgentMutationResult = await createWrite
       if (r.error) { setWsError(r.error); setSubmitting(false); return }
       onCreated(r.name || n)
     } catch (e) {
@@ -272,6 +286,7 @@ export function WorkspaceModal({
   onCreated,
   onClose,
   onDirtyChange,
+  onSaveChain,
 }: {
   open: boolean
   workspaceOptions: string[]
@@ -281,6 +296,9 @@ export function WorkspaceModal({
    *  navigation stake (the Crewmates dialog): a route change unmounts this
    *  modal with its host, and the host's guard must count this draft too. */
   onDirtyChange?: (dirty: boolean) => void
+  /** Register the in-flight create POST with the host so a route-leave is
+   *  refused until it SETTLES (tracked past this modal's unmount). */
+  onSaveChain?: (p: Promise<unknown>) => void
 }) {
   // Unsaved input in the form: Escape and a backdrop click are refused while
   // it is set (the same rule `components/Modal` applies as
@@ -316,7 +334,7 @@ export function WorkspaceModal({
         onEscapeKeyDown={e => { if (dirty) e.preventDefault() }}
         onPointerDownOutside={e => { if (dirty) e.preventDefault() }}
       >
-        <WorkspaceForm workspaceOptions={workspaceOptions} onCreated={onCreated} onClose={onClose} onDirtyChange={setDirty} />
+        <WorkspaceForm workspaceOptions={workspaceOptions} onCreated={onCreated} onClose={onClose} onDirtyChange={setDirty} onSaveChain={onSaveChain} />
       </DialogContent>
     </Dialog>
   )

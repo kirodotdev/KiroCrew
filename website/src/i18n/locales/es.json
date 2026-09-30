@@ -17215,6 +17215,7 @@
       "create_unconfirmed": "No se pudo confirmar si {{name}} se creó. Revisa la lista antes de intentarlo de nuevo.",
       "create_unconfirmed_title": "Sin confirmar",
       "create_leave_draft": "¿Salir de esta página? El diálogo Nuevo compañero se cierra y lo que escribiste se pierde.",
+      "edit_leave_draft": "¿Salir de esta página? Se perderán los cambios sin guardar de este compañero.",
       "create_leave_busy": "¿Salir mientras se crea el compañero? Puede que se cree igualmente, pero su chat no se abrirá aquí; revisa la lista después.",
       "add_member_pending": "Reintenta o descarta el aviso sobre {{name}} antes de añadir otro compañero.",
       "add_member_pending_roster": "Actualiza la lista para {{name}} antes de añadir otro compañero.",

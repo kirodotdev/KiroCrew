@@ -16975,6 +16975,7 @@
       "create_unconfirmed": "Es konnte nicht bestätigt werden, ob {{name}} erstellt wurde. Prüf die Liste, bevor du es noch einmal versuchst.",
       "create_unconfirmed_title": "Nicht bestätigt",
       "create_leave_draft": "Diese Seite verlassen? Der Dialog „Neuer Crewmate“ schließt sich und deine Eingaben gehen verloren.",
+      "edit_leave_draft": "Diese Seite verlassen? Deine nicht gespeicherten Änderungen an diesem Crewmate gehen verloren.",
       "create_leave_busy": "Verlassen, während der Crewmate erstellt wird? Er wird vielleicht trotzdem erstellt, aber sein Chat öffnet sich hier nicht – prüf danach die Liste.",
       "add_member_pending": "Wiederhole oder schließe zuerst den Hinweis zu {{name}}, bevor du einen weiteren Crewmate hinzufügst.",
       "add_member_pending_roster": "Aktualisiere zuerst die Liste für {{name}}, bevor du einen weiteren Crewmate hinzufügst.",

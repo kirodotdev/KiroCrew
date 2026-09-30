@@ -17215,6 +17215,7 @@
       "create_unconfirmed": "Impossible de confirmer si {{name}} a été créé. Vérifie la liste avant de réessayer.",
       "create_unconfirmed_title": "Non confirmé",
       "create_leave_draft": "Quitter cette page ? La boîte de dialogue Nouveau coéquipier se ferme et ce que tu as saisi est perdu.",
+      "edit_leave_draft": "Quitter cette page ? Tes modifications non enregistrées sur ce coéquipier seront perdues.",
       "create_leave_busy": "Quitter pendant la création du coéquipier ? Il sera peut-être créé quand même, mais sa conversation ne s'ouvrira pas ici — vérifie la liste ensuite.",
       "add_member_pending": "Réessaie ou ferme l’avis concernant {{name}} avant d’ajouter un autre coéquipier.",
       "add_member_pending_roster": "Actualise la liste pour {{name}} avant d’ajouter un autre coéquipier.",

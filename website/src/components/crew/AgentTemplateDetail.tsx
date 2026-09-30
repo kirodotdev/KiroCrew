@@ -162,11 +162,17 @@ function Chips({ items, tone }: { items: string[]; tone?: 'ok' | 'aim' | 'danger
 }
 
 export default function AgentTemplateDetail({
-  template, models, crew, onForked, options, onSelect, onRebound, provenance, fieldLabel, onSaveChain, readOnly = false, onCapabilities, actionsDisabled = false,
+  template, models, crew, onForked, options, onSelect, onRebound, provenance, fieldLabel, onSaveChain, readOnly = false, onCapabilities, actionsDisabled = false, suppressHandoff = false, onDirtyChange,
 }: {
   actionsDisabled?: boolean
   readOnly?: boolean
   onCapabilities?: () => void
+  /** Suppress the embedded "Ask the agent" hand-off on read-failure notices.
+   *  A host that mounts this inside a modal with its own unsaved draft (the
+   *  in-place crew editor) sets it, because the hand-off navigates to `/chat`
+   *  and would unmount the host's draft. Standalone (the crew-manager page) it
+   *  defaults off and the hand-off stays. */
+  suppressHandoff?: boolean
   /** The crew's current binding (the copy's name when customized). */
   template: string
   models: string[]
@@ -192,6 +198,14 @@ export default function AgentTemplateDetail({
    *  toggle) so the parent can hold a close until it settles — a close
    *  mid-PATCH unmounts the pane and its failure notice renders nowhere. */
   onSaveChain?: (p: Promise<unknown>) => void
+  /** Reports whether THIS pane holds unsaved typed input in one of its own
+   *  nested dialogs (today: the publish-copy name). A host that mounts this in a
+   *  modal whose page-level exits (Back / reload / route-leave) it cannot
+   *  intercept folds this into its navigation stake, so a typed publish name is
+   *  not silently lost. Reported as a single signal rather than the host
+   *  enumerating each nested field, so a future nested input is covered here
+   *  without touching the host. */
+  onDirtyChange?: (dirty: boolean) => void
 }) {
   const qc = useQueryClient()
   const { confirm, confirmDialog } = useConfirm()
@@ -218,6 +232,16 @@ export default function AgentTemplateDetail({
   // check is a validation HINT rendered as plain hint text, while only a
   // caught server rejection flows through ErrorNotice.
   const [publishNameHint, setPublishNameHint] = useState('')
+
+  // Report this pane's own unsaved typed input (the publish-copy name) so a host
+  // modal can fold it into its page-level navigation stake. Keyed on the open
+  // publish dialog holding a non-empty name; cleared on unmount so a stale true
+  // never strands the host's guard.
+  const onDirtyChangeRef = useRef(onDirtyChange)
+  onDirtyChangeRef.current = onDirtyChange
+  const paneDirty = publishOpen && publishName.trim() !== ''
+  useEffect(() => { onDirtyChangeRef.current?.(paneDirty) }, [paneDirty])
+  useEffect(() => () => { onDirtyChangeRef.current?.(false) }, [])
 
   const { data: detail, isLoading, isError } = useQuery<TemplateDetail>({
     queryKey: ['agentDetail', template],
@@ -405,8 +429,16 @@ export default function AgentTemplateDetail({
       // publishing it would ship a stale template — the rejection aborts
       // through the catch below and renders in the dialog. Re-applying the
       // edit starts a fresh chain link, which is the recovery path.
-      await instantSaveChain.current
-      const r = (await api.agentPublish(template, crew, name)) as { template?: string }
+      // The whole publish write (drain + the agentPublish PUT/DELETE) is a
+      // nested write the host's navigation guard must see, so register it
+      // through onSaveChain — a confirmed route-leave then refuses until it
+      // settles instead of unmounting mid-publish.
+      const publishWrite = (async () => {
+        await instantSaveChain.current
+        return api.agentPublish(template, crew, name)
+      })()
+      onSaveChain?.(publishWrite)
+      const r = (await publishWrite) as { template?: string }
       setPublishOpen(false)
       setPublishName('')
       setPublishError('')
@@ -551,7 +583,7 @@ export default function AgentTemplateDetail({
         {originDiffFailed && (
           <ErrorNotice
             variant="inline"
-            askAgent
+            askAgent={!suppressHandoff}
             message={i18nT('components.agentTemplateDetail.origin_diff_failed')}
           />
         )}
@@ -653,7 +685,7 @@ export default function AgentTemplateDetail({
                     decision as the detail-load notice above. */}
                 <ErrorNotice
                   variant="inline"
-                  askAgent
+                  askAgent={!suppressHandoff}
                   message={i18nT('pages.agentsPage.could_not_load_this_agent_s_configuration_skills')}
                 />
               </>

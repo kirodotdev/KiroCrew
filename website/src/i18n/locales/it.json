@@ -17215,6 +17215,7 @@
       "create_unconfirmed": "Impossibile confermare se {{name}} è stato creato. Controlla l'elenco prima di riprovare.",
       "create_unconfirmed_title": "Non confermato",
       "create_leave_draft": "Lasciare questa pagina? La finestra Nuovo compagno si chiude e quanto hai scritto va perso.",
+      "edit_leave_draft": "Lasciare questa pagina? Le modifiche non salvate a questo compagno andranno perse.",
       "create_leave_busy": "Uscire mentre il compagno viene creato? Potrebbe essere creato comunque, ma la sua chat non si aprirà qui: controlla l'elenco dopo.",
       "add_member_pending": "Riprova o chiudi l'avviso su {{name}} prima di aggiungere un altro compagno.",
       "add_member_pending_roster": "Aggiorna l'elenco per {{name}} prima di aggiungere un altro compagno.",

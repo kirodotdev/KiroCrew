@@ -472,12 +472,12 @@ describe('MembersPage Schedules chip', () => {
     }
   })
 
-  it('asks before the header identity pill leaves the route over a draft', async () => {
-    // The pill IS the crewmate's edit entry (it replaced the hover-revealed pencil in
-    // #9425). It sits in the header, on screen at the same time as this tab, and it
-    // navigates to the crew manager -- a different route, so the whole page unmounts. A
-    // raw `navigate` would discard the draft with no recovery: the route change never
-    // reaches `beforeunload`, and the leave channel is only consulted by callers that ask.
+  it('opens the editor in place over a Schedules draft without discarding it (CREW-18688)', async () => {
+    // The pill IS the crewmate's edit entry. It used to NAVIGATE to the crew
+    // manager, which unmounted this page and so had to prompt before discarding
+    // a Schedules draft. It now opens the editor as a MODAL IN PLACE (CREW-18688):
+    // the panel subtree holding the draft stays mounted behind the modal, so there
+    // is nothing to discard and no prompt — the draft is still there afterwards.
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
     try {
       await openCrewmate()
@@ -489,8 +489,9 @@ describe('MembersPage Schedules chip', () => {
       fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'Read the board.' } })
 
       fireEvent.click(screen.getByTestId('member-identity-pill'))
-      expect(confirmSpy).toHaveBeenCalledWith(expect.stringMatching(/lose the schedule/i))
-      // Refused: still on the crewmate, with the draft.
+      // No discard prompt: opening the modal does not leave the route.
+      expect(confirmSpy).not.toHaveBeenCalled()
+      // Still on the crewmate, with the draft intact behind the modal.
       expect(screen.getByTestId('member-schedules')).toBeInTheDocument()
       expect(screen.getByDisplayValue('Check the board')).toBeInTheDocument()
     } finally {

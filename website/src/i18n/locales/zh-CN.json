@@ -16735,6 +16735,7 @@
       "create_unconfirmed": "无法确认队友 {{name}} 是否已创建。重试前请先查看列表。",
       "create_unconfirmed_title": "未确认",
       "create_leave_draft": "离开此页面？“新队友”对话框将关闭，已输入的内容会丢失。",
+      "edit_leave_draft": "离开此页面？此队友未保存的更改将丢失。",
       "create_leave_busy": "在创建队友时离开？队友可能仍会创建，但它的聊天不会在这里打开——之后请查看列表。",
       "add_member_pending": "在添加另一位队友之前，请先重试或关闭关于 {{name}} 的提示。",
       "add_member_pending_roster": "在添加另一位队友之前，请先为 {{name}} 刷新列表。",

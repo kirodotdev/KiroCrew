@@ -91,6 +91,9 @@ vi.mock('../../api/client', () => ({
     // workspace — so the dialog renders without its own options-failed notice
     // in every case that does not open it.
     agentCatalog: vi.fn(() => Promise.resolve({ agents: [], default_agent: 'kirocrew' })),
+    // The crew editor's roster read (KiroCrewAgent list), fired when the
+    // thread-header pencil opens the in-place editor (CREW-18688).
+    kirocrewAgents: vi.fn(() => Promise.resolve({ agents: [], default_agent: 'kirocrew' })),
     workspaces: vi.fn(() => Promise.resolve({ workspaces: [{ name: 'default' }] })),
     createWorkspace: vi.fn(() => Promise.resolve({ name: 'staging' })),
     createKirocrewAgent: vi.fn(() => Promise.resolve({ ok: true })),
@@ -123,6 +126,20 @@ vi.mock('../../api/threads', async (importOriginal) => {
  * so the + menu case below can assert the per-chat Terminal row is offered on
  * a member DM. */
 vi.mock('../chat/ActivityViewer', () => ({ default: () => null }))
+// The crew editor is exercised by its own suite. Here we only need to prove the
+// thread-header pencil OPENS it in place (CREW-18688) — a route change no more —
+// so a probe renders the crew it was pointed at.
+vi.mock('../../components/crew/CrewEditorDialog', () => ({
+  default: ({ ctl }: { ctl: { editing: string } }) =>
+    ctl.editing ? <div data-testid="crew-editor-dialog-open">{ctl.editing}</div> : null,
+}))
+// The editor hook runs inside MembersPage even when closed; its option/roster
+// reads are gated on an open editor, but stub the module so the hook needs no
+// live query wiring in this suite. Returns a minimal controller the probe reads.
+vi.mock('../../components/crew/useCrewEditor', () => ({
+  useCrewEditor: ({ editingName }: { editingName: string }) => ({ open: !!editingName, editing: editingName, dirtyPanes: new Set() }),
+  INHERIT_MODEL: 'auto',
+}))
 vi.mock('../chat/FilesHomePanel', () => ({ default: () => null }))
 vi.mock('../chat/FolderPanel', () => ({ default: () => null }))
 vi.mock('../../components/DiffPanel', () => ({ default: () => null }))
@@ -3086,8 +3103,6 @@ describe('MembersPage auto patrol (monitor loop status)', () => {
 })
 
 describe('MembersPage member edit entry (issue #9425)', () => {
-  const EDIT_LINK = '/capabilities?tab=crews&crew=oncall'
-
   beforeEach(() => { localStorage.clear() })
 
   it('the DM header identity pill — face + name, centred, one Glass chip — is a button, named by the crewmate and described "Edit crewmate", that opens this crewmate\'s editor', async () => {
@@ -3122,11 +3137,11 @@ describe('MembersPage member edit entry (issue #9425)', () => {
     // a side control is present.
     expect(screen.getByTestId('member-thread-header').className).toContain('grid-cols-[1fr_minmax(0,auto)_1fr]')
     fireEvent.click(pill)
-    // Mutation check on the DESTINATION: this page never writes — the crew
-    // manager opens THIS crew's editor. No `&avatar=1`: the builder is one
-    // row inside that editor, not where an "edit this member" click lands.
-    expect(navigateSpy).toHaveBeenCalledWith(EDIT_LINK)
-    expect(navigateSpy).not.toHaveBeenCalledWith(expect.stringContaining('avatar=1'))
+    // CREW-18688: the identity pill opens the crew editor as a MODAL on this
+    // page, pointed at THIS crewmate — no route change. The probe reports the
+    // crew the shared editor controller was opened for.
+    expect(await screen.findByTestId('crew-editor-dialog-open')).toHaveTextContent('oncall')
+    expect(navigateSpy).not.toHaveBeenCalled()
   })
 
   it('the pill\'s second line says what the crewmate is doing: text only, always present, out of the button\'s name', async () => {
@@ -3256,11 +3271,41 @@ describe('MembersPage member edit entry (issue #9425)', () => {
     expect(header.className).toMatch(/\bpy-2\b/)
   })
 
-  it('encodes the crew name in the deep link', async () => {
+  it('opens the editor for the exact crew name, special characters and all', async () => {
     await renderPage([row({ name: 'on call/2', slug: 'on-call-2', bound: true, slot_key: 'member-on-call-2' })])
     fireEvent.click(await rosterRow('on call/2'))
     fireEvent.click(await screen.findByTestId('member-identity-pill'))
-    expect(navigateSpy).toHaveBeenCalledWith('/capabilities?tab=crews&crew=on%20call%2F2')
+    // In-place editor, pointed at the crew's exact NAME (identity), no route
+    // change and no URL-encoding round trip to get wrong.
+    expect(await screen.findByTestId('crew-editor-dialog-open')).toHaveTextContent('on call/2')
+    expect(navigateSpy).not.toHaveBeenCalled()
+  })
+
+  it('a failed editor roster read surfaces a notice instead of a silent dead click (F1)', async () => {
+    // The editor's roster read is gated on the pill click; if GET
+    // /api/kirocrew/agents rejects, the pill would otherwise do nothing forever
+    // with no report. The notice near the header is what makes the failure
+    // visible (Opus/F1 blocking finding).
+    vi.mocked(api.kirocrewAgents).mockRejectedValue(new Error('roster boom'))
+    await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await rosterRow('oncall'))
+    // Before the click the notice is absent — the read has not fired yet.
+    expect(screen.queryByTestId('member-crew-roster-load-error')).toBeNull()
+    fireEvent.click(await screen.findByTestId('member-identity-pill'))
+    const notice = await screen.findByTestId('member-crew-roster-load-error')
+    expect(notice).toBeInTheDocument()
+    // Opus BLOCKING fix: this notice must NOT offer the "Ask the agent"
+    // hand-off. It renders only when the roster read failed, so the editor is
+    // unopened and its dirtyPanes is always empty here — a `dirtyPanes.size===0`
+    // guard would be inert and leave the hand-off unconditionally on, silently
+    // discarding the ChatPane DM draft and the Schedules create draft via the
+    // raw /chat navigate that skips the leave guard.
+    expect(within(notice).queryByText('Ask the agent')).toBeNull()
+    expect(navigateSpy).not.toHaveBeenCalled()
+    // And it is dismissable (clearing editingCrew), so it does not follow the
+    // user onto other crewmates' threads nor pop the editor open later.
+    fireEvent.click(within(notice).getByRole('button', { name: /dismiss/i }))
+    expect(screen.queryByTestId('member-crew-roster-load-error')).toBeNull()
   })
 })
 

@@ -7547,6 +7547,7 @@
       "create_unconfirmed": "Couldn't confirm whether {{name}} was created. Check the list before trying again.",
       "create_unconfirmed_title": "Not confirmed",
       "create_leave_draft": "Leave this page? The New crewmate dialog closes and what you typed is lost.",
+      "edit_leave_draft": "Leave this page? Your unsaved changes to this crewmate are lost.",
       "create_leave_busy": "Leave while the crewmate is being created? It may still be created, but its chat won't open here — check the list afterwards.",
       "add_member_pending": "Retry or dismiss the notice about {{name}} before adding another crewmate.",
       "add_member_pending_roster": "Refresh the list for {{name}} before adding another crewmate.",
