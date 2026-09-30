@@ -52,6 +52,7 @@ from kiro_crew.mcp_gateway.hashing import (
     expand_stub_flags,
     hash_command,
     hash_effective_env,
+    runs_install_code,
 )
 from kiro_crew.mcp_gateway.pool import (
     _DEFAULT_READ_BUFFER_LIMIT,
@@ -567,14 +568,25 @@ def _pool_binary_identity(command: str, target_args: list[str]) -> tuple[str, st
     its existing argv-based identity.
     """
     base = _binary_version(command)
-    if not any(a in _KIROCREW_MCP_SUBCOMMANDS for a in target_args):
+    # Two ways a target runs Kiro Crew's own code: one of the reserved
+    # subcommands, or the gateway interpreter pinned by ``apps/bridges.py``
+    # with ``-m kiro_crew...`` / the deps_boot shim in argv
+    # (``hashing.runs_install_code``). The second needs the fold here too: with
+    # the versioned directory gone from ``command_args_hash``, this token is
+    # the only identity dimension left that can see the code change. A
+    # third-party server that merely runs ON that interpreter is excluded, so
+    # its pool is not re-partitioned on every Kiro Crew commit.
+    managed = any(a in _KIROCREW_MCP_SUBCOMMANDS for a in target_args)
+    if not managed and not runs_install_code(command, target_args):
         return base, ""
     # Imported here, not at module top: the stub's cold-start path is timed
     # and this module is only needed on the Kiro Crew branch.
     from kiro_crew.code_fingerprint import code_fingerprint
 
-    generation = code_fingerprint()
-    return f"{base}+{generation}", generation
+    fingerprint = code_fingerprint()
+    # The generation stays argv-selected: only a managed subcommand runs the
+    # daemon-generation check, so an install-code app bridge reports none.
+    return f"{base}+{fingerprint}", (fingerprint if managed else "")
 
 
 def pool_binary_version(command: str, target_args: list[str]) -> str:

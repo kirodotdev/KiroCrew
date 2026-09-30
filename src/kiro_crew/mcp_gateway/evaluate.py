@@ -23,9 +23,10 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from kiro_crew.code_fingerprint import code_fingerprint
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.mcp_discovery import PROBE_MAX_CONCURRENCY
-from kiro_crew.mcp_gateway.hashing import hash_command, hash_effective_env
+from kiro_crew.mcp_gateway.hashing import hash_command, hash_effective_env, runs_install_code
 from kiro_crew.mcp_gateway.preflight import PreflightResult, preflight
 from kiro_crew.mcp_gateway.stub import binary_fingerprint
 from kiro_crew.mcp_gateway.verdict_cache import (
@@ -139,13 +140,26 @@ def _launch_fingerprint(command: str, args: list[str]) -> str:
     Non-file arguments (flags, ports, module names) contribute nothing here —
     they are already covered by ``hash_command``, which hashes argv verbatim.
     What this adds is the CONTENT of the files argv points at, which argv itself
-    cannot express.
+    cannot express, plus the Kiro Crew code fingerprint when the launch runs
+    this install's own code (``hashing.runs_install_code``): for such a launch
+    the command hash is deliberately the same across releases and argv names no
+    file, so the code the release shipped has to enter the identity here.
 
     An argument that does not resolve to a readable file is skipped rather than
     treated as empty, so a flag value that merely looks like a path does not make
     the key unstable between passes.
     """
     parts = [binary_fingerprint(command)]
+    if runs_install_code(command, args):
+        # The command hashes by alias, so the versioned directory does not
+        # distinguish one release from the next, and a host-CLI pin
+        # (``sys.executable -P -m kiro_crew ...``) names no file in argv. The
+        # code fingerprint is what still sees the upgrade; without it the row
+        # would survive a release that replaced the server's code -- the stale
+        # verdict this identity exists to prevent. Same rule as
+        # ``stub.pool_binary_version``. A third-party server that merely runs
+        # on that interpreter keeps its file-content fingerprint alone.
+        parts.append("code:" + code_fingerprint())
     for arg in args:
         if not arg or arg.startswith("-"):
             continue
