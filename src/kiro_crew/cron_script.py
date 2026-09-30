@@ -2591,6 +2591,15 @@ _BRACE_OFF_SHELLS: dict[str, bool] = {}
 # it, which is exactly why it is never tried first: an unknown-option refusal
 # would look like a failing shell.
 _BRACE_OFF_FLAG = "+B"
+# Serializes the check-probe-record sequence in ``_shell_is_posix_strict``. Up to
+# ``_MAX_CRON_WORKERS`` command crons resolve the shell concurrently, and the two
+# maps above are only coherent if one probe of a shell owns them from the cache
+# miss to the record. Unserialized, a second probe that started on the same cold
+# cache and then failed transiently would pop the brace-off record a first probe
+# had just proved, and the first caller's executor would read the plain form and
+# run with brace expansion ON. A cache hit is the steady state, so the lock is
+# contended only on each shell's first probe.
+_SHELL_PROBE_LOCK = threading.Lock()
 
 
 def _argv_for_form(shell: str, command: str, brace_off: bool) -> list[str]:
@@ -2645,22 +2654,23 @@ def _shell_is_posix_strict(shell: str) -> bool:
     denies an agent-planted shim the un-isolated execution it would need.
     """
 
-    cached = _POSIX_STRICT_CACHE.get(shell)
-    if cached is not None:
-        return cached
-    for brace_off in (False, True):
-        if _probe_one_form(shell, brace_off):
-            # Record the form only once it has PASSED, and record nothing on the
-            # way there: the executor reads this map, so a form written while
-            # still being tested would be visible to a concurrent command cron.
-            _BRACE_OFF_SHELLS[shell] = brace_off
-            _POSIX_STRICT_CACHE[shell] = True
-            return True
-    # No form worked: leave no brace-off record behind for a shell this resolver
-    # refuses, so a later caller cannot inherit the last form tried.
-    _BRACE_OFF_SHELLS.pop(shell, None)
-    _POSIX_STRICT_CACHE[shell] = False
-    return False
+    with _SHELL_PROBE_LOCK:
+        cached = _POSIX_STRICT_CACHE.get(shell)
+        if cached is not None:
+            return cached
+        for brace_off in (False, True):
+            if _probe_one_form(shell, brace_off):
+                # Record the form only once it has PASSED, and record nothing on the
+                # way there: the executor reads this map, so a form written while
+                # still being tested would be visible to a concurrent command cron.
+                _BRACE_OFF_SHELLS[shell] = brace_off
+                _POSIX_STRICT_CACHE[shell] = True
+                return True
+        # No form worked: leave no brace-off record behind for a shell this resolver
+        # refuses, so a later caller cannot inherit the last form tried.
+        _BRACE_OFF_SHELLS.pop(shell, None)
+        _POSIX_STRICT_CACHE[shell] = False
+        return False
 
 
 def _probe_one_form(shell: str, brace_off: bool) -> bool:
@@ -2694,6 +2704,37 @@ def _probe_one_form(shell: str, brace_off: bool) -> bool:
             except OSError:
                 pass
     return result
+
+
+def _no_command_shell_message() -> str:
+    """The refusal a command cron gets when ``_resolve_command_shell`` finds nothing.
+
+    Worded per platform because the two refusals have different causes and
+    different remedies. On Windows it is by design and permanent. On POSIX it is
+    this host: neither trusted ``sh`` passed the probe, and naming Windows there
+    would send a macOS or Linux operator looking for a cause that does not apply
+    to their machine.
+    """
+
+    if platform_compat.IS_WINDOWS:
+        return (
+            "❌ No POSIX shell available to run this command cron. Command "
+            "crons execute with `sh -c` under POSIX-sh semantics (what the "
+            "storage-time vet gate assumes); Windows ships no such shell "
+            "(Git for Windows's sh.exe is bash and would widen the language "
+            "past the vet). Use a script cron or an LLM `message` cron on "
+            "this platform, or run the gateway under POSIX."
+        )
+    return (
+        "❌ No usable POSIX shell to run this command cron. Command crons run "
+        "only under /bin/sh or /usr/bin/sh (never $PATH), and the one used must "
+        "pass a sandboxed probe proving it leaves `echo x.{a,a}` unexpanded when "
+        "invoked as `sh -c` or `sh +B -c` (brace expansion would widen the "
+        "command past what the storage-time vet gate checked). Neither passed on "
+        "this host: the shell is missing, expands braces even with `+B`, or the "
+        "OS sandbox refused to start the probe. Use a script cron or an LLM "
+        "`message` cron until that is fixed."
+    )
 
 
 def run_command_sandboxed(
@@ -2776,18 +2817,7 @@ def run_command_sandboxed(
         # below as a job the scheduler can mark failed.
         shell = _resolve_command_shell()
         if shell is None:
-            return {
-                "status": "error",
-                "output": (
-                    "❌ No POSIX shell available to run this command cron. Command "
-                    "crons execute with `sh -c` under POSIX-sh semantics (what the "
-                    "storage-time vet gate assumes); Windows ships no such shell "
-                    "(Git for Windows's sh.exe is bash and would widen the language "
-                    "past the vet). Use a script cron or an LLM `message` cron on "
-                    "this platform, or run the gateway under POSIX."
-                ),
-                "exit_code": -1,
-            }
+            return {"status": "error", "output": _no_command_shell_message(), "exit_code": -1}
         argv = _command_argv(shell, command)
         # The same app-secret mask the script path applies, for the same reason and on
         # the same trust reading: the comment above says this command string is fully

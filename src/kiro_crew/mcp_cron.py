@@ -963,7 +963,7 @@ def _vet_command_governance(command: str) -> str | None:
     return None
 
 
-def _vet_shell_command(command: str) -> str | None:
+def _vet_shell_command(command: str, *, governance_checked: bool = False) -> str | None:
     """Apply the bash-tool security guards to a model-supplied cron shell command.
 
     The ``command`` field of ``cron_add`` is a free-form shell string that is
@@ -983,6 +983,12 @@ def _vet_shell_command(command: str) -> str | None:
     Returns an ``"Error: ..."`` string to surface to the caller, or ``None`` if
     the command is clean. The returned message is redacted so it never echoes
     captured credentials back to the model.
+
+    ``governance_checked=True`` skips the governance ceiling
+    (``_vet_command_governance``) for a caller that has just evaluated and
+    audited it itself -- ``vet_job_at_fire_time``, which runs on every fire and
+    again at claim time inside the ``claim_vet_bound`` allowance, so evaluating
+    the ceiling twice per pass spends that allowance on a repeated decision.
     """
     if not command:
         return None
@@ -1147,7 +1153,7 @@ def _vet_shell_command(command: str) -> str | None:
     # never sees it — apply the governance ceiling ∩ cron profile here against
     # the cron surface. Covers both an enterprise commands-deny and the per-cron
     # profile's command scope. Best-effort beyond the always-on checks above.
-    gov_reason = _vet_command_governance(command)
+    gov_reason = None if governance_checked else _vet_command_governance(command)
     if gov_reason:
         return gov_reason
     # sh performs parameter expansion AND quote removal in one word-expansion
@@ -1478,7 +1484,7 @@ def vet_job_at_fire_time(job: CronJob) -> str | None:
         # silent -- which also makes the newly-refused shapes (a quoted regex
         # interval, say) surface as a legible audited failure instead of a job
         # that quietly stops matching policy.
-        reason = _vet_shell_command(job.command)
+        reason = _vet_shell_command(job.command, governance_checked=True)
         if reason:
             _audit_fire_time_decision(job.id, "cron_command_body", "denied", reason)
             return reason
