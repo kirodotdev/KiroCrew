@@ -349,6 +349,17 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "redacts at the source rather than at either boundary.",
     ),
     (
+        "Browser install job failure detail",
+        "browser_cli/install_job.py",
+        "The `error_detail` of the gateway's browser install job, returned by "
+        "`GET /api/browser/install` and in every 409 `install_already_running` "
+        "body. Failed-step output is redacted by `install._step` at the source; "
+        "exception and error fallbacks are not. `bounded_detail` re-redacts every "
+        "carrier on the FULL text before the 2000-character cut, using only "
+        "`redact_install_output` (the shared two-pass plus npm patterns), so a "
+        "pre-redaction cut cannot split a credential past its matching anchor.",
+    ),
+    (
         "Browser panel launch failures",
         "browser_cli/launcher.py",
         "The CLI's own words when the Browser panel's address bar could not open a "

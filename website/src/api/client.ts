@@ -206,8 +206,12 @@ export type {
   FileMenuContext,
 } from './client/apps'
 export type { AppPublishProvider } from './client/artifacts'
+export { browserInstallConflictJob } from './client/browserAndComputerUse'
 export type {
   BrowserInstallData,
+  BrowserEngine,
+  BrowserEngineStatus,
+  BrowserInstallJob,
   BrowserViewData,
   BrowserOpenData,
   ComputerUsePermissions,

@@ -4,6 +4,7 @@
  * config.
  */
 
+import { ApiError } from '../apiError'
 import type { ClientTransport } from './transport'
 
 /**
@@ -45,6 +46,68 @@ export interface BrowserInstallData {
    *  in-app install. Optional so an older gateway simply shows nothing extra
    *  rather than rendering `undefined`. */
   standalone_install?: string
+  /** The gateway's current or most recent install operation. `null` means no
+   *  install has run since the gateway started; absent means the gateway
+   *  predates job reporting, so the panel falls back to `installing` alone and
+   *  cannot say which operation is running. */
+  install_job?: BrowserInstallJob | null
+  /** Per-engine detection with an explicit `unknown`, which the `browsers`
+   *  booleans cannot express. Optional for the same older-gateway reason. */
+  browser_status?: Partial<Record<BrowserEngine, BrowserEngineStatus>>
+}
+
+/** Engines the managed install can download. */
+export type BrowserEngine = 'chromium' | 'firefox' | 'webkit'
+
+/** Passive filesystem detection only: `downloaded` is not a launch check. */
+export type BrowserEngineStatus = 'downloaded' | 'missing' | 'unknown'
+
+/**
+ * One gateway-owned install operation. Identity, target, stage and outcome all
+ * come from the server, so a refreshed page or a second tab attributes progress
+ * the same way the tab that pressed the button does.
+ */
+export interface BrowserInstallJob {
+  id: string
+  kind: 'cli_setup' | 'engine_download'
+  /** Set for `engine_download`; `null` for `cli_setup`. */
+  engine: BrowserEngine | null
+  status: 'running' | 'succeeded' | 'failed' | 'interrupted'
+  stage: 'preparing' | 'installing_cli' | 'downloading_browser' | 'installing_skills' | 'finishing'
+  started_at: string
+  updated_at: string
+  finished_at: string | null
+  /** Server-computed at response time; the panel ticks it forward locally. */
+  elapsed_s: number
+  error_code: 'step_failed' | 'timeout' | 'exception' | 'interrupted' | null
+  /** Redacted, then truncated, by the gateway. */
+  error_detail: string | null
+}
+
+/**
+ * The active job carried by a `409 install_already_running` refusal, or `null`
+ * for any other rejection.
+ *
+ * The refusal is still thrown, so a caller keeps its error path; this reads the
+ * body `j()` already kept on the `ApiError` instead of discarding it. Validated
+ * field by field because the body is whatever answered the request: an older
+ * gateway's 409 carries no job at all, and a proxy's carries HTML.
+ */
+export function browserInstallConflictJob(err: unknown): BrowserInstallJob | null {
+  if (!(err instanceof ApiError) || err.status !== 409) return null
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(err.body)
+  } catch {
+    return null
+  }
+  if (!parsed || typeof parsed !== 'object') return null
+  const job = (parsed as { install_job?: unknown }).install_job
+  if (!job || typeof job !== 'object') return null
+  const { id, kind, status, stage } = job as Record<string, unknown>
+  if (typeof id !== 'string' || typeof status !== 'string' || typeof stage !== 'string') return null
+  if (kind !== 'cli_setup' && kind !== 'engine_download') return null
+  return job as BrowserInstallJob
 }
 
 export interface BrowserViewData {
@@ -154,8 +217,10 @@ export function createBrowserAndComputerUseEndpoints({ get, post, put, j }: Clie
     // returns the SAME shape, so a start needs no follow-up read.
     getBrowserInstall: () => get('/api/browser/install').then(j) as Promise<BrowserInstallData>,
     setBrowserToken: (token: string) => put('/api/browser/token', { token }).then(j) as Promise<{ok: boolean; token: boolean}>,
+    // Both reject a busy slot with 409 `install_already_running`; the active job
+    // rides on that rejection and `browserInstallConflictJob` reads it back.
     installBrowserCli: () => post('/api/browser/install', {}).then(j) as Promise<BrowserInstallData>,
-    installBrowserEngine: (engine: string) => post('/api/browser/engine', { engine }).then(j) as Promise<BrowserInstallData>,
+    installBrowserEngine: (engine: BrowserEngine) => post('/api/browser/engine', { engine }).then(j) as Promise<BrowserInstallData>,
     getBrowserView: () => get('/api/browser/view').then(j) as Promise<BrowserViewData>,
     startBrowserView: () => post('/api/browser/view/start', {}).then(j) as Promise<BrowserViewData>,
     // The address bar's launcher: opens an owner-typed URL in the gateway host's

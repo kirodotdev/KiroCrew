@@ -6132,7 +6132,11 @@ class DashboardState:
         self._terminal_reaper: asyncio.Task | None = None  # type: ignore[type-arg]
         self._browser_snapshot_pruner: asyncio.Task | None = None  # type: ignore[type-arg]
         self._browser_install_task: asyncio.Task | None = None  # type: ignore[type-arg]
-        self._browser_install_error: str | None = None
+        # The one browser install job (browser_cli.install_job.BrowserInstallJob)
+        # and the InstallScope owning its subprocesses. In memory only: a gateway
+        # start has no job, so a "running" state never outlives its process.
+        self._browser_install_job: Any = None
+        self._browser_install_scope: Any = None
         self._terminal_title_poller: asyncio.Task | None = None  # type: ignore[type-arg]
         # Background reconciler that surfaces channel-originated sessions
         # (slack:<ts>, discord:…) as chat slots. Held to prevent GC.

@@ -6,8 +6,11 @@ Three concerns, one per module, with no shared mutable state:
   capability gate. Presence of ``playwright-cli`` is the gate; there is no
   toggle, flag, or consent file anywhere in this package.
 - :mod:`kiro_crew.browser_cli.os_deps` — which Linux hosts the browser download's
-  ``--with-deps`` flag can serve, and the command handed to the operator on the
-  ones it cannot. Reads ``/etc/os-release``; never runs a package manager.
+  ``--with-deps`` flag can serve, and the engine-specific OS-library command
+  handed to the operator when a download reports missing libraries. Reads
+  ``/etc/os-release``; never runs a package manager.
+- :mod:`kiro_crew.browser_cli.install_job` — the gateway's single install job
+  record: kind, engine, stage, outcome, and the redacted failure detail.
 - :mod:`kiro_crew.browser_cli.view` — supervises ``playwright-cli show``, the
   CLI's own dashboard, as a long-lived loopback-only child process.
 - :mod:`kiro_crew.browser_cli.launcher` — opens a URL the dashboard OWNER typed

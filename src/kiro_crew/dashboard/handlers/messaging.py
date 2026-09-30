@@ -28,6 +28,7 @@ from kiro_crew.browser.command_bus import (
     get_command_bus,
 )
 from kiro_crew.browser_cli import install as browser_cli_install
+from kiro_crew.browser_cli import install_job as browser_install_job
 from kiro_crew.browser_cli import launcher as browser_cli_launcher
 from kiro_crew.browser_cli import token as browser_cli_token
 from kiro_crew.browser_cli import view as browser_cli_view
@@ -4384,19 +4385,167 @@ async def api_browser_command_result(request: web.Request) -> web.Response:
     return web.json_response({"ok": True})
 
 
+def _browser_install_job(state: DashboardState) -> browser_install_job.BrowserInstallJob | None:
+    """The gateway's current or most recent install job, if one ran."""
+    job = getattr(state, "_browser_install_job", None)
+    return job if isinstance(job, browser_install_job.BrowserInstallJob) else None
+
+
+def _browser_install_active(state: DashboardState) -> bool:
+    """Whether an install occupies the gateway's one slot.
+
+    The task is consulted as well as the job so the slot stays closed until
+    the task that owns the worker has actually returned.
+    """
+    job = _browser_install_job(state)
+    task = getattr(state, "_browser_install_task", None)
+    return bool((job is not None and job.running) or (task is not None and not task.done()))
+
+
+def _browser_install_status(state: DashboardState) -> dict[str, Any]:
+    """The job-derived fields every install response carries.
+
+    ``installing`` and ``last_error`` keep their meaning for older dashboards:
+    whether a job runs, and the latest job's detail when it failed.
+    """
+    job = _browser_install_job(state)
+    failed = job is not None and job.status == browser_install_job.STATUS_FAILED
+    return {
+        "installing": _browser_install_active(state),
+        "install_job": job.snapshot() if job is not None else None,
+        "last_error": job.error_detail if failed and job is not None else None,
+    }
+
+
+def _browser_install_conflict(state: DashboardState) -> web.Response:
+    """409 naming the job that holds the slot, so the panel can say which one."""
+    job = _browser_install_job(state)
+    return web.json_response(
+        {
+            "error": "an install is already running",
+            "code": "install_already_running",
+            "install_job": job.snapshot() if job is not None and job.running else None,
+        },
+        status=409,
+    )
+
+
+def _start_browser_install_job(
+    state: DashboardState,
+    kind: str,
+    engine: str | None,
+    work: Callable[[browser_cli_install.StageCallback], dict[str, Any]],
+    default_step: str,
+) -> None:
+    """Publish a new running job, then start its worker.
+
+    The job is on ``state`` before the task exists, so a status read that
+    lands between this call and the worker's first stage already reports it.
+    Stage updates arrive from the worker thread and are marshalled onto the
+    loop; each is bound to THIS job object, whose own id and status checks make
+    a late update from a finished job a no-op.
+
+    Cancelling the task (gateway shutdown cancels every pending task) kills
+    the installer's process tree through the job's
+    :class:`~kiro_crew.browser_cli.install.InstallScope` before the task
+    ends, because cancelling the awaiting coroutine alone leaves the worker
+    thread and its subprocess running.
+    """
+    loop = asyncio.get_running_loop()
+    job = browser_install_job.BrowserInstallJob.start(kind, engine)
+    scope = browser_cli_install.InstallScope()
+    state._browser_install_job = job
+    state._browser_install_scope = scope
+
+    def _on_stage(stage: str) -> None:
+        # Runs on the worker thread; the loop owns the job.
+        loop.call_soon_threadsafe(job.apply_stage, job.id, stage)
+
+    async def _run() -> None:
+        try:
+            result = await asyncio.to_thread(
+                browser_cli_install.run_in_scope, scope, work, _on_stage
+            )
+        except asyncio.CancelledError:
+            await _terminate_install_scope(scope)
+            job.finish(
+                job.id,
+                browser_install_job.STATUS_INTERRUPTED,
+                browser_install_job.ERROR_INTERRUPTED,
+                "interrupted: the gateway stopped this install",
+            )
+            raise
+        except Exception as exc:  # noqa: BLE001 - surfaced to the operator
+            # Redact the full text, then truncate: see bounded_detail. Pinned by
+            # test_a_credential_straddling_a_pre_redaction_cut_is_still_masked.
+            job.finish(
+                job.id,
+                browser_install_job.STATUS_FAILED,
+                browser_install_job.ERROR_EXCEPTION,
+                browser_install_job.bounded_detail(str(exc)),
+            )
+            return
+        status, code, detail = browser_install_job.outcome_of(result, default_step)
+        if scope.terminated and status != browser_install_job.STATUS_INTERRUPTED:
+            status = browser_install_job.STATUS_INTERRUPTED
+            code = browser_install_job.ERROR_INTERRUPTED
+        job.finish(job.id, status, code, detail)
+
+    state._browser_install_task = asyncio.create_task(_run())
+
+
+async def _terminate_install_scope(scope: Any) -> None:
+    """Kill an install scope's children off the event loop.
+
+    ``InstallScope.terminate`` runs ``taskkill`` on Windows, a blocking call with
+    its own timeout, so it goes to a worker thread. At interpreter teardown the
+    default executor may already refuse work; the call then runs inline, since
+    nothing else is left on the loop to stall.
+    """
+    try:
+        await asyncio.to_thread(scope.terminate)
+    except RuntimeError:
+        scope.terminate()
+
+
+async def stop_browser_install(state: DashboardState) -> None:
+    """Terminate the running install's subprocesses and wait for its task.
+
+    For the gateway's shutdown path. Idempotent and never raises. The job is
+    left ``interrupted``; nothing is persisted or resumed, so the next gateway
+    starts with no job and the operator retries explicitly.
+    """
+    scope = getattr(state, "_browser_install_scope", None)
+    if isinstance(scope, browser_cli_install.InstallScope):
+        await _terminate_install_scope(scope)
+    task = getattr(state, "_browser_install_task", None)
+    if isinstance(task, asyncio.Task) and not task.done():
+        task.cancel()
+        # ``wait`` reports the child's outcome instead of raising it here, so the
+        # CancelledError the child raises because it was just cancelled never
+        # reaches this frame, while a cancellation of THIS task (the gateway's
+        # shutdown deadline expiring around ``_shutdown()``) still propagates out
+        # of the await. A plain ``await task`` inside ``except CancelledError``
+        # could not tell the two apart and swallowed both.
+        await asyncio.wait({task})
+        if not task.cancelled():
+            # Consume a failure so the loop does not log "exception was never
+            # retrieved" at teardown; the job record already carries it.
+            task.exception()
+
+
 async def api_browser_install_get(request: web.Request) -> web.Response:
     """GET /api/browser/install -- whether browsing is available, and why not.
 
-    Reports `installing` separately from the detection fields so the card can show
-    progress for an install already in flight, including one started by a different
-    dashboard tab: the job lives on the gateway, not in a page.
+    Reports the install job separately from the detection fields so the card can
+    show progress for an install already in flight, including one started by a
+    different dashboard tab: the job lives on the gateway, not in a page. A read
+    never spawns an installer, launches a browser, or attaches to one.
     """
     state: DashboardState = request.app["state"]
     payload = dict(await asyncio.to_thread(browser_cli_install.detect))
-    task = getattr(state, "_browser_install_task", None)
-    payload["installing"] = bool(task and not task.done())
+    payload.update(_browser_install_status(state))
     payload["token"] = browser_cli_token.has_token()
-    payload["last_error"] = getattr(state, "_browser_install_error", None)
     return web.json_response(payload)
 
 
@@ -4407,71 +4556,27 @@ async def api_browser_install_start(request: web.Request) -> web.Response:
     browser, which takes long enough that holding the request open would read as a
     hung dashboard, so progress is observed by re-reading rather than awaited here.
 
-    Concurrent clicks are folded into the one running job: npm and the browser
-    installer are not safe to run twice over the same target at once.
+    A click while CLI setup already runs is folded into that job: it is the same
+    work, and npm is not safe to run twice over the same target at once. A click
+    while an ENGINE download runs is refused with 409 naming that job, because
+    folding it would answer "CLI setup accepted" for work that is not happening.
     """
     denied = _deny_non_owner_browser_request(request, "browser_cli_install")
     if denied is not None:
         return denied
     state: DashboardState = request.app["state"]
-    task = getattr(state, "_browser_install_task", None)
-    if not (task and not task.done()):
-
-        async def _run() -> None:
-            state._browser_install_error = None
-            try:
-                result = await asyncio.to_thread(browser_cli_install.install)
-                # The LAST step, not the first failed one. Two reasons, both of
-                # them cases this string is the only cure for:
-                #   * A step can fail and be RECOVERED -- a refused
-                #     ``--with-deps`` is retried without the flag
-                #     (browser_cli.os_deps) and its failed attempt stays in
-                #     ``steps`` so the operator can see what was tried. Reporting
-                #     "any failed step" would raise a permanent banner quoting a
-                #     sudo refusal on a host where browsing works.
-                #   * When the install really did fail, the FIRST failed step may
-                #     be that same recovered one, which would mask the step that
-                #     actually decided the outcome and drop the remedy it carries.
-                # ``install`` returns ``ok`` from its last step and every earlier
-                # gate returns on a real failure, so the last step is always the
-                # decisive one.
-                steps = result.get("steps") or []
-                failed = [] if result.get("ok") or not steps else steps[-1:]
-                if failed:
-                    first = failed[0]
-                    # `stderr`, not `error`: install steps only ever carry
-                    # `stderr` (see browser_cli.install._step), so reading
-                    # `error` discarded the npm / download output and left the
-                    # operator with a bare "failed" -- which cannot tell a
-                    # registry auth error apart from a blocked download, the two
-                    # cases the panel renders this string to explain.
-                    # Redacted before it reaches the panel. Step stderr is already
-                    # scrubbed at the source (browser_cli.install._step runs the
-                    # npm-aware redactor on it), but the `error` fallback and the
-                    # exception arm below are composed HERE and never pass through
-                    # _step. This call re-runs the same npm-aware redactor
-                    # (redact_install_output: the shared two-pass PLUS the npm
-                    # shapes such as a bare `_authToken=`) so all three carriers
-                    # get identical coverage -- the module-local _redact runs only
-                    # the shared pair and would let an npm registry line through.
-                    detail = first.get("stderr") or first.get("error") or "failed"
-                    state._browser_install_error = browser_cli_install.redact_install_output(
-                        f"{first.get('name', 'install')}: {str(detail).strip()}"
-                    )[:2000]
-            except Exception as exc:  # noqa: BLE001 - surfaced to the operator
-                # Redact the FULL text, then truncate: any pre-redaction cut can
-                # split a credential so its `@` anchor is gone, no pattern
-                # matches, and npm-line compression pulls the surviving fragment
-                # into the 2000-char display window. Pinned by
-                # test_a_credential_straddling_a_pre_redaction_cut_is_still_masked.
-                # Unbounded input cannot reach this arm in practice: install._run
-                # reports subprocess failures as return codes rather than raising
-                # with output, and every raise site carries a short message.
-                state._browser_install_error = browser_cli_install.redact_install_output(str(exc))[
-                    :2000
-                ]
-
-        state._browser_install_task = asyncio.create_task(_run())
+    if _browser_install_active(state):
+        job = _browser_install_job(state)
+        if job is not None and job.running and job.kind != browser_install_job.KIND_CLI_SETUP:
+            return _browser_install_conflict(state)
+    else:
+        _start_browser_install_job(
+            state,
+            browser_install_job.KIND_CLI_SETUP,
+            None,
+            lambda on_stage: browser_cli_install.install(on_stage=on_stage),
+            "install",
+        )
     return await api_browser_install_get(request)
 
 
@@ -4480,10 +4585,9 @@ async def api_browser_engine_install(request: web.Request) -> web.Response:
 
     Body: ``{"engine": "chromium" | "firefox" | "webkit"}``.
 
-    Shares the ONE ``_browser_install_task`` slot with the CLI install rather than
-    taking its own: both drive the same browser installer, which is not safe to run
-    twice over the same cache at once, and sharing the slot means the panel's single
-    "installing" flag stays true for whichever download is in flight.
+    Shares the ONE install slot with the CLI install rather than taking its own:
+    both drive the same browser installer, which is not safe to run twice over the
+    same cache at once.
     """
     denied = _deny_non_owner_browser_request(request, "browser_engine_install")
     if denied is not None:
@@ -4506,41 +4610,18 @@ async def api_browser_engine_install(request: web.Request) -> web.Response:
     # gets a 400 instead of an error they have to go re-read the status to find.
     if engine not in browser_cli_install.BROWSER_ENGINES:
         return web.json_response({"error": "unknown engine", "code": "unknown_engine"}, status=400)
-    task = getattr(state, "_browser_install_task", None)
-    if task and not task.done():
-        # 409, NOT a folded success. Folding is right for the CLI install, which
-        # has one target: a second click means the same work. Engines are three
-        # DISTINCT targets sharing one slot, so answering 200 while a different
-        # engine installs makes the panel show WebKit downloading when Firefox
-        # actually is. Refuse and say why.
-        return web.json_response(
-            {"error": "an install is already running", "code": "install_already_running"},
-            status=409,
-        )
-
-    async def _run() -> None:
-        state._browser_install_error = None
-        try:
-            result = await asyncio.to_thread(browser_cli_install.install_browser, engine)
-            # The decisive step, not the first failed one: see the CLI install
-            # path above for why a recovered attempt must neither raise a banner
-            # nor mask the step that actually decided the outcome.
-            steps = result.get("steps") or []
-            failed = [] if result.get("ok") or not steps else steps[-1:]
-            if failed:
-                first = failed[0]
-                # npm-aware redactor, same reasoning as the CLI install above.
-                state._browser_install_error = browser_cli_install.redact_install_output(
-                    f"{first.get('name', 'install-browser')}: "
-                    f"{first.get('stderr') or first.get('error') or 'failed'}"
-                )[:2000]
-        except Exception as exc:  # noqa: BLE001 - surfaced to the operator
-            # Redact the full text, then truncate; see the CLI install above.
-            state._browser_install_error = browser_cli_install.redact_install_output(str(exc))[
-                :2000
-            ]
-
-    state._browser_install_task = asyncio.create_task(_run())
+    if _browser_install_active(state):
+        # 409, NOT a folded success. Engines are three DISTINCT targets sharing
+        # one slot, so answering 200 while a different engine installs makes the
+        # panel show WebKit downloading when Firefox actually is.
+        return _browser_install_conflict(state)
+    _start_browser_install_job(
+        state,
+        browser_install_job.KIND_ENGINE_DOWNLOAD,
+        engine,
+        lambda on_stage: browser_cli_install.install_browser(engine, on_stage=on_stage),
+        "install-browser",
+    )
     return await api_browser_install_get(request)
 
 

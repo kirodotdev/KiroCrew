@@ -114,6 +114,39 @@ class TestWithDepsIsOfferedOnlyWherePlaywrightHonoursIt:
         assert mod.with_deps_supported() is False
 
 
+class TestTheRemedyIsEngineAware:
+    def test_apt_family_names_the_engine_it_was_asked_for(self, monkeypatch):
+        _os_release(monkeypatch, {"ID": "ubuntu"})
+        _managers(monkeypatch, {"sudo"})
+        assert mod.manual_deps_command("firefox") == "sudo npx playwright install-deps firefox"
+        hint = mod.missing_deps_hint("webkit")
+        assert "WebKit" in hint
+        assert "install-deps webkit" in hint
+
+    def test_rpm_family_offers_its_package_list_for_chromium_only(self, monkeypatch):
+        _os_release(monkeypatch, {"ID": "fedora"})
+        _managers(monkeypatch, {"dnf", "sudo"})
+        assert mod.manual_deps_command("chromium") is not None
+        for engine, title in (("firefox", "Firefox"), ("webkit", "WebKit")):
+            assert mod.manual_deps_command(engine) is None
+            hint = mod.missing_deps_hint(engine)
+            assert title in hint
+            assert "no verified package list" in hint
+            # Chromium's package set must not be offered as the fix.
+            assert "mesa-libgbm" not in hint
+            assert "dnf install" not in hint
+
+    def test_the_chromium_hint_names_chromium(self, monkeypatch):
+        _os_release(monkeypatch, {"ID": "fedora"})
+        _managers(monkeypatch, {"dnf", "sudo"})
+        assert mod.missing_deps_hint("chromium").startswith("The Chromium browser")
+
+    def test_unknown_linux_stays_silent_for_every_engine(self, monkeypatch):
+        _os_release(monkeypatch, {"ID": "alpine"})
+        for engine in ("chromium", "firefox", "webkit"):
+            assert mod.missing_deps_hint(engine) == ""
+
+
 class TestTheManualRemedy:
     def test_a_dnf_host_is_told_dnf_with_rpm_package_names(self, monkeypatch):
         _os_release(monkeypatch, {"ID": "fedora"})
@@ -263,6 +296,7 @@ class TestTheManualRemedy:
         mod.with_deps_supported()
         mod.manual_deps_command()
         mod.missing_deps_hint()
+        mod.missing_deps_hint("firefox")
 
 
 class TestTheHostValidationWarningIsAFailure:

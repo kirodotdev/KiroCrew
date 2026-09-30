@@ -1,4 +1,4 @@
-"""Which Linux hosts ``install-browser --with-deps`` can actually serve.
+"""Which Linux hosts ``install-browser --with-deps`` can serve, and the remedy for the rest.
 
 Playwright's OS-dependency installer is **apt-only**. On a distribution it does
 not recognize it does not decline -- it picks its nearest Ubuntu package set and
@@ -9,10 +9,12 @@ managed workstation usually does not have. The observed shape on Amazon Linux
 never typed, and because the flag and the browser download are one CLI
 invocation, that refusal takes the download down with it.
 
-So the flag is offered only where it means something, and everywhere else the
-operator is handed the one command that does work on their distribution. The
-package list is the remedy for a failure they must fix with root; nothing here
-elevates, and nothing here runs a package manager.
+So the flag is offered only where it means something (:func:`with_deps_supported`),
+and everywhere else the operator is handed the one command that does work on
+their distribution. The package list is the remedy for a failure they must fix
+with root; nothing here elevates, and nothing here runs a package manager. Every
+remedy names the engine it was composed for, because a Chromium package list
+does not make Firefox or WebKit launch.
 
 The read blocks (the os-release file), so a caller on the event loop offloads
 them -- the same contract as the rest of this package.
@@ -123,9 +125,11 @@ _RPM_CHROMIUM_PACKAGES: tuple[str, ...] = (
 
 #: Remedy for the apt family. Deliberately not a package list: Playwright installs
 #: its own, correct, per-version set there, and a copy here would go stale against
-#: the CLI the user actually has. Privilege elevation is composed separately by
-#: :func:`_sudo_prefix` so minimal root containers do not need a ``sudo`` binary.
-_APT_DEPS_COMMAND = "npx playwright install-deps chromium"
+#: the CLI the user actually has. ``install-deps`` takes the engine name, so the
+#: command is completed per engine and never claims Chromium's set fixes Firefox
+#: or WebKit. Privilege elevation is composed separately by :func:`_sudo_prefix`
+#: so minimal root containers do not need a ``sudo`` binary.
+_APT_DEPS_COMMAND = "npx playwright install-deps {engine}"
 
 #: Remedy prefix for the rpm family, completed with :data:`_RPM_CHROMIUM_PACKAGES`.
 #: ``{manager}`` is filled with whichever supported manager this host actually
@@ -138,9 +142,26 @@ _RPM_DEPS_COMMAND_PREFIX = "{manager} install -y "
 #: What a blocked operator is told. One sentence of cause, then the command, so the
 #: actionable part is last and survives being appended after a truncated stderr.
 _MISSING_DEPS_HINT = (
-    "The browser needs OS libraries that only root can install. "
-    "Run this yourself, then retry the install:\n{command}"
+    "The {title} browser needs OS libraries that only root can install. "
+    "Run this yourself, then retry the download:\n{command}"
 )
+
+#: What an rpm-family operator is told for an engine this module has no verified
+#: package list for. It names the engine and points at the library names
+#: Playwright printed above it, rather than offering Chromium's list as a fix.
+_UNLISTED_ENGINE_HINT = (
+    "The {title} browser needs OS libraries that only root can install. Kiro Crew "
+    "has no verified package list for {title} on this distribution: install the "
+    "libraries Playwright names above with your package manager, then retry the "
+    "download."
+)
+
+#: Engines whose rpm package set is :data:`_RPM_CHROMIUM_PACKAGES`.
+_RPM_LISTED_ENGINES = frozenset({"chromium"})
+
+#: Display names for the hint text. The engine argument is already allowlisted
+#: by the caller; an unlisted value falls back to itself.
+_ENGINE_TITLES = {"chromium": "Chromium", "firefox": "Firefox", "webkit": "WebKit"}
 
 
 def _sudo_prefix() -> str:
@@ -241,22 +262,25 @@ def _rpm_package_manager() -> str | None:
     return None
 
 
-def manual_deps_command() -> str | None:
-    """The command the operator can run with root to install the OS libraries.
+def manual_deps_command(engine: str = "chromium") -> str | None:
+    """The command the operator can run with root to install *engine*'s OS libraries.
 
     ``None`` off Linux, where the browser download alone is sufficient and there
     is nothing to install. On an unknown Linux the return is also ``None``: a
     guessed package manager is worse than silence, because a command that fails
     on its own first argument reads as the product being broken rather than as
     the host being unrecognized. The same rule governs the rpm family's SUSE
-    side (whose packages this module's list cannot name) and any rpm host with
-    no supported manager on ``PATH``: no correct command can be composed, so
-    none is -- see :func:`_rpm_package_manager`.
+    side (whose packages this module's list cannot name), any rpm host with no
+    supported manager on ``PATH``, and every engine other than Chromium on the
+    rpm family (:data:`_RPM_LISTED_ENGINES`): no verified command can be
+    composed, so none is -- see :func:`_rpm_package_manager`.
     """
     family = linux_family()
     if family == FAMILY_DEBIAN:
-        return _sudo_prefix() + _APT_DEPS_COMMAND
+        return _sudo_prefix() + _APT_DEPS_COMMAND.format(engine=engine)
     if family == FAMILY_RPM:
+        if engine not in _RPM_LISTED_ENGINES:
+            return None
         manager = _rpm_package_manager()
         if manager is None:
             return None
@@ -268,18 +292,25 @@ def manual_deps_command() -> str | None:
     return None
 
 
-def missing_deps_hint() -> str:
-    """One line for a failed browser step, or ``""`` when there is nothing to add.
+def missing_deps_hint(engine: str = "chromium") -> str:
+    """One line for a failed *engine* download, or ``""`` when there is nothing to add.
 
     Appended to a step's failure detail rather than raised as its own state: the
     settings panel already shows that detail verbatim, so this turns an opaque
-    package-manager refusal into the command that resolves it without adding a
+    host-validation failure into the command that resolves it without adding a
     surface to the UI or a string to the translation catalogs.
+
+    An rpm-family host downloading an engine with no verified package list gets
+    an engine-named manual instruction instead of a command
+    (:data:`_UNLISTED_ENGINE_HINT`). An unrecognized host still gets nothing.
     """
-    command = manual_deps_command()
-    if command is None:
-        return ""
-    return _MISSING_DEPS_HINT.format(command=command)
+    title = _ENGINE_TITLES.get(engine, engine)
+    command = manual_deps_command(engine)
+    if command is not None:
+        return _MISSING_DEPS_HINT.format(title=title, command=command)
+    if linux_family() == FAMILY_RPM and engine not in _RPM_LISTED_ENGINES:
+        return _UNLISTED_ENGINE_HINT.format(title=title)
+    return ""
 
 
 #: How Playwright announces that the browser it just downloaded cannot run.

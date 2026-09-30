@@ -381,6 +381,7 @@ from kiro_crew.dashboard.handlers.messaging import (  # noqa: E402, F401
     api_webex_config_save,
     api_wecom_config_get,
     api_wecom_config_save,
+    stop_browser_install,
 )
 
 # ── Rendered slides for the file panel (handlers/office_slides.py) ──

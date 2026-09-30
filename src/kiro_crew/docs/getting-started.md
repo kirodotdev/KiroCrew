@@ -93,15 +93,17 @@ To browse, install the Playwright agent CLI (needs Node.js 20 or newer):
 
 ```bash
 npm install -g @playwright/cli@latest
-playwright-cli install-browser              # --with-deps on Debian/Ubuntu only
+playwright-cli install-browser chromium
 playwright-cli install --skills agents --global
 ```
 
-`--with-deps` installs OS libraries through `apt` and needs root. Playwright
-implements it for apt alone, so on Fedora, RHEL, CentOS or Amazon Linux it
-misfires against Ubuntu package names; install the libraries with your own
-package manager instead. The Settings → Browser install button handles this
-per-distribution and prints the command to run when it needs root.
+`install-browser` downloads a separate Chromium build into your user cache and
+needs no root. It does not install Google Chrome, and it does not install OS
+libraries. If the download reports missing libraries, install them with your own
+package manager; on Debian or Ubuntu `sudo npx playwright install-deps chromium`
+does it. The Settings → Browser page runs the same download on the machine the
+gateway runs on and prints the library command for that machine when one is
+needed.
 
 Having `playwright-cli` on your `PATH` is what makes browsing available, so
 uninstalling it is how you take the capability away. Note that it covers

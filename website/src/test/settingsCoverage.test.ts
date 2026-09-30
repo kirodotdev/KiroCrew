@@ -60,6 +60,7 @@ function readPanel(file: string): string {
  * an unlisted file fails, so the choice is always conscious.
  */
 const UNMAPPED_PANELS: Record<string, string> = {
+  'BrowserInstallStatus.tsx': 'read-only install progress region BrowserPanel mounts above its sections, zero controls',
   'ChannelDisabledPanel.tsx': 'informational placeholder (locked/loading/error states), zero controls',
   'ChannelFolderBackfill.tsx': 'one action button shared by the channel panels; files existing conversations into the folder the OWNING panel configures, and holds no setting of its own',
   'ChannelsPanel.tsx': 'list-detail shell routing to per-channel panels; carries no controls of its own',
@@ -158,13 +159,13 @@ const WAIVED_BARE_CONTROLS: Record<string, { counts: BareCounts; reason: string 
       'gateway auto-update Toggle has a ternary label (manual: about.update-notifications); ' +
       'the two channel SegmentedControls share manual: about.update-channel',
   },
-  'BrowserPanel.tsx': {
-    counts: { Input: 1 },
-    reason: 'attach-token credential field with Save/Clear semantics (manual: browser.attach-token)',
-  },
   'ChatPanel.tsx': {
     counts: { Input: 2 },
     reason: "LinkPatternsEditor's per-row pattern/url fields — part of a composite the extractor indexes whole (chat.text-link-patterns)",
+  },
+  'ConnectBrowserSection.tsx': {
+    counts: { Input: 1 },
+    reason: 'attach-token credential field with Save/Clear semantics (manual: browser.attach-token)',
   },
   'DecisionsCard.tsx': {
     counts: { input: 1 },
