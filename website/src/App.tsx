@@ -1576,10 +1576,18 @@ function NotificationsBellButton() {
                 the blur to nothing there, so there is no hard boundary.
                 -z-10 + isolate on the sheet keeps it behind the cards without
                 forming a backdrop root (isolation is not a root trigger, so
-                the cards' own backdrop-blur still samples the page). */}
+                the cards' own backdrop-blur still samples the page).
+                Strength: 2% black, 2px blur. The 12% / 4px it wore before the
+                rows became liquid glass (#3029, for text contrast on flat
+                cards) now stacks under every row's own glass tint and
+                `glass-shadow`, and read as a heavy shadow down the sheet's
+                left edge (measured 248 -> 217 on a white page, 12% darker).
+                At 2% the strip still separates the column from the page
+                (248 -> 243) without reading as a shadow; the rows carry the
+                contrast themselves now. */}
             <div
               aria-hidden="true"
-              className="absolute inset-y-0 -left-20 right-0 -z-10 pointer-events-none bg-black/[.12] backdrop-blur-xs [mask-image:linear-gradient(to_right,transparent,black_80px)] [-webkit-mask-image:linear-gradient(to_right,transparent,black_80px)]"
+              className="absolute inset-y-0 -left-20 right-0 -z-10 pointer-events-none bg-black/[.02] backdrop-blur-[2px] [mask-image:linear-gradient(to_right,transparent,black_80px)] [-webkit-mask-image:linear-gradient(to_right,transparent,black_80px)]"
             />
             <div className="flex-1 min-h-0 px-3 py-2 flex flex-col">
               <NotificationFeed
