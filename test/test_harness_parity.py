@@ -1007,6 +1007,12 @@ _DECLARED_IDENTITY_TESTS: dict[tuple[str, str], str] = {
     "Another host reaching it would have its resolved id rewritten from a list it did "
     "not author.",
     (
+        "src/kiro_crew/acp/runtime.py",
+        "_served_default_after_mode",
+    ): "kiro-cli alone applies an agent spec's model at ``session/set_mode``, and the "
+    "check it feeds is kiro-only (``ensure_served_default``). The positive test keeps "
+    "every other harness from paying a spec read on its session-start path (H13).",
+    (
         "src/kiro_crew/acp/session_handle.py",
         "_handle_update",
     ): "KAS emits its own notification discriminants. The positive gate restores those "

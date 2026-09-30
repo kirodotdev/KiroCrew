@@ -6553,6 +6553,9 @@ class TestAcpRuntimeLoadSession:
             return {}
 
         monkeypatch.setattr(rt, "_send_and_await", _fake_send)
+        # The spec pins no model, so only the resume response is judged here; the
+        # re-check after set_mode is TestServedDefaultAfterSetMode's.
+        monkeypatch.setattr(runtime_mod, "load_agent_spec", lambda *_a: {})
         # set_model goes through the routed (fire-and-forget) send.
         routed = AsyncMock(return_value=1)
         monkeypatch.setattr(rt, "send_request", routed)
@@ -9316,6 +9319,134 @@ def test_drop_counter_placeholder_appears_in_flushed_summary(caplog):
     records = _drop_records(caplog)
     assert len(records) == 1, records
     assert "Dropped 1 unroutable frame(s) for session '?' (method='?')" in records[0]
+
+
+class TestServedDefaultAfterSetMode:
+    """The served-default check must also judge the model ``set_mode`` applies.
+
+    Both session-start paths run ``ensure_served_default`` right after storing the
+    session/new or session/load response, which is before the mode is activated.
+    kiro-cli's ``set_mode`` loads the agent spec from disk and puts the session on
+    the model the spec pins, undoing that earlier switch. With ``agent.model`` set
+    to a model the account cannot run (it is copied into ``kirocrew.json``), the
+    first prompt failed with "no access to model" and a cron run died with no
+    retry. The check must run again against the spec's model after the switch.
+    """
+
+    UNSERVED = "claude-fable-5"
+    ADVERTISED = [{"modelId": "auto"}, {"modelId": "gpt-5.6-sol"}, {"modelId": "glm-5"}]
+
+    def _rig(self, monkeypatch, *, current, spec):
+        from kiro_crew.acp.types import ACP_BACKEND_KIRO
+
+        rt, _, _ = _make_runtime()
+        rt._can_load_session = True
+        rt._acp_backend = ACP_BACKEND_KIRO
+
+        async def _fake_send(method, params, timeout=None):
+            if method in (METHOD_SESSION_NEW, METHOD_SESSION_LOAD):
+                return {
+                    "sessionId": "sid-new",
+                    "modes": {"currentModeId": "kirocrew"},
+                    "models": {"currentModelId": current, "availableModels": self.ADVERTISED},
+                }
+            return {}
+
+        monkeypatch.setattr(rt, "_send_and_await", _fake_send)
+        routed = AsyncMock(return_value=1)
+        monkeypatch.setattr(rt, "send_request", routed)
+
+        def _spec(_agents_dir, agent_id):
+            assert agent_id == "kirocrew"
+            if isinstance(spec, BaseException):
+                raise spec
+            return spec
+
+        monkeypatch.setattr(runtime_mod, "load_agent_spec", _spec)
+        return rt, routed
+
+    @staticmethod
+    def _set_models(routed) -> list[str]:
+        from kiro_crew.acp.types import METHOD_SET_MODEL
+
+        return [
+            c.args[1]["modelId"] for c in routed.await_args_list if c.args[0] == METHOD_SET_MODEL
+        ]
+
+    async def _start(self, rt, path):
+        if path == "create":
+            return await rt.create_session(cwd="/work", agent="kirocrew")
+        return await rt.load_session("/f.json", "sid-new", cwd="/work", agent="kirocrew")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("path", ["create", "load"])
+    async def test_an_unserved_spec_model_is_switched_off_after_set_mode(self, monkeypatch, path):
+        rt, routed = self._rig(monkeypatch, current=self.UNSERVED, spec={"model": self.UNSERVED})
+
+        handle = await self._start(rt, path)
+
+        # Once for the session/new default, once more after set_mode re-applied it.
+        assert self._set_models(routed) == ["auto", "auto"]
+        assert handle.served_model == "auto"
+        # The intent is untouched: the session still INHERITS.
+        assert handle.model == ""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("path", ["create", "load"])
+    async def test_a_served_spec_model_is_adopted_without_a_switch(self, monkeypatch, path):
+        rt, routed = self._rig(monkeypatch, current="gpt-5.6-sol", spec={"model": "glm-5"})
+
+        handle = await self._start(rt, path)
+
+        assert self._set_models(routed) == []
+        assert handle.served_model == "glm-5"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "spec", [OSError("unreadable"), {}, {"model": "  "}], ids=["unreadable", "none", "blank"]
+    )
+    async def test_no_spec_model_is_no_evidence(self, monkeypatch, spec):
+        rt, routed = self._rig(monkeypatch, current="gpt-5.6-sol", spec=spec)
+
+        handle = await self._start(rt, "create")
+
+        assert self._set_models(routed) == []
+        assert handle.served_model == "gpt-5.6-sol"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("path", ["create", "load"])
+    async def test_a_checkout_spec_is_judged_before_the_user_level_one(
+        self, monkeypatch, tmp_path, path
+    ):
+        # kiro-cli resolves --agent from <cwd>/.kiro/agents before ~/.kiro/agents,
+        # so a checkout spec pinning an unserved model is the one set_mode applied
+        # even while the user-level spec pins a served model.
+        project_agents = tmp_path / ".kiro" / "agents"
+        project_agents.mkdir(parents=True)
+        (project_agents / "kirocrew.json").write_text(
+            json.dumps({"name": "kirocrew", "model": self.UNSERVED})
+        )
+        rt, routed = self._rig(monkeypatch, current="gpt-5.6-sol", spec={"model": "glm-5"})
+        from kiro_crew.acp import kas_agents
+
+        user_level = runtime_mod.load_agent_spec
+
+        def _by_dir(agents_dir, agent_id):
+            if Path(agents_dir) == project_agents:
+                return kas_agents.load_agent_spec(agents_dir, agent_id)
+            return user_level(agents_dir, agent_id)
+
+        monkeypatch.setattr(runtime_mod, "load_agent_spec", _by_dir)
+
+        if path == "create":
+            handle = await rt.create_session(cwd=str(tmp_path), agent="kirocrew")
+        else:
+            handle = await rt.load_session(
+                "/f.json", "sid-new", cwd=str(tmp_path), agent="kirocrew"
+            )
+
+        assert self._set_models(routed) == ["auto"]
+        assert handle.served_model == "auto"
 
 
 class TestToolPurposeExtraction:

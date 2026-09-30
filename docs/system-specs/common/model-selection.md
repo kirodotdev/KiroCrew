@@ -54,6 +54,18 @@ alone so the warm-pool re-apply and the slot backfill still read "inherit". The
 dashboard carries the corrected id as the slot's `served_model` so the composer
 chip names the model a turn will run on instead of `auto`.
 
+A pooled session is checked a second time when `session/set_mode` activates an
+agent. kiro-cli loads that agent's spec at `set_mode` and switches the session to
+the model the spec pins, which undoes the first check; `agent.model` is copied into
+`kirocrew.json`, so an unentitled global default reaches the wire this way.
+`AcpRuntime._served_default_after_mode` reads the activated spec's `model` and passes
+it to `ensure_served_default(activated_model=...)`, which judges that id instead of
+the stale `session/new` one. The activated spec is resolved the way kiro-cli resolves
+`--agent`: the session checkout's `<work_dir>/.kiro/agents` spec when one dispatchably
+declares the agent (`_project_shadow_of`), else the user-level spec. A spec that pins
+no model, or cannot be read, is no evidence and changes nothing. Both `create_session`
+and `load_session` run it.
+
 ## A pin belongs to the harness it was chosen in
 
 A stored pin records WHAT was picked and never WHERE. Switching `agent.acp_backend`
