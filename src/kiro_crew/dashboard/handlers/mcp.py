@@ -3810,7 +3810,7 @@ def _collect_server_rows() -> dict[str, dict[str, Any]]:
                     # measurement belongs to one execution identity, and the probe
                     # only ever runs the definition that won the merge, so a second
                     # distinct launch here means the row covers something nobody
-                    # measured. Hashing is pure -- no file is opened.
+                    # measured. Hashing opens no file the launch names.
                     "launch_ids": set(),
                 }
                 rows[name] = row

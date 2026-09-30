@@ -51,6 +51,7 @@ from kiro_crew.mcp_gateway.hashing import (
     expand_stub_flags,
     hash_command,
     hash_effective_env,
+    runs_install_code,
 )
 from kiro_crew.mcp_gateway.pool import (
     _DEFAULT_READ_BUFFER_LIMIT,
@@ -545,7 +546,16 @@ def pool_binary_version(command: str, target_args: list[str]) -> str:
     Crew code fingerprint when the target is one of Kiro Crew's own servers.
     """
     base = _binary_version(command)
-    if not any(a in _KIROCREW_MCP_SUBCOMMANDS for a in target_args):
+    # Two ways a target runs Kiro Crew's own code: one of the reserved
+    # subcommands, or the gateway interpreter pinned by ``apps/bridges.py``
+    # with ``-m kiro_crew...`` / the deps_boot shim in argv
+    # (``hashing.runs_install_code``). The second needs the fold here too: with
+    # the versioned directory gone from ``command_args_hash``, this token is
+    # the only identity dimension left that can see the code change. A
+    # third-party server that merely runs ON that interpreter is excluded, so
+    # its pool is not re-partitioned on every Kiro Crew commit.
+    own_code = any(a in _KIROCREW_MCP_SUBCOMMANDS for a in target_args)
+    if not own_code and not runs_install_code(command, target_args):
         return base
     # Imported here, not at module top: the stub's cold-start path is timed
     # and this module is only needed on the Kiro Crew branch.

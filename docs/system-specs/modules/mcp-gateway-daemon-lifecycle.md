@@ -38,7 +38,7 @@ The fail-open branch is unchanged in kind and louder in degree: a stale daemon t
 
 ## The pool key
 
-`stub.pool_binary_version` folds `code_fingerprint()` into the registered `binary_version` when the target args name one of Kiro Crew's own servers (`_KIROCREW_MCP_SUBCOMMANDS`: `mcp-core`, `mcp-cron`, `mcp-work`, `mcp-computer`, `mcp-dashboard`) and leaves third-party servers on the binary hash alone. So even a daemon that survives — an operator-run one with no owner, or one whose stand-down was refused — hands a stub from new code a NEW pool partition rather than the old checkout's backend; a `git pull` cold-starts Kiro Crew's own servers and nothing else.
+`stub.pool_binary_version` folds `code_fingerprint()` into the registered `binary_version` when the target args name one of Kiro Crew's own servers (`_KIROCREW_MCP_SUBCOMMANDS`: `mcp-core`, `mcp-cron`, `mcp-work`, `mcp-computer`, `mcp-dashboard`, `mcp-crew-log`) or when the launch runs this install's own code (`hashing.runs_install_code` -- the gateway interpreter `apps/bridges.py` pins, whose `command_args_hash` is an alias and so cannot see a release on its own, with `-m kiro_crew...` or the `deps_boot` shim in argv), and leaves third-party servers -- including one that merely runs on that interpreter -- on the binary hash alone. So even a daemon that survives — an operator-run one with no owner, or one whose stand-down was refused — hands a stub from new code a NEW pool partition rather than the old checkout's backend; a `git pull` cold-starts Kiro Crew's own servers and nothing else.
 
 ## Diagnosis
 
