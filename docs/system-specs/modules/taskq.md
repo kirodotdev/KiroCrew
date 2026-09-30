@@ -1246,7 +1246,7 @@ gateway makes before the store finished opening adopts nothing and the
 store-ready pass adopts exactly once -- two concurrent sweeps over one set of
 rows would let each settle a row the other is resuming.
 
-Gateway wiring is TWO passes over ONE admission (`slack/gateway.py`).
+Gateway wiring is TWO passes over ONE admission (`slack/gateway_runtime/admission.py`).
 `_wire_runner_admission` runs while the dashboard socket is being bound, so both
 consumers hold the admission -- and therefore the typed
 `task_store_unavailable` refusal -- from the moment they can serve; it also

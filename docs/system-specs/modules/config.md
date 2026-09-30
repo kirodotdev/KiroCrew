@@ -1829,7 +1829,7 @@ caller, and replays only when it was built with `config=` (a raised
 store keeps its constructor defaults at construction. The other `watch_object`
 owners that copy caller-loaded config before registering (`cron_history.py`,
 `subagent.py`, `history_consolidation.py`, `adaptive/controller.py`,
-`slack/gateway.py`) keep the registration gap; they are out of scope for #10889.
+`slack/gateway_runtime/admission.py`) keep the registration gap; they are out of scope for #10889.
 
 ### The point-of-use read
 

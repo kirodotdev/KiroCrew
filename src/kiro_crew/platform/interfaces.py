@@ -280,7 +280,7 @@ class SlackEnterpriseGate(Protocol):
     def heartbeat_safe_tools(self) -> "frozenset[str]":
         """Extra tool names an edition allows during unattended heartbeat polling.
 
-        WIRED: ``slack/gateway.py::_is_heartbeat_safe_tool`` checks this set after
+        WIRED: ``slack/gateway_runtime/tool_policy.py::_is_heartbeat_safe_tool`` checks this set after
         the core ``HEARTBEAT_SAFE_TOOLS`` exact-name match. The public default is
         ``frozenset()`` (no additions — the heartbeat allowlist is byte-identical
         to today). A companion returns its own read-only tool names so its

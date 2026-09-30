@@ -142,7 +142,7 @@ When a legitimate new read tool needs to run in heartbeat, operators observe SEL
 | `HEARTBEAT_TASK_TIMEOUT_SECS` | 1800 | `heartbeat.py` |
 | `HEARTBEAT_FILE` | `HEARTBEAT.md` | `heartbeat.py` |
 | `HEARTBEAT_KEY` | `_hb` | `session.py` |
-| `HEARTBEAT_SAFE_TOOLS` | curated frozenset | `slack/gateway.py` |
+| `HEARTBEAT_SAFE_TOOLS` | curated frozenset | `slack/gateway_runtime/tool_policy.py` |
 | `_HEARTBEAT_KEEP_INJECTION` | reminder string | `slack/gateway.py` |
 | `kirocrew-heartbeat` agent | minimal-MCP agent JSON | installed by `agent.py:_install_heartbeat_agent` |
 | `_BG_RECYCLE_PCT` | 70.0 (shared with background) | `session.py` |

@@ -2557,3 +2557,84 @@ class TestDmFireSpineIsReusable:
         assert result is monitor_models.MonitorDispatchResult.UNAVAILABLE
         transport.dispatcher.handle_message.assert_not_awaited()
         orch.autonudge_svc.remove.assert_not_called()
+
+
+class TestMcpBrokerRefreshPrefetchAndPersistArms:
+    """The broker's refresh, prefetch and approval-persist arms nothing else reaches.
+
+    Each seam is patched on the gateway module, which is also what proves the moved
+    broker code still reads those names from the facade's globals.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_refresh_before_any_broker_start_reports_no_targets(self):
+        orch = _make_orchestrator()
+        orch._mcp_target_env = {}
+        orch._prefetch_mcp_resolutions = AsyncMock()
+        fresh = KiroCrewConfig()
+        with patch.object(gw.KiroCrewConfig, "load", return_value=fresh):
+            result = await orch._refresh_mcp_resolutions()
+        assert result == {"ok": False, "reason": "no_targets", "resolved": {}}
+        assert orch._cfg is fresh
+        orch._prefetch_mcp_resolutions.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_refresh_forces_a_pass_and_names_the_ready_packages(self):
+        orch = _make_orchestrator()
+        orch._mcp_target_env = {"KIROCREW_MCP_TARGET_A": "npx a"}
+        outcomes = {"b": "failed", "a": "ready"}
+        orch._prefetch_mcp_resolutions = AsyncMock(return_value=outcomes)
+        with patch.object(gw.KiroCrewConfig, "load", return_value=KiroCrewConfig()):
+            result = await orch._refresh_mcp_resolutions()
+        assert result == {"ok": True, "resolved": outcomes, "ready": ["a"]}
+        orch._prefetch_mcp_resolutions.assert_awaited_once_with(
+            {"KIROCREW_MCP_TARGET_A": "npx a"}, force=True
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_failed_prefetch_pass_is_logged_and_reports_nothing(self, caplog):
+        orch = _make_orchestrator()
+        failing = AsyncMock(side_effect=RuntimeError("registry unreachable"))
+        with patch.object(gw, "resolve_prefetch", failing):
+            with caplog.at_level(logging.ERROR, logger="kiro_crew.slack.gateway"):
+                assert await orch._prefetch_mcp_resolutions({"K": "v"}) == {}
+        failing.assert_awaited_once()
+        assert "pre-resolve pass failed" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_a_cancelled_prefetch_pass_is_not_swallowed(self):
+        orch = _make_orchestrator()
+        with patch.object(gw, "resolve_prefetch", AsyncMock(side_effect=asyncio.CancelledError())):
+            with pytest.raises(asyncio.CancelledError):
+                await orch._prefetch_mcp_resolutions({"K": "v"})
+
+    @pytest.mark.asyncio
+    async def test_a_failed_approval_persist_is_logged_and_its_task_released(self, caplog):
+        orch = _make_orchestrator()
+        orch._background_tasks = set()
+        with patch.object(gw, "save_pass", side_effect=OSError("disk full")):
+            with caplog.at_level(logging.WARNING, logger="kiro_crew.slack.gateway"):
+                orch._schedule_mcp_launch_approval_persist(MagicMock())
+                (task,) = orch._background_tasks
+                orch._mcp_launch_approval_ready.set()
+                await asyncio.wait_for(task, timeout=5)
+                await asyncio.sleep(0)
+        assert "could not persist the approval store" in caplog.text
+        assert orch._background_tasks == set()
+
+    @pytest.mark.asyncio
+    async def test_stopping_the_broker_cancels_an_in_flight_prefetch(self):
+        orch = _make_orchestrator()
+        orch._mcp_gateway_manager = None
+        started = asyncio.Event()
+
+        async def _pending_install() -> None:
+            started.set()
+            await asyncio.Event().wait()
+
+        task = asyncio.create_task(_pending_install())
+        await started.wait()
+        orch._mcp_resolve_prefetch = task
+        await asyncio.wait_for(orch._stop_mcp_broker(), timeout=5)
+        assert task.cancelled()
+        assert orch._mcp_resolve_prefetch is None

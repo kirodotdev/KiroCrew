@@ -2980,8 +2980,11 @@ lacking them should close the finding, not file it:
 ## Cron output delivery: one run, one surface
 
 An unattended cron run has no inbound message to answer, so its output is
-delivered proactively, and `slack/gateway.py` chooses ONE surface instead of
-broadcasting to every one it can reach. The choice is that a job belongs to the
+delivered proactively, and the Slack gateway chooses ONE surface instead of
+broadcasting to every one it can reach. The cron callback, `_deliver_cron_response`,
+`_deliver_channel_reply` and the failure alerts in `slack/gateway.py` choose and
+redact each leg; the origin and channel-conversation helpers they call are
+`slack/gateway_runtime/delivery.py`. The choice is that a job belongs to the
 conversation that scheduled it: `job.session_key` records the creating session's
 key, and `_cron_origin_key(parent_key)` recovers it from the run's
 `cron:{job_id}` / `cron:{job_id}:{run_id}` key, which carries no channel namespace

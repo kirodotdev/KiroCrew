@@ -2233,7 +2233,7 @@ hand-off through the error journal (`findReport`). Wait names, lane names and th
 degrade reason resolve through full-literal
 catalog-key maps (`pages.tasksCapacityCard.state_*`, `lane_*`, `degrade_*`) so
 the i18n key-refs gate sees every label: the three `adaptive_*` tokens
-`slack/gateway.py` publishes become catalog copy, because the badge already
+`slack/gateway_runtime/admission.py` publishes become catalog copy, because the badge already
 reads "Degraded" in the reader's language and the explanation beside it cannot
 be a snake_case wire token. Any other reason — the controller's own free-text
 reading — renders verbatim with `translate="no"` because that text is machine

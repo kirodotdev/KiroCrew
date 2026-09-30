@@ -155,7 +155,8 @@ Slack Socket Mode → events.py (dispatch) → handler.py → SessionManager →
 | `slack/files.py` | Slack adapter over shared attachment ingestion — authenticated downloads, inlineable images/text/documents, and byte-identical opaque files with local path + metadata; caller-owned cleanup and SEL audit |
 | `slack/format.py` | Markdown → Slack mrkdwn conversion (headings, links, strike, tables, mermaid, ANSI strip, truncation) |
 | `slack/handler.py` | `handle_message()` — streams ACP response, `handle_interaction()` — button clicks (with None provider guard) |
-| `slack/gateway.py` | `GatewayOrchestrator` — service lifecycle, cron/heartbeat/subagent/task callbacks, shutdown, auto-update. Entry point: `run_gateway()` |
+| `slack/gateway.py` | `GatewayOrchestrator` — the composition facade: service construction and boot, the cron/heartbeat/subagent/task callbacks, approvals and the redacting delivery legs, shutdown, the update apply chain. Entry point: `run_gateway()`. See [Composition](#composition) |
+| `slack/gateway_runtime/` | Private owners the facade composes, one responsibility each (see [Composition](#composition)); nothing else imports them |
 | `slack/events.py` | Socket Mode event routing — dedup (`SeenCache`), slash commands, `member_joined_channel` tracking, message dispatch |
 | `slack/interactions.py` | Block Kit button routing — tool approval, OPTIONS choices, cron/subagent ack, allowlist approve/deny, track channel approve/deny |
 | `slack/blocks.py` | Reusable Block Kit dict builders for slash command UIs (session list, send-to-slack). Action IDs: `mc_<command>_<action>[_<id>]` |
@@ -170,6 +171,77 @@ Slack Socket Mode → events.py (dispatch) → handler.py → SessionManager →
 | `slack/transport_dispatch.py` | The new-path dispatch `events.py` routes to when `messaging.use_transport` is on: `handle_message_transport` builds a `TurnDriver` and `SlackRenderer` over the existing Slack client. It does not go through `SlackTransport.receive` or `authorize` |
 | `slack/sessions_view.py` | Slack half of the recent-sessions list shared by the slash command, the DM keyword and the App Home tab; collection lives in `messaging/sessions_view.py` |
 | `slack/thread_parent.py` | The first message of a thread a new Slack-born session was opened in: fetched once for the fenced prompt block and recorded once as a display-only `notice` transcript row (see "Thread parent for a new Slack-born session") |
+
+## Composition
+
+`slack/gateway.py` is the gateway's composition facade. `GatewayOrchestrator`,
+`run_gateway` and every name the module exported stay importable and patchable
+there; the responsibilities below live in private owners under
+`slack/gateway_runtime/`, and nothing but the facade imports an owner.
+
+| Owner | Responsibility |
+|---|---|
+| `slack/gateway_runtime/tool_policy.py` | Which tool calls an unattended turn may run: the `--approval reads` verb test (`hooks.py` imports it through the facade), `HEARTBEAT_SAFE_TOOLS` and `_is_heartbeat_safe_tool`, the heartbeat-scoped hooks, `_BACKGROUND_APPROVAL_SOURCES`, tool-title normalisation |
+| `slack/gateway_runtime/cron_dispatch.py` | What a cron run clears before and while it dispatches: the bounded fire-time gate and its retention marker, the reserved-env screen, the first-run tab, the claim-time re-vet with its handoff, the one-shot post-token resume |
+| `slack/gateway_runtime/cron_verdict.py` | What a cron run's tool-gate outcomes and result add up to: the per-run tally and its refusal summary, the banner on a partially blocked result, the dedup hash and reminder windows |
+| `slack/gateway_runtime/delivery.py` | Where an unattended result is routed: the origin key, the channel conversation behind it, the channel leg that hands a result to that conversation, the dedup anchor a confirmed delivery advances, OPTIONS bookkeeping, the bounded DM open, whether a job is silent |
+| `slack/gateway_runtime/channel_lifecycle.py` | The connect-time `channels` governance gate, the governed Slack connect, the live-config appliers and one-channel restart, boot-time re-hoisting from the watcher, readiness badges, inbound spool replay |
+| `slack/gateway_runtime/mcp_broker.py` | The MCP broker's lifecycle: launch approvals, the agent-overlay rewrite, start/stop, the npm pre-resolve prefetch, the dashboard enable/stub callbacks |
+| `slack/gateway_runtime/memory_lifecycle.py` | Memory preparation behind `MemoryStartup`, the paced member-store repair, embeddings and the model download, the legacy migration and re-embed sweep |
+| `slack/gateway_runtime/admission.py` | Opening subagent dispatch and the dashboard workers after the memory fence, child liveness, the adaptive controller and its overload-health sources, the dependency coordinator, runner task admission |
+
+**One namespace.** `gateway_runtime.compose`, called once after the class body,
+rebinds every function an owner defines -- its module functions, the orchestrator
+methods it holds (bound as the `GatewayOrchestrator` attribute of the same name)
+and the methods of the classes it defines -- onto the facade's module globals. A
+patch of `kiro_crew.slack.gateway.<name>` therefore reaches owner code exactly as
+it reached the one-module file, and `__module__` / `__qualname__` still read
+`kiro_crew.slack.gateway` / `GatewayOrchestrator.<name>`. The orchestrator is the
+only holder of state: an owner keeps none, so a `GatewayOrchestrator.__new__`
+fixture or an unbound `GatewayOrchestrator.<method>(stub, ...)` call reaches an
+owner method unchanged. An owner imports the facade only under `TYPE_CHECKING`,
+so the facade is the one import edge; `test/test_slack_gateway_composition_contract.py`
+sweeps every owner function's bytecode for globals the facade does not bind.
+
+**What stays in the facade, and why.** Repository guards read these constructs in
+`slack/gateway.py` by path, text, AST or `inspect.getsource`, so they live there:
+
+- construction and boot: `__init__`, the per-channel `_hoist_*`,
+  `_register_config_appliers`, `_start_channel_transports`, `_init_services`,
+  `run`, the signal handlers, `_shutdown`, `_shutdown_and_exit`,
+  `_write_marker_worker` (boot-order, readiness, hot-reload and exit-path audits);
+- the cron callback (`_init_cron`) with `_apply_gate_verdict`, `_init_heartbeat`
+  and the subagent completion path (`_init_subagents`): usage-row, runtime-death,
+  dispatch-site, memory-store and reap-race audits;
+- AutoNudge: `_init_autonudge`, every `_fire_*_nudge` adapter and the fire paths
+  they delegate to, and the loop-stop notices: composer, turn-ceiling, event-log
+  and wake-judge audits;
+- the approval callbacks and every delivery leg that renders or redacts before
+  egress (`_interactive_approval`, `_heartbeat_approval`, `_deliver_channel_reply`,
+  `_deliver_cron_response`, `_deliver_result` with its heartbeat Slack rendering,
+  the failure alerts): the security-posture sink row and the baseline-log census;
+- the dependency repair and the whole update path, its checks included
+  (`_check_missing_deps`, `_check_console_script`, `_warn_if_kiro_cli_outdated`,
+  `_run_update_checks`, `_check_for_updates`, `_check_for_updates_via_provider`,
+  `_auto_apply_update`, `_auto_apply_wheel_update`, `_restart_after_update` and
+  its fence): spawn-site and restart audits;
+- the ACP/provider import lines the agent-SDK boundary baseline counts,
+  `_persist_turn_row`, and the predecessor run-directory sweep helpers.
+
+The contract test lists the constructs those guards enumerate and fails when an
+owner grows one. A guard whose rule spans code by path rather than naming
+constructs covers the owners with the facade: `test_no_config_dir_in_async.py`
+scans each owner that defines a coroutine, and the `AUTOSDE.yaml` rule
+`no-new-work-on-gateway-boot-path` matches `slack/gateway_runtime/` because the
+boot path reaches `_init_mcp_gateway`, `_start_embeddings` and the runner
+admission there.
+
+`compose` is not `subagent_manager._component.bind_component_globals`, which
+rebinds the `*_impl` methods of coordinator objects a manager holds: here the
+owner functions ARE the orchestrator's methods and module functions, so there is
+no object a `__new__` fixture could miss. Nor is it the write fan-out facade of
+`apps/backend.py`, which copies a patched name into every module holding it; one
+rebound namespace leaves one binding to patch.
 
 ## APIs
 
@@ -704,6 +776,8 @@ Messages arriving while a session is busy are queued with ⏳ reaction and drain
 
 `GatewayOrchestrator` is the process's channel host, so it owns two config
 appliers, registered in `_register_config_appliers` on the shared `ConfigWatch`
+(the appliers, `restart_channel` and the boot re-hoist are
+`slack/gateway_runtime/channel_lifecycle.py`; the hoists stay in `gateway.py`)
 (`config/live.py`). The `Subscription` objects are kept on `self._config_subs`
 because the watcher holds a bound method WEAKLY — an orchestrator a test builds and
 discards must not pin itself into the registry. See
@@ -934,7 +1008,7 @@ responder, so waiting the interactive approval window on every approval would
 stall cron, heartbeat, task-runner, or AutoNudge turns.
 
 - `_BACKGROUND_APPROVAL_SOURCES = {"cron", "heartbeat", "taskrunner", "autonudge", ""}` (module
-  constant in `gateway.py`). `is_background = source in _BACKGROUND_APPROVAL_SOURCES`.
+  constant in `slack/gateway_runtime/tool_policy.py`, re-exported by `gateway.py`). `is_background = source in _BACKGROUND_APPROVAL_SOURCES`.
 - `subagent` is **NOT** background: subagent approvals route to the dashboard
   where the spawning human is present (via the parent slot), so they keep the long
   interactive window.
@@ -947,7 +1021,7 @@ stall cron, heartbeat, task-runner, or AutoNudge turns.
 
 ### Heartbeat Tool Allowlist (`HEARTBEAT_SAFE_TOOLS`)
 
-Heartbeat sessions run unattended and cannot prompt a human for tool approval. `_is_heartbeat_safe_tool(event_title)` checks whether a tool is safe to auto-approve using a strict **exact-match** against the `HEARTBEAT_SAFE_TOOLS` frozenset — no verb/heuristic fallback (deny-by-default, per security-controls).
+Heartbeat sessions run unattended and cannot prompt a human for tool approval. `_is_heartbeat_safe_tool(event_title)` (`slack/gateway_runtime/tool_policy.py`) checks whether a tool is safe to auto-approve using a strict **exact-match** against the `HEARTBEAT_SAFE_TOOLS` frozenset — no verb/heuristic fallback (deny-by-default, per security-controls).
 
 **Title normalization** (applied before the set lookup):
 
