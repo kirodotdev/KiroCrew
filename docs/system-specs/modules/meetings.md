@@ -20,7 +20,9 @@ action items.
 | `.../backend/domain/translate.py` | live per-line translation queue + its prompt |
 | `.../backend/domain/audio.py` | splitting an imported transcript into lines |
 | `.../backend/providers/tasks.py` | **task-provider seam** + the local ledger |
-| `.../backend/providers/calendar.py` | **calendar-provider seam** + the `.ics` reader |
+| `.../backend/providers/calendar.py` | **calendar-provider seam**, the `.ics` reader, the CalDAV / Google / Microsoft 365 readers, and `fetch_vetted`, the one gated outbound HTTP path they share |
+| `.../backend/credentials.py` | the calendar credential store (CalDAV login, OAuth tokens) — a top-level data-home leaf, outside the app data tree |
+| `.../backend/oauth.py` | authorization-code + PKCE flow for the Google / Microsoft readers: consent URL, code exchange, early refresh |
 | `.../backend/calendar_sync.py` | one calendar sync (provider fetch → cache), shared by the route and the poller |
 | `.../backend/calendar_poller.py` | background calendar poll: keeps the cache fresh, pre-creates the meeting about to start |
 | `.../backend/routes/` | `_common` (gate + validation + the dispatch transaction), `meeting_lifecycle`, `agents`, `audio_import`, `tasks`, `calendar`, `settings` |
@@ -48,6 +50,11 @@ POST   /dictionary/reload           re-read from disk
 GET    /calendar                    cached events + provider + configured flag
 POST   /calendar/sync[?days=N]      fetch from the provider, replace the cache
 GET    /calendar/providers          registered calendar providers
+GET    /calendar/credentials        which providers hold credentials — field NAMES + booleans only
+PUT    /calendar/credentials        {provider, values{}} — store one provider's fields (allow-listed per provider)
+POST   /calendar/credentials/forget {provider} — disconnect: forget its credentials + any pending OAuth flow
+POST   /calendar/oauth/start        {provider} — begin a flow; returns {authorize_url} for the browser to open
+GET    /calendar/oauth/callback     where the provider redirects the BROWSER back; answers a small HTML page
 
 GET    /agents                      configured meeting agents
 GET    /status                       live dispatcher status (or an all-idle shape)
@@ -116,6 +123,11 @@ meetings/<safe_id>/<agent>.html  an HTML agent's output
 meetings/<safe_id>/translations.json  live translation, reset on language change
 edits/<safe_id>/<agent>.md        the user's edit of that agent's minutes (sidecar)
 ```
+
+**Not** under the app data dir: `~/.kiro/crew/meetings-credentials/calendar-credentials.json`,
+the calendar credential store (see "Calendar credentials" below). A live CalDAV login
+or OAuth refresh token cannot sit in the tree `store.contain` opens to agent-driven paths,
+and it cannot sit under the agent-writable `workspace/` either.
 
 `edits/` is an **app-owned sidecar root outside every agent-writable meeting
 directory**, never a rewrite of the agent's file. It is registered on the shared
@@ -511,9 +523,116 @@ meeting and leaving the executor fields permanently unused.
 ### Calendar provider (`backend/providers/calendar.py`)
 
 `CalendarProvider` (`provider_id`, `display_name`, `requires_source`,
-`async fetch(days) -> [CalendarEvent]`). Shipped: `none` (the default — the app
-is fully usable with ad-hoc meetings) and `ics`, a stdlib iCalendar reader fed by
-a local `.ics` path or a published `https://` URL.
+`async fetch(days) -> [CalendarEvent]`). Five ship:
+
+| id | reads | source | credential |
+|---|---|---|---|
+| `none` | nothing (the default — the app is fully usable with ad-hoc meetings) | — | — |
+| `ics` | a stdlib iCalendar reader | a local `.ics` path or a published `https://` URL | — |
+| `caldav` | a time-ranged `REPORT calendar-query` against one collection; the Multi-Status is parsed with `defusedxml` (`forbid_dtd`), and each returned iCalendar document goes through the same `parse_ics` | the collection URL | `username` + `password` (Basic) |
+| `google` | Google Calendar v3 `events.list` on the signed-in user's `primary` calendar | — (`requires_source` is False) | OAuth: `client_id` (+ optional `client_secret`) stored by the user, tokens minted by the flow |
+| `microsoft` | Microsoft Graph `calendarView`, requested with `Prefer: outlook.timezone="UTC"`; a Windows zone name in a response that ignored the header is mapped through `_WINDOWS_TO_IANA` | — | same shape as `google` |
+
+Every provider funnels its raw fields through `build_event`, the one place that
+redacts (`security.redact`, a registered redaction sink) and derives `event_id`.
+The id comes from the ORIGINAL uid, never the redacted text — running Graph's
+long base64 ids through the redactor first collapsed distinct events onto one
+`[REDACTED]` placeholder and one meeting directory — but the redactor's VERDICT
+still gates visibility: a uid it flags as credential-shaped switches to a
+digest-only id (`<provider>-<sha256 prefix>`), so no fragment of it reaches the
+agent-readable id while the id stays unique per uid and stable across syncs.
+Google's date-only `{"date": …}` start and Graph's `isAllDay: true` set
+`all_day`, by the same rule as the `.ics` parser below: the flag is decided where
+the value's form is still in hand.
+
+All outbound HTTP — the `.ics` fetch, the CalDAV report, both cloud APIs and the
+OAuth token POST — goes through `fetch_vetted`, the module-level successor of the
+`.ics` reader's `_fetch_url`, so "Fetch safety" below is one control with five
+consumers rather than five copies. Two rules are new with the credentialed
+callers: `auth_headers` (a CalDAV `Basic`, a `Bearer`) ride only hops that stay
+on the origin first addressed — a cross-origin redirect is followed
+unauthenticated rather than handing the live credential to whoever answers the
+new address — and a non-GET request follows only the method-preserving 307/308,
+because a 301/302/303 would silently turn a CalDAV `REPORT` into a GET of some
+other resource. OAuth token POSTs follow no redirects at all, so their credential
+body can never be replayed to a different origin. Microsoft Graph pagination
+also requires every response-provided `@odata.nextLink` to retain the configured
+Graph origin before the next request attaches its bearer token. A caller can widen
+`ok_statuses` (207 for CalDAV, 400 for the token endpoint) without touching the gate.
+
+### Calendar credentials (`backend/credentials.py`)
+
+The CalDAV login and the Google / Microsoft OAuth tokens are the first
+credentials this app holds, and three properties of the store are decisions, not
+defaults:
+
+* **Location: a TOP-LEVEL leaf of the crew data home**,
+  `<crew-home>/meetings-credentials/calendar-credentials.json`. Not under
+  `app_data_dir("meetings")`, which `store.contain` opens to agent-driven paths.
+  Not under `workspace/` either, and this is the load-bearing half: the
+  directory is created on the first credential save, and the sandbox's mask
+  binds only over a directory that already exists, so a nested leaf would have
+  appeared unmasked inside every session running when the user connected a
+  calendar (a refresh token stays valid until revoked). Only a direct child of
+  the data home can be materialised before every spawn, and a nested leaf's
+  agent-writable parent could be renamed out from under the mask. The directory
+  is registered in all three places at once — `security._CREW_SECRET_LEAVES`
+  (agent file tools), `sandbox._CREW_HIDDEN_LEAVES` (spawned commands, every
+  mode) and `sandbox._CREW_PRECREATE_HIDDEN_DIR_LEAVES` (created empty at
+  `0700` before each namespace spawn) — as the whole DIRECTORY, because the
+  `atomic_write` temp sibling holds the same bytes. Spec: [security](security.md),
+  "Meetings calendar credentials".
+* **The path is not a request parameter.** Every other `store` function takes a
+  `root` for test isolation; the credential path is module state
+  (`set_credentials_home`) that no request can reach.
+* **Values never reach the browser.** `GET /calendar/credentials` publishes
+  field names and booleans; there is no route that reads a value back.
+  `PUT /calendar/credentials` is an allow-list per provider (`username`/
+  `password`, `client_id`/`client_secret`): a client cannot PUT an
+  `access_token` and hand the app a token of its choosing — those are written
+  only by `oauth.py`, on the way out of a real exchange.
+
+The store is read-modify-write under one lock (a settings PUT and a token
+refresh really do interleave), written through `atomic_write(restrict_to_owner=
+True)` fail-closed (a lockdown failure refuses the write and keeps the previous
+file), and a store it cannot parse or that fails the schema **refuses writes**
+rather than rebuilding from a partial view — display degrades to "not
+connected", the malformed file stays for a human to salvage.
+
+### OAuth custody (`backend/oauth.py`)
+
+This is the first OAuth chain Kiro Crew itself custodies, and [connections](connections.md)
+states the general rule the other way: kiro-cli owns a connection's OAuth chain end
+to end and Kiro Crew only observes grant presence. The calendar readers deliberately
+do not go through that path, for a reason that is about who consumes the token:
+
+* a connection's token is consumed by an **agent session** (kiro-cli's MCP client
+  attaches it to the tool call), so kiro-cli holding it is both sufficient and
+  correct;
+* the calendar token is consumed by the **gateway's own app backend** — the
+  `calendar_poller` syncs and pre-creates meetings with no agent session running,
+  and the dashboard's settings page drives the connect flow through the app's
+  routes. kiro-cli's grant store is neither reachable from nor scoped to that
+  process, and threading an agent session through every poll to borrow its
+  token would put an LLM turn on the path of a background fetch.
+
+So the app runs authorization-code + PKCE (S256) itself: `begin` mints
+`state` + verifier, keeps the pending flow in memory (TTL
+`OAUTH_FLOW_TTL_SECS`), `complete` verifies `state` in constant time, consumes
+the flow BEFORE the exchange (a verifier that survived a failed attempt could be
+replayed), and `access_token` refreshes early (`OAUTH_REFRESH_SKEW_SECS`). The
+token POST goes through `fetch_vetted` like every other fetch, accepting HTTP
+400 so a provider's RFC 6749 §5.2 error body (`invalid_grant` on a revoked
+token) is read and its `error_description` shown instead of a bare "HTTP 400";
+a body with no `access_token` is refused rather than stored as a connection that
+holds nothing. The redirect URI is derived from the origin the request arrived
+on (the dashboard cookie is host-scoped). Every callback exit — including a
+forged or expired `state` — writes a `meetings.calendar_oauth_callback` audit
+record, and the `code` is never echoed into the page.
+
+The next app that needs a gateway-consumed OAuth token should import this
+module's flow rather than copy it; an app whose token is consumed by an agent
+session should use [connections](connections.md).
 
 `parse_ics` reads only the `VEVENT` fields the app displays. Recurrence
 (`RRULE`) is deliberately **not** expanded: a correct expansion needs a full RFC
@@ -537,7 +656,7 @@ cache written before it existed: `GET /calendar` normalizes a missing key to
 `false` (keeping the wire type honest), and a legacy all-day row renders as a
 timed event until the next sync rewrites the cache with real flags.
 
-Fetch safety:
+Fetch safety (`fetch_vetted`, shared by every network provider):
 
 * an `https://` source is fetched with **aiohttp** (never `requests`/`urllib`,
   which would block the gateway's single event loop); the response is size-capped

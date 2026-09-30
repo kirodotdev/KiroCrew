@@ -314,7 +314,17 @@ class TestLeafOnlyPopulationIsRecorded:
     #: launch fingerprints; ``mcp/resolved`` holds executables substituted for an
     #: approved launch. Each sits beside writable siblings, so no parent stand-in
     #: can hold it.
-    EXPECTED: dict[str, int] = {"standard": 253, "cc": 260, "strict": 261}
+    #:
+    #: * ``meetings-credentials`` -- the Meetings builtin's calendar credential
+    #:   store (a CalDAV password, the Google / Microsoft 365 OAuth refresh and
+    #:   access tokens), three entries per tier. At the data-home root
+    #:   DELIBERATELY: it is created by the gateway on the first credential save,
+    #:   and only a direct child of the data home can be materialised ahead of
+    #:   the spawn so the mask has a target (``_CREW_PRECREATE_HIDDEN_DIR_LEAVES``);
+    #:   nested under ``workspace/`` it stayed readable in every namespace already
+    #:   running when the calendar was connected. Leaf-only is the only hold
+    #:   available to a root leaf, the same as the four above.
+    EXPECTED: dict[str, int] = {"standard": 256, "cc": 263, "strict": 264}
 
     @pytest.mark.parametrize("tier", TIERS)
     def test_leaf_only_count_has_not_grown(self, tier: str) -> None:

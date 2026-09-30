@@ -299,6 +299,28 @@ _MD_NOTEBOOK_STATE_LEAVES: tuple[str, ...] = (
 #: publish rename is still atomic.
 _MD_NOTEBOOK_STAGING_LEAF: str = f"{MD_NOTEBOOK_APP_NAME}-staging"
 
+#: The Meetings builtin's calendar credential store, masked as a WHOLE DIRECTORY like
+#: ``whatsapp``: ``calendar-credentials.json`` in it holds a CalDAV password and the
+#: Google / Microsoft 365 OAuth refresh + access tokens, and the ``atomic_write`` temp
+#: sibling holds the same bytes during a write and after a crash between write and
+#: rename. Fenced from agent FILE TOOLS by ``security._CREW_SECRET_LEAVES``; masked here so
+#: a spawned command's ``open()``, which never routes through that gate, cannot read a
+#: refresh token that stays valid until revoked.
+#:
+#: A TOP-LEVEL leaf, for the same two reasons ``_MD_NOTEBOOK_STAGING_LEAF`` is one. A
+#: mask covers the leaf, not its ancestors, so a store under the agent-writable
+#: ``workspace/`` could be renamed out from under its own mask and the next token write
+#: would publish through the replacement, unmasked, into a live agent's view. And the
+#: ``SENSITIVE_DIRS`` loop binds only over a directory that already exists: the store is
+#: created on the FIRST credential save, so a namespace spawned before it would have seen
+#: the file appear inside its view -- and only a direct child of the data home can be
+#: materialised ahead of the spawn (:func:`_materialize_maskable_dirs`), which is why it is
+#: also in :data:`_CREW_PRECREATE_HIDDEN_DIR_LEAVES`. Nothing in-sandbox reads it: the
+#: gateway-side app backend (``meetings/backend/credentials.py``) opens it directly, so
+#: unlike md-notebook it needs no backend carve-out. Must stay byte-identical to
+#: ``meetings.backend.constants.CALENDAR_CREDENTIALS_DIR_LEAF``; a test pins the two.
+_MEETINGS_CREDENTIALS_LEAF: str = "meetings-credentials"
+
 #: Crew-home leaves with no legitimate in-sandbox reader — bind-masked in every mode.
 _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # Gateway diagnostics: recorded host and gateway state, plus loop-stall dumps.
@@ -337,6 +359,8 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # can rename out from under the mount.
     "quarantined-clones",
     "apps/meetings/data/edits",
+    # The meetings calendar credential store -- see :data:`_MEETINGS_CREDENTIALS_LEAF`.
+    _MEETINGS_CREDENTIALS_LEAF,
     "whatsapp",
     # The refused-inbound spool. Fenced from agent FILE TOOLS by
     # ``security._CREW_SECRET_LEAVES``; masked here so a spawned command cannot
@@ -1733,6 +1757,13 @@ _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
     # ``SENSITIVE_DIRS`` loop skips it, and the directory the backend creates later shows
     # up INSIDE that running sandbox — with the PAT staging window in it.
     _MD_NOTEBOOK_STAGING_LEAF,
+    # The meetings calendar credential store, by the same rule: a direct child of the data
+    # home, created by the backend on the FIRST credential save. Left to lazy creation, a
+    # sandbox spawned before that save finds it absent, the ``SENSITIVE_DIRS`` loop skips
+    # it, and the file the gateway writes later -- a refresh token that stays valid until
+    # revoked -- shows up INSIDE that running sandbox. The backend tolerates finding the
+    # directory already present and empty.
+    _MEETINGS_CREDENTIALS_LEAF,
     # The live-target stub's staging directory, by the same rule: created before the
     # first spawn so the mask has a mount target, and the temp the materialiser stages
     # in it is never visible to a running namespace.

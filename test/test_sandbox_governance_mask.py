@@ -267,6 +267,11 @@ class TestSecretsAreMaskedInEveryMode:
         "apps/aws-control/data",
         "aws-control-staging",
         "workspace/md-notebook/pat",
+        # The meetings calendar credential store: a CalDAV password and OAuth
+        # refresh + access tokens, whole directory (the atomic-write temp
+        # sibling holds the same bytes). A TOP-LEVEL leaf -- see the precreate
+        # test below for why it cannot live under ``workspace/``.
+        "meetings-credentials",
         "data.sqlite3",
         "data.sqlite3-wal",
         "data.sqlite3-shm",
@@ -313,6 +318,76 @@ class TestSecretsAreMaskedInEveryMode:
 
         assert f'(deny file-write* (subpath "{target}"))' in profile
         assert f'(deny file-write* (literal "{target}"))' in profile
+
+
+class TestTheMeetingsCredentialStoreIsMaskedBeforeItsFirstSave:
+    """A namespace spawned BEFORE the user connects a calendar must still mask the store.
+
+    The store's directory is created by the meetings backend on the first credential
+    save, and the launcher's ``SENSITIVE_DIRS`` loop binds only over a directory that
+    already exists -- so a leaf that is merely LISTED in ``_CREW_HIDDEN_LEAVES`` is
+    unmasked in every session that was running when the user first saved a CalDAV
+    password or finished a Google / Microsoft 365 sign-in, and a refresh token stays
+    valid until revoked. Being a direct child of the data home is what lets
+    :func:`sandbox._materialize_maskable_dirs` give the mask a name to bind over before
+    every spawn; a leaf nested under the agent-writable ``workspace/`` could not be
+    (its parent could be renamed out from under the mask).
+    """
+
+    LEAF = "meetings-credentials"
+
+    def test_it_is_a_top_level_leaf_in_all_three_lists(self) -> None:
+        assert "/" not in self.LEAF
+        assert self.LEAF == sandbox._MEETINGS_CREDENTIALS_LEAF
+        assert self.LEAF in sandbox._CREW_HIDDEN_LEAVES
+        assert self.LEAF in sandbox._CREW_PRECREATE_HIDDEN_DIR_LEAVES
+        assert any(
+            path.endswith("/" + self.LEAF) for path in security.sensitive_home_dirs()
+        ), "the tool gate must fence the same directory the sandbox masks"
+
+    def test_the_backend_writes_where_the_sandbox_masks(self) -> None:
+        from kiro_crew.apps.builtins.meetings.backend import constants as k
+
+        assert k.CALENDAR_CREDENTIALS_DIR_LEAF == sandbox._MEETINGS_CREDENTIALS_LEAF
+
+    def test_precreate_materialises_the_store_directory_before_spawn(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """BEHAVIOURAL, not just membership: on a data home that has never held a
+        calendar credential, the pre-spawn step creates the directory, so the
+        ``isdir``-guarded mask loop has something to bind over."""
+        monkeypatch.setattr(sandbox, "config_dir", lambda: tmp_path)
+        target = tmp_path / self.LEAF
+        assert not target.exists(), "the point of the test is that it starts absent"
+
+        created = sandbox._materialize_maskable_dirs()
+
+        assert str(target) in created
+        assert target.is_dir() and not target.is_symlink()
+        if os.name == "posix":
+            assert (target.stat().st_mode & 0o077) == 0
+
+    @_POSIX_ONLY
+    @pytest.mark.parametrize("mode", _MODES)
+    def test_the_precreated_directory_is_what_the_launcher_masks(
+        self, mode: str, tmp_path, monkeypatch
+    ) -> None:
+        """The name the pre-spawn step creates and the name the launcher's hidden
+        list binds over are the same path, under the resolved data home -- so a
+        relocated ``KIROCREW_HOME`` is covered too."""
+        from kiro_crew.config.paths import config_dir
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "relocated-crew"))
+        root = str(config_dir())
+        os.makedirs(root, exist_ok=True)
+        target = os.path.join(root, self.LEAF)
+        assert not os.path.exists(target)
+
+        created = sandbox._materialize_maskable_dirs()
+        hidden, _readonly, _files = _launcher_sets(mode)
+
+        assert target in created
+        assert target in hidden, f"the precreated store is unmasked in {mode}"
 
 
 class TestTheReconciliationIsComplete:
