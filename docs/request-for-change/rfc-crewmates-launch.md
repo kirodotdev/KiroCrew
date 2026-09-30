@@ -208,6 +208,11 @@ Decided: the existing detail page is kept as is and becomes the one place a
 crewmate is configured. The separate "Edit crewmate" modal is dropped from the
 plan. Manager metaphor: the detail page is the HR file.
 
+> **Amended 2026-09-30 (see § 10, CREW-18688) — ACCEPTED.** § 10 revises "the
+> modal is dropped": a bot is edited in place on the Crewmates page via a modal
+> that mounts the SAME editor the detail page uses (one editor, two front doors),
+> not a second, divergent editor. § 10 now supersedes this screen-04 decision.
+
 ### 05 Crewmate chat shows only what it says to you
 
 Today: a crewmate's chat renders every turn the runtime produces — auto-nudge
@@ -431,3 +436,34 @@ Branches not yet open as PRs; each will add its number to
 Product owner review, 2026-09-22, with rendered mocks of all nine screens.
 This document is the public record of that review; it carries no link to the
 review's internal notes.
+
+## 10. Amendment — edit a crewmate in place (CREW-18688)
+
+Status: ACCEPTED 2026-09-30 (product owner). This section supersedes screen 04's
+"the separate 'Edit crewmate' modal is dropped": a crewmate is edited in place
+on the Crewmates page via the modal below.
+
+The problem this fixes: to edit a bot from the Crewmates page today, the user is
+navigated away to the crew manager (`/capabilities?tab=crews&crew=<name>`). That
+drops them out of the crewmate thread they were reading, onto a different
+top-level page. Leaving the member page to make a quick edit is the specific
+experience the team decided to remove.
+
+Decision: a crewmate is edited in place on the Crewmates page. The thread-header
+identity pill opens the crew editor as a modal over the page. No navigation, no
+page change. The user stays on the member they were looking at.
+
+This revises screen 04. Screen 04's concern was a SECOND, divergent editor — two
+editors that drift out of sync. This decision keeps ONE editor: the modal mounts
+the same editor the detail page uses (`CrewEditorDialog` + `useCrewEditor`), so
+there is one write path reached from two entry points, and nothing to drift. The
+detail page stays the full "HR file" surface; the modal is the in-context edit
+for "edit the bot I am looking at".
+
+Implementation: the shared editor (hook + dialog) and the Crewmates-page wiring
+ship first. Folding the crew manager (`KiroCrewAgentsPage`) onto the same shared
+component, so "one editor" is literally true in code, is the committed follow-up.
+
+Provenance: accepted by the product owner on 2026-09-30 (CREW-18688), recorded
+here ahead of the implementation PR (#15275) so the decision lands on main
+before the code that relies on it.
