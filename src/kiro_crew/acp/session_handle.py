@@ -687,6 +687,23 @@ class AcpRuntimeDead(AcpRuntimeError):
     """Raised when the underlying process has died."""
 
 
+class AcpFrameTooLarge(AcpRuntimeError):
+    """The reply to an awaited request was over the stdout frame limit and dropped.
+
+    Raised in place of the timeout the caller would otherwise hit much later, so
+    the error names the real cause -- the frame's size against the limit --
+    instead of whatever the request was waiting on (a ``session/new`` timeout
+    reads as slow MCP servers). Not ``transient``: the same request gets the same
+    reply. ``session_start_failed`` is set by the session-start arms that catch it,
+    like :class:`AcpRequestTimeout`'s, so a self-driving caller counts the streak.
+    """
+
+    # Read structurally by llm_helpers.acp_error_is_transient, so the verdict never
+    # falls back to matching this message's prose.
+    transient = False
+    session_start_failed = False
+
+
 class AcpRequestTimeout(AcpRuntimeError):
     """Raised when a request's response does not arrive within its budget.
 

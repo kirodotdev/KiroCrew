@@ -2159,6 +2159,20 @@ escapes the loop's non-JSON guard into its crash handler and kills every
 multiplexed session, the very outcome this replaces. Any oversize frame carrying
 CJK or emoji reaches it whenever the final remainder falls under the reader limit.
 
+A dropped frame can be the reply to an awaited request -- a `session/new` or
+`session/load` reply lists every agent in `~/.kiro/agents` with its description
+and `welcomeMessage`, so an agent package with very large welcomeMessage text
+pushes it over the limit. The drain therefore keeps the line's first
+`_OVERSIZE_HEAD_BYTES` (never parsed as a frame), and when that head is a reply
+envelope (no `"method"`) whose numeric `id` is a pending awaited request, that
+request fails at once with `AcpFrameTooLarge`, naming the frame's size and the
+limit. It is not `transient`, and the `session/new` and `session/load` arms tag it
+`session_start_failed`, so a self-driving caller counts it and backs off as it
+does for a stalled start. Without this the caller timed out much later under an unrelated name (a
+`session/new` timeout reads as slow MCP servers). A frame whose head names no
+pending request keeps the timeout path, and the warning still lists the ids in
+flight.
+
 Because this reader is a standalone task with no deadline, an endlessly
 unterminated stream still needs a terminal state, so the drain carries a budget of
 `_OVERSIZE_DRAIN_MAX_BYTES` (160 MB) and raises `OversizeLineUnrecoverable` past

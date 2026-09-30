@@ -2663,11 +2663,21 @@ _STDOUT_BUFFER_LIMIT = 10 * 1024 * 1024  # 10MB
 _OVERSIZE_DRAIN_MAX_BYTES = 16 * _STDOUT_BUFFER_LIMIT  # 160MB
 
 
+#: Bytes of an oversize line a drain keeps when asked to (``head=``): enough for a
+#: JSON-RPC envelope's ``id``, which kiro-cli writes ahead of its ``result``.
+_OVERSIZE_HEAD_BYTES = 4096
+
+
 class OversizeLineUnrecoverable(Exception):
     """An oversize stdout line exceeded the drain budget without terminating."""
 
 
-async def _drain_oversize_line(reader: asyncio.StreamReader, exc: asyncio.LimitOverrunError) -> int:
+async def _drain_oversize_line(
+    reader: asyncio.StreamReader,
+    exc: asyncio.LimitOverrunError,
+    *,
+    head: bytearray | None = None,
+) -> int:
     """Discard one oversize line ENTIRELY, leaving the stream on a frame boundary.
 
     Called after ``readuntil(b"\\n")`` raised ``LimitOverrunError``, which consumes
@@ -2685,6 +2695,10 @@ async def _drain_oversize_line(reader: asyncio.StreamReader, exc: asyncio.LimitO
     into its crash handler, killing every multiplexed session over one oversize
     frame.
 
+    *head*, when given, receives the line's first ``_OVERSIZE_HEAD_BYTES`` bytes
+    so a caller can tell which request the dropped frame answered. It is never
+    parsed as a whole frame.
+
     Returns the bytes discarded. Raises ``OversizeLineUnrecoverable`` past
     ``_OVERSIZE_DRAIN_MAX_BYTES`` (the stream is garbage, not merely verbose) and
     propagates ``IncompleteReadError`` on EOF mid-drain so the caller can use its
@@ -2699,7 +2713,10 @@ async def _drain_oversize_line(reader: asyncio.StreamReader, exc: asyncio.LimitO
             raise OversizeLineUnrecoverable(
                 f"stream reported a {exc.consumed}-byte oversize prefix"
             )
-        discarded += len(await reader.readexactly(exc.consumed))
+        chunk = await reader.readexactly(exc.consumed)
+        if head is not None and len(head) < _OVERSIZE_HEAD_BYTES:
+            head.extend(chunk[: _OVERSIZE_HEAD_BYTES - len(head)])
+        discarded += len(chunk)
         if discarded > _OVERSIZE_DRAIN_MAX_BYTES:
             raise OversizeLineUnrecoverable(
                 f"discarded {discarded} bytes with no frame boundary "

@@ -86,6 +86,7 @@ from kiro_crew.acp.mcp_session_report import (
 )
 from kiro_crew.acp.session_handle import (
     NATIVE_CHILD_ROSTER_CAP,
+    AcpFrameTooLarge,
     AcpRequestTimeout,
     AcpRuntimeDead,
     AcpRuntimeError,
@@ -277,10 +278,49 @@ class AcpToolSurfaceBindingError(AcpWorkspaceBindingError):
 
 _STDOUT_BUFFER_LIMIT = 10 * 1024 * 1024  # 10MB
 # How many in-flight request ids to name in the oversize-frame warning. A dropped
-# frame can carry a response, and the caller then fails as an opaque
-# _send_and_await timeout — naming what was in flight at the drop makes that
-# timeout attributable instead of a mystery. Capped so the line stays bounded.
+# frame can carry a response; when its head names the awaited request, that
+# request fails with AcpFrameTooLarge, and otherwise its caller times out, which
+# naming what was in flight at the drop makes attributable. Capped so the line
+# stays bounded.
 _DROP_IDS_IN_LOG = 8
+
+# The ``id`` of a JSON-RPC envelope near the front of a dropped oversize frame. A
+# numeric id only: this runtime numbers its own requests, and a string id or a
+# nested mode ``"id": "<name>"`` is never one of them.
+_OVERSIZE_FRAME_ID_RE = re.compile(rb'"id"\s*:\s*(\d{1,18})\s*[,}]')
+
+
+def _oversize_frame_request_id(head: bytes) -> int | None:
+    """The request id a dropped oversize frame answered, when its head names one.
+
+    A frame carrying ``"method"`` is a request or notification FROM the host, whose
+    id counter is independent of ours, so it never names one of our requests.
+    """
+    if b'"method"' in head:
+        return None
+    match = _OVERSIZE_FRAME_ID_RE.search(head)
+    if match is None:
+        return None
+    # The envelope's own id precedes its payload; one found after ``result`` /
+    # ``error`` began is a nested field, not the envelope's.
+    for key in (b'"result"', b'"error"'):
+        at = head.find(key)
+        if 0 <= at < match.start():
+            return None
+    return int(match.group(1))
+
+
+def _oversize_frame_message(size: int) -> str:
+    """The error an awaited request fails with when its reply was dropped as oversize."""
+    return (
+        f"The agent backend's reply was {size:,} bytes, over Kiro Crew's "
+        f"{_STDOUT_BUFFER_LIMIT:,}-byte frame limit, so it was dropped. On kiro-cli, a "
+        "session/new or session/load reply lists every agent in ~/.kiro/agents with its "
+        "description and welcomeMessage, so an agent package whose specs carry very large "
+        "welcomeMessage text is the usual cause: trim those fields, or remove agents you "
+        "do not use."
+    )
+
 
 # Cap on the stderr text folded into a process-exit death reason. The reason
 # is what the chat error card shows, so it must stay one readable line: the
@@ -4184,12 +4224,14 @@ class AcpRuntime:
                     # frames is survivable frame after frame.
                     #
                     # An awaited request whose response was in a dropped frame is
-                    # not orphaned: _send_and_await wraps every future in
-                    # wait_for(timeout=...), so the caller gets a timeout instead
-                    # of hanging. The ids in flight at the drop are logged so that
-                    # timeout is attributable.
+                    # never orphaned: when the frame's head names it, it fails at
+                    # once with AcpFrameTooLarge (below); otherwise
+                    # _send_and_await's wait_for(timeout=...) ends it, and the ids
+                    # in flight at the drop are logged so that timeout is
+                    # attributable.
+                    head = bytearray()
                     try:
-                        dropped = await _drain_oversize_line(stdout, exc)
+                        dropped = await _drain_oversize_line(stdout, exc, head=head)
                     except asyncio.IncompleteReadError:
                         # The same observed EOF as the empty-line branch below,
                         # reached with a torn frame in hand; the exit is confirmed
@@ -4209,6 +4251,14 @@ class AcpRuntime:
                         sorted(self._routed_requests)[:_DROP_IDS_IN_LOG],
                         exc,
                     )
+                    # A reply to an awaited request fails THAT request now, with
+                    # the size and the limit, instead of the timeout it would
+                    # otherwise hit much later under an unrelated name.
+                    req_id = _oversize_frame_request_id(bytes(head))
+                    pending = self._pending_requests.get(req_id) if req_id is not None else None
+                    if pending is not None and not pending.done():
+                        self._pending_requests.pop(req_id, None)
+                        pending.set_exception(AcpFrameTooLarge(_oversize_frame_message(dropped)))
                     continue
 
                 if not line:
@@ -6580,6 +6630,15 @@ class AcpRuntime:
                 # One failed start, one sample: the ``except`` below records it.
                 raise AcpRuntimeError(f"session/new did not return sessionId: {resp}")
             _record_session_start(start_t0, ok=True)
+        except AcpFrameTooLarge as exc:
+            # The reply was dropped as oversize: a start that failed, never one
+            # a retry fixes. Tagged like a stalled start so a self-driving caller
+            # counts the streak and backs off instead of re-issuing session/new.
+            # Cleaned up exactly like the catch-all below, which this arm precedes.
+            exc.session_start_failed = True
+            permit.release()
+            _record_session_start(start_t0, ok=False)
+            raise
         except AcpRequestTimeout as exc:
             # A start that outlived its budget is the congestion signal the
             # controller keys its decrease on (attributable timeout).
@@ -7416,6 +7475,9 @@ class AcpRuntime:
             if "modes" not in resp:
                 raise AcpRuntimeError(f"session/load did not resume session {resume_sid}: {resp}")
             loaded_session_id = resume_sid
+        except AcpFrameTooLarge as exc:
+            exc.session_start_failed = True
+            raise
         except AcpRequestTimeout as exc:
             # Read the staged MCP reports before the finally below clears them.
             raise self._session_start_stalled(exc, METHOD_SESSION_LOAD, wire_servers) from exc
