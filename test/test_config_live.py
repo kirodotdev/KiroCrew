@@ -44,6 +44,92 @@ def cfg_file(tmp_path: Path):
     live.reset_for_tests()
 
 
+# ── standing-override revalidation on a live sandbox change ────────────────
+
+
+class TestSandboxChangeDrivesStandingOverrideRevalidation:
+    """F1 wiring: a LIVE ``agent.sandbox`` change must reach the standing-override
+    revalidation through the trusted live-config applier.
+
+    The orchestrator subscribes ``agent.sandbox`` to a callback that drives the
+    standing-override revalidation through its two halves
+    (``suspend_standing_override_trust`` + ``_finish_standing_override_revalidation``), the
+    way the gateway applier does. This proves the DISPATCH half end to end (the revocation
+    behaviour itself is proven in ``test_standing_approval_keystone.py``): a reload that
+    flips ``agent.sandbox`` fires the applier with the NEW mode, and a reload that leaves it
+    alone does not.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_sandbox_flip_calls_revalidate_with_the_new_mode(self, cfg_file: Path):
+        from kiro_crew import safety_override
+
+        _write(cfg_file, {"agent": {"model": "model-a", "log_level": "INFO", "sandbox": "auto"}})
+        w = ConfigWatch(poll_interval_secs=0.05)
+        w.prime(KiroCrewConfig.load())
+        seen: list[str] = []
+
+        async def _apply(change: ConfigChange) -> None:
+            if not change.touched("agent.sandbox"):
+                return
+            suspension = safety_override.suspend_standing_override_trust()
+            safety_override._finish_standing_override_revalidation(
+                change.new.agent.sandbox, suspension
+            )
+
+        with patch.object(
+            safety_override,
+            "_finish_standing_override_revalidation",
+            side_effect=lambda mode, _susp: seen.append(mode),
+        ):
+            w.subscribe("agent.sandbox", callback=_apply, name="sandbox-revalidate")
+            _write(
+                cfg_file,
+                {"agent": {"model": "model-a", "log_level": "INFO", "sandbox": "off"}},
+            )
+            change = await w.refresh_now()
+
+        assert change is not None
+        assert "agent.sandbox" in change.changed
+        assert change.new.agent.sandbox == "off"
+        # The applier fired with the NEW mode, so the revalidation sees 'off'.
+        assert seen == ["off"]
+
+    @pytest.mark.asyncio
+    async def test_an_unrelated_change_does_not_call_revalidate(self, cfg_file: Path):
+        from kiro_crew import safety_override
+
+        _write(cfg_file, {"agent": {"model": "model-a", "log_level": "INFO", "sandbox": "auto"}})
+        w = ConfigWatch(poll_interval_secs=0.05)
+        w.prime(KiroCrewConfig.load())
+        seen: list[str] = []
+
+        async def _apply(change: ConfigChange) -> None:
+            if not change.touched("agent.sandbox"):
+                return
+            suspension = safety_override.suspend_standing_override_trust()
+            safety_override._finish_standing_override_revalidation(
+                change.new.agent.sandbox, suspension
+            )
+
+        with patch.object(
+            safety_override,
+            "_finish_standing_override_revalidation",
+            side_effect=lambda mode, _susp: seen.append(mode),
+        ):
+            w.subscribe("agent.sandbox", callback=_apply, name="sandbox-revalidate")
+            # Change only the model; sandbox stays 'auto'.
+            _write(
+                cfg_file,
+                {"agent": {"model": "model-b", "log_level": "INFO", "sandbox": "auto"}},
+            )
+            change = await w.refresh_now()
+
+        assert change is not None
+        assert "agent.sandbox" not in change.changed
+        assert seen == []
+
+
 # ── flatten / diff ────────────────────────────────────────────────────────
 
 

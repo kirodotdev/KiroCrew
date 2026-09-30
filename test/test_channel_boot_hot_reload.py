@@ -1052,6 +1052,7 @@ class TestSlackApplierReconciles:
         assert names == {
             "GatewayOrchestrator.channel_restart",
             "GatewayOrchestrator.slack",
+            "GatewayOrchestrator.sandbox_standing_override_revalidate",
         }
 
 

@@ -13335,10 +13335,83 @@ class GatewayOrchestrator:
                 callback=self._on_slack_config_change,
                 name="GatewayOrchestrator.slack",
             ),
+            live.subscribe(
+                "agent.sandbox",
+                callback=self._on_sandbox_config_change,
+                name="GatewayOrchestrator.sandbox_standing_override_revalidate",
+            ),
         ]
 
     # gateway_runtime/channel_lifecycle.py
     _on_channel_config_change = _channel_lifecycle._on_channel_config_change
+
+    async def _on_sandbox_config_change(self, change: ConfigChange) -> None:
+        """Revalidate (and revoke) the standing auto-approve grant on a live sandbox flip.
+
+        ``agent.sandbox`` is a LIVE field: a change applies to sessions started
+        after it, with NO restart (``config.sections`` marks it without
+        ``restart``, and its own doc says "a change applies to sessions started
+        after it; a session already running keeps the tier it was spawned with").
+        The operator's STANDING (declared) auto-approve grant, however, is
+        evaluated ONCE at startup (``grant_declared_yolo``) and then held in memory
+        with no expiry -- and it is a valid authorization ONLY where the sandbox
+        mask covers the standing-approval keystone
+        (``standing_approval.is_declared`` -> ``_keystone_is_masked``). So a live
+        flip from a masked mode to an unmasked one (e.g. ``off``) removes the
+        precondition the grant rests on, and without this a new, now-UNMASKED
+        session would inherit permanent auto-approval AND be able to reach the
+        keystone directory itself.
+
+        This is the process's single TRUSTED revalidation point: the orchestrator
+        is constructed for every gateway mode (full dashboard AND headless
+        ``--slack-only``), and this applier fires from the live-config watcher --
+        never from an agent-reachable path. The declared override is re-evaluated and,
+        if the new mode does not mask the keystone, REVOKED before that mode governs
+        any session; the grant is retained when the new mode still masks the keystone.
+
+        The mask re-check (``is_declared``) reads a file, so it runs off-loop via
+        ``asyncio.to_thread`` like the boot-time establishment does -- but the declared
+        grant is taken DOWN synchronously on this dispatch thread FIRST, before that
+        yield: both its inherited slot/channel trust AND the global grant flag itself, so
+        neither a reader of ``is_active()``/``is_declared`` nor
+        ``admission.parent_trusted`` (which reads a slot's ``approval_policy`` directly)
+        sees a live standing grant while the worker thread reads the mask. The grant is
+        re-activated only after a permitting same-epoch recheck; a denying one leaves it
+        down and makes the drop durable. Because the grant is down before the read, a
+        revocation teardown that raises leaves no authority live (it re-raises and the
+        trusted ConfigWatch retries).
+        """
+        if not change.touched("agent.sandbox"):
+            return
+        from kiro_crew.safety_override import (
+            _finish_standing_override_revalidation,
+            suspend_standing_override_trust,
+        )
+
+        # Take the declared grant DOWN synchronously, on this dispatch thread, BEFORE the
+        # yield below -- both its inherited slot/channel trust and the global grant flag.
+        # ``is_declared`` reads a file, so the re-check runs off-loop; the grant must be
+        # down before that yield, or a reader of ``is_active()``/``is_declared`` or a spawn
+        # admission (which reads a slot's ``approval_policy`` directly) sees a live standing
+        # grant under the mode being revalidated. The worker thread then reads the mask and
+        # either re-activates the grant (mask still holds, nothing re-activated meanwhile)
+        # or finishes the revoke (it does not); a drop that already happened means even a
+        # revoke teardown that raises leaves no authority live.
+        suspension = suspend_standing_override_trust()
+        try:
+            await asyncio.to_thread(
+                _finish_standing_override_revalidation, change.new.agent.sandbox, suspension
+            )
+        except Exception:
+            # Fail CLOSED toward safety: log and re-raise so ConfigWatch records
+            # this subscriber stale and retries it on the next tick. Trust was
+            # suspended before the yield, so this failure never leaves auto-approval
+            # live; it never grants.
+            logger.warning(
+                "standing-override revalidation after an agent.sandbox change failed",
+                exc_info=True,
+            )
+            raise
 
     _restart_changed_channels = _channel_lifecycle._restart_changed_channels
 

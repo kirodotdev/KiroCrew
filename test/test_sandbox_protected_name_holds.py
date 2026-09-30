@@ -297,6 +297,14 @@ class TestLeafOnlyPopulationIsRecorded:
     #:
     #: * ``credential_redaction.json`` -- the owner's credential-redaction
     #:   switch, on the same read-only floor as ``file_delivery_consent.json``;
+    #: * ``standing-approval`` -- the operator's standing auto-approve keystone
+    #:   DIRECTORY, a top-level crew-home leaf (counted once per crew-home
+    #:   prefix). No enclosing crew-home directory can stand in for it without
+    #:   masking unrelated siblings, so leaf-only is the only hold; the
+    #:   host-side-republish risk this cap guards is instead answered by
+    #:   pre-creating it empty at 0700 (``_CREW_PRECREATE_HIDDEN_DIR_LEAVES``),
+    #:   so the bind always has a name to cover and an empty root reads as no
+    #:   grant;
     #: * ``auth-store-staging`` -- the masked directory the two gateway auth
     #:   stores publish through, so the temp holding a full signing key or
     #:   refresh-chain state is never listable from inside the namespace;
@@ -321,7 +329,7 @@ class TestLeafOnlyPopulationIsRecorded:
     #: launch fingerprints; ``mcp/resolved`` holds executables substituted for an
     #: approved launch. Each sits beside writable siblings, so no parent stand-in
     #: can hold it.
-    EXPECTED: dict[str, int] = {"standard": 262, "cc": 269, "strict": 270}
+    EXPECTED: dict[str, int] = {"standard": 265, "cc": 272, "strict": 273}
 
     @pytest.mark.parametrize("tier", TIERS)
     def test_leaf_only_count_has_not_grown(self, tier: str) -> None:
