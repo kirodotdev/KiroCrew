@@ -44,6 +44,7 @@ from kiro_crew.messaging.queue_receipt import (
     receipt_address_key,
     receipt_text,
 )
+from kiro_crew.slack import events as slack_events
 
 #: Two allow-listed people on one transport, and a third on another. Under a unified
 #: scope all three land on ONE session key, which is the whole premise.
@@ -227,6 +228,21 @@ class TestTheTokenAndItsReader:
 
     def test_a_missing_owner_reads_as_unclaimed_rather_than_raising(self) -> None:
         assert entry_owner({}) == ""
+
+    def test_slacks_producers_record_the_owner_beside_the_channel(self) -> None:
+        """Both Slack enqueue sites and its pre-session stash tag through one helper."""
+        kwargs = slack_events._queue_tags("U_ALICE", "C1")
+        assert kwargs[QUEUED_CHANNEL_KEY] == "slack"
+        assert entry_owner(kwargs) == slack_events._entry_owner("U_ALICE", "C1")
+        assert entry_owner(kwargs) == owner_token("slack", ("U_ALICE", "C1"))
+
+    def test_slacks_owner_tells_senders_and_channels_apart(self) -> None:
+        assert slack_events._entry_owner("U_ALICE", "C1") != slack_events._entry_owner(
+            "U_BOB", "C1"
+        )
+        assert slack_events._entry_owner("U_ALICE", "C1") != slack_events._entry_owner(
+            "U_ALICE", "C2"
+        )
 
 
 # ── the receipt layer ───────────────────────────────────────────────────────
@@ -637,26 +653,24 @@ class TestTheSharedStopPath:
 
 # ── the call sites ──────────────────────────────────────────────────────────
 
-#: Each dispatcher that clears a queue on Stop, and the handler that does it. A source
-#: check rather than a behavioural one because the point is that NO such handler is
-#: missing the argument -- including one added after these tests were written, which no
-#: behavioural test can be written for in advance.
+#: Each channel that clears a queue on Stop, the module holding its handler, and the
+#: handler. A source check rather than a behavioural one because the point is that NO
+#: such handler is missing the argument -- including one added after these tests were
+#: written, which no behavioural test can be written for in advance. Slack is here too:
+#: its ``!stop`` is inlined in the event router rather than a dispatcher, and every
+#: member of a Slack thread shares that thread's session key, so it is the one channel
+#: where a whole-queue clear discards other people's messages without any unified scope.
 _STOP_HANDLERS = (
-    ("discord", "_handle_stop"),
-    ("telegram", "_handle_stop"),
-    ("teams", "_handle_stop"),
-    ("webex", "_handle_stop"),
+    ("discord", "transport_dispatch.py", "_handle_stop"),
+    ("telegram", "transport_dispatch.py", "_handle_stop"),
+    ("teams", "transport_dispatch.py", "_handle_stop"),
+    ("webex", "transport_dispatch.py", "_handle_stop"),
+    ("slack", "events.py", "_route_message"),
 )
 
 
-def _handler_source(channel: str, name: str) -> str:
-    path = (
-        pathlib.Path(__file__).resolve().parents[1]
-        / "src"
-        / "kiro_crew"
-        / channel
-        / "transport_dispatch.py"
-    )
+def _handler_source(channel: str, module: str, name: str) -> str:
+    path = pathlib.Path(__file__).resolve().parents[1] / "src" / "kiro_crew" / channel / module
     tree = ast.parse(path.read_text(encoding="utf-8"))
     for node in ast.walk(tree):
         if isinstance(node, ast.AsyncFunctionDef) and node.name == name:
@@ -665,22 +679,359 @@ def _handler_source(channel: str, name: str) -> str:
 
 
 class TestEveryStopHandlerNamesItsCaller:
-    @pytest.mark.parametrize(("channel", "name"), _STOP_HANDLERS)
-    def test_the_handler_passes_an_owner(self, channel: str, name: str) -> None:
+    @pytest.mark.parametrize(("channel", "module", "name"), _STOP_HANDLERS)
+    def test_the_handler_passes_an_owner(self, channel: str, module: str, name: str) -> None:
         """Whether through the shared helper or its own inline clear.
 
         Webex clears inline, so a check written only against ``stop_running_turn`` would
         pass while Webex still emptied the whole queue -- and Webex is the channel where
         one session key is shared even without a unified scope, because a group space
-        routes every member onto it.
+        routes every member onto it. Slack clears inline for the same reason.
         """
-        source = _handler_source(channel, name)
+        source = _handler_source(channel, module, name)
         assert "_entry_owner(" in source, f"{channel} Stop does not name its caller"
 
-    @pytest.mark.parametrize(("channel", "name"), _STOP_HANDLERS)
-    def test_the_handler_never_clears_the_whole_queue(self, channel: str, name: str) -> None:
-        source = _handler_source(channel, name)
+    @pytest.mark.parametrize(("channel", "module", "name"), _STOP_HANDLERS)
+    def test_the_handler_never_clears_the_whole_queue(
+        self, channel: str, module: str, name: str
+    ) -> None:
+        source = _handler_source(channel, module, name)
         assert "clear_queue(session_key)" not in source
+
+
+# ── Slack's inlined !stop ───────────────────────────────────────────────────
+
+#: Two allow-listed members of one Slack channel thread. No unified scope is needed
+#: for them to share a queue: a thread IS the session key, for everybody in it.
+SLACK_ALICE = slack_events._entry_owner("U_ALICE", "C1")
+SLACK_BOB = slack_events._entry_owner("U_BOB", "C1")
+
+#: The thread both members are typing in, which is also the session key.
+_THREAD = "100.0"
+
+
+@pytest.fixture()
+def slack_home(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> pathlib.Path:
+    """Point every home-derived path at ``tmp_path`` so the router touches no real HOME."""
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / ".kiro" / "crew"))
+    monkeypatch.setenv("KIRO_HOME", str(tmp_path / ".kiro"))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    return tmp_path
+
+
+def _slack_orch() -> Any:
+    """The orchestrator surface ``_route_message`` touches for a busy channel thread.
+
+    ``clear_queue`` is recorded rather than run so the test can hand the predicate it
+    received to the REAL manager queue below; the pre-session queue is real.
+    """
+    from unittest.mock import AsyncMock, MagicMock
+
+    from kiro_crew.config.loader import (
+        ACTIVATION_ALWAYS,
+        ChannelConfig,
+        KiroCrewConfig,
+        MessagingConfig,
+    )
+
+    orch = MagicMock()
+    orch._cfg = KiroCrewConfig(
+        slack_channels={"C1": ChannelConfig(activation=ACTIVATION_ALWAYS)},
+        messaging=MessagingConfig(),
+    )
+    orch.slack_command = "kirocrew"
+    orch._owner_id = "U_ALICE"
+    orch._allowed_users = {"U_ALICE", "U_BOB"}
+    orch._tracking_channels = set()
+    orch._open_channels = set()
+    orch._approval_mode = ""
+    orch.channel_history = MagicMock()
+    orch.channel_history._user_names = {}
+    orch.slack = AsyncMock()
+    orch.slack.record_channel_team = MagicMock()
+    orch.slack.ensure_channel_team = AsyncMock()
+    orch.slack.get_user_info = AsyncMock(return_value={})
+    orch.sessions = AsyncMock()
+    orch.sessions.enqueue = MagicMock(return_value=False)
+    orch.sessions.is_busy = MagicMock(return_value=True)
+    orch.sessions.is_cancelled = MagicMock(return_value=False)
+    orch.sessions.has_session = MagicMock(return_value=True)
+    orch.sessions.get_session_for_thread = MagicMock(return_value=None)
+    orch.sessions.dequeue = MagicMock(return_value=None)
+    orch.sessions.clear_queue = MagicMock()
+    orch.sessions.cancel_queued = MagicMock(return_value=False)
+    orch.sessions.stop_turn = AsyncMock(return_value="soft")
+    orch.ctx_builder = None
+    orch.cron_svc = None
+    orch.conv_log = None
+    orch.consolidator = None
+    orch.subagent_mgr = None
+    orch.task_runner = None
+    orch.dashboard_state = None
+    orch._handler_tasks = set()
+    orch._session_tasks = {}
+    orch._pending_queue = {}
+    return orch
+
+
+def _slack_event(user: str, text: str, ts: str, **over: object) -> dict:
+    base = {
+        "user": user,
+        "channel": "C1",
+        "text": text,
+        "ts": ts,
+        "thread_ts": _THREAD,
+        "team": "T1",
+    }
+    base.update(over)  # type: ignore[arg-type]
+    return base
+
+
+def _pending_entry(user: str, ts: str, temp: pathlib.Path) -> tuple[str, str, dict]:
+    """A pre-session entry the way the Slack stash records it, holding one temp file."""
+    temp.write_bytes(b"x")
+    return (
+        ts,
+        f"{user} asked",
+        dict(
+            channel="C1",
+            thread_ts=_THREAD,
+            sender_id=user,
+            image_temp_paths=[str(temp)],
+            **slack_events._queue_tags(user, "C1"),
+        ),
+    )
+
+
+async def _route(orch: Any, event: dict) -> None:
+    from unittest.mock import MagicMock, patch
+
+    with patch("kiro_crew.slack.events.sel", return_value=MagicMock()):
+        with patch("kiro_crew.slack.events.is_allowed_user", return_value=True):
+            with patch("kiro_crew.slack.events.is_owner", return_value=False):
+                await slack_events._route_message(orch, event, slack_events.SeenCache())
+
+
+class TestSlacksStopIsTheCallersToo:
+    """One member's ``!stop`` in a shared thread leaves the other member's messages."""
+
+    def test_a_stop_hands_the_queue_a_predicate_that_keeps_the_others_entries(
+        self, slack_home: pathlib.Path
+    ) -> None:
+        """The predicate Bob's stop passes, run over the REAL manager queue."""
+        orch = _slack_orch()
+        orch._session_tasks = {_THREAD: _NeverDone()}
+        asyncio.run(_route(orch, _slack_event("U_BOB", "!stop", "103.0")))
+
+        key, owned_by = orch.sessions.clear_queue.call_args.args
+        assert key == _THREAD
+        entries = [
+            ("101.0", "alice asked", _queued(SLACK_ALICE, "a", channel="slack")),
+            ("102.0", "bob asked", _queued(SLACK_BOB, "b", channel="slack")),
+            ("3", "carla asked", _queued(CARLA, "c", channel="discord")),
+        ]
+        kept, deps, _ = _clear(entries, owned_by)
+        assert kept == ["a", "c"], "Alice's message and the foreign entry stay queued"
+        assert deps.unlinked == ["b"], "and only Bob's temp files are unlinked"
+        orch.sessions.stop_turn.assert_awaited_once()
+
+    def test_the_pre_session_queue_keeps_the_others_entries_and_their_files(
+        self, slack_home: pathlib.Path
+    ) -> None:
+        orch = _slack_orch()
+        orch._session_tasks = {_THREAD: _NeverDone()}
+        alice_temp, bob_temp = slack_home / "alice.png", slack_home / "bob.png"
+        orch._pending_queue = {
+            _THREAD: [
+                _pending_entry("U_ALICE", "101.0", alice_temp),
+                _pending_entry("U_BOB", "102.0", bob_temp),
+            ]
+        }
+        asyncio.run(_route(orch, _slack_event("U_BOB", "!stop", "103.0")))
+
+        assert [item[0] for item in orch._pending_queue[_THREAD]] == ["101.0"]
+        assert alice_temp.exists(), "Alice's attachment is still owed a turn"
+        assert not bob_temp.exists(), "Bob's never dispatches, so it is unlinked here"
+
+    def test_the_callers_own_entries_are_all_dropped(self, slack_home: pathlib.Path) -> None:
+        """Bob queued twice; his stop takes both, and the empty list is removed."""
+        orch = _slack_orch()
+        orch._session_tasks = {_THREAD: _NeverDone()}
+        first, second = slack_home / "one.png", slack_home / "two.png"
+        orch._pending_queue = {
+            _THREAD: [
+                _pending_entry("U_BOB", "101.0", first),
+                _pending_entry("U_BOB", "102.0", second),
+            ]
+        }
+        asyncio.run(_route(orch, _slack_event("U_BOB", "!stop", "103.0")))
+
+        assert _THREAD not in orch._pending_queue
+        assert not first.exists() and not second.exists()
+
+    def test_an_entry_that_named_no_owner_survives_a_slack_stop(
+        self, slack_home: pathlib.Path
+    ) -> None:
+        """A dashboard-linked session's own entries are nobody's to drop from Slack."""
+        orch = _slack_orch()
+        orch._session_tasks = {_THREAD: _NeverDone()}
+        orch._pending_queue = {_THREAD: [("101.0", "untagged", {"channel": "C1"})]}
+        asyncio.run(_route(orch, _slack_event("U_BOB", "!stop", "103.0")))
+
+        assert [item[1] for item in orch._pending_queue[_THREAD]] == ["untagged"]
+        _, owned_by = orch.sessions.clear_queue.call_args.args
+        assert owned_by({}) is False
+
+    def test_both_enqueue_sites_and_the_stash_record_the_sender(
+        self, slack_home: pathlib.Path
+    ) -> None:
+        """Tagging comes first: a scoped clear over untagged entries drops nothing."""
+        # The session-level queue while a task is running.
+        orch = _slack_orch()
+        orch._session_tasks = {_THREAD: _NeverDone()}
+        orch.sessions.enqueue.return_value = True
+        asyncio.run(_route(orch, _slack_event("U_ALICE", "hello", "101.0")))
+        assert entry_owner(orch.sessions.enqueue.call_args.kwargs) == SLACK_ALICE
+
+        # The pre-session stash when the session object does not exist yet.
+        orch = _slack_orch()
+        orch._session_tasks = {_THREAD: _NeverDone()}
+        asyncio.run(_route(orch, _slack_event("U_ALICE", "hello", "101.0")))
+        assert entry_owner(orch._pending_queue[_THREAD][0][2]) == SLACK_ALICE
+
+        # The session-level queue when no task is registered but the session is busy.
+        orch = _slack_orch()
+        orch.sessions.enqueue.return_value = True
+        asyncio.run(_route(orch, _slack_event("U_BOB", "hello", "102.0")))
+        assert entry_owner(orch.sessions.enqueue.call_args.kwargs) == SLACK_BOB
+
+    def test_a_root_and_a_threaded_message_from_one_dm_user_share_an_owner(
+        self, slack_home: pathlib.Path
+    ) -> None:
+        """A single-session DM merges its threads into one key, so its owner must too.
+
+        Otherwise a ``!stop`` typed at channel root would leave the same person's
+        threaded messages queued in the one conversation the flat key exists to merge.
+        """
+        orch = _slack_orch()
+        orch.sessions.enqueue.return_value = True
+        asyncio.run(_route(orch, _slack_event("U_ALICE", "hello", "101.0", channel="D1")))
+        threaded = entry_owner(orch.sessions.enqueue.call_args.kwargs)
+        asyncio.run(
+            _route(orch, _slack_event("U_ALICE", "hello", "102.0", channel="D1", thread_ts=None))
+        )
+        assert entry_owner(orch.sessions.enqueue.call_args.kwargs) == threaded
+
+
+class _NeverDone:
+    """A registered turn task that is still running when the stop arrives."""
+
+    def done(self) -> bool:
+        return False
+
+    def cancel(self) -> None:
+        self.cancelled = True
+
+
+class _SlackSessions:
+    """The session surface Slack's ``!stop`` and drain touch, holding a REAL queue.
+
+    ``clear_queue`` and ``stop_turn`` follow the manager's contracts exactly where they
+    matter here: a clear with no predicate empties the queue and unlinks every entry's
+    temp files, and ``stop_turn`` makes that whole-queue clear itself unless the caller
+    says ``preserve_queue``. A stop handler that scopes its own clear and then lets
+    ``stop_turn`` default is therefore caught here, where an ``AsyncMock`` would not
+    see it.
+    """
+
+    def __init__(self, entries: list[tuple[str, str, dict]]) -> None:
+        from collections import deque
+
+        self.queue = deque(entries)
+        self.stop_calls: list[dict[str, Any]] = []
+
+    def has_session(self, key: str) -> bool:
+        return key == _THREAD
+
+    def get_session_for_thread(self, key: str) -> str | None:
+        return None
+
+    def is_busy(self, key: str) -> bool:
+        return True
+
+    def enqueue(self, *args: Any, **kwargs: Any) -> bool:
+        return False
+
+    def clear_queue(self, key: str, owned_by: Any = None) -> None:
+        dropped = [item for item in self.queue if owned_by is None or owned_by(item[2])]
+        for _, _, kwargs in dropped:
+            for path in kwargs.get("image_temp_paths", ()):
+                pathlib.Path(path).unlink(missing_ok=True)
+        kept = [item for item in self.queue if item not in dropped]
+        self.queue.clear()
+        self.queue.extend(kept)
+
+    def dequeue(self, key: str) -> tuple[str, str, dict] | None:
+        return self.queue.popleft() if self.queue else None
+
+    async def stop_turn(self, key: str, *, preserve_queue: bool = False, **hooks: Any) -> str:
+        self.stop_calls.append({"key": key, "preserve_queue": preserve_queue})
+        if not preserve_queue:
+            self.clear_queue(key)
+        on_soft = hooks.get("on_soft")
+        if on_soft is not None:
+            await on_soft()
+        return "soft"
+
+
+class TestTheOthersEntrySurvivesTheWholeStopAndThenDrains:
+    """End to end: Bob stops, and Alice's queued message is still there AFTERWARDS.
+
+    The partition alone does not prove this. ``stop_turn`` runs after it, and its
+    default is a whole-queue clear that would erase the partition one call later and
+    unlink Alice's attachment with it -- so the assertion is made after the handler
+    has returned, on the real queue, and then the drain is run to show her entry is the
+    one it dispatches.
+    """
+
+    def _stopped_by_bob(self, slack_home: pathlib.Path) -> tuple[Any, _SlackSessions, Any]:
+        alice_temp, bob_temp = slack_home / "alice.png", slack_home / "bob.png"
+        alice = _pending_entry("U_ALICE", "101.0", alice_temp)
+        bob = _pending_entry("U_BOB", "102.0", bob_temp)
+        orch = _slack_orch()
+        orch.sessions = _SlackSessions([alice, bob])
+        orch._session_tasks = {_THREAD: _NeverDone()}
+        asyncio.run(_route(orch, _slack_event("U_BOB", "!stop", "103.0")))
+        return orch, orch.sessions, (alice_temp, bob_temp)
+
+    def test_alices_entry_and_her_attachment_outlive_the_handler(
+        self, slack_home: pathlib.Path
+    ) -> None:
+        orch, sessions, (alice_temp, bob_temp) = self._stopped_by_bob(slack_home)
+        assert [item[0] for item in sessions.queue] == ["101.0"]
+        assert alice_temp.exists(), "her attachment is still owed a turn"
+        assert not bob_temp.exists(), "Bob's own is dropped and unlinked"
+        assert sessions.stop_calls == [{"key": _THREAD, "preserve_queue": True}]
+
+    def test_the_next_drain_dispatches_alices_message(self, slack_home: pathlib.Path) -> None:
+        from unittest.mock import AsyncMock, patch
+
+        orch, sessions, _ = self._stopped_by_bob(slack_home)
+        orch._session_tasks = {}
+        dispatched = AsyncMock()
+
+        async def drain() -> None:
+            with patch("kiro_crew.slack.events._dispatch_queued", new=dispatched):
+                await slack_events._drain_slack_queue(orch, _THREAD)
+                await asyncio.sleep(0)
+
+        asyncio.run(drain())
+        assert dispatched.await_count == 1
+        _orch, key, ts, text, kwargs = dispatched.await_args.args
+        assert (key, ts, text) == (_THREAD, "101.0", "U_ALICE asked")
+        assert kwargs["sender_id"] == "U_ALICE"
+        assert not sessions.queue
 
 
 class TestAnOwedRecordOnlyAddressesTheBubbleItBelongsTo:

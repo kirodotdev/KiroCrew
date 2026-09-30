@@ -57,7 +57,12 @@ from kiro_crew.messaging.commands import note_user_stop
 from kiro_crew.messaging.dispatch import admit_inbound_callback
 from kiro_crew.messaging.identity import channel_inbound_permitted
 from kiro_crew.messaging.link import canonical_key
-from kiro_crew.messaging.queue_drain import register_drain, tag_entry
+from kiro_crew.messaging.queue_drain import (
+    entries_queued_by,
+    owner_token,
+    register_drain,
+    tag_entry,
+)
 from kiro_crew.platform import current_context, safe_context_call
 from kiro_crew.platform.interfaces import InterceptDecision
 from kiro_crew.safety_override import safety_override, yolo_policy_permits
@@ -125,8 +130,40 @@ if TYPE_CHECKING:
     from kiro_crew.slack.gateway import GatewayOrchestrator
 
 logger = logging.getLogger(__name__)
-#: Slack has no per-owner clear (its !stop clears the whole queue), so no owner.
-_SLACK_QUEUE_TAGS: dict[str, Any] = tag_entry({}, "slack", "")
+
+#: This channel's name in the shared queue-drain contract (``messaging/queue_drain.py``).
+#: ONE constant, used both to tag the entries this module produces and to register its
+#: drain, because a tag that does not match the registration cannot be woken for its own
+#: entries.
+_CHANNEL = "slack"
+
+
+def _entry_owner(sender_id: str, channel: str) -> str:
+    """The neutral token naming the principal a Slack message came from.
+
+    ``!stop`` compares it to drop one person's queued messages and leave everybody
+    else's: every member of a thread shares that thread's session key and queue, so a
+    whole-queue clear there discards messages other members are still owed an answer to.
+
+    The place is the channel, not the thread. A thread-scoped session IS one thread, and
+    a single-session DM merges every thread of that 1:1 conversation into one key on
+    purpose (``flat_dm_session_key``), so the thread root would only split the DM user's
+    own entries away from a ``!stop`` typed at channel root. The sender id alone is not
+    enough either: two channels can share a thread timestamp, and the channel is the
+    WHERE the sibling transports' ``sender_key`` carries beside the WHO.
+    """
+    return owner_token(_CHANNEL, (sender_id, channel))
+
+
+def _queue_tags(sender_id: str, channel: str) -> dict[str, Any]:
+    """The channel and owner tags every Slack queue entry carries.
+
+    Attached to the session queue's kwargs and to a pre-session ``_pending_queue``
+    entry's kwargs alike, so a ``!stop`` scoped by owner can tell the caller's entries
+    from the rest on both.
+    """
+    return tag_entry({}, _CHANNEL, _entry_owner(sender_id, channel))
+
 
 _skills_loader: SkillsLoader | None = None
 
@@ -1095,7 +1132,7 @@ async def init_socket_mode(orch: GatewayOrchestrator, seen: SeenCache) -> None:
         )
 
     orch._socket_client.socket_mode_request_listeners.append(_on_event)  # type: ignore[arg-type]
-    register_drain("slack", lambda session_key: _drain_slack_queue(orch, session_key))
+    register_drain(_CHANNEL, lambda session_key: _drain_slack_queue(orch, session_key))
 
 
 async def _drain_slack_queue(orch: GatewayOrchestrator, session_key: str) -> None:
@@ -2669,11 +2706,29 @@ async def _route_message(
         has_session = orch.sessions.has_session(session_key)
         active_task = orch._session_tasks.pop(session_key, None)
         if has_session or active_task:
-            orch.sessions.clear_queue(session_key)
-            # Dropped pending (pre-session) entries never reach
-            # _dispatch_queued's cleanup, so unlink their temp files here.
-            for _item in orch._pending_queue.pop(session_key, None) or []:
+            # The CALLER's queued messages, not the session's. Every member of a
+            # thread queues under this one session key, so a whole-queue clear
+            # would discard messages the other members are still owed an answer
+            # to. Entries no Slack producer tagged (a dashboard-linked session's
+            # own queue) are nobody's to drop and stay queued; the running turn
+            # is still stopped whoever it belongs to.
+            _stop_owned_by = entries_queued_by(_entry_owner(sender_id, channel))
+            orch.sessions.clear_queue(session_key, _stop_owned_by)
+            # The pre-session queue holds the same 3-tuples with kwargs at index
+            # 2 and is partitioned the same way, BEFORE anything is mutated.
+            # Dropped entries never reach _dispatch_queued's cleanup, so unlink
+            # their temp files here.
+            _pending = orch._pending_queue.get(session_key) or []
+            _dropped: list[tuple[str, str, dict[str, Any]]] = []
+            _kept: list[tuple[str, str, dict[str, Any]]] = []
+            for _item in _pending:
+                (_dropped if _stop_owned_by(_item[2]) else _kept).append(_item)
+            for _item in _dropped:
                 unlink_queued_temp_paths(_item[2])
+            if _kept:
+                orch._pending_queue[session_key] = _kept
+            else:
+                orch._pending_queue.pop(session_key, None)
 
             # Post ephemeral "Stopping…" block with Kill Now button
             if orch.slack:
@@ -2695,7 +2750,13 @@ async def _route_message(
                         channel, "⛔ Execution stopped — session reset.", stop_post_ts
                     )
 
-            outcome = await orch.sessions.stop_turn(session_key, on_soft=_on_soft, on_hard=_on_hard)
+            # preserve_queue: the caller-scoped clear above is the ONLY clear this
+            # stop makes. stop_turn's default clears the whole queue with no
+            # predicate, which would erase the partition one call later and unlink
+            # every other member's attachments with it.
+            outcome = await orch.sessions.stop_turn(
+                session_key, preserve_queue=True, on_soft=_on_soft, on_hard=_on_hard
+            )
             if active_task and not active_task.done():
                 active_task.cancel()
             # If stop_turn returned "idle" (no active turn), neither callback
@@ -2790,10 +2851,12 @@ async def _route_message(
             # Historical key; carries every attachment temp path for cleanup.
             image_temp_paths=list(_attachment_temp_paths),
             from_trusted_bot=from_trusted_bot,
-            **_SLACK_QUEUE_TAGS,
+            **_queue_tags(sender_id, channel),
         )
         if not _queued:
-            # Session object not created yet — stash on orch._pending_queue
+            # Session object not created yet — stash on orch._pending_queue,
+            # tagged like a session entry so a caller-scoped !stop can tell
+            # this sender's entries from the rest here too.
             orch._pending_queue.setdefault(session_key, []).append(
                 (
                     msg_ts,
@@ -2807,6 +2870,7 @@ async def _route_message(
                         user_display_name=_sender_display,
                         image_temp_paths=list(_attachment_temp_paths),
                         from_trusted_bot=from_trusted_bot,
+                        **_queue_tags(sender_id, channel),
                     ),
                 )
             )
@@ -2834,7 +2898,7 @@ async def _route_message(
         user_display_name=_sender_display,
         image_temp_paths=list(_attachment_temp_paths),
         from_trusted_bot=from_trusted_bot,
-        **_SLACK_QUEUE_TAGS,
+        **_queue_tags(sender_id, channel),
     ):
         logger.info("Message %s queued for busy session %s", msg_ts, session_key)
         if orch.slack:

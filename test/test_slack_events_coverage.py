@@ -2418,7 +2418,7 @@ class TestRouteMessageStopCommand:
         orch = _make_orch()
         orch.sessions.has_session = MagicMock(return_value=True)
 
-        async def _stop_turn(key, on_soft=None, on_hard=None):
+        async def _stop_turn(key, preserve_queue=False, on_soft=None, on_hard=None):
             await on_soft()
             await on_hard()
             return "soft"

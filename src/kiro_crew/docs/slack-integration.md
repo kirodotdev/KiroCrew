@@ -106,8 +106,11 @@ in the thread where the agent is running.
 
 `!stop` is intercepted before the per-session semaphore in the Slack event
 handler, so it acts even when the agent is mid-tool-call or mid-stream.
-The active asyncio task is cancelled, the message queue for that session is
-cleared, the pending queue is dropped, and the session is reset. Three
+The active asyncio task is cancelled, your own queued messages for that
+session are dropped (including any not-yet-dispatched attachments), and the
+session is reset. Messages other members of the thread have queued stay
+queued and are answered in order once the turn stops: everybody in a thread
+shares its session, so a stop only withdraws what its caller sent. Three
 answers, one per outcome: "⏹ Execution stopped." when the turn stopped
 cooperatively, "⛔ Execution stopped — session reset." when it had to be
 escalated to a hard stop, and "Nothing running." when no turn was active.
