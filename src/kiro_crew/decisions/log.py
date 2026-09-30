@@ -266,9 +266,13 @@ _MAX_TURN_ID_CHARS = 200
 #: distinguishable from never having given one.
 FEEDBACK_VERDICTS = ("right", "wrong")
 
-#: Which of the two answers the verdict is ABOUT. A verdict with no side names no
-#: answer, so there is no default -- the caller states it.
-FEEDBACK_SIDES = ("jev", "baseline")
+#: Which answer the verdict is ABOUT. ``jev`` and ``baseline`` are the two arms of
+#: a compared decision; ``llm`` is the small-model lane's single answer on
+#: ``model.route``, kept apart from ``jev`` because a verdict on it judges a
+#: different judge, and folding the two under one side would score Jev for a tier
+#: it never picked. A verdict with no side names no answer, so there is no
+#: default -- the caller states it.
+FEEDBACK_SIDES = ("jev", "baseline", "llm")
 
 #: ``kind`` on a calibration-label row. A third kind beside the absent-``kind``
 #: decision row and ``feedback``, told apart the same way.

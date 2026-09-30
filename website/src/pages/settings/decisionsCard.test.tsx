@@ -752,6 +752,128 @@ describe('Decisions (Jev) preview card', () => {
     )
   })
 
+  /** The gateway's rows with `model.route` running on the small model, consent off. */
+  const routeOnSmallModel = () =>
+    pointsOf(false).map(row =>
+      row.id === 'model.route' ? { ...row, status: 'active', lane: 'llm' } : row,
+    )
+
+  it('names the lane on the model.route row when the small model rates the turn', async () => {
+    // The second two-lane row. Under the "while this is on" heading, the generic active
+    // word with the switch OFF would claim the endpoint is in use; the row says which
+    // judge rates the turn instead, in its own verb.
+    stubGateway(
+      { enabled: false, points: routeOnSmallModel() },
+      { decisions: { bucket: 100, model_route_judge: { provider: 'llm', llm_model: '' } } },
+    )
+    renderSection()
+    await waitFor(() => {
+      expect(pointRow("Model for the turn's difficulty")).toBeInTheDocument()
+    })
+    expect(screen.getByText('Rated by the small model')).toBeInTheDocument()
+    // And never the word that sends a reader to a consent this lane does not use.
+    expect(screen.queryByText('Needs your OK')).not.toBeInTheDocument()
+  })
+
+  it('offers model.route its judge pickers beside the tiers, reachable with consent off', async () => {
+    stubGateway(
+      { enabled: false, points: routeOnSmallModel() },
+      { decisions: { bucket: 100, model_route_judge: { provider: 'llm', llm_model: '' } } },
+    )
+    renderSection()
+    await waitFor(() => {
+      expect(pointRow("Model for the turn's difficulty")).toBeInTheDocument()
+    })
+    openPoint("Model for the turn's difficulty")
+    await waitFor(() => {
+      expect(screen.getByText('Which judge rates the turn')).toBeInTheDocument()
+    })
+    expect(screen.getByText('Model for the small-model routing judge')).toBeInTheDocument()
+    // The three tier pickers are still there: the judge picks a level, the map says
+    // what each level runs on, and the two are independent controls.
+    expect(screen.getByText('Model for a hard turn')).toBeInTheDocument()
+    const panelText = screen.getByRole('tabpanel').textContent ?? ''
+    expect(panelText).toContain('The small model \u2014 your current provider; switch still needed')
+    expect(panelText).toContain("Keep the judge agent's own model")
+    // The lane note, on this point's own terms: the message, not the evidence.
+    expect(panelText).toContain('The small model is rating this one')
+    // The wake judge's own pickers are NOT drawn on this point.
+    expect(screen.queryByText('Which judge answers')).not.toBeInTheDocument()
+  })
+
+  it('withholds the lane note on a model.route row that names the small model but is off', async () => {
+    // The gateway's row stays truthful about configuration: `provider = llm` with the
+    // keystone switched off carries `lane: 'llm'` under an Off chip. The note says the
+    // small model IS rating turns, which under that chip would describe a judge that
+    // is not asked, so the panel reads the status beside the lane before drawing it.
+    const offOnSmallModel = pointsOf(false).map(row =>
+      row.id === 'model.route' ? { ...row, status: 'off', lane: 'llm' } : row,
+    )
+    stubGateway(
+      { enabled: false, points: offOnSmallModel },
+      { decisions: { bucket: 100, model_route_judge: { provider: 'llm', llm_model: '' } } },
+    )
+    renderSection()
+    await waitFor(() => {
+      expect(pointRow("Model for the turn's difficulty")).toBeInTheDocument()
+    })
+    openPoint("Model for the turn's difficulty")
+    await waitFor(() => {
+      expect(screen.getByText('Which judge rates the turn')).toBeInTheDocument()
+    })
+    expect(screen.getByRole('tabpanel').textContent ?? '').not.toContain(
+      'The small model is rating this one',
+    )
+  })
+
+  it('writes the routing judge to its own config path, never to the wake judge', async () => {
+    // The two knobs are siblings with the same three words; a picker on one point
+    // writing the other's path would move the wrong judge with no visible error.
+    const patch = vi.spyOn(api, 'patchConfig').mockResolvedValue({} as never)
+    // The native `<select>` branch (touch devices) is the one path the test can
+    // drive with a change event; the Radix popup and it share the `onChange`.
+    const originalMatchMedia = window.matchMedia
+    Object.defineProperty(window, 'matchMedia', {
+      writable: true,
+      configurable: true,
+      value: (query: string) => ({
+        matches: query === '(pointer: coarse)' || query === '(hover: none)',
+        media: query,
+        addEventListener: () => {},
+        removeEventListener: () => {},
+        dispatchEvent: () => false,
+      }),
+    })
+    try {
+      stubGateway(
+        { enabled: false, points: routeOnSmallModel() },
+        { decisions: { bucket: 100, model_route_judge: { provider: 'auto', llm_model: '' } } },
+      )
+      renderSection()
+      await waitFor(() => {
+        expect(pointRow("Model for the turn's difficulty")).toBeInTheDocument()
+      })
+      openPoint("Model for the turn's difficulty")
+      const provider = (await waitFor(() =>
+        screen.getByRole('combobox', { name: 'Which judge rates the turn' }),
+      )) as HTMLSelectElement
+      fireEvent.change(provider, { target: { value: 'llm' } })
+      await waitFor(() => {
+        expect(patch).toHaveBeenCalledWith('decisions.model_route_judge.provider', 'llm')
+      })
+      const model = screen.getByRole('combobox', {
+        name: 'Model for the small-model routing judge',
+      }) as HTMLSelectElement
+      fireEvent.change(model, { target: { value: '' } })
+      await waitFor(() => {
+        expect(patch).toHaveBeenCalledWith('decisions.model_route_judge.llm_model', '')
+      })
+      expect(patch.mock.calls.map(c => c[0])).not.toContain('decisions.nudge_wake.provider')
+    } finally {
+      Object.defineProperty(window, 'matchMedia', { writable: true, value: originalMatchMedia })
+    }
+  })
+
   it('fades the egress note only when the gateway cannot run this at all', async () => {
     stubGateway(notFound(), { decisions: { preview: true } })
     renderSection()

@@ -1,12 +1,16 @@
 import { SettingsToggle, SettingsSelect } from '../../components/settings'
 import {
   DECISIONS_LANE_LLM,
+  DECISIONS_MODEL_POINT,
+  DECISIONS_MODEL_ROUTE_JUDGE_MODEL_PATH,
+  DECISIONS_MODEL_ROUTE_JUDGE_PROVIDER_PATH,
   DECISIONS_MODEL_ROUTE_PATH,
   DECISIONS_MODEL_ROUTE_TIERS,
   DECISIONS_NUDGE_WAKE_MODEL_PATH,
   DECISIONS_NUDGE_WAKE_POINT,
   DECISIONS_NUDGE_WAKE_PROVIDER_PATH,
   DECISIONS_NUDGE_WAKE_PROVIDERS,
+  POINT_ACTIVE,
   POINT_NEEDS_SCOPE,
   type DecisionPointRow,
 } from './decisionsPreview'
@@ -69,7 +73,51 @@ export interface DecisionsPointPanelProps {
   judgeDisabled: boolean
   onJudgeProviderChange: (value: string) => void
   onJudgeModelChange: (value: string) => void
+  /**
+   * The routing judge's provider and model (`decisions.model_route_judge`), its
+   * own option labels, and its writers. The same two pickers the wake judge draws,
+   * fed from the point's own section: `model.route` is the second point with two
+   * oracles, and which one puts a turn in its tier is a choice of its own.
+   */
+  routeJudgeProvider: string
+  routeJudgeModel: string
+  routeJudgeModelOptions: string[]
+  /** Option labels for the routing judge's provider picker, keyed as the wake judge's. */
+  routeProviderLabel: Record<string, string>
+  onRouteJudgeProviderChange: (value: string) => void
+  onRouteJudgeModelChange: (value: string) => void
   /** A sentence per `config.json` path this card points at instead of controlling. */
+}
+
+/**
+ * The line a two-lane point shows when the SMALL MODEL is the lane that would run.
+ *
+ * The card's frame speaks for the Jev endpoint -- its heading says "while this is
+ * on" and its intro says nothing is sent while it is off -- and both are true of
+ * every one-lane point. This lane is the exception, so the reader who has just seen
+ * the row name the small model is told here, on the point that does it, which lane
+ * answers and where the state goes. Drawn only when that lane is in fact the live
+ * one: on the Jev lane the frame above is already the whole story, and on a row
+ * that names the small-model lane but is not active -- `model.route` with
+ * `provider = llm` and the keystone switched off reports its configured lane under
+ * an Off chip, because the row stays truthful about configuration -- the note would
+ * say the small model is rating turns it is not asked about, so it is withheld
+ * until the row is active.
+ *
+ * Only the NOTE is shared between the two points. Their four `SettingsSelect`s stay
+ * inline in the panel with a literal `label={i18nT('...')}` each, because that is
+ * what `scripts/settingsExtract.ts` reads to index a control for settings search: a
+ * label arriving through a prop is "dynamic" and the control drops out of the
+ * registry, which is a regression for the two judge pickers that are in it today.
+ */
+function LaneNote({ lane, status, note }: { lane: string | null; status: string; note: string }) {
+  if (lane !== DECISIONS_LANE_LLM || status !== POINT_ACTIVE) return null
+  return <p className="text-[12px] text-muted m-0">{note}</p>
+}
+
+/** Option labels for a provider picker, keyed as the config spells the three words. */
+function providerOptionLabels(labels: Record<string, string>): string[] {
+  return DECISIONS_NUDGE_WAKE_PROVIDERS.map(p => labels[p] ?? p)
 }
 
 export function DecisionsPointPanel({
@@ -96,6 +144,12 @@ export function DecisionsPointPanel({
   judgeDisabled,
   onJudgeProviderChange,
   onJudgeModelChange,
+  routeJudgeProvider,
+  routeJudgeModel,
+  routeJudgeModelOptions,
+  routeProviderLabel,
+  onRouteJudgeProviderChange,
+  onRouteJudgeModelChange,
 }: DecisionsPointPanelProps) {
   return (
     <>
@@ -144,7 +198,7 @@ export function DecisionsPointPanel({
           other picker reads, so an id that cannot run cannot be chosen — and INHERIT is
           the default, because a model id written into a build fails on the first prompt
           for every account not entitled to it. */}
-      {row.id === 'model.route' &&
+      {row.id === DECISIONS_MODEL_POINT &&
         DECISIONS_MODEL_ROUTE_TIERS.map(tier => {
           const server = modelRoute[tier] ?? ''
           // A pinned model the backend does not advertise must stay selectable, or a
@@ -166,28 +220,49 @@ export function DecisionsPointPanel({
             />
           )
         })}
-      {/* The judge point's own two settings. Drawn on the same terms as the tier
-          pickers above and NOT gated on consent: the `llm` lane sends to the model
-          provider this machine already uses, so an owner with no Jev key has to be
-          able to reach these while the consent switch is off -- that is the case the
-          lane exists for. `auto` is the default and resolves without either provider
-          being named. The model list is the same advertised one every other picker
-          reads, and INHERIT is its default for the same reason a tier's is. */}
+      {/* Which oracle puts a turn in its tier, under the three pickers that say what
+          each tier runs on. The two settings are independent on purpose: the judge
+          only ever picks a tier, and the tier map above is the only thing a turn can
+          be routed TO, so a small-model judge widens WHO answers and never WHAT. */}
+      {row.id === DECISIONS_MODEL_POINT && (
+        <>
+          <LaneNote
+            lane={row.lane}
+            status={row.status}
+            note={i18nT('pages.developer.featurePreviewsTab.decisions_route_judge_lane_note')}
+          />
+          <SettingsSelect
+            label={i18nT('pages.developer.featurePreviewsTab.decisions_route_judge_provider')}
+            description={i18nT('pages.developer.featurePreviewsTab.decisions_route_judge_provider_desc')}
+            configKey={DECISIONS_MODEL_ROUTE_JUDGE_PROVIDER_PATH}
+            value={routeJudgeProvider}
+            options={[...DECISIONS_NUDGE_WAKE_PROVIDERS]}
+            optionLabels={providerOptionLabels(routeProviderLabel)}
+            onChange={onRouteJudgeProviderChange}
+            disabled={judgeDisabled}
+          />
+          <SettingsSelect
+            label={i18nT('pages.developer.featurePreviewsTab.decisions_route_judge_model')}
+            description={i18nT('pages.developer.featurePreviewsTab.decisions_route_judge_model_desc')}
+            configKey={DECISIONS_MODEL_ROUTE_JUDGE_MODEL_PATH}
+            value={routeJudgeModel}
+            options={routeJudgeModelOptions}
+            optionLabels={routeJudgeModelOptions.map(m => (m === '' ? judgeInheritLabel : m))}
+            onChange={onRouteJudgeModelChange}
+            disabled={judgeDisabled}
+          />
+        </>
+      )}
+      {/* The wake judge's own two settings: the same two pickers over its own section,
+          drawn on the same terms (not gated on consent: the small-model lane does not
+          depend on it, and an owner with no Jev key must reach these with the switch off). */}
       {row.id === DECISIONS_NUDGE_WAKE_POINT && (
         <>
-          {/* The card's frame speaks for the Jev endpoint -- its heading says "while
-              this is on" and its intro says nothing is sent while it is off -- and both
-              are true of every other point. This lane is the exception, so the reader
-              who has just seen the row name the small model is told here, on the point
-              that does it, which lane answers and where the evidence goes. Drawn only
-              when that lane is in fact the live one: on the Jev lane the frame above is
-              already the whole story, and a second line would answer a question the
-              reader does not have. */}
-          {row.lane === DECISIONS_LANE_LLM && (
-            <p className="text-[12px] text-muted m-0">
-              {i18nT('pages.developer.featurePreviewsTab.decisions_judge_lane_note')}
-            </p>
-          )}
+          <LaneNote
+            lane={row.lane}
+            status={row.status}
+            note={i18nT('pages.developer.featurePreviewsTab.decisions_judge_lane_note')}
+          />
           <SettingsSelect
             label={i18nT('pages.developer.featurePreviewsTab.decisions_judge_provider')}
             description={i18nT(
@@ -196,7 +271,7 @@ export function DecisionsPointPanel({
             configKey={DECISIONS_NUDGE_WAKE_PROVIDER_PATH}
             value={judgeProvider}
             options={[...DECISIONS_NUDGE_WAKE_PROVIDERS]}
-            optionLabels={DECISIONS_NUDGE_WAKE_PROVIDERS.map(p => providerLabel[p] ?? p)}
+            optionLabels={providerOptionLabels(providerLabel)}
             onChange={onJudgeProviderChange}
             disabled={judgeDisabled}
           />

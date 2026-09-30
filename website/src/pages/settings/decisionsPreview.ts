@@ -130,6 +130,16 @@ export const DECISIONS_NUDGE_WAKE_PROVIDER_PATH = 'decisions.nudge_wake.provider
 export const DECISIONS_NUDGE_WAKE_MODEL_PATH = 'decisions.nudge_wake.llm_model'
 
 /**
+ * Config path of the routing judge's provider choice: which oracle puts a chat turn
+ * in its tier at `model.route`. A SIBLING of the tier map rather than a key inside
+ * it, because that map is `{tier: model_id}` and every reader walks it as one.
+ */
+export const DECISIONS_MODEL_ROUTE_JUDGE_PROVIDER_PATH = 'decisions.model_route_judge.provider'
+
+/** Config path of the model the routing judge's small-model lane runs on. */
+export const DECISIONS_MODEL_ROUTE_JUDGE_MODEL_PATH = 'decisions.model_route_judge.llm_model'
+
+/**
  * The judge's CLOSED provider domain, in the order the panel draws it
  * (`JUDGE_PROVIDERS` in `config/sections.py`). `auto` first because it is the
  * shipped default and the one choice that needs no knowledge of either provider:
@@ -452,15 +462,33 @@ export function readModelRoute(config: unknown): Record<string, string> {
  * account not entitled to it.
  */
 export function readNudgeWake(config: unknown): { provider: string; llmModel: string } {
+  return readLaneSection(config, 'nudge_wake')
+}
+
+/**
+ * The routing judge's two settings (`decisions.model_route_judge`), read on the
+ * same terms as the wake judge's: an unknown provider word reads as `auto`, an
+ * absent or non-string model reads as `''` for INHERIT. One reader body for both
+ * sections, because the two knobs mean the same two lanes and a second copy of the
+ * fallback rules would be a second place for them to drift.
+ */
+export function readModelRouteJudge(config: unknown): { provider: string; llmModel: string } {
+  return readLaneSection(config, 'model_route_judge')
+}
+
+function readLaneSection(
+  config: unknown,
+  section: 'nudge_wake' | 'model_route_judge',
+): { provider: string; llmModel: string } {
   const root = asRecord(config)
   const decisions = root ? asRecord(root.decisions) : null
-  const nudgeWake = decisions ? asRecord(decisions.nudge_wake) : null
-  const rawProvider = nudgeWake?.provider
+  const lane = decisions ? asRecord(decisions[section]) : null
+  const rawProvider = lane?.provider
   const provider =
     typeof rawProvider === 'string' &&
     (DECISIONS_NUDGE_WAKE_PROVIDERS as readonly string[]).includes(rawProvider)
       ? rawProvider
       : 'auto'
-  const rawModel = nudgeWake?.llm_model
+  const rawModel = lane?.llm_model
   return { provider, llmModel: typeof rawModel === 'string' ? rawModel : '' }
 }

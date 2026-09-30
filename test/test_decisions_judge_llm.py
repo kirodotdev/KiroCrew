@@ -644,7 +644,9 @@ class TestTheCardsRowForTheJudge:
         rows = {row["id"]: row for row in handlers._points({}, permits=True)}
         assert rows[gate.JUDGE_POINT]["lane"] == gate.LANE_LLM
         assert rows[gate.JUDGE_POINT]["status"] == handlers._POINT_ACTIVE
-        assert all("lane" not in row for name, row in rows.items() if name != gate.JUDGE_POINT)
+        # A lane belongs to a row that has two; every one-lane row carries none. The
+        # route point is the other two-lane row and is asserted in its own suite.
+        assert all("lane" not in row for name, row in rows.items() if name not in gate.LANE_POINTS)
 
     def test_a_pinned_jev_fail_closes_on_an_unregistered_scope(
         self, monkeypatch: pytest.MonkeyPatch

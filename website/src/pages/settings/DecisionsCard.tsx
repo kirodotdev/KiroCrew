@@ -16,6 +16,9 @@ import {
   DECISIONS_API_KEY_SECRET,
   DECISIONS_BUCKET_PATH,
   DECISIONS_LANE_LLM,
+  DECISIONS_MODEL_POINT,
+  DECISIONS_MODEL_ROUTE_JUDGE_MODEL_PATH,
+  DECISIONS_MODEL_ROUTE_JUDGE_PROVIDER_PATH,
   DECISIONS_MODEL_ROUTE_PATH,
   DECISIONS_NUDGE_WAKE_MODEL_PATH,
   DECISIONS_NUDGE_WAKE_POINT,
@@ -24,6 +27,7 @@ import {
   POINT_NEEDS_SCOPE,
   readDecisions,
   readModelRoute,
+  readModelRouteJudge,
   readNudgeWake,
   type DecisionPointRow,
 } from './decisionsPreview'
@@ -237,6 +241,17 @@ export function DecisionsCard() {
   if (nudgeWake.llmModel && !judgeModelOptions.includes(nudgeWake.llmModel)) {
     judgeModelOptions.splice(1, 0, nudgeWake.llmModel)
   }
+  // The routing judge's two values, off its own section beside the tier map, with
+  // its own option list for the same reason: a pinned id the backend no longer
+  // advertises stays selectable so a reader can switch off it.
+  const routeJudge = readModelRouteJudge(configQ.data)
+  const routeJudgeModelOptions = [
+    '',
+    ...modelsQ.data.map(m => m.name).filter(m => m !== 'auto'),
+  ]
+  if (routeJudge.llmModel && !routeJudgeModelOptions.includes(routeJudge.llmModel)) {
+    routeJudgeModelOptions.splice(1, 0, routeJudge.llmModel)
+  }
   // The reviewed CEILING, off the keystone the switch writes. `config.json` carries
   // what the seam asks for and an agent may raise it; this is the number the gate
   // clamps to, so it is the one a reader may act on and the one the box edits.
@@ -382,6 +397,9 @@ export function DecisionsCard() {
   const smallModelJudgeWord = i18nT(
     'pages.developer.featurePreviewsTab.decisions_status_judged_by_small_model',
   )
+  const smallModelRouteWord = i18nT(
+    'pages.developer.featurePreviewsTab.decisions_status_routed_by_small_model',
+  )
   // A label per SCOPE, so a point that needs a new one draws its switch with no
   // per-point branch here.
   const SCOPE_LABEL: Record<string, string> = {
@@ -406,6 +424,14 @@ export function DecisionsCard() {
     auto: i18nT('pages.developer.featurePreviewsTab.decisions_judge_provider_auto'),
     jev: i18nT('pages.developer.featurePreviewsTab.decisions_judge_provider_jev'),
     llm: i18nT('pages.developer.featurePreviewsTab.decisions_judge_provider_llm'),
+  }
+  // The routing judge's labels for the same three words. Its own set because `auto`
+  // means something narrower here: with the switch off nothing routes a session
+  // nobody armed at the picker, where the wake judge would fall to the small model.
+  const ROUTE_PROVIDER_LABEL: Record<string, string> = {
+    auto: i18nT('pages.developer.featurePreviewsTab.decisions_route_judge_provider_auto'),
+    jev: i18nT('pages.developer.featurePreviewsTab.decisions_route_judge_provider_jev'),
+    llm: i18nT('pages.developer.featurePreviewsTab.decisions_route_judge_provider_llm'),
   }
   const inheritLabel = i18nT('pages.developer.featurePreviewsTab.decisions_tier_inherit')
   // The judge's own word for INHERIT. The tier label above says the SESSION's model,
@@ -441,12 +467,11 @@ export function DecisionsCard() {
   // register -- so deriving it from the switch would print the generic word over a
   // small-model judge for the default provider.
   const statusWord = (row: DecisionPointRow) => {
-    if (
-      row.id === DECISIONS_NUDGE_WAKE_POINT &&
-      row.status === POINT_ACTIVE &&
-      row.lane === DECISIONS_LANE_LLM
-    ) {
-      return smallModelJudgeWord
+    if (row.status === POINT_ACTIVE && row.lane === DECISIONS_LANE_LLM) {
+      if (row.id === DECISIONS_NUDGE_WAKE_POINT) return smallModelJudgeWord
+      // The other two-lane row. Its own word, because the small model RATES a turn
+      // here rather than judging a wake, and the verb is what a reader acts on.
+      if (row.id === DECISIONS_MODEL_POINT) return smallModelRouteWord
     }
     return STATUS_WORD[row.status] ?? offWord
   }
@@ -961,6 +986,16 @@ export function DecisionsCard() {
                     }
                     onJudgeModelChange={value =>
                       configMut.mutate({ path: DECISIONS_NUDGE_WAKE_MODEL_PATH, value })
+                    }
+                    routeJudgeProvider={routeJudge.provider}
+                    routeJudgeModel={routeJudge.llmModel}
+                    routeJudgeModelOptions={routeJudgeModelOptions}
+                    routeProviderLabel={ROUTE_PROVIDER_LABEL}
+                    onRouteJudgeProviderChange={value =>
+                      configMut.mutate({ path: DECISIONS_MODEL_ROUTE_JUDGE_PROVIDER_PATH, value })
+                    }
+                    onRouteJudgeModelChange={value =>
+                      configMut.mutate({ path: DECISIONS_MODEL_ROUTE_JUDGE_MODEL_PATH, value })
                     }
                   />
                 </Suspense>

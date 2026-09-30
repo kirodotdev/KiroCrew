@@ -452,8 +452,19 @@ async def routed_model(
             "history_chars": trace.get("history_chars", 0),
             "truncated": trace.get("truncated", 0),
         }
+        # The gate reports the lane it resolved on the receipt, so the outcome row
+        # can say which oracle answered without this module learning the rule that
+        # picks one. Read from the receipt and never inferred from config here: the
+        # gate resolves ``auto`` against the keystone, which this point never reads.
+        receipt: dict[str, Any] = {}
         answers = await core.decide(
-            POINT, state, questions(), session_key=session_key, config=config, extra=extra
+            POINT,
+            state,
+            questions(),
+            session_key=session_key,
+            config=config,
+            extra=extra,
+            receipt=receipt,
         )
     except asyncio.CancelledError:
         raise
@@ -463,6 +474,7 @@ async def routed_model(
         logger.debug("model.route: keeping the session's own model", exc_info=True)
         return None
     latency_ms = int((time.monotonic() - started) * 1000)
+    lane = str(receipt.get("lane") or "")
     tier = read_tier(answers)
     if not tier:
         return None
@@ -484,6 +496,7 @@ async def routed_model(
             tier=tier,
             latency_ms=latency_ms,
             error=ERROR_UNKNOWN_MODEL,
+            lane=lane,
         )
         return None
     return {
@@ -493,6 +506,7 @@ async def routed_model(
         "model_chosen": chosen,
         "baseline_model": current_model or "",
         "latency_ms": latency_ms,
+        "lane": lane,
     }
 
 
@@ -502,6 +516,13 @@ def build_outcome(routed: Mapping[str, Any]) -> dict[str, Any]:
     ``latency_ms`` is deliberately NOT here: it is a core row field
     (:func:`~kiro_crew.decisions.log.build_row`), so the row carries it at top
     level and an ``extra`` naming it would be dropped.
+
+    ``lane`` names the oracle that answered -- ``jev`` or ``llm`` -- because this is
+    the one point besides the wake judge that has two, and an operator reading a
+    tier they disagree with needs to know which model to disagree with. Written
+    only when the gate reported one, so a row from a build that predates the field
+    and a row from one that has it read the same way: absent means Jev, the only
+    lane there was.
     """
     row = {
         "turn_id": routed.get("turn_id"),
@@ -510,6 +531,9 @@ def build_outcome(routed: Mapping[str, Any]) -> dict[str, Any]:
         "model_chosen": routed.get("model_chosen"),
         "baseline_model": routed.get("baseline_model") or "",
     }
+    lane = str(routed.get("lane") or "")
+    if lane:
+        row["lane"] = lane
     # Present only on an APPLY: an unpinned tier switches nothing, so a row saying
     # "not applied" there would name a failure where the shipped state is no pin.
     if "applied" in routed:
@@ -574,6 +598,7 @@ def record_error(
     latency_ms: int,
     error: str,
     p: float | None = None,
+    lane: str = "",
 ) -> None:
     """One row for a tier that arrived and could not be applied. Never raises.
 
@@ -584,11 +609,15 @@ def record_error(
 
     *p* is the refused answer's own probability, recorded when the category is
     about the ANSWER rather than about a model id: a reader tells the two window
-    rules apart by whether that number clears the floor.
+    rules apart by whether that number clears the floor. *lane* is the oracle that
+    answered, on the same terms :func:`build_outcome` gives it: written when known,
+    absent otherwise.
     """
     extra: dict[str, Any] = {"turn_id": turn_id, "tier": tier}
     if p is not None:
         extra["p"] = p
+    if lane:
+        extra["lane"] = lane
     try:
         _log.append(
             _log.build_row(
