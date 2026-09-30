@@ -6,6 +6,7 @@ import asyncio
 import base64
 import bisect
 import fnmatch
+import functools
 import hashlib as _hashlib
 import importlib
 import ipaddress
@@ -30,7 +31,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from types import ModuleType
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, NamedTuple, ParamSpec, TypeVar
 from urllib.parse import parse_qs, unquote, unquote_plus, urlparse
 
 from kiro_crew.credential_patterns import AWS_KEY_ID, JWT_MULTI_SEGMENT
@@ -1104,6 +1105,27 @@ def _inline_interpreter_bindings(text: str) -> str:
     return _INTERP_IDENT_RE.sub(lambda m: bindings.get(m.group(0), m.group(0)), text)
 
 
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
+
+
+def _one_payload_walk_per_decision(fn: Callable[_P, _R]) -> Callable[_P, _R]:
+    """Run *fn* inside one ``shell_normalizer._payload_walk_memo`` block.
+
+    Every floor of a decision descends the same command's nested payloads, so the
+    decision shares one walk per distinct text instead of paying for one per floor.
+    The owner is resolved at call time, as :func:`is_denied` resolves its own.
+    """
+
+    @functools.wraps(fn)
+    def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> _R:
+        with _submodule("shell_normalizer")._payload_walk_memo():
+            return fn(*args, **kwargs)
+
+    return wrapper
+
+
+@_one_payload_walk_per_decision
 def is_denied(
     tool_name: str,
     extra_patterns: list[str] | None = None,
