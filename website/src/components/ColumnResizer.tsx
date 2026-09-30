@@ -38,17 +38,26 @@ const COARSE_STEP = 64
  * already try to drag, but nothing about a plain header cell says its boundary
  * moves, and lighting only the hovered cell's rule reads as one decoration
  * rather than as a row of boundaries. It keys off the `thead` ancestor so a
- * caller has no row-level class to remember.
+ * caller has no row-level class to remember; a markdown table's grips sit in an
+ * overlay outside its `thead`, so they key off the table's header hover too.
  *
  * It is the ARIA window-splitter widget: focusable, arrow-key operable, and it
  * reports its position. Enter and a double-click both return the column to its
  * declared default, so the keyboard can reach every state the mouse can.
  */
 export default function ColumnResizer({
-  column, value, min, max, onResize, onReset,
+  column, value, min, max, onResize, onReset, tabIndex = 0, onFocus, onNavigate,
 }: ColumnResizerBinding & {
   /** The column's already-translated header label, for the accessible name. */
   column: string
+  /** A caller holding several grips as ONE roving tab stop passes -1 for every
+   *  grip but the current one. Defaults to its own tab stop. */
+  tabIndex?: 0 | -1
+  onFocus?: () => void
+  /** Roving callers only: ArrowUp / ArrowDown move focus to the previous /
+   *  next grip of the same table (Left/Right already resize). Without it
+   *  Up/Down are left alone, so the page still scrolls. */
+  onNavigate?: (dir: -1 | 1) => void
 }) {
   const startRef = useRef(0)
   const draggingRef = useRef(false)
@@ -94,8 +103,10 @@ export default function ColumnResizer({
       role="separator"
       aria-orientation="vertical"
       aria-label={i18nT('components.columnResizer.resize_column', { column })}
-      // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- the splitter widget is operable from the keyboard, so it needs the tab stop
-      tabIndex={0}
+      // The splitter widget is operable from the keyboard, so it needs a tab
+      // stop (or a share of one, for a roving caller).
+      tabIndex={tabIndex}
+      onFocus={onFocus}
       aria-valuenow={value}
       aria-valuemin={min}
       aria-valuemax={max}
@@ -107,6 +118,9 @@ export default function ColumnResizer({
       onDoubleClick={(e) => { e.stopPropagation(); onReset() }}
       onKeyDown={(e) => {
         if (e.key === 'Enter') { e.preventDefault(); onReset(); return }
+        if (onNavigate && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+          e.preventDefault(); onNavigate(e.key === 'ArrowDown' ? 1 : -1); return
+        }
         // Left/Right only: swallowing Up/Down would break scrolling the page.
         if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return
         e.preventDefault()
@@ -121,7 +135,7 @@ export default function ColumnResizer({
     >
       <div
         aria-hidden="true"
-        className="h-[60%] w-[2px] rounded-full bg-transparent transition-colors duration-200 resize-accent [thead:hover_&]:bg-border-strong group-hover/drag:bg-accent group-focus-visible/drag:bg-accent group-active/drag:bg-accent-hover"
+        className="h-[60%] w-[2px] rounded-full bg-transparent transition-colors duration-200 resize-accent [thead:hover_&]:bg-border-strong [.markdown-table:has(thead:hover)_&]:bg-border-strong group-hover/drag:bg-accent group-focus-visible/drag:bg-accent group-active/drag:bg-accent-hover"
       />
     </div>
   )

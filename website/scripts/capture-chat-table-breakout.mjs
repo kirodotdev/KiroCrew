@@ -35,6 +35,13 @@ mkdirSync(out, { recursive: true })
 const { LD_LIBRARY_PATH: _ld, ...env } = process.env
 const browser = await chromium.launch({ env })
 const results = []
+// Breakout is opt-in: a top-level table keeps the reading column's width
+// until its Expand toggle is pressed. Toggle every visible top-level toggle.
+const setExpanded = (page, want) => page.evaluate((want) => {
+  for (const b of document.querySelectorAll('[data-role="assistant"] [data-testid="table-expand"]')) {
+    if (getComputedStyle(b).display !== 'none' && (b.getAttribute('aria-expanded') === 'true') !== want) b.click()
+  }
+}, want)
 try {
   for (const host of tables ? ['sdk', 'main'] : []) {
   for (const theme of ['light', 'dark']) {
@@ -45,6 +52,23 @@ try {
     for (const width of [1500, 1100, 768, 390, 320, 1500]) {
       await page.setViewportSize({ width, height: 900 })
       await page.waitForTimeout(100)
+      if (!expectBug) {
+        // Default: the table sits in the reading column, like the prose.
+        const d = await page.evaluate(() => {
+          const assistant = document.querySelector('.chat-container [data-role="assistant"]')
+          const outer = assistant.querySelector('table').parentElement.parentElement
+          const toggle = outer.querySelector('[data-testid="table-expand"]')
+          return { table: outer.getBoundingClientRect().width, prose: assistant.querySelector('p').getBoundingClientRect().width, expanded: outer.hasAttribute('data-expanded'), toggleShown: getComputedStyle(toggle).display !== 'none' }
+        })
+        assert(!d.expanded && Math.abs(d.table - d.prose) < 1, `Default table must keep the prose width: ${JSON.stringify(d)}`)
+        assert.equal(d.toggleShown, width >= 880, `Expand toggle must show only where expanding can widen: ${JSON.stringify({ width, ...d })}`)
+        if (width === 1500) {
+          await page.hover('.chat-container [data-role="assistant"] [data-testid="markdown-table"]')
+          await page.screenshot({ path: `${out}/default-${theme}-${width}.png` })
+        }
+        await setExpanded(page, true)
+        await page.waitForTimeout(100)
+      }
       const m = await page.evaluate(() => {
         const scroller = document.querySelector('.chat-container')
         const assistant = scroller.querySelector('[data-role="assistant"]')
@@ -108,6 +132,7 @@ try {
       assert.equal(m.farmHeight, m.liveHeight, 'Off-screen measurement differs from the visible row')
       results.push({ host, theme, width, ...m })
       if (width === 1500 || width === 390) await page.screenshot({ path: `${out}/${expectBug ? 'before' : 'after'}-${theme}-${width}.png` })
+      if (!expectBug) await setExpanded(page, false)
     }
     if (!expectBug) {
       await page.goto(`${base}/capture/chat-table-breakout.html?theme=${theme}&host=${host}&tableOnly`, { waitUntil: 'networkidle' })
@@ -140,6 +165,7 @@ try {
     const page = await context.newPage()
     await page.goto(`${base}/capture/chat-table-breakout.html?theme=light&rail=${side}`, { waitUntil: 'networkidle' })
     await page.waitForSelector('[data-live-fixture] table')
+    await setExpanded(page, true)
     const railProbe = () => page.evaluate((side) => {
       const scroller = document.querySelector('.chat-container')
       const s = scroller.getBoundingClientRect()

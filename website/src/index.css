@@ -3464,8 +3464,10 @@ html[data-font-family="opendyslexic"] .nav-item {
      while allowing its table to paint into the surrounding gutters. */
   display: flow-root;
 }
-.chat-container [data-role="assistant"] > .message-bubble:not([data-bordered]) > [data-image-scope] > div > .markdown-table {
-  /* Stop 40px short of each pane edge: the band TurnNavigationMinimap needs
+.chat-container [data-role="assistant"] > .message-bubble:not([data-bordered]) > [data-image-scope] > div > .markdown-table[data-expanded] {
+  /* Only once the reader presses the table's Expand toggle (MarkdownTable's
+     `data-expanded`): by default a table keeps the reading column's width,
+     like the prose around it. Stop 40px short of each pane edge: the band TurnNavigationMinimap needs
      free beside the content column (MIN_GUTTER_PX, a px constant — so px here,
      not rem, or a browser's smaller root font would shrink the clearance under
      the band) and paints its 28px button into, 8px in from the edge. Keeping
@@ -3498,4 +3500,20 @@ html[data-font-family="opendyslexic"] .nav-item {
 .markdown-table .overflow-x-auto[data-overflow="both"] {
   mask-image: linear-gradient(to right, transparent, black 24px, black calc(100% - 24px), transparent);
   -webkit-mask-image: linear-gradient(to right, transparent, black 24px, black calc(100% - 24px), transparent);
+}
+
+/* The Expand toggle shows on a top-level table in an unbordered transcript
+   bubble (the breakout rule above the overflow cue), on a viewport wide enough that the pane can
+   outgrow the reading column (below ~880px the pane minus the rail band is no
+   wider than the column). The gate is the viewport, not the pane: a narrow
+   split pane on a wide screen still shows it, and there expanding is a no-op. The utilities are
+   emitted unlayered at the top of this file, so at equal specificity this
+   later rule beats the button's own `flex`. */
+.markdown-table-expand {
+  display: none;
+}
+@media (min-width: 880px) {
+  .chat-container [data-role="assistant"] > .message-bubble:not([data-bordered]) > [data-image-scope] > div > .markdown-table .markdown-table-expand {
+    display: flex;
+  }
 }

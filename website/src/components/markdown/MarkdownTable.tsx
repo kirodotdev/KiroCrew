@@ -1,5 +1,5 @@
-import React, { useEffect, useRef, useState } from 'react'
-import { Check, Copy, FileSpreadsheet } from 'lucide-react'
+import React, { useCallback, useEffect, useRef, useState } from 'react'
+import { Check, Copy, FileSpreadsheet, FoldHorizontal, UnfoldHorizontal } from 'lucide-react'
 import type { Element as HastElement } from 'hast'
 import { copyToClipboard } from '../../utils/clipboard'
 import { hastTableToCsv, hastTableToMarkdown } from '../../utils/tableClipboard'
@@ -8,6 +8,7 @@ import { useScrollEdges } from '../../hooks/useScrollEdges'
 import ErrorNotice from '../ErrorNotice'
 import { i18nT } from '../../i18n/t'
 import { sp } from './elements'
+import { useMarkdownTableColumns } from './useMarkdownTableColumns'
 
 const TABLE_ACTION_BTN_CLS = 'flex items-center gap-1 px-1.5 py-1 rounded text-[11px] text-muted hover:text-text hover:bg-bg-hover cursor-pointer'
 
@@ -59,6 +60,17 @@ export function MarkdownTable({ node, children }: { node?: HastElement; children
   // re-labelling headers, a webfont finishing load), not the scroller's own
   // box, so the table is the observed content node.
   const [attachScroller, edges, , attachTable] = useScrollEdges<HTMLDivElement>()
+  const tableRef = useRef<HTMLTableElement | null>(null)
+  // One table node feeds both owners: the column sizer reads tableRef, the
+  // edge fade observes it through attachTable.
+  const setTable = useCallback((el: HTMLTableElement | null) => {
+    tableRef.current = el
+    attachTable(el)
+  }, [attachTable])
+  const columns = useMarkdownTableColumns(tableRef)
+  // Off by default: a transcript table sits in the reading column like the
+  // prose around it, and widens into the pane only when the reader asks.
+  const [expanded, setExpanded] = useState(false)
 
   const copy = (target: CopyTarget) => {
     if (!node) return
@@ -93,7 +105,7 @@ export function MarkdownTable({ node, children }: { node?: HastElement; children
     : <Icon size={13} aria-hidden="true" />
 
   return (
-    <div className="markdown-table my-3 group/table" data-testid="markdown-table">
+    <div className="markdown-table my-3 group/table" data-testid="markdown-table" data-expanded={expanded ? '' : undefined}>
       {/* A hidden scrollbar leaves no sign that columns sit past an edge, so
           fade whichever edge still clips. The fade is a `mask-image` on the
           scroller itself (the proven edge-fade pattern — ThinkingBlock,
@@ -123,8 +135,25 @@ export function MarkdownTable({ node, children }: { node?: HastElement; children
         data-testid="table-scroller"
         data-overflow={edges.left && edges.right ? 'both' : edges.left ? 'left' : edges.right ? 'right' : ''}
         className="relative overflow-x-auto"
-      ><table ref={attachTable} {...sp(node)} className="min-w-full border-collapse text-sm [overflow-wrap:normal] [word-break:normal]">{children}</table></div>
+      ><table {...sp(node)} ref={setTable} style={columns.tableStyle} className={columns.resized
+        // A narrowed fixed-layout column clips its content instead of painting
+        // it over the neighbour; a header label ellipsizes (it never wraps).
+        ? 'min-w-full border-collapse text-sm [overflow-wrap:normal] [word-break:normal] [&_th]:overflow-hidden [&_th]:text-ellipsis [&_td]:overflow-hidden'
+        : 'min-w-full border-collapse text-sm [overflow-wrap:normal] [word-break:normal]'}>{columns.colgroup}{children}</table>{columns.grips}</div>
       <div className={`mt-0.5 flex items-center justify-end gap-1 select-none opacity-0 group-hover/table:opacity-100 group-focus-within/table:opacity-100 transition-opacity ${HOVER_NONE_ACTIONS_ROW_CLS}`}>
+        {/* Shown only where a table can widen (index.css: a top-level
+            assistant table in an unbordered transcript bubble); everywhere
+            else `.markdown-table-expand` stays display:none. The visible word
+            flips Widen/Narrow, so the accessible name and title flip with it
+            (a voice-control user says the word they see); `aria-expanded`
+            still carries the state. */}
+        <button type="button" data-testid="table-expand" className={`markdown-table-expand ${TABLE_ACTION_BTN_CLS}`}
+          onClick={() => setExpanded(v => !v)} aria-expanded={expanded}
+          title={expanded ? i18nT('components.markdownRenderer.narrow_table') : i18nT('components.markdownRenderer.expand_table')}
+          aria-label={expanded ? i18nT('components.markdownRenderer.narrow_table') : i18nT('components.markdownRenderer.expand_table')}>
+          {expanded ? <FoldHorizontal size={13} aria-hidden="true" /> : <UnfoldHorizontal size={13} aria-hidden="true" />}
+          <span aria-hidden="true">{expanded ? i18nT('components.markdownRenderer.collapse_table_word') : i18nT('components.markdownRenderer.expand_table_word')}</span>
+        </button>
         <button type="button" data-testid="table-copy-markdown" className={TABLE_ACTION_BTN_CLS} onClick={() => copy('markdown')} title={label('markdown')} aria-label={label('markdown')}>
           {glyph('markdown', Copy)}
           <span aria-hidden="true">{word('markdown')}</span>
