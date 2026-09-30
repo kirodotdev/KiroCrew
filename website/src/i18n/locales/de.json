@@ -345,7 +345,8 @@
     "kiro_credit_usage_no_reading": "Kiro-Credit-Verbrauch — noch keine Guthabenanzeige; öffnen zum Aktualisieren",
     "kiro_credit_usage_config_unreadable": "Kiro-Credit-Verbrauch — Backend-Einstellung konnte nicht gelesen werden; öffnen zum erneuten Versuch",
     "metrics_card_old_data": "Zuletzt vor mehr als 90 Sekunden aktualisiert",
-    "metrics_card_fetch_failed": "Die letzte Aktualisierung der Metriken ist fehlgeschlagen"
+    "metrics_card_fetch_failed": "Die letzte Aktualisierung der Metriken ist fehlgeschlagen",
+    "release_notes_not_published_yet": "Die Versionshinweise für {{release}} sind noch nicht veröffentlicht. Stattdessen werden die Hinweise zu {{shown}} angezeigt."
   },
   "appSdk": {
     "chatEmbed": {

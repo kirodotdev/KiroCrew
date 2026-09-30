@@ -349,7 +349,8 @@
     "kiro_credit_usage_no_reading": "Utilizzo crediti Kiro — nessuna lettura del saldo per ora; apri per aggiornare",
     "kiro_credit_usage_config_unreadable": "Utilizzo crediti Kiro — impossibile leggere l’impostazione del backend; apri per riprovare",
     "metrics_card_old_data": "Ultimo aggiornamento oltre 90 secondi fa",
-    "metrics_card_fetch_failed": "L'ultimo aggiornamento delle metriche non è riuscito"
+    "metrics_card_fetch_failed": "L'ultimo aggiornamento delle metriche non è riuscito",
+    "release_notes_not_published_yet": "Le note di rilascio di {{release}} non sono ancora state pubblicate. Vengono mostrate invece le note di {{shown}}."
   },
   "appSdk": {
     "chatEmbed": {

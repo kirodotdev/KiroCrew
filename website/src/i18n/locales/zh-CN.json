@@ -341,7 +341,8 @@
     "kiro_credit_usage_no_reading": "Kiro 额度用量 — 暂无余额读数；打开以刷新",
     "kiro_credit_usage_config_unreadable": "Kiro 额度用量 — 无法读取后端设置；打开以重试",
     "metrics_card_old_data": "上次更新已超过 90 秒",
-    "metrics_card_fetch_failed": "上次指标更新失败"
+    "metrics_card_fetch_failed": "上次指标更新失败",
+    "release_notes_not_published_yet": "{{release}} 的更新日志尚未发布，现改为显示 {{shown}} 的更新日志。"
   },
   "appSdk": {
     "chatEmbed": {

@@ -19,7 +19,7 @@ import { installSoftNavigate } from './utils/errorReport'
 import { agentSwitchFailureMessage } from './utils/agentSwitchFeedback'
 import { sendTurn } from './chat-core/transport/sendTurn'
 import { updateAffordance } from './utils/updateAffordance'
-import { isNewSection } from './utils/releaseVersion'
+import { baseRelease, compareVersions, isNewSection, notesPredateRunningRelease } from './utils/releaseVersion'
 import { metricColor } from './utils/metricColor'
 import { fetchNotifications, ackNotification, armBootNotificationsFallback } from './store/notificationsSlice'
 import { useWebSocket } from './hooks/useWebSocket'
@@ -2794,6 +2794,10 @@ export default function App() {
   const [showUpdateModal, setShowUpdateModal] = useState(false)
   const [kiroUsageOpen, setKiroUsageOpen] = useState(false)
   const [changes, setChanges] = useState('')
+  // Set to the newest shown section's version when the modal is showing an
+  // EARLIER release's notes because this build's release has none in the file
+  // yet; '' otherwise. Drives the notice above the notes.
+  const [staleNotesFrom, setStaleNotesFrom] = useState('')
   const [showChangelog, setShowChangelog] = useState(false)
   // Has the changelog effect below reached a verdict for this launch? It decides
   // asynchronously, so "no changelog is showing" is not the same claim as "no
@@ -3349,6 +3353,11 @@ export default function App() {
       if (!d.content) return
       const filtered: string[] = []
       let include = false
+      let newest = ''
+      // Does the file carry a section for the release this build is (a
+      // prerelease of)? Only then is "not published yet" a false claim.
+      let hasOwnRelease = false
+      const runningRelease = baseRelease(version)
       for (const line of d.content.split('\n')) {
         // ANY level-2 heading ends the preceding section, matching the renderer
         // (`changelog.py:_H2_RE`). Keying only on `## [` left an unversioned
@@ -3356,6 +3365,8 @@ export default function App() {
         if (/^##\s+\S/.test(line)) {
           const v = line.match(/^##\s+\[([^\]]+)\]/)?.[1]
           include = !!v && isNewSection(v, lastSeen, version)
+          if (include && v && (!newest || (compareVersions(v, newest) ?? 0) > 0)) newest = v
+          if (v && runningRelease && compareVersions(baseRelease(v) ?? '', runningRelease) === 0) hasOwnRelease = true
         }
         if (include) filtered.push(line)
       }
@@ -3363,7 +3374,11 @@ export default function App() {
       // No qualifying section means this build's release has no notes yet, which
       // is the normal state on a dev build. Say nothing: the modal exists to
       // deliver notes, and one carrying someone else's is worse than none.
-      if (text) { setChanges(text); setShowChangelog(true) }
+      if (text) {
+        setChanges(text)
+        setStaleNotesFrom(!hasOwnRelease && notesPredateRunningRelease(newest, version) ? newest : '')
+        setShowChangelog(true)
+      }
     }).then(() => {
       // Stamp the version ONLY on a response we actually read. The old `finally`
       // stamped it either way, so a single failed fetch retired that version's
@@ -4660,8 +4675,16 @@ export default function App() {
       {/* Changelog modal */}
       {showChangelog && !updating && (
         <Clickable className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/60 backdrop-blur-xs animate-rise" onClick={e => { if (e && e.target === e.currentTarget) { setShowChangelog(false); setShowFull(false) } }}>
-          <div role="dialog" aria-modal="true" aria-label={i18nT('app.changelog')} className={`bg-card border border-border rounded-xl p-6 w-full mx-4 shadow-xl transition-all duration-300 ${showFull ? 'max-w-2xl' : 'max-w-md'}`}>
-            <div className="flex justify-between items-center mb-4">
+          {/* Sized for a real release, not a patch note: a minor's section runs
+              to hundreds of lines, and the old max-w-md / max-h-56 box showed a
+              dozen of them. The dialog is bounded by the viewport and laid out as
+              a column so only the notes (and the full changelog, when opened)
+              scroll while the header and the update affordance stay on screen.
+              One width for both states, so "view full changelog" does not make
+              the dialog jump; opening it pins the notes to a shorter box and
+              gives the full changelog the rest of the dialog's height. */}
+          <div role="dialog" aria-modal="true" aria-label={i18nT('app.changelog')} data-testid="changelog-modal" className="bg-card border border-border rounded-xl p-6 w-full mx-4 max-w-3xl max-h-[85vh] overflow-y-auto flex flex-col shadow-xl">
+            <div className="flex justify-between items-center mb-4 shrink-0">
               <div className="text-sm font-bold text-text-strong"><Package className="lucide-inline" /> {i18nT('app.v')}{version}</div>
               <button aria-label={i18nT('app.close')} className="text-muted text-[13px] cursor-pointer hover:text-text" onClick={() => { setShowChangelog(false); setShowFull(false) }}><X className="lucide-inline" /></button>
             </div>
@@ -4673,10 +4696,26 @@ export default function App() {
                 replaced the notes with "You're on the latest version" and
                 delivered nothing. Availability is a separate fact and now has
                 its own row below. */}
-            <div className="text-[13px] font-medium text-muted uppercase tracking-wider mb-2">{i18nT('app.what_s_new')}</div>
-            <div className="p-3 bg-bg rounded-lg border border-border max-h-56 overflow-y-auto mb-4">
-              <div className="text-[13px] text-text leading-relaxed"><MarkdownRenderer content={changes} /></div>
+            <div className="text-[13px] font-medium text-muted uppercase tracking-wider mb-2 shrink-0">{i18nT('app.what_s_new')}</div>
+            {/* Notes are written when a STABLE release ships, so a prerelease or
+                dev build (main runs a minor ahead) has no section of its own and
+                is shown the previous release's notes under its own version in
+                the header. Say so, rather than let those read as this build's. */}
+            {staleNotesFrom && (
+              <div role="note" data-testid="changelog-stale-notice" className="text-[13px] text-muted mb-2 shrink-0">
+                {i18nT('app.release_notes_not_published_yet', { release: baseRelease(version), shown: staleNotesFrom })}
+              </div>
+            )}
+            {/* The bottom fade marks that the notes continue past the box edge
+                instead of leaving a line sliced mid-height; the padding lets the
+                last line scroll clear of the fade. The fade sits on an inner
+                scroller so the box's own border stays intact. */}
+            <div className={`bg-bg rounded-lg border border-border min-h-0 mb-4 flex flex-col transition-[max-height] duration-300 motion-reduce:transition-none ${showFull ? 'max-h-[30vh] shrink-0' : 'max-h-[60vh]'}`} data-testid="changelog-notes">
+              <div className="p-3 pb-6 min-h-0 overflow-y-auto [mask-image:linear-gradient(to_bottom,black_calc(100%-1.5rem),transparent)]" data-testid="changelog-notes-scroll">
+                <div className="text-[13px] text-text leading-relaxed"><MarkdownRenderer content={changes} /></div>
+              </div>
             </div>
+            <div className="shrink-0">
             {updateAvailable ? (
               affordance === 'apply' ? (
                 <button className="w-full py-2 rounded-lg text-[13px] font-medium cursor-pointer bg-accent text-accent-fg border-none hover:opacity-90 transition-opacity" onClick={handleUpdate}>
@@ -4699,18 +4738,25 @@ export default function App() {
             ) : (
               <div className="text-sm text-muted py-4 text-center"><CheckCircle className="lucide-inline" /> {i18nT('app.you_re_on_the_latest_version')}</div>
             )}
-            <div className="flex items-center justify-between mt-4 pt-3 border-t border-border">
+            </div>
+            <div className="flex items-center justify-between mt-4 pt-3 border-t border-border shrink-0">
               <span className="text-[13px] text-muted">{i18nT('app.auto_update_on_restart')}</span>
               <Toggle checked={autoUpdate} label={i18nT('app.auto_update_on_restart')}
                 onChange={async next => { setAutoUpdate(next); await api.setAutoUpdate(next) }} />
             </div>
-            <div className="mt-3 pt-3 border-t border-border">
-              <button className="text-[13px] text-muted cursor-pointer hover:text-text transition-colors bg-transparent border-none p-0 font-body" onClick={async () => {
+            {/* The full changelog takes the dialog's remaining height, with a
+                floor: on a short viewport the fixed rows above can consume all
+                of it, and the dialog then scrolls rather than collapsing this
+                box to zero height. */}
+            <div className={`mt-3 pt-3 border-t border-border flex flex-col flex-1 ${showFull ? 'min-h-[10rem]' : 'min-h-0'}`}>
+              <button className="self-start shrink-0 text-[13px] text-muted cursor-pointer hover:text-text transition-colors bg-transparent border-none p-0 font-body" onClick={async () => {
                 if (!showFull) { if (!fullChangelog) { const d = await api.changelog(); setFullChangelog(d.content || '') }; setShowFull(true) } else { setShowFull(false) }
               }}>{showFull ? i18nT('app.hide_full_changelog') : i18nT('app.view_full_changelog')}</button>
               {showFull && fullChangelog && (
-                <div className="mt-2 p-3 bg-bg rounded-lg border border-border max-h-72 overflow-y-auto">
-                  <div className="text-[13px] text-text leading-relaxed"><MarkdownRenderer content={fullChangelog} /></div>
+                <div className="mt-2 bg-bg rounded-lg border border-border flex-1 min-h-0 flex flex-col" data-testid="changelog-full">
+                  <div className="p-3 pb-6 min-h-0 overflow-y-auto [mask-image:linear-gradient(to_bottom,black_calc(100%-1.5rem),transparent)]" data-testid="changelog-full-scroll">
+                    <div className="text-[13px] text-text leading-relaxed"><MarkdownRenderer content={fullChangelog} /></div>
+                  </div>
                 </div>
               )}
             </div>

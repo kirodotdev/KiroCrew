@@ -353,7 +353,8 @@
     "kiro_credit_usage_no_reading": "Использование кредитов Kiro — показаний баланса пока нет; открой, чтобы обновить",
     "kiro_credit_usage_config_unreadable": "Использование кредитов Kiro — не удалось прочитать настройку бэкенда; открой, чтобы повторить",
     "metrics_card_old_data": "Последнее обновление более 90 секунд назад",
-    "metrics_card_fetch_failed": "Последнее обновление метрик не удалось"
+    "metrics_card_fetch_failed": "Последнее обновление метрик не удалось",
+    "release_notes_not_published_yet": "Заметки о выпуске {{release}} ещё не опубликованы. Вместо них показаны заметки о выпуске {{shown}}."
   },
   "appSdk": {
     "chatEmbed": {

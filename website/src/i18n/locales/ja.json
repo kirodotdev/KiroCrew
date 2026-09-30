@@ -341,7 +341,8 @@
     "kiro_credit_usage_no_reading": "Kiro クレジット使用量 — 残高はまだ読み取れていません。開いて更新",
     "kiro_credit_usage_config_unreadable": "Kiro クレジット使用量 — バックエンド設定を読み取れませんでした。開いて再試行",
     "metrics_card_old_data": "最終更新から90秒以上経過しています",
-    "metrics_card_fetch_failed": "前回のメトリクス更新に失敗しました"
+    "metrics_card_fetch_failed": "前回のメトリクス更新に失敗しました",
+    "release_notes_not_published_yet": "{{release}} のリリースノートはまだ公開されていません。代わりに {{shown}} のリリースノートを表示しています。"
   },
   "appSdk": {
     "chatEmbed": {
