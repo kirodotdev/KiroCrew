@@ -878,9 +878,9 @@ def _deny_segment_views(segment: str, emit_self: bool = True) -> tuple[str, ...]
     shell hands over; a whitespace-only element is a real operand naming a file
     that can exist, so a view without it is an argv ONE OPERAND SHORT of the one
     that runs.  Widening the render to elements that do carry characters changes
-    what a view is permitted to assert -- and ``is_denied``'s exception machinery
-    (present, and ``_DENY_EXCEPTIONS`` empty today) is matched against views, so
-    the direction it would open is ALLOW, not deny.  Recognizing this shape wants
+    what a view is permitted to assert -- and ``is_denied``'s perm-verb-mention
+    narrowing is matched against views, so the direction it would open is ALLOW,
+    not deny.  Recognizing this shape wants
     rules matched against argv STRUCTURE rather than against a rendered line,
     which is what ``_SELF_PROTECTION_FLOOR_PATTERNS`` already does for the six
     self-protection rules — and is why those are not fooled by either shape.
@@ -1192,6 +1192,7 @@ def is_denied(
     # cost flat -- one import-system lookup per owner, not one per name read.
     _rules = _submodule("denied_rules")
     _argv = _submodule("argv_floor")
+    _rm_floor = _submodule("rm_floor")
     _shell = _submodule("shell_normalizer")
     _diag = _submodule("diagnostics")
 
@@ -1241,6 +1242,28 @@ def is_denied(
     # under backtracking and are already enforced by the ``_is_git_publish`` floor
     # below (see ``_GIT_PUBLISH_RULE_PATTERNS``).
     regex_patterns = [p for p in regex_patterns if p not in _rules._GIT_PUBLISH_RULE_PATTERNS]
+    # The two recursive-force ``rm`` rules get an ADDITIONAL argv-structural
+    # FLOOR (``_recursive_force_rm_targets``) below, but the catalog regexes STAY
+    # in the Python ``re`` tier as a fail-closed deny-net — a UNION with the
+    # floor, never a replacement, for the same two reasons the self-protection
+    # floor keeps its regex rows:
+    #   1. The floor reads only the ``rm`` command's OWN argv, so a quoted payload
+    #      the argv model does not reach (``su -c "rm -rf /"``, ``fish -c``,
+    #      ``eval "$(printf 'rm -rf /')"``, ``trap 'rm -rf /' EXIT``, ``bash
+    #      <(echo …)``) is caught only by the whole-text regex. Dropping the
+    #      regex made every such vehicle a complete bypass of a rule that base
+    #      denied — a security-class fail-open.
+    #   2. The tokenizer can fail (unbalanced quotes, a platform bug); a floor
+    #      that REPLACED the regex would then fail OPEN on the catastrophic
+    #      literal.
+    # The regex's one cost is a false positive on a command that merely NAMES the
+    # literal (``git grep``/``rg``/``git log --grep`` for it, ``git commit -m``
+    # that documents it). That is narrowed by the existing argv-structural
+    # inert-mention carve-out (``_perm_verb_mention_narrows`` — the two rm rules
+    # are members of ``_PERM_VERB_MENTION_PATTERNS``), which exempts a command
+    # where the ``rm`` word only ever sits at an ARGUMENT position of a
+    # data-consuming program and never runs.
+    rm_rf_floor_enabled = {p for p in regex_patterns if p in _rules._RM_RF_FLOOR_PATTERNS}
     # The two self-protection rules get an ADDITIONAL argv-structural floor
     # below, for the reason documented on ``_SELF_PROTECTION_FLOOR_PATTERNS``:
     # only a tokenized view can tell ``kirocrew "token"`` from
@@ -1422,7 +1445,43 @@ def is_denied(
                 rule=rule_id,
                 component="argv-floor",
             )
-    # The self-management SUBCOMMAND floors have no catalog row (their
+    # ── Recursive-force rm floor (argv-structural, sole enforcement) ──
+    # The base rule was the bare literal ``rm -rf /`` / ``rm -rf ~``. Enforcement
+    # is now this floor, which tokenizes the TOP-LEVEL argv (and every nested
+    # payload), collects flags from every position, and reports which
+    # catastrophic target (root / home) is deleted — so each rule fires only for
+    # ITS target and an operator opt-out of one but not the other is honored.
+    # Gated on the rule being in the effective set.
+    #
+    # FAIL CLOSED: base ``main`` denied ``rm -rf /`` with NO tokenizer (a plain
+    # text ``re.search``), so if the tokenizer RAISES this floor must not turn
+    # that catastrophic literal into an ALLOW. On exception it falls back to the
+    # base-literal check, which is exactly what base did — no weaker than before
+    # (First Principles items 5+6). The widened flag/glob/obfuscation
+    # coverage depends on the tokenizer and is simply unavailable when it breaks;
+    # only the exact base literal is recovered, in the DENY direction.
+    if rm_rf_floor_enabled:
+        try:
+            rm_targets = _rm_floor._recursive_force_rm_targets(lower, raw_text=tool_name)
+        except Exception:
+            rm_targets = _rm_floor._recursive_force_rm_targets_fail_closed(lower)
+        for target, rule_id in (
+            ("root", "local-destructive-rm-rf-root"),
+            ("home", "local-destructive-rm-rf-home"),
+        ):
+            if target not in rm_targets:
+                continue
+            pattern = _rules._RM_RF_FLOOR_BY_ID.get(rule_id)
+            if pattern is None or pattern not in rm_rf_floor_enabled:
+                continue
+            _emit_deny_event(tool_name, pattern, lower)
+            return _reason(
+                pattern,
+                _rules._SELF_PROTECTION_FLOOR_NOTES.get(rule_id, ""),
+                rule=rule_id,
+                component="argv-floor",
+            )
+    # The remaining self-protection floor rules are UNGATED (their
     # product-name-anywhere regex rows were deleted, see
     # ``_SELF_PROTECTION_UNGATED_FLOOR_IDS``), so there is no pattern to gate on
     # and nothing to report but the id: they run unconditionally, like the
@@ -1461,21 +1520,16 @@ def is_denied(
     # full string before this point.
     for pattern, is_regex in all_patterns:
         if _rules._deny_pattern_matches(pattern, lower, is_regex):
-            exceptions = _rules._DENY_EXCEPTIONS.get(pattern, [])
-            whole_string_exception_match = (
-                exceptions
-                and _rules._exception_eligible(lower)
-                and any(fnmatch.fnmatch(lower, e.lower()) for e in exceptions)
-            )
-            if not whole_string_exception_match and _perm_verb_mention_narrows(
-                pattern, lower, mention_cache
-            ):
-                # Same shape as the glob exception above: a whole-string carve-out
-                # only DEFERS to Pass 2, which re-judges each segment on its own,
-                # so an embedded real invocation is still denied there.  The audit
-                # is emitted here (and GATES the carve-out) because for a search
-                # whose verb and path land in different segments Pass 2 never
-                # matches, so this is the only place the decision is recorded.
+            # The only whole-string carve-out is the argv-structural
+            # perm-verb-mention narrowing (a ``chmod``/``chown`` verb handed to a
+            # search tool as a PATTERN, never run).  It DEFERS to Pass 2, which
+            # re-judges each segment on its own so an embedded real invocation is
+            # still denied there.  The audit is emitted here (and GATES the
+            # carve-out) because for a search whose verb and path land in
+            # different segments Pass 2 never matches, so this is the only place
+            # the decision is recorded.
+            whole_string_exception_match = False
+            if _perm_verb_mention_narrows(pattern, lower, mention_cache):
                 if _emit_deny_exception_event(tool_name, pattern, _PERM_VERB_MENTION_MECHANISM):
                     whole_string_exception_match = True
             if not whole_string_exception_match:
@@ -1535,12 +1589,7 @@ def is_denied(
         for view in segment_views:
             for pattern, is_regex in all_patterns:
                 if _rules._deny_pattern_matches(pattern, view, is_regex):
-                    exceptions = _rules._DENY_EXCEPTIONS.get(pattern, [])
-                    if (
-                        exceptions
-                        and _rules._exception_eligible(view)
-                        and any(fnmatch.fnmatch(view, e.lower()) for e in exceptions)
-                    ) or _perm_verb_mention_narrows(pattern, lower, mention_cache):
+                    if _perm_verb_mention_narrows(pattern, lower, mention_cache):
                         # ``lower``, not ``view``: the mention reading is a
                         # WHOLE-COMMAND judgement and a Pass 2 segment is not
                         # always a command.  ``_split_segments`` is deliberately
@@ -1561,7 +1610,7 @@ def is_denied(
                         # separator, which ``shlex`` would swallow as
                         # whitespace, is refused outright by the predicate.
                         if not _emit_deny_exception_event(
-                            tool_name, pattern, _perm_verb_mechanism_for(pattern)
+                            tool_name, pattern, _PERM_VERB_MENTION_MECHANISM
                         ):
                             _emit_deny_event(tool_name, pattern, view, raw_segment=seg_lower)
                             return _reason(pattern)
@@ -1663,11 +1712,6 @@ def is_denied_synthesized_target(
     for pattern, is_regex in all_patterns:
         if not _denied_rules._deny_pattern_matches(pattern, lower, is_regex):
             continue
-        # No ``_DENY_EXCEPTIONS`` carve-out here.  That map ships EMPTY and its machinery
-        # is retained in ``is_denied`` only for a future scoped exception, so replicating
-        # it here would be dead symmetry.  If it ever gains an entry, this tier has to be
-        # revisited deliberately -- ``test_the_deny_exception_map_is_still_empty`` reddens
-        # then, so the omission cannot become a silent gap.
         _emit_deny_event(target, pattern, lower)
         return _denied_rules._deny_reason(pattern, reason_notes)
     return None
@@ -1750,22 +1794,10 @@ def _emit_deny_event(
 
 
 #: SEL ``mechanism`` value for the argv-structural inert-mention narrowing.
-#: Distinct from the glob carve-out map's ``_DENY_EXCEPTIONS`` so the audit trail
-#: can tell the two apart -- they share one emitter and nothing else.
+#: This is now the ONLY narrowing that reaches ``_emit_deny_exception_event`` --
+#: the glob carve-out map (``_DENY_EXCEPTIONS``) was retired with the rm text
+#: rules -- so the emitter records every granted exception under this label.
 _PERM_VERB_MENTION_MECHANISM = "_PERM_VERB_MENTION"
-
-
-def _perm_verb_mechanism_for(pattern: str) -> str:
-    """The SEL mechanism name for the exception about to be granted.
-
-    Pass 2 reaches the emitter from a condition that is an OR of the glob
-    carve-out and the mention reading, so the branch alone cannot say which one
-    fired.  The mention reading is the narrower of the two -- it applies only to
-    the opted-in patterns -- so membership in that set decides the label.
-    """
-    if pattern in _submodule("denied_rules")._PERM_VERB_MENTION_PATTERNS:
-        return _PERM_VERB_MENTION_MECHANISM
-    return "_DENY_EXCEPTIONS"
 
 
 def _perm_verb_mention_narrows(
@@ -1798,18 +1830,17 @@ def _perm_verb_mention_narrows(
 def _emit_deny_exception_event(
     tool_name: str,
     deny_pattern: str,
-    mechanism: str = "_DENY_EXCEPTIONS",
+    mechanism: str = _PERM_VERB_MENTION_MECHANISM,
 ) -> bool:
     """Emit an SEL audit event when a deny exception is applied.
 
     Returns True if the event was logged successfully, False otherwise.
     The caller must NOT grant the exception if this returns False.
 
-    *mechanism* names WHICH narrowing granted the exception.  Two unrelated ones
-    reach this emitter -- the glob carve-out map and the argv-structural
-    inert-mention reading -- and recording both under one value makes the audit
-    trail unable to answer "why was this allowed", which is the only question it
-    exists for.  The default keeps the glob path's historical value.
+    *mechanism* names WHICH narrowing granted the exception.  Only the
+    argv-structural inert-mention reading now reaches this emitter (the glob
+    carve-out map was retired), so the audit trail can still answer "why was
+    this allowed" -- the only question it exists for.
     """
     try:
         sel = SecurityEventLog()
@@ -2670,7 +2701,6 @@ _EXPORTS: dict[str, str] = {
     "_AWS_SECRET_WORD_PREFIXES": "denied_rules",
     "_AWS_VAR_SELECTOR": "denied_rules",
     "_DANGEROUS_AWS_FLAG_RUN": "denied_rules",
-    "_DENY_EXCEPTIONS": "denied_rules",
     "_DENY_FALLBACK_SCAN_MAX_CHARS": "denied_rules",
     "_DENY_MATCHER_CACHE": "denied_rules",
     "_DenyMatcher": "denied_rules",
@@ -2688,8 +2718,6 @@ _EXPORTS: dict[str, str] = {
     "_GIT_PUBLISH_RULE_PATTERNS": "denied_rules",
     "_GIT_PUBLISH_UNGATED": "denied_rules",
     "_GIT_PUBLISH_UNGATED_RULE_IDS": "denied_rules",
-    "_INERT_SEARCH_GLOBS": "denied_rules",
-    "_INERT_SEARCH_VERBS": "denied_rules",
     "_INTERPRETER_RULE_IDS": "denied_rules",
     "_INTERPRETER_RULE_PATTERNS": "denied_rules",
     "_LEGACY_RULE_ID_BY_PATTERN": "denied_rules",
@@ -2709,7 +2737,6 @@ _EXPORTS: dict[str, str] = {
     "_deny_matcher": "denied_rules",
     "_deny_pattern_matches": "denied_rules",
     "_deny_reason": "denied_rules",
-    "_exception_eligible": "denied_rules",
     "_frags_can_underconsume": "denied_rules",
     "_has_top_level_alternation": "denied_rules",
     "_linearize_deny_pattern": "denied_rules",
@@ -3249,7 +3276,6 @@ if TYPE_CHECKING:  # keep the names visible to type checkers and IDEs
         _AWS_SECRET_WORDS,
         _AWS_VAR_SELECTOR,
         _DANGEROUS_AWS_FLAG_RUN,
-        _DENY_EXCEPTIONS,
         _DENY_FALLBACK_SCAN_MAX_CHARS,
         _DENY_MATCHER_CACHE,
         _ENV_CRED_DENIAL_REASON,
@@ -3266,8 +3292,6 @@ if TYPE_CHECKING:  # keep the names visible to type checkers and IDEs
         _GIT_PUBLISH_RULES,
         _GIT_PUBLISH_UNGATED,
         _GIT_PUBLISH_UNGATED_RULE_IDS,
-        _INERT_SEARCH_GLOBS,
-        _INERT_SEARCH_VERBS,
         _INTERPRETER_RULE_IDS,
         _INTERPRETER_RULE_PATTERNS,
         _LEGACY_RULE_ID_BY_PATTERN,
@@ -3294,7 +3318,6 @@ if TYPE_CHECKING:  # keep the names visible to type checkers and IDEs
         _deny_pattern_matches,
         _deny_reason,
         _DenyMatcher,
-        _exception_eligible,
         _frags_can_underconsume,
         _has_top_level_alternation,
         _linearize_deny_pattern,

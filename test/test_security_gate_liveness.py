@@ -158,7 +158,33 @@ def _url_payload_command(n: int) -> str:
 #: added here fails this gate and has to be re-pinned deliberately, with its reason
 #: written above. The guards that detect a monolith growing back are the per-file cap
 #: and the facade's share below, and both must stay untouched.
-_PACKAGE_LINE_BUDGET = 28_399
+#:
+#: The total covers the recursive-force ``rm`` deletion floor, which lives in its own
+#: ``rm_floor.py`` sibling module: an argv-structural gate that reads the ``rm``
+#: command's own argv (flags in any position/spelling, the ``$HOME``/``~``/glob
+#: targets, exec wrappers, command-string wrappers (``flock``/``watch``/``ssh``),
+#: ``sh -c`` payloads, and obfuscated nested spellings). The floor is a UNION with
+#: the two catalog regexes, which stay in the ``re`` tier as a fail-closed deny-net:
+#: the regex catches a quoted payload the floor's own-argv model does not reach
+#: (``su -c "rm -rf /"``, ``eval``, ``trap``, a pipe into a code interpreter), and
+#: the argv inert-mention carve-out narrows the regex's one false positive, a command
+#: that merely NAMES the literal at a data-consumer argument position (``grep`` for
+#: it). The module header and imports it carries are counted here alongside the code.
+#:
+#: The total also covers the floor's static-decidability closures: brace expansion of
+#: flags and operands before parsing (``_rm_expand_brace_members`` plus the token
+#: pre-pass), so ``rm {--recursive,--force} {/,/tmp}`` is classified as the flags and
+#: roots it expands to; and classification of an operand that IS the expanded home
+#: path (``_rm_expanded_home_path``), so ``x=$HOME; rm -rf "$x"`` denies.
+#:
+#: Two cost bounds keep the synchronous gate linear on a hostile input: the per-argv
+#: ``rm``-span cap (``_RM_CLASSIFY_SPAN_CAP``) stops the per-``rm`` operand re-scan an
+#: argv padded with thousands of ``rm`` words would make quadratic, and the
+#: execution-substitution body cap (``_RM_SUBST_BODY_CAP``) stops the whole-remainder
+#: body an unterminated ``${`` opener would yield from being re-tokenized per opener.
+#: Past either cap a catastrophic literal is still caught by the whole-text deny-net
+#: regex, so neither bound can fail open.
+_PACKAGE_LINE_BUDGET = 30_470
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

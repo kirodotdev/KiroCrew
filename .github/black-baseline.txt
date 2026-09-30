@@ -468,7 +468,6 @@ test/test_dashboard_yolo_startup.py
 test/test_delete_message.py
 test/test_denied_commands_api.py
 test/test_denied_commands_authority.py
-test/test_denied_commands_hooks.py
 test/test_dependencies.py
 test/test_dependency_ledger.py
 test/test_deploy_apigw_logging.py

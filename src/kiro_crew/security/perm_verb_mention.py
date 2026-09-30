@@ -66,7 +66,8 @@ from .shell_normalizer import (
 #   * ``echo 'chmod 777 /etc/x' > /tmp/s.sh`` -- ``echo``/``printf`` emit their
 #     argument AS the file's content, and ``>`` is not a command separator, so
 #     exonerating them would exonerate writing the command to a script.  This is
-#     the same case ``_INERT_SEARCH_VERBS`` declined to open; the emitters and
+#     the same case the (now-retired) rm inert-search carve-out declined to open;
+#     the emitters and
 #     the filesystem mutators are both removed from the accepted set, and any
 #     redirect other than to ``/dev/null`` refuses outright.
 #   * ``grep -h 'chmod 777 /etc/x' f | python`` -- a downstream stage can EXECUTE

@@ -289,8 +289,11 @@ class TestFloorDenialExplainsItself:
         assert "\n" not in out.splitlines()[0]
 
     def test_regex_tier_denial_carries_no_explanation_line(self):
-        # Unchanged for a real pattern match: there the identifier IS accurate.
-        out = self._deny("rm -rf /")
+        # A plain catalog regex match carries no explanation line — there the
+        # matched pattern IS the accurate identifier. ``dd`` of a raw device is a
+        # regex-tier rule (unlike the recursive-force ``rm`` rules, which are
+        # argv-floor-enforced and DO carry a structural note).
+        out = self._deny("dd if=/dev/zero of=/dev/sda")
         assert out
         assert len(out.splitlines()) == 1
 

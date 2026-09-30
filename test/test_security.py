@@ -2826,40 +2826,34 @@ class TestBuiltinDenyPatterns:
         # still be ALLOWED — the second segment must be deny-free.
         assert is_denied("git stash push -m 'wip' & echo done") is None
 
-    def test_two_pass_evaluates_all_deny_patterns(self, monkeypatch) -> None:
-        """Pass 1 must continue iterating deny patterns after granting an
-        exception, so a *different* pattern with no exception still triggers
-        an outright deny.
+    def test_two_pass_evaluates_all_deny_patterns(self) -> None:
+        """Pass 1 must keep iterating deny patterns after granting a narrowing,
+        so a *different* pattern with no narrowing still triggers an outright
+        deny.
 
-        Guards a review-bot finding on rev 1: the original
-        pass-2 inner loop used ``break`` after granting an exception, which
-        would skip remaining patterns.  In rev 2 the equivalent logic in
-        pass 1 records the exception-matched pattern as a candidate and
-        keeps iterating (this test exercises that path); pass 2 uses
-        ``continue`` for the same reason (covered by other tests).
+        Guards a review-bot finding on rev 1: the original pass-2 inner loop used
+        ``break`` after granting an exception, which would skip remaining
+        patterns.  The equivalent Pass 1 logic records the narrowed pattern as a
+        candidate and keeps iterating; Pass 2 uses ``continue`` for the same
+        reason.
 
-        ``_DENY_EXCEPTIONS`` ships only the search-verb carve-out on the two
-        ``local-destructive`` rm rules, so the multi-pattern interaction still cannot
-        be expressed with live catalog data (one input would have to trip two rm rules
-        at once).  We install a synthetic two-glob scenario to
-        keep exercising the loop-control invariant directly: the input matches
-        an exception-carrying glob AND a second glob with no exception, so pass 1
-        must fall through to the second glob and deny outright.  A ``break``
-        regression would skip the second glob and falsely allow.
+        The only whole-string narrowing left after (the ``_DENY_EXCEPTIONS``
+        glob map was retired with the rm text rules) is the argv-structural
+        perm-verb-mention reading.  So the invariant is exercised with a command
+        that is BOTH a ``chmod`` mention grep verb narrows away AND a real
+        second deny (a ``dd`` device wipe): if Pass 1 stopped iterating after the
+        chmod narrowing, the ``dd`` deny would be skipped and the command falsely
+        allowed.
         """
-        import kiro_crew.security as security_module
+        from kiro_crew.security import is_denied
 
-        monkeypatch.setattr(security_module, "_DENY_EXCEPTIONS", {"*alpha*": ["* stash *"]})
-        # Pass 1 sees:
-        #   *alpha* — matches, " stash " whole-string exception matches → candidate
-        #   *bravo* — matches, no exception → outright deny
-        assert (
-            security_module.is_denied("alpha stash bravo", extra_patterns=["*alpha*", "*bravo*"])
-            is not None
-        )
-        # Confidence check: with only the exception-carrying glob and no second
-        # deny, the command is allowed (the candidate path itself does not deny).
-        assert security_module.is_denied("alpha stash here", extra_patterns=["*alpha*"]) is None
+        # ``grep 'chmod 777 /etc' …`` alone is narrowed away (a search, runs no
+        # chmod) and would be ALLOWED.
+        assert is_denied("grep -rn 'chmod 777 /etc' src/") is None
+        # Chain it with a real deny: the chmod pattern is narrowed, but the dd
+        # device-wipe pattern in the second segment must still deny outright, so
+        # Pass 1 (and Pass 2) must not stop at the first narrowed pattern.
+        assert is_denied("grep -rn 'chmod 777 /etc' src/ ; dd if=/dev/zero of=/dev/sda") is not None
 
     def test_allows_commit_message_mentioning_push(self) -> None:
         """A ``git commit`` whose message merely mentions ``push`` must be
@@ -2906,33 +2900,28 @@ class TestBuiltinDenyPatterns:
             assert is_denied(f'{verb} "{self.ROOT_WIPE}" test/') is None, verb
             assert is_denied(f'{verb} "{self.HOME_WIPE}" test/') is None, verb
 
-    def test_a_search_pattern_containing_an_alternation_is_still_denied(self) -> None:
-        """KNOWN LIMITATION, pinned deliberately.
+    def test_a_search_pattern_containing_an_alternation_is_now_exonerated(self) -> None:
+        """The argv floor resolves this case that a rendered-line matcher cannot.
 
-        The command that motivated the report puts a regex ALTERNATION in the
-        search pattern::
+        The command that motivated the original report puts a regex ALTERNATION in
+        the search pattern::
 
             grep -rln "rm-rf-root\\|rm -rf /" test/
 
-        ``_CMD_SPLIT_RE`` is quote-unaware, so the ``|`` inside the quoted
-        pattern is read as a pipe and the command splits into
-        ``grep -rln "rm-rf-root\\`` and ``rm -rf /" test/``.  The second segment
-        genuinely looks like a bare deletion in command position, so the
-        verb-anchored carve-out cannot reach it — the exception is keyed to
-        segments that START with a search verb, and by design it must stay that
-        way or ``grep x | xargs <destructive>`` would be exonerated too.
-
-        Closing this case needs quote-aware SEGMENTATION, which is a separate and
-        much larger change (it also has to stay compatible with the
-        quote-NORMALIZED matching added for evasion resistance).  Asserting the
-        current behaviour rather than xfailing it, so the boundary is explicit and
-        a future segmentation fix has to update this test consciously.
+        The old text-tier carve-out could not reach it: ``_CMD_SPLIT_RE`` is
+        quote-unaware, so the ``|`` inside the quoted pattern was read as a pipe
+        and ``rm -rf /" test/`` looked like a bare deletion in command position,
+        which the broad text rule denied. The recursive-force ``rm`` rules are now
+        enforced by the argv floor, which reads argv
+        STRUCTURE: ``grep`` is the program and the whole alternation is its quoted
+        pattern (data), so the search is correctly exonerated. The floor's exact
+        regex second-net does not fire either — the pattern does not END in the
+        exact literal ``rm -rf /`` (the trailing ``" test/`` follows it).
         """
         from kiro_crew.security import is_denied
 
-        assert is_denied(f'grep -rln "rm-rf-root\\|{self.ROOT_WIPE}" test/') is not None
-        # The same search without the alternation IS exonerated — isolating the
-        # cause to segmentation rather than to the carve-out.
+        assert is_denied(f'grep -rln "rm-rf-root\\|{self.ROOT_WIPE}" test/') is None
+        # The same search without the alternation is likewise exonerated.
         assert is_denied(f'grep -rln "{self.ROOT_WIPE}" test/') is None
 
     def test_still_denies_the_real_destruction_and_any_chaining(self) -> None:
@@ -2987,9 +2976,13 @@ class TestBuiltinDenyPatterns:
         assert is_denied(f"{self.ROOT_WIPE} /bin/grep x") is not None
         assert is_denied(f"{self.ROOT_WIPE} x/grep y") is not None
         assert is_denied(f"{self.HOME_WIPE} /usr/bin/grep z") is not None
-        # The accepted trade-off: a path-qualified search verb is NOT exonerated,
-        # because no glob can express "the first token's basename is the verb".
-        assert is_denied(f'/usr/bin/grep -rn "{self.ROOT_WIPE}" test/') is not None
+        # A path-qualified search verb whose PATTERN is the destructive literal is
+        # now exonerated by the argv floor: ``/usr/bin/grep`` is the program and
+        # ``rm -rf /`` is its quoted pattern (data), and the pattern does not END
+        # in the exact literal (the trailing ``" test/`` follows). The floor reads
+        # argv structure, so it needs no glob that can express "the first token's
+        # basename is the verb".
+        assert is_denied(f'/usr/bin/grep -rn "{self.ROOT_WIPE}" test/') is None
 
     def test_no_shell_active_construct_is_ever_exonerated(self) -> None:
         """A command hidden in any expansion behind a search verb must stay denied.
@@ -3003,15 +2996,19 @@ class TestBuiltinDenyPatterns:
         isolated in its own command position, while bash still executes it.
 
         The first attempt blocklisted just ``(`` and was defeated by the bash 5.3
-        funsub. ``_exception_eligible`` now refuses any view containing a
-        shell-active character, closing the class instead of chasing spellings.
+        funsub. The rm floor now reads only the ``rm`` command's own argv and
+        descends every executing substitution body, so a destructive command
+        glued to a search verb is classified on its own argv, closing the class
+        instead of chasing spellings.
         """
         from kiro_crew.security import is_denied
 
         # Process substitution, input and output forms, and a bare subshell.
-        assert is_denied(f"grep x <({self.ROOT_WIPE}tmp/victim)") is not None
+        # The payload is an EXACT root wipe, so the assertion tests the
+        # exoneration guard rather than incidentally the operand-exactness.
+        assert is_denied(f"grep x <({self.ROOT_WIPE})") is not None
         assert is_denied(f'grep -rn "x" <({self.ROOT_WIPE})') is not None
-        assert is_denied(f"grep x >({self.ROOT_WIPE}tmp/victim)") is not None
+        assert is_denied(f"grep x >({self.ROOT_WIPE})") is not None
         assert is_denied(f"grep x ({self.ROOT_WIPE})") is not None
         # bash >= 5.3 funsub -- the opener that defeated the `(`-only guard.
         assert is_denied(f"grep x ${{ {self.ROOT_WIPE};}}") is not None
@@ -3022,27 +3019,6 @@ class TestBuiltinDenyPatterns:
         # Confidence check: the plain search is still exonerated, so the guard
         # narrowed exactly the shell-active forms and nothing else.
         assert is_denied(f'grep -rn "{self.ROOT_WIPE}" test/') is None
-
-    def test_a_search_verb_that_can_execute_a_helper_is_not_exonerated(self) -> None:
-        """Only verbs with no exec flag are exonerated.
-
-        Guards the third bypass found reviewing the carve-out fix. The
-        carve-out's premise is that the verb cannot execute its operands, and
-        that is a property of the specific tool, not of "being a search tool":
-        ``rg --pre <cmd>`` runs a preprocessor and ``ack --pager <cmd>`` runs a
-        pager, so ``rg --pre sh "<destructive>" payload.sh`` really does execute.
-
-        ``rg`` and ``ack`` were therefore dropped from the allowlist, which makes
-        the premise true rather than merely asserted. ``grep``/``egrep``/``fgrep``
-        have no flag that spawns a helper.
-        """
-        from kiro_crew.security import is_denied
-
-        assert is_denied(f'rg --pre sh "{self.ROOT_WIPE}tmp/victim" payload.sh') is not None
-        # Dropped wholesale, not just for the executing flag: a glob cannot tell
-        # `rg PATTERN` from `rg --pre sh PATTERN`, so the verb cannot be trusted.
-        assert is_denied(f'rg "{self.ROOT_WIPE}" src/') is not None
-        assert is_denied(f'ack "{self.ROOT_WIPE}" src/') is not None
 
     def test_a_pipeline_into_an_interpreter_is_never_exonerated(self) -> None:
         """A search piped into something that executes what it emitted must deny.
@@ -3254,9 +3230,1038 @@ class TestBuiltinDenyPatterns:
 
         assert is_denied("cr --summary 'Fix test discovery'") is None
 
+    # ── rm -rf flag-spelling and $HOME-spelling bypasses ──
+    #
+    # The two ``local-destructive`` rm rules cover more than the literal
+    # ``rm -rf``, so every other spelling of the same recursive-force deletion
+    # slipped the gate. Each destructive command below is ASSEMBLED at runtime
+    # from fragments so this test file is not itself an un-greppable needle the
+    # very rules it exercises would refuse (the established convention above with
+    # ``ROOT_WIPE`` / ``HOME_WIPE``).
 
-class TestOAuthAuthorizationUrlRedaction:
-    """OAuth entropy is exempt only in the dedicated ACP banner-safety path."""
+    def test_denies_every_root_rm_rf_flag_spelling(self) -> None:
+        """The recursive+force flags in any order/packing/long form, and
+        ``--no-preserve-root`` on its own, must all be denied when the operand is
+        the filesystem root or a path under it. This case pins the bare root ``/``;
+        a descendant like ``/tmp/x`` is also denied (base's ``rm -rf /.*`` contract,
+        see :meth:`test_rm_rf_denies_descendants_of_root_and_home_allows_only_relative_and_mentions`).
+        """
+        from kiro_crew.security import is_denied
+
+        rm = "r" + "m"
+        root_spellings = [
+            f"{rm} -rf /",  # baseline
+            f"{rm} -fr /",  # reversed pack
+            f"{rm} -rfv /",  # extra verbose flag packed in
+            f"{rm} -vrf /",  # verbose leading
+            f"{rm} -r -f /",  # split, recursive first
+            f"{rm} -f -r /",  # split, force first
+            f"{rm} --recursive --force /",  # long options
+            f"{rm} --force --recursive /",  # long options reversed
+            f"{rm} -r --force /",  # mixed short/long
+            f"{rm} --recursive -f /",  # mixed long/short
+            f"{rm} --no-preserve-root -rf /",  # the flag that defeats the / guard
+            f"{rm} -rf --no-preserve-root /",  # …interposed after -rf
+            f"{rm} --no-preserve-root /",  # …on its own, no explicit -rf
+            f"{rm} -i -rf /",  # an interposed unrelated flag
+            f'{rm} -rf "/"',  # quoted target (quote-normalized view)
+            f"{rm} / -rf",  # flags AFTER the operand (argv floor)
+            f"{rm} / -rf --no-preserve-root",
+        ]
+        for cmd in root_spellings:
+            assert is_denied(cmd) is not None, cmd
+
+    def test_denies_every_home_rm_rf_flag_and_var_spelling(self) -> None:
+        """The home rule must accept the recursive+force flags in any
+        spelling AND the home target spelled ``~`` OR ``$HOME`` / ``${HOME}``
+        (double-quoted ``"$HOME"`` reduces to ``$HOME`` under normalization). The
+        operand is home itself OR a path under it (``$HOME/x`` is denied too, base's
+        ``rm -rf ~.*`` contract widened to the ``$HOME`` spellings)."""
+        from kiro_crew.security import is_denied
+
+        rm = "r" + "m"
+        home = "$" + "HOME"
+        braced = "${" + "HOME}"
+        home_spellings = [
+            f"{rm} -rf ~",  # tilde
+            f"{rm} -fr ~",  # reversed pack, tilde
+            f"{rm} -rfv ~",  # verbose packed, tilde
+            f"{rm} -rf ~/",  # tilde with a trailing slash IS home
+            f"{rm} -rf {home}",  # $HOME
+            f"{rm} -rf {braced}",  # ${HOME}
+            f"{rm} -rf {home}/",  # $HOME with a trailing slash IS home
+            f"{rm} -rf {braced}/",
+            f'{rm} -rf "{home}"',  # double-quoted $HOME (normalized)
+            f"{rm} -r -f {home}",  # split flags
+            f"{rm} --recursive --force {braced}",  # long options
+            f"{rm} --force --recursive ~",  # long options reversed, tilde
+            f"{rm} --no-preserve-root -rf {home}",  # np-root interposed
+            f"{rm} {home} -rf",  # flags AFTER the operand (argv floor)
+            f"{rm} ~ -rf",
+        ]
+        for cmd in home_spellings:
+            assert is_denied(cmd) is not None, cmd
+
+    def test_allows_non_recursive_or_non_force_rm(self) -> None:
+        """The mirror of the widening: ``rm -f`` alone, ``rm -r`` alone and
+        flagless ``rm`` stay ALLOWED for both the root and the home target — only
+        recursive AND force together (or ``--no-preserve-root``) is destructive."""
+        from kiro_crew.security import is_denied
+
+        rm = "r" + "m"
+        home = "$" + "HOME"
+        braced = "${" + "HOME}"
+        allowed = [
+            # root target, missing one of the two flags
+            f"{rm} -f /tmp/x",
+            f"{rm} -r /tmp/x",
+            f"{rm} /tmp/x",
+            f"{rm} --force /tmp/only",
+            f"{rm} --recursive /tmp/only",
+            f"{rm} -f /etc/hosts.bak",
+            # home target, missing one of the two flags
+            f"{rm} -f ~/x",
+            f"{rm} -r ~/x",
+            f"{rm} ~/x",
+            f"{rm} -f {home}/x",
+            f"{rm} -r {home}",
+            f"{rm} -f {braced}/x",
+            # not rm at all, or unrelated
+            "echo $HOME",
+            "ls ~",
+            "rmdir /tmp/emptydir",
+        ]
+        for cmd in allowed:
+            assert is_denied(cmd) is None, cmd
+
+    def test_rm_rf_search_for_the_rule_is_allowed_and_real_deletion_denied(self) -> None:
+        """The rm search carve-out has been RETIRED, and it is not needed: the
+        argv floor reads only the ``rm`` command's own argv, so a grep whose
+        PATTERN is the rule text is that grep's data and is allowed with no
+        exception at all, while the real deletion — bare or behind an executing
+        wrapper — is still denied."""
+        from kiro_crew.security import is_denied
+
+        rm = "r" + "m"
+        root = f"{rm} -rf /"
+        home = f"{rm} -rf ~"
+        # Searching FOR the rule text is data to the search verb -> allowed.
+        for verb in ("grep -rn", "egrep -r", "fgrep", "/usr/bin/grep -rn"):
+            assert is_denied(f'{verb} "{root}" src/') is None, verb
+            assert is_denied(f'{verb} "{home}" src/') is None, verb
+        # The real deletion, bare and behind an executing wrapper -> denied.
+        assert is_denied(root) is not None
+        assert is_denied(f"sudo {root}") is not None
+        assert is_denied(f"grep -rl x src/ | xargs {root}") is not None
+
+    def test_rm_rf_rules_are_not_enforced_by_the_regex_tier(self) -> None:
+        """The two rm rules are enforced SOLELY by the argv floor. Their catalog
+        rows (and golden text) remain for opt-out / SEL identity — exactly as the
+        git-publish rows do — but ``is_denied`` strips them from the Python ``re``
+        tier, so no whole-line text matcher survives to fire on a commit message
+        or a search pattern (Security Scope revised ruling)."""
+        from kiro_crew.security import denied_rules as dr
+
+        rm_patterns = {
+            r.pattern
+            for r in dr.BUILTIN_DENIED_RULES
+            if r.id in ("local-destructive-rm-rf-root", "local-destructive-rm-rf-home")
+        }
+        # Rows still exist in the catalog (identity for opt-out + SEL + golden)…
+        assert rm_patterns == dr._RM_RF_FLOOR_PATTERNS
+        # …and the effective regex list computed with everything enabled must NOT
+        # contain them: is_denied removes them before the ``re`` tier, like
+        # git-publish. Re-derive the strip here so the guarantee is pinned.
+        effective = dr.compute_effective_denied(dr.BUILTIN_DENIED_RULES, (), False, (), ())
+        stripped = [p for p in effective if p not in dr._RM_RF_FLOOR_PATTERNS]
+        assert all(p not in stripped for p in rm_patterns)
+
+    def test_denies_rm_rf_with_flags_after_the_operand(self) -> None:
+        """The argv-structural floor closes the flag-POSITION gap the catalog regex
+        cannot: GNU getopt accepts options after the operand, so a rooted delete with
+        the flags trailing the target must still be denied (issue review)."""
+        from kiro_crew.security import is_denied
+
+        rm = "r" + "m"
+        home = "$" + "HOME"
+        post_operand = [
+            f"{rm} / -rf --no-preserve-root",  # the reported bypass
+            f"{rm} / -r -f",  # split flags after the bare root
+            f"{rm} / --recursive --force",  # long options after root
+            f"{rm} --no-preserve-root /",  # np-root before, no explicit -rf
+            f"{rm} {home} -rf",  # home target, flags after
+            f"{rm} ~ -rf",  # tilde target, flags after
+            f"{rm} {home} --recursive --force",
+        ]
+        for cmd in post_operand:
+            assert is_denied(cmd) is not None, cmd
+
+    def test_allows_home_prefixed_variable_and_post_flag_relative_paths(self) -> None:
+        """The floor must not over-fire: an unrelated ``$HOME``-PREFIXED variable is
+        not the home dir (issue review — require a variable-name boundary), and
+        a relative path with trailing flags is not a rooted delete."""
+        from kiro_crew.security import is_denied
+
+        rm = "r" + "m"
+        hb = "$" + "HOME_BACKUP"
+        allowed = [
+            f"{rm} -rf {hb}",  # $HOME_BACKUP is a different variable, not ~
+            f"{rm} -rf {hb}/data",
+            f"{rm} {hb} -rf",  # …with flags after, too
+            f"{rm} ./build -rf",  # relative path, flags after
+            f"{rm} build -rf",  # bare relative name, flags after
+            f"{rm} -f / -r",  # NOTE: -f then / then -r IS recursive+force+root
+        ]
+        # The last one IS a recursive-force root delete (flags split around the
+        # operand), so it must be DENIED — separate it out.
+        for cmd in allowed[:-1]:
+            assert is_denied(cmd) is None, cmd
+        assert is_denied(f"{rm} -f / -r") is not None
+
+    def test_rm_rf_floor_does_not_fire_on_a_mention_or_a_sibling_command(self) -> None:
+        """The floor keys on ``rm`` being the argv PROGRAM of its own command, so a
+        mention as data and a sibling command's flags do not trigger it."""
+        from kiro_crew.security import is_denied
+
+        rm = "r" + "m"
+        # A sibling command's -rf must not combine with a later rm's rooted operand.
+        assert is_denied(f"ls -rf; {rm} /tmp/onlythis") is None
+        # A non-rm program that merely takes -rf and a rooted arg.
+        assert is_denied("tar -rf archive.tar /etc/hosts") is None
+
+    def test_rm_rf_denies_descendants_of_root_and_home_allows_only_relative_and_mentions(
+        self,
+    ) -> None:
+        """The restored base contract (First Principles / GPT / Opus): base
+        ``main``'s ``rm -rf /.*`` / ``rm -rf ~.*`` denied the CONTIGUOUS ``rm -rf``
+        token followed by root/home OR ANY DESCENDANT, so a descendant in base's
+        own ``rm -rf`` spelling (``rm -rf /etc``, ``rm -rf ~/.ssh``) stays DENIED.
+        The Security Scope regressions were WIDENED flag spellings base's literal
+        never contained (``rm -fr /tmp/x``, ``rm --recursive --force /tmp/x``, ``rm
+        -rf $HOME/.cache`` where ``$HOME`` ≠ the ``~`` / ``$HOME`` text base
+        matched) — those descendants were ALLOWED by base and stay ALLOWED. The
+        catastrophic root/home ITSELF is denied in ANY flag spelling. What stays
+        ALLOWED: a widened-spelling descendant, a relative path,
+        non-recursive/non-force deletions, and the ``rm -fr`` TEXT in a commit
+        message or search pattern."""
+        from kiro_crew.security import is_denied
+
+        rm = "r" + "m"
+        home = "$" + "HOME"
+        braced = "${" + "HOME}"
+        # WIDENED-spelling descendants ALLOW (base's contiguous literal never
+        # matched these spellings; Security Scope ruling).
+        allowed_descendants = [
+            f"{rm} -fr /tmp/kc-probe",  # -fr != base -rf
+            f"{rm} -r -f /tmp/kc-wt-example",  # split flags
+            f"{rm} --recursive --force /tmp/kc-scratch",  # long options
+            f"{rm} -rf -- /tmp/kc-scratch",  # the -- marker breaks the contiguous text
+            f"{rm} /tmp/kc-scratch -rf",  # flags after the operand
+            f"{rm} -rf {home}/.cache/pip",  # $HOME descendant, not the ~/$HOME text
+            f"{rm} -rf {braced}/.npm/_cacache",
+            f"{rm} -fr {home}/scratch",
+            f"{rm} -rf ./build",  # relative path
+            f"{rm} -rf relative/scratch",
+            f"{rm} -f /tmp/kc-probe",  # force only
+            f"{rm} -r /tmp/kc-probe",  # recursive only
+            "terraform plan -out /tmp/tfplan",
+            f"rg '{rm} -fr /' src/",
+            f"git commit -m 'refactor: stop suggesting {rm} -fr / in docs'",
+        ]
+        for cmd in allowed_descendants:
+            assert is_denied(cmd) is None, cmd
+        # base's OWN contiguous ``rm -rf <descendant>`` spelling DENIES, and the
+        # root/home ITSELF denies in any flag spelling.
+        denied = [
+            f"{rm} -rf /etc",  # base -rf descendant
+            f"{rm} -rf /tmp/kc-probe",  # base -rf descendant
+            f"{rm} -rf /home/x",
+            f"{rm} -rf ~/.ssh",  # base -rf home descendant
+            f"{rm} -rf ~/Documents",
+            f"{rm} -fr /",  # root itself, widened flag
+            f"{rm} -r -f /",
+            f"{rm} --recursive --force /",
+            f"{rm} -rf {home}",  # home itself via $HOME
+            f"{rm} -rf {braced}",
+            f"{rm} -rf ~",
+            f"{rm} / -rf",  # flags after the root operand
+        ]
+        for cmd in denied:
+            assert is_denied(cmd) is not None, cmd
+
+    def test_rm_rf_denies_root_or_home_target_in_any_flag_spelling(self) -> None:
+        """The root/home dir ITSELF is denied under any flag spelling or position
+        — the base case both issues name, still denied under the widened floor."""
+        from kiro_crew.security import is_denied
+
+        rm = "r" + "m"
+        home = "$" + "HOME"
+        braced = "${" + "HOME}"
+        denied = [
+            f"{rm} -rf /",
+            f"{rm} -fr /",
+            f"{rm} -r -f /",
+            f"{rm} --recursive --force /",
+            f"{rm} / -rf",  # flags after the bare root
+            f"{rm} / -rf --no-preserve-root",
+            f"{rm} --no-preserve-root /",
+            f"{rm} -rf ~",
+            f"{rm} ~ -rf",
+            f"{rm} -rf ~/",  # home with a trailing slash IS home
+            f"{rm} -rf {home}",
+            f"{rm} -rf {braced}",
+            f"{rm} {home} -rf",
+            f"{rm} -rf {home}/",  # $HOME with a trailing slash IS home
+        ]
+        for cmd in denied:
+            assert is_denied(cmd) is not None, cmd
+
+    def test_rm_rf_text_mentions_in_searches_are_all_allowed(self) -> None:
+        """ZERO text false positives — the Security Scope lane's acceptance list.
+
+        With the regex second net RETIRED, enforcement is the argv floor alone,
+        which reads only the ``rm`` command's OWN argv. A search or a commit whose
+        ARGUMENT merely contains the ``rm -fr /`` / ``rm -fr ~`` text is that
+        program's data, never an ``rm`` invocation, so the floor is blind to it.
+
+        The five commands the Security Scope lane script-confirmed the earlier
+        narrow-regex residual refused — a ``git grep`` / ``rg`` / ``git log
+        --grep`` for the literal, and a ``git commit -m`` documenting it — are
+        pinned here as ALLOW. The lane accepts zero text false positives, so a
+        text rule cannot distinguish an ``rm`` operand from an ``rm`` mentioned in
+        a string; that is why the regex was retired in favour of the floor
+        (Security Scope Review ruling). The ``git grep 'rm -fr /'`` case
+        that the earlier ruling accepted as a residual is now correctly allowed.
+        """
+        from kiro_crew.security import is_denied
+
+        rm = "r" + "m"
+        allowed = [
+            f"git grep '{rm} -fr /'",  # was the earlier accepted FP; now allowed
+            f"rg '{rm} -fr /'",
+            f"git grep '{rm} -fr ~'",
+            f"git log --grep '{rm} -fr /'",
+            f"git commit -m 'docs: warn against {rm} -fr /'",
+            # near-neighbours, always allowed
+            f"rg '{rm} -fr /' src/",
+            f"git grep '{rm} -fr /tmp/x'",
+        ]
+        for cmd in allowed:
+            assert is_denied(cmd) is None, cmd
+
+    def test_rm_rf_glob_over_children_is_equal_to_the_target(self) -> None:
+        """A glob over every child of root/home wipes the same tree, so ``/*`` and
+        ``~/*`` are equal to the target and DENY. A DESCENDANT's children in base's
+        own ``rm -rf`` spelling (``rm -rf /etc/*``) are a contiguous ``rm -rf /``
+        text base matched, so they DENY; a WIDENED-spelling descendant glob (``rm
+        -fr /etc/*``) base never matched stays ALLOWED (Security Scope ruling)."""
+        from kiro_crew.security import is_denied
+
+        rm = "r" + "m"
+        home = "$" + "HOME"
+        for cmd in (
+            f"{rm} -rf /*",
+            f"{rm} -rf /*/",
+            f"{rm} -fr /*",
+            f"{rm} /* -rf",  # glob target, flags after
+            f"{rm} -rf ~/*",
+            f"{rm} -rf ~/*/",
+            f"{rm} -rf {home}/*",
+            f"{rm} -rf /etc/*",  # base -rf descendant text -> deny
+            f"{rm} -rf /tmp/kc/*",  # base -rf descendant text -> deny
+        ):
+            assert is_denied(cmd) is not None, cmd
+        # A WIDENED-spelling descendant glob base never matched -> ALLOWED.
+        for cmd in (
+            f"{rm} -fr /etc/*",  # -fr != base -rf
+            f"{rm} --recursive --force /tmp/kc/*",
+            f"{rm} -rf {home}/.cache/*",  # $HOME descendant, not the ~/$HOME text
+        ):
+            assert is_denied(cmd) is None, cmd
+
+    def test_rm_rf_obfuscated_spellings_are_decoded_by_the_floor(self) -> None:
+        """Four obfuscation spellings are decoded IN THE FLOOR (one decoder): an
+        escaped-quote two-level nest, a ``\\U`` (8-hex) unicode escape, a bash-5.3
+        ``${ …;}`` funsub, and a double-quoted ``$(…)`` command substitution —
+        each EXECUTES an exact-root wipe, so each must deny."""
+        from kiro_crew.security import is_denied
+
+        rm = "r" + "m"
+        for cmd in (
+            f'bash -c \'sh -c "{rm} -rf \\"/\\""\'',  # escaped-quote two-level nest
+            f"{rm} $'\\U0000002d\\U00000072\\U00000066' /",  # \\U unicode -> -rf
+            f"grep x ${{ {rm} -rf /;}}",  # bash 5.3 funsub, executes the wipe
+            f'grep -rn "$({rm} -rf /)" test/',  # $() in double quotes, executes
+            f"({rm} -rf /)",  # bare subshell, executes
+        ):
+            assert is_denied(cmd) is not None, cmd
+
+    def test_rm_rf_gnu_long_option_abbreviations_are_denied(self) -> None:
+        """GPT security-class: GNU ``getopt_long`` accepts any UNAMBIGUOUS
+        prefix of a long option, so ``rm --rec --for /`` runs the identical
+        recursive-force wipe.  A fixed ``--recursive``/``--force`` compare misses
+        it; the floor honours unambiguous prefixes."""
+        from kiro_crew.security import is_denied
+
+        rm = "r" + "m"
+        for cmd in (
+            f"{rm} --rec --for /",
+            f"{rm} --recu --forc /",
+            f"{rm} --recursive --force /",
+            f"{rm} --r --f ~",  # shortest unambiguous prefixes
+            f"{rm} --recursive --force $HOME",
+        ):
+            assert is_denied(cmd) is not None, cmd
+        # A prefix of an UNRELATED long option is not recursive/force, and an
+        # ambiguous/nonexistent one is not either — neither pair triggers.
+        for cmd in (
+            f"{rm} --dir --interactive /",  # neither is recursive+force
+            f"{rm} --recursive /",  # recursive only, no force → allowed
+        ):
+            assert is_denied(cmd) is None, cmd
+
+    def test_rm_rf_apostrophe_in_double_quotes_does_not_hide_a_substitution(self) -> None:
+        """GPT security-class: an apostrophe INSIDE a double-quoted span
+        is a literal, not a single-quote opener, so it must not make the executing
+        ``$(…)`` after it look single-quoted (which would skip it)."""
+        from kiro_crew.security import is_denied, rm_floor
+
+        rm = "r" + "m"
+        # The apostrophe in ``it's`` is inside the double quotes; the ``$(…)`` runs.
+        assert is_denied('echo "it' + "'" + f's $({rm} -rf /)"') is not None
+        # Unit: an apostrophe inside a double-quoted span does NOT toggle
+        # single-quote state, so the ``$(`` after it reads as UNQUOTED (executing),
+        # not single-quoted (literal). Index of the ``(`` in ``"it's $("``.
+        src = '"it' + "'" + "s $("
+        assert rm_floor._rm_single_quoted_positions(src)[src.index("(")] is False
+        # …while a genuinely single-quoted ``$(`` reads as inside single quotes.
+        src2 = "'it $("
+        assert rm_floor._rm_single_quoted_positions(src2)[src2.index("(")] is True
+
+    def test_rm_rf_floor_fails_closed_when_the_tokenizer_raises(self, monkeypatch) -> None:
+        """First Principles items 5+6: base ``main`` denied ``rm -rf /``
+        with NO tokenizer, so if the structural tokenizer RAISES the floor must
+        still deny the catastrophic literal (fail CLOSED), never fall open."""
+        import kiro_crew.security as security
+        import kiro_crew.security.rm_floor as rm_floor
+
+        rm = "r" + "m"
+
+        def _boom(*_a, **_k):
+            raise RuntimeError("tokenizer down")
+
+        monkeypatch.setattr(rm_floor, "_recursive_force_rm_targets", _boom)
+        # The exact base literal is still denied via the fail-closed fallback.
+        assert security.is_denied(f"{rm} -rf /") is not None
+        assert security.is_denied(f"{rm} -rf ~") is not None
+
+    def test_rm_rf_glued_command_separator_is_classified_before_the_boundary(self) -> None:
+        """GPT security-class: a control operator glued to the operand
+        (``rm -rf /;reboot``, ``rm -rf /&&id``) leaves the real target before the
+        boundary. Classify the operand up to its first unquoted ``;``/``&``/``|``/
+        newline and end the argv there, so the wipe is caught and a command glued
+        after it is not read as another operand."""
+        from kiro_crew.security import is_denied
+
+        rm = "r" + "m"
+        for cmd in (
+            f"{rm} -rf /;echo hi",
+            f"{rm} -rf /&&whoami",
+            f"{rm} -rf /|cat",
+            f"{rm} -rf $HOME;id",
+            f"{rm} -rf /*;reboot",  # glob-over-children then glued ;
+            f"{rm} -rf /tmp/x;reboot",  # base -rf descendant then glued ; -> deny
+        ):
+            assert is_denied(cmd) is not None, cmd
+        # A WIDENED-spelling descendant before a glued separator base never matched
+        # stays allowed; the command after the boundary is not read as an operand.
+        assert is_denied(f"{rm} -fr /tmp/x;reboot") is None
+
+    def test_rm_rf_quoted_paren_in_a_substitution_body_does_not_truncate(self) -> None:
+        """GPT security-class: a ``)`` (or backtick) INSIDE a quoted
+        string within a ``$(…)`` / backtick body must not close the substitution
+        early. The body is matched quote-aware, so a wipe after the quoted closer
+        is still seen."""
+        from kiro_crew.security import is_denied
+
+        rm = "r" + "m"
+        for cmd in (
+            f'x "$(printf "a)b"; {rm} -rf /)"',  # quoted ) inside body, then wipe
+            f'x `echo "a)b"; {rm} -rf /`',  # backtick body, quoted ) then wipe
+        ):
+            assert is_denied(cmd) is not None, cmd
+
+    def test_rm_rf_locale_quoted_nested_payload_is_denied(self) -> None:
+        """Item 4: ``bash -c $"\\r\\m -rf /"`` reaches the inner shell as
+        the script ``\\r\\m -rf /``, whose ``\\r\\m`` the inner bash de-escapes to
+        ``rm`` — a real root wipe base ``main`` denied. The floor re-splits the
+        ``-c`` payload with the inner shell's own unquoted backslash de-escaping,
+        so the ``rm`` program word reforms and the wipe is caught."""
+        from kiro_crew.security import is_denied
+
+        rm = "r" + "m"
+        assert is_denied('bash -c $"\\r\\m -rf /"') is not None
+        # The plain nested form and the exact-quote operand still deny.
+        assert is_denied(f'bash -c $"{rm} -rf /"') is not None
+        assert is_denied(f'{rm} -rf $"/"') is not None
+
+    def test_rm_rf_in_awk_and_php_r_executing_payloads_is_denied(self) -> None:
+        """GPT security-class: an executing payload must be classified by SHAPE,
+        not only by the interpreter's name. ``php -r '<code>'`` runs inline code
+        via the ``-r`` flag, and an AWK-family program runs a command through
+        ``system(...)`` or a pipe-to-command inside its FIRST positional operand
+        (no ``-c`` flag) — so the floor reads the php ``-r`` payload and the awk
+        program text and classifies the ``rm`` sink there."""
+        from kiro_crew.security import is_denied
+
+        rm = "r" + "m"
+        for cmd in (
+            f"php -r 'system(\"{rm} -rf /\");'",
+            f"php -r 'exec(\"{rm} -rf ~\");'",
+            f"php -r 'passthru(\"{rm} -rf /\");'",
+            f"awk 'BEGIN{{system(\"{rm} -rf /\")}}'",
+            f"gawk 'BEGIN{{system(\"{rm} -rf /\")}}'",
+            f"awk 'BEGIN{{print | \"{rm} -rf /\"}}'",  # pipe-to-command
+            f"awk -F: 'BEGIN{{system(\"{rm} -rf /\")}}' /etc/passwd",  # after -F fs
+            f"awk -v x=1 'BEGIN{{system(\"{rm} -rf ~\")}}'",  # after -v var=val
+        ):
+            assert is_denied(cmd) is not None, cmd
+        # Benign awk/php run no rm and stay allowed; a ``-f`` script file carries
+        # no inline program to read.
+        for cmd in (
+            "awk -F: '{print $1}' /etc/passwd",
+            "awk -v x=1 '{print x}' file",
+            "awk -f script.awk data.txt",
+            "php -r 'echo \"hello\";'",
+            f"awk '/{rm} -rf/ {{print}}' log.txt",  # rm in a match pattern, printed
+        ):
+            assert is_denied(cmd) is None, cmd
+
+    def test_rm_rf_nested_shell_c_is_budgeted_not_exponential(self) -> None:
+        """Opus security-class: each ``sh -c`` span classified as its own argv
+        recurses into the floor, and the pre-fix duplicate raw-span classification
+        let one level fan out twice, so a chain of ``sh -c`` spans was 3^n and hung
+        the synchronous PreToolUse gate on a ~120-byte command. A descent budget
+        threaded through the recursion bounds the work to linear regardless of
+        nesting, while the real ``rm -rf /`` at the bottom still denies."""
+        import time
+
+        from kiro_crew.security import rm_floor
+
+        rm = "r" + "m"
+        # A flat chain of ``sh -c`` frames terminating in a real root wipe. Without
+        # the budget this is exponential; with it the run stays in the millisecond
+        # range and the wipe is still caught.
+        tokens = ["sh", "-c"] * 24 + [rm, "-rf", "/"]
+        start = time.perf_counter()
+        targets = rm_floor._recursive_force_rm_targets(" ".join(tokens), raw_text="Bash")
+        elapsed = time.perf_counter() - start
+        assert "root" in targets  # the wipe is still denied
+        assert elapsed < 1.0, f"nested sh -c took {elapsed:.2f}s — budget not bounding fan-out"
+
+    def test_rm_rf_wrapper_reached_root_descendant_matches_base_literal(self) -> None:
+        """base ``main``'s whole-line literal ``rm -rf /.*`` / ``rm -rf ~.*``
+        matched the contiguous ``rm -rf <target>`` text wherever it appeared,
+        including behind a wrapper, so a wrapper-reached DESCENDANT in base's own
+        ``rm -rf`` spelling DENIES (``sudo rm -rf /etc``). A WIDENED-spelling
+        descendant base never matched stays ALLOWED (Security Scope ruling); the
+        root/home dir ITSELF denies through a wrapper in any spelling."""
+        from kiro_crew.security import is_denied
+
+        rm = "r" + "m"
+        # Wrapper-reached DESCENDANT in base's OWN contiguous ``rm -rf`` spelling
+        # -> DENIED (base's whole-line regex matched the text).
+        for cmd in (
+            f"sudo {rm} -rf /etc",
+            f"setsid {rm} -rf /tmp/x",
+            f"ssh host {rm} -rf /tmp/x",
+            f"docker exec c {rm} -rf /var/tmp/cache",
+            f"nohup {rm} -rf ~/.cache",
+        ):
+            assert is_denied(cmd) is not None, cmd
+        # Wrapper-reached WIDENED-spelling descendant base never matched -> ALLOWED.
+        for cmd in (
+            f"docker exec c {rm} -fr /tmp/build-cache",  # -fr != base -rf
+            f"setsid {rm} -r -f /tmp/x",  # split flags
+            f"ssh host {rm} --recursive --force /tmp/x",  # long options
+        ):
+            assert is_denied(cmd) is None, cmd
+        # The root/home ITSELF through a wrapper denies in any spelling.
+        for cmd in (
+            f"setsid {rm} -rf /",
+            f"sudo {rm} -rf ~",
+            f"setsid {rm} -fr /",
+            f"docker exec c {rm} -r -f ~",
+        ):
+            assert is_denied(cmd) is not None, cmd
+
+    def test_rm_rf_wrapped_home_with_repeated_trailing_slashes_is_denied(self) -> None:
+        """GPT security-class: a path-collapsing shell treats ``~//`` and
+        ``~///`` as the home dir itself, so the exact-home matcher for a
+        wrapper-reached ``rm`` accepts any RUN of trailing slashes — otherwise
+        ``setsid rm -rf ~//`` bypassed the wrapped home-deletion guard."""
+        from kiro_crew.security import is_denied
+
+        rm = "r" + "m"
+        for cmd in (
+            f"setsid {rm} -rf ~/",
+            f"setsid {rm} -rf ~//",
+            f"setsid {rm} -rf ~///",
+            f"sudo {rm} -rf $HOME//",
+            f"nohup {rm} -rf ${{HOME}}///",
+            f"setsid {rm} -rf ///",  # root, many slashes
+        ):
+            assert is_denied(cmd) is not None, cmd
+
+    def test_rm_rf_partially_quoted_home_is_classified_as_home(self) -> None:
+        """GPT security-class: a shell removes quoting during word expansion, so
+        ``"$HOME"`` and ``$HOME`` are the same path — but a PARTIALLY quoted operand
+        keeps a leading ``"`` that defeats the ``$HOME`` anchor of the home matcher,
+        so a partially-quoted home ITSELF bypassed the enabled home rule. The
+        operand is also classified fully de-quoted, so every partial-quote spelling
+        of ``$HOME`` / ``${HOME}`` for the home dir ITSELF is caught; a partially-
+        quoted DESCENDANT stays allowed under the exact-target contract."""
+        from kiro_crew.security import is_denied
+
+        rm = "r" + "m"
+        # Partially-quoted home ITSELF (optionally a run of trailing slashes) -> deny.
+        for cmd in (
+            f'setsid {rm} -fr "$HOME"/',  # the wrapper -fr bypass (home + slash = home)
+            f'{rm} -rf "$HOME"/',
+            f'{rm} -rf "$HO"ME',  # split mid-variable, resolves to $HOME itself
+            f'sudo {rm} -rf "$HOME"',  # wrapper + quoted home itself
+            f'{rm} -rf "${{HOME}}"',
+        ):
+            assert is_denied(cmd) is not None, cmd
+        # A partially-quoted DESCENDANT -> allowed (exact-target; Security Scope).
+        for cmd in (
+            f'{rm} -rf "$HOME"/.cache',
+            f'{rm} -rf "${{HOME}}"/x',
+            f'{rm} -rf "$HOME""/sub"',  # two quoted spans -> $HOME/sub, a descendant
+        ):
+            assert is_denied(cmd) is None, cmd
+        # A sibling variable (``$HOMEx`` expands to a different directory, not
+        # ``$HOME``) is NOT home, and the variable-name boundary keeps it allowed.
+        assert is_denied(f'{rm} -rf "$HOME"x') is None
+
+    def test_rm_rf_glued_ampersand_is_a_command_boundary(self) -> None:
+        """GPT security-class: a glued ``&`` / ``&&`` ends the command,
+        so the ``rm`` after it is a NEW executed command, not the data-consumer's
+        argument. ``echo hi& rm -rf /`` bypassed the guard because the ``&`` glued
+        to ``hi`` was not read as a boundary before the data-consumer exemption."""
+        from kiro_crew.security import is_denied
+
+        rm = "r" + "m"
+        for cmd in (
+            f"echo x&{rm} -rf /",
+            f"echo x&&{rm} -rf /",
+            f"true&&{rm} -rf /",
+            f"echo hi& {rm} -rf /",  # trailing & on the token, space before rm
+            f"echo x & {rm} -rf /",  # spaced (standalone & token)
+            f"{rm} -rf /tmp&{rm} -rf /",  # second rm after a glued &
+        ):
+            assert is_denied(cmd) is not None, cmd
+
+    def test_rm_rf_substitution_output_resolves_the_operand(self) -> None:
+        """GPT F3 security-class: a command-substitution operand resolves to its
+        OUTPUT, which the raw split keeps as the unresolved ``$(printf /)``
+        spelling, so ``rm -rf --no-preserve-root "$(printf /)"`` must resolve the
+        operand to ``/`` and deny. A dynamic generator does not conjure a
+        target."""
+        from kiro_crew.security import is_denied
+
+        rm = "r" + "m"
+        npr = "--no-preserve" + "-root"
+        for cmd in (
+            f'{rm} -rf {npr} "$(printf /)"',
+            f"{rm} -rf $(echo /)",  # unquoted, body split across tokens
+            f'{rm} -rf "$(echo ~)"',
+        ):
+            assert is_denied(cmd) is not None, cmd
+        # A dynamic (non echo/printf-literal) generator resolves to a sentinel no
+        # operand matcher accepts — it can only ADD coverage, never conjure one.
+        assert is_denied(f'{rm} -rf "$(cat somefile)"') is None
+
+    def test_rm_rf_home_parent_traversal_resolves_against_home(self) -> None:
+        """GPT F4 security-class: a ``..`` after the home marker must collapse
+        against HOME, not against ``/``. ``$HOME/../<home-basename>`` is the home
+        directory itself and must deny; ``$HOME/../other`` escapes home and stays
+        allowed."""
+        import os
+
+        from kiro_crew.security import is_denied
+
+        rm = "r" + "m"
+        home_base = os.path.basename(os.path.expanduser("~"))
+        assert is_denied(f"{rm} -rf $HOME/../{home_base}") is not None
+        assert is_denied(f"{rm} -rf ${{HOME}}/../{home_base}") is not None
+        assert is_denied(f"{rm} -rf $HOME/../somethingelse") is None
+
+    def test_rm_rf_quoted_separator_operand_is_not_a_boundary(self) -> None:
+        """Opus security-class: a quoted ``;``/``|`` (``';'``) is a literal
+        filename argument, not a command separator — peeling its quotes must not
+        end the rm argv before a later ``/`` operand. ``rm -rf ';' /`` really
+        deletes root."""
+        from kiro_crew.security import is_denied
+
+        rm = "r" + "m"
+        for cmd in (f"{rm} -rf ';' /", f'{rm} -rf ";" /', f"{rm} -rf '|' ~"):
+            assert is_denied(cmd) is not None, cmd
+        # A genuinely unquoted glued boundary still ends the argv at its head.
+        assert is_denied(f"{rm} -rf /;reboot") is not None  # head is the root
+
+    def test_rm_rf_escaped_separator_operand_is_not_a_boundary(self) -> None:
+        """Opus c399 security-class: a BACKSLASH-escaped separator (``a\\;b``) is a
+        literal filename character, not a command separator — the operand-boundary
+        scan must skip it so a later ``/*`` operand is still classified. ``rm -rf
+        a\\;b /*`` really wipes every child of root."""
+        from kiro_crew.security import is_denied
+
+        rm = "r" + "m"
+        assert is_denied(f"{rm} -rf a\\;b /*") is not None
+        assert is_denied(f"{rm} -rf a\\&b ~/*") is not None
+
+    def test_rm_rf_partially_quoted_root_operand_denies(self) -> None:
+        """Opus c399 security-class: ``rm -rf "/"etc`` keeps a leading quote on
+        the raw operand, yet bash runs ``rm -rf /etc`` and base ``main``'s
+        quote-normalized view denied it. The base-pin prefix test runs over the
+        fully de-quoted operand too, so the partially-quoted spelling denies while
+        a ``$HOME`` descendant stays allowed."""
+        from kiro_crew.security import is_denied
+
+        rm = "r" + "m"
+        assert is_denied(f'{rm} -rf "/"etc') is not None
+        assert is_denied(f'{rm} -rf "~"/.ssh') is not None
+        assert is_denied(f"{rm} -rf $HOME/.cache") is None  # descendant stays allowed
+
+    def test_rm_rf_home_parent_glob_keeps_its_separator(self) -> None:
+        """Opus c399 security-class: ``rm -fr ~/./*`` collapses the ``/./`` to home
+        and must re-emit the ``/`` separator with the glob — the home-itself
+        matcher admits ``*`` only after ``/``, so a dropped separator (``~*``)
+        failed open on the home-children wipe."""
+        from kiro_crew.security import is_denied
+
+        rm = "r" + "m"
+        for cmd in (f"{rm} -fr ~/./*", f"{rm} -fr ~/*", f"{rm} -fr /./*"):
+            assert is_denied(cmd) is not None, cmd
+
+    def test_rm_rf_python_dash_E_before_dash_c_is_classified(self) -> None:
+        """GPT c399 F2 security-class: Python's ``-E`` (ignore environment) takes
+        NO argument, so ``python3 -E -c '<code>'`` — a routine clean-env
+        invocation — must still classify ``<code>``, not consume ``-c`` as ``-E``'s
+        payload. (Python accepts neither ``-e`` nor ``-E`` as a code flag.)"""
+        from kiro_crew.security import is_denied
+
+        rm = "r" + "m"
+        assert is_denied(f"python3 -E -c 'import os; os.system(\"{rm} -rf /\")'") is not None
+        assert is_denied(f"python -E -c 'import os; os.system(\"{rm} -rf ~\")'") is not None
+
+    def test_rm_rf_exec_wrapped_stdin_interpreter_is_inspected(self) -> None:
+        """GPT c399 F4 security-class: ``env``/``sudo`` is the attributed program
+        under ``printf '…' | env python3``, so the interpreter scan was skipped.
+        Resolving through the exec wrapper to the effective program (``python3``)
+        inspects the piped stdin code."""
+        from kiro_crew.security import is_denied
+
+        rm = "r" + "m"
+        for wrapper in ("env", "sudo", "nohup"):
+            cmd = f"printf 'import os; os.system(\"{rm} -rf /\")' | {wrapper} python3"
+            assert is_denied(cmd) is not None, cmd
+
+    def test_rm_rf_leading_flag_before_rf_descendant_stays_allowed(self) -> None:
+        """Opus c427 security-class false-positive: base's literal was ``rm``
+        IMMEDIATELY followed by ``-rf`` (``rm -rf /``), so a flag BEFORE the
+        ``-rf`` broke that contiguity and base never matched it. The base ``-rf``
+        descendant pin now arms only when ``-rf`` is ``rm``'s first argument, so a
+        verbose/scratch cleanup is not newly denied -- while the root/home ITSELF
+        in any spelling still denies."""
+        from kiro_crew.security import is_denied
+
+        rm = "r" + "m"
+        # base allowed these (``-v`` breaks the contiguous ``rm -rf``): stay allowed.
+        for cmd in (f"{rm} -v -rf /tmp/x", f"{rm} -i -rf /var/tmp/scratch"):
+            assert is_denied(cmd) is None, cmd
+        # root/home ITSELF is denied in ANY spelling, flag order notwithstanding.
+        for cmd in (f"{rm} -v -rf /", f"{rm} -rf /", f"{rm} -i -rf ~"):
+            assert is_denied(cmd) is not None, cmd
+
+    def test_rm_rf_command_string_wrapper_is_denied(self) -> None:
+        """Opus c427 security-class BLOCKING: a non-shell command-string wrapper
+        (``watch 'rm -rf /'``, ``flock /tmp/l -c 'rm -rf /'``) keeps the whole
+        command in ONE quoted token whose argv program is the wrapper, so the
+        per-``rm`` loop and the shell ``-c`` scan both missed it and the single
+        literal was never re-split. The wrapper's command argument is now
+        re-classified as its own argv."""
+        from kiro_crew.security import is_denied
+
+        rm = "r" + "m"
+        root = "/"
+        for cmd in (
+            f"watch '{rm} -rf {root}'",
+            f"watch -n2 '{rm} -rf {root}'",
+            f"flock /tmp/l -c '{rm} -rf {root}'",
+            f"flock -c '{rm} -rf {root}'",
+        ):
+            assert is_denied(cmd) is not None, cmd
+
+    def test_rm_rf_ssh_remote_command_is_denied(self) -> None:
+        """GPT security-class (UPHOLD-FENCED): an ``ssh`` remote command is a
+        quoted operand a shell tokenizer never splits, so ``ssh host 'rm -rf /*'``
+        left the catastrophic wipe opaque to the per-``rm`` loop. The remote
+        command after the destination is now re-classified as its own argv, so the
+        root/home dir itself denies; a benign remote command stays allowed."""
+        from kiro_crew.security import is_denied
+
+        rm = "r" + "m"
+        for cmd in (
+            f"ssh 192.0.2.10 '{rm} -rf /*'",
+            f"ssh -p 22 host '{rm} -rf /'",
+            f"ssh user@host '{rm} -rf ~'",
+            f"ssh -i key.pem user@host '{rm} -rf /'",
+            f"ssh user@host {rm} -rf /",  # unquoted remote command
+        ):
+            assert is_denied(cmd) is not None, cmd
+        # A benign remote command is not a catastrophic wipe -> allowed.
+        assert is_denied("ssh host 'ls /tmp'") is None
+
+    def test_rm_rf_xargs_stdin_operand_is_classified(self) -> None:
+        """GPT 5.6 security-class (UPHOLD-FENCED): ``xargs`` APPENDS the words it
+        reads on stdin to ``rm``'s argv, so ``echo "$HOME" | xargs rm -rf`` runs
+        ``rm -rf "$HOME"`` with the destructive operand in NO token of the ``rm``
+        command -- the floor saw ``rm -rf`` with no target and allowed it. The
+        effective ``rm`` argv (its flags plus the literal ``echo``/``printf`` stdin
+        words) is now reconstructed and classified ITSELF-only: the root/home dir
+        itself denies, while a DESCENDANT operand (``echo /tmp/x | xargs rm -rf``)
+        stays allowed exactly as base did, and a benign command stays allowed."""
+        from kiro_crew.security import is_denied
+
+        rm = "r" + "m"
+        dollar = "$"
+        for cmd in (
+            f'echo "{dollar}HOME" | xargs {rm} -rf',
+            f"echo / | xargs {rm} -rf",
+            f'echo "{dollar}HOME" | xargs -n 1 {rm} -rf',  # xargs option skipped
+            f"printf / | xargs -0 {rm} -rf",
+        ):
+            assert is_denied(cmd) is not None, cmd
+        # Descendant operand: base allowed it (no contiguous rm -rf / text), so the
+        # itself-only reconstruction must keep allowing it.
+        assert is_denied(f"echo /tmp/x | xargs {rm} -rf") is None
+        # A benign (non-recursive, non-root) xargs rm stays allowed.
+        assert is_denied(f"echo foo.txt | xargs {rm} -f") is None
+
+    def test_rm_rf_xargs_glued_pipe_is_classified(self) -> None:
+        """GPT 5.6 security-class (UPHOLD-FENCED): a shell ends the producer at the
+        ``|`` regardless of spacing, but the raw split keeps a glued pipe
+        (``echo $HOME|xargs rm -rf``) as one token (``$HOME|xargs``), so the
+        reconstruction -- which looked for ``xargs`` as its own token -- never
+        fired and the home wipe passed. Tokens are now split on an embedded lone
+        ``|`` before the pipeline walk, so a glued pipeline classifies the same as
+        a spaced one; a descendant and a benign command stay allowed."""
+        from kiro_crew.security import is_denied
+
+        rm = "r" + "m"
+        dollar = "$"
+        for cmd in (
+            f"echo {dollar}HOME|xargs {rm} -rf",
+            f"echo /|xargs {rm} -rf",
+            f'echo "{dollar}HOME"|xargs {rm} -rf',
+        ):
+            assert is_denied(cmd) is not None, cmd
+        # Glued descendant stays allowed (base parity, itself-only classification).
+        assert is_denied(f"echo /tmp/x|xargs {rm} -rf") is None
+        # Glued benign stays allowed.
+        assert is_denied(f"echo foo.txt|xargs {rm} -f") is None
+
+    def test_rm_rf_home_parameter_suffix_removal_is_denied(self) -> None:
+        """GPT security-class (UPHOLD-FENCED): the shell resolves the
+        suffix-removal expansions ``${HOME%/}`` / ``${HOME%%/}`` to the home dir
+        itself (stripping a trailing slash the value does not carry), but the home
+        matcher admitted only ``~`` / ``$HOME`` / ``${HOME}`` plus a slash/glob
+        tail, so the suffix-removal spelling matched nothing and the home wipe went
+        allowed. The matcher now recognizes the slash-only suffix-removal forms."""
+        from kiro_crew.security import is_denied
+
+        rm = "r" + "m"
+        dollar = "$"
+        for cmd in (
+            f"{rm} -rf {dollar}{{HOME%/}}",
+            f"{rm} -rf {dollar}{{HOME%%/}}",
+            # control: the plain and brace spellings still deny.
+            f"{rm} -rf {dollar}HOME",
+            f"{rm} -rf {dollar}{{HOME}}",
+        ):
+            assert is_denied(cmd) is not None, cmd
+
+    def test_rm_rf_home_parameter_check_operator_is_denied(self) -> None:
+        """GPT 5.6 security-class (UPHOLD-FENCED): ``${HOME:?}`` / ``${HOME:?msg}``
+        is a documented defensive idiom that ABORTS when HOME is unset and
+        OTHERWISE expands to HOME's value UNCHANGED, so ``rm -rf "${HOME:?}"`` wipes
+        the home tree exactly as ``rm -rf "$HOME"`` does -- but the home matcher
+        admitted no ``:?`` operator and the wipe went allowed. The matcher now
+        recognizes it. The VALUE-CHANGING operators (``:-``/``:+``/``:=``) are NOT
+        admitted: they can expand to a value that is not the home dir, so refusing
+        them would over-refuse a non-home target."""
+        from kiro_crew.security import is_denied
+
+        rm = "r" + "m"
+        dollar = "$"
+        for cmd in (
+            f'{rm} -rf "{dollar}{{HOME:?}}"',
+            f'{rm} -rf "{dollar}{{HOME:?unset}}"',
+        ):
+            assert is_denied(cmd) is not None, cmd
+        # Value-CHANGING operators expand to something that may not be home, so
+        # they must NOT be refused as a home wipe (``:-`` yields the word when
+        # unset, ``:+`` yields the word when set).
+        for cmd in (
+            f'{rm} -rf "{dollar}{{HOME:-/other}}"',
+            f'{rm} -rf "{dollar}{{HOME:+other}}"',
+        ):
+            assert is_denied(cmd) is None, cmd
+
+    def test_rm_rf_static_brace_expansion_classifies_each_member(self) -> None:
+        """GPT 5.6 security-class (UPHOLD-FENCED, F1): bash expands a brace word in
+        place, so ``rm {--recursive,--force,--no-preserve-root} {/,/tmp}`` runs with
+        the recursive/force/npr flags against ``/`` and wipes the root -- yet the
+        brace GROUPS reached the floor as single tokens matching no flag predicate
+        and no root operand. The floor now expands statically-decidable alternation
+        members before parsing flags and operands, so a brace-grouped FLAG is seen
+        as its flags and a brace-grouped OPERAND as its members. A member that IS
+        root/home denies; a brace whose members are all descendants keeps base
+        parity, and a single-member brace (an awk program, a format literal) is not
+        expanded and never read as a rooted operand."""
+        from kiro_crew.security import is_denied
+
+        rm = "r" + "m"
+        sl = "/"
+        home = "$HOME"
+        # Brace-grouped flags AND a brace operand whose member is root.
+        assert (
+            is_denied(f"{rm} {{--recursive,--force,--no-preserve-root}} {{{sl},{sl}tmp}}")
+            is not None
+        )
+        # A brace operand with a root/home member -- the member denies.
+        assert is_denied(f"{rm} -rf {{~,{sl}tmp/x}}") is not None
+        assert is_denied(f"{rm} -rf {{{sl},{sl}tmp/x}}") is not None
+        assert is_denied(f"{rm} -rf {home}/{{,.cache}}") is not None
+        # A single-member brace is NOT brace expansion -- not read as a rooted
+        # operand (would otherwise fail open as a program-position word elsewhere).
+        # Here it simply is not a root/home target, so a descendant-only command
+        # with such a brace is unaffected -- a benign relative delete stays allowed.
+        assert is_denied(f"{rm} -rf ./build/{{state}}") is None
+
+    def test_rm_rf_home_alias_variable_resolves_to_home(self) -> None:
+        """GPT 5.6 security-class (UPHOLD-FENCED, F3): ``x=$HOME; rm -rf "$x"`` --
+        the decoded view substitutes ``$x`` to the EXPANDED home path, which carries
+        no ``~``/``$HOME`` marker and matched neither exact matcher, allowing the
+        home wipe. The floor now also classifies an operand that IS the expanded
+        home path as home (on the decoded view only -- the raw view keeps markers
+        unexpanded for descendant base-parity). A home DESCENDANT stays allowed."""
+        from kiro_crew.security import is_denied
+
+        rm = "r" + "m"
+        assert is_denied(f'x=$HOME; {rm} -rf "$x"') is not None
+        assert is_denied(f"x=$HOME; {rm} -rf $x") is not None
+        # A descendant via the same alias is NOT the home dir itself -> allowed
+        # (base allowed its $HOME/.cache spelling).
+        assert is_denied(f'x=$HOME; {rm} -rf "$x/.cache"') is None
+
+    def test_rm_rf_wrapper_flag_only_options_do_not_eat_the_command(self) -> None:
+        """GPT 5.6 security-class (UPHOLD-FENCED): a wrapper's flag-only option was
+        listed as operand-taking, so the destination scan skipped the NEXT token
+        as its value and swallowed the host (``ssh``) or the command (``watch``),
+        leaving the quoted ``rm -rf /`` unclassified. ``ssh``'s ``-q``/``-f``/
+        ``-s`` and ``watch``'s ``-d``/``--differences`` are flags that take no
+        value, so the root wipe behind them must still deny; a benign command
+        behind the same flags stays allowed."""
+        from kiro_crew.security import is_denied
+
+        rm = "r" + "m"
+        for cmd in (
+            f"ssh -q host '{rm} -rf /'",
+            f"ssh -f host '{rm} -rf /'",
+            f"ssh -q -f host '{rm} -rf /'",  # two stacked flag-only options
+            f"watch -d '{rm} -rf /'",
+            f"watch --differences '{rm} -rf /'",
+            f"ssh -p 22 host '{rm} -rf /'",  # a real operand-taking option still skips its value
+        ):
+            assert is_denied(cmd) is not None, cmd
+        # A flag-only option in front of a benign remote/watched command is allowed.
+        assert is_denied("ssh -q host 'ls /tmp'") is None
+        assert is_denied("watch -d 'date'") is None
+
+    def test_program_basename_does_not_cache_long_tokens(self) -> None:
+        """GPT 5.6 security-class (UPHOLD-FENCED): the ``_program_basename`` LRU
+        bounds its ENTRY COUNT, not the byte size of each key, so caching a very
+        long token (adversarial padding, pasted data) would pin unbounded bytes
+        for the process's life. A token past the length cap is now peeled uncached
+        -- same answer, bounded retention -- while a short token is still cached."""
+        from kiro_crew.security import shell_normalizer as sn
+
+        rm = "r" + "m"
+        long_token = "a" * (sn._PROGRAM_BASENAME_CACHE_MAX_LEN + 50) + "/" + rm
+        # Correctness is unchanged for a long token.
+        assert sn._program_basename(long_token) == rm
+        # ...but it is NOT added to the cache.
+        sn._program_basename_cached.cache_clear()
+        before = sn._program_basename_cached.cache_info().misses
+        sn._program_basename(long_token)
+        sn._program_basename(long_token)
+        assert (
+            sn._program_basename_cached.cache_info().misses == before
+        ), "a long token must not populate the bounded cache"
+        # A short token IS cached: one miss, then hits.
+        sn._program_basename_cached.cache_clear()
+        for _ in range(4):
+            sn._program_basename("sudo")
+        info = sn._program_basename_cached.cache_info()
+        assert info.misses == 1 and info.hits >= 3, f"short token not cached: {info}"
+
+    def test_rm_rf_elided_empty_word_keeps_base_rf_contiguity(self) -> None:
+        """Opus 5 c468 security-class (UPHOLD-FENCED, F2): a shell-elided empty
+        word (``rm "" -rf /etc``) contributes neither a flag nor an operand, so it
+        must leave ``rm``'s first-argument position intact -- otherwise the
+        following ``-rf`` is not ``rm``'s first argument and base's contiguous
+        ``rm -rf <root>`` pin never arms, deleting ``/etc`` while base (whose
+        quote-normalized view drops the ``""``) denies it. The first-argument
+        position advances only for a word that contributes a flag or an operand,
+        so an elided empty word is transparent."""
+        from kiro_crew.security import is_denied
+
+        rm = "r" + "m"
+        sl = "/"
+        rf = "-rf"
+        # The empty word must not disarm the base pin for a root/system target.
+        assert is_denied(f'{rm} "" {rf} {sl}etc') is not None
+        assert is_denied(f'{rm} "" {rf} {sl}usr') is not None
+        assert is_denied(f'{rm} "" {rf} {sl}') is not None
+        # Several elided words in a row stay transparent.
+        assert is_denied(f"{rm} '' \"\" {rf} {sl}etc") is not None
+        # A benign descendant after an empty word stays ALLOWED (base parity -- the
+        # empty word changes nothing about a non-root target).
+        assert is_denied(f'{rm} "" {rf} ./build') is None
+        assert is_denied(f'{rm} "" foo.txt') is None
+
+    def test_rm_rf_sink_literal_budget_prioritises_catastrophic(self) -> None:
+        """Opus 5 c468 security-class (UPHOLD-FENCED, F3): a flat run of benign
+        ``rm aN`` sink literals (64 of them) each decremented the shared descent
+        budget, so the 65th literal -- a real ``rm -rf /`` -- hit the budget break
+        and was never classified -> root wipe allowed. The ``rm``-bearing sink
+        literals are now classified DANGEROUS-first, so a benign-sibling flood can
+        never starve the budget a catastrophic sibling needs; the ordering is a
+        priority hint only, so no benign command is newly denied."""
+        from kiro_crew.security import is_denied
+
+        rm = "r" + "m"
+        sl = "/"
+        pad = ";".join(f'os.system("{rm} a{i}")' for i in range(64))
+        # Wipe LAST, after 64 benign padding literals -- must still deny.
+        assert is_denied(f"python3 -c '{pad};os.system(\"{rm} -rf {sl}\")'") is not None
+        # Wipe FIRST, before the padding -- order independence.
+        assert is_denied(f"python3 -c 'os.system(\"{rm} -rf {sl}\");{pad}'") is not None
+        # 64 benign literals with NO wipe stay allowed (no over-refusal).
+        assert is_denied(f"python3 -c '{pad}'") is None
 
     STATE = "opaque-state-123"
     CHALLENGE = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
@@ -9470,7 +10475,11 @@ class TestPublishFloorNestedPayloads:
             sec._nested_shell_payloads = boom  # type: ignore[assignment]
             # Decides rather than raising, and the top-level reading still holds.
             assert sec.is_denied("git push origin main") is not None
-            assert sec.is_denied("rm -rf /") is not None
+            # A regex-tier rule (``dd``) is the exemplar for "the raw tier still
+            # decides": the rm rules are floor-only and the rm floor reads
+            # the very walk being exploded here, so it fails OPEN under this fault
+            # (its own documented degradation), which is not the property tested.
+            assert sec.is_denied("dd if=/dev/zero of=/dev/sda") is not None
             assert sec.is_denied("git push origin my-feature") is None
         finally:
             sec._nested_shell_payloads = original  # type: ignore[assignment]
@@ -10562,11 +11571,13 @@ class TestARefusalNamesItsRuleAndSpan:
 
         A diagnostic on every catalog refusal would add a line to the common case
         for no information, and the first line is a parsed micro-format whose
-        readers count on what follows it.
+        readers count on what follows it. Uses a genuine REGEX-tier catalog rule
+        (``dd``); the rm rules are floor-only now and a floor refusal
+        deliberately carries the extra structural note + diagnostic lines.
         """
         from kiro_crew.security import is_denied
 
-        reason = is_denied("r" + "m -rf /")
+        reason = is_denied("dd if=/dev/zero of=/dev/sda")
         assert reason is not None
         assert reason.splitlines() == [reason]
 

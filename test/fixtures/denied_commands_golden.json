@@ -399,7 +399,7 @@
     "id": "iac-teardown-cdk-destroy",
     "pattern": "cdk destroy.*",
     "category": "iac-teardown",
-    "description": "Blocks `cdk destroy`, which tears down an entire AWS CDK stack and all its provisioned cloud resources \u2014 irreversible infrastructure and data loss."
+    "description": "Blocks `cdk destroy`, which tears down an entire AWS CDK stack and all its provisioned cloud resources — irreversible infrastructure and data loss."
   },
   {
     "id": "local-destructive-chmod-777",
@@ -579,7 +579,7 @@
     "id": "iac-teardown-kubectl-delete-namespace",
     "pattern": "kubectl delete namespace.*",
     "category": "iac-teardown",
-    "description": "Blocks `kubectl delete namespace`, which deletes a Kubernetes namespace and cascades to every workload, service, and volume inside it \u2014 irreversible cluster-wide teardown."
+    "description": "Blocks `kubectl delete namespace`, which deletes a Kubernetes namespace and cascades to every workload, service, and volume inside it — irreversible cluster-wide teardown."
   },
   {
     "id": "local-destructive-mkfs",
@@ -603,25 +603,25 @@
     "id": "iac-teardown-pulumi-destroy",
     "pattern": "pulumi destroy.*",
     "category": "iac-teardown",
-    "description": "Blocks `pulumi destroy`, which deletes all cloud resources managed by a Pulumi stack \u2014 irreversible infrastructure teardown."
+    "description": "Blocks `pulumi destroy`, which deletes all cloud resources managed by a Pulumi stack — irreversible infrastructure teardown."
   },
   {
     "id": "local-destructive-rm-rf-root",
     "pattern": "rm -rf /.*",
     "category": "local-destructive",
-    "description": "Blocks recursive force-deletion rooted at the filesystem root (rm -rf /...), which can wipe the entire operating system and all data."
+    "description": "Blocks recursive force-deletion of the filesystem root (rm -rf /...), which can wipe the entire operating system and all data. The root directory ITSELF is denied in any flag spelling — recursive and force in any order, packed (-rf/-fr/-rfv), split (-r -f), or long (--recursive --force), and --no-preserve-root as a trigger on its own. A path UNDER the root is denied only in the contiguous base spelling `rm -rf /<path>` (a widened spelling of a descendant, e.g. `rm -fr /tmp/x`, stays allowed for scratch cleanup); rm -f, rm -r and flagless rm stay allowed."
   },
   {
     "id": "local-destructive-rm-rf-home",
     "pattern": "rm -rf ~.*",
     "category": "local-destructive",
-    "description": "Blocks recursive force-deletion of the user home directory (rm -rf ~...), which would destroy all personal files and config."
+    "description": "Blocks recursive force-deletion of the user home directory (rm -rf ~... or rm -rf $HOME...), which would destroy all personal files and config. The home directory ITSELF is denied in any flag spelling (recursive and force in any order) with the home target spelled ~ or $HOME / ${HOME} (quotes are normalized away first). A path UNDER home is denied only in the contiguous base spelling `rm -rf ~<path>` (a widened spelling, e.g. `rm -rf $HOME/.cache`, stays allowed for cache cleanup); rm -f, rm -r and flagless rm stay allowed."
   },
   {
     "id": "iac-teardown-terraform-destroy",
     "pattern": "terraform destroy.*",
     "category": "iac-teardown",
-    "description": "Blocks `terraform destroy`, which destroys every resource tracked in the Terraform state \u2014 irreversible infrastructure and data loss."
+    "description": "Blocks `terraform destroy`, which destroys every resource tracked in the Terraform state — irreversible infrastructure and data loss."
   },
   {
     "id": "sql-truncate-table",
