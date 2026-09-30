@@ -2624,11 +2624,15 @@ test("fetchRemoteToken runs one bounded ssh against the port's crew and parses i
   assert.deepStrictEqual(await supervisor.fetchRemoteToken(), { token: "abc123", error: null });
   assert.strictEqual(calls.length, 1);
   assert.strictEqual(calls[0].file, "/usr/bin/ssh");
-  assert.deepStrictEqual(calls[0].args.slice(0, 3), ["-o", "ConnectTimeout=10", "myhost.example.com"]);
-  assert.strictEqual(calls[0].args.length, 4);
-  assert.match(calls[0].args[3], /KIROCREW_PORT=7000/, "the crew's own port, not the local end");
+  assert.deepStrictEqual(
+    calls[0].args.slice(0, 6),
+    ["-n", "-o", "BatchMode=yes", "-o", "ConnectTimeout=3", "myhost.example.com"],
+    "stdin closed, no prompt, and ssh's connect deadline inside the kill budget",
+  );
+  assert.strictEqual(calls[0].args.length, 7);
+  assert.match(calls[0].args[6], /KIROCREW_PORT=7000/, "the crew's own port, not the local end");
   assert.deepStrictEqual(calls[0].options, { timeout: 5000 }, "the SSH budget never drops below 5s");
-  assert.ok(logs.includes("SSH token fetch: ssh myhost.example.com for port 7000"));
+  assert.ok(logs.includes("SSH token fetch: /usr/bin/ssh myhost.example.com for port 7000"));
 });
 
 test("fetchRemoteToken defaults the SSH budget and the remote port to the tab's port", async (t) => {
@@ -2649,7 +2653,64 @@ test("fetchRemoteToken defaults the SSH budget and the remote port to the tab's 
 
   assert.deepStrictEqual(await supervisor.fetchRemoteToken(7778), { token: "", error: null });
   assert.deepStrictEqual(calls[0].options, { timeout: 20000 });
-  assert.match(calls[0].args[3], /KIROCREW_PORT=7778/);
+  assert.ok(calls[0].args.includes("ConnectTimeout=18"));
+  assert.match(calls[0].args[6], /KIROCREW_PORT=7778/);
+});
+
+function windowsCrewHarness(kernelRoot, execFileFn) {
+  return harness({
+    processRef: {
+      platform: "win32",
+      arch: "x64",
+      env: { KIROCREW_HOME: "C:\\virtual\\kirocrew-home", SystemRoot: "C:\\planted" },
+      resourcesPath: "C:\\virtual\\resources",
+      kill() { throw new Error("process kill must not run in this harness"); },
+    },
+    fsMod: {
+      constants: { X_OK: 1 },
+      mkdirSync() {},
+      accessSync() { throw Object.assign(new Error("not found"), { code: "ENOENT" }); },
+      existsSync() { return false; },
+      realpathSync: {
+        native: () => {
+          if (kernelRoot instanceof Error) throw kernelRoot;
+          return kernelRoot;
+        },
+      },
+      readFileSync() { throw new Error("unexpected filesystem read"); },
+    },
+    store: remoteCrewStore(5476, {
+      host: "devbox",
+      binPath: "/opt/kc/bin/kirocrew",
+      remotePort: "",
+      remotePath: "",
+    }),
+    execFileFn,
+  });
+}
+
+test("fetchRemoteToken runs the in-box OpenSSH client under the kernel's Windows directory", async (t) => {
+  t.mock.method(console, "error", () => {});
+  const calls = [];
+  const { supervisor } = windowsCrewHarness("D:\\Windows", (file, args, options, callback) => {
+    calls.push({ file, args, options });
+    callback(null, "http://localhost:5476?token=abc\n", "");
+  });
+
+  assert.deepStrictEqual(await supervisor.fetchRemoteToken(), { token: "abc", error: null });
+  assert.strictEqual(calls[0].file, "D:\\Windows\\System32\\OpenSSH\\ssh.exe");
+});
+
+test("fetchRemoteToken refuses on Windows when the system directory does not resolve", async (t) => {
+  t.mock.method(console, "error", () => {});
+  let runs = 0;
+  const { supervisor } = windowsCrewHarness(new Error("EINVAL"), () => { runs += 1; });
+
+  assert.deepStrictEqual(
+    await supervisor.fetchRemoteToken(),
+    { token: "", error: "ssh client not found: the Windows system directory did not resolve." },
+  );
+  assert.strictEqual(runs, 0, "no guessed ssh path is ever run");
 });
 
 test("fetchRemoteToken reports ssh's stderr, else its error message", async (t) => {
@@ -2675,6 +2736,31 @@ test("fetchRemoteToken reports ssh's stderr, else its error message", async (t) 
   assert.deepStrictEqual(
     await supervisor.fetchRemoteToken(),
     { token: "", error: "Command failed: ssh" },
+  );
+});
+
+test("fetchRemoteToken names a missing ssh client and a timeout kill", async (t) => {
+  t.mock.method(console, "error", () => {});
+  let failure;
+  const { supervisor } = harness({
+    store: remoteCrewStore(5476, {
+      host: "devbox",
+      binPath: "/opt/kc/bin/kirocrew",
+      remotePort: "",
+      remotePath: "",
+    }),
+    execFileFn: (_file, _args, _options, callback) => callback(failure, "", ""),
+  });
+
+  failure = Object.assign(new Error("spawn /usr/bin/ssh ENOENT"), { code: "ENOENT" });
+  assert.deepStrictEqual(
+    await supervisor.fetchRemoteToken(),
+    { token: "", error: "ssh client not found: /usr/bin/ssh. Install the OpenSSH client and retry." },
+  );
+  failure = Object.assign(new Error("Command failed: ssh"), { killed: true, signal: "SIGTERM" });
+  assert.deepStrictEqual(
+    await supervisor.fetchRemoteToken(),
+    { token: "", error: "ssh devbox timed out after 20 s" },
   );
 });
 
