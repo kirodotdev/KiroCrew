@@ -452,26 +452,41 @@ The exception: layer 3's own header claims precedence over the whole section,
 protocol included, so the user's safety boundary is never formally outranked by
 product prose.
 
-Layers 2 and 4 describe how the member runs its own desk, and only a member
-selected BY NAME gets them. When the member's store runs under an explicitly
-selected **template** — the execution record carries the member's `member_id` and
-store with `selection_kind == "template"`, the shape `session_create(agent=…)`
-and `spawn_run(agent=…)` both mint for a member caller — the session is that
-member's *delegate*, sent to do the work: `_template_selected_on_member_store`
-is the one predicate, every builder call site passes its verdict, and the section
-is layers 1 and 3 only. The delegate keeps the member's identity because the
-memory it reads and writes is that member's, and keeps `[PERMANENT RULES]`
-because the user's bounds on a member follow its memory, not its template. It is
-not handed the desk protocol — whose second item hands substantial work to a
-separate session, the loop a delegate must not enter — nor the briefing that
-protocol maintains, and no placeholder stands in for either. A member whose record
-carries no persisted `member_id` is never a delegate in this sense: it is named by
-`selection_kind == "member"` and `selection_name` alone, and no record field can
-carry "this member, under that template". The `session_create` arm keeps that
-selection and changes only the template, so its child keeps all four layers —
-losing the member would lose layer 3 with layer 1 — while the spawn gate's
-`spawn_run(agent=…)` child of such a member is a plain template run on the parent's
-store with no member section.
+Layers 2 and 4 are the member's **desk**: they describe how the member runs its
+own DM thread. The desk follows the SURFACE, not the store and not the selection.
+`_desk_withheld(execution_context, desk_member)` is the one predicate, every
+builder call site passes its verdict, and either of its two reasons makes the
+section layers 1 and 3 only — no placeholder stands in for the desk, the briefing
+is not read, and the identity sentence describing the DM thread is dropped:
+
+- **No caller named the turn as the desk.** `build_message` and
+  `build_session_context` take the desk from their own `member=` argument, which
+  the dashboard passes for a `mode == "member"` slot only, and take the OWNER —
+  whose identity, rules and memory the turn carries — from the execution record.
+  Every plain dashboard chat resolves to the stock `default` crew alias, which
+  the loader classifies `selection_kind == "member"`; that is the right store
+  binding and was the wrong desk trigger, so the two are captured separately.
+  An ordinary chat on a crew alias, a cron turn, a channel turn and every
+  delegate get identity and permanent rules only.
+- **The store runs under an explicitly selected template**
+  (`_template_selected_on_member_store`): the execution record carries the
+  member's `member_id` and store with `selection_kind == "template"`, the shape
+  `session_create(agent=…)` and `spawn_run(agent=…)` both mint for a member
+  caller. The session is that member's *delegate*, sent to do the work, and the
+  desk protocol's second item hands substantial work to a separate session — the
+  loop a delegate must not enter.
+
+The delegate keeps the member's identity because the memory it reads and writes
+is that member's, and keeps `[PERMANENT RULES]` because the user's bounds on a
+member follow its memory, not its surface or template. A member whose record
+carries no persisted `member_id` is never a template-selected delegate in this
+sense: it is named by `selection_kind == "member"` and `selection_name` alone, and
+no record field can carry "this member, under that template". The
+`session_create` arm keeps that selection and changes only the template, so its
+child keeps layers 1 and 3 — losing the member would lose layer 3 with layer 1 —
+and loses the desk through the surface reason, while the spawn gate's
+`spawn_run(agent=…)` child of such a member is a plain template run on the
+parent's store with no member section.
 
 Two failure behaviours are deliberate and opposite. A **missing** rules file reads
 as `""` (the normal unbounded-by-choice state). An **existing but unreadable** one
@@ -526,7 +541,9 @@ work. Pass `agent="kirocrew-worker"` (or the intended implementer) explicitly, a
 a self-contained brief with `session_send`. For a member-bound caller that explicit
 template selects the child's persona, not its memory: the child keeps the caller's
 store and member identity and takes `selection_kind == "template"`, which is what
-makes it the member's delegate of §5 — identity and rules, no desk protocol.
+makes it the member's delegate of §5 — identity and rules, no desk (which no
+created session has: the desk is delivered only where a caller's `member=` names
+the DM thread).
 
 ## 6. Crew-member private files: implemented vs planned
 

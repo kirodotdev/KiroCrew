@@ -2463,11 +2463,10 @@ _MEMBER_HOW_YOU_WORK = _MEMBER_HOW_YOU_WORK_COMMON + _MEMBER_BRIEFING_ITEM
 def _template_selected_on_member_store(execution_context: Any) -> bool:
     """Whether *execution_context* runs a member's store under a selected TEMPLATE.
 
-    The one predicate behind withholding the member operating protocol, read by
-    every ``_build_member_section`` caller. A member's memory identity and its
+    One of the two reasons :func:`_desk_withheld` gives for delivering a member
+    section without its desk layers. A member's memory identity and its
     persona are two fields of one record: ``member_id`` (bound to the store) says
     whose memory this is, ``selection_kind`` says what was picked to run it. A
-    member picked BY NAME runs its own desk and gets the whole section. A
     template picked on a member's store — a ``session_create(agent=...)`` child
     or a ``spawn_run(agent=...)`` delegate of a member — is that member's
     delegate sent to do the work: it keeps the member's identity, its
@@ -2480,15 +2479,47 @@ def _template_selected_on_member_store(execution_context: Any) -> bool:
     alone, and no record field can say "this member, under that template"
     without losing the member -- and losing the member drops its rules along
     with its persona. The ``session_create`` arm therefore keeps such a member's
-    selection and changes only the template, so that child keeps its whole
-    desk; a ``spawn_run(agent=...)`` child of such a member is a plain template
-    run on the parent's store and has no member section at all.
+    selection and changes only the template. That child is not a template
+    selection, so this predicate is False for it; it still loses the desk
+    layers, because the surface half of :func:`_desk_withheld` answers for it
+    (no caller names its desk). A ``spawn_run(agent=...)`` child of such a member
+    is a plain template run on the parent's store and has no member section at
+    all.
     """
     return (
         execution_context is not None
         and execution_context.member_id is not None
         and execution_context.selection_kind == "template"
     )
+
+
+def _desk_withheld(execution_context: Any, desk_member: str) -> bool:
+    """Whether this turn's member section is identity and permanent rules ONLY.
+
+    The one predicate behind withholding the member DESK — layer 2
+    (``[HOW YOU WORK]``) and layer 4 (``[CURRENT ASSIGNMENT]``, the agent-writable
+    briefing) — read by every ``_build_member_section`` caller. Identity and
+    ``[PERMANENT RULES]`` follow the member's STORE: the execution record's owner
+    (``member_id``, or ``selection_name`` when ``selection_kind == "member"``)
+    receives them on every surface, because the user's bounds on a member follow
+    its memory. The desk follows the SURFACE: the two layers describe how the
+    member runs its own DM thread ("this DM thread is your front desk", "keep
+    your working memory in the briefing file"), so they are delivered only where
+    the caller names that thread by passing ``member=`` — the dashboard's
+    ``mode == "member"`` slot does, an ordinary chat that merely resolved to a
+    crew alias does not, and neither does a cron, channel or delegated turn whose
+    owner comes from the record alone.
+
+    Two reasons withhold, either suffices:
+
+    * *desk_member* is empty — no caller named this turn as the member's desk. The
+      stock ``default`` alias resolves every plain dashboard chat to
+      ``selection_kind == "member"``; without this half every such chat became a
+      member desk that rewrote the briefing file from an ordinary conversation.
+    * :func:`_template_selected_on_member_store` — the record runs the member's
+      store under an explicitly selected template (the member's delegate).
+    """
+    return not desk_member or _template_selected_on_member_store(execution_context)
 
 
 # Runtime sources whose transcript renders tool-call cards (and therefore the
@@ -3468,7 +3499,7 @@ class ContextBuilder:
         *,
         strict: bool = False,
         include_briefing: bool = True,
-        template_selected: bool = False,
+        desk_withheld: bool = False,
     ) -> str:
         """Assemble the four-layer identity for a member's bound execution.
 
@@ -3489,16 +3520,18 @@ class ContextBuilder:
         4. ``[CURRENT ASSIGNMENT]`` — member-owned working memory, read
            (capped) from the member's own agent-writable briefing file.
 
-        ``template_selected`` is the verdict of
-        :func:`_template_selected_on_member_store` for the execution being
-        built: the member's store is running under an explicitly selected
-        template, so the section is the member's identity and rules ONLY. Layers
-        2 and 4 describe how the member runs its own desk — the desk protocol's
-        "hand substantial work to a separate session" item is what a template
-        picked to do that work must not be told — so both are withheld, with no
-        placeholder and no briefing read. Layer 1 stays because the memory the
-        delegate reads and writes is that member's, and layer 3 stays because
-        the user's bounds on a member follow its memory, not its template.
+        ``desk_withheld`` is the verdict of :func:`_desk_withheld` for the turn
+        being built: the section is the member's identity and rules ONLY. Layers
+        2 and 4 describe how the member runs its own desk — the DM thread — so
+        both are withheld, with no placeholder and no briefing read, when no
+        caller named this turn as that desk (an ordinary chat that resolved to
+        the crew alias, a cron, channel or delegated turn) or when the store runs
+        under an explicitly selected template (the desk protocol's "hand
+        substantial work to a separate session" item is what a template picked
+        to do that work must not be told). Layer 1 stays, minus the sentence
+        that describes the DM thread, because the memory the turn reads and
+        writes is that member's; layer 3 stays because the user's bounds on a
+        member follow its memory, not its surface or template.
 
         V1 retains its existing optional-layer failure behavior. V2 passes
         ``strict=True`` with a stable member ID, never a configured-name fallback,
@@ -3551,10 +3584,10 @@ class ContextBuilder:
         # around it (item 6 above, the placeholder below): where the pinned
         # briefing read fails closed (Windows — member_briefing_supported),
         # instructing upkeep of a never-injected file is a futile loop, so the
-        # section says the layer is unavailable instead. A template-selected
-        # delegate gets neither the layer nor a placeholder, so its briefing
+        # section says the layer is unavailable instead. A turn with the desk
+        # withheld gets neither the layer nor a placeholder, so its briefing
         # is not read at all.
-        briefing_ok = include_briefing and not template_selected and member_briefing_supported()
+        briefing_ok = include_briefing and not desk_withheld and member_briefing_supported()
         briefing = ""
         briefing_path = ""
         if briefing_ok:
@@ -3587,15 +3620,19 @@ class ContextBuilder:
             identity.append(f"Your role: {description}")
         if triggers:
             identity.append(f"Your remit — the work that belongs to you: {triggers}")
-        identity.append(
-            "This DM thread is your durable working relationship with the user. It "
-            "continues across sessions: remember what was discussed, refer back to it "
-            "naturally, and speak as a colleague who owns their work — never as a "
-            "support bot."
-        )
+        if not desk_withheld:
+            # The one identity sentence that describes the DM thread itself: an
+            # ordinary chat, a cron turn or a delegate on this member's store is
+            # not that thread, so the sentence goes with the desk layers.
+            identity.append(
+                "This DM thread is your durable working relationship with the user. It "
+                "continues across sessions: remember what was discussed, refer back to it "
+                "naturally, and speak as a colleague who owns their work — never as a "
+                "support bot."
+            )
 
         parts = ["\n".join(identity)]
-        if not template_selected:
+        if not desk_withheld:
             parts.append("\n\n")
             parts.append(
                 _MEMBER_HOW_YOU_WORK
@@ -3607,7 +3644,7 @@ class ContextBuilder:
             # is no "working protocol above" to name, so that clause goes with it.
             outranked = (
                 ""
-                if template_selected
+                if desk_withheld
                 else "the working protocol above included, whose instructions yield "
                 "wherever these rules contradict them — "
             )
@@ -3628,11 +3665,12 @@ class ContextBuilder:
                     "priorities worth remembering)"
                 )
             )
-        elif template_selected:
+        elif desk_withheld:
             # No layer 4 and no placeholder either, the scope notice below
-            # included: the placeholders tell a MEMBER why its own working memory
-            # is missing this turn and not to fill that gap from the briefing file
-            # or recall, and a delegate has no layer 4 to miss. Its memory scope
+            # included: the placeholders tell a MEMBER AT ITS DESK why its own
+            # working memory is missing this turn and not to fill that gap from
+            # the briefing file or recall; a turn off the desk (an ordinary chat
+            # on the alias, a delegate) has no layer 4 to miss. Its memory scope
             # is stated where every non-member session's is -- the [CONTEXT
             # SCOPE] block for a narrowed spawn or a privacy mode, nowhere for
             # the operator's standing toggle -- and this arm is ordered ahead of
@@ -3672,15 +3710,15 @@ class ContextBuilder:
         conditional_index: bool = False,
         trigger_text: str = "",
         steering_dirs: tuple[str, ...] = (),
-        template_selected: bool = False,
+        desk_withheld: bool = False,
         provider_type: str = PROVIDER_ACP,
     ) -> str:
         """Refresh complete member essentials without opening learned memory.
 
-        ``template_selected`` is :func:`_template_selected_on_member_store`'s verdict
-        for the execution being built and is handed to the member-section builder
-        unchanged: the envelope keeps the member's identity, rules, documents and
-        anchors, and withholds only the desk protocol and briefing.
+        ``desk_withheld`` is :func:`_desk_withheld`'s verdict for the turn being
+        built and is handed to the member-section builder unchanged: the
+        envelope keeps the member's identity, rules, documents and anchors, and
+        withholds only the desk protocol and briefing.
 
         ``provider_type`` names the harness serving the session. Only kiro-cli
         (:data:`PROVIDER_ACP`) honours ``chat.disableInheritingDefaultResources``,
@@ -3719,7 +3757,7 @@ class ContextBuilder:
             context_groups, CONTEXT_GROUP_PROJECT
         )
         identity = self._build_member_section(
-            owner, strict=True, include_briefing=reads, template_selected=template_selected
+            owner, strict=True, include_briefing=reads, desk_withheld=desk_withheld
         )
         # A validation pass measures the largest envelope any harness can build,
         # so it keeps inheritance and never reads kiro-cli's opt-out. On a normal
@@ -3928,6 +3966,11 @@ class ContextBuilder:
             from kiro_crew.execution_context import read_session_execution
 
             execution_context = read_session_execution(session_key)
+        # The caller's ``member=`` names this turn as the member's DESK (the
+        # dashboard passes it for a ``mode == "member"`` slot only). It decides
+        # the desk layers and nothing else; the record below decides whose
+        # identity, rules and memory the turn carries.
+        desk_member = member
         if execution_context is not None:
             member = execution_context.member_id or (
                 execution_context.selection_name
@@ -3959,7 +4002,7 @@ class ContextBuilder:
                 context_groups=context_groups,
                 member_template=execution_context.template_id if execution_context else "",
                 steering_dirs=steering_dirs,
-                template_selected=_template_selected_on_member_store(execution_context),
+                desk_withheld=_desk_withheld(execution_context, desk_member),
                 provider_type=provider_type,
             )
 
@@ -4136,7 +4179,7 @@ class ContextBuilder:
         # [PERMANENT RULES] fresh and fails closed on an unreadable file.
         if member_turn_context(member, MemberLifecycle.FRESH).deliver_section and not essentials:
             _member_section = self._build_member_section(
-                member, template_selected=_template_selected_on_member_store(execution_context)
+                member, desk_withheld=_desk_withheld(execution_context, desk_member)
             )
             if _member_section:
                 append_required(_member_section)
@@ -4845,6 +4888,11 @@ class ContextBuilder:
             from kiro_crew.execution_context import read_session_execution
 
             execution_context = read_session_execution(session_key)
+        # The caller's ``member=`` names this turn as the member's DESK (the
+        # dashboard passes it for a ``mode == "member"`` slot only). It decides
+        # the desk layers and nothing else; the record below decides whose
+        # identity, rules and memory the turn carries.
+        desk_member = member
         if execution_context is not None:
             member = execution_context.member_id or (
                 execution_context.selection_name
@@ -4942,7 +4990,7 @@ class ContextBuilder:
                 and delivery is not None
                 and not context_provider.native_steering,
                 steering_dirs=steering_dirs,
-                template_selected=_template_selected_on_member_store(execution_context),
+                desk_withheld=_desk_withheld(execution_context, desk_member),
                 provider_type=provider_type,
             )
         if _essentials and not is_new_session:
@@ -5019,7 +5067,10 @@ class ContextBuilder:
                     context_groups=context_groups,
                     query_text=text,
                     project=project,
-                    member=member,
+                    # The desk argument, not the record's owner: the callee
+                    # re-derives the owner from the same record and must see
+                    # whether THIS caller named the desk.
+                    member=desk_member,
                     execution_context=execution_context,
                     steering_dirs=steering_dirs,
                     _v2_essentials=_essentials,
@@ -5075,8 +5126,7 @@ class ContextBuilder:
                     _resume_member = ""
                     if _member_turn.deliver_section:
                         _member_section = self._build_member_section(
-                            member,
-                            template_selected=_template_selected_on_member_store(execution_context),
+                            member, desk_withheld=_desk_withheld(execution_context, desk_member)
                         )
                         if _member_section:
                             _resume_member = (
@@ -5308,7 +5358,7 @@ class ContextBuilder:
             # chokepoint consult above).
             if _member_turn.deliver_section:
                 _member_section = self._build_member_section(
-                    member, template_selected=_template_selected_on_member_store(execution_context)
+                    member, desk_withheld=_desk_withheld(execution_context, desk_member)
                 )
                 if _member_section:
                     parts.append(_neutralize_structural_markers(_member_section))

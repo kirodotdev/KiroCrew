@@ -1405,23 +1405,51 @@ complete snapshot is submitted only when the conversation needs it.
 bound custom-template persona on fresh, warm, resumed, post-compaction and
 minimal turns, including delegated and cron turns with no DM member argument.
 An execution-template override supplies task instructions; it does not replace
-the memory owner's persona. The member OPERATING protocol and working briefing
-are the one exception, and they follow the selection rather than the store: an
-execution whose record carries the owner's `member_id` and store with
-`selection_kind == "template"` — the shape `session_create(agent=…)` and
-`spawn_run(agent=…)` mint for a member caller naming a template — is the owner's
-delegate, and its member section is identity and permanent rules only. The desk
-protocol, whose second item hands substantial work to a separate session, and the
-briefing that protocol maintains are withheld with no placeholder, so a delegate
-picked to do the work is not told to hand it on again. A member selected by name
-receives the whole section, and so does the `session_create` child of a member whose
-record carries no persisted `member_id`: that member is named by `selection_kind
-== "member"` and `selection_name` alone, and no record field can carry "this
-member, under that template", so that arm keeps its selection and changes only the
-template, because a record that does not name the member would lose its rules along
-with its persona. The spawn gate's `spawn_run(agent=…)` child of such a member is a
-plain template run on the parent's store — `ExecutionContext.with_template` flips
-the namespace for every record — and receives no member section at all. The generic product prompt retains its existing
+the memory owner's persona. The member OPERATING protocol (`[HOW YOU WORK]`) and
+working briefing (`[CURRENT ASSIGNMENT]`) are the one exception: they are the
+member's DESK, and the desk follows the SURFACE, not the store and not the
+selection. `context._desk_withheld` is the single predicate, read by every
+`_build_member_section` caller, and either of its two reasons withholds both
+layers — with no placeholder, no briefing read, and without the identity
+sentence that describes the DM thread; the rules header then names no protocol
+to outrank:
+
+- **No caller named the turn as the desk.** `build_message` and
+  `build_session_context` take the desk from their own `member=` argument, which
+  the dashboard passes for a `mode == "member"` slot only (the pinned DM thread
+  `POST /api/members/{slug}/thread` births), and they take the OWNER — whose
+  identity, rules and memory the turn carries — from the execution record
+  (`member_id`, or `selection_name` when `selection_kind == "member"`). The two
+  are captured separately, and `build_message` hands its desk argument, not the
+  derived owner, down to `build_session_context`. An ordinary dashboard chat
+  that resolved to a crew alias, a cron turn, a channel turn and every delegate
+  therefore get identity and permanent rules only. This is what keeps the stock
+  `default` alias from turning every plain chat into a member desk: the loader
+  classifies any crew alias that is not a materialized template as
+  `selection_kind == "member"`, which is correct for the store binding (a
+  V1-store member IS named by that field and `selection_name` alone, and its
+  persisted `agent_kind: "member"` needs no migration), and was wrong only as
+  the desk trigger — the agent rewrote its briefing file from an ordinary
+  conversation and answered as a named member with a standing assignment.
+- **The store runs under a selected template**
+  (`_template_selected_on_member_store`): an execution whose record carries the
+  owner's `member_id` and store with `selection_kind == "template"` — the shape
+  `session_create(agent=…)` and `spawn_run(agent=…)` mint for a member caller
+  naming a template — is the owner's delegate. The desk protocol's second item
+  hands substantial work to a separate session, so a delegate picked to do the
+  work is not told to hand it on again.
+
+A member whose record carries no persisted `member_id` is named by
+`selection_kind == "member"` and `selection_name` alone, and no record field can
+carry "this member, under that template", so the `session_create` arm keeps its
+selection and changes only the template — a record that does not name the member
+would lose its rules along with its persona. That child keeps identity and
+rules and, because no caller names a delegate as the desk, loses the protocol
+and briefing through the surface reason above; the record-shape change once
+thought necessary for it is not. The spawn gate's `spawn_run(agent=…)` child of
+such a member is a plain template run on the parent's store —
+`ExecutionContext.with_template` flips the namespace for every record — and
+receives no member section at all. The generic product prompt retains its existing
 provider/session-start path, including when a member's fork inherits it. The
 loader recognizes the exact current `file://` URI selected by `_prompt_path()`,
 not a template name or file basename. Package installs outside the user home,

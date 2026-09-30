@@ -656,13 +656,17 @@ member identity and takes the template's selection namespace — `selection_kind
 template as `template_id` — through `ExecutionContext.with_template`, the same
 rewrite the subagent admission gate makes for `spawn_run(agent=…)`. The record
 therefore says whose memory the child runs on and, separately, what was picked to
-run it: a member's child that selected a template is that member's delegate, and
-`ContextBuilder` reads the namespace to withhold the member operating protocol from
-it (see [memory-skills-hooks](memory-skills-hooks.md)). A caller whose member has
-no persisted `member_id` is the one exception: its member is named by the selection
-alone, so the arm keeps that selection and changes only the template with its own
-`replace` — `with_template` would leave the child attributed to no member, which is
-the shape the spawn gate mints for that caller. The child's
+run it: a member's child that selected a template is that member's delegate. The
+member operating protocol and briefing are withheld from every child regardless,
+because no created worker is the member's DM thread — `ContextBuilder` delivers
+that desk only where the caller's `member=` argument names it, and the template
+namespace is the second, independent reason
+(see [memory-skills-hooks](memory-skills-hooks.md)). A caller whose member has
+no persisted `member_id` keeps its identity and rules through a different record
+shape: its member is named by the selection alone, so the arm keeps that selection
+and changes only the template with its own `replace` — `with_template` would leave
+the child attributed to no member, which is the shape the spawn gate mints for that
+caller. The child's
 execution record is published before slot metadata, broadcast or provider startup.
 Publication failure retracts an idle empty child and reports the actual failure.
 
