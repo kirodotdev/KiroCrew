@@ -218,6 +218,32 @@ class TestScriptHookStoreFire:
             assert "agent_role" not in hook_event
 
     @pytest.mark.asyncio
+    async def test_fire_emits_session_key_when_set(self, fire_store: ScriptHookStore):
+        """``session_key`` is the firing session's own key: stamped as itself, and
+        never spelled as ``parent_session_key`` (a subagent's parent pointer) or
+        as ``subagent_id``, so a hook keyed on those cannot mistake a top-level
+        turn for a spawned subagent's."""
+        with patch("kiro_crew.hooks.run_script_hook", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = type("R", (), {"hook_name": "test-hook", "exit_code": 0, "stdout": "", "stderr": "", "duration_ms": 1})()
+            await fire_store.fire(
+                HOOK_EVENT_PRE_TOOL_USE,
+                tool_name="ReadFile",
+                session_key="dashboard:slot-1",
+            )
+            (_, _, hook_event), _ = mock_run.call_args
+            assert hook_event["session_key"] == "dashboard:slot-1"
+            assert "parent_session_key" not in hook_event
+            assert "subagent_id" not in hook_event
+
+    @pytest.mark.asyncio
+    async def test_fire_omits_session_key_when_unset(self, fire_store: ScriptHookStore):
+        with patch("kiro_crew.hooks.run_script_hook", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = type("R", (), {"hook_name": "test-hook", "exit_code": 0, "stdout": "", "stderr": "", "duration_ms": 1})()
+            await fire_store.fire(HOOK_EVENT_PRE_TOOL_USE, tool_name="ReadFile")
+            (_, _, hook_event), _ = mock_run.call_args
+            assert "session_key" not in hook_event
+
+    @pytest.mark.asyncio
     async def test_fire_emits_agent_role_when_set(self, fire_store: ScriptHookStore):
         with patch("kiro_crew.hooks.run_script_hook", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = type("R", (), {"hook_name": "test-hook", "exit_code": 0, "stdout": "", "stderr": "", "duration_ms": 1})()
@@ -414,3 +440,45 @@ class TestRunScriptHookStopEnvCap:
         parsed = json.loads(stdin_bytes)
         assert parsed["assistant_text"] == full
         assert "[OPTIONS:" in parsed["assistant_text"]
+
+
+class TestRunScriptHookGovernanceScopeKey:
+    """run_script_hook resolves the governance scope from the payload's session
+    fields: a subagent's event names the spawning session (``parent_session_key``),
+    a top-level turn names itself (``session_key``). Asserted through the denial
+    path so no subprocess is spawned."""
+
+    @staticmethod
+    async def _scope_seen(hook_event: dict) -> str:
+        seen: list[str] = []
+
+        def _deny(sk: str = "") -> str | None:
+            seen.append(sk)
+            return "off"
+
+        hook = ScriptHook(id="g1", name="gov-hook", event=HOOK_EVENT_PRE_TOOL_USE, command="cat", timeout=5)
+        with patch("kiro_crew.hooks._script_hooks_capability_denied", _deny):
+            result = await run_script_hook(hook, hook_event=hook_event)
+        assert result.exit_code == 2
+        assert seen, "the gate was not consulted"
+        return seen[0]
+
+    @pytest.mark.asyncio
+    async def test_top_level_turn_scopes_by_its_own_session_key(self) -> None:
+        sk = await self._scope_seen(
+            {"hook_event_name": HOOK_EVENT_PRE_TOOL_USE, "cwd": "/", "session_key": "dashboard:s1"}
+        )
+        assert sk == "dashboard:s1"
+
+    @pytest.mark.asyncio
+    async def test_subagent_event_scopes_by_parent(self) -> None:
+        sk = await self._scope_seen(
+            {
+                "hook_event_name": HOOK_EVENT_PRE_TOOL_USE,
+                "cwd": "/",
+                "subagent_id": "sub-1",
+                "parent_session_key": "dashboard:s1",
+                "session_key": "subagent:sub-1",
+            }
+        )
+        assert sk == "dashboard:s1"
