@@ -2169,10 +2169,11 @@ async def create_session(
             # at THIS gate-verified admission rather than stranding own-store
             # dispatch until the owner re-selects the agent. The trust source is
             # the VERIFIED session key: `revouch_at_verified_admission` re-vouches
-            # only when that key is a member DM key whose slug the durable record
-            # AGREES with, so a caller that forged its record to name a peer's
-            # store (its key is not a member DM key, or its slug is not the member
-            # the record claims) gets nothing. `caller_key` is the key the HTTP
+            # a member DM key whose slug the durable record AGREES with, or any
+            # other key whose disk vouch copy in `vouched-executions/` (written
+            # when the gateway vouched it -- a member-born child) agrees with the
+            # record. A caller that forged its record to name a peer's store gets
+            # nothing: neither source names the peer. `caller_key` is the key the HTTP
             # gate authenticated; `caller_memory_identity[0]` is the same session's
             # history key, which carries the `member-<slug>` form for a member DM.
             # Off the loop: it resolves the member's store from config (filesystem

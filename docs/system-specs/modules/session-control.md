@@ -716,19 +716,16 @@ A private member store is reachable on two authorities and no others:
   This keeps the shipped capability: an owner reopening member conversations and
   dispatching member workers.
 
-The vouched half is held in this process only, so a restart drops it while the durable
-records survive, and the own-store admission is refused until the owner re-selects the
-agent — which binds afresh through the durable path and vouches again. That deferral is
-deliberate rather than an oversight: nothing reachable on the rehydrate path can
-re-establish the authority safely, because every candidate resolves through something the
-session itself can influence. The record is written by the session; `slot.memory_store` is
-rehydrated from that record; the execution the selection path carries is built from it on
-the provider-switch path; and a config lookup there is keyed by that record's own
-`member_id`, so re-reading config agrees with a forged record by construction instead of
-checking it. Refusing is the fail-closed direction, an owner's own dispatch is unaffected,
-and the refusal is pinned by a regression test alongside the re-bind that clears it. The
-authenticated identity that would let a rehydrated session self-heal without an owner
-action is tracked separately as #12528.
+The vouched half is held in this process, and the gateway also writes a copy of each
+vouch to `vouched-executions/` at the data-home root. Every sandbox masks that leaf and
+agent file tools refuse it, so only the gateway writes it; it is NOT under `trust/`,
+which sandboxes keep writable for the audit log. The copy is removed wherever a vouch is
+withdrawn on purpose (a privacy tightening, a selection rollback, an explicit clear) and
+when the transcript is deleted, but not on cap eviction or restart. After a restart, the
+next gate-verified admission re-vouches a member DM key whose slug the durable record
+agrees with, or any other key whose disk copy, durable record, privacy mode and the
+member's configured store all agree. A session that rewrites its record to name a peer's
+store matches neither source and stays refused.
 
 For an operator, the recovery is one owner action and nothing at restart time: a member
 session whose worker dispatch answers `memory_delegation_denied` after a gateway restart

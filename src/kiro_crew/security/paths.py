@@ -311,6 +311,7 @@ _CREW_SECRET_LEAVES: list[str] = [
     # its own poisoned clone. Masked at OS level too (`sandbox._CREW_HIDDEN_LEAVES`), since a
     # spawned shell's `open()` never routes through this gate.
     "quarantined-clones",
+    "vouched-executions",  # member-store vouches; also sandbox-masked
     "browser-cookies.txt",
     "playwright-storage-state.json",
     # The refused-inbound spool (messaging/inbound_spool.py). Not a secret: it is

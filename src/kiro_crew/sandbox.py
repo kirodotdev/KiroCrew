@@ -326,6 +326,12 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # ``apps/aws-control/``: a mask covers the leaf, not its ancestors, and an
     # agent-writable ancestor could be renamed out from under it mid-transfer.
     "aws-control-staging",
+    # Restart-surviving vouches (``kiro_crew._durable_vouch``). Each file is the
+    # gateway's word that a session may reach its member's private store, so a
+    # sandboxed writer could forge admission to a peer member's memory. Only the
+    # unsandboxed gateway reads or writes it. Deliberately NOT under ``trust/``,
+    # which stays read-write for the SEL log.
+    "vouched-executions",
     # Quarantine markers for auto-improvement clones whose provisional rollback AND
     # retirement both failed. Each marker is the only durable record that a clone still
     # carrying a REFUSED, unscanned commit must never be reused, and the process it has to
@@ -1784,6 +1790,9 @@ _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
     "file-delivery-consent-pending",
     "appearance-library",
     "quarantined-clones",
+    # First created by the first member-born session's vouch, so a sandbox spawned
+    # before then would otherwise see the directory appear unmasked.
+    "vouched-executions",
     # md-notebook's write-staging directory, for the same reason and by the same rule: a
     # direct child of the data home, so the plain ``mkdir`` above is sound. Left to lazy
     # creation, a sandbox spawned before the first state write finds it absent, the

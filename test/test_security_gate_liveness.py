@@ -131,13 +131,17 @@ def _url_payload_command(n: int) -> str:
 #: CPython 3.12 raises ``SystemError`` for a NUL after an indented block, which
 #: escaped the lexer and crashed the gate on an ordinary ``b'\0'`` in a payload.
 #: No new rule and no new matching pass.
+#: Raised again, from 27,948, by one line: the ``vouched-executions`` entry in
+#: ``_SENSITIVE_HOME_DIRS``. Each file there is the gateway's restart-surviving
+#: word that a session may reach its member's private store, so no file tool may
+#: write it. The fuller reason lives beside its ``sandbox._CREW_HIDDEN_LEAVES`` mask.
 #:
 #: The number IS the package's measured total, carrying no spare room: a ratchet with
 #: headroom admits exactly the unreviewed growth it exists to catch, so the next line
 #: added here fails this gate and has to be re-pinned deliberately, with its reason
 #: written above. The guards that detect a monolith growing back are the per-file cap
 #: and the facade's share below, and both must stay untouched.
-_PACKAGE_LINE_BUDGET = 27_948
+_PACKAGE_LINE_BUDGET = 27_949
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

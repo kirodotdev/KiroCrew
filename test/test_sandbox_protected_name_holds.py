@@ -311,13 +311,17 @@ class TestLeafOnlyPopulationIsRecorded:
     #: * ``config.json`` / ``config.local.json`` -- the owner's settings files,
     #:   sealed read-only so an agent cannot loosen its own settings. Both sit
     #:   at the data-home root, so two leaves are six entries per tier.
+    #: * ``vouched-executions`` -- the gateway's restart-surviving vouches for
+    #:   member-store admission. A forged file would admit a session to a peer
+    #:   member's private memory, so it sits at the root, masked, rather than
+    #:   under the sandbox read-write ``trust/``. Leaf-only for the same reason.
     #:
     #: Two directories hold what the MCP gateway launches outside the sandbox,
     #: six entries per tier. ``mcp-launch-approvals`` holds the owner's approved
     #: launch fingerprints; ``mcp/resolved`` holds executables substituted for an
     #: approved launch. Each sits beside writable siblings, so no parent stand-in
     #: can hold it.
-    EXPECTED: dict[str, int] = {"standard": 259, "cc": 266, "strict": 267}
+    EXPECTED: dict[str, int] = {"standard": 262, "cc": 269, "strict": 270}
 
     @pytest.mark.parametrize("tier", TIERS)
     def test_leaf_only_count_has_not_grown(self, tier: str) -> None:
