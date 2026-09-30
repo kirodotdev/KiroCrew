@@ -283,6 +283,19 @@ class CancellationCoordinator(ManagerComponent):
             except Exception:
                 logger.debug("queue-depth re-emit failed after unqueue", exc_info=True)
             return dropped
+        if stored is not None:
+            # A row cancelled from the store alone -- one that had spilled out
+            # of the in-memory window -- was in the parent's count too, and the
+            # synthetic terminal its caller publishes carries no depth of its
+            # own. Every stop of a waiting row leaves through here, so this is
+            # where the count is corrected, whichever half held the row.
+            try:
+                self._manager._emit_queue_depth(
+                    str(stored.get("parent_session_key", "")),
+                    str(stored.get("batch_id", "")),
+                )
+            except Exception:
+                logger.debug("queue-depth re-emit failed after store unqueue", exc_info=True)
         return stored
 
     def _report_queued_stop_impl(self, params: dict) -> None:
@@ -681,7 +694,29 @@ class CancellationCoordinator(ManagerComponent):
             return_exceptions=True,
         )
         running_stopped = sum(result is True for result in results)
+        self._republish_queue_depth(parent_session_key)
         return (running_stopped, queued_stopped)
+
+    def _republish_queue_depth(self, parent_session_key: str) -> None:
+        """Re-publish *parent_session_key*'s queued depth after a bulk stop.
+
+        The per-row re-emits a stop makes only fire for rows it removed, so a
+        dashboard still showing a count from a frame it never saw superseded
+        would get no answer from a stop that found nothing: Stop all and the
+        stage's Cancel are the controls a user reaches for exactly then, and
+        this is the authoritative count that repairs the card (and, at depth 0,
+        forgets the remembered wait label). Guarded like every other re-emit:
+        the work is already stopped, and an advisory event must not turn that
+        into a failed request.
+        """
+        # Imported here: this helper is not an ``_impl`` and so keeps this
+        # module's namespace, where the facade's ``logger`` is only a type hint.
+        from ..subagent import logger
+
+        try:
+            self._manager._emit_queue_depth(parent_session_key)
+        except Exception:
+            logger.debug("queue-depth re-emit failed after bulk stop", exc_info=True)
 
     def _boundary_scope_matches_impl(
         self,
@@ -928,20 +963,23 @@ class CancellationCoordinator(ManagerComponent):
             parent_session_key,
             boundary_owner,
         )
-        if refusal:
-            results = await asyncio.gather(
-                *(self._manager.cancel(info.id) for info in live_infos),
-                return_exceptions=True,
+        # A refused scope stops its live owners but touches no durable row:
+        # the store pass is what the refusal withheld. Both arms end in the
+        # same trailing re-publish, so a Cancel that found nothing to stop
+        # still answers the card once, not zero times and not twice.
+        queued_stopped = (
+            0
+            if refusal
+            else await self._manager._settle_boundary_queue(
+                parent_session_key,
+                boundary_owner,
             )
-            return (sum(result is True for result in results), 0)
-        queued_stopped = await self._manager._settle_boundary_queue(
-            parent_session_key,
-            boundary_owner,
         )
         results = await asyncio.gather(
             *(self._manager.cancel(info.id) for info in live_infos),
             return_exceptions=True,
         )
+        self._republish_queue_depth(parent_session_key)
         return (sum(result is True for result in results), queued_stopped)
 
     def _stop_queued(self, agent_ids: Sequence[str]) -> int:
