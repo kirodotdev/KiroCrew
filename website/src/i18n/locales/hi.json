@@ -7296,6 +7296,9 @@
       "remote_media_gateway_refused": "मीडिया लोड नहीं हुआ: इसका पता इसी डैशबोर्ड के अपने सर्वर से होकर जाता है, इसलिए यह जिस साइट तक पहुँचेगा, वह दिखाई नहीं जा सकती।",
       "couldnt_copy_select_the_text_to_copy_it_manually": "कॉपी नहीं हो सकी — टेक्स्ट चुनकर उसे मैन्युअल रूप से कॉपी करो",
       "the_copy_failed_ctrl_cmd_click_copies_the_full_session_id_for_label": "कॉपी नहीं हो सकी। Ctrl/Cmd+क्लिक से {{label}} की पूरी सत्र आईडी कॉपी होती है।",
+      "show_folder_chip_name": "फ़ोल्डर {{label}} साइडबार में दिखाओ",
+      "click_to_show_this_folder_in_the_sidebar": "इस फ़ोल्डर को साइडबार में देखने के लिए क्लिक करो",
+      "the_copy_failed_ctrl_cmd_click_copies_the_folder_path_label": "कॉपी नहीं हो सकी। Ctrl/Cmd+क्लिक से फ़ोल्डर पथ {{label}} कॉपी होता है।",
       "couldnt_copy_the_image_path": "छवि पथ कॉपी नहीं किया जा सका",
       "the_copy_failed_ctrl_cmd_click_copies_the_path_label": "कॉपी नहीं हो सकी। Ctrl/Cmd+क्लिक से पथ {{label}} कॉपी होता है।"
     },

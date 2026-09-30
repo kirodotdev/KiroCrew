@@ -7516,6 +7516,9 @@
       "remote_media_gateway_refused": "Медиа не загружено: адрес проходит через собственный сервер этой панели, поэтому нельзя показать, к какому сайту он обратится.",
       "couldnt_copy_select_the_text_to_copy_it_manually": "Не удалось скопировать — выдели текст, чтобы скопировать его вручную",
       "the_copy_failed_ctrl_cmd_click_copies_the_full_session_id_for_label": "Скопировать не удалось. Ctrl/Cmd+клик копирует полный ID сессии для {{label}}.",
+      "show_folder_chip_name": "Показать папку {{label}} в боковой панели",
+      "click_to_show_this_folder_in_the_sidebar": "Нажми, чтобы показать эту папку в боковой панели",
+      "the_copy_failed_ctrl_cmd_click_copies_the_folder_path_label": "Скопировать не удалось. Ctrl/Cmd+клик копирует путь к папке {{label}}.",
       "couldnt_copy_the_image_path": "Не удалось скопировать путь к изображению",
       "the_copy_failed_ctrl_cmd_click_copies_the_path_label": "Скопировать не удалось. Ctrl/Cmd+клик копирует путь {{label}}."
     },

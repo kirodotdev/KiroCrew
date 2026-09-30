@@ -7296,6 +7296,9 @@
       "remote_media_gateway_refused": "মিডিয়া লোড হয়নি: এর ঠিকানা এই ড্যাশবোর্ডের নিজের সার্ভারের মধ্য দিয়ে যায়, তাই এটি কোন সাইটে পৌঁছাবে তা দেখানো যায় না।",
       "couldnt_copy_select_the_text_to_copy_it_manually": "কপি করা যায়নি — টেক্সট নির্বাচন করে ম্যানুয়ালি কপি করো",
       "the_copy_failed_ctrl_cmd_click_copies_the_full_session_id_for_label": "কপি করা যায়নি। Ctrl/Cmd+ক্লিক দিয়ে {{label}}-এর পূর্ণ সেশন আইডি কপি হয়।",
+      "show_folder_chip_name": "ফোল্ডার {{label}} সাইডবারে দেখাও",
+      "click_to_show_this_folder_in_the_sidebar": "এই ফোল্ডারটি সাইডবারে দেখতে ক্লিক করো",
+      "the_copy_failed_ctrl_cmd_click_copies_the_folder_path_label": "কপি করা যায়নি। Ctrl/Cmd+ক্লিক দিয়ে ফোল্ডার পাথ {{label}} কপি হয়।",
       "couldnt_copy_the_image_path": "ছবির পাথ কপি করা যায়নি",
       "the_copy_failed_ctrl_cmd_click_copies_the_path_label": "কপি করা যায়নি। Ctrl/Cmd+ক্লিক দিয়ে পাথ {{label}} কপি হয়।"
     },

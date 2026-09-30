@@ -2661,6 +2661,9 @@
       "switch_to_session_chip_name": "Switch to session {{label}}",
       "couldnt_copy_select_the_text_to_copy_it_manually": "Couldn’t copy — select the text to copy it manually",
       "the_copy_failed_ctrl_cmd_click_copies_the_full_session_id_for_label": "The copy failed. Ctrl/Cmd+click copies the full session ID for {{label}}.",
+      "show_folder_chip_name": "Show folder {{label}} in sidebar",
+      "click_to_show_this_folder_in_the_sidebar": "Click to show this folder in the sidebar",
+      "the_copy_failed_ctrl_cmd_click_copies_the_folder_path_label": "The copy failed. Ctrl/Cmd+click copies the folder path {{label}}.",
       "couldnt_copy_the_image_path": "Couldn’t copy the image path",
       "the_copy_failed_ctrl_cmd_click_copies_the_path_label": "The copy failed. Ctrl/Cmd+click copies the path {{label}}."
     },

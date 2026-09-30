@@ -2,7 +2,7 @@ import { useContext } from 'react'
 import type { Element as HastElement } from 'hast'
 import { safeHttpUrl } from '../../lib/safeUrl'
 import { sessionKeyFrom, sessionKeyFromShort } from '../../utils/sessionKeys'
-import { LinkUnfurlCtx, type SessionActions } from './contexts'
+import { LinkUnfurlCtx, type SessionActions, type SidebarFolderActions } from './contexts'
 
 /**
  * Where a rendered link or chip points: an in-app artifact route, whether an
@@ -114,4 +114,99 @@ export function resolveSessionChip(raw: string, actions: SessionActions): { key:
   const title = actions.sessions.get(key)
   if (title === undefined) return null
   return { key, title }
+}
+
+/**
+ * Split a span into folder-path segments, or null when it is not folder-shaped.
+ *
+ * Two spellings are read, both of which the product itself writes: the `/`-joined
+ * human path the folder tools take and return (`goal/worker`), and the ` › `
+ * breadcrumb the chat header and the `[FOLDER]` context line show
+ * (`kirocrew › oss`). One trailing separator is tolerated -- `goal/worker/` is how
+ * a directory-minded author spells a folder. An empty segment anywhere else
+ * (`a//b`, a leading `/`) is refused: a leading slash is a filesystem path, which
+ * the path chip owns, and a doubled separator names nothing in the tree.
+ *
+ * At least TWO segments: a separator is the one shape signal a folder path has.
+ * A session key has key shape and a filesystem path has a stat probe, but a bare
+ * word (`test`, `docs`, `main`) has nothing to say it means a folder, and with a
+ * top-level folder of that name every such span in every message would lose
+ * its click-to-copy for a click that jerks the sidebar. The bare name stays the
+ * plain span; a top-level folder is reached by its row.
+ */
+export function folderSegmentsOf(raw: string): string[] | null {
+  const trimmed = raw.trim().replace(/(?:\s*›\s*|\/)$/, '')
+  if (!trimmed) return null
+  const parts = trimmed.includes('›') ? trimmed.split(/\s*›\s*/) : trimmed.split('/')
+  if (parts.length < 2 || parts.some(p => p.trim() === '')) return null
+  return parts.map(p => p.trim())
+}
+
+/**
+ * The NORMALISED human path of every reachable folder row, root to leaf: names
+ * joined with `/`, and every ` › ` inside a name read as `/` too, so a rendered
+ * path is keyed exactly the way `folderSegmentsOf` keys a span.
+ *
+ * Rendered from the rows themselves rather than walked segment by segment from
+ * the span, because a folder NAME may contain either separator: `chat_folders.py`
+ * only strips and caps a name, so a root folder literally called `goal/worker`,
+ * or `goal › worker`, can sit beside a nested `goal` -> `worker`, and all three
+ * normalise to the same key. Indexing under that one key is what makes such a
+ * collision visible; a per-segment walk could only ever find the nested one, and
+ * indexing the `/` rendering alone would miss the breadcrumb-spelled name. An orphan row (a
+ * `parent_id` naming no row, or a cycle) renders to nothing, which matches the
+ * sidebar: it draws such rows under a recovery heading, not at any path.
+ */
+function renderedFolderPaths(rows: readonly { id: string; name: string; parent_id?: string }[]): Map<string, string[]> {
+  const byId = new Map(rows.map(r => [r.id, r]))
+  const out = new Map<string, string[]>()
+  for (const row of rows) {
+    const names: string[] = []
+    let cur: { id: string; name: string; parent_id?: string } | undefined = row
+    let ok = true
+    for (let guard = 0; cur; guard += 1) {
+      if (guard > rows.length) { ok = false; break }
+      names.unshift(cur.name)
+      if (!cur.parent_id) break
+      cur = byId.get(cur.parent_id)
+      if (!cur) ok = false
+    }
+    if (!ok) continue
+    const path = names.map(n => n.replace(/\s*›\s*/g, '/')).join('/')
+    const ids = out.get(path)
+    if (ids) ids.push(row.id)
+    else out.set(path, [row.id])
+  }
+  return out
+}
+
+/**
+ * Whether a span names a sidebar folder by its FULL human path, and which one.
+ *
+ * Same discipline as `resolveSessionChip`: the folder roster confirms the target
+ * the way the slot roster confirms a session, so the chip is offered only for a
+ * folder that exists, and stays plain text otherwise. The span's normalised
+ * `/`-joined path is compared, case-sensitive, against every folder's rendered
+ * path (`renderedFolderPaths`), so the match is the whole ancestry root to leaf.
+ * Two folders can share a leaf name under different parents; the full path is
+ * what tells them apart, so a partial match is never offered.
+ *
+ * Refusals, each of which must stay plain text: no handler or no roster wired
+ * (see `SidebarFolderActions`); a shape that is not a folder path
+ * (`folderSegmentsOf`); a path no folder renders to; a path that MORE than one
+ * folder renders to. The sidebar lets a person hold two sibling folders of one
+ * name (`chat_folders.py`), and a folder name may itself contain `/` or ` › `,
+ * so `goal/worker` can name two siblings, or a nested folder and a root folder
+ * spelled with either separator -- the same ambiguity `_ensure_chat_folder_path`
+ * refuses on the server, and a chip that picked one would flash an arbitrary
+ * folder with no sign the reference was ambiguous.
+ */
+export function resolveFolderChip(raw: string, actions: SidebarFolderActions): { id: string; path: string } | null {
+  if (!actions.onFolderReveal || !actions.folders) return null
+  const segments = folderSegmentsOf(raw)
+  if (!segments) return null
+  const path = segments.join('/')
+  const ids = renderedFolderPaths(actions.folders).get(path)
+  if (!ids || ids.length !== 1) return null
+  return { id: ids[0], path }
 }

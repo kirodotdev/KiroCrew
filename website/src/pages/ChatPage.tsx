@@ -42,6 +42,7 @@ import {
   requestStop, pendingQuestionFor, clearFollowupCard, dismissFollowupItem, clearFolderSuggestion, ageFolderSuggestion,
   capturePendingAskId, confirmOptimisticSend, markSendUnconfirmed, resolveOptimisticSteer,
   requestSlotReveal,
+  requestFolderReveal,
   refreshSlot,
   mcpAppKey,
   selectAutomationForSlot,
@@ -297,6 +298,7 @@ import { prevUserTextFor } from './chat/share/shareSupport'
 import { turnHadPolicyBlock } from '../app-sdk/turnPolicyBlock'
 import MarkdownRenderer from '../components/MarkdownRenderer'
 import { JiraHostsCtx } from '../lib/jiraHosts'
+import { SidebarFolderCtx, type SidebarFolderActions } from '../components/markdown/contexts'
 import MessageErrorBoundary from '../components/MessageErrorBoundary'
 import ErrorBoundary from '../components/ErrorBoundary'
 import SessionTitleControl from './chat/SessionTitleControl'
@@ -6950,6 +6952,31 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     animateDrawer(drawerX, 0)
     pushDrawerEntry()
   }, [drawerX, drawerTravel, pushDrawerEntry])
+  // The sidebar-folder chip's roster and handler, for every markdown span on this
+  // page (`InlineCode` -> `FolderChip`). A folder path in prose (`goal/worker`)
+  // becomes a click that reveals that row in the sidebar -- the same store
+  // request the command bar's folder scope issues, so the sidebar answers it the
+  // same way (expand ancestors, leave the flat lane, scroll, flash). The click
+  // first puts a sidebar ON SCREEN, exactly as the header menu's "Reveal in
+  // sidebar" does above: the phone drives its drawer, the desktop pins the pane,
+  // and only then is the request dispatched -- the store holds it until the
+  // sidebar mounts and consumes it. Embed-chat never mounts a sidebar, so no
+  // handler is wired there and `resolveFolderChip` offers no chip: a stored
+  // request would outlive the view and replay on whichever sidebar mounts next.
+  // Offered while OFFLINE, unlike the session chip: revealing a row is
+  // client-side work on a list already cached, where switching a session needs
+  // the gateway. Provided once here rather than threaded through
+  // MarkdownRenderer props, so subagent and workflow cards and system notices
+  // offer the same chip as a message body.
+  const sidebarFolderActions = useMemo<SidebarFolderActions>(() => ({
+    folders: chatFolders,
+    onFolderReveal: embedMode === 'chat' ? undefined : (folderId: string) => {
+      sidebarAutoHidden.current = null
+      if (isMobile) openSidebar()
+      else if (!sidebarPinned) setSidebarPinned(true)
+      dispatch(requestFolderReveal(folderId))
+    },
+  }), [chatFolders, dispatch, embedMode, isMobile, openSidebar, sidebarPinned])
   /** Mount the panel for a drag in progress. Deliberately NOT `openSidebar`:
    *  that one runs the settle to the rest position, which would race the finger
    *  for the same value and pull the panel out from under it. The gesture has
@@ -7565,6 +7592,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         message bodies, previews, and panels alike -- so a pasted Jira URL
         chips identically wherever it renders. Cloud URLs need no provider. */}
     <JiraHostsCtx.Provider value={jiraSourceHosts}>
+    <SidebarFolderCtx.Provider value={sidebarFolderActions}>
     <div
       ref={chatContainerRef}
       /* Both sides are this page's own: a rightward drag opens the sessions
@@ -9461,6 +9489,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         activitySlot
       )}
     </div>
+    </SidebarFolderCtx.Provider>
     </JiraHostsCtx.Provider>
     </TagPopoverProvider>
     </RowDisclosureProvider>

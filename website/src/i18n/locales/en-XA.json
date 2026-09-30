@@ -6568,6 +6568,9 @@
       "switch_to_session_chip_name": "[Şẁìţçĥ ţø şèşşìøñ {{label}} ················]",
       "couldnt_copy_select_the_text_to_copy_it_manually": "[Çøùĺðñ’ţ çøþý — şèĺèçţ ţĥè ţèẋţ ţø çøþý ìţ ɱàñùàĺĺý ··················]",
       "the_copy_failed_ctrl_cmd_click_copies_the_full_session_id_for_label": "[Ţĥè çøþý ƒàìĺèð. Çţŕĺ/Çɱð+çĺìçķ çøþìèş ţĥè ƒùĺĺ şèşşìøñ ÌÐ ƒøŕ {{label}}. ······················]",
+      "show_folder_chip_name": "[Şĥøẁ ƒøĺðèŕ {{label}} ìñ şìðèƀàŕ ················]",
+      "click_to_show_this_folder_in_the_sidebar": "[Çĺìçķ ţø şĥøẁ ţĥìş ƒøĺðèŕ ìñ ţĥè şìðèƀàŕ ····················]",
+      "the_copy_failed_ctrl_cmd_click_copies_the_folder_path_label": "[Ţĥè çøþý ƒàìĺèð. Çţŕĺ/Çɱð+çĺìçķ çøþìèş ţĥè ƒøĺðèŕ þàţĥ {{label}}. ····················]",
       "couldnt_copy_the_image_path": "[Çøùĺðñ’ţ çøþý ţĥè ìɱàğè þàţĥ ····················]",
       "the_copy_failed_ctrl_cmd_click_copies_the_path_label": "[Ţĥè çøþý ƒàìĺèð. Çţŕĺ/Çɱð+çĺìçķ çøþìèş ţĥè þàţĥ {{label}}. ·························]"
     },

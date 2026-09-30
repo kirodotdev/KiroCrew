@@ -7406,6 +7406,9 @@
       "remote_media_gateway_refused": "Contenuto non caricato: il suo indirizzo passa dal server di questa dashboard, quindi il sito che raggiungerebbe non può essere mostrato.",
       "couldnt_copy_select_the_text_to_copy_it_manually": "Impossibile copiare — seleziona il testo per copiarlo manualmente",
       "the_copy_failed_ctrl_cmd_click_copies_the_full_session_id_for_label": "La copia non è riuscita. Ctrl/Cmd+clic copia l’ID di sessione completo di {{label}}.",
+      "show_folder_chip_name": "Mostra la cartella {{label}} nella barra laterale",
+      "click_to_show_this_folder_in_the_sidebar": "Clicca per mostrare questa cartella nella barra laterale",
+      "the_copy_failed_ctrl_cmd_click_copies_the_folder_path_label": "La copia non è riuscita. Ctrl/Cmd+clic copia il percorso della cartella {{label}}.",
       "couldnt_copy_the_image_path": "Impossibile copiare il percorso dell’immagine",
       "the_copy_failed_ctrl_cmd_click_copies_the_path_label": "La copia non è riuscita. Ctrl/Cmd+clic copia il percorso {{label}}."
     },
