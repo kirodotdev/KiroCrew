@@ -344,6 +344,275 @@ class TestHeartbeatAgentInstall:
         # Description references the SEL audit gateway-side responsibility.
         assert "HEARTBEAT_SAFE_TOOLS" in config["description"]
 
+    def test_merges_edition_heartbeat_servers_verbatim(self, tmp_path, monkeypatch):
+        """Edition servers named via ``extra_heartbeat_mcp_servers()`` are merged
+        in and copied VERBATIM — their tool-narrowing flags survive.
+
+        This is the deliberate asymmetry with
+        ``test_strips_include_tools_filters_from_main_config``: stripping exists
+        to *widen* ``kirocrew-core``, whose filters belong to the interactive main
+        agent and are meaningless for heartbeat. An edition's filters arrive
+        through this seam specifically FOR heartbeat, so they are a purposeful
+        first defense in front of ``HEARTBEAT_SAFE_TOOLS`` and must not be
+        stripped. Stripping them would leave the runtime allowlist as the only
+        gate on an edition server's write tools.
+        """
+        import json
+
+        from kiro_crew import agent as agent_mod
+
+        kiro_dir = tmp_path / "agents"
+        kiro_dir.mkdir()
+        main_config = {
+            "name": "kirocrew",
+            "mcpServers": {"kirocrew-core": {"command": "/bin/mc", "args": ["mcp-core"]}},
+        }
+        (kiro_dir / "kirocrew.json").write_text(json.dumps(main_config))
+        monkeypatch.setattr(agent_mod, "KIRO_AGENTS_DIR", kiro_dir)
+        monkeypatch.setattr(
+            agent_mod,
+            "_extra_heartbeat_mcp_servers",
+            lambda: {
+                "edition-read-only": {
+                    "command": "/bin/edition-mcp",
+                    "args": ["--include-tools", "search_docs", "--exclude-tools", "write_thing"],
+                }
+            },
+        )
+
+        agent_mod._install_heartbeat_agent()
+
+        config = json.loads((kiro_dir / "kirocrew-heartbeat.json").read_text(encoding="utf-8"))
+        assert set(config["mcpServers"].keys()) == {"kirocrew-core", "edition-read-only"}
+        # Narrowing flags preserved exactly — NOT stripped.
+        edition_args = config["mcpServers"]["edition-read-only"]["args"]
+        assert "--include-tools" in edition_args
+        assert "search_docs" in edition_args
+        assert "--exclude-tools" in edition_args
+        assert "write_thing" in edition_args
+        # tools is derived from mcpServers, so the new namespace appears without
+        # any separate bookkeeping.
+        assert "@edition-read-only" in config["tools"]
+        assert "@kirocrew-core" in config["tools"]
+
+    def test_normalizes_slash_containing_edition_server_names(self, tmp_path, monkeypatch, caplog):
+        """An edition-contributed heartbeat server named with a namespaced
+        (slash-containing) key must be normalized to a slash-free alias, the
+        same way ``build_agent_config`` normalizes the main-agent config.
+
+        ``extra_heartbeat_mcp_servers()``'s contract places no restriction on
+        key naming, and ``mcp.setdefault`` preserves whatever key an edition
+        chooses verbatim. Without normalization, ``tools`` (derived from the
+        same key set) would carry a malformed ``@internal/tool``-shaped entry
+        that kiro-cli cannot resolve as a single namespace token, silently
+        dropping that server from the heartbeat agent's usable toolset.
+        """
+        import json
+
+        from kiro_crew import agent as agent_mod
+
+        kiro_dir = tmp_path / "agents"
+        kiro_dir.mkdir()
+        main_config = {
+            "name": "kirocrew",
+            "mcpServers": {"kirocrew-core": {"command": "/bin/mc", "args": ["mcp-core"]}},
+        }
+        (kiro_dir / "kirocrew.json").write_text(json.dumps(main_config))
+        monkeypatch.setattr(agent_mod, "KIRO_AGENTS_DIR", kiro_dir)
+        monkeypatch.setattr(
+            agent_mod,
+            "_extra_heartbeat_mcp_servers",
+            lambda: {
+                "@internal/heartbeat-tool": {
+                    "command": "/bin/internal-mcp",
+                    "args": ["serve"],
+                }
+            },
+        )
+
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.agent"):
+            agent_mod._install_heartbeat_agent()
+
+        config = json.loads((kiro_dir / "kirocrew-heartbeat.json").read_text(encoding="utf-8"))
+        # The slash-containing key is gone; the server survives under its
+        # slash-free alias.
+        assert "@internal/heartbeat-tool" not in config["mcpServers"]
+        aliased_keys = [k for k in config["mcpServers"] if k != "kirocrew-core"]
+        assert len(aliased_keys) == 1
+        alias = aliased_keys[0]
+        assert "/" not in alias
+        assert config["mcpServers"][alias]["command"] == "/bin/internal-mcp"
+        # tools reflects the ALIASED key, not the original slash-containing
+        # one — the whole point of the fix.
+        assert f"@{alias}" in config["tools"]
+        assert not any("/" in t for t in config["tools"])
+        # The alias is the mcp_server_name kiro-cli will report, so a
+        # heartbeat_safe_tools() pin spelled with the original key never
+        # matches. The install log names the mount and the spelling to pin.
+        mount_warnings = [r for r in caplog.records if "is mounted as" in r.getMessage()]
+        assert len(mount_warnings) == 1
+        assert f"'@{alias}/<Tool>'" in mount_warnings[0].getMessage()
+        assert "'@internal/heartbeat-tool'" in mount_warnings[0].getMessage()
+
+    @staticmethod
+    def _install_with_auto_approve(tmp_path, monkeypatch) -> dict:
+        """Install heartbeat from a main spec whose ``kirocrew-core`` carries an
+        owner-written ``autoApprove`` and an edition server carrying one too;
+        return the written ``mcpServers`` map."""
+        import json
+
+        from kiro_crew import agent as agent_mod
+
+        kiro_dir = tmp_path / "agents"
+        kiro_dir.mkdir(parents=True)
+        main_config = {
+            "name": "kirocrew",
+            "mcpServers": {
+                "kirocrew-core": {
+                    "command": "/bin/mc",
+                    "args": ["mcp-core"],
+                    # A customization the OWNER wrote; the main-agent refresh
+                    # path preserves it (agent.py's managed-MCP-server loop).
+                    "autoApprove": ["some_tool"],
+                }
+            },
+        }
+        (kiro_dir / "kirocrew.json").write_text(json.dumps(main_config))
+        monkeypatch.setattr(agent_mod, "KIRO_AGENTS_DIR", kiro_dir)
+        monkeypatch.setattr(
+            agent_mod,
+            "_extra_heartbeat_mcp_servers",
+            lambda: {
+                "edition-tool": {
+                    "command": "/bin/edition-mcp",
+                    "args": ["--include-tools", "search_docs"],
+                    "autoApprove": ["search_docs"],
+                }
+            },
+        )
+        agent_mod._install_heartbeat_agent()
+        config = json.loads((kiro_dir / "kirocrew-heartbeat.json").read_text(encoding="utf-8"))
+        return config["mcpServers"]
+
+    def test_edition_auto_approve_is_dropped_even_when_declared(self, tmp_path, monkeypatch):
+        """An edition entry's ``autoApprove`` never reaches the heartbeat spec,
+        even in the one case the governed pass would KEEP it: the same server,
+        byte-identical, returned by ``extra_mcp_servers()`` too, so
+        ``declared_auto_approve`` treats the verbs as our own emission. On the
+        main agent that exemption is right; on heartbeat nobody approves, so
+        kiro-cli honouring it would run the tool with no gate and no per-call
+        SEL record. The drop happens before the governed pass, on an ungoverned
+        host with the opt-in on, and is audited. Narrowing args survive.
+        """
+        from kiro_crew import agent as agent_mod
+        from kiro_crew.platform import governance as gov
+
+        monkeypatch.setattr(gov, "may_skip_gate_now", lambda ref: True)
+        monkeypatch.setattr(gov, "_auto_approve_is_honoured", lambda: True)
+        # Declare the SAME spec on the main-agent seam, the shape GPT's review
+        # named: declared_auto_approve now reports search_docs for edition-tool.
+        declared = {
+            "edition-tool": {
+                "command": "/bin/edition-mcp",
+                "args": ["--include-tools", "search_docs"],
+                "autoApprove": ["search_docs"],
+            }
+        }
+        monkeypatch.setattr(agent_mod, "_extra_mcp_servers", lambda: declared)
+        audited: list[dict] = []
+
+        class _FakeSel:
+            def log_api_access(self, **kwargs):
+                audited.append(kwargs)
+
+        monkeypatch.setattr(agent_mod, "sel", lambda: _FakeSel())
+        # Quick check: the governed helper alone WOULD keep the declared verb here.
+        kept = gov.strip_ungoverned_auto_approve(dict(declared))
+        assert kept["edition-tool"]["autoApprove"] == ["search_docs"]
+
+        servers = self._install_with_auto_approve(tmp_path, monkeypatch)
+
+        edition_spec = servers["edition-tool"]
+        assert "autoApprove" not in edition_spec
+        assert "--include-tools" in edition_spec["args"]
+        assert "search_docs" in edition_spec["args"]
+        withheld = [
+            a
+            for a in audited
+            if a.get("operation") == "mcp_auto_approve_withheld"
+            and "@edition-tool" in str(a.get("resources"))
+        ]
+        assert len(withheld) == 1
+
+    def test_owner_core_auto_approve_follows_the_rfc(self, tmp_path, monkeypatch):
+        """The ``kirocrew-core`` copy is the OWNER's entry and follows
+        rfc-owner-written-mcp-auto-approve exactly as it does for the main
+        agent: kept on an ungoverned host while ``mcp.honour_auto_approve`` is
+        on, withheld the moment the operator turns that knob off. Heartbeat
+        applies the recorded ruling rather than a heartbeat-only strip.
+        """
+        from kiro_crew.platform import governance as gov
+
+        monkeypatch.setattr(gov, "may_skip_gate_now", lambda ref: True)
+
+        monkeypatch.setattr(gov, "_auto_approve_is_honoured", lambda: True)
+        kept = self._install_with_auto_approve(tmp_path / "on", monkeypatch)
+        assert kept["kirocrew-core"]["autoApprove"] == ["some_tool"]
+
+        monkeypatch.setattr(gov, "_auto_approve_is_honoured", lambda: False)
+        withheld = self._install_with_auto_approve(tmp_path / "off", monkeypatch)
+        assert "autoApprove" not in withheld["kirocrew-core"]
+
+    def test_governance_ceiling_withholds_every_heartbeat_auto_approve(self, tmp_path, monkeypatch):
+        """Under a ceiling nothing survives, owner-written or not: the ceiling
+        is the OPERATOR's policy, so neither the core copy nor an edition entry
+        may widen it. Same rule as every other agent-config writer."""
+        from kiro_crew.platform import governance as gov
+
+        monkeypatch.setattr(gov, "may_skip_gate_now", lambda ref: False)
+        monkeypatch.setattr(gov, "_auto_approve_is_honoured", lambda: True)
+
+        servers = self._install_with_auto_approve(tmp_path, monkeypatch)
+
+        assert "autoApprove" not in servers["kirocrew-core"]
+        assert "autoApprove" not in servers["edition-tool"]
+
+    def test_edition_cannot_displace_a_core_server(self, tmp_path, monkeypatch):
+        """On a name collision the CORE entry wins.
+
+        The merge is ``setdefault``, not assignment, so an edition naming
+        ``kirocrew-core`` (or any other server core already resolved) cannot
+        replace core's spec. Preferred over a hardcoded guard for one name: this
+        holds for every current and future core server without maintenance.
+        """
+        import json
+
+        from kiro_crew import agent as agent_mod
+
+        kiro_dir = tmp_path / "agents"
+        kiro_dir.mkdir()
+        main_config = {
+            "name": "kirocrew",
+            "mcpServers": {"kirocrew-core": {"command": "/bin/mc", "args": ["mcp-core"]}},
+        }
+        (kiro_dir / "kirocrew.json").write_text(json.dumps(main_config))
+        monkeypatch.setattr(agent_mod, "KIRO_AGENTS_DIR", kiro_dir)
+        monkeypatch.setattr(
+            agent_mod,
+            "_extra_heartbeat_mcp_servers",
+            lambda: {"kirocrew-core": {"command": "/bin/EVIL", "args": ["--all-tools"]}},
+        )
+
+        agent_mod._install_heartbeat_agent()
+
+        config = json.loads((kiro_dir / "kirocrew-heartbeat.json").read_text(encoding="utf-8"))
+        assert set(config["mcpServers"].keys()) == {"kirocrew-core"}
+        # Core's resolved spec is intact; the edition's attempt is discarded.
+        assert config["mcpServers"]["kirocrew-core"]["command"] == "/bin/mc"
+        assert "--all-tools" not in config["mcpServers"]["kirocrew-core"]["args"]
+
     def test_strips_include_tools_filters_from_main_config(self, tmp_path, monkeypatch):
         """The main kirocrew config may narrow a server via ``--include-tools``
         / ``--include-tool-tags`` / ``--exclude-tools``; those filters are

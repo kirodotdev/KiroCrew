@@ -115,6 +115,7 @@ def _url_payload_command(n: int) -> str:
 #: control logic and no new matching pass. This branch's raise and the ones above it
 #: are independent additions to the same ratchet, so the number below is re-MEASURED
 #: off the tree rather than being the arithmetic sum of the deltas.
+#:
 #: Raised again, from 27,863, for the own-address startup warm in ``argv_floor``:
 #: the gateway starts the netlink read at boot, the worker reads and publishes that
 #: table before any DNS lookup, and the publish merges the addresses and opens the
@@ -126,12 +127,23 @@ def _url_payload_command(n: int) -> str:
 #: Three incomplete dumps in a row log one warning, so a host whose table never
 #: reads can be told apart from a target that is really this machine.
 #:
+#: Re-pinned again, from 27,942, for ``command_invokes_git`` in ``readonly_bash.py``
+#: plus the ``_SEGMENT_SEPARATOR_RE`` constant it shares with ``_classify_bash``.
+#: Heartbeat has no approver, ever, and excludes every git invocation from its
+#: read-only shell trust because git reads ``.git/config`` (``core.fsmonitor``,
+#: ``core.hooksPath``) on invocation, a channel no command-line classifier can see.
+#: A first-token check is bypassed by ``pwd; git status`` while ``_classify_bash``
+#: still approves the later segment, so the exclusion has to split on the SAME
+#: separators the classifier does; hoisting that regex into one shared constant is
+#: what makes "same" hold by construction instead of by two literals staying in step.
+#: Forty-five lines, most of them the docstring saying why; no new matching pass.
+#:
 #: The number IS the package's measured total, carrying no spare room: a ratchet with
 #: headroom admits exactly the unreviewed growth it exists to catch, so the next line
 #: added here fails this gate and has to be re-pinned deliberately, with its reason
 #: written above. The guards that detect a monolith growing back are the per-file cap
 #: and the facade's share below, and both must stay untouched.
-_PACKAGE_LINE_BUDGET = 27_942
+_PACKAGE_LINE_BUDGET = 27_987
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
