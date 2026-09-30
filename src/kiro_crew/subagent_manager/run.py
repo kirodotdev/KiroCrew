@@ -820,9 +820,7 @@ class RunEventCoordinator(ManagerComponent):
         about to claim is not shown as waiting. Every other caller -- the
         reset-deferral guards above all -- keeps the default and counts it, since
         it is still this parent's accepted work until the claim lands."""
-        in_window = sum(
-            1 for q in self._manager._queue if q.get("parent_session_key", "") == parent_session_key
-        )
+        in_window = self._in_window_count(parent_session_key)
         # Rows queued in the store but outside the in-memory window are still
         # this parent's waiting work; the chip and the reset-deferral guards
         # must see them.
@@ -832,9 +830,7 @@ class RunEventCoordinator(ManagerComponent):
 
     async def _queued_depth_async_impl(self, parent_session_key: str) -> int:
         """:meth:`_queued_depth_impl` with its store count on the writer thread."""
-        in_window = sum(
-            1 for q in self._manager._queue if q.get("parent_session_key", "") == parent_session_key
-        )
+        in_window = self._in_window_count(parent_session_key)
         overflow = await self._manager._admission.taskq_overflow_async(parent_session_key)
         return in_window + overflow
 
@@ -858,7 +854,13 @@ class RunEventCoordinator(ManagerComponent):
         """
         return await self._manager._queued_depth_async(parent_session_key)
 
-    def _has_live_parent_run_task(self, parent_session_key: str) -> bool:
+    def _in_window_count(self, parent_session_key: str) -> int:
+        """This parent's spawns in the in-memory dispatch window."""
+        return sum(
+            1 for q in self._manager._queue if q.get("parent_session_key", "") == parent_session_key
+        )
+
+    def _has_live_parent_run_task(self, parent_session_key: str, *, exclude_id: str = "") -> bool:
         """Whether a parent-owned run can still register its terminal report.
 
         ``_run_inner`` publishes ``info.done`` before ``_run_impl`` resumes its
@@ -868,7 +870,7 @@ class RunEventCoordinator(ManagerComponent):
         registered in ``_report_owners`` and the delivery barrier owns the wait.
         """
         for info in self._manager._agents.values():
-            if info.parent_session_key != parent_session_key:
+            if info.parent_session_key != parent_session_key or info.id == exclude_id:
                 continue
             task = self._manager._tasks.get(info.id)
             if task is not None and not task.done():
@@ -883,6 +885,30 @@ class RunEventCoordinator(ManagerComponent):
             not task.done() and parents.get(run_id) == parent_session_key
             for run_id, task in watchers.items()
         )
+
+    def has_in_memory_pending_work_for_impl(
+        self, parent_session_key: str, *, exclude_id: str = ""
+    ) -> bool:
+        """The terms of :meth:`has_pending_work_for_impl` that need no store read.
+
+        A spawn in the dispatch window, a run whose terminal report is still
+        waiting on its teardown (*exclude_id* leaves out the run asking, whose
+        own task is live while its completion is delivered), and a live
+        follow-up watcher. With ``running_agents_for`` this is everything the
+        synthesis ARM consults: the store half is the fire gate's, so the
+        delivery path never waits on the task store's writer.
+        """
+        return (
+            self._in_window_count(parent_session_key) > 0
+            or self._has_live_parent_run_task(parent_session_key, exclude_id=exclude_id)
+            or self._has_live_parent_followup_watcher(parent_session_key)
+        )
+
+    async def queued_count_or_none_async_impl(self, parent_session_key: str) -> int | None:
+        """:meth:`queued_count_for_async_impl`, None when the store could not be read."""
+        in_window = self._in_window_count(parent_session_key)
+        overflow = await self._manager._admission.taskq_overflow_or_none_async(parent_session_key)
+        return None if overflow is None else in_window + overflow
 
     def has_pending_work_for_impl(self, parent_session_key: str) -> bool:
         """True while a parent has queued, running, or finalizing sub-agents.

@@ -49,6 +49,7 @@ if TYPE_CHECKING:
     from kiro_crew.execution_context import ExecutionContext
     from kiro_crew.acp.runtime import AcpRuntime
     from kiro_crew.providers.base import LLMProvider
+    from kiro_crew.subagent_manager.admission.types import QueuedRun, QueuedRunListing
 
 from kiro_crew import name_grant, platform_compat
 from kiro_crew.agent_discovery import (
@@ -217,6 +218,7 @@ from kiro_crew.subagent_wait_reasons import (  # noqa: F401 - re-exported: the g
     QUEUED_REASON_CONCURRENCY_LIMIT,
     QUEUED_REASON_LOW_MEMORY,
     QUEUED_REASON_POSTURE_CRITICAL,
+    adaptive_pause_text,
 )
 from kiro_crew.validation import _AGENT_NAME_RE, is_registered_agent_name
 
@@ -3219,6 +3221,9 @@ class SubagentManager:
         self._pending_boundary_cancellations: dict[tuple[str, str], str] = {}
         self._boundary_cancellation_overflow_count = 0
         self._boundary_cancel_retry_handle: asyncio.TimerHandle | None = None
+        # Whether the last queued listing was partial, so the bridge logs the
+        # transition into one once rather than per request.
+        self._queued_listing_partial = False
         # A post-claim store outage cannot return an ADMITTED row to the ordinary
         # refill, which reads only claimable rows. Keep that generation, its
         # reserved slot, and its re-entry callback until a later pump pass can
@@ -5431,6 +5436,37 @@ class SubagentManager:
 
     async def queued_count_for_async(self, parent_session_key: str) -> int:
         return await self._run_events.queued_count_for_async_impl(parent_session_key)
+
+    async def queued_run_async(self, agent_id: str) -> "QueuedRun | None":
+        """The accepted, not yet registered spawn *agent_id*, or None.
+
+        For a reader that must not answer "not found" for a spawn the gate is
+        holding (``GET /api/spawn/{id}`` and its ownership check). None also
+        for a registered id: :meth:`get` answers that one.
+        """
+        return await self._admission.taskq_queued_run_async(agent_id)
+
+    async def queued_runs_async(
+        self, parent_session_key: str | None = None, *, app: str | None = None
+    ) -> "QueuedRunListing":
+        """Every accepted spawn with no registered run, for one parent or all.
+
+        The rows :attr:`all_agents` cannot list: gate-deferred rows, rows
+        waiting for a slot, claimed unregistered rows and window entries
+        (``GET /api/spawn?queued=1``). A bounded page: ``partial`` says when it
+        cannot be all of them.
+        """
+        return await self._admission.taskq_queued_runs_async(parent_session_key, app=app)
+
+    def has_in_memory_pending_work_for(
+        self, parent_session_key: str, *, exclude_id: str = ""
+    ) -> bool:
+        return self._run_events.has_in_memory_pending_work_for_impl(
+            parent_session_key, exclude_id=exclude_id
+        )
+
+    async def queued_count_or_none_async(self, parent_session_key: str) -> int | None:
+        return await self._run_events.queued_count_or_none_async_impl(parent_session_key)
 
     def has_pending_work_for(self, parent_session_key: str) -> bool:
         return self._run_events.has_pending_work_for_impl(parent_session_key)

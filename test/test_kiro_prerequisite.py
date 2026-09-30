@@ -4185,6 +4185,11 @@ class TestKiroPrerequisiteHandlers:
         state._yolo = False
         state.subagents = MagicMock()
         state.subagents.running_agents_for.return_value = []
+        # No child queued behind the spawn gate either, and none pending in
+        # memory: the synthesis fire gate counts them.
+        state.subagents.queued_count_for_async = AsyncMock(return_value=0)
+        state.subagents.queued_count_or_none_async = AsyncMock(return_value=0)
+        state.subagents.has_in_memory_pending_work_for.return_value = False
         state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
         slot = state.get_or_create_slot("synthesis-readiness")
         slot._titled = True

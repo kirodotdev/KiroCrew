@@ -443,6 +443,9 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: E402
     SESSION_START_FAILED_KIND,
     STAGE_DELIVERY_KINDS,
     SUBAGENT_COMPLETION_KIND,
+    SYNTHESIS_CLEAR,
+    SYNTHESIS_HELD,
+    SYNTHESIS_UNKNOWN,
     SYNTHETIC_RECOVERY_KIND,
     TRANSIENT_GIVE_UP_TEXT,
     TRANSIENT_NOTICE_GIVE_UP,
@@ -473,6 +476,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: E402
     should_notice_mixed_turn_leak,
     should_recover_promise_only,
     subagents_attached_async,
+    synthesis_fire_verdict,
     tool_calls_are_read_only_preparation,
 )
 
@@ -9290,7 +9294,7 @@ async def _start_next_queued_turn(
         (
             not allow_user_during_subagents
             and state.subagents is not None
-            and state.subagents.running_agents_for(f"dashboard:{slot.key}")
+            and state.subagents.running_agents_for(effective_session_key(slot))
         )
         or in_stage
     )
@@ -9403,6 +9407,7 @@ async def _start_next_queued_turn(
     is_app_message = any(item.get("kind") == MCP_APP_MESSAGE_KIND for item in consumed)
     if not (is_cron or is_subagent or is_recovery or is_app_message):
         slot._pending_synthesis = False
+        slot._synthesis_rechecks = 0
 
     for item in consumed:
         content, _ = redact_exfiltration_urls(item["content"])
@@ -9807,16 +9812,12 @@ async def _run_pending_synthesis(state: DashboardState, slot: _ChatSlot) -> None
             state.push_slots_update()
             if await _start_next_queued_turn(state, slot):
                 return
-        if (
-            state.subagents is None
-            or state.subagents.running_agents_for(f"dashboard:{slot.key}")
-            or slot._subagent_deliveries_inflight != 0
-        ):
-            await _finish_queue_cycle(state, slot)
-            return
+        # The fire gate's verdict was taken by the caller (`_finish_queue_cycle`
+        # or the outage re-check), the one place the decision reads the store.
 
         # All delivery guards hold. Consume immediately before the turn begins.
         slot._pending_synthesis = False
+        slot._synthesis_rechecks = 0
         # Same successor boundary as the queue drain (see the finalize comment in
         # `_start_next_queued_turn`): this dispatch is reached from the previous
         # turn's tail without a `chat_done`, so the predecessor's streaming row
@@ -9868,6 +9869,70 @@ async def _run_pending_synthesis(state: DashboardState, slot: _ChatSlot) -> None
         slot._synthesis_inflight = False
 
 
+#: How often, and how many times, an idle slot re-asks the synthesis fire gate
+#: after the task store could not be read (``SYNTHESIS_UNKNOWN``). Bounded: a
+#: store that stays down past it leaves the synthesis armed for the next turn
+#: end, as before.
+_SYNTHESIS_RECHECK_SECS = 5.0
+_SYNTHESIS_RECHECK_MAX = 12
+
+
+def _launch_synthesis(state: DashboardState, slot: _ChatSlot) -> None:
+    slot._synthesis_inflight = True
+    task = asyncio.create_task(_run_pending_synthesis(state, slot))
+    slot.task = task
+    state._background_tasks.add(task)
+    task.add_done_callback(state._background_tasks.discard)
+    state.push_slots_update()
+
+
+def _arm_synthesis_recheck(state: DashboardState, slot: _ChatSlot) -> None:
+    """Re-ask the fire gate later: an unreadable store has no completion to wake it.
+
+    One timer per slot (``slot._synthesis_recheck``), cancelled when the slot
+    closes (``begin_close``), at most :data:`_SYNTHESIS_RECHECK_MAX` times per
+    armed synthesis. Each attempt runs only while the slot is idle, registered
+    and still armed; a real "children attached" answer stops the chain, since
+    that child's own completion re-triggers the check.
+    """
+    if slot._synthesis_recheck is not None or slot._synthesis_rechecks >= _SYNTHESIS_RECHECK_MAX:
+        return
+    slot._synthesis_rechecks += 1
+
+    async def _recheck() -> None:
+        slot._synthesis_recheck = None
+
+        def _still_wanted() -> bool:
+            return bool(
+                slot._pending_synthesis
+                and not slot._synthesis_inflight
+                and not slot.turn_running
+                and not slot._closing
+                and state._slots.get(slot.key) is slot
+            )
+
+        if not _still_wanted():
+            return
+        verdict = await synthesis_fire_verdict(state, slot)
+        if verdict == SYNTHESIS_UNKNOWN:
+            _arm_synthesis_recheck(state, slot)
+        elif verdict == SYNTHESIS_CLEAR and _still_wanted():
+            # Re-read after the store read: the tab may have started closing.
+            _launch_synthesis(state, slot)
+
+    def _fire() -> None:
+        task = asyncio.ensure_future(_recheck())
+        state._background_tasks.add(task)
+        task.add_done_callback(state._background_tasks.discard)
+
+    try:
+        slot._synthesis_recheck = asyncio.get_running_loop().call_later(
+            _SYNTHESIS_RECHECK_SECS, _fire
+        )
+    except RuntimeError:
+        slot._synthesis_recheck = None
+
+
 async def _finish_queue_cycle(
     state: DashboardState, slot: _ChatSlot, *, allow_automatic_successor: bool = True
 ) -> None:
@@ -9877,7 +9942,9 @@ async def _finish_queue_cycle(
     :func:`chat_utils.chat_done_payload` whether the floor really goes back to
     the user, and that question reaches the task store."""
 
-    will_synthesize = (
+    will_synthesize = False
+    verdict = SYNTHESIS_HELD
+    if (
         allow_automatic_successor
         and slot._pending_synthesis
         and not slot._synthesis_inflight
@@ -9885,9 +9952,22 @@ async def _finish_queue_cycle(
         # user turn to owe a held note to -- withholding there would lose it.
         and state._slots.get(slot.key) is slot
         and state.subagents is not None
-        and not state.subagents.running_agents_for(f"dashboard:{slot.key}")
-        and slot._subagent_deliveries_inflight == 0
-    )
+    ):
+        # Running, delivering, pending in memory, or queued in the store: the
+        # one fire-gate read (`synthesis_fire_verdict`).
+        verdict = await synthesis_fire_verdict(state, slot)
+        will_synthesize = verdict == SYNTHESIS_CLEAR
+        if verdict == SYNTHESIS_UNKNOWN:
+            _arm_synthesis_recheck(state, slot)
+        if not will_synthesize and slot._queue and not slot._last_turn_auth_required:
+            # A message the user sent while the fire gate read the store found
+            # the turn still running and was queued behind it. Drain it as a
+            # normal turn end does (`_start_next_queued_turn` keeps its own hold
+            # rules); only this await could have let it in after the turn's own
+            # drain attempt.
+            state.push_slots_update()
+            if await _start_next_queued_turn(state, slot):
+                return
 
     # Before any successor is dispatched. A held note's CONTEXT half drains into
     # the next turn, so flushing after that turn started would let the note shape
@@ -9916,12 +9996,7 @@ async def _finish_queue_cycle(
     if not slot._queue:
         slot._stopping = False
     if will_synthesize:
-        slot._synthesis_inflight = True
-        task = asyncio.create_task(_run_pending_synthesis(state, slot))
-        slot.task = task
-        state._background_tasks.add(task)
-        task.add_done_callback(state._background_tasks.discard)
-        state.push_slots_update()
+        _launch_synthesis(state, slot)
         return
 
     slot.append("done", "", "done")

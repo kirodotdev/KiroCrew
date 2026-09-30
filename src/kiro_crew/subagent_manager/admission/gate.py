@@ -25,6 +25,7 @@ if TYPE_CHECKING:
         _validate_app_agent_ownership,
         _vet_parent_available_agents,
         _vet_spawn_governance,
+        adaptive_pause_text,
         asyncio,
         cached_admission_check,
         check_memory_available,
@@ -352,9 +353,15 @@ class _GateMixin(ManagerComponent):
             """A policy refusal of a spawn whose row ALREADY exists (a drained
             row the pump re-checks) marks that row failed in the same step,
             so the refusal the caller sees is also the store's verdict and
-            the pump can never dispatch work that was refused."""
+            the pump can never dispatch work that was refused.
+
+            The refused run is registered as a terminal record too: the
+            caller was told it was accepted, and its next ``GET
+            /api/spawn/{id}`` must read this failure, not a 404 for an id
+            that is neither queued nor started any more."""
             if _from_queue and info.error:
                 self._manager._admission.taskq_fail(agent_id, info.error)
+                self._manager._agents.setdefault(info.id, info)
             return self._manager._announce_rejection(info)
 
         # The mutable policy gates (memory identity, cwd allowlist,
@@ -988,13 +995,7 @@ class _GateMixin(ManagerComponent):
                 )
             }
             capacity_detail = (
-                (
-                    "dispatch paused: the host is low on memory or overloaded, so no new "
-                    "subagent starts until it recovers (configured cap "
-                    f"{self._manager._user_max_concurrent}, effective cap 0)"
-                )
-                if adaptive_paused
-                else ""
+                adaptive_pause_text(self._manager._user_max_concurrent) if adaptive_paused else ""
             )
             # Advisory UI signal: tell the chip how many agents are now waiting
             # to start for this parent so it can appear immediately and show a
@@ -1127,8 +1128,9 @@ class _GateMixin(ManagerComponent):
                 agent_id,
                 "retained admitted generation" if retained else "left queued for the pump",
             )
-            # The row is still QUEUED (or ADMITTED and retained), so the depth
-            # published here must count it. A pump that popped it marked it
+            # The row is still QUEUED (or ADMITTED and retained), and the depth
+            # published here counts both: ``taskq_overflow`` includes admitted
+            # rows no run is registered for. A pump that popped it marked it
             # dispatching; that mark describes an attempt that just ended.
             self._manager._dispatching_ids.discard(agent_id)
             self._manager._emit_queue_depth(parent_session_key, batch_id)

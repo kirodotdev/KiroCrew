@@ -13,6 +13,7 @@ row waiting only for a stagger tick behind the cap) keeps the existing text.
 
 from __future__ import annotations
 
+import json
 from unittest.mock import patch
 
 from kiro_crew.mcp_tools import spawn as spawn_tools
@@ -95,14 +96,13 @@ class TestDeferredSpawnIsReportedAsQueued:
 
 
 class TestSpawnSubAgentsNamesTheDeferral:
-    """The blocking sibling polls each id until it settles. A deferred row is
-    never registered as a run, so its poll answers ``not found`` and the caller
-    saw an error entry with no cause; the accept-time reason is now reported
-    beside it under its own ``queued`` line."""
+    """The blocking sibling polls each id until it settles. A deferred row has
+    no run yet and answers ``queued: true``: the member is reported ONCE, under
+    the ``queued`` record with its reason, and never as an error too -- seeing
+    both, a model trusted the error and dispatched the same work again."""
 
-    def test_a_member_deferred_at_accept_is_reported_queued_with_its_reason(
-        self, monkeypatch
-    ) -> None:
+    @staticmethod
+    def _call(monkeypatch, status: dict) -> list[dict]:
         import json
 
         clock = {"now": 0.0}
@@ -128,11 +128,11 @@ class TestSpawnSubAgentsNamesTheDeferral:
             return {}
 
         def _get(path: str, **_kw: object) -> dict:
-            return {"error": "not found"}
+            return dict(status)
 
         monkeypatch.setenv("KIROCREW_SPAWN_SUB_AGENTS_MAX_WAIT", "60")
         with (
-            patch.object(spawn_tools.mcp_core, "_post", side_effect=_post),
+            patch.object(spawn_tools.mcp_core, "_post", side_effect=_post) as post,
             patch.object(spawn_tools.mcp_core, "_get", side_effect=_get),
             patch.object(spawn_tools.mcp_core, "time", _Time),
             patch.object(spawn_tools.mcp_core, "_resolve_session_key", return_value="chat-1"),
@@ -147,7 +147,271 @@ class TestSpawnSubAgentsNamesTheDeferral:
                     "solo_details": "a large log only the summary of which is needed",
                 },
             )
-        records = [json.loads(chunk) for chunk in out.split("\n\n")]
+        # Never marked collected: it has not run, so its completion must inject.
+        assert not [c for c in post.call_args_list if c.args[0] == "/api/spawn/mark-collected"]
+        return [json.loads(chunk) for chunk in out.split("\n\n")]
+
+    def test_a_not_found_answer_is_an_error_never_a_queued_member(self, monkeypatch) -> None:
+        """ "Held" is read off ``queued: true`` only, never off a 404's prose: a
+        gone row or a refused lookup is not "queued, nothing was cancelled"."""
+        records = self._call(monkeypatch, {"error": "not found"})
+        assert not [r for r in records if r.get("status") == "queued"]
+        errors = [r for r in records if r.get("status") == "error"]
+        assert len(errors) == 1 and "check spawn_status" in errors[0]["hint"]
+
+    def test_a_capacity_wait_does_not_repeat_the_accept_time_sentence(self, monkeypatch) -> None:
+        """Deferred for memory at accept, now waiting behind the concurrency cap
+        with no sentence of its own: the record names the CURRENT wait."""
+        records = self._call(
+            monkeypatch,
+            {"id": "q1", "done": False, "queued": True, "reason": "concurrency_limit"},
+        )
         queued = [r for r in records if r.get("status") == "queued"]
-        assert len(queued) == 1
-        assert queued[0]["agents"] == {"q1": _DETAIL}
+        assert queued and queued[0]["agents"] == {
+            "q1": "waiting for a free slot behind the concurrency limit"
+        }
+        assert _DETAIL not in json.dumps(records)
+
+    def test_a_run_waiting_to_resume_is_running_work_not_unstarted(self, monkeypatch) -> None:
+        records = self._call(
+            monkeypatch,
+            {
+                "id": "q1",
+                "done": False,
+                "queued": True,
+                "resuming": True,
+                "resuming_reason": "gateway_restart",
+            },
+        )
+        assert not [r for r in records if r.get("status") == "queued"]
+        still = [r for r in records if r.get("status") == "still_running"]
+        assert still and still[0]["states"] == {"q1": "waiting_to_resume"}
+
+    def test_a_queued_answer_is_reported_once_with_the_latest_reason(self, monkeypatch) -> None:
+        later = "low memory: 1.1 GB available, need 4 GB"
+        records = self._call(
+            monkeypatch,
+            {"id": "q1", "done": False, "queued": True, "reason_detail": later},
+        )
+        assert [r["agents"] for r in records if r.get("status") == "queued"] == [{"q1": later}]
+        assert not [r for r in records if r.get("status") == "error"]
+        assert not [r for r in records if r.get("status") == "still_running"]
+
+    def test_a_deferred_member_that_started_is_running_not_queued(self, monkeypatch) -> None:
+        """Started after its deferral and still going when the wait ended: it is
+        a running child, so the never-started record must not name it."""
+        records = self._call(monkeypatch, {"id": "q1", "done": False, "turns": 3})
+        still = [r for r in records if r.get("status") == "still_running"]
+        assert still and still[0]["states"] == {"q1": "running"}
+        assert not [r for r in records if r.get("status") == "queued"]
+
+    def test_a_transport_failure_is_still_an_error(self, monkeypatch) -> None:
+        """An unreachable gateway says nothing about the row: the member keeps
+        its error entry, and because it was accepted (deferred) at spawn time,
+        a hint not to re-spawn it blind."""
+        records = self._call(monkeypatch, {"error": "connection refused"})
+        errors = [r for r in records if r.get("status") == "error"]
+        assert len(errors) == 1
+        assert errors[0]["hint"] == (
+            "accepted at spawn time; its state couldn't be read now; "
+            "check spawn_status before re-spawning"
+        )
+        assert not [r for r in records if r.get("status") == "queued"]
+
+
+class TestSpawnSubAgentsWaitsOnlyForStartedWork:
+    """A member still queued and not started settles the WAIT: the call returns
+    once every member is done, errored or queued, and only members not yet
+    settled are polled again."""
+
+    def test_a_queued_member_does_not_hold_the_call(self, monkeypatch) -> None:
+        import json
+
+        class _Time:
+            now = 0.0
+
+            @classmethod
+            def monotonic(cls) -> float:
+                cls.now += 0.001  # a deadline the loop could spin against for hours
+                return cls.now
+
+            @staticmethod
+            def sleep(_s: float) -> None:
+                pass
+
+        ids = iter(["a1", "b1", "q1"])
+        gets: dict[str, int] = {}
+        polls_of_b = {"n": 0}
+
+        def _post(path: str, body: dict, **_kw: object) -> dict:
+            if path == "/api/spawn":
+                aid = next(ids)
+                return {
+                    "id": aid,
+                    **({"status": "queued", "reason": "low_memory"} if aid == "q1" else {}),
+                }
+            return {}
+
+        def _get(path: str, **_kw: object) -> dict:
+            aid = path.rsplit("/", 1)[-1]
+            gets[aid] = gets.get(aid, 0) + 1
+            if aid == "a1":
+                return {"id": "a1", "done": True, "result": "A"}
+            if aid == "b1":
+                polls_of_b["n"] += 1
+                done = polls_of_b["n"] >= 3
+                return {"id": "b1", "done": done, **({"result": "B"} if done else {})}
+            return {
+                "id": "q1",
+                "done": False,
+                "queued": True,
+                "reason": "low_memory",
+                "reason_detail": "low memory: 1.1 GB available, need 4 GB",
+            }
+
+        monkeypatch.setenv("KIROCREW_SPAWN_SUB_AGENTS_MAX_WAIT", "7200")
+        with (
+            patch.object(spawn_tools.mcp_core, "_post", side_effect=_post),
+            patch.object(spawn_tools.mcp_core, "_get", side_effect=_get),
+            patch.object(spawn_tools.mcp_core, "time", _Time),
+            patch.object(spawn_tools.mcp_core, "_resolve_session_key", return_value="chat-1"),
+            patch.object(spawn_tools, "_hold_for_parent_resume", return_value=None),
+            patch.object(spawn_tools, "is_tool_cancelled", return_value=False),
+        ):
+            out = spawn_tools.spawn_sub_agents(
+                "spawn_sub_agents",
+                {
+                    "agents": [{"prompt": "a"}, {"prompt": "b"}, {"prompt": "q"}],
+                    "solo_reason": "bulk_data",
+                    "solo_details": "three independent summaries",
+                },
+            )
+        records = [json.loads(chunk) for chunk in out.split("\n\n")]
+        assert [r["status"] for r in records if r.get("agent")] == ["completed", "completed"]
+        assert [r["agents"] for r in records if r.get("status") == "queued"] == [
+            {"q1": "low memory: 1.1 GB available, need 4 GB"}
+        ]
+        # a1 settled on the first pass and was not polled again (+1 final read).
+        assert gets["a1"] == 2
+        # q1 was read once it was reached in the wait, then once in the result.
+        assert gets["q1"] == 2
+
+
+class TestSpawnSubAgentsWaitsOutACapacityQueue:
+    def test_a_member_queued_behind_the_cap_is_waited_for(self, monkeypatch) -> None:
+        """A wave larger than the cap: the tail answers ``queued`` with
+        ``concurrency_limit`` and drains with the wave, so the call keeps
+        polling it and returns its result rather than a queued record."""
+        import json
+
+        class _Time:
+            now = 0.0
+
+            @classmethod
+            def monotonic(cls) -> float:
+                cls.now += 0.001
+                return cls.now
+
+            @staticmethod
+            def sleep(_s: float) -> None:
+                pass
+
+        polls = {"n": 0}
+
+        def _post(path: str, body: dict, **_kw: object) -> dict:
+            return {"id": "c1", "status": "spawned"} if path == "/api/spawn" else {}
+
+        def _get(path: str, **_kw: object) -> dict:
+            polls["n"] += 1
+            if polls["n"] < 4:
+                return {"id": "c1", "done": False, "queued": True, "reason": "concurrency_limit"}
+            return {"id": "c1", "done": True, "result": "C"}
+
+        monkeypatch.setenv("KIROCREW_SPAWN_SUB_AGENTS_MAX_WAIT", "7200")
+        with (
+            patch.object(spawn_tools.mcp_core, "_post", side_effect=_post),
+            patch.object(spawn_tools.mcp_core, "_get", side_effect=_get),
+            patch.object(spawn_tools.mcp_core, "time", _Time),
+            patch.object(spawn_tools.mcp_core, "_resolve_session_key", return_value="chat-1"),
+            patch.object(spawn_tools, "_hold_for_parent_resume", return_value=None),
+            patch.object(spawn_tools, "is_tool_cancelled", return_value=False),
+        ):
+            out = spawn_tools.spawn_sub_agents(
+                "spawn_sub_agents",
+                {
+                    "agents": [{"prompt": "c"}],
+                    "solo_reason": "bulk_data",
+                    "solo_details": "one summary",
+                },
+            )
+        records = [json.loads(chunk) for chunk in out.split("\n\n")]
+        assert [r["status"] for r in records if r.get("agent")] == ["completed"]
+        assert not [r for r in records if r.get("status") == "queued"]
+
+
+class TestSpawnStatusAndListShowAQueuedRun:
+    """``spawn_status`` / ``spawn_list`` render a spawn that has no run yet as
+    queued, with its reason, rather than "not found" / "No subagents running."."""
+
+    def test_spawn_status_says_queued_and_why(self) -> None:
+        answer = {
+            "id": "q1",
+            "task": "summarize",
+            "done": False,
+            "queued": True,
+            "elapsed": 12,
+            "reason": "low_memory",
+            "reason_detail": _DETAIL,
+        }
+        with patch.object(spawn_tools.mcp_core, "_get", return_value=answer):
+            out = spawn_tools.spawn_status("spawn_status", {"agent_id": "q1"})
+        assert out.splitlines()[0] == "[QUEUED · 12s]"
+        assert _DETAIL in out
+        assert "do not spawn it again" in out
+        assert "RUNNING" not in out and "Error" not in out
+
+    def test_spawn_status_names_the_kind_without_a_sentence(self) -> None:
+        answer = {"id": "q1", "done": False, "queued": True, "reason": "concurrency_limit"}
+        with patch.object(spawn_tools.mcp_core, "_get", return_value=answer):
+            out = spawn_tools.spawn_status("spawn_status", {"agent_id": "q1"})
+        assert out.startswith("[QUEUED]")
+        assert "concurrency limit" in out
+
+    def test_spawn_list_lists_queued_rows_apart_from_runs(self) -> None:
+        answer = {
+            "agents": [],
+            "queued": [
+                {"id": "q1", "task": "summarize the log", "reason_detail": _DETAIL},
+                {"id": "q2", "task": "second", "reason": "adaptive_cap_zero"},
+            ],
+        }
+        with (
+            patch.object(spawn_tools.mcp_core, "_get", return_value=answer),
+            patch.object(spawn_tools.mcp_core, "list_agents", return_value=[]),
+        ):
+            out = spawn_tools.spawn_list("spawn_list", {})
+        assert "No subagents running." not in out
+        assert f"q1  [queued] (not started: {_DETAIL})  summarize the log" in out
+        assert "q2  [queued] (not started: starts are paused" in out
+
+    def test_spawn_list_says_when_the_queued_list_is_partial(self) -> None:
+        answer = {
+            "agents": [],
+            "queued": [{"id": "q1", "task": "oldest", "reason": "low_memory"}],
+            "queued_truncated": True,
+        }
+        with (
+            patch.object(spawn_tools.mcp_core, "_get", return_value=answer),
+            patch.object(spawn_tools.mcp_core, "list_agents", return_value=[]),
+        ):
+            out = spawn_tools.spawn_list("spawn_list", {})
+        assert "the queued list is partial" in out
+        assert "do not spawn them again" in out
+
+    def test_spawn_list_with_nothing_running_or_queued_is_unchanged(self) -> None:
+        with (
+            patch.object(spawn_tools.mcp_core, "_get", return_value={"agents": []}),
+            patch.object(spawn_tools.mcp_core, "list_agents", return_value=[]),
+        ):
+            out = spawn_tools.spawn_list("spawn_list", {})
+        assert out.splitlines()[0] == "No subagents running."
