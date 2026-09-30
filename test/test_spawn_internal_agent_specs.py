@@ -189,7 +189,22 @@ class TestTheModeRefusalExplanation:
         cause, remedy = srs.unavailable_mode_explanation("scout--readonly")
         assert "kirocrew setup --agent-only" not in cause + remedy
         assert "derives from 'scout'" in cause
-        assert remedy == "It is not a sub-agent; to spawn its source agent, name 'scout'."
+        assert remedy == (
+            "A new session starts a kiro-cli that lists it. It is not a sub-agent: to spawn "
+            "its source agent, name 'scout', or omit 'agent' when that is the default agent."
+        )
+
+    def test_the_host_default_base_is_given_a_remedy_it_can_follow(self, registry: Path) -> None:
+        """The common derived spec is ``kirocrew--readonly``. The host default is
+        reached by omitting ``agent``, and a new session is what re-lists the
+        spec, so the remedy must say both rather than only "name 'kirocrew'"."""
+        (registry / "kirocrew.json").write_text(
+            json.dumps({"name": "kirocrew", "description": "host"}), encoding="utf-8"
+        )
+        srs.publish_readonly_spec("kirocrew")
+        _, remedy = srs.unavailable_mode_explanation("kirocrew--readonly")
+        assert remedy.startswith("A new session starts a kiro-cli that lists it.")
+        assert "omit 'agent' when that is the default agent" in remedy
 
     def test_a_published_project_scope_spec_is_explained_too(self, registry: Path) -> None:
         derived = srs.readonly_agent_name("scout", "/repo")
