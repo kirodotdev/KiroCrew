@@ -317,6 +317,10 @@ class TestEagerSpawnDefaultModel:
     @pytest.fixture(autouse=True)
     def _no_debounce(self, monkeypatch):
         monkeypatch.setattr(chat_runner, "_EAGER_SPAWN_DEBOUNCE_SECS", 0)
+        # Own semaphore, as in ``test_session_capabilities``. ``_eager_spawn`` returns
+        # WITHOUT allocating when the module-global one is held, so a sibling eager spawn
+        # in flight anywhere in this process turns these into "get_or_create awaited 0".
+        monkeypatch.setattr(chat_runner, "_eager_spawn_sem", asyncio.Semaphore(1))
 
     @pytest.mark.asyncio
     async def test_eager_session_starts_on_the_global_default(self, tmp_path, _runner_config):
