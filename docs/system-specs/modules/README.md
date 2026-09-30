@@ -101,6 +101,7 @@ agent loads only the one it needs.
 | [mcp-probe-quarantine.md](mcp-probe-quarantine.md) | A durable consecutive-probe-failure count per MCP server, surfaced on its dashboard row with a reset control. The unmount half is deferred; the spec records why. |
 | [app-notifications.md](app-notifications.md) | How an app publishes a notification to the local bus, and the two shipped producers. |
 | [artifacts.md](artifacts.md) | Artifact identity, versioning, and the companion chat panel. |
+| [dashboard-templates.md](dashboard-templates.md) | A dashboard page shipped with its own typed contract, provider and parity gate: the three invariants, the fold menu the numbers come from, and why a publisher writes sentences and never numbers. |
 | [prompt-optimizer.md](prompt-optimizer.md) | Rewriting a draft prompt on demand, and the paste-forwarding surface. |
 | [steering-viewer.md](steering-viewer.md) | Reading, creating, editing and deleting the steering files a session loads, and the declared-`inclusion` reporting. |
 | [turn-stats-footer.md](turn-stats-footer.md) | The per-turn token and timing footer: capture, persistence, and the frontend render gates. |
