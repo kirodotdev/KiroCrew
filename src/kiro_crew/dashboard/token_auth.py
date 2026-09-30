@@ -82,6 +82,7 @@ from kiro_crew.executors import subprocess_executor
 from kiro_crew.mcp_gateway.socketsec import PeerCredResult, check_peer_is_self, get_peer_pid
 from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.peer_resolve import resolve_peer_tenancy
+from kiro_crew.runtime_ownership import session_keys_bound_to_pid
 from kiro_crew.sel import sel as _sel_fn
 from kiro_crew.session_token_sig import verify_session_token
 
@@ -1777,6 +1778,50 @@ def _live_session_keys_on_chain(request: web.Request, chain: Sequence[int]) -> f
     return frozenset()
 
 
+def _bound_session_keys_on_chain(chain: Sequence[int]) -> frozenset[str]:
+    """WHICH sessions the OWNERSHIP TABLES place on *chain*'s nearest hit.
+
+    A token proves which session a caller IS. It does not prove that session is
+    on the process the call arrived from, and those are different facts: the token
+    is a bearer credential sitting in the runtime's environment, so a same-uid
+    co-tenant that can read ``/proc/<pid>/environ`` can present a sibling's token
+    and satisfy the name check with it. What it cannot do is put that sibling onto
+    a process the gateway never placed it on. So the declared key is additionally
+    required to hold a LIVE entry in one of the two tables for this pid -- the
+    lease table for a session that owns its runtime, the tenancy table for a
+    sharing sub-agent or task run that does not.
+
+    Both halves are needed and :func:`session_keys_bound_to_pid` unions them: a
+    sub-agent holds no lease, and a chat session holds no tenancy.
+
+    The chain is walked peer-first, exactly as the disk walk and the live-manager
+    reader walk it, and the NEAREST pid either table knows anything about decides.
+    The peer is an MCP stub whose kiro-cli ANCESTOR is the process sessions are
+    placed on, so the answer is never on the peer pid itself.
+
+    Returns an EMPTY set when no pid on the chain appears in either table, which
+    is not a verdict and must not be read as one. The tables describe runtimes
+    THIS gateway placed sessions on; a warm-pool runtime before its claim, a
+    pooled MCP backend, a cron script and anything belonging to another install
+    are all absent from them while being entirely legitimate. Every failure path
+    answers empty for the same reason a probe that could not ask must not become a
+    verdict.
+    """
+    try:
+        for pid in chain:
+            if not isinstance(pid, int):
+                continue
+            bound = session_keys_bound_to_pid(pid)
+            if bound:
+                return bound
+    except Exception:
+        # The tables failing to answer is an "unresolvable" outcome, never a
+        # denial -- the same rule the resolver failure above follows.
+        logger.debug("ownership tables unreadable while verifying a peer", exc_info=True)
+        return frozenset()
+    return frozenset()
+
+
 async def _verify_unix_peer(
     request: web.Request, sock: Any, path: str
 ) -> web.StreamResponse | None:
@@ -1888,6 +1933,18 @@ async def _verify_unix_peer(
         recorded on both outcomes, so an investigation can tell a declaration
         checked against a full membership from one checked against a short one.
 
+        Two things are asked, because a token answers only one of them. It proves
+        WHICH session the caller is; it does not prove that session is on the
+        process this call arrived from, and it cannot, because it is a bearer
+        credential living in the runtime's environment where a same-uid co-tenant
+        reading ``/proc/<pid>/environ`` can lift it. So the declared key must ALSO
+        hold a live entry in one of the two ownership tables for this pid --
+        :func:`_bound_session_keys_on_chain` -- and a declaration the tables place
+        elsewhere is refused ``peer_session_unbound``. Stolen-token reach shrinks
+        from "any session whose env is readable" to "a session this process
+        actually hosts", which is the set the roster already admits. Tables that
+        cannot speak about the pid answer empty and change nothing.
+
         *hosts* is the tenancy the denial was actually decided against, or
         ``None`` on the one arm that measured no count at all. It is
         keyword-only with NO default on purpose: a default resolves to
@@ -1930,6 +1987,40 @@ async def _verify_unix_peer(
                 f"co-tenant declaration unattested (peer_pid={peer_pid})",
             )
             return _deny(request, "Forbidden", "peer_session_unattested")
+        bound = _bound_session_keys_on_chain(tenancy.chain)
+        if bound and declared not in bound:
+            # The token named this session, and the gateway's own tables say this
+            # session is not on this process. A token is a BEARER credential in
+            # the runtime's environment, so the actor that can read a sibling's
+            # env can present its token and pass the name check above -- which is
+            # exactly the gap this arm closes. It cannot also make the gateway
+            # place that sibling on a process it was never placed on, and the
+            # tables are in this process's memory rather than in a file the
+            # sandbox can write.
+            #
+            # A non-empty set is the whole precondition. Empty means the tables
+            # cannot speak about the pid, which is no evidence and takes the arm
+            # below unchanged; only a set that names OTHER sessions and not this
+            # one is positive evidence that the declaration does not belong here.
+            _sel_fn().log_api_access(
+                caller=declared,
+                operation="dashboard.peer-session-unbound",
+                outcome="denied",
+                source="token_auth",
+                resources=path,
+                error=(
+                    f"peer_pid={peer_pid} ({shape}); the token names this session but "
+                    f"neither ownership table places it on this process "
+                    f"({len(bound)} bound there)"
+                ),
+            )
+            _log_auth(
+                request,
+                "internal",
+                "denied",
+                f"declared session is not bound to this process (peer_pid={peer_pid})",
+            )
+            return _deny(request, "Forbidden", "peer_session_unbound")
         # Recorded, not debug-logged: this is the arm where a cross-session
         # declaration would have succeeded, so it is the one an investigation
         # needs a trail for. The 1:1 arm stays at debug because a pid hosting
@@ -1940,7 +2031,11 @@ async def _verify_unix_peer(
             outcome="allowed",
             source="token_auth",
             resources=path,
-            error=shape,
+            # The roster judged AND whether the tables confirmed the binding, so
+            # the trail separates an admission that passed both checks from one
+            # the tables could not speak about -- which is the difference between
+            # the hardened path and the one that fell open.
+            error=f"{shape}; binding={'confirmed' if bound else 'no evidence'}",
         )
         request["peer_verified"] = True
         return None

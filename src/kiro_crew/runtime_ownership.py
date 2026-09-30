@@ -352,6 +352,35 @@ class RuntimeOwnership:
             total += len(entry.leases)
         return total
 
+    def lease_keys_on_pid(self, pid: int) -> frozenset[str]:
+        """WHICH sessions hold a live lease on *pid*, for the auth boundary.
+
+        The keys, not a count. :meth:`leases_on_pid` answers the kill gate, which
+        only needs to know whether anyone would be harmed by a signal; a caller
+        deciding whether a DECLARED session key belongs on this process needs the
+        names, because a count admits whatever key it is handed.
+
+        The same liveness rule as :meth:`leases_on_pid`, for the same reason: a
+        dead runtime's leases are on their way out of the table, and reporting them
+        would name sessions on a process that has already exited.
+
+        An EMPTY set is "this table knows of no session here", never "no session
+        is here". Every legitimate caller whose lease lives in a table this
+        process does not own -- and every caller with no lease at all, which is
+        every tenant -- answers empty, so a consumer must treat empty as absence
+        of evidence.
+        """
+        keys: set[str] = set()
+        for entry in self._entries:
+            if not entry.leases:
+                continue
+            if _pid_of(entry.runtime) != pid:
+                continue
+            if not self._alive(entry):
+                continue
+            keys.update(k for k in entry.leases.values() if k)
+        return frozenset(keys)
+
     def leases_on_runtime(self, runtime: object) -> int:
         """How many leases this exact runtime OBJECT holds, for the kill gate.
 
@@ -461,6 +490,14 @@ class _Claim:
     pid: int | None
     holder: str
     owed: bool = False
+    #: The SESSION this claim is taken for, or ``""`` when the claimer is not a
+    #: session at all (the OAuth mint child). Recorded beside ``holder`` rather
+    #: than parsed back out of it: ``holder`` is a label written to be read in a
+    #: refusal log and free to change its wording, and an auth decision must not
+    #: rest on a log format. A claimer that names no session is simply not
+    #: reported by :meth:`RuntimeTenancy.tenant_keys_on_pid`, which is correct --
+    #: it has no session key to bind and never declares one.
+    session_key: str = ""
 
 
 class RuntimeTenancy:
@@ -515,8 +552,18 @@ class RuntimeTenancy:
         # lock could not be acquired at the call sites that need it.
         self._lock = threading.Lock()
 
-    def claim(self, target: object, *, holder: str) -> str | None:
+    def claim(self, target: object, *, holder: str, session_key: str = "") -> str | None:
         """Record that *holder* is using *target*, and return the claim's handle.
+
+        *session_key* names the SESSION the claim is taken for, and is what the
+        auth boundary reads back: a claimer that declares a session key over the
+        dashboard socket must appear in this table under that same key. It is a
+        separate argument rather than something derived from *holder* because
+        *holder* is a refusal-log label, and a caller that legitimately holds no
+        session -- the OAuth mint child -- must pass nothing rather than a
+        made-up name. Defaulted so the existing callers and the mint keep their
+        exact shape; a claim with no key is defended by the gate exactly as
+        before and is simply not reported as a binding.
 
         None means there was nothing to defend, and the caller needs no branch for
         it: :meth:`release` is a no-op for None. That is the answer whenever no pid
@@ -572,7 +619,13 @@ class RuntimeTenancy:
                 self._names(c, target, pid) and self._alive(c) and c.owed
                 for c in self._claims.values()
             )
-            self._claims[handle] = _Claim(target=target, pid=pid, holder=str(holder), owed=owed)
+            self._claims[handle] = _Claim(
+                target=target,
+                pid=pid,
+                holder=str(holder),
+                owed=owed,
+                session_key=str(session_key or ""),
+            )
             # Bumped INSIDE the lock, with the insert. A killer that read the
             # epoch before this claim existed re-reads it before it signals and
             # finds it moved, which is what stops an authorized kill from landing
@@ -775,6 +828,29 @@ class RuntimeTenancy:
             claims = list(self._claims.values())
         return sum(1 for c in claims if c.pid == pid and self._alive(c))
 
+    def tenant_keys_on_pid(self, pid: int) -> frozenset[str]:
+        """WHICH sessions hold a live claim on *pid*, for the auth boundary.
+
+        The counterpart of :meth:`RuntimeOwnership.lease_keys_on_pid`, and the
+        half that matters most there: a session-sharing sub-agent holds no lease
+        and is never registered with the session manager, so this table is the
+        ONLY account of it the gateway has. Reported from ``session_key`` rather
+        than from ``holder`` for the reason :class:`_Claim` gives.
+
+        Live claims only, matching every other reader of this table: a claim whose
+        process has exited names a session that is not on that process.
+
+        Empty means this table knows of no session on the pid. That is the answer
+        for a pid whose only claimer is the mint child, and for every pid with no
+        claims at all, so a consumer must read it as absence of evidence rather
+        than as a statement that nobody is there.
+        """
+        with self._lock:
+            claims = list(self._claims.values())
+        return frozenset(
+            c.session_key for c in claims if c.pid == pid and c.session_key and self._alive(c)
+        )
+
     def claims_on_runtime(self, runtime: object) -> int:
         """How many live claims name this exact OBJECT, for the kill gate.
 
@@ -874,6 +950,31 @@ def _pid_of(target: object) -> int | None:
     return pid
 
 
+def session_keys_bound_to_pid(pid: int) -> frozenset[str]:
+    """Every session this gateway records as living on *pid*, from BOTH tables.
+
+    The union, because the two tables hold different populations and neither is
+    the whole answer: a chat session appears as a LEASE, and a session-sharing
+    sub-agent or task run appears as a TENANCY with no lease at all. A check
+    written against either one alone would refuse exactly the callers the other
+    table exists for.
+
+    This is the gateway's own memory, in this process, about runtimes it owns --
+    which is what makes it usable at an auth boundary. The roster
+    :mod:`kiro_crew.session_pid_sig` publishes answers the same question on disk,
+    in a directory the agent sandbox can write, and the session manager's
+    snapshot omits a shared sub-agent's session entirely.
+
+    An EMPTY set is NO EVIDENCE, and every consumer owes that reading. A pid this
+    gateway did not place a session on -- a warm-pool runtime before its claim, a
+    pooled MCP backend, a cron script, anything belonging to another install --
+    answers empty, and so does a pid whose only claimer named no session. Absence
+    here says the tables cannot speak about the pid, never that the caller does
+    not belong on it.
+    """
+    return RUNTIME_OWNERSHIP.lease_keys_on_pid(pid) | RUNTIME_TENANCY.tenant_keys_on_pid(pid)
+
+
 def outstanding_leases(target: object) -> int:
     """Leases held on *target*, by object identity when it is a runtime.
 
@@ -910,7 +1011,7 @@ def note_runtime_kill(target: object, *, reason: str, caller: str) -> None:
     )
 
 
-def claim_runtime_tenancy(target: object, *, holder: str) -> str | None:
+def claim_runtime_tenancy(target: object, *, holder: str, session_key: str = "") -> str | None:
     """Defend *target* from the kill gate while *holder* is using it.
 
     For a party that is mid-flight on a process it does not own and must not end:
@@ -919,11 +1020,16 @@ def claim_runtime_tenancy(target: object, *, holder: str) -> str | None:
     :func:`release_runtime_tenancy`, and hold the claim for as long as -- and no
     longer than -- a signal would destroy work.
 
+    A claimer that IS a session passes *session_key*, which also binds it: the
+    dashboard's peer check admits a declared key on a shared process only while
+    one of the two ownership tables names it, and for a sub-agent this claim is
+    the only entry there is. A claimer that is not a session passes nothing.
+
     Raises :class:`RuntimeTeardownCommitted` when this pid's teardown has already
     committed; see :meth:`RuntimeTenancy.claim` for why that cannot be the same
     answer as the None it returns for a target with nothing to defend.
     """
-    return RUNTIME_TENANCY.claim(target, holder=holder)
+    return RUNTIME_TENANCY.claim(target, holder=holder, session_key=session_key)
 
 
 def release_runtime_tenancy(handle: str | None) -> object | None:
@@ -1094,5 +1200,6 @@ __all__ = [
     "release_runtime_teardown",
     "release_runtime_tenancy",
     "release_session_lease",
+    "session_keys_bound_to_pid",
     "tenancy_epoch",
 ]
