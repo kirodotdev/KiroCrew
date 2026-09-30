@@ -393,7 +393,14 @@ async def _handle_create_label(request: web.Request) -> web.Response:
     loop; gated on triage/push access (read-only repos get 403). Idempotent if
     the label already exists. Appends the label to the local labels cache so the
     pickers show it immediately, and returns ``{label, created}``."""
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
     from .. import routes  # circular import: backend.routes imports this module
+
+    # Writes to the forge as the OWNER's gh/glab login: owner only.
+    owner_denied = await require_owner_dashboard_request(request, "issue_radar.create_label")
+    if owner_denied is not None:
+        return owner_denied
 
     try:
         body = await request.json()
