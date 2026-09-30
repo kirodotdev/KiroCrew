@@ -3400,6 +3400,21 @@ class TestAStoreThatRefusesToWriteIsReportedNotCrashed(unittest.IsolatedAsyncioT
     def _refuse(*_a, **_kw):
         raise PermissionError(13, "Permission denied")
 
+    @staticmethod
+    def _owner_app() -> web.Application:
+        """An app whose requests read as the dashboard owner (the secret routes are
+        owner-gated): no configured owner, caller ``local-app``."""
+
+        @web.middleware
+        async def _identity(request, handler):
+            request["user"] = "local-app"
+            request["app"] = ""
+            return await handler(request)
+
+        app = web.Application(middlewares=[_identity])
+        app["state"] = mock.MagicMock(owner_id="")
+        return app
+
     async def _client(self, app):
         from aiohttp.test_utils import TestClient, TestServer
 
@@ -3410,7 +3425,7 @@ class TestAStoreThatRefusesToWriteIsReportedNotCrashed(unittest.IsolatedAsyncioT
 
     async def test_a_refused_secret_save_is_a_coded_503_not_a_500(self):
         token = "u+ThisIsTheActualTokenValue"
-        app = web.Application()
+        app = self._owner_app()
         routes.register_routes(app)
         with mock.patch.object(routes, "is_app_enabled", return_value=True):
             with mock.patch.object(routes, "put_secret", self._refuse):
@@ -3431,7 +3446,7 @@ class TestAStoreThatRefusesToWriteIsReportedNotCrashed(unittest.IsolatedAsyncioT
         """The load-bearing one. The failure this replaces did not 500 — it returned
         ``{"ok": true, "removed": false}``, i.e. "there was nothing to revoke", while the
         live token was still on disk. Anything 2xx here is the bug."""
-        app = web.Application()
+        app = self._owner_app()
         routes.register_routes(app)
         with mock.patch.object(routes, "is_app_enabled", return_value=True):
             with mock.patch.object(routes, "delete_secret", self._refuse):
@@ -3459,7 +3474,7 @@ class TestAStoreThatRefusesToWriteIsReportedNotCrashed(unittest.IsolatedAsyncioT
         def _corrupt(*_a, **_kw):
             raise corrupt
 
-        app = web.Application()
+        app = self._owner_app()
         routes.register_routes(app)
         with mock.patch.object(routes, "is_app_enabled", return_value=True):
             with mock.patch.object(routes, "put_secret", _corrupt):
@@ -3487,7 +3502,7 @@ class TestAStoreThatRefusesToWriteIsReportedNotCrashed(unittest.IsolatedAsyncioT
         def _corrupt(*_a, **_kw):
             raise corrupt
 
-        app = web.Application()
+        app = self._owner_app()
         routes.register_routes(app)
         with mock.patch.object(routes, "is_app_enabled", return_value=True):
             with mock.patch.object(routes, "delete_secret", _corrupt):

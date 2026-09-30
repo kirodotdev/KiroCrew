@@ -35,6 +35,7 @@ from kiro_crew.apps.builtins.ops_mission_control.backend.http_routes._shared imp
 from kiro_crew.apps.builtins.ops_mission_control.backend.models import MODE_ORDER
 from kiro_crew.apps.builtins.ops_mission_control.backend.providers import set_top_level
 from kiro_crew.cron import CronStoreUnreadable
+from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 
 #: Cap on a secret value. Real provider tokens are well under this; a larger body
 #: is a misuse (or an attempt to bloat the keystone file) and is refused.
@@ -715,6 +716,9 @@ async def _handle_put_secret(
     put_secret: Callable[[str, str, str], None],
 ) -> web.StreamResponse:
     """Store a provider secret. Write-only: the value is never readable back."""
+    owner_denied = await require_owner_dashboard_request(request, "ops_mission_control.put_secret")
+    if owner_denied is not None:
+        return owner_denied
     provider_id = request.match_info.get("provider_id", "").strip()
     body = await _json_body(request)
     if body is None:
@@ -783,6 +787,11 @@ async def _handle_put_secret(
 async def _handle_delete_secret(
     request: web.Request, *, delete_secret: Callable[[str], bool]
 ) -> web.StreamResponse:
+    owner_denied = await require_owner_dashboard_request(
+        request, "ops_mission_control.delete_secret"
+    )
+    if owner_denied is not None:
+        return owner_denied
     provider_id = request.match_info.get("provider_id", "").strip()
     if not provider_id:
         return web.json_response(
