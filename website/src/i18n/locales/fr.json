@@ -12333,7 +12333,9 @@
         "artifact_deploy_desc": "Publie un artefact sur une URL HTTPS publique dans ton propre compte AWS. Désactivé par défaut : chaque déploiement engage des frais sur ton compte et expose le contenu sur l’internet ouvert.",
         "open_artifact_deploy": "Ouvrir Déploiement d'artefacts",
         "decisions_nudge_evidence": "Envoyer aussi ce qu’une boucle en attente surveille, pour que Jev puisse sauter un tour",
-        "decisions_nudge_evidence_desc": "Une boucle qui vérifie quelque chose toutes les quelques minutes réveille l’assistant chaque fois, même quand rien n’a changé. Ceci envoie ce qu’elle surveille — les derniers messages de l’assistant de ces sessions et l’état de toute pull request qu’elle nomme — à Jev, et demande si ce tour vaut la peine de réveiller quelqu’un. Jev ne peut que patienter ou réveiller : il ne peut jamais mettre fin à la boucle, et s’il est lent ou injoignable, la boucle réveille comme aujourd’hui. Les mots de passe et les clés sont remplacés avant tout envoi. Il lit les sessions que la boucle surveille, pas celle où tu écris."
+        "decisions_nudge_evidence_desc": "Une boucle qui vérifie quelque chose toutes les quelques minutes réveille l’assistant chaque fois, même quand rien n’a changé. Ceci envoie ce qu’elle surveille — les derniers messages de l’assistant de ces sessions et l’état de toute pull request qu’elle nomme — à Jev, et demande si ce tour vaut la peine de réveiller quelqu’un. Jev ne peut que patienter ou réveiller : il ne peut jamais mettre fin à la boucle, et s’il est lent ou injoignable, la boucle réveille comme aujourd’hui. Les mots de passe et les clés sont remplacés avant tout envoi. Il lit les sessions que la boucle surveille, pas celle où tu écris.",
+        "layout_harness": "Mise en page composable",
+        "layout_harness_desc": "Active un harnais en cours de développement, réservé aux développeurs, pour un nouveau mécanisme de mise en page. Rien de visible ne change encore : le mécanisme n’a pas de page à lui, donc ceci n’existe que pour pouvoir le construire et le tester derrière un interrupteur."
       },
       "kiroSignInCard": {
         "title": "Connexion Kiro",
@@ -17760,9 +17762,5 @@
     "resolve_explanation": "Conservez la valeur actuelle. Appliquer enregistre cette décision et clôt ses propositions en attente.",
     "forget_count": "Oublier les souvenirs sélectionnés : {{count}}",
     "retry_preview_page": "Réessayer la page d’aperçu"
-  },
-  "featurePreviewsTab": {
-    "layout_harness": "Mise en page composable",
-    "layout_harness_desc": "Aperçu réservé aux développeurs du mécanisme de mise en page piloté par placement (moteur de rendu + portée + éditeur), construit à côté de la page Membres. Désactivé par défaut ; le mécanisme est encore en cours de construction et n’a pas encore sa propre entrée."
   }
 }

@@ -295,8 +295,8 @@ export function FeaturePreviewsSection() {
           and/or an ingress the day the feature lands a real capture and route. */}
       <SettingsCard>
         <SettingsToggle
-          label={i18nT('featurePreviewsTab.layout_harness')}
-          description={i18nT('featurePreviewsTab.layout_harness_desc')}
+          label={i18nT('pages.developer.featurePreviewsTab.layout_harness')}
+          description={i18nT('pages.developer.featurePreviewsTab.layout_harness_desc')}
           checked={layoutHarness}
           onChange={v => setPreviewFlag(PREVIEW_LAYOUT_HARNESS, v)}
         />

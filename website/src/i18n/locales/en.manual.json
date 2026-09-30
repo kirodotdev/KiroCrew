@@ -75,10 +75,6 @@
     "input_count": "Needs you: {{countText}}",
     "summary": "Running {{running}} · Blocked {{blocked}} · Approvals {{approvals}}"
   },
-  "featurePreviewsTab": {
-    "layout_harness": "Composable layout",
-    "layout_harness_desc": "Dev-only preview of the placement-driven layout mechanism (renderer + scope + editor), built beside the Members page. Off by default; the mechanism is still being built and has no door of its own yet."
-  },
   "terminalTab": {
     "rename": "Rename",
     "name": "Terminal name",
@@ -7603,7 +7599,9 @@
         "decisions_api_key_remove_cancel": "Keep it",
         "decisions_api_key_delete": "Delete key",
         "decisions_nudge_evidence": "Also send what a watching loop has found so Jev can skip a turn",
-        "decisions_nudge_evidence_desc": "A loop that checks on something every few minutes wakes the assistant every time, even when nothing changed. This sends what it is watching — the last few assistant messages from those sessions, and the state of any pull request it names — to Jev, and asks whether this round is worth waking anyone for. Jev can only wait or wake: it can never end the loop, and if it is slow or unreachable the loop wakes as it does today. Passwords and keys are replaced before anything is sent. It reads the sessions the loop watches rather than the one you are talking in."
+        "decisions_nudge_evidence_desc": "A loop that checks on something every few minutes wakes the assistant every time, even when nothing changed. This sends what it is watching — the last few assistant messages from those sessions, and the state of any pull request it names — to Jev, and asks whether this round is worth waking anyone for. Jev can only wait or wake: it can never end the loop, and if it is slow or unreachable the loop wakes as it does today. Passwords and keys are replaced before anything is sent. It reads the sessions the loop watches rather than the one you are talking in.",
+        "layout_harness": "Composable layout",
+        "layout_harness_desc": "Turns on an in-development, developer-only harness for a new layout mechanism. Nothing you can see changes yet: the mechanism has no page of its own, so this exists only so it can be built and tested behind a switch."
       },
       "kiroSignInCard": {
         "title": "Kiro sign-in",

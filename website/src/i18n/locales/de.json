@@ -12155,7 +12155,9 @@
         "artifact_deploy_desc": "Veröffentlicht ein Artefakt unter einer öffentlichen HTTPS-URL in deinem eigenen AWS-Konto. Standardmäßig aus: jede Bereitstellung kostet Geld in deinem Konto und stellt die Inhalte im offenen Internet bereit.",
         "open_artifact_deploy": "Artifact Deploy öffnen",
         "decisions_nudge_evidence": "Auch senden, was eine wartende Schleife beobachtet, damit Jev einen Zug überspringen kann",
-        "decisions_nudge_evidence_desc": "Eine Schleife, die alle paar Minuten nach etwas sieht, weckt die Assistenz jedes Mal, auch wenn sich nichts geändert hat. Dies sendet, was sie beobachtet — die letzten Assistenz-Nachrichten dieser Sitzungen und den Zustand eines von ihr genannten Pull Requests — an Jev und fragt, ob diese Runde es wert ist, jemanden zu wecken. Jev kann nur warten oder wecken: die Schleife beenden kann es nie, und wenn es langsam oder nicht erreichbar ist, weckt die Schleife wie bisher. Passwörter und Schlüssel werden vorher ersetzt. Gelesen werden die Sitzungen, die die Schleife beobachtet, nicht die, in der du gerade schreibst."
+        "decisions_nudge_evidence_desc": "Eine Schleife, die alle paar Minuten nach etwas sieht, weckt die Assistenz jedes Mal, auch wenn sich nichts geändert hat. Dies sendet, was sie beobachtet — die letzten Assistenz-Nachrichten dieser Sitzungen und den Zustand eines von ihr genannten Pull Requests — an Jev und fragt, ob diese Runde es wert ist, jemanden zu wecken. Jev kann nur warten oder wecken: die Schleife beenden kann es nie, und wenn es langsam oder nicht erreichbar ist, weckt die Schleife wie bisher. Passwörter und Schlüssel werden vorher ersetzt. Gelesen werden die Sitzungen, die die Schleife beobachtet, nicht die, in der du gerade schreibst.",
+        "layout_harness": "Komponierbares Layout",
+        "layout_harness_desc": "Schaltet ein in Entwicklung befindliches, nur für Entwickler gedachtes Gerüst für einen neuen Layout-Mechanismus ein. Sichtbar ändert sich noch nichts: Der Mechanismus hat keine eigene Seite, daher ist dies nur da, damit er hinter einem Schalter gebaut und getestet werden kann."
       },
       "kiroSignInCard": {
         "title": "Kiro-Anmeldung",
@@ -17516,9 +17518,5 @@
     "resolve_explanation": "Aktuellen Wert behalten. Anwenden speichert diese Entscheidung und schließt ausstehende Vorschläge.",
     "forget_count": "Ausgewählte Erinnerungen vergessen: {{count}}",
     "retry_preview_page": "Vorschauseite erneut laden"
-  },
-  "featurePreviewsTab": {
-    "layout_harness": "Komponierbares Layout",
-    "layout_harness_desc": "Nur für Entwickler gedachte Vorschau des platzierungsgesteuerten Layout-Mechanismus (Renderer + Scope + Editor), gebaut neben der Mitglieder-Seite. Standardmäßig aus; der Mechanismus wird noch gebaut und hat noch keinen eigenen Zugang."
   }
 }

@@ -12333,7 +12333,9 @@
         "artifact_deploy_desc": "Publica um artefato em uma URL HTTPS publica na sua propria conta AWS. Desativado por padrao: cada implantacao gasta dinheiro na sua conta e serve o conteudo na internet aberta.",
         "open_artifact_deploy": "Abrir Implantação de artefatos",
         "decisions_nudge_evidence": "Enviar também o que um laço em espera observa, para que o Jev possa pular um turno",
-        "decisions_nudge_evidence_desc": "Um laço que verifica algo a cada poucos minutos acorda o assistente sempre, mesmo quando nada mudou. Isto envia o que ele observa — as últimas mensagens do assistente dessas sessões e o estado de qualquer pull request que ele nomeie — ao Jev, e pergunta se esta rodada vale a pena acordar alguém. O Jev só pode esperar ou acordar: nunca pode encerrar o laço, e se estiver lento ou inacessível o laço acorda como hoje. Senhas e chaves são substituídas antes de qualquer envio. Ele lê as sessões que o laço observa, não aquela em que você está escrevendo."
+        "decisions_nudge_evidence_desc": "Um laço que verifica algo a cada poucos minutos acorda o assistente sempre, mesmo quando nada mudou. Isto envia o que ele observa — as últimas mensagens do assistente dessas sessões e o estado de qualquer pull request que ele nomeie — ao Jev, e pergunta se esta rodada vale a pena acordar alguém. O Jev só pode esperar ou acordar: nunca pode encerrar o laço, e se estiver lento ou inacessível o laço acorda como hoje. Senhas e chaves são substituídas antes de qualquer envio. Ele lê as sessões que o laço observa, não aquela em que você está escrevendo.",
+        "layout_harness": "Layout combinável",
+        "layout_harness_desc": "Ativa um arcabouço em desenvolvimento, apenas para desenvolvedores, de um novo mecanismo de layout. Nada que você veja muda ainda: o mecanismo não tem página própria, então isto existe apenas para que ele possa ser construído e testado atrás de um botão."
       },
       "kiroSignInCard": {
         "title": "Login do Kiro",
@@ -17760,9 +17762,5 @@
     "resolve_explanation": "Mantenha o valor atual. Aplicar registra esta decisão e encerra as propostas pendentes.",
     "forget_count": "Esquecer memórias selecionadas: {{count}}",
     "retry_preview_page": "Tentar página de prévia novamente"
-  },
-  "featurePreviewsTab": {
-    "layout_harness": "Layout combinável",
-    "layout_harness_desc": "Prévia apenas para desenvolvedores do mecanismo de layout guiado por posicionamento (renderizador + escopo + editor), construída ao lado da página de Membros. Desativada por padrão; o mecanismo ainda está sendo construído e ainda não tem uma entrada própria."
   }
 }

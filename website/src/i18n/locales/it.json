@@ -12333,7 +12333,9 @@
         "artifact_deploy_desc": "Pubblica un artefatto su un URL HTTPS pubblico nel tuo account AWS. Disattivato per impostazione predefinita: ogni distribuzione comporta costi sul tuo account e serve il contenuto su internet aperto.",
         "open_artifact_deploy": "Apri Artifact Deploy",
         "decisions_nudge_evidence": "Invia anche ciò che osserva un ciclo in attesa, così Jev può saltare un turno",
-        "decisions_nudge_evidence_desc": "Un ciclo che controlla qualcosa ogni pochi minuti sveglia l’assistente ogni volta, anche quando non è cambiato nulla. Questo invia ciò che osserva — gli ultimi messaggi dell’assistente di quelle sessioni e lo stato di qualsiasi pull request che nomina — a Jev, e chiede se questo giro merita di svegliare qualcuno. Jev può solo attendere o svegliare: non può mai terminare il ciclo, e se è lento o irraggiungibile il ciclo sveglia come oggi. Password e chiavi vengono sostituite prima di ogni invio. Legge le sessioni che il ciclo osserva, non quella in cui stai scrivendo."
+        "decisions_nudge_evidence_desc": "Un ciclo che controlla qualcosa ogni pochi minuti sveglia l’assistente ogni volta, anche quando non è cambiato nulla. Questo invia ciò che osserva — gli ultimi messaggi dell’assistente di quelle sessioni e lo stato di qualsiasi pull request che nomina — a Jev, e chiede se questo giro merita di svegliare qualcuno. Jev può solo attendere o svegliare: non può mai terminare il ciclo, e se è lento o irraggiungibile il ciclo sveglia come oggi. Password e chiavi vengono sostituite prima di ogni invio. Legge le sessioni che il ciclo osserva, non quella in cui stai scrivendo.",
+        "layout_harness": "Layout componibile",
+        "layout_harness_desc": "Attiva un'impalcatura in fase di sviluppo, riservata agli sviluppatori, per un nuovo meccanismo di layout. Non cambia ancora nulla di visibile: il meccanismo non ha una pagina propria, quindi questo serve solo a poterlo costruire e testare dietro un interruttore."
       },
       "kiroSignInCard": {
         "title": "Accesso a Kiro",
@@ -17760,9 +17762,5 @@
     "resolve_explanation": "Mantieni il valore attuale. Applica registra questa decisione e chiude le proposte in sospeso.",
     "forget_count": "Dimentica i ricordi selezionati: {{count}}",
     "retry_preview_page": "Riprova la pagina di anteprima"
-  },
-  "featurePreviewsTab": {
-    "layout_harness": "Layout componibile",
-    "layout_harness_desc": "Anteprima riservata agli sviluppatori del meccanismo di layout guidato dal posizionamento (renderer + ambito + editor), costruita accanto alla pagina Membri. Disattivata per impostazione predefinita; il meccanismo è ancora in fase di costruzione e non ha ancora un proprio accesso."
   }
 }

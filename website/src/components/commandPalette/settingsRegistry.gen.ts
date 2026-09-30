@@ -1610,8 +1610,8 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "developer.composable-layout",
     "label": "Composable layout",
-    "labelKey": "featurePreviewsTab.layout_harness",
-    "description": "Dev-only preview of the placement-driven layout mechanism (renderer + scope + editor), built beside the Members page. Off by default; the mechanism is still being built and has no door of its own yet.",
+    "labelKey": "pages.developer.featurePreviewsTab.layout_harness",
+    "description": "Turns on an in-development, developer-only harness for a new layout mechanism. Nothing you can see changes yet: the mechanism has no page of its own, so this exists only so it can be built and tested behind a switch.",
     "tab": "developer",
     "type": "toggle",
     "occurrence": 1

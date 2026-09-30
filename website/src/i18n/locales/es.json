@@ -12333,7 +12333,9 @@
         "artifact_deploy_desc": "Publica un artefacto en una URL HTTPS publica de tu propia cuenta de AWS. Desactivado por defecto: cada despliegue gasta dinero en tu cuenta y sirve el contenido en la internet abierta.",
         "open_artifact_deploy": "Abrir Despliegue de artefactos",
         "decisions_nudge_evidence": "Enviar también lo que observa un bucle en espera para que Jev pueda omitir un turno",
-        "decisions_nudge_evidence_desc": "Un bucle que comprueba algo cada pocos minutos despierta al asistente siempre, incluso cuando nada ha cambiado. Esto envía lo que observa — los últimos mensajes del asistente de esas sesiones y el estado de cualquier pull request que nombre — a Jev, y pregunta si esta ronda merece despertar a alguien. Jev solo puede esperar o despertar: nunca puede terminar el bucle, y si va lento o no responde, el bucle despierta como hoy. Las contraseñas y claves se sustituyen antes de enviar nada. Lee las sesiones que el bucle observa, no la que tú tienes abierta."
+        "decisions_nudge_evidence_desc": "Un bucle que comprueba algo cada pocos minutos despierta al asistente siempre, incluso cuando nada ha cambiado. Esto envía lo que observa — los últimos mensajes del asistente de esas sesiones y el estado de cualquier pull request que nombre — a Jev, y pregunta si esta ronda merece despertar a alguien. Jev solo puede esperar o despertar: nunca puede terminar el bucle, y si va lento o no responde, el bucle despierta como hoy. Las contraseñas y claves se sustituyen antes de enviar nada. Lee las sesiones que el bucle observa, no la que tú tienes abierta.",
+        "layout_harness": "Diseño componible",
+        "layout_harness_desc": "Activa un arnés en desarrollo, solo para desarrolladores, de un nuevo mecanismo de diseño. Todavía no cambia nada que puedas ver: el mecanismo no tiene página propia, así que esto existe solo para poder construirlo y probarlo detrás de un interruptor."
       },
       "kiroSignInCard": {
         "title": "Inicio de sesión en Kiro",
@@ -17760,9 +17762,5 @@
     "resolve_explanation": "Conserva el valor actual. Aplicar registra esta decisión y cierra sus propuestas pendientes.",
     "forget_count": "Olvidar recuerdos seleccionados: {{count}}",
     "retry_preview_page": "Reintentar página de vista previa"
-  },
-  "featurePreviewsTab": {
-    "layout_harness": "Diseño componible",
-    "layout_harness_desc": "Vista previa solo para desarrolladores del mecanismo de diseño guiado por colocación (renderizador + ámbito + editor), construida junto a la página de Miembros. Desactivada de forma predeterminada; el mecanismo aún se está construyendo y todavía no tiene una entrada propia."
   }
 }
