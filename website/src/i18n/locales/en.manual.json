@@ -6680,6 +6680,15 @@
         "live_count_unavailable": "The live count for this control is currently unavailable."
       },
       "slackPanel": {
+        "auto_link_sessions": "Connect new sessions to Slack automatically",
+        "auto_link_sessions_desc": "Every new dashboard session gets a Slack thread on its first message. The thread opens in your private direct message with the bot by default; when this is on, a target picker appears below where you can choose a channel instead. Sessions started by cron, apps or sub-agents, sessions that began in Slack or another messaging app, and incognito or temporary sessions are left alone.",
+        "auto_link_target": "Auto-connect target",
+        "auto_link_target_desc": "Where the thread opens. Everyone in a channel can read the session's title, first prompt and replies.",
+        "auto_link_target_dm": "Direct message with the bot",
+        "auto_link_target_saved": "Saved channel ({{id}})",
+        "auto_link_target_unknown_help": "This channel is not in the bot's channel list. New sessions still try to open there, so pick a target from the list to be sure where they go.",
+        "auto_link_channels_load_failed": "Could not load the channels the bot can post in. The direct message and the saved target are still offered.",
+        "auto_link_channels_retry": "Retry",
         "create_the_slack_app_from_the_manifest": "Create the Slack app from the pre-filled manifest below (Socket Mode and permissions\n            included, named KiroCrew-{{alias}}). Install it to your\n            workspace, then paste the bot token and app-level token here.",
         "connected": "Connected",
         "copy_manifest_yaml": "Copy manifest YAML",

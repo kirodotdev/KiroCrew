@@ -24,6 +24,10 @@ export interface SlackConfigData {
   show_thinking: boolean
   /** Sidebar folder this channel's sessions are filed into ("" = off, the default). */
   session_folder?: string
+  /** Open a Slack thread for every new dashboard session on its first message. */
+  auto_link_sessions?: boolean
+  /** Where that thread opens: "" = the owner's bot DM, else a channel ID. */
+  auto_link_channel?: string
 }
 
 /** Writable Slack config fields sent to PUT /api/slack/config. */
@@ -39,6 +43,10 @@ export interface SlackConfigSave {
   show_thinking: boolean
   /** Sidebar folder this channel's sessions are filed into ("" = off, the default). */
   session_folder?: string
+  /** Open a Slack thread for every new dashboard session on its first message. */
+  auto_link_sessions?: boolean
+  /** Where that thread opens: "" = the owner's bot DM, else a channel ID. */
+  auto_link_channel?: string
 }
 
 /** Discord config as returned by GET /api/discord/config (secret masked). */

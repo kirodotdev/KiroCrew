@@ -3,7 +3,7 @@ import { useImeGuard } from '../../hooks/useImeGuard'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { ExternalLink, Check, AlertTriangle, Plus, X, Lock } from 'lucide-react'
 import { SlackIcon } from '../../components/SlackIcon'
-import { SettingsSection, SettingsCard, SettingsInput, SettingsToggle } from '../../components/settings'
+import { SettingsSection, SettingsCard, SettingsInput, SettingsSelect, SettingsToggle } from '../../components/settings'
 import { SecretField } from '../../components/SecretField'
 import { Input, Btn } from '../../components/ui'
 import { api, type SlackConfigData, type SlackConfigSave } from '../../api/client'
@@ -27,6 +27,10 @@ type Draft = {
   session_folder_on: boolean
   /** Folder name, kept while the toggle is off so turning it back on restores it. */
   session_folder: string
+  /** Open a Slack thread for every new dashboard session on its first message. */
+  auto_link_sessions: boolean
+  /** Where that thread opens: "" = the owner's bot DM, else a channel ID. */
+  auto_link_channel: string
 }
 
 function draftFrom(c: SlackConfigData): Draft {
@@ -40,7 +44,77 @@ function draftFrom(c: SlackConfigData): Draft {
     // means off, so the toggle is derived rather than separately persisted.
     session_folder_on: !!c.session_folder,
     session_folder: c.session_folder ?? '',
+    auto_link_sessions: !!c.auto_link_sessions,
+    auto_link_channel: c.auto_link_channel ?? '',
   }
+}
+
+/** The owner-DM choice in the auto-connect target picker; the backend's off/DM value is "". */
+const AUTO_LINK_DM = 'dm'
+
+/** Channel choices for the auto-connect target: the owner DM first, then every
+ *  channel configured for the bot, from the same endpoint the Connect to Slack
+ *  button reads. Only fetched while the toggle is on, so an install that never
+ *  turns it on never pays the Slack lookup. */
+function AutoLinkTargetSelect({ value, onChange, disabled }: { value: string; onChange: (v: string) => void; disabled: boolean }) {
+  const channelsQ = useQuery<{ id: string; name: string }[]>({
+    queryKey: ['slack-channels'],
+    queryFn: () => api.slackChannels().then(r => (Array.isArray(r) ? r as { id: string; name: string }[] : [])),
+    staleTime: 60_000,
+  })
+  const listed = (channelsQ.data ?? []).filter(c => c.id && c.id !== AUTO_LINK_DM)
+  // A saved channel the list does not name still has to show as the current
+  // choice, or the select would silently render the DM as selected while the
+  // backend keeps posting to the channel. It reads as the saved channel in every
+  // state: the list names the channels configured for the bot, not the ones it
+  // can reach, so being absent from it proves nothing about the channel.
+  const current = value || AUTO_LINK_DM
+  const known = listed.some(c => c.id === current)
+  const options = [AUTO_LINK_DM, ...listed.map(c => c.id), ...(current !== AUTO_LINK_DM && !known ? [current] : [])]
+  const labels = [
+    i18nT('pages.settings.slackPanel.auto_link_target_dm'),
+    ...listed.map(c => `#${c.name}`),
+    ...(current !== AUTO_LINK_DM && !known
+      ? [i18nT('pages.settings.slackPanel.auto_link_target_saved', { id: current })]
+      : []),
+  ]
+  return (
+    <>
+      <SettingsSelect
+        label={i18nT('pages.settings.slackPanel.auto_link_target')}
+        description={i18nT('pages.settings.slackPanel.auto_link_target_desc')}
+        value={current}
+        options={options}
+        optionLabels={labels}
+        onChange={v => onChange(v === AUTO_LINK_DM ? '' : v)}
+        disabled={disabled}
+        configKey="slack.auto_link_channel"
+      />
+      {/* Once the list has loaded, a saved channel it does not name gets a line
+          that says sessions still go there, since who reads the session is the
+          one thing this setting risks. A failed list proves nothing about the
+          channel, and the notice below already says what went wrong. */}
+      {current !== AUTO_LINK_DM && !known && channelsQ.isSuccess && (
+        <div className="text-[12px] text-warn">{i18nT('pages.settings.slackPanel.auto_link_target_unknown_help')}</div>
+      )}
+      {/* No hand-off: the unsaved Slack settings draft stays in the form above,
+          so the notice names the one thing that failed (the channel list) and
+          the picker keeps offering the DM and the stored value meanwhile. Retry
+          refetches in place: the list only loads once the toggle is on, so
+          reopening the page would discard that unsaved flip. */}
+      {channelsQ.isError && (
+        <div className="flex flex-wrap items-center gap-2">
+          <ErrorNotice
+            message={i18nT('pages.settings.slackPanel.auto_link_channels_load_failed')}
+            variant="inline"
+          />
+          <Btn onClick={() => channelsQ.refetch()} disabled={channelsQ.isFetching}>
+            {i18nT('pages.settings.slackPanel.auto_link_channels_retry')}
+          </Btn>
+        </div>
+      )}
+    </>
+  )
 }
 
 /** Status pill mirroring the connection state of the messaging gateway. */
@@ -257,6 +331,8 @@ export function SlackPanel() {
       // Off sends "" (the field's off-state); on with a blank name falls back
       // to "Slack", which is what the toggle's description promises.
       session_folder: draft.session_folder_on ? (draft.session_folder.trim() || CHANNEL_NAME) : '',
+      auto_link_sessions: draft.auto_link_sessions,
+      auto_link_channel: draft.auto_link_channel,
     }
     if (botClear) payload.bot_token_clear = true
     else if (botToken.trim()) payload.bot_token = botToken.trim()
@@ -434,6 +510,29 @@ export function SlackPanel() {
             onChange={v => upd({ show_thinking: v })}
             disabled={ro}
           />
+          {/* Optional auto-connect of every new dashboard session. Off by
+              default: the thread carries the session's title and first prompt
+              to wherever the target points, so turning it on is a choice about
+              who reads that. */}
+          <div className="border-t border-border mt-4 pt-4">
+            <SettingsToggle
+              label={i18nT('pages.settings.slackPanel.auto_link_sessions')}
+              description={i18nT('pages.settings.slackPanel.auto_link_sessions_desc')}
+              checked={draft.auto_link_sessions}
+              onChange={v => upd({ auto_link_sessions: v })}
+              disabled={ro}
+              configKey="slack.auto_link_sessions"
+            />
+            {draft.auto_link_sessions && (
+              <div className="mt-4">
+                <AutoLinkTargetSelect
+                  value={draft.auto_link_channel}
+                  onChange={v => upd({ auto_link_channel: v })}
+                  disabled={ro}
+                />
+              </div>
+            )}
+          </div>
           {/* Optional per-channel session filing. Off by default: Slack
               conversations stay unfiled in the sidebar, as before. */}
           <div className="border-t border-border mt-4 pt-4">

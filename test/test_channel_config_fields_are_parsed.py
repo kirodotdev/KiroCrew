@@ -67,6 +67,9 @@ _NOT_FROM_JSON: dict[tuple[str, str], str] = {
 _ENUM_PROBES: dict[tuple[str, str], str] = {
     ("imessage", "service"): "sms",
     ("telegram", "forum_activation"): "mention",
+    # A Slack conversation ID, which is what the field's coercer accepts; an
+    # arbitrary string fails closed to the owner DM ("").
+    ("slack", "auto_link_channel"): "C0PROBE",
 }
 
 #: Fields whose loader CLAMPS to a range, so the probe has to land inside it. A

@@ -13714,11 +13714,18 @@ async def _run_chat(
         if state.slack_client and not is_slash and not slack_mirror_is_paused(state, session_key):
             _mirror_thread, _mirror_chan = state.sessions.get_slack_link(session_key)
             if _mirror_thread and _mirror_chan:
+                # From this turn on the thread is mirrored live, so a late link's
+                # backfill stops below this turn's opening row -- below the
+                # prompt only once its echo reached the thread, so a failed echo
+                # leaves the prompt owed to the backfill instead of to nobody.
+                _echo_posted = False
                 try:
                     if not _is_synthetic:
                         _mirror_msg = _prepare_mirror_msg(_user_msg_for_mirror)
-                        await state.slack_client.post_message(
-                            _mirror_chan, f"💬 _{_mirror_msg}_", _mirror_thread
+                        _echo_posted = bool(
+                            await state.slack_client.post_message(
+                                _mirror_chan, f"💬 _{_mirror_msg}_", _mirror_thread
+                            )
                         )
                     # Start a stream for real-time tool animations
                     _mirror_stream_ts = (
@@ -13729,6 +13736,7 @@ async def _run_chat(
                     )
                 except Exception:
                     logger.debug("Failed to mirror user message to Slack", exc_info=True)
+                slot.note_slack_live_mirror(_mirror_thread, echoed=_echo_posted)
 
         # Channel-neutral leg: mirror the user message to a linked non-Slack
         # proactive channel (e.g. Telegram) so the remote conversation reads

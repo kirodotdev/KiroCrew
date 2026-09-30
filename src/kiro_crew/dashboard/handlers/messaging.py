@@ -41,6 +41,7 @@ from kiro_crew.config.loader import (
     KiroCrewConfig,
     config_path,
 )
+from kiro_crew.config.sections import SLACK_AUTO_LINK_CHANNEL_RE
 from kiro_crew.constants import CHANNEL_SEND_NAMESPACES, SUBAGENT_COMPLETION_META_KEY
 from kiro_crew.cron import CronStoreBusy, CronStoreUnreadable
 from kiro_crew.dashboard.channel_folders import (
@@ -5638,6 +5639,8 @@ async def api_slack_config_get(request: web.Request) -> web.Response:
             "reactions_enabled": slack.reactions_enabled,
             "show_thinking": slack.show_thinking,
             "session_folder": slack.session_folder,
+            "auto_link_sessions": slack.auto_link_sessions,
+            "auto_link_channel": slack.auto_link_channel,
         }
     )
 
@@ -5776,13 +5779,29 @@ async def _slack_config_save_locked(request: web.Request) -> web.Response:
             staged["allowed_enterprise_ids"] = new_ents
             applied.append("allowed_enterprise_ids")
 
-    for key in ("reactions_enabled", "show_thinking"):
+    for key in ("reactions_enabled", "show_thinking", "auto_link_sessions"):
         if key in body:
             val = body.get(key)
             if not isinstance(val, bool):
                 return _deny(f"{key} must be a boolean")
             staged[key] = val
             applied.append(key)
+
+    if "auto_link_channel" in body:
+        raw_channel = body.get("auto_link_channel")
+        if not isinstance(raw_channel, str):
+            return _deny("auto_link_channel must be a string")
+        channel = raw_channel.strip()
+        # "" and "dm" both mean the owner DM; anything else must be a channel
+        # ID. Refused here rather than coerced, so a pasted "#general" is told
+        # apart from a deliberate DM choice instead of silently becoming one.
+        if channel.lower() == "dm":
+            channel = ""
+        if channel and not SLACK_AUTO_LINK_CHANNEL_RE.fullmatch(channel):
+            return _deny("auto_link_channel must be a Slack channel ID (starts with C or G)")
+        if channel != str(slack_cfg.get("auto_link_channel", "") or ""):
+            staged["auto_link_channel"] = channel
+            applied.append("auto_link_channel")
 
     if "session_folder" in body:
         try:

@@ -4736,7 +4736,9 @@
         "home_tab_sessions_per_kind": 5,
         "sessions_limit": 10,
         "use_tunnel_url": false,
-        "session_folder": ""
+        "session_folder": "",
+        "auto_link_sessions": false,
+        "auto_link_channel": ""
       }
     },
     {
@@ -5055,6 +5057,38 @@
       ],
       "label": "Session Folder",
       "help": "Optional sidebar folder for sessions that start on this channel. Empty (the default) leaves them unfiled; any other value is the folder name, created when these settings are saved and marked with the channel's brand mark. A configured folder that no longer exists leaves conversations unfiled until the next save recreates it.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
+      "path": "slack.auto_link_sessions",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "slack"
+      ],
+      "label": "Connect New Sessions To Slack Automatically",
+      "help": "Open a Slack thread for every new dashboard session on its first message, exactly as the Connect to Slack button does, so you can follow and reply from Slack without clicking the button each time. The thread is created when the first message is sent, not when the tab opens, so an abandoned tab leaves nothing behind. Only sessions a person starts in the dashboard qualify: cron, app, sub-agent, incognito, temporary and channel-born sessions are never connected this way. Off by default because the thread carries the session's title and first prompt to wherever `auto_link_channel` points. Takes effect on the next new session; no restart.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "slack.auto_link_channel",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "slack"
+      ],
+      "label": "Auto-Connect Target Channel",
+      "help": "Where the automatic thread is opened. Empty (the default) uses the owner's DM with the bot, which only the owner can read. A Slack channel ID (starts with C or G) posts the thread in that channel instead, where every member can read the session's title, first prompt and mirrored replies. Ignored while `auto_link_sessions` is off.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""
