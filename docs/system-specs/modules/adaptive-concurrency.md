@@ -376,7 +376,7 @@ the ceiling is never exceeded, a lowered ceiling clamps, `fixed` disables
 adaptation; `TestIdleRecovery`: a cut cap climbs back one step per window to the
 fresh-start value and stops there, an unreported probe resumes once idle and
 clear, demand or a lone soft signal restarts the idle clock, work below the cap
-is not idle, a cap already at the fresh-start value never drifts, and
+is not idle, a gate step on the same sample does not suppress the idle exec step due on it, and every increase names each track it moved (a gate step as its `spawn gate target X -> Y`, never under an exec note), a cap already at the fresh-start value never drifts, and
 `last_cut` names the cut behind a low cap; `Decision.changed` and the snapshot shape. Those cases construct
 their params with slow start OFF, because each one pins a congestion-avoidance
 rule; `TestSlowStart` owns the other regime: doubling per window up to the

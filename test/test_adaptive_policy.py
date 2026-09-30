@@ -758,6 +758,52 @@ class TestIdleRecovery:
         d = pol.observe(_sample(t + 180.0))
         assert d.effective_exec_cap == 3
 
+    def test_a_gate_step_does_not_spend_the_idle_exec_step(self) -> None:
+        pol = AdaptivePolicy(_params(exec_ceiling=9, exec_initial=4, increase_successes=1))
+        t = self._cut_to_the_floor(pol)
+        gate_cap = pol.gate_cap
+        # Exec idle, while backend inits keep the gate busy and earning.
+        busy = SpawnGateStats(capacity=gate_cap, in_flight=gate_cap, queued=2, successes=0)
+        pol.observe(_sample(t + 5.0, spawn_gate=busy))
+        d = pol.observe(_sample(t + 60.0, spawn_gate=replace(busy, successes=5)))
+        assert d.action == ACTION_INCREASE
+        assert d.spawn_gate_capacity == gate_cap + 1
+        assert d.effective_exec_cap == 2  # the due idle step landed on the same sample
+        # Both moves are explained by the one decision that made them.
+        assert "toward the fresh-start cap" in d.reason
+        assert f"spawn gate target {gate_cap} -> {gate_cap + 1} on backend inits" in d.reason
+
+    def test_a_combined_step_reports_the_gate_move_it_made(self) -> None:
+        # Slow start doubles the gate step: the note names the real move.
+        pol = AdaptivePolicy(
+            _params(exec_ceiling=9, exec_initial=4, slow_start=True, increase_successes=1)
+        )
+        pol.observe(_sample(0.0))
+        # A lowered then raised ceiling leaves the cap below the fresh-start
+        # value without any pressure, so slow start is still on.
+        pol.update_params(replace(pol.params, exec_ceiling=1))
+        pol.update_params(replace(pol.params, exec_ceiling=9))
+        assert pol.exec_cap == 1 and pol.slow_start
+        busy = SpawnGateStats(capacity=4, in_flight=4, queued=2, successes=5)
+        d = pol.observe(_sample(60.0, spawn_gate=busy))
+        assert d.effective_exec_cap == 2 and d.spawn_gate_capacity == 8
+        assert "spawn gate target 4 -> 8 on backend inits" in d.reason
+
+    def test_every_gate_step_names_itself_and_only_itself(self) -> None:
+        # Gate-only: the reason carries the gate note and no exec note.
+        pol = AdaptivePolicy(_params(exec_ceiling=4, exec_initial=4, increase_successes=1))
+        pol.observe(_sample(0.0))
+        busy = SpawnGateStats(capacity=4, in_flight=4, queued=2, successes=5)
+        d = pol.observe(_sample(31.0, spawn_gate=busy))
+        assert d.action == ACTION_INCREASE and d.effective_exec_cap == 4
+        assert d.reason == "spawn gate target 4 -> 5 on backend inits"
+        # Earned exec step and gate step together: both notes.
+        pol = AdaptivePolicy(_params(exec_ceiling=9, exec_initial=4, increase_successes=1))
+        pol.observe(_sample(0.0))
+        d = pol.observe(_sample(31.0, running=4, queued=2, completions=5, spawn_gate=busy))
+        assert d.effective_exec_cap == 5 and d.spawn_gate_capacity == 5
+        assert d.reason == "clean window earned +1; spawn gate target 4 -> 5 on backend inits"
+
     def test_work_below_the_cap_is_not_idle(self) -> None:
         pol = AdaptivePolicy(_params(exec_ceiling=9, exec_initial=4))
         pol.observe(_sample(0.0, loop_lag_ms=400.0, running=4))

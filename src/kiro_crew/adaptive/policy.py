@@ -590,7 +590,10 @@ class AdaptivePolicy:
             )
             self._exec_success_base = sample.completions
             changed = True
+        exec_changed = changed
 
+        gate_changed = False
+        gate_before = self._gate_cap
         gate = sample.spawn_gate
         gate_successes = gate.successes - self._gate_success_base
         gate_demand = gate.queued > 0 or gate.in_flight >= self._gate_cap
@@ -602,9 +605,13 @@ class AdaptivePolicy:
             self._gate_cap = self._step_up(self._gate_cap, p.gate_ceiling)
             self._gate_success_base = gate.successes
             changed = True
+            gate_changed = True
 
+        # Judged on the EXEC track alone: a gate step on THIS sample must not
+        # suppress an idle exec step due on it. (Both tracks still share one
+        # increase-per-window clock across samples, as the earn rules do.)
         idle_step = False
-        if not changed and self._exec_cap < min(p.exec_start, exec_target):
+        if not exec_changed and self._exec_cap < min(p.exec_start, exec_target):
             idle_step = self._idle_recovery_due(sample, report)
             if idle_step:
                 self._exec_cap += 1
@@ -614,17 +621,25 @@ class AdaptivePolicy:
         if not changed:
             return self._emit(ACTION_HOLD, self._hold_reason(sample, exec_successes), report)
         self._last_increase_at = now
+        # One decision can move both tracks; each move names itself, so the
+        # history never files one track's step under the other's reason. The
+        # gate figure is the policy's TARGET: the daemon confirms (or clamps)
+        # it on apply, and ``recent_decisions`` carries what it confirmed.
+        notes: list[str] = []
         if idle_step:
-            reason = (
+            notes.append(
                 f"idle and clear for {self._idle_for(sample):.0f}s: +1 toward the "
                 f"fresh-start cap {p.exec_start}"
             )
-        elif probed:
-            reason = "fresh progress with host headroom earned one exec probe"
-        elif self._slow_start:
-            reason = f"clean window earned x{p.slow_start_factor} (slow start)"
-        else:
-            reason = "clean window earned +1"
+        elif exec_changed and probed:
+            notes.append("fresh progress with host headroom earned one exec probe")
+        elif exec_changed and self._slow_start:
+            notes.append(f"clean window earned x{p.slow_start_factor} (slow start)")
+        elif exec_changed:
+            notes.append("clean window earned +1")
+        if gate_changed:
+            notes.append(f"spawn gate target {gate_before} -> {self._gate_cap} on backend inits")
+        reason = "; ".join(notes)
         return self._emit(ACTION_INCREASE, reason, report)
 
     def _hold_reason(self, sample: Sample, exec_successes: int) -> str:
