@@ -3716,9 +3716,11 @@ than taking the channel down, and never to a plaintext host — the bearer token
 rides these requests). `webex.wdm_base` PINS a **Webex** host for a restricted network. It is
 suffix-checked against `*.wbx2.com` / `*.webex.com` / `*.ciscospark.com` over
 https and dropped (loudly, falling back to discovery) otherwise, because
-`config.json` is agent-writable by design — `security.py` deliberately does not
-over-block it — and the bot token rides device registration, so a value from a
-prompt-injected `config set` would otherwise POST the token wherever it named. An
+`config.json` is an ordinary settings file — the sandbox seals it read-only against
+an in-sandbox agent shell, but `security.py` deliberately does not over-block it
+for the operator's own writers — and the bot token rides device registration, so a
+value from a mistaken or coerced `config set` would otherwise POST the token
+wherever it named. An
 outbound proxy belongs in `HTTPS_PROXY`, which the client honours separately. The
 same suffix rule is applied to the catalog's own `serviceLinks.wdm` as defence in
 depth. Otherwise:

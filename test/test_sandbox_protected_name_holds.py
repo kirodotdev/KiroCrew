@@ -291,7 +291,7 @@ class TestLeafOnlyPopulationIsRecorded:
     #: home it protects (the two ``$HOME``-joined ``_CREW_HOME_PREFIXES`` plus
     #: the resolved ``config_dir()`` when it is a third place, as the relocated
     #: ``KIROCREW_HOME`` the conftest pins always is), so one new root-level
-    #: leaf is three entries in every tier. Four landed after the first
+    #: leaf is three entries in every tier. Six landed after the first
     #: measurement, all at the data-home root, whose parent no stand-in can
     #: hold, so leaf-only is the only hold available to them:
     #:
@@ -308,13 +308,16 @@ class TestLeafOnlyPopulationIsRecorded:
     #:   stays sandbox read-write for SEL and would leave the record forgeable by
     #:   a runtime-built path. Same hold as those two, and the same reason it can
     #:   only be leaf-only.
+    #: * ``config.json`` / ``config.local.json`` -- the owner's settings files,
+    #:   sealed read-only so an agent cannot loosen its own settings. Both sit
+    #:   at the data-home root, so two leaves are six entries per tier.
     #:
     #: Two directories hold what the MCP gateway launches outside the sandbox,
     #: six entries per tier. ``mcp-launch-approvals`` holds the owner's approved
     #: launch fingerprints; ``mcp/resolved`` holds executables substituted for an
     #: approved launch. Each sits beside writable siblings, so no parent stand-in
     #: can hold it.
-    EXPECTED: dict[str, int] = {"standard": 253, "cc": 260, "strict": 261}
+    EXPECTED: dict[str, int] = {"standard": 259, "cc": 266, "strict": 267}
 
     @pytest.mark.parametrize("tier", TIERS)
     def test_leaf_only_count_has_not_grown(self, tier: str) -> None:

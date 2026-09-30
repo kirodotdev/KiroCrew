@@ -680,9 +680,10 @@ The **operator** WARNING log names every auto-approve rung that would have let t
 spawn through (`approval_mode="auto"`, parent-session **Trust**,
 `hooks.auto_approve_subagent_spawn`, `hooks.auto_approve_sources`). The
 **agent-facing** `info.error` names none of them: two of those rungs are
-`config.json` edits, and `config.json` is writable by any auto-approved agent
-shell, so a bypass recipe in the completion event would hand an unattended or
-prompt-injected agent the steps to remove its own gate. The agent error stays
+`config.json` edits — the sandbox seals that file read-only against an in-sandbox
+agent shell, but a bypass recipe in the completion event would still hand an
+unattended or prompt-injected agent the exact edit to ask the operator for, or to
+make from an unsandboxed spawn, that removes its own gate. The agent error stays
 terse ("ask the operator to open the dashboard and spawn again, or to enable spawn
 auto-approval"). Because the channel hook and the Slack/dashboard gate own the
 "which surface was missing" half while the backstop owns the rung list, the

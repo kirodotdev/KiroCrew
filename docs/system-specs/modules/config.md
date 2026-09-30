@@ -1960,8 +1960,10 @@ Consequences, and they are the point:
   silently-inert bug this design exists to kill, now with the settings UI
   affirming that the value took effect.
 - **A reload that can widen approvals is audited.** `HookManager` follows
-  `hooks.*` live, and `config.json` is writable by an auto-approved agent shell,
-  so its applier SEL-logs an `auto_approve_tools` / `auto_approve_sources` /
+  `hooks.*` live, and `config.json` — sealed read-only against an in-sandbox agent
+  shell — is still written by every settings surface outside the seal (the config
+  PATCH, the operator CLI, an unsandboxed spawn), so its applier SEL-logs an
+  `auto_approve_tools` / `auto_approve_sources` /
   `auto_approve_subagent_*` change (`hook_manager.reconfigure`,
   `auto_approve_changed`, counts and flag names only) the way the channel
   transports audit an allow-list reload. Governance still caps the resulting
@@ -2368,8 +2370,8 @@ to a closed vocabulary is not user-authored text, and masking it would break the
 reaction while destroying nothing an attacker could have put there.
 
 Anything else — a non-dict, an unknown `kind`, a ghost override carrying no
-trait, motion or sound that survives validation — collapses to `{}` on load (config.json is hand-editable and
-agent-writable, so junk must never crash the load), while the endpoints answer a
+trait, motion or sound that survives validation — collapses to `{}` on load (config.json is hand-editable,
+so junk must never crash the load), while the endpoints answer a
 non-empty raw value the coercer collapses with 400 `invalid_avatar` — except a
 well-formed ghost override whose traits all coerce to absent, which is the
 validator's own all-empty → reset rule rather than caller junk and so stores as
@@ -2438,10 +2440,12 @@ Consent to send message text and skill descriptions to Jev lives **outside
 
 `endpoint` is the `provider.endpoint` the owner consented to; the gate sends only
 while the configured endpoint still equals it, because that field is in this
-agent-writable file too. Same reasoning as `computer_use.json` above: `config.json` is a `VISIBLE` leaf the
-agent's shell can write, and every `decisions.*` field is hot-applied by the live
-watcher, so an `enabled` toggle here would let a prompt-injected agent start the
-egress of its own conversation without a restart. Reads fail soft to `{}` → **not
+same settings file. Same reasoning as `computer_use.json` above: `config.json` is
+sealed read-only against an in-sandbox agent shell (`sandbox._CREW_READONLY_LEAVES`;
+see security.md) but remains an ordinary settings file every config writer reaches
+without an owner gate, and every `decisions.*` field is hot-applied by the live
+watcher, so an `enabled` toggle here would be one settings edit away from starting
+the egress of the owner's conversation without a restart. Reads fail soft to `{}` → **not
 consented**, and only a literal `true` consents. The only writer is the owner-only,
 browser-called `PUT /api/decisions/consent` (`dashboard/handlers/decisions.py`);
 `PATCH /api/config/kirocrew` refuses `decisions.enabled`, and an `enabled` key written

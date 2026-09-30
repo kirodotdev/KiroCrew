@@ -919,10 +919,12 @@ The grant is stored PER ACCOUNT as `sessionsIncludeLayerB` in the app's state
 document, `backup.json`, which sits inside the `apps/aws-control/data` directory
 registered in `security._CREW_SECRET_LEAVES` -- the read+write keystone floor,
 beside the `nightly` bit. It is deliberately NOT a `config.json` key.
-`config.json` is writable by any auto-approved agent shell, so a permission
-honoured from there is one a prompt-injected agent can grant itself, and an
-unredacted archive already in a bucket cannot be recalled; an authorization whose
-subject can write it is not an authorization. The sole writer is the owner-gated
+`config.json` is an ordinary settings file: the sandbox seals it read-only against
+an in-sandbox agent shell, but every general settings writer (the config PATCH,
+`kirocrew config set`) still reaches it without an owner gate, so a permission
+honoured from there is one settings edit away from being granted by something other
+than the owner, and an unredacted archive already in a bucket cannot be recalled;
+an authorization that lives beside ordinary settings is not an authorization. The sole writer is the owner-gated
 `POST /api/apps/aws-control/backup/{account}/layer-b`, which opens the state file
 directly rather than through the agent file gate. The grant is per account
 because the risk it prices is the destination bucket, so granting it for one
