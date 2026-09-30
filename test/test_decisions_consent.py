@@ -1663,16 +1663,20 @@ class TestPointProjection:
         """
         from kiro_crew.dashboard.handlers.decisions import api_decisions_consent_get
 
-        # The judge is the one point with TWO lanes, and only its Jev lane answers to a
-        # scope. Left on the default ``auto`` it lands on the small model when Jev is
-        # unarmed, so a keystone recording no scope leaves the row reporting something
-        # other than ``needs_scope`` and the sweep below would have to subtract it out.
+        # The judge is the point whose Jev lane answers to a scope. Left on the default
+        # ``auto`` it lands on the small model when Jev is unarmed, so a keystone
+        # recording no scope leaves the row reporting something other than
+        # ``needs_scope`` and the sweep below would have to subtract it out.
         # Subtracting is how a universal assertion stops being universal: the next
         # point somebody scopes inherits the exemption silently. Pinning the lane that
         # the scope governs makes the judge answer the same question every other row
         # answers, and its small-model lane is asserted in ``test_decisions_judge_llm``.
+        # ``model.route`` reads the same patched section and lands on Jev too, which
+        # under consent is ``active`` -- the row this test already asserts.
         monkeypatch.setattr(
-            _gate_module(), "_judge_config", lambda config=None: SimpleNamespace(provider="jev")
+            _gate_module(),
+            "_lane_config",
+            lambda config=None, point=None: SimpleNamespace(provider="jev"),
         )
 
         async def _get():
@@ -1720,6 +1724,54 @@ class TestPointProjection:
         )
         rows = json.loads((await mod.api_decisions_consent_get(_request())).text)["points"]
         assert {r["status"] for r in rows} == {"off"}
+
+    @pytest.mark.asyncio
+    async def test_model_route_llm_uses_the_hosted_ceiling_with_a_local_preset(
+        self,
+        keystone,
+        audit,
+        configured,
+        monkeypatch,
+        ceiling,
+        governance_rows,
+    ):
+        from kiro_crew.dashboard.handlers import decisions as mod
+
+        gate = _gate_module()
+        endpoint = "http://127.0.0.1:8102/v1/systemone"
+        configured(endpoint)
+        monkeypatch.setattr(gate, "configured_provider_model", lambda config=None: "plumb-4b")
+        monkeypatch.setattr(
+            gate,
+            "_lane_config",
+            lambda config=None, point=None: SimpleNamespace(provider="llm"),
+        )
+        monkeypatch.setattr(mod, "_llm_lane_available", lambda: True)
+        ceiling(
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "capabilities": {
+                    "decisions": {"enabled": True},
+                    "decisions_local": {"enabled": False},
+                },
+            }
+        )
+        keystone.write_text(
+            json.dumps({"enabled": True, "endpoint": endpoint}),
+            encoding="utf-8",
+        )
+
+        rows = json.loads((await mod.api_decisions_consent_get(_request())).text)["points"]
+        by_id = {row["id"]: row for row in rows}
+
+        assert by_id[gate.ROUTE_POINT]["lane"] == gate.LANE_LLM
+        assert by_id[gate.ROUTE_POINT]["status"] == "active"
+        assert by_id["skills.select"]["status"] == "off"
+        assert [(row["scope"], row["outcome"]) for row in governance_rows] == [
+            ("capabilities.decisions", "allowed"),
+            ("capabilities.decisions_local", "denied"),
+        ]
 
 
 class TestScopeOnlyWrite:

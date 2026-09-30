@@ -680,6 +680,41 @@ def provider_backend(provider: Any) -> str:
     return ""
 
 
+def known_backend(obj: Any) -> str | None:
+    """The ACP backend id *obj* runs on, ``None`` when it cannot be read.
+
+    Unlike :func:`provider_backend`, this keeps the kiro-cli id (``""``,
+    ``ACP_BACKEND_KIRO``) apart from "unknown", so a caller that must match two
+    backends can tell a default install from an object with no backend at all.
+    Read on the object, on its wrapped client (:func:`pick_epoch_host`), then on a
+    handle's ``provider``; the first value that is a ``str`` wins.
+    """
+
+    def _read(target: Any) -> str | None:
+        for attr in ("acp_backend", "backend"):
+            try:
+                val = getattr(target, attr, None)
+            except Exception:  # pragma: no cover - exotic property getters
+                val = None
+            if isinstance(val, str):
+                return val
+        return None
+
+    val = _read(obj)
+    if val is None:
+        val = _read(pick_epoch_host(obj))
+    if val is None:
+        try:
+            provider = getattr(obj, "provider", None)
+        except Exception:  # pragma: no cover - exotic property getters
+            provider = None
+        if provider is not None and not callable(provider):
+            val = _read(provider)
+            if val is None:
+                val = _read(pick_epoch_host(provider))
+    return val
+
+
 def provider_active_model(provider: Any) -> str:
     """The model currently serving the provider's session, ``""`` if unknown."""
     for attr in ("served_model", "_model"):

@@ -278,7 +278,9 @@ class DashboardState:
             from kiro_crew.decisions import impl_llm
 
             impl_llm.set_runner_factory(
-                lambda model: impl_llm.build_session_runner(sessions, model=model)
+                lambda model, source: impl_llm.build_session_runner(
+                    sessions, model=model, source=source
+                )
             )
         except Exception:
             logger.debug("decisions: LLM lane runner not registered", exc_info=True)

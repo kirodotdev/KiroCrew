@@ -257,6 +257,7 @@ from kiro_crew.config.sections_decisions import (  # noqa: F401
     JUDGE_PROVIDERS,
     DecisionProviderConfig,
     DecisionsConfig,
+    ModelRouteJudgeConfig,
     NudgeWakeConfig,
     coerce_model_route,
 )

@@ -208,6 +208,28 @@ def _judge_lane(jev_armed: bool) -> str:
         return _gate.LANE_JEV
 
 
+def _route_lane(jev_armed: bool) -> str | None:
+    """Which lane ``model.route`` RUNS on, or ``None`` when neither does. Never raises.
+
+    ``gate.route_lane`` owns the rule, and it is deliberately narrower than the
+    judge's: under ``auto`` with no consent the judge lands on the small model,
+    because a loop whose owner wrote a brief has authorized that; a chat slot on
+    ``auto`` with no consent has no such act behind it, and the gate routes nothing
+    for it. The row says what runs, so it reads the same helper the chat runner
+    does. ``None`` means neither lane runs, which the caller reports as ``off``.
+
+    Anything unreadable resolves to ``None``: a config this handler could not parse
+    must not be what reports a key-free judge nobody configured.
+    """
+    from kiro_crew.decisions import gate as _gate
+
+    try:
+        return _gate.route_lane(jev_consented=jev_armed)
+    except Exception:
+        logger.debug("decisions: route lane unreadable; reporting the row off")
+        return None
+
+
 def _llm_lane_available() -> bool:
     """Whether the judge's small-model lane could answer at all. Never raises.
 
@@ -226,7 +248,13 @@ def _llm_lane_available() -> bool:
         return False
 
 
-def _points(state: dict, *, permits: bool, denied: bool = False) -> list[dict]:
+def _points(
+    state: dict,
+    *,
+    permits: bool,
+    denied: bool = False,
+    hosted_denied: bool | None = None,
+) -> list[dict]:
     """One row per decision point this build ships, for the card's overview list.
 
     Projected from the seam's own registry (``gate.DECISION_POINT_NAMES``,
@@ -241,8 +269,10 @@ def _points(state: dict, *, permits: bool, denied: bool = False) -> list[dict]:
     so the row and the gate cannot report different answers for one point. It is
     never a switch position -- ``off`` is every reason nothing would be sent.
 
-    *permits* is the effective "anything is sent at all" answer, governance denial
-    already folded in, so this function performs no probe of its own.
+    *permits* is the effective Jev answer, with the configured provider's
+    governance denial folded in. *hosted_denied* is the hosted ceiling on its own,
+    which is the ceiling an LLM lane answers to. This function performs no probe of
+    its own.
 
     The SAMPLED SHARE is folded in on the same terms. ``decisions.bucket`` at 0 means
     no session's key falls inside the sample, so every point is asked for nobody and
@@ -253,18 +283,25 @@ def _points(state: dict, *, permits: bool, denied: bool = False) -> list[dict]:
     zero is one of them; the share itself is on screen in the shared block, so a reader
     who sees every row off has the reason one glance away.
 
-    ONE point is not read off the keystone: the judge has two providers, and its row
-    has to name the lane that would actually run. ``llm`` reaches the model provider
-    the owner's sessions already use, so that row needs neither the endpoint consent
-    nor this point's scope -- only a lane that can answer, which means a registered
-    runner. ``auto`` resolves to that same lane whenever Jev is not armed, so it is
-    ``active`` on either lane being able to answer. An explicitly pinned ``jev`` is
-    judged on the keystone AND this point's own scope, fail-closed the way the gate
-    reads it: a point with no registered scope has no grant to run that lane on. The
-    sampled share binds all three.
+    TWO points are not read off the keystone alone, because each has two providers and
+    its row has to name the lane that would actually run. For the judge: ``llm``
+    reaches the model provider the owner's sessions already use, so that row needs
+    neither the endpoint consent nor this point's scope -- only a lane that can
+    answer, which means a registered runner. ``auto`` resolves to that same lane
+    whenever Jev is not armed, so it is ``active`` on either lane being able to
+    answer. An explicitly pinned ``jev`` is judged on the keystone AND this point's
+    own scope, fail-closed the way the gate reads it: a point with no registered
+    scope has no grant to run that lane on. For ``model.route`` the small-model lane
+    runs only when the owner PINNED it AND the keystone is switched on (``auto`` with
+    no consent routes nothing for a slot nobody armed at the picker), and the Jev
+    lane on the keystone alone, since the point has no scope of its own. The sampled
+    share binds every lane of both.
     """
     from kiro_crew.decisions import consent
     from kiro_crew.decisions import gate as _gate
+
+    if hosted_denied is None:
+        hosted_denied = denied
 
     # Read per SCOPE rather than per point, and only for the scopes this build
     # actually has: a point's row says whether ITS OWN consent is recorded, so a
@@ -280,6 +317,10 @@ def _points(state: dict, *, permits: bool, denied: bool = False) -> list[dict]:
     sampled = _sampling_admits_anybody()
     rows: list[dict] = []
     for name in _gate.DECISION_POINT_NAMES:
+        # The lane a two-lane row would run on; ``None`` on every one-lane row and on a
+        # route row that runs nothing, so the field below is written only where it means
+        # something.
+        lane: str | None = None
         # From the gate's own scope map, so a point that gains a scope is listed with
         # it and needs no edit here or in the card.
         scope = _gate.POINT_SCOPE_KEYS.get(name)
@@ -316,7 +357,7 @@ def _points(state: dict, *, permits: bool, denied: bool = False) -> list[dict]:
             # calling the judge active under that pin would describe a judge that
             # cannot answer. ``permits`` already carries the denial, but only together
             # with consent, and this lane needs the denial WITHOUT the consent.
-            if not sampled or denied:
+            if not sampled or hosted_denied:
                 status = _POINT_OFF
             elif lane == _gate.LANE_LLM:
                 # Judged on its own terms like the Jev lane below: whether this lane can
@@ -335,6 +376,29 @@ def _points(state: dict, *, permits: bool, denied: bool = False) -> list[dict]:
                     status = _POINT_NEEDS_SCOPE
                 else:
                     status = _POINT_OFF
+        elif name == _gate.ROUTE_POINT:
+            # The second two-lane point. Its Jev side needs no scope of its own --
+            # the message excerpt is what the main switch was reviewed for -- so
+            # consent IS the arming. Its small-model lane is armed by the owner
+            # pinning ``provider = llm`` AND the keystone switched on: the pin lives
+            # in ``config.json``, a settings file that is not owner-gated, so the
+            # keystone is read for OWNERSHIP there, not for egress, the way the gate
+            # reads it
+            # (``_LanePoint.llm_needs_keystone``). Under the default ``auto`` with
+            # no consent the gate ROUTES NOTHING for a slot nobody armed at the
+            # picker (a chat turn is not a loop whose owner wrote a brief), so the
+            # row reads ``off`` there rather than naming a lane that would never be
+            # asked. The lane the row carries is the one the chat runner reads, from
+            # the same gate helper, so the word on screen and the oracle that
+            # answers are one read.
+            lane = _route_lane(permits)
+            if not sampled or hosted_denied or lane is None:
+                status = _POINT_OFF
+            elif lane == _gate.LANE_LLM:
+                armed = consent.is_enabled(state) and _llm_lane_available()
+                status = _POINT_ACTIVE if armed else _POINT_OFF
+            else:
+                status = _POINT_ACTIVE
         elif not permits or not sampled:
             status = _POINT_OFF
         elif scope is not None and not granted.get(scope, False):
@@ -352,25 +416,28 @@ def _points(state: dict, *, permits: bool, denied: bool = False) -> list[dict]:
                 # Paths the card prints as a pointer rather than offering a control
             }
         )
-        # On the ONE row that has two of them, so the card's status word can name the
+        # On the rows that have two lanes, so the card's status word can name the
         # lane that would answer instead of re-deriving it from the switch: the card
         # holds no scope reader for a point whose scope this build does not register,
         # so a frontend deriving this would report the Jev lane for an ``auto`` judge
-        # the gate sends to the small model. A field on the single row that has one,
-        # like the pointer sentence below it, rather than a registry a second case
-        # would earn.
-        if name == _gate.JUDGE_POINT:
+        # the gate sends to the small model. The judge always names one; the route
+        # names one only while a lane runs, and an ``off`` row from ``auto`` with
+        # no consent carries none, because no oracle would be asked.
+        if name == _gate.JUDGE_POINT or (name == _gate.ROUTE_POINT and lane is not None):
             rows[-1]["lane"] = lane
     return rows
 
 
-def _payload(state: dict, *, denied: bool) -> dict:
+def _payload(state: dict, *, denied: bool, hosted_denied: bool) -> dict:
     """What both verbs return: the keystone and the endpoint config names now.
 
     *denied* subtracts from ``permits`` rather than appearing as a field of its own:
-    the effective answer is what a caller acts on, and a separate reason field had no
-    reader. It is passed in rather than probed here because the probe is filesystem
-    IO and both callers already have a worker thread to spend it on.
+    the effective Jev answer is what a caller acts on, and a separate reason field
+    had no reader. *hosted_denied* is kept separate for an LLM lane, which uses the
+    owner's session provider and does not answer to a configured local preset's
+    ``capabilities.decisions_local`` ceiling. Both are passed in rather than probed
+    here because the probes are filesystem IO and both callers already have a worker
+    thread to spend them on.
 
     SYNCHRONOUS ON PURPOSE, and both callers reach it through ``asyncio.to_thread``.
     It reads the configured endpoint and the sampled share from ``config.json``, so
@@ -422,19 +489,25 @@ def _payload(state: dict, *, denied: bool) -> dict:
         # rather than on a route of its own because the card reads this payload
         # already and a point's status is a function of the same keystone: a second
         # endpoint would be a second read that could answer differently.
-        "points": _points(state, permits=permits, denied=denied),
+        "points": _points(
+            state,
+            permits=permits,
+            denied=denied,
+            hosted_denied=hosted_denied,
+        ),
     }
 
 
-def _seam_withdrawn() -> bool:
-    """Whether governance withdraws the seam for the provider configured now. Filesystem IO.
+def _seam_denials() -> tuple[bool, bool]:
+    """Return ``(hosted_denied, configured_denied)`` for the configured provider.
 
     A local preset adds ``capabilities.decisions_local`` on top of
-    ``capabilities.decisions``; any other provider reads the hosted row. Derived from the config,
-    never from the request, so a caller cannot pick the more permissive row.
+    ``capabilities.decisions``. The pair keeps the hosted answer available for an
+    LLM lane while evaluating each governance row once.
     """
     from kiro_crew.decisions import gate as _gate
     from kiro_crew.decisions.capability import (
+        denied_sides,
         is_decisions_denied,
         is_local_preset,
         names_local_preset,
@@ -445,7 +518,10 @@ def _seam_withdrawn() -> bool:
     # unattested preset shape answers under both rows too, as on the send path, and
     # the local evaluation already holds the hosted row's deny.
     local = is_local_preset(endpoint, model, serving=False) or names_local_preset(endpoint, model)
-    return is_decisions_denied(local=local)
+    if local:
+        return denied_sides()
+    hosted_denied = is_decisions_denied()
+    return hosted_denied, hosted_denied
 
 
 async def api_decisions_consent_get(request: web.Request) -> web.Response:
@@ -459,8 +535,13 @@ async def api_decisions_consent_get(request: web.Request) -> web.Response:
     # Off the loop for the same reason as the keystone read: profile resolution may
     # read from disk. Audited by the probe itself. Named ``withdrawn`` because
     # ``denied`` above is the owner gate's refusal, a different decision.
-    withdrawn = await asyncio.to_thread(_seam_withdrawn)
-    payload = await asyncio.to_thread(_payload, state, denied=withdrawn)
+    hosted_withdrawn, withdrawn = await asyncio.to_thread(_seam_denials)
+    payload = await asyncio.to_thread(
+        _payload,
+        state,
+        denied=withdrawn,
+        hosted_denied=hosted_withdrawn,
+    )
     # Read audited too: WHO learned whether the owner's messages leave the machine
     # is itself a fact an auditor needs, and it pairs with the denied-read row so
     # the log shows every read of the switch, not only the refused ones.
@@ -734,7 +815,7 @@ async def api_decisions_consent_put(request: web.Request) -> web.Response:
     # ONE probe for this request, resolved before the branch so the refusal below
     # and the ``permits`` value in the response cannot disagree. Off the loop:
     # profile resolution may read from disk.
-    withdrawn = await asyncio.to_thread(_seam_withdrawn)
+    hosted_withdrawn, withdrawn = await asyncio.to_thread(_seam_denials)
     # What the fleet ceiling is held against is whether this write GRANTS something:
     # consent itself, or an egress scope. Only a grant is gated -- a disabling or
     # revoking PUT stays available so an owner can clear a record written before the pin
@@ -893,17 +974,26 @@ async def api_decisions_consent_put(request: web.Request) -> web.Response:
             f"nudge_evidence={consent.consented_nudge_evidence(state)}"
         ),
     )
-    return web.json_response(await asyncio.to_thread(_payload, state, denied=withdrawn))
+    return web.json_response(
+        await asyncio.to_thread(
+            _payload,
+            state,
+            denied=withdrawn,
+            hosted_denied=hosted_withdrawn,
+        )
+    )
 
 
 async def api_decisions_feedback(request: web.Request) -> web.Response:
     """POST /api/decisions/feedback -- record one verdict about one turn.
 
-    Body: ``{"turn_id": str, "verdict": "right"|"wrong"|null, "side": "jev"|"baseline"}``.
-    ``verdict: null`` is a real value and means the person TOOK BACK an earlier
-    verdict, which the log has to be able to say; ``side`` names which of the two
-    answers the verdict is about and is required for every verdict, including a
-    cleared one, because a row that names no side names no decision.
+    Body: ``{"turn_id": str, "verdict": "right"|"wrong"|null, "side":
+    "jev"|"baseline"|"llm"}``. ``verdict: null`` is a real value and means the
+    person TOOK BACK an earlier verdict, which the log has to be able to say;
+    ``side`` names which answer the verdict is about (``llm`` is the small-model
+    lane's answer on ``model.route``, judged apart from Jev's) and is required for
+    every verdict, including a cleared one, because a row that names no side
+    names no decision.
 
     Writes exactly one APPENDED row and never touches an existing one. A verdict
     is a second event about the turn, not a correction of the row that recorded
@@ -982,7 +1072,7 @@ async def api_decisions_feedback(request: web.Request) -> web.Response:
             {
                 "error": (
                     'body must be {"turn_id": str, "verdict": "right"|"wrong"|null, '
-                    '"side": "jev"|"baseline"}'
+                    '"side": "jev"|"baseline"|"llm"}'
                 ),
                 "code": _CODE_FEEDBACK_INVALID_BODY,
             },

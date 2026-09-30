@@ -1109,6 +1109,13 @@
       "description": "Kept in this dashboard's secret store on the machine that runs Kiro Crew, never in config.json, and never shown again once you save it."
     },
     {
+      "id": "developer.model-for-rating-turns",
+      "label": "Model for rating turns",
+      "tab": "developer",
+      "route": "/settings/developer/feature-previews?highlight=developer.model-for-rating-turns",
+      "description": "Only used when the small model rates turns. Leave the default, the judge agent's own model, unless you want a cheaper one."
+    },
+    {
       "id": "developer.model-for-the-small-model-judge",
       "label": "Model for the small-model judge",
       "tab": "developer",
@@ -1162,6 +1169,13 @@
       "label": "Which judge answers",
       "tab": "developer",
       "route": "/settings/developer/feature-previews?highlight=developer.which-judge-answers"
+    },
+    {
+      "id": "developer.which-judge-rates-the-turn",
+      "label": "Which judge rates the turn",
+      "tab": "developer",
+      "route": "/settings/developer/feature-previews?highlight=developer.which-judge-rates-the-turn",
+      "description": "Jev sends the message to the address shown at the top of this card; the small model sends it to the model provider this machine already uses."
     },
     {
       "id": "display.command-completion",

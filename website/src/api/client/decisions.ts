@@ -79,8 +79,13 @@ export interface DecisionPointData {
   status: string
 }
 
-/** Which side of a logged decision a reader's verdict is about. */
-export type DecisionFeedbackSide = 'jev' | 'baseline'
+/**
+ * Which side of a logged decision a reader's verdict is about. `jev` and
+ * `baseline` are the two arms of a compared decision; `llm` is the small-model
+ * lane's answer on `model.route`, filed apart from Jev's because it rates a
+ * different judge.
+ */
+export type DecisionFeedbackSide = 'jev' | 'baseline' | 'llm'
 
 /** A reader's verdict on one side. `null` retracts an earlier one. */
 export type DecisionVerdictValue = 'right' | 'wrong' | null

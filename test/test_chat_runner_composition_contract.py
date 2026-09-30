@@ -205,7 +205,7 @@ _BASE_NAMES = frozenset("""
         _flush_file_changes _flush_segment _folder_steering_turn _gateway_shutdown_requested
         _get_skills _handle_goal_command _handle_workflow_command _has_user_queued_followup
         _is_bedrock_profile_id _is_pre_spawn_refusal _is_safe_oauth_url _is_turn_inject
-        _jev_current_window _jev_downgrade_refused _jev_preview_on _jev_route_armed
+        _jev_current_window _jev_downgrade_refused _jev_route_armed
         _jev_route_baseline _jev_route_premise_moved
         _launch_synthesis _line_change_input _link_principal
         _list_aim_prompts _local_turn_generation_for _local_turn_opening_row

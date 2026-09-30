@@ -590,7 +590,6 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         ),
         ("_JEV_ROUTE_AUTO_MODELS", "value", "tuple"),
         ("_jev_route_armed", "function", "(slot: 'Any') -> 'bool'"),
-        ("_jev_preview_on", "function", "(session_key: 'str') -> 'bool'"),
         ("_JEV_ROUTE_BASELINE_ATTR", "value", "str"),
         ("_JEV_ROUTE_CAPABILITY_STOPS", "value", "frozenset"),
         (

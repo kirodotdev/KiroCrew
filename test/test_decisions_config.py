@@ -45,7 +45,12 @@ class TestDefaults:
         ``model_route`` map may already name -- ids the account advertises -- and it
         sends nothing anywhere: the question it answers is only asked once the
         keystone consents, so it chooses where a consented answer lands and arms
-        nothing."""
+        nothing.
+
+        ``model_route_judge`` is held to it too: two addresses (which lane rates a
+        chat turn, and the model id that lane runs on) and no bound. Its Jev lane
+        needs the keystone switch, its small-model lane routes only a session the
+        owner armed, and what a turn can be routed TO is the tier map above it."""
         from dataclasses import fields
 
         assert {f.name for f in fields(DecisionsConfig)} == {
@@ -53,6 +58,7 @@ class TestDefaults:
             "history_budget_chars",
             "model_route",
             "model_route_derive",
+            "model_route_judge",
             "nudge_wake",
             "provider",
         }
@@ -85,6 +91,10 @@ class TestDefaults:
         assert nested == {
             "provider": {"endpoint", "api_key", "model", "timeout_ms"},
             "nudge_wake": {"provider", "llm_model", "quiet_streak_floor"},
+            # Two addresses and no bound: which lane rates a chat turn, and the model
+            # id that lane runs on. Neither arms anything -- the Jev lane still needs
+            # the keystone switch, and what a turn can be routed TO is the tier map.
+            "model_route_judge": {"provider", "llm_model"},
         }
 
     def test_the_provider_defaults_are_the_documented_ones(self):
@@ -153,6 +163,7 @@ class TestMigrationFromThePreviewSpelling:
             "history_budget_chars",
             "model_route",
             "model_route_derive",
+            "model_route_judge",
             "nudge_wake",
             "provider",
         }

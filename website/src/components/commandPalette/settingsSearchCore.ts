@@ -110,6 +110,8 @@ export const DECISIONS_SETTING_IDS: ReadonlySet<string> = new Set([
   // `settingsSearchGovernance.test.ts` asserts the extractor finds them in that file.
   'developer.which-judge-answers',
   'developer.model-for-the-small-model-judge',
+  'developer.which-judge-rates-the-turn',
+  'developer.model-for-rating-turns',
 ])
 
 /** With `dashboard.tips_enabled` off the rail can drop Discovery, and `sub=discovery`

@@ -248,6 +248,8 @@ _CANNOT_WIDEN_SETTINGS: frozenset[str] = frozenset(
         "decisions.model_route.complex",
         "decisions.model_route.medium",
         "decisions.model_route.simple",
+        "decisions.model_route_judge.llm_model",
+        "decisions.model_route_judge.provider",
         "decisions.nudge_wake.llm_model",
         "decisions.nudge_wake.provider",
         # Only orders *Send a copy to* (the crew it lists first); nothing is
