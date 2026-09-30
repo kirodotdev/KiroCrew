@@ -65,6 +65,7 @@ const {
   READY_PATH,
 } = require("./instance-guard");
 const { getRemoteHostConfig } = require("./host-config");
+const { createTunnelKeeper } = require("./tunnel-keeper");
 const {
   remoteCrewAction,
   remoteCrewDraft,
@@ -290,6 +291,52 @@ function createGatewaySupervisor({
     log: glog,
     getSpawnedExecutablePaths: () => spawnedExecutablePaths,
   });
+  // The SSH forward a client-only launch reaches its crew through, when the
+  // crew opted in. Its PATH is recovered the same way the gateway's is, because
+  // ssh runs the user's ProxyCommand (an SSM helper, typically) by name.
+  const tunnelKeeper = createTunnelKeeper({
+    store,
+    port: PORT,
+    spawn,
+    resolveBin: resolveGatewayBin,
+    // Built per spawn, not here: recovering the launchd PATH shells out, and
+    // a launch whose crew never opted in must not pay for it.
+    getEnv: () => {
+      const { KIROCREW_PORT: _unused, ...tunnelEnv } = processObj.env;
+      const recovered = recoverLaunchdPath(tunnelEnv.PATH || "");
+      return recovered ? { ...tunnelEnv, PATH: recovered.path } : tunnelEnv;
+    },
+    isWindows: IS_WIN,
+    log: glog,
+    setTimeoutFn,
+    clearTimeoutFn,
+  });
+
+  // How long a launch waits for a managed forward to come up before asking the
+  // port. ssh's own connect budget is 15s (DEFAULT_CONNECT_TIMEOUT_SECS on the
+  // Python side); a little over it lets one full attempt land.
+  const TUNNEL_READY_TIMEOUT_MS = 20000;
+  const TUNNEL_READY_POLL_MS = 500;
+
+  /**
+   * Start the managed forward when this port opted in, and give it one connect
+   * budget to answer. Never rejects: a forward that is still down leaves the
+   * ordinary "no gateway is answering" path to explain it, and the keeper goes
+   * on retrying behind that dialog, so Retry works once the crew is back.
+   */
+  async function ensureManagedTunnel() {
+    if (!tunnelKeeper.start()) return;
+    sendStatus("Opening the tunnel to your crew…");
+    // Counted in polls rather than read off the clock, so the injected timer
+    // fully decides how long this waits.
+    for (let waited = 0; waited < TUNNEL_READY_TIMEOUT_MS; waited += TUNNEL_READY_POLL_MS) {
+      try { await checkBackend(); return; }
+      catch { /* not up yet */ }
+      await new Promise((resolve) => setTimeoutFn(resolve, TUNNEL_READY_POLL_MS));
+    }
+    glog(`tunnel: :${PORT} still not answering after ${TUNNEL_READY_TIMEOUT_MS}ms; keeper keeps retrying`);
+  }
+
   const { resolveFamilyConflict } = createFamilyTakeover({
     dialog,
     execFile,
@@ -314,7 +361,7 @@ function createGatewaySupervisor({
     snapshotGatewayPortPids,
     getGatewayProcess: () => gatewayProcess,
   });
-  const { promptRemoteCrew } = createRemoteCrewPrompt({ BrowserWindow, nativeTheme });
+  const { promptRemoteCrew } = createRemoteCrewPrompt({ BrowserWindow, nativeTheme, isWindows: IS_WIN });
 
   /**
    * May the failure dialog offer "Start Local Gateway"?
@@ -917,7 +964,8 @@ function createGatewaySupervisor({
         resolve(false);
       };
 
-      checkBackend()
+      ensureManagedTunnel()
+        .then(() => checkBackend())
         .then(async () => {
           const outcome = await resolveGatewayConflict();
           if (outcome === "reuse") { resolve(true); return; }
@@ -1224,6 +1272,7 @@ function createGatewaySupervisor({
   }
 
   function stopGatewayOnQuit() {
+    tunnelKeeper.stop();
     stopGatewayGracefully()
       .catch((error) => console.error("Gateway stop failed:", error?.message));
   }
@@ -2276,6 +2325,12 @@ function createGatewaySupervisor({
     probePrimaryPortOwner,
     stopGracefully: stopGatewayGracefully,
     stopOnQuit: stopGatewayOnQuit,
+    // After sleep the old forward can look alive while carrying nothing, so a
+    // wake rebuilds it at once instead of waiting out ssh's keepalive.
+    reopenTunnel: () => tunnelKeeper.restart(),
+    // A remote-crew edit re-applies the launch port's tunnel choice at once:
+    // start, replace (new host or port) or stop the forward to match it.
+    syncTunnel: () => tunnelKeeper.start(),
     onInstallDispatched,
     onInstallFailed,
   });

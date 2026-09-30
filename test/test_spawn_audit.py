@@ -1431,6 +1431,10 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "instances/ssh_tunnel_manager.py::start",
         "instances/token_mint.py::mint_remote_token",
         "instances/token_mint.py::run_remote_kirocrew",
+        # NOT a subprocess spawn: the AST heuristic matches ``asyncio.run`` in the
+        # desktop tunnel keeper's CLI entry point. The only child it creates is the
+        # forward ``_SshTunnel.start`` spawns, listed just above.
+        "instances/tunnel_keeper.py::run",
         # The iMessage bridge child (`<cli_path> rpc [--db-path <p>]`). Fixed
         # list-argv, no shell: both paths come from the operator's own
         # `config.json` `imessage` section, which the settings API writes only

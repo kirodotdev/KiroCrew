@@ -307,6 +307,19 @@ delay the bind past the desktop app's gateway-wait window. A failed revive leave
 `was_connected` true and records the failure reason, so the entry persists showing
 why it is down.
 
+**The same supervisor without a gateway: `kirocrew desktop tunnel`.** The desktop
+app's client-only mode runs no local gateway, so nothing above is running there,
+yet its window reaches a remote crew through exactly this kind of forward.
+`instances/tunnel_keeper.py` runs `_SshTunnel` (readiness wait, zombie probe, exit
+classification) and `_recover_backoff_secs` on their own, for one fixed port pair,
+and the desktop app spawns it when a crew's `remoteHosts` entry carries
+`manageTunnel: true`. It deliberately takes none of the manager's registry, token
+minting or hop leases: the app fetches its own token over SSH. A connect resets the
+backoff, so a laptop waking from sleep reconnects within seconds, and the app also
+bounces the keeper on the OS resume event. It stops, always, when stdin
+closes, so the forward cannot outlive the app. Windows is not offered, for the same
+reason the ssh transport above is not.
+
 ---
 
 ## 5. Configuration

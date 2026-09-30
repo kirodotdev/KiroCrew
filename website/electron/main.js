@@ -407,6 +407,7 @@ windows = createWindowLifecycle({
   isQuitting: () => isQuitting,
   requestQuit,
   connectWindow: (...args) => gateway.connect(...args),
+  syncTunnel: () => gateway.syncTunnel(),
 });
 
 const ipcRegistrar = createIpcRegistrar({
@@ -534,6 +535,17 @@ app.whenReady().then(async () => {
   // The crash reporter and the keep-alive safety net above are armed; from
   // here on an exception is recovered, not fatal.
   releaseEarlyBootGuard();
+
+  // A managed SSH forward does not survive sleep; reopen it on wake. A no-op
+  // unless this launch is keeping one.
+  try {
+    electron.powerMonitor.on("resume", () => {
+      glog("power: resumed from sleep");
+      gateway.reopenTunnel();
+    });
+  } catch (error) {
+    glog("power: could not watch for resume: " + (error && error.message));
+  }
 
   const frameDecision = windows.platform.linuxFrameDecision;
   if (frameDecision) {

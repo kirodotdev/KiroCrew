@@ -135,7 +135,11 @@ function getRemoteHostConfig(store, port) {
   return hosts[String(port)] || null;
 }
 
-function setRemoteHostConfig(store, port, { host, binPath, remotePort, remotePath } = {}) {
+function setRemoteHostConfig(
+  store,
+  port,
+  { host, binPath, remotePort, remotePath, manageTunnel } = {},
+) {
   const hosts = store.get("remoteHosts") || {};
   if (host) {
     hosts[String(port)] = {
@@ -144,6 +148,10 @@ function setRemoteHostConfig(store, port, { host, binPath, remotePort, remotePat
       binPath: binPath || DEFAULT_REMOTE_BIN,
       remotePort: remotePort || "",
       remotePath: remotePath || "",
+      // Opt-in: only a crew reached over a plain SSH forward can have that
+      // forward rebuilt by this app. A port carried by a VPN, a kubectl
+      // port-forward or the user's own ssh must never be taken over.
+      manageTunnel: manageTunnel === true,
     };
   } else {
     // Clear SSH fields but preserve defaultName

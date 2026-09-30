@@ -191,7 +191,11 @@ via SSH instead of reading the local `.local_secret`.
 
 ### Prerequisites
 
-1. An SSH tunnel forwarding the remote gateway port to localhost:
+1. An SSH tunnel forwarding the remote gateway port to localhost. Either tick
+   **Keep an SSH tunnel to this crew open** for the app's launch port (in the
+   Add/Edit Remote Crew form the "no gateway is answering" dialog opens, or in
+   Set Remote Host… on that tab, below), and the app opens and maintains it;
+   saving either form applies the choice at once. Or run your own:
    ```bash
    ssh -L 5476:localhost:5476 YOUR_HOST.example.com
    ```
@@ -217,7 +221,16 @@ Remote host settings are **per-port** — each tab can have its own remote host
    from the local tab port (default: same as tab port)
 5. Optionally set a **Remote PATH** if kirocrew needs additional directories
    (default: `~/.toolbox/bin:/usr/bin:/bin`)
-6. Click Save. Leave hostname empty to clear (use local token for that port).
+6. Optionally tick **Keep an SSH tunnel to this crew open** (macOS and Linux).
+   The app then runs `kirocrew desktop tunnel`, which holds the forward from the
+   tab's port to the crew's with the same supervisor and backoff Remote Crew uses
+   inside a gateway. A dropped forward is rebuilt on its own, and waking the
+   machine from sleep rebuilds it at once. Leave it unticked if something else
+   (your own ssh, a VPN, `kubectl port-forward`) already carries that port: the
+   app never takes a port over without this opt-in. Routing and identity come
+   from your `~/.ssh/config`, and ssh runs non-interactively, so the host must
+   authenticate without a prompt.
+7. Click Save. Leave hostname empty to clear (use local token for that port).
 
 **Multi-instance example:**
 - Tab 1 on `:5476` — local gateway, no remote host needed

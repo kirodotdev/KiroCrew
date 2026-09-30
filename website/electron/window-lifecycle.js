@@ -21,8 +21,10 @@ const { isLoopbackUrl } = require("./browser-control");
 const { runAnnotateOp } = require("./browser-annotate");
 const { attachContextMenu } = require("./context-menu");
 const {
+  TUNNEL_OPTION_LABEL,
   parseRemoteCrewFields,
   saveRemoteCrewConfig,
+  tunnelOptionHint,
 } = require("./remote-crew-setup");
 const { getRemoteHostConfig, setRemoteHostConfig } = require("./host-config");
 const { openPathHardened } = require("./open-path");
@@ -85,6 +87,9 @@ function createWindowLifecycle(options) {
     isQuitting = () => false,
     requestQuit,
     connectWindow,
+    // Re-apply the launch port's managed-tunnel choice after a save here, so
+    // ticking or un-ticking it takes effect without a relaunch.
+    syncTunnel = () => {},
     platform = process.platform,
     env = process.env,
   } = options || {};
@@ -841,6 +846,12 @@ function createWindowLifecycle(options) {
     const currentBin = config?.binPath || DEFAULT_REMOTE_BIN;
     const currentRemotePort = config?.remotePort || "";
     const currentRemotePath = config?.remotePath || "";
+    const currentManageTunnel = config?.manageTunnel === true;
+    // The app keeps a tunnel only for the port it launched on, so this form
+    // offers the option there alone; for any other tab it carries the stored
+    // choice over unchanged.
+    const isLaunchPort = String(focusedPort) === String(port);
+    const offerTunnel = isLaunchPort && !IS_WINDOWS;
 
     const css = await getModalCSS();
     const esc = (value) => value
@@ -850,7 +861,7 @@ function createWindowLifecycle(options) {
       .replace(/>/g, "&gt;");
     const promptWin = new BrowserWindow({
       width: 480,
-      height: 400,
+      height: offerTunnel ? 520 : 400,
       resizable: false,
       useContentSize: true,
       parent: focused,
@@ -870,6 +881,8 @@ function createWindowLifecycle(options) {
       <input id="rp" value="${esc(currentRemotePort)}" placeholder="${focusedPort}">
       <label>Remote PATH <span style="font-weight:normal;opacity:0.6">(default: ${DEFAULT_REMOTE_PATH})</span></label>
       <input id="pa" value="${esc(currentRemotePath)}" placeholder="${DEFAULT_REMOTE_PATH}">
+      ${offerTunnel ? `<label style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="mt" style="width:auto"${currentManageTunnel ? " checked" : ""}> ${TUNNEL_OPTION_LABEL}</label>
+      <div class="hint">${esc(tunnelOptionHint(focusedPort))}</div>` : ""}
       <div class="row"><button class="ok" onclick="save()">Save</button>
       <button class="cancel" onclick="window.close()">Cancel</button></div>
       <script>
@@ -879,6 +892,9 @@ function createWindowLifecycle(options) {
             binPath: document.getElementById('b').value.trim(),
             remotePort: document.getElementById('rp').value.trim(),
             remotePath: document.getElementById('pa').value.trim(),
+            // Read from the checkbox where this form offers it; elsewhere the
+            // stored choice rides through unchanged, never silently dropped.
+            manageTunnel: ${offerTunnel ? "document.getElementById('mt').checked" : currentManageTunnel ? "true" : "false"},
           });
           window.close();
         }
@@ -905,6 +921,7 @@ function createWindowLifecycle(options) {
             // Clearing belongs to this surface: the shared writer stores a crew
             // and refuses an empty host.
             setRemoteHostConfig(store, focusedPort, {});
+            if (isLaunchPort) syncTunnel();
             const cleared = `Remote host for :${focusedPort} cleared (using local token)`;
             console.log(cleared);
             dialog.showMessageBox(parent, { message: cleared, type: "info" });
@@ -919,6 +936,7 @@ function createWindowLifecycle(options) {
             });
             return;
           }
+          if (isLaunchPort) syncTunnel();
           const message = `Remote host for :${focusedPort} set to ${host}`;
           console.log(message);
           dialog.showMessageBox(parent, { message, type: "info" });
