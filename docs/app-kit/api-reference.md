@@ -131,7 +131,8 @@ moves. Omitted, the 240-pixel default applies.
 
 `ChatPanel` mounts Kiro Crew's native chat experience for an existing session. The required
 `slotKey` selects the session. By default, the component keeps the standard embedded ChatPage
-behavior.
+behavior. A session the app has just created with `POST /api/chat/slots` can be passed straight
+away: the panel shows it before the dashboard's session list has caught up.
 
 ```tsx
 import { ChatPanel } from '@kirocrew/app-sdk'
