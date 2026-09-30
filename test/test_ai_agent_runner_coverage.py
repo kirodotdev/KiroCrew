@@ -1498,7 +1498,7 @@ async def test_run_async_treats_an_exhausted_stream_as_success(fake_sel):
 @pytest.mark.asyncio
 async def test_reject_audits_the_refusal_and_tells_the_provider(fake_sel):
     provider = _FakeProvider()
-    await R.SessionAgentRunner._reject(provider, "r9", tool="bash", session_key="s")
+    await R.SessionAgentRunner._reject(provider, "r9", tool="bash", session_key="s", cause=None)
     assert provider.rejected == ["r9"]
     (call,) = fake_sel.calls
     assert call["outcome"] == "denied"
@@ -1508,7 +1508,7 @@ async def test_reject_audits_the_refusal_and_tells_the_provider(fake_sel):
 @pytest.mark.asyncio
 async def test_reject_still_refuses_when_the_audit_cannot_be_written(broken_sel):
     provider = _FakeProvider()
-    await R.SessionAgentRunner._reject(provider, "r9", tool="bash")
+    await R.SessionAgentRunner._reject(provider, "r9", tool="bash", cause=None)
     assert provider.rejected == ["r9"]
 
 
@@ -1518,7 +1518,7 @@ async def test_reject_tolerates_a_provider_that_cannot_be_told(fake_sel):
         async def reject_tool(self, rid):
             raise RuntimeError("stdin closed")
 
-    await R.SessionAgentRunner._reject(_Deaf(), "r9", tool="bash")  # must not raise
+    await R.SessionAgentRunner._reject(_Deaf(), "r9", tool="bash", cause=None)  # must not raise
 
 
 @pytest.mark.asyncio

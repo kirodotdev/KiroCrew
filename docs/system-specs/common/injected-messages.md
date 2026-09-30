@@ -379,6 +379,42 @@ fails when a site is missing from the enumeration, a host deny is not preceded
 by the steer, a user rejection is, or a mixed site's steer is not under its host
 guard.
 
+**The prompt optimizer, the task-refine turn and the unattended auto-improvement
+runner steer the same notice.** `dashboard/handlers/optimizer.py` rewrites one
+prompt in a side-session that runs no tools; its one reject is `surface_policy`,
+the notice saying the optimizer permits nothing. `dashboard/handlers/taskrunner.py`
+(`_run_refine`) drafts a task spec with text only; its one reject is
+`surface_policy` the same way. Both write the denied attempt as a SEL row
+FIRST (`source` `optimizer` / `taskrunner_refine`), then steer, then reject. The
+unattended auto-improvement runner
+(`apps/builtins/auto_improvement/spine/agent_runner.py`) denies through ONE
+funnel, `SessionAgentRunner._reject`, whose REQUIRED `cause=` keyword is the
+per-site verdict; the SEL row is written first, its `error` naming which gate
+refused (`governance_deny`, `governance_hook_unavailable`, `shell_denylist`,
+`not_in_allowed_tools`). No person is attached to this surface, so every deny
+is a host deny. Per site:
+
+- the platform governance gate's `deny` -- `policy`, with the hook's own reason;
+  the same gate's fail-closed arm, when the hook LAYER raised -- `hook_error`
+  (nothing judged the call). The gate names the cause itself
+  (`_GovernanceDeny.cause`) rather than leaving the funnel to read it off the
+  reason's wording.
+- the app-local shell denylist (`shell_command_refusal`) -- `policy`, with the
+  denylist's reason.
+- the caller's `allowed_tools` refusing a tool it does not list (or an empty
+  list refusing every tool) -- `surface_policy`; the notice names what the run
+  permits, never a sanctioned alternative.
+- `_approve`'s audit-or-deny arm, when the SEL row an unattended approval
+  requires cannot be written -- the new `audit_unavailable` cause: the host
+  could not record the call, so it refused rather than run it unaudited;
+  nothing judged the action, and one retry is reasonable. Distinct from
+  `hook_error`, which would send the model looking at a gate that never ran.
+
+`test_handlers_auto_improvement_deny_notice.py` enumerates every `reject_tool(`
+in the three modules and every funnel call with its verdict, pins the funnel's
+order and required keyword, and drives each deny with a provider double
+recording steer/reject order.
+
 The recovery classification for the last two rows of the marker table above
 is **structural**: the queue entry
 carries `kind == "synthetic_recovery"` (`SYNTHETIC_RECOVERY_KIND`), set at insert

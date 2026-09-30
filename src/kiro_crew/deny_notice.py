@@ -26,6 +26,7 @@ from kiro_crew.constants import (
     DENY_CAUSE_APPROVAL_OVERSIZE,
     DENY_CAUSE_APPROVAL_TIMEOUT,
     DENY_CAUSE_APPROVAL_UNDELIVERABLE,
+    DENY_CAUSE_AUDIT_UNAVAILABLE,
     DENY_CAUSE_BATCH_CASCADE,
     DENY_CAUSE_HOOK_ERROR,
     DENY_CAUSE_INVALID_NAME,
@@ -119,6 +120,14 @@ _DENY_CAUSE_TEXT: dict[str, tuple[str, str]] = {
         "on this evidence. The reason above gives the limit: split the request "
         "into shorter steps that each fit it and reissue them one at a time; if "
         "it cannot be split, say so and stop with the reason.",
+    ),
+    DENY_CAUSE_AUDIT_UNAVAILABLE: (
+        "was refused because the host could not write the audit record its "
+        "unattended approval requires",
+        "treat this as a host fault, not a verdict on the action: nothing judged "
+        "the call itself, and the surface refused it rather than run it "
+        "unrecorded. Retrying the identical call is reasonable once; if it is "
+        "refused again, say what happened rather than working around it silently.",
     ),
 }
 

@@ -1496,6 +1496,13 @@ DENY_CAUSE_APPROVAL_UNDELIVERABLE = "approval_undeliverable"
 #: ``DENY_CAUSE_APPROVAL_UNDELIVERABLE`` (the card could not be posted at all):
 #: here the fix is in the model's hands, and the notice must say so.
 DENY_CAUSE_APPROVAL_OVERSIZE = "approval_oversize"
+#: An UNATTENDED surface refused a call it would otherwise have auto-approved
+#: because its audit record could not be written (audit-or-deny: an approval
+#: that leaves no trace is what the Security Event Log exists to prevent).
+#: Nothing judged the action; the host could not record it. Distinct from
+#: ``DENY_CAUSE_HOOK_ERROR`` (a PreToolUse hook raised while deciding the call):
+#: naming a hook here would send the model looking at a gate that never ran.
+DENY_CAUSE_AUDIT_UNAVAILABLE = "audit_unavailable"
 
 #: Upper bound on the best-effort in-band deny notice steered into a running
 #: turn before a permission rejection goes back on the wire. Every deny site
