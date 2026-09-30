@@ -23,6 +23,14 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from kiro_crew.acp.client import (
+    AcpError,
+    AcpProcessDied,
+    AcpPromptBusy,
+    AcpRegistrationRateLimited,
+    AcpTimeoutError,
+    _raise_acp_error,
+)
 from kiro_crew.acp.types import (
     EVENT_COMPLETE,
     EVENT_PERMISSION_REQUEST,
@@ -376,6 +384,121 @@ def test_member_memory_refusal_redacts_before_posting(monkeypatch):
     assert private_path not in posted and "alice" not in posted
     assert credential not in posted
     assert sessions.agents == []
+
+
+def _classified_acp_error(data: str) -> AcpError:
+    """An ``AcpError`` built the way the ACP client builds one from an error frame."""
+    try:
+        _raise_acp_error({"code": -32603, "message": "Internal error", "data": data})
+    except AcpError as exc:
+        return exc
+    raise AssertionError("_raise_acp_error did not raise")
+
+
+def test_classified_acp_error_reaches_the_user(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    failure = _classified_acp_error("The monthly usage limit has been reached.")
+    monkeypatch.setattr(
+        transport_dispatch, "session_store_for_turn", AsyncMock(side_effect=failure)
+    )
+    slack, _sessions = _run_transport_text(monkeypatch, "hello there")
+    assert f"❌ {failure}" in _posts(slack)
+
+
+def test_classified_acp_error_is_redacted_on_the_wire(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    private_path = "/Users/alice/secret/x"
+    failure = _classified_acp_error(f"Backend refused: cannot read {private_path}")
+    assert private_path in str(failure)
+    monkeypatch.setattr(
+        transport_dispatch, "session_store_for_turn", AsyncMock(side_effect=failure)
+    )
+    slack, _sessions = _run_transport_text(monkeypatch, "hello there")
+    posted = "\n".join(_posts(slack))
+    assert "❌ Backend refused: cannot read " in posted
+    assert private_path not in posted and "alice" not in posted
+
+
+class TestTransportErrorText:
+    """The reply posted when a transport turn raises.
+
+    A classified backend ``AcpError`` (e.g. a usage limit) reaches the user as its
+    own redacted, length-capped reason; everything else keeps the generic text.
+    """
+
+    def test_classified_acp_error_shows_its_reason(self):
+        err = _classified_acp_error("The monthly usage limit has been reached.")
+        assert err.usage_limit
+        assert transport_dispatch._transport_error_text(err) == f"❌ {err}"
+        assert "monthly usage limit" in str(err)
+
+    def test_prompt_busy_shows_its_reason(self):
+        err = _classified_acp_error("Prompt already in progress")
+        assert isinstance(err, AcpPromptBusy)
+        assert transport_dispatch._transport_error_text(err) == f"❌ {err}"
+
+    def test_classified_acp_error_is_redacted_before_posting(self):
+        private_path = "/Users/alice/secret/x"
+        credential = "AKIAIOSFODNN7EXAMPLE"
+        err = AcpError(
+            f"Backend refused: cannot read {private_path}; key {credential}", transient=False
+        )
+        text = transport_dispatch._transport_error_text(err)
+        assert text.startswith("❌ Backend refused: cannot read ")
+        assert private_path not in text and "alice" not in text
+        assert credential not in text
+
+    def test_classified_acp_error_is_truncated(self):
+        cap = transport_dispatch._TRANSPORT_ERROR_DETAIL_MAX_CHARS
+        err = _classified_acp_error("x" * (cap + 500))
+        assert len(str(err)) > cap
+        assert transport_dispatch._transport_error_text(err) == "❌ " + "x" * cap
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "ACP process exited (code=1): Traceback (most recent call last) ...",
+            "Shutdown in progress",
+        ],
+    )
+    def test_unclassified_acp_error_keeps_generic_text(self, message):
+        assert transport_dispatch._transport_error_text(AcpError(message)) == (
+            transport_dispatch._TRANSPORT_ERROR_TEXT
+        )
+
+    def test_timeout_keeps_generic_text(self):
+        assert transport_dispatch._transport_error_text(AcpTimeoutError("t")) == (
+            transport_dispatch._TRANSPORT_ERROR_TEXT
+        )
+
+    def test_process_died_keeps_generic_text(self):
+        assert transport_dispatch._transport_error_text(AcpProcessDied("d")) == (
+            transport_dispatch._TRANSPORT_ERROR_TEXT
+        )
+
+    def test_rate_limited_process_death_keeps_generic_text(self):
+        err = AcpRegistrationRateLimited("registration throttled")
+        assert err.transient is True
+        assert transport_dispatch._transport_error_text(err) == (
+            transport_dispatch._TRANSPORT_ERROR_TEXT
+        )
+
+    def test_non_acp_fault_keeps_generic_text(self):
+        assert transport_dispatch._transport_error_text(RuntimeError("internal detail")) == (
+            transport_dispatch._TRANSPORT_ERROR_TEXT
+        )
+
+    def test_slack_markup_in_the_reason_cannot_notify_anyone(self):
+        """A provider error can echo arbitrary text; ``<!channel>`` or ``<@U…>`` in
+        it must reach Slack as inert text, not a channel-wide or user ping."""
+        text = transport_dispatch._transport_error_text(
+            _classified_acp_error("quota hit <!channel> ping <@U0VICTIM> & more")
+        )
+        assert "<!channel>" not in text and "<@U0VICTIM>" not in text
+        assert "&lt;!channel&gt;" in text and "&lt;@U0VICTIM&gt;" in text
+        assert "&amp; more" in text
 
 
 class TestTransportKeywordCommands:

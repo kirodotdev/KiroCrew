@@ -52,10 +52,12 @@ from kiro_crew.platform import current_context
 from kiro_crew.security import redact, redact_local_paths
 from kiro_crew.sel import sel
 from kiro_crew.session_allocation import SessionClosingError
+from kiro_crew.slack.format import escape_mrkdwn
 from kiro_crew.slack.handler import (
     _get_default_agent,
     _hydrate_conv_flags,
     _hydrate_thread_overrides,
+    _is_classified_acp_error,
     _is_slack_restricted,
     _maybe_auto_title_slack,
     _should_auto_approve_spawn,
@@ -104,6 +106,46 @@ logger = logging.getLogger(__name__)
 #: Mirrors the native path's fallback (``handler.py``: ``_get_default_agent()
 #: or "kirocrew"``) and the many ``agent="kirocrew"`` call sites.
 _DEFAULT_KIROCREW_AGENT = "kirocrew"
+
+#: Generic reply for a failed transport turn whose error text is not meant for
+#: the user (see ``_transport_error_text``).
+_TRANSPORT_ERROR_TEXT = "🔧 Something went wrong (transport path). Please try again."
+
+#: Longest error detail posted to Slack, the cap the native path applies to its
+#: ``UnknownMemoryStore`` refusal.
+_TRANSPORT_ERROR_DETAIL_MAX_CHARS = 1000
+
+
+def _redacted_error_detail(exc: BaseException) -> str:
+    """``str(exc)`` redacted, truncated and made inert as Slack markup.
+
+    Redaction runs before truncation so a cut can never leave the head of a
+    credential or path that the full-string passes would have matched. The text
+    comes from outside Kiro Crew (a provider error can echo arbitrary input), so
+    Slack's entity characters are escaped last: ``<!channel>`` or ``<@U…>`` in it
+    must show as text, not notify anyone. Escaping after the cut means the cut can
+    never split an escape sequence.
+    """
+    detail = redact_local_paths(redact(str(exc)))[0][:_TRANSPORT_ERROR_DETAIL_MAX_CHARS]
+    return escape_mrkdwn(detail)
+
+
+def _transport_error_text(exc: BaseException) -> str:
+    """User-facing reply for a failed transport turn.
+
+    A classified backend ``AcpError`` (see ``_is_classified_acp_error``) carries a
+    user-readable reason, for example a usage limit that retrying cannot fix, so
+    that reason is shown under the same ``❌`` prefix the native path uses. The
+    message can still quote a host path or a credential from the backend, so it
+    goes through the same redaction and length cap as the ``UnknownMemoryStore``
+    refusal. Every other failure, including an unclassified ``AcpError``, keeps
+    the generic retry text, because its message is internal detail.
+    """
+    if isinstance(exc, UnknownMemoryStore):
+        return _redacted_error_detail(exc)
+    if _is_classified_acp_error(exc):
+        return f"❌ {_redacted_error_detail(exc)}"
+    return _TRANSPORT_ERROR_TEXT
 
 
 async def _refresh_dashboard_tab(session_key: str) -> None:
@@ -1251,15 +1293,7 @@ async def handle_message_transport(
             )
         else:
             try:
-                await slack.post_message(
-                    channel,
-                    (
-                        redact_local_paths(redact(str(exc)))[0][:1000]
-                        if isinstance(exc, UnknownMemoryStore)
-                        else "🔧 Something went wrong (transport path). Please try again."
-                    ),
-                    post_thread_ts,
-                )
+                await slack.post_message(channel, _transport_error_text(exc), post_thread_ts)
             except Exception:
                 pass
         try:
