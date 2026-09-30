@@ -163,6 +163,7 @@ def _run_scan(
         # builds the namespace by hand: a global the block references and the namespace
         # omits is a NameError, not a skipped branch.
         "ALIAS_CREDENTIAL_IDS": [list(pair) for pair in (alias_ids or ())],
+        "REQUIRED_MASK_TARGETS": frozenset(),
     }
     block = tmp_path / "_scan_block.py"
     block.write_text(_scan_source(), encoding="utf-8")
