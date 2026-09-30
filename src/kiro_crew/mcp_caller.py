@@ -193,6 +193,15 @@ class CallerContext:
     #: a shared backend from its own environment, so the per-session env token
     #: never reaches it. Never forwarded to a third-party backend.
     session_token: str = ""
+    #: Why gatewayd withheld ``session_token`` from a backend spawned under one
+    #: of Kiro Crew's OWN server names (the ``_deny_control_plane`` reason:
+    #: "spawned '/opt/local/bin/kirocrew' is not the spec's '…'"). Set only
+    #: on the frames forwarded to such a denied backend, so its
+    #: ``identity_unattested`` refusal can name the cause; the reason otherwise
+    #: reaches only the daemon's own log, which no session surfaces
+    #: (the Toolbox-shim report took three wrong diagnoses to find it). Diagnostic text,
+    #: never a credential; empty everywhere else.
+    identity_denial: str = ""
 
     @classmethod
     def from_meta(cls, meta: Any) -> "CallerContext | None":
@@ -224,6 +233,7 @@ class CallerContext:
             from_gateway=True,
             raw=MappingProxyType(dict(block)),
             session_token=str(block.get("sessionToken") or ""),
+            identity_denial=str(block.get("identityDenial") or ""),
         )
 
     @classmethod
@@ -361,6 +371,8 @@ def build_caller_meta(ctx: CallerContext) -> dict[str, Any]:
     }
     if ctx.session_token:
         meta[CALLER_META_KEY]["sessionToken"] = ctx.session_token
+    if ctx.identity_denial:
+        meta[CALLER_META_KEY]["identityDenial"] = ctx.identity_denial
     return meta
 
 
