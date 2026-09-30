@@ -311,6 +311,30 @@ _CREW_SECRET_LEAVES: list[str] = [
     # its own poisoned clone. Masked at OS level too (`sandbox._CREW_HIDDEN_LEAVES`), since a
     # spawned shell's `open()` never routes through this gate.
     "quarantined-clones",
+    # The Meetings builtin's calendar credentials: a CalDAV password and the
+    # Google / Microsoft 365 OAuth refresh + access tokens -- live bearer
+    # credentials for the user's calendar, and a refresh token survives until
+    # revoked. A leaf (not a flat ``~/.kiro/crew`` entry) so it is generated for
+    # BOTH ``_CREW_HOME_PREFIXES``, since ``config_dir()`` can resolve to the
+    # legacy ``.kirocrew`` data-home during a migration fallback.
+    #
+    # A TOP-LEVEL leaf, like ``md-notebook-staging`` above, and NOT one under
+    # ``workspace/`` or ``apps/meetings/data/``: the app data tree is what its
+    # ``store.contain`` bounds agent-driven paths against, and a leaf nested under
+    # the agent-writable ``workspace/`` has two holes the OS mask cannot close --
+    # ``SENSITIVE_DIRS`` binds only over directories that already exist and only a
+    # direct child of the data home can be materialised ahead of the spawn
+    # (``_materialize_maskable_dirs``), so a namespace spawned before the first
+    # credential save would watch the file appear inside its view; and the parent
+    # can be renamed out from under the mask. A direct child is precreated
+    # (``sandbox._CREW_PRECREATE_HIDDEN_DIR_LEAVES``) and masked
+    # (``sandbox._CREW_HIDDEN_LEAVES``), so a spawned shell's ``open()`` cannot
+    # reach it either. ``meetings/backend/credentials.py`` opens the file
+    # directly, not through this gate. The DIRECTORY is gated, not the one leaf,
+    # because ``atomic_write``'s owner-only ``.tmp`` sibling holds the same
+    # tokens if the process dies between write and replace (like ``trust`` /
+    # ``profiles`` below).
+    "meetings-credentials",
     "browser-cookies.txt",
     "playwright-storage-state.json",
     # The refused-inbound spool (messaging/inbound_spool.py). Not a secret: it is

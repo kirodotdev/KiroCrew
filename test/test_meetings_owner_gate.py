@@ -32,6 +32,9 @@ pytestmark = pytest.mark.asyncio
 
 GATED = {
     ("PUT", "/config"): "meetings.put_config",
+    ("PUT", "/calendar/credentials"): "meetings.calendar_credentials",
+    ("POST", "/calendar/credentials/forget"): "meetings.calendar_disconnect",
+    ("POST", "/calendar/oauth/start"): "meetings.calendar_oauth_start",
     ("PATCH", "/meetings/{meeting_id}"): "meetings.rename",
     ("DELETE", "/meetings/{meeting_id}"): "meetings.delete",
     ("POST", "/meetings/{meeting_id}/init"): "meetings.init",

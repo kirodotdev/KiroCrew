@@ -26,6 +26,8 @@ const apiMocks = vi.hoisted(() => ({
   dictionary: vi.fn(),
   addTerm: vi.fn(),
   removeTerm: vi.fn(),
+  calendarCredentials: vi.fn(),
+  saveCalendarCredentials: vi.fn(),
 }))
 
 vi.mock('../apps/meetings/api', async importOriginal => {
@@ -58,6 +60,8 @@ const REGISTRIES = {
   calendar_providers: [
     { id: 'none', label: 'No calendar' },
     { id: 'ics', label: 'ICS file', requires_source: true },
+    { id: 'google', label: 'Google Calendar' },
+    { id: 'microsoft', label: 'Microsoft 365' },
   ],
   stt_providers: [{ id: 'local', label: 'Local' }],
 }
@@ -98,6 +102,16 @@ beforeEach(() => {
   vi.useFakeTimers({ shouldAdvanceTime: true })
   apiMocks.config.mockResolvedValue(configResponse())
   apiMocks.dictionary.mockResolvedValue({ terms: [] })
+  // The credential form is its own suite (MeetingsCalendarCredentials.test.tsx);
+  // here it only has to resolve so the Calendar card renders without a pending query.
+  apiMocks.calendarCredentials.mockResolvedValue({
+    status: {},
+    providers: {
+      google: { fields: ['client_id', 'client_secret'], oauth: true },
+      microsoft: { fields: ['client_id', 'client_secret'], oauth: true },
+    },
+  })
+  apiMocks.saveCalendarCredentials.mockResolvedValue({ ok: true, status: {} })
   apiMocks.saveConfig.mockImplementation((config: MeetingsConfig) => Promise.resolve({ config }))
   apiMocks.addTerm.mockResolvedValue({ terms: [TERM] })
   apiMocks.removeTerm.mockResolvedValue({ terms: [] })
@@ -176,6 +190,74 @@ describe('Meetings SettingsView — rendering', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: 'Back' }))
     expect(onBack).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('Meetings SettingsView — calendar credential provider switching', () => {
+  it('does not carry a credential draft into another provider', async () => {
+    apiMocks.config.mockResolvedValue(
+      configResponse({ calendar: { provider: 'google', source: '' } }),
+    )
+    apiMocks.calendarCredentials.mockResolvedValue({
+      status: { google: { configured: true, fields: ['client_id'] } },
+      providers: {
+        google: { fields: ['client_id', 'client_secret'], oauth: true },
+        microsoft: { fields: ['client_id', 'client_secret'], oauth: true },
+      },
+    })
+    renderView()
+
+    fireEvent.change(await screen.findByLabelText('Client secret'), {
+      target: { value: 'google-client-secret' },
+    })
+    await pickOption('Calendar provider', 'Microsoft 365')
+    await waitFor(() =>
+      expect(screen.getByRole('combobox', { name: 'Calendar provider' })).toHaveTextContent(
+        'Microsoft 365',
+      ),
+    )
+    fireEvent.change(screen.getByLabelText('Client ID'), {
+      target: { value: 'microsoft-client-id' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Save credentials' }))
+
+    await waitFor(() =>
+      expect(apiMocks.saveCalendarCredentials).toHaveBeenCalledWith('microsoft', {
+        client_id: 'microsoft-client-id',
+      }),
+    )
+  })
+
+  it('does not carry a pending removal into another provider', async () => {
+    apiMocks.config.mockResolvedValue(
+      configResponse({ calendar: { provider: 'google', source: '' } }),
+    )
+    apiMocks.calendarCredentials.mockResolvedValue({
+      status: { google: { configured: true, fields: ['client_secret'] } },
+      providers: {
+        google: { fields: ['client_id', 'client_secret'], oauth: true },
+        microsoft: { fields: ['client_id', 'client_secret'], oauth: true },
+      },
+    })
+    renderView()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove' }))
+    await pickOption('Calendar provider', 'Microsoft 365')
+    await waitFor(() =>
+      expect(screen.getByRole('combobox', { name: 'Calendar provider' })).toHaveTextContent(
+        'Microsoft 365',
+      ),
+    )
+    fireEvent.change(screen.getByLabelText('Client ID'), {
+      target: { value: 'microsoft-client-id' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Save credentials' }))
+
+    await waitFor(() =>
+      expect(apiMocks.saveCalendarCredentials).toHaveBeenCalledWith('microsoft', {
+        client_id: 'microsoft-client-id',
+      }),
+    )
   })
 })
 

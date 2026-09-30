@@ -547,10 +547,28 @@ _SELF_AUTH_WEBHOOK_METHODS = frozenset({"POST"})
 #: under another method stays on the ordinary token gate.
 UPDATE_REVALIDATE_PATH = "/api/update/revalidate"
 
+#: The Meetings app's OAuth redirect target (the RFC 8252 loopback arrangement).
+#: The calendar provider redirects the user's BROWSER here after consent -- and
+#: from the Electron shell that browser is the OS default, opened through
+#: ``shell.openExternal``, which holds no dashboard cookie and no token. Behind
+#: the ordinary gate every desktop sign-in lands on a 403 JSON page and the tokens
+#: are never stored. The handler
+#: (``meetings.backend.routes.calendar.handle_oauth_callback``) does its OWN
+#: admission: the single-use, TTL-bound ``state`` minted by the owner-gated
+#: ``POST .../calendar/oauth/start`` is compared in constant time and consumed
+#: before the code exchange, an absent or forged ``state`` is refused (and
+#: audited) without touching the store, and the page never echoes ``code`` back.
+#: GET only: the only method routed there, and the only one whose handler carries
+#: that check. Spelled out rather than imported from the app so this module keeps
+#: no dependency on an app package; ``test_meetings_oauth_callback_auth.py`` pins
+#: the two spellings together.
+MEETINGS_OAUTH_CALLBACK_PATH = "/api/apps/meetings/calendar/oauth/callback"
+
 _BYPASS_EXACT_METHODS: dict[str, frozenset[str]] = {
     AGENT_HOOK_PATH: _SELF_AUTH_WEBHOOK_METHODS,
     TEAMS_WEBHOOK_PATH: _SELF_AUTH_WEBHOOK_METHODS,
     UPDATE_REVALIDATE_PATH: _SELF_AUTH_WEBHOOK_METHODS,
+    MEETINGS_OAUTH_CALLBACK_PATH: frozenset({"GET"}),
 }
 
 # Exact-path exemptions from the CSRF **Origin** check, path -> allowed methods.
