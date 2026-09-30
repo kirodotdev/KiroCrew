@@ -920,7 +920,15 @@ UI — removal only; nothing is created or rebound:
   member names as the `teams.json` document in the `crew-teams` data-home directory holds them): placing it on a team is
   the owner's own act, so a teamed crewmate is never removed whatever its
   shape. A created crewmate has a `member_id` and is never removed. No memory
-  directory is inspected.
+  directory is inspected. A row bound to a skill-view alias
+  (exactly the prefix `kirocrew-skill-view-` plus 24 lowercase hex digits, the
+  name the projection writes; any other tail is an ordinary row) is
+  the one exception to the installed-spec test: the runtime writes those files
+  to project a spec's skills, discovery never lists them, and an older sync
+  that walked the agents directory enrolled one crewmate per alias file. Such
+  a row is judged on its own string stamp (`builtin`, `package` or `aim`) and
+  fresh-sync shape; every other rule above -- `member_id`, overlay, team,
+  chatted -- still applies.
 - **Chatted** = the crewmate's own Crewmates-page DM thread holds a turn, and
   nothing else counts. Its transcript lives at `sessions/dashboard_<slot
   key>.jsonl`, the slot key derived from the slug (`member_slot_key`) and, when
@@ -945,7 +953,8 @@ UI — removal only; nothing is created or rebound:
   overlay's own sidecar lock — and the bound spec, when re-read from disk under
   `agents_spec_lock`, still declares the bound `kiro_agent`, remains non-private
   (`private_to` is empty) and not `kirocrew_owned`, and has the same canonical
-  discovery source; and no team lists it, the team document re-read under
+  discovery source (a skill-view alias row has no spec to re-read, so its row
+  identity and shape are the whole test); and no team lists it, the team document re-read under
   `crew_teams.document_lock`. The three
   inner locks are taken inside the base lock, overlay then spec (the order every
   binding writer keeps) then the team document lock innermost — its own
@@ -1044,15 +1053,17 @@ UI — removal only; nothing is created or rebound:
   is one `is_set()` read per request. Each candidate's check runs immediately
   before its own removal, never once for the whole list.
 - **Marker.** A completed pass (a no-op included) writes
-  `<config dir>/crewmate_prune_v2_migrated.json` with `{migrated_at, removed,
+  `<config dir>/crewmate_prune_v3_migrated.json` with `{migrated_at, removed,
   kept, doubted}` — the same marker-file seam the config loader's one-shot migrations
   use (`connections_ui_migrated.json`); later boots return at once. One INFO
   line records the removal: `removed N unused auto-generated crewmates:
   <names>`. The first build of this pass wrote
   `crewmate_prune_migrated.json`; it judged only user-authored specs and
   counted any session that ran the agent, so on an install full of package
-  agents it removed nothing. That marker is left in place and does not stop
-  the current pass, which runs once on such an install too.
+  agents it removed nothing. The next wrote `crewmate_prune_v2_migrated.json`
+  and skipped every row bound to a skill-view alias, since no installed spec
+  matches one. Both markers are left in place and do not stop the current
+  pass, which runs once on those installs too.
 
 Removed rows do not come back: since #12224 the dashboard pickers read
 `GET /api/agents/catalog` and nothing calls `POST /api/agents/sync`, so the rows

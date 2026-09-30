@@ -187,7 +187,10 @@ or review; and the removal drops nothing the person made — every agent file
 stays, and one click re-enrols any of them. A package-installed agent is
 enrolled by the same sync as a person's own, so its generated row is the
 same leftover state; the runtime's own agents and uninstalled specs are left
-out because nothing re-enrols them in one click. Only a turn on the crewmate's
+out because nothing re-enrols them in one click. A row the sync wrote for a
+skill-view alias (`kirocrew-skill-view-*`) is not an uninstalled spec: the
+runtime writes that file to project another agent's skills, nobody installs
+or picks it, and it is removed under the same rule as any generated row. Only a turn on the crewmate's
 own page counts as chatting, because that thread is the crewmate: another
 session running the same agent file is a template use, and it survives the
 removal untouched. One unreadable thread keeps only its own crewmate, so a
