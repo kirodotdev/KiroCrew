@@ -16,6 +16,9 @@ import os
 import time
 from unittest.mock import patch
 
+import pytest
+
+from conftest import make_dir_link
 from kiro_crew import platform_compat as pc
 from kiro_crew.mcp_gateway.spill import (
     cleanup_old_spill_files,
@@ -74,6 +77,39 @@ class TestSpillToFile:
         assert len(spill_files) == 1
         spill_content = json.loads(spill_files[0].read_bytes())
         assert spill_content["result"]["content"][0]["text"] == big_text
+
+    def test_spill_refuses_a_linked_spill_dir(self, tmp_path):
+        """The WRITE path refuses a linked spill dir too.
+
+        Sibling of the cleanup guard, same directory and same blind spot. This
+        function's own comment says why it matters: "an attacker-planted link
+        would redirect the write outside the data home". What gets written is a
+        full tool response -- precisely the payload that may carry secrets.
+
+        ``O_EXCL``/``O_NOFOLLOW`` on the open do not cover it: they constrain
+        the FINAL path component, not the directory the path resolves through,
+        and ``os.O_NOFOLLOW`` does not exist on Windows -- the only platform
+        that has junctions.
+        """
+        victim_dir = tmp_path / "victim"
+        victim_dir.mkdir()
+
+        spill_dir = tmp_path / "mcp_spill"
+        make_dir_link(spill_dir, victim_dir)
+
+        big_text = "S" * 500_000
+        msg = {
+            "jsonrpc": "2.0",
+            "id": "req-7",
+            "result": {"content": [{"type": "text", "text": big_text}]},
+        }
+        line = json.dumps(msg, separators=(",", ":")).encode("utf-8") + b"\n"
+
+        with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
+            result = maybe_spill_response(line, "test-mcp", 256 * 1024)
+
+        assert list(victim_dir.iterdir()) == [], "spilled a payload outside the data home"
+        assert result == line, "a refused spill must forward the original line unmodified"
 
     def test_spill_preserves_id(self, tmp_path):
         """Spilled response preserves the original JSON-RPC id."""
@@ -361,3 +397,50 @@ class TestSpillCleanup:
 
         assert deleted == 0
         assert fresh_file.exists()
+
+    def test_cleanup_refuses_a_linked_spill_dir(self, tmp_path):
+        """A linked spill dir is refused, so the sweep never runs through it.
+
+        ``is_symlink()`` answers False for a Windows junction, so the dir-level
+        guard admitted one and the sweep iterated the junction's TARGET,
+        calling ``unlink()`` on every 24h-old regular file there. That is
+        exactly the confused deputy this function's docstring says it hardened
+        against, reached by a link kind its check cannot see. The per-entry
+        ``lstat``/``S_ISREG`` screen does not help: it guards links INSIDE the
+        directory, while here the directory itself is the link.
+        """
+        victim_dir = tmp_path / "victim"
+        victim_dir.mkdir()
+        precious = victim_dir / "precious.json"
+        precious.write_text("precious")
+        old_time = time.time() - (25 * 3600)
+        os.utime(precious, (old_time, old_time))
+
+        spill_dir = tmp_path / "mcp_spill"
+        make_dir_link(spill_dir, victim_dir)
+
+        with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
+            deleted = cleanup_old_spill_files()
+
+        assert deleted == 0
+        assert precious.exists(), "cleanup deleted a file outside the spill dir"
+
+    @pytest.mark.skipif(not pc.IS_WINDOWS, reason="junctions are Windows-only")
+    def test_make_dir_link_yields_a_junction_on_windows(self, tmp_path):
+        """Guard the guard: the seam above must produce a JUNCTION, not a symlink.
+
+        What a junction *is* -- a directory that ``is_symlink()`` misses and
+        ``is_link_or_junction`` catches -- is already pinned by
+        ``test_junction_is_recognised_and_removable``. The property that is
+        NOT pinned anywhere else, and that the two containment tests above
+        depend on, is that this particular seam yields one: were
+        ``make_dir_link`` ever to hand back a symlink on Windows, both would
+        pass against the ORIGINAL ``is_symlink()`` guard and prove nothing.
+        """
+        target = tmp_path / "target"
+        target.mkdir()
+        link = tmp_path / "link"
+        make_dir_link(link, target)
+
+        assert link.is_dir()
+        assert not link.is_symlink()
