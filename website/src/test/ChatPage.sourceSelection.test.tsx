@@ -82,6 +82,7 @@ vi.mock('../pages/chat/SidePanel', () => ({
     )
   },
   CHAT_PANE_MIN_W: 320,
+  SIDE_PANEL_MIN_W: 320,
   sidePanelFillWidth: () => false,
 }))
 

@@ -57,6 +57,7 @@ vi.mock('../components/DetailPanel', () => ({ default: () => null }))
 // `report,` -- both legal names, the shorter a consumable prefix of the longer.
 vi.mock('../pages/chat/SidePanel', () => ({
   CHAT_PANE_MIN_W: 320,
+  SIDE_PANEL_MIN_W: 320,
   sidePanelFillWidth: () => undefined,
   default: ({ onAddToContext }: { onAddToContext?: (absPath: string, kind: 'file' | 'dir') => void }) => (
     <>

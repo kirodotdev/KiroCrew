@@ -146,7 +146,13 @@ test.describe('Session summary panel', () => {
 
     // The most recent card starts open, so its body is present.
     await expect(page.getByText('You asked for')).toBeVisible({ timeout: 10000 })
-    await page.getByRole('button', { expanded: true }).first().click()
+    // Collapse it by its OWN disclosure button, matched on the intent title in
+    // the button's accessible name. A page-wide `{ expanded: true }` selector is
+    // not safe here: the nav rail's "Collapse sidebar" and the sessions
+    // sidebar's folder toggles also carry aria-expanded and precede the panel in
+    // DOM order, so `.first()` would click the shell chrome and leave the card
+    // open.
+    await page.getByRole('button', { expanded: true, name: /Session summary panel/ }).click()
     await expect(page.getByText('You asked for')).toBeHidden()
 
     // Disclosure is persisted per slot: a reload must not silently reopen it.

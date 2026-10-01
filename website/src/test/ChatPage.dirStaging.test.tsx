@@ -63,6 +63,7 @@ vi.mock('../components/DetailPanel', () => ({ default: () => null }))
 // goes through ChatInput's own onFileSelect instead, a different path).
 vi.mock('../pages/chat/SidePanel', () => ({
   CHAT_PANE_MIN_W: 320,
+  SIDE_PANEL_MIN_W: 320,
   sidePanelFillWidth: () => undefined,
   default: ({ onAddToContext }: { onAddToContext?: (absPath: string, kind: 'file' | 'dir', dropAt?: number | null) => void }) => (
     // Each stub control lives in its own wrapper, one per row -- not a
