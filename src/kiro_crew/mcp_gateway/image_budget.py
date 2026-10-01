@@ -62,6 +62,7 @@ from kiro_crew.imaging import (
     image_dimensions,
     pil_available,
 )
+from kiro_crew.json_line import parse_json_object_line
 
 logger = logging.getLogger(__name__)
 
@@ -214,11 +215,8 @@ def parse_image_bearing_frame(line: bytes) -> dict[str, Any] | None:
     Returns ``None`` for anything that is not a ``tools/call`` result with at
     least one ``{"type": "image"}`` content block.
     """
-    try:
-        msg = json.loads(line.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        return None
-    if not isinstance(msg, dict):
+    msg = parse_json_object_line(line)
+    if msg is None:
         return None
     result = msg.get("result")
     if not isinstance(result, dict):

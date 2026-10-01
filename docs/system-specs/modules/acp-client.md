@@ -1477,7 +1477,18 @@ accounting consumers must reject the synthetic form.
 ### Tool-stall watchdog
 
 A JSONL tool result retires its matching active call before dispatch yields the
-result, even though it carries no `tool_status`. All JSONL flush paths update the
+result, even though it carries no `tool_status`. The scan
+(`_read_new_tool_results_sync`) reads the file through
+`jsonl_util.bounded_raw_records_with_offsets`, so one record's memory is capped
+at `RECORD_CAP` and the scan resumes from a byte offset. It saves its offset past
+each complete line before parsing it, and decodes each line on its own with
+`errors="replace"`, so a line it cannot use costs only that line and one bad byte
+cannot hold the offset in place for the rest of the session. Skipped: a record
+over the cap (the offset still moves past it), a line that is not a JSON object
+(malformed, nested past the decoder's ceiling), a `data`, `content` or item of
+the wrong type, a result without a non-empty string `toolUseId`, a `stdout` that
+is not a string, and any line whose handling raises. An unterminated last record
+is left for the next scan. All JSONL flush paths update the
 watchdog state on the event loop after the file read: remaining calls keep the
 tool watchdog armed; the final result disarms it and re-arms stale recovery.
 

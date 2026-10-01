@@ -420,9 +420,13 @@ class TestToolsCallDispatch:
 
 class TestMainLoop:
     def _run(
-        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], stdin: str
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+        stdin: str | bytes,
     ) -> list[dict[str, Any]]:
-        monkeypatch.setattr(mcp_server.sys, "stdin", io.StringIO(stdin))
+        data = stdin.encode("utf-8") if isinstance(stdin, str) else stdin
+        monkeypatch.setattr(mcp_server.sys, "stdin", io.TextIOWrapper(io.BytesIO(data)))
         mcp_server.main()
         out = capsys.readouterr().out
         return [json.loads(line) for line in out.splitlines() if line]
@@ -450,6 +454,69 @@ class TestMainLoop:
             "\n   \n{not json\n[1, 2]\n" + json.dumps({"id": 9, "method": "tools/list"}) + "\n",
         )
         assert [r["id"] for r in replies] == [9]
+
+    def test_an_undecodable_or_too_deep_line_is_skipped_without_ending_the_session(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """``RecursionError`` is not a ``ValueError``, and a text-mode stdin
+        decodes outside any ``try``: either line must not end the server."""
+        deep = b"[" * 200_000 + b"]" * 200_000
+        replies = self._run(
+            monkeypatch,
+            capsys,
+            b"\x80\xff{}\n"
+            + deep
+            + b"\n"
+            + json.dumps({"id": 9, "method": "tools/list"}).encode()
+            + b"\n",
+        )
+        assert [r["id"] for r in replies] == [9]
+
+    def test_an_unparseable_request_with_a_recoverable_id_is_answered(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Answered, so its caller does not wait for its own timeout. A response
+        is never answered: its id is the client's own request namespace."""
+        replies = self._run(
+            monkeypatch,
+            capsys,
+            b'{"jsonrpc":"2.0","id":7,"method":"tools/list","params":{"s":"\xff"}}\n'
+            + b'{"id":8,"method":"tools/list","params":{"n":'
+            + b"9" * 5000
+            + b"}}\n"
+            + b'{"method":"log","params":{"id":99,"s":"\xff"}}\n'
+            + b'{"jsonrpc":"2.0","id":3,"result":{"s":"\xff"}}\n'
+            + json.dumps({"id": 9, "method": "tools/list"}).encode()
+            + b"\n",
+        )
+        assert [r["id"] for r in replies] == [7, 8, 9]
+        assert replies[0]["error"]["code"] == replies[1]["error"]["code"] == -32700
+
+    def test_a_request_whose_handling_raises_is_answered_and_the_session_goes_on(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        real = mcp_server.handle
+
+        def _handle(request: dict[str, Any]) -> dict[str, Any] | None:
+            if request.get("id") == 1:
+                raise RuntimeError("boom")
+            return real(request)
+
+        monkeypatch.setattr(mcp_server, "handle", _handle)
+        replies = self._run(
+            monkeypatch,
+            capsys,
+            json.dumps({"id": 1, "method": "tools/list"})
+            + "\n"
+            + json.dumps({"id": 2, "method": "tools/list"})
+            + "\n",
+        )
+        assert replies[0] == {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "error": {"code": mcp_server._INTERNAL_ERROR, "message": "internal error"},
+        }
+        assert replies[1]["id"] == 2
 
     def test_a_notification_produces_no_line_on_stdout(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]

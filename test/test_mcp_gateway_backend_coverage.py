@@ -40,6 +40,7 @@ from typing import Any, Optional, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from stray_line_helpers import STRAY_LINES, too_deep_to_decode
 
 from kiro_crew.mcp_caller import (
     CALLER_META_KEY,
@@ -4054,21 +4055,69 @@ class TestFailOversizeRequest:
         assert backend._gone_broadcast is False
 
     @pytest.mark.asyncio
-    async def test_oversize_initialize_recycles_the_backend(self) -> None:
-        """Failing just the one request cannot work for ``initialize``: the
-        handshake could never complete. The whole backend is recycled so init
-        waiters get a clean BackendGone and the done-event is woken."""
+    async def test_oversize_initialize_fails_the_handshake_and_answers_its_waiters(self) -> None:
+        """The handshake can never complete, so it fails, the backend reads dead
+        and the done-event is woken, and every queued initialize waiter is
+        answered with the failure."""
         backend = _make_backend()
-        await backend.attach_stub("s1")
+        inbox = await backend.attach_stub("s1")
         backend._init_state = "in_flight"
         backend._pending_requests["gw-7"] = _PendingRequest("__init__", None, "initialize")
         backend._init_pending = [("s1", 1)]
         await backend._fail_oversize_request(b'{"id":"gw-7","result":{}}')
-        assert "oversize initialize response" in (backend.dead_reason or "")
+        assert "exceeded size limit" in (backend.dead_reason or "")
         assert backend._init_state == "failed"
         assert backend._init_done_event.is_set()
         assert backend._init_pending == []
-        assert backend._gone_broadcast is True
+        assert not backend.is_alive
+        reply = await _drain(inbox)
+        assert reply["id"] == 1 and "backend init failed" in reply["error"]["message"]
+
+    @pytest.mark.asyncio
+    async def test_an_oversize_apps_fetch_is_failed_at_once(self) -> None:
+        """The MCP Apps fetch is resolved at once, so the tool result it holds
+        back is delivered without waiting out the fetch's full timeout."""
+        backend = _make_backend()
+        fut: asyncio.Future = asyncio.get_running_loop().create_future()
+        backend._pending_requests["gw-8"] = _PendingRequest(
+            backend_mod._APPS_STUB_SENTINEL, None, "resources/read", apps_future=fut
+        )
+        await backend._fail_oversize_request(b'{"jsonrpc":"2.0","id":"gw-8","result":{"x"')
+        assert fut.done()
+        assert "exceeded size limit" in fut.result()["error"]["message"]
+
+    @pytest.mark.asyncio
+    async def test_an_oversize_response_with_its_id_last_is_found_by_the_tail(self) -> None:
+        """The MCP TypeScript SDK writes ``{result, jsonrpc, id}``: the id sits
+        past any head the drain keeps, so the tail must find it."""
+        backend = _make_backend()
+        inbox = await backend.attach_stub("s1")
+        backend._pending_requests["gw-9"] = _PendingRequest("s1", 90, "tools/call")
+        await backend._fail_oversize_request(
+            b'{"result":{"content":[{"type":"text","text":"xxxx',
+            b'xxxx"}],"meta":{"id":"rec-1"}},"jsonrpc":"2.0","id":"gw-9"}\n',
+        )
+        reply = await _drain(inbox)
+        assert reply["id"] == 90 and "exceeded size limit" in reply["error"]["message"]
+        assert backend.is_alive
+
+    @pytest.mark.asyncio
+    async def test_the_drain_keeps_both_ends_of_an_oversize_line(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seen: list[tuple[bytes, bytes]] = []
+
+        async def _record(head: bytes, tail: bytes = b"") -> None:
+            seen.append((head, tail))
+
+        backend = _make_backend()
+        monkeypatch.setattr(backend, "_fail_oversize_request", _record)
+        big = b'{"result":"' + b"x" * 4096 + b'","jsonrpc":"2.0","id":"gw-3"}\n'
+        backend.stdout = cast(Any, _reader(big, _line({"method": "x"}), limit=1024))
+        await asyncio.wait_for(backend.run_stdout_pump(), timeout=10)
+        [(head, tail)] = seen
+        assert head.startswith(b'{"result":"x') and len(head) == 512
+        assert tail.endswith(b'"id":"gw-3"}\n') and len(tail) == 512
 
     @pytest.mark.asyncio
     async def test_unrecoverable_id_recycles_rather_than_guessing(self) -> None:
@@ -4678,7 +4727,7 @@ class TestSendInitialize:
         backend = _make_backend()
         backend.stdout = cast(Any, _reader(_line(
             {"id": backend_mod._GATEWAY_INIT_ID, "result": "nope"})))
-        with pytest.raises(ValueError, match="missing/non-dict result"):
+        with pytest.raises(ValueError, match="missing/malformed result"):
             await send_initialize(backend, timeout=5)
 
     @pytest.mark.asyncio
@@ -5163,3 +5212,346 @@ class TestBackendTmpContainment:
         await backend.shutdown()
 
         assert tmp_dir.is_dir(), "shutdown must not delete; the sweep owns deletion"
+
+
+# --- One stray stdout line costs that line, never the shared pump ------------
+
+
+#: Lines a backend may print that are not a routable JSON-RPC object. The pump
+#: is shared by every co-pooled session, and its ``finally`` fails them all, so
+#: each of these must be dropped rather than raised.
+_STRAY_BACKEND_LINES = {
+    **STRAY_LINES,
+    "list-method": lambda: b'{"jsonrpc":"2.0","method":["x"]}\n',
+    "dict-method": lambda: b'{"jsonrpc":"2.0","method":{"a":1},"id":3}\n',
+}
+
+
+def _roomy_reader(*chunks: bytes) -> asyncio.StreamReader:
+    """``_reader`` with a limit that admits every chunk, so a deep line reaches
+    the parse, not the oversize arm."""
+    return _reader(*chunks, limit=max(len(c) for c in chunks) * 2 + 65536)
+
+
+class TestStrayStdoutLines:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("stray", sorted(_STRAY_BACKEND_LINES))
+    async def test_the_pump_routes_the_next_frame_instead_of_failing_every_session(
+        self, stray: str
+    ) -> None:
+        backend = _make_backend()
+        backend.stdout = cast(Any, _roomy_reader(
+            _STRAY_BACKEND_LINES[stray](),
+            _line({"id": "gw-1", "result": {"ok": 1}}),
+        ))
+        inbox = await backend.attach_stub("s1")
+        backend._pending_requests["gw-1"] = _PendingRequest("s1", 5, "tools/call")
+
+        await asyncio.wait_for(backend.run_stdout_pump(), timeout=10)
+
+        assert await _drain(inbox) == {"id": 5, "result": {"ok": 1}}
+        assert backend.dead_reason == "stdout EOF"
+
+    @pytest.mark.asyncio
+    async def test_an_unparseable_response_fails_its_request_instead_of_hanging(self) -> None:
+        """The id probe finds whom it answers, so its caller is failed rather
+        than left to the heartbeat's hard ceiling."""
+        backend = _make_backend()
+        deep = too_deep_to_decode()
+        backend.stdout = cast(Any, _roomy_reader(
+            ('{"jsonrpc":"2.0","id":"gw-1","result":' + deep + "}\n").encode("ascii"),
+            _line({"id": "gw-2", "result": {"ok": 2}}),
+        ))
+        inbox1 = await backend.attach_stub("s1")
+        inbox2 = await backend.attach_stub("s2")
+        backend._pending_requests["gw-1"] = _PendingRequest("s1", 5, "tools/call")
+        backend._pending_requests["gw-2"] = _PendingRequest("s2", 6, "tools/call")
+
+        await asyncio.wait_for(backend.run_stdout_pump(), timeout=10)
+
+        failed = await _drain(inbox1)
+        assert failed["id"] == 5
+        assert "could not be parsed" in failed["error"]["message"]
+        assert await _drain(inbox2) == {"id": 6, "result": {"ok": 2}}
+
+    @pytest.mark.asyncio
+    async def test_an_unparseable_response_with_its_id_last_fails_its_request(self) -> None:
+        """The MCP TypeScript SDK writes ``{result, jsonrpc, id}``, so the probe
+        reads the tail of the line too."""
+        backend = _make_backend()
+        deep = too_deep_to_decode()
+        backend.stdout = cast(Any, _roomy_reader(
+            ('{"result":{"meta":{"id":"rec-1"},"x":' + deep + '},"jsonrpc":"2.0","id":"gw-1"}\n')
+            .encode("ascii"),
+        ))
+        inbox = await backend.attach_stub("s1")
+        backend._pending_requests["gw-1"] = _PendingRequest("s1", 5, "tools/call")
+
+        await asyncio.wait_for(backend.run_stdout_pump(), timeout=10)
+
+        failed = await _drain(inbox)
+        assert failed["id"] == 5 and "could not be parsed" in failed["error"]["message"]
+
+    @pytest.mark.asyncio
+    async def test_a_nested_id_in_an_unparseable_notification_fails_nothing(self) -> None:
+        """A server logging the call it serves echoes that call's id inside
+        ``params``; failing the call off it reported a success as a failure."""
+        backend = _make_backend()
+        backend.stdout = cast(Any, _roomy_reader(
+            b'{"jsonrpc":"2.0","method":"notifications/message","params":'
+            b'{"level":"debug","data":{"id":"gw-1","raw":"caf\xe9"}}}\n',
+            _line({"jsonrpc": "2.0", "id": "gw-1", "result": {"ok": 1}}),
+        ))
+        inbox = await backend.attach_stub("s1")
+        backend._pending_requests["gw-1"] = _PendingRequest("s1", 5, "tools/call")
+
+        await asyncio.wait_for(backend.run_stdout_pump(), timeout=10)
+
+        assert await _drain(inbox) == {"jsonrpc": "2.0", "id": 5, "result": {"ok": 1}}
+
+    @pytest.mark.asyncio
+    async def test_an_unparseable_subscribe_verdict_settles_the_lease(self) -> None:
+        """The parked rider is answered and the URI stops awaiting a grant, so a
+        later subscriber does not park behind a lease nothing is left to settle
+        (and nothing pending is left for the heartbeat to recycle)."""
+        backend = _make_backend()
+        inbox_a = await backend.attach_stub("A")
+        inbox_b = await backend.attach_stub("B")
+
+        def _sub(i: int) -> dict:
+            return {
+                "jsonrpc": "2.0", "id": i, "method": "resources/subscribe",
+                "params": {"uri": "res://x"},
+            }
+
+        await backend.forward_from_stub("A", _sub(11))
+        await backend.forward_from_stub("B", _sub(22))
+        (fid,) = [f for f, p in backend._pending_requests.items() if p.resource_uri]
+        assert backend._lease_awaiting_grant == {"res://x"}
+
+        await backend._route_backend_line(
+            b'{"jsonrpc":"2.0","id":"' + fid.encode() + b'","error":'
+            b'{"code":-32000,"message":"caf\xe9 not found"}}\n'
+        )
+
+        assert (await _drain(inbox_a))["id"] == 11
+        assert (await _drain(inbox_b))["id"] == 22
+        assert backend._lease_awaiting_grant == set()
+        assert backend._lease_pending_riders == {}
+
+    @staticmethod
+    def _releases(backend: Backend) -> list[dict]:
+        return [f for f in _frames(backend) if f.get("method") == "resources/unsubscribe"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("shape", ["unparseable", "oversize"])
+    async def test_a_coalesced_subscribe_reply_it_cannot_use_releases_the_lease(
+        self, shape: str
+    ) -> None:
+        """The gateway's error is not the server's refusal: read as one, it
+        skipped the release, and a lease the server granted stayed live
+        upstream with nothing routing its updates."""
+        backend = _make_backend()
+        inbox_a = await backend.attach_stub("A")
+        inbox_b = await backend.attach_stub("B")
+        for stub_uuid, rid in (("A", 11), ("B", 22)):
+            await backend.forward_from_stub(
+                stub_uuid,
+                {
+                    "jsonrpc": "2.0", "id": rid, "method": "resources/subscribe",
+                    "params": {"uri": "res://x"},
+                },
+            )
+        (fid,) = [f for f, p in backend._pending_requests.items() if p.resource_uri]
+
+        if shape == "unparseable":
+            await backend._route_backend_line(
+                b'{"jsonrpc":"2.0","id":"' + fid.encode()
+                + b'","result":{"_meta":{"n":"caf\xe9"}}}\n'
+            )
+        else:
+            await backend._fail_oversize_request(
+                b'{"jsonrpc":"2.0","id":"' + fid.encode() + b'","result":{"x":"'
+            )
+
+        assert [r["params"]["uri"] for r in self._releases(backend)] == ["res://x"]
+        assert backend._resource_subscriptions == {}
+        assert "error" in await _drain(inbox_a) and "error" in await _drain(inbox_b)
+
+    @pytest.mark.asyncio
+    async def test_a_per_caller_subscribe_reply_it_cannot_use_releases_as_that_caller(
+        self,
+    ) -> None:
+        backend = _make_backend()
+        backend.supports_caller_identity = True
+        inbox = await backend.attach_stub("A")
+        caller = CallerContext(session_key="sess-a", from_gateway=True)
+        await backend.forward_from_stub(
+            "A",
+            {
+                "jsonrpc": "2.0", "id": 11, "method": "resources/subscribe",
+                "params": {"uri": "res://x"},
+            },
+            caller=caller,
+        )
+        (fid,) = [f for f, p in backend._pending_requests.items() if p.resource_uri]
+
+        await backend._route_backend_line(
+            b'{"jsonrpc":"2.0","id":"' + fid.encode() + b'","result":{"n":"caf\xe9"}}\n'
+        )
+
+        (release,) = self._releases(backend)
+        assert CallerContext.from_meta(release["params"]["_meta"]).session_key == "sess-a"
+        assert backend._resource_subscriptions == {}
+        assert "error" in await _drain(inbox)
+
+    @pytest.mark.asyncio
+    async def test_a_refusal_the_server_sent_still_releases_nothing(self) -> None:
+        """The unknown-verdict release is for the gateway's own error only."""
+        backend = _make_backend()
+        await backend.attach_stub("A")
+        await backend.forward_from_stub(
+            "A",
+            {
+                "jsonrpc": "2.0", "id": 11, "method": "resources/subscribe",
+                "params": {"uri": "res://x"},
+            },
+        )
+        (fid,) = [f for f, p in backend._pending_requests.items() if p.resource_uri]
+        await backend._route_backend_line(
+            _line({"jsonrpc": "2.0", "id": fid, "error": {"code": -32000, "message": "no"}})
+        )
+        assert self._releases(backend) == []
+
+    @pytest.mark.asyncio
+    async def test_an_unparseable_release_verdict_settles_its_waiters(self) -> None:
+        """A gateway-owned release has no stub to answer; skipping it left the
+        URI awaiting release and its waiters unanswered."""
+        backend = _make_backend()
+        inbox = await backend.attach_stub("w")
+        backend._pending_requests["gw-r"] = _PendingRequest(
+            backend_mod._RELEASE_STUB_SENTINEL, None, "resources/unsubscribe",
+            resource_uri="res://y",
+        )
+        backend._lease_awaiting_release.add("res://y")
+        backend._lease_release_waiters["res://y"] = [("w", 31)]
+
+        await backend._route_backend_line(
+            b'{"jsonrpc":"2.0","id":"gw-r","error":{"message":"\xff"}}\n'
+        )
+
+        assert backend._lease_awaiting_release == set()
+        assert (await _drain(inbox))["id"] == 31
+
+    @pytest.mark.asyncio
+    async def test_a_line_whose_handling_raises_costs_that_line(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Anything one line's handling raises, past the routing guard too, costs
+        that line: ending the pump would fail every co-pooled session in its
+        ``finally``."""
+        backend = _make_backend()
+        real = backend._route_backend_line
+        calls: list[bytes] = []
+
+        async def _raise_once(line: bytes) -> None:
+            calls.append(line)
+            if len(calls) == 1:
+                raise RuntimeError("delivery path broke")
+            await real(line)
+
+        monkeypatch.setattr(backend, "_route_backend_line", _raise_once)
+        backend.stdout = cast(Any, _reader(
+            _line({"method": "x"}), _line({"jsonrpc": "2.0", "id": "gw-1", "result": {}}),
+        ))
+        inbox = await backend.attach_stub("s1")
+        backend._pending_requests["gw-1"] = _PendingRequest("s1", 5, "tools/call")
+
+        await asyncio.wait_for(backend.run_stdout_pump(), timeout=10)
+
+        assert (await _drain(inbox))["id"] == 5
+        assert backend.dead_reason == "stdout EOF"
+
+    @pytest.mark.asyncio
+    async def test_a_routing_raise_answers_the_request_it_had_claimed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        real = backend_mod._tool_call_error_text
+
+        def _boom(msg: Any) -> Any:
+            # A fault in this RESPONSE's content: the error that answers it routes.
+            if "result" in msg:
+                raise RuntimeError("routing failed")
+            return real(msg)
+
+        monkeypatch.setattr(backend_mod, "_tool_call_error_text", _boom)
+        backend = _make_backend()
+        backend.stdout = cast(Any, _roomy_reader(
+            _line({"id": "gw-1", "result": {"ok": 1}}),
+            _line({"method": "notifications/tools/list_changed"}),
+        ))
+        inbox = await backend.attach_stub("s1")
+        backend._pending_requests["gw-1"] = _PendingRequest(
+            "s1", 5, "tools/call", t_start_ms=time.monotonic() * 1000.0
+        )
+
+        await asyncio.wait_for(backend.run_stdout_pump(), timeout=10)
+
+        failed = await _drain(inbox)
+        assert failed["id"] == 5
+        assert "could not be routed" in failed["error"]["message"]
+        # The pump went on to the next frame.
+        assert (await _drain(inbox))["method"] == "notifications/tools/list_changed"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "capabilities", [["tools"], "x", True, [], 0, None], ids=["list", "str", "bool", "empty-list", "zero", "null"]
+    )
+    async def test_a_non_object_capabilities_reads_as_none_and_initializes(
+        self, capabilities: Any, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A cosmetic field, so it must not fail the shared backend's handshake;
+        falsy and truthy values are treated alike (the old ``or {}`` let ``[]``
+        through as-is and failed ``["tools"]``), and no later session is
+        replayed the bad value."""
+        backend = _make_backend()
+        reader = asyncio.StreamReader(limit=1 << 20)
+        backend.stdout = cast(Any, reader)
+        inbox1 = await backend.attach_stub("s1")
+        inbox2 = await backend.attach_stub("s2")
+        init = {"jsonrpc": "2.0", "method": "initialize", "params": {"capabilities": {}}}
+        await backend.forward_from_stub("s1", dict(init, id=1))
+        await backend.forward_from_stub("s2", dict(init, id=7))
+        (fid,) = [k for k, p in backend._pending_requests.items() if p.stub_uuid == "__init__"]
+        pump = asyncio.create_task(backend.run_stdout_pump())
+        with caplog.at_level(logging.WARNING, logger=backend_mod.__name__):
+            reader.feed_data(_line({"jsonrpc": "2.0", "id": fid, "result": {"capabilities": capabilities}}))
+            reader.feed_eof()
+            await asyncio.wait_for(pump, timeout=10)
+
+        assert backend._init_result == {"capabilities": {}}
+        assert backend.supports_caller_identity is False
+        for inbox, original_id in ((inbox1, 1), (inbox2, 7)):
+            reply = await _drain(inbox)
+            assert reply["id"] == original_id
+            assert reply["result"]["capabilities"] == {}
+        assert any("non-object capabilities" in r.getMessage() for r in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_the_pre_init_reader_skips_stray_lines_and_initializes(self) -> None:
+        result: dict[str, Any] = {"capabilities": {}}
+        backend = _make_backend()
+        backend.stdout = cast(Any, _roomy_reader(
+            *(make() for make in _STRAY_BACKEND_LINES.values()),
+            _line({"id": backend_mod._GATEWAY_INIT_ID, "result": result}),
+        ))
+        assert await send_initialize(backend, timeout=10) == result
+
+    @pytest.mark.asyncio
+    async def test_send_initialize_reads_a_non_object_capabilities_as_none(self) -> None:
+        """The same parser as the pump's handshake: one rule on both paths."""
+        backend = _make_backend()
+        backend.stdout = cast(Any, _reader(_line(
+            {"id": backend_mod._GATEWAY_INIT_ID, "result": {"capabilities": ["tools"]}})))
+        assert await send_initialize(backend, timeout=5) == {"capabilities": {}}
+        assert backend.supports_caller_identity is False

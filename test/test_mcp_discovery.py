@@ -14,6 +14,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from stray_line_helpers import STRAY_LINES, too_deep_line
 
 from conftest import host_abs
 from kiro_crew import mcp_cleanup, platform_compat
@@ -2848,6 +2849,21 @@ class TestReadJsonrpcResponse:
         assert result["result"] == {"ok": True}
 
     @pytest.mark.asyncio
+    async def test_sse_a_stray_data_line_is_skipped(self) -> None:
+        """``RecursionError`` is not a ``JSONDecodeError``: unlisted, one data
+        line nested past the decoder failed the whole probe."""
+        strays = "".join(
+            "data: " + make().decode("utf-8", "replace") for make in STRAY_LINES.values()
+        )
+        resp = MagicMock()
+        resp.content_type = "text/event-stream"
+        resp.text = AsyncMock(
+            return_value=strays + 'data: {"jsonrpc": "2.0", "id": 1, "result": {"ok": true}}\n'
+        )
+        result = await _read_jsonrpc_response(resp)
+        assert result["result"] == {"ok": True}
+
+    @pytest.mark.asyncio
     async def test_sse_empty_returns_empty_dict(self) -> None:
         resp = MagicMock()
         resp.content_type = "text/event-stream"
@@ -5391,6 +5407,30 @@ class TestReadStdioJsonrpcResponse:
                 b'{"jsonrpc":"2.0","id":1,"result":{}}\n',
             ]
         )
+        resp = await _read_stdio_jsonrpc_response(stream, timeout=5)
+        assert resp is not None
+        assert resp["id"] == 1
+
+    @pytest.mark.asyncio
+    async def test_skips_a_line_nested_past_the_decoder(self) -> None:
+        """``RecursionError`` is not a ``JSONDecodeError``: unlisted, one such
+        line failed the probe instead of being skipped."""
+        stream = asyncio.StreamReader(limit=1 << 20)
+        stream.feed_data(too_deep_line())
+        stream.feed_data(b'{"jsonrpc":"2.0","id":1,"result":{}}\n')
+        stream.feed_eof()
+        resp = await _read_stdio_jsonrpc_response(stream, timeout=5)
+        assert resp is not None
+        assert resp["id"] == 1
+
+    @pytest.mark.asyncio
+    async def test_non_object_json_lines_do_not_count_toward_cap(self) -> None:
+        """A server printing a JSON progress counter before it answers is not a
+        flood: valid JSON is bounded by the timeout, like a notification."""
+        from kiro_crew.mcp_discovery import _MAX_BANNER_LINES
+
+        progress = [f"{n}\n".encode() for n in range(1, 2 * _MAX_BANNER_LINES + 1)]
+        stream = _make_stream([*progress, b'{"jsonrpc":"2.0","id":1,"result":{}}\n'])
         resp = await _read_stdio_jsonrpc_response(stream, timeout=5)
         assert resp is not None
         assert resp["id"] == 1

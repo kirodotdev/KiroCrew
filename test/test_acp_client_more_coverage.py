@@ -21,6 +21,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from stray_line_helpers import too_deep_to_decode as _too_deep_to_decode
 
 import kiro_crew.acp.client as acp_client
 from kiro_crew import model_registry as mr
@@ -1344,6 +1345,108 @@ class TestReadNewToolResults:
         # A second call sees no new lines.
         assert client._read_new_tool_results_sync() == []
 
+    @staticmethod
+    def _result_line(tool_use_id: Any, content: Any) -> str:
+        return json.dumps(
+            {
+                "kind": "ToolResults",
+                "data": {
+                    "content": [
+                        {
+                            "kind": "toolResult",
+                            "data": {"toolUseId": tool_use_id, "content": content},
+                        }
+                    ]
+                },
+            }
+        )
+
+    def test_a_value_of_the_wrong_type_costs_only_that_value(self, tmp_path, monkeypatch):
+        """The offset is saved before a line is parsed, so a raise here ended
+        the scan and the lines behind it waited for the next one."""
+        text = [{"kind": "text", "data": "x"}]
+        lines = [
+            self._result_line("t1", [{"kind": "text", "data": "first"}]),
+            "123",
+            "null",
+            json.dumps({"kind": "ToolResults", "data": [1]}),
+            json.dumps({"kind": "ToolResults", "data": {"content": "not-a-list"}}),
+            json.dumps({"kind": "ToolResults", "data": {"content": [5, None, "s"]}}),
+            self._result_line("t-content", 7),
+            self._result_line(["unhashable"], text),
+            self._result_line("", text),
+            self._result_line(None, text),
+            self._result_line("t-stdout", [{"kind": "json", "data": {"stdout": 5}}]),
+            self._result_line("t2", [{"kind": "text", "data": "second"}]),
+        ]
+        body = "\n".join(lines) + "\n"
+        client = self._write(tmp_path, monkeypatch, body)
+
+        results = client._read_new_tool_results_sync()
+
+        assert [(r.tool_call_id, r.tool_output) for r in results] == [
+            ("t1", "first"),
+            ("t2", "second"),
+        ]
+        assert client._jsonl_pos == len(body.encode("utf-8"))
+
+    def test_an_undecodable_byte_costs_only_its_line(self, tmp_path, monkeypatch):
+        """A strict text read raised on the byte before the offset moved, so
+        every later scan failed at the same place for the rest of the session."""
+        client = self._write(tmp_path, monkeypatch, "")
+        first = self._result_line("t1", [{"kind": "text", "data": "first"}]).encode("utf-8")
+        later = self._result_line("t2", [{"kind": "text", "data": "second"}]).encode("utf-8")
+        body = first + b"\n" + b'{"kind": "x", "s": "\xff"}\n' + later + b"\n"
+        (tmp_path / "sid.jsonl").write_bytes(body)
+
+        results = client._read_new_tool_results_sync()
+
+        assert [r.tool_call_id for r in results] == ["t1", "t2"]
+        assert client._jsonl_pos == len(body)
+
+    def test_an_over_cap_record_costs_only_itself(self, tmp_path, monkeypatch):
+        """The scan reads through the capped record reader: a newline-free or
+        huge record is never materialised whole, and the offset still moves
+        past it so the lines after it are read on this scan."""
+        import functools
+
+        from kiro_crew import jsonl_util
+
+        monkeypatch.setattr(
+            acp_client,
+            "bounded_raw_records_with_offsets",
+            functools.partial(jsonl_util.bounded_raw_records_with_offsets, cap=512),
+        )
+        first = self._result_line("t1", [{"kind": "text", "data": "first"}])
+        later = self._result_line("t2", [{"kind": "text", "data": "second"}])
+        body = first + "\n" + "x" * 4096 + "\n" + later + "\n"
+        client = self._write(tmp_path, monkeypatch, body)
+
+        results = client._read_new_tool_results_sync()
+
+        assert [r.tool_call_id for r in results] == ["t1", "t2"]
+        assert client._jsonl_pos == len(body.encode("utf-8"))
+
+    def test_a_line_whose_handling_raises_costs_only_that_line(self, tmp_path, monkeypatch):
+        calls = []
+
+        def _raise_once(value, **kwargs):
+            calls.append(value)
+            if len(calls) == 1:
+                raise RuntimeError("encoder fault")
+            return json.dumps(value, **kwargs)
+
+        monkeypatch.setattr(acp_client, "_dumps_degraded", _raise_once)
+        lines = [
+            self._result_line("t-raises", [{"kind": "json", "data": {"rc": 1}}]),
+            self._result_line("t-after", [{"kind": "json", "data": {"rc": 0}}]),
+        ]
+        client = self._write(tmp_path, monkeypatch, "\n".join(lines) + "\n")
+
+        results = client._read_new_tool_results_sync()
+
+        assert [r.tool_call_id for r in results] == ["t-after"]
+
     def test_partial_trailing_line_is_left_for_the_next_call(self, tmp_path, monkeypatch):
         complete = json.dumps(
             {
@@ -1933,24 +2036,6 @@ def _nested_json_text(payload: Any) -> str:
         depth += 1
         node = node["nested"]
     return '{"nested": ' * depth + json.dumps(node) + "}" * depth
-
-
-def _too_deep_to_decode() -> str:
-    """JSON text nested past THIS interpreter's DECODER ceiling.
-
-    Probed for the same reason as the encoder depth, and a separate probe because
-    the decoder's ceiling is the higher of the two: text the encoder refuses is
-    still ordinary input to ``json.loads``.
-    """
-    depth = 1000
-    while depth <= 262144:
-        text = "[" * depth + "]" * depth
-        try:
-            json.loads(text)
-        except RecursionError:
-            return text
-        depth *= 2
-    raise AssertionError("no nesting up to 2**18 is refused by json.loads")
 
 
 class TestClientEncodeRefusalDegrades:

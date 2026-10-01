@@ -831,6 +831,16 @@ class TestReadbackParsing:
         commands = _pi_commands_from_readback(stdout)
         assert isinstance(commands, list) and commands[0]["name"] == PROBE
 
+    def test_a_stray_line_before_the_response_is_skipped(self):
+        """A line nested past the decoder raised ``RecursionError``, which the
+        ``ValueError`` arm missed, and failed the session's spawn."""
+        from stray_line_helpers import STRAY_LINES
+
+        strays = [make().decode("utf-8", "replace").rstrip("\n") for make in STRAY_LINES.values()]
+        stdout = "\n".join([*strays, _response(_registry((PROBE, "/site/gate.ts")))])
+        commands = _pi_commands_from_readback(stdout)
+        assert isinstance(commands, list) and commands[0]["name"] == PROBE
+
     def test_a_response_to_another_request_is_not_taken(self):
         assert _pi_commands_from_readback(_response([], request_id="other")) is None
 

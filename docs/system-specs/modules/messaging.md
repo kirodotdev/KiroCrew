@@ -5425,7 +5425,12 @@ cleanly when stdin closes, so the existing subprocess lifecycle applies
 unchanged. `rpc.py` owns only the framing (request correlation, notification
 routing, oversized/unparseable-line tolerance, a stdout limit far above
 asyncio's 64 KiB default so one large line cannot kill the reader);
-`client.py` owns iMessage semantics.
+`client.py` owns iMessage semantics. "Unparseable" is any line that is not a
+JSON object, undecodable bytes and a line nested past the JSON decoder's ceiling
+included: each is dropped with one warning, except a blank line, which is
+dropped silently. A read that fails with any `OSError`
+(a reset, an `EIO`) ends the loop like EOF does, so its teardown — failing the
+pending calls, reporting the disconnect — always runs.
 
 **Why an external bridge rather than Python.** iMessage has no server-side API,
 so both halves a channel needs are macOS-native problems: following the Messages

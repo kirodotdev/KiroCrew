@@ -276,6 +276,8 @@ from kiro_crew.hooks import (
     get_global_hook_store,
 )
 from kiro_crew.identity_stores import IDENTITY_STORE_ROOTS
+from kiro_crew.json_line import parse_json_object_line
+from kiro_crew.jsonl_util import bounded_raw_records_with_offsets
 from kiro_crew.kiro_cli import known_kiro_cli_dirs, resolve_kiro_cli
 from kiro_crew.mcp_gateway.claim import (
     STUB_SESSION_TOKEN_ENV,
@@ -1912,14 +1914,8 @@ def _pi_commands_from_readback(stdout: str) -> object:
     """
     want = _PI_READBACK_REQUEST["id"]
     for line in stdout.splitlines():
-        line = line.strip()
-        if not line.startswith("{"):
-            continue
-        try:
-            frame = json.loads(line)
-        except ValueError:
-            continue
-        if not isinstance(frame, dict) or frame.get("id") != want:
+        frame = parse_json_object_line(line)
+        if frame is None or frame.get("id") != want:
             continue
         if frame.get("type") != "response" or frame.get("success") is not True:
             return None
@@ -13829,68 +13825,92 @@ class AcpClient:
             return []
         results: list[AcpEvent] = []
         try:
-            # kiro-cli writes the transcript as UTF-8. Without an explicit
-            # encoding a Windows interpreter decodes with the ANSI code page.
-            with open(jsonl_path, "r", encoding="utf-8") as f:
+            # Read as bytes and decode each record on its own with
+            # ``errors="replace"``: kiro-cli writes UTF-8, but a strict text
+            # read raises on one bad byte BEFORE the offset below is saved, so
+            # every later scan would fail at the same place for the rest of
+            # the session. The capped reader bounds one record's memory, and
+            # its offsets are byte offsets to resume from.
+            with open(jsonl_path, "rb") as f:
                 f.seek(self._jsonl_pos)
-                while True:
-                    line = f.readline()
-                    if not line:
-                        break
-                    if not line.endswith("\n"):
+                for _start, end, record in bounded_raw_records_with_offsets(
+                    f, jsonl_path, label="JSONL tool results"
+                ):
+                    if record is not None and not record.endswith((b"\n", b"\r")):
                         break  # partial line — retry next call
-                    self._jsonl_pos = f.tell()
-                    line = line.strip()
-                    if not line:
+                    # Saved before the line is parsed, so a line this scan
+                    # cannot use (an over-cap one included) costs that line
+                    # only, and the lines after it are still read.
+                    self._jsonl_pos = end
+                    if record is None:
                         continue
                     try:
-                        entry = json.loads(line)
-                    # A line past the decoder's recursion ceiling raises
-                    # ``RecursionError``, which is a ``RuntimeError`` and not a
-                    # ``JSONDecodeError``: unlisted, it reaches the method's
-                    # catch-all arm and costs every LATER line's results too,
-                    # since the saved offset has already moved past this one.
-                    except (json.JSONDecodeError, RecursionError):
-                        continue
-                    if entry.get("kind") != "ToolResults":
-                        continue
-                    for c in entry.get("data", {}).get("content", []):
-                        if c.get("kind") != "toolResult":
-                            continue
-                        tr = c.get("data")
-                        if not isinstance(tr, dict):
-                            continue
-                        tool_use_id = tr.get("toolUseId", "")
-                        output_parts: list[str] = []
-                        for rc in tr.get("content", []):
-                            if not isinstance(rc, dict):
-                                continue
-                            if rc.get("kind") == "json":
-                                d = rc.get("data", {})
-                                if isinstance(d, dict) and "stdout" in d:
-                                    out = d.get("stdout", "")
-                                    if out:
-                                        output_parts.append(out[:4000])
-                                else:
-                                    output_parts.append(_dumps_degraded(d, indent=2)[:4000])
-                            elif rc.get("kind") == "text":
-                                output_parts.append(str(rc.get("data", ""))[:4000])
-                        if output_parts:
-                            joined = "\n".join(output_parts)
-                            results.append(
-                                AcpEvent(
-                                    kind=EVENT_TOOL_RESULT,
-                                    tool_call_id=tool_use_id,
-                                    tool_output=joined[:8000],
-                                    # A kiro-cli result read back from its session
-                                    # file traces credentials like a streamed one.
-                                    tool_output_credentials=tool_output_fingerprints(joined),
-                                )
-                            )
+                        results.extend(self._jsonl_tool_results(record))
+                    except Exception:  # noqa: BLE001 - one line, not the scan
+                        logger.debug("JSONL: skipped a tool-result line", exc_info=True)
         except Exception:
             logger.debug("Failed to read JSONL for tool results", exc_info=True)
         if results:
             logger.debug("JSONL: read %d tool result(s) from %s", len(results), jsonl_path.name)
+        return results
+
+    @staticmethod
+    def _jsonl_tool_results(line: bytes) -> list[AcpEvent]:
+        """The tool results one session JSONL line carries; ``[]`` for any other line.
+
+        Anything that is not the expected shape is skipped at its own level --
+        a line that is not a JSON object, a ``data`` or ``content`` that is not
+        an object or list, an item that is not an object, a result without a
+        non-empty string ``toolUseId``, a ``stdout`` that is not a string.
+        """
+        entry = parse_json_object_line(line, errors="replace")
+        if entry is None or entry.get("kind") != "ToolResults":
+            return []
+        data = entry.get("data")
+        if not isinstance(data, dict):
+            return []
+        content = data.get("content")
+        if not isinstance(content, list):
+            return []
+        results: list[AcpEvent] = []
+        for c in content:
+            if not isinstance(c, dict) or c.get("kind") != "toolResult":
+                continue
+            tr = c.get("data")
+            if not isinstance(tr, dict):
+                continue
+            tool_use_id = tr.get("toolUseId")
+            if not isinstance(tool_use_id, str) or not tool_use_id:
+                continue
+            tr_content = tr.get("content")
+            if not isinstance(tr_content, list):
+                continue
+            output_parts: list[str] = []
+            for rc in tr_content:
+                if not isinstance(rc, dict):
+                    continue
+                if rc.get("kind") == "json":
+                    d = rc.get("data", {})
+                    if isinstance(d, dict) and "stdout" in d:
+                        out = d.get("stdout", "")
+                        if isinstance(out, str) and out:
+                            output_parts.append(out[:4000])
+                    else:
+                        output_parts.append(_dumps_degraded(d, indent=2)[:4000])
+                elif rc.get("kind") == "text":
+                    output_parts.append(str(rc.get("data", ""))[:4000])
+            if output_parts:
+                joined = "\n".join(output_parts)
+                results.append(
+                    AcpEvent(
+                        kind=EVENT_TOOL_RESULT,
+                        tool_call_id=tool_use_id,
+                        tool_output=joined[:8000],
+                        # A kiro-cli result read back from its session
+                        # file traces credentials like a streamed one.
+                        tool_output_credentials=tool_output_fingerprints(joined),
+                    )
+                )
         return results
 
     def _note_pi_gate_asked(self, msg: JsonRpcMessage) -> None:

@@ -22,12 +22,14 @@ import json
 import sys
 from typing import Any, Callable
 
+from kiro_crew.json_line import parse_json_object_line, recover_line_id
 from kiro_crew.security import redact
 from kiro_crew.sel import sel
 
 from . import deps, progress, runner
 
 #: JSON-RPC 2.0 error codes used here.
+_PARSE_ERROR = -32700
 _METHOD_NOT_FOUND = -32601
 _INVALID_PARAMS = -32602
 _INTERNAL_ERROR = -32603
@@ -381,19 +383,28 @@ def main() -> None:
 
     One malformed line must not end the session: the client may still send valid
     requests afterwards, and dying here would surface as the whole MCP server
-    disappearing mid-session.
+    disappearing mid-session. So the lines are read as bytes and parsed through
+    the shared reader contract (a line that is not UTF-8, not JSON, not an
+    object, or nested past the decoder's ceiling is skipped), and a request
+    whose handling raises is answered as an internal error rather than ending
+    the loop. A skipped line that is a request (a top-level ``method``) with a
+    recoverable top-level id is answered as a parse error, so its caller is
+    not left to its own timeout.
     """
-    for line in sys.stdin:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            request = json.loads(line)
-        except ValueError:
-            continue
-        if not isinstance(request, dict):
-            continue
-        reply = handle(request)
+    for line in sys.stdin.buffer:
+        request = parse_json_object_line(line)
+        if request is None:
+            req_id = recover_line_id(line, requests_only=True)
+            reply = None if req_id is None else _error(req_id, _PARSE_ERROR, "Parse error")
+        else:
+            try:
+                reply = handle(request)
+            except Exception:  # noqa: BLE001 - one request must not end the server
+                print("auto-improvement mcp: a request could not be handled", file=sys.stderr)
+                req_id = request.get("id")
+                reply = (
+                    None if req_id is None else _error(req_id, _INTERNAL_ERROR, "internal error")
+                )
         if reply is None:
             continue
         sys.stdout.write(json.dumps(reply) + "\n")

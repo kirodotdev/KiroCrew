@@ -23,6 +23,8 @@ import json
 import logging
 from typing import Any, Awaitable, Callable, Optional, Sequence
 
+from kiro_crew.json_line import parse_json_object_line
+
 logger = logging.getLogger(__name__)
 
 #: Max bytes in one stdout line. The bridge folds a whole message (and, for
@@ -227,16 +229,17 @@ class JsonRpcPeer:
                 # reading: the alternative is a permanently silent channel.
                 logger.warning("imessage rpc: oversized stdout line dropped (%s)", exc)
                 continue
-            except (asyncio.IncompleteReadError, ConnectionResetError):
+            except (asyncio.IncompleteReadError, OSError):
+                # ``OSError`` covers ``ConnectionResetError`` and an ``EIO``
+                # from a pipe gone bad: either way the stream is over, and the
+                # teardown below must run rather than be skipped by a raise.
                 break
             if not raw:
                 break
-            try:
-                frame = json.loads(raw)
-            except (ValueError, UnicodeDecodeError):
-                logger.warning("imessage rpc: unparseable stdout line dropped")
-                continue
-            if not isinstance(frame, dict):
+            frame = parse_json_object_line(raw)
+            if frame is None:
+                if raw.strip():
+                    logger.warning("imessage rpc: unparseable stdout line dropped")
                 continue
             try:
                 await self._route(frame)

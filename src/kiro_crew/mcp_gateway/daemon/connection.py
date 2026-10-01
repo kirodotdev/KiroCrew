@@ -12,13 +12,13 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import json
 import time
 from collections import deque
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
 from kiro_crew.code_fingerprint import code_fingerprint
+from kiro_crew.json_line import parse_json_object_line, recover_line_id
 from kiro_crew.mcp_gateway import hazards
 from kiro_crew.mcp_gateway.admission import Admission
 from kiro_crew.mcp_gateway.backend import INTERNAL_STUB_PREFIXES, Backend, BackendGone
@@ -49,6 +49,7 @@ from kiro_crew.mcp_gateway.daemon.launch import TargetResolver
 from kiro_crew.mcp_gateway.daemon.replacement import _ReplacementRefused
 from kiro_crew.mcp_gateway.daemon.wire import (
     _jsonrpc_error,
+    _jsonrpc_parse_error,
     _read_first_frame,
     _stub_probe_add,
     _stub_probe_discard,
@@ -360,13 +361,21 @@ async def _handle_connection(
             if len(line) > facade._MAX_FRAME_BYTES:
                 logger.warning("stub %s frame too large (%d bytes); dropping", stub_uuid, len(line))
                 return
-            try:
-                msg = json.loads(line.decode("utf-8"))
-            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-                logger.warning("stub %s sent non-JSON frame: %s", stub_uuid, exc)
-                continue
-            if not isinstance(msg, dict):
-                logger.warning("stub %s sent non-object frame; dropping", stub_uuid)
+            msg = parse_json_object_line(line)
+            if msg is None:
+                logger.warning(
+                    "stub %s sent a frame that is not a JSON object; dropping", stub_uuid
+                )
+                # A request kiro-cli is waiting on is answered rather than
+                # stranded: the ping-gated wedge check would see nothing wrong.
+                # Only a request: a response here answers a backend's request,
+                # under an id of the backend's that kiro-cli may also be using.
+                req_id = recover_line_id(line, requests_only=True)
+                if req_id is not None:
+                    try:
+                        await _write_json_line(writer, _jsonrpc_parse_error(req_id))
+                    except (OSError, ConnectionError):
+                        return
                 continue
             # Claim-push pickup: a concurrent ``claim`` connection may have
             # re-targeted this connection's identity via ``conn.caller``.

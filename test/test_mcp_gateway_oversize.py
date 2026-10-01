@@ -38,6 +38,13 @@ class TestUnderThresholdPassthrough:
         """An empty or whitespace line passes through."""
         assert maybe_spill_response(b"\n", "test-server", 100) == b"\n"
 
+    def test_a_line_nested_past_the_decoder_passes_through(self):
+        """Over the threshold but unparseable: forwarded as it came, not raised."""
+        from stray_line_helpers import too_deep_result_line
+
+        line = too_deep_result_line()
+        assert maybe_spill_response(line, "test-server", 100) is line
+
 
 # --- (d) Over spill threshold -> spill file with full content ---
 

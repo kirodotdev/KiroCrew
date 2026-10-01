@@ -1166,7 +1166,14 @@ One transport difference: the upstream served its MCP tools over HTTP on its own
 allocated port. A builtin has no port, and the app bridge deliberately SKIPS a
 URL-based MCP entry when there is no live backend (a dead default-port URL would
 poison every session's provider config), so the tools ship as a **stdio** server
-instead — `backend/mcp_server.py`, six read-only tools, all auto-approvable.
+instead — `backend/mcp_server.py`, six read-only tools, all auto-approvable. Its
+loop reads stdin as bytes through `json_line.parse_json_object_line`, so a line
+that is not UTF-8, not a JSON object, or nested past the decoder's ceiling is
+skipped (a request, one with a top-level `method`, is answered `-32700` under
+its top-level id when one is recoverable at either end of the line, so its
+caller does not wait out its own timeout), and a
+request whose handling raises is answered `-32603`: neither ends the server
+mid-session.
 
 ## Tests
 

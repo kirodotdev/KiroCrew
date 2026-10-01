@@ -388,6 +388,30 @@ def strict_raw_records_with_offsets(
         yield start, end, frame
 
 
+def bounded_raw_records_with_offsets(
+    handle: IO[bytes], path: Path, *, cap: int = RECORD_CAP, label: str = "read"
+) -> Iterator[tuple[int, int, bytes | None]]:
+    """Yield ``(start, end, record)`` with absolute byte offsets, skipping over-cap ones.
+
+    :func:`bounded_raw_records` for a caller that resumes from a saved offset
+    (a tail reader polling a file another process appends to). An over-cap
+    record is yielded as ``None`` rather than left out, so the caller can still
+    move its offset past it instead of re-reading it on every poll. The last
+    record may be unterminated (a writer mid-append): it carries no terminator,
+    which is how the caller tells it apart and leaves it for its next read.
+    """
+    oversized = 0
+    for start, end, frame in _frames_with_offsets(handle, cap):
+        if isinstance(frame, _Oversized):
+            oversized += 1
+            yield start, end, None
+            continue
+        yield start, end, frame
+    if oversized:
+        # %r for the same reason as bounded_raw_records: *path* may embed a newline.
+        logger.debug("%s: skipped %d record(s) over %d bytes in %r", label, oversized, cap, path)
+
+
 def _decode(raw: bytes) -> str:
     """Decode one accepted record.
 

@@ -6,11 +6,14 @@ import asyncio
 import json
 import time
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from kiro_crew.acp_backends import ACP_BACKEND_CLAUDE, ACP_BACKEND_KIRO
+from kiro_crew.knowledge import llm_pool
 from kiro_crew.knowledge.llm_pool import (
     DEFAULT_EXTRACTION_EFFORT,
     DEFAULT_IDLE_TTL_SECS,
@@ -1166,6 +1169,117 @@ class TestCCWorker:
             worker = CCWorker()
             with pytest.raises(RuntimeError, match="claude CLI not found"):
                 await worker.start()
+
+
+def _stream_json(*events: Any) -> list[bytes]:
+    return [(json.dumps(e) + "\n").encode("utf-8") for e in events]
+
+
+def _assistant(text: str) -> dict:
+    return {
+        "type": "assistant",
+        "message": {"role": "assistant", "content": [{"type": "text", "text": text}]},
+    }
+
+
+def _result(text: str) -> dict:
+    """A result event that ends the reply; the reply is the assistant text."""
+    return {"type": "result", "subtype": "success", "is_error": False}
+
+
+async def _fed_worker(
+    monkeypatch, lines: list[bytes], *, limit: int = 1 << 20, eof: bool = True
+) -> CCWorker:
+    """A CCWorker over a fake process whose stdout already holds *lines*."""
+    reader = asyncio.StreamReader(limit=limit)
+    for line in lines:
+        reader.feed_data(line)
+    if eof:
+        reader.feed_eof()
+    stdin = MagicMock()
+    stdin.drain = AsyncMock()
+    worker = CCWorker(sandbox_mode="off")
+    worker._proc = cast(Any, SimpleNamespace(stdout=reader, stdin=stdin, returncode=None, pid=4242))
+    worker._event_queue = asyncio.Queue()
+    worker._reader_task = asyncio.create_task(worker._stdout_reader())
+    monkeypatch.setattr(llm_pool.platform_compat, "kill_and_reap", AsyncMock())
+    return worker
+
+
+class TestCCWorkerStreamJson:
+    """One stray line costs that line, never the reader."""
+
+    @pytest.mark.asyncio
+    async def test_stray_lines_and_bad_shapes_are_skipped(self, monkeypatch):
+        from stray_line_helpers import STRAY_LINES
+
+        lines = [
+            *(make() for make in STRAY_LINES.values()),
+            *_stream_json(
+                {"type": "assistant", "message": "x"},
+                {"type": "assistant", "message": {"content": [5, {"type": "text", "text": 7}]}},
+                _assistant("tail-of-prompt-1"),
+                {"type": "result", "result": ["not", "text"]},
+                _assistant("reply-2"),
+                _result("reply-2"),
+            ),
+        ]
+        worker = await _fed_worker(monkeypatch, lines)
+        assert await worker.send_message("p1", timeout=10) == "tail-of-prompt-1"
+        assert await worker.send_message("p2", timeout=10) == "reply-2"
+        await worker.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_a_line_over_the_limit_is_skipped_and_the_reader_lives(self, monkeypatch):
+        """A fetched page echoed in a ``user`` tool_result is one long line."""
+        oversize = _stream_json(
+            {
+                "type": "user",
+                "message": {"content": [{"type": "tool_result", "content": "x" * 4000}]},
+            }
+        )
+        worker = await _fed_worker(
+            monkeypatch,
+            oversize + _stream_json(_assistant("reply-1"), _result("reply-1")),
+            limit=1024,
+            eof=False,
+        )
+        assert await worker.send_message("p1", timeout=10) == "reply-1"
+        assert worker.is_alive()
+        await worker.shutdown()
+
+    def test_the_line_limit_is_the_acp_transports_ceiling(self):
+        """knowledge.md says so; a copy could drift from it without a test."""
+        from kiro_crew.acp import transport_framing
+
+        assert llm_pool.STDOUT_LINE_LIMIT == transport_framing._STDOUT_BUFFER_LIMIT
+
+    @pytest.mark.asyncio
+    async def test_the_stream_is_opened_with_the_stream_json_line_limit(self, monkeypatch):
+        captured: dict = {}
+
+        async def _spawn(*argv, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(
+                stdout=asyncio.StreamReader(), stdin=MagicMock(), returncode=None
+            )
+
+        async def _wrap(cmd, **kwargs):
+            return (cmd, None)
+
+        monkeypatch.setattr(llm_pool, "create_subprocess_limited", _spawn)
+        monkeypatch.setattr(llm_pool, "wrap_argv_async", _wrap)
+        monkeypatch.setattr(llm_pool, "cgroup_scope_argv", lambda argv: argv)
+        worker = CCWorker(sandbox_mode="off")
+        worker._claude_bin = "claude"
+        await worker._spawn()
+        assert captured["limit"] == llm_pool.STDOUT_LINE_LIMIT > 64 * 1024
+        # The limit sizes every pipe asyncio reads; an unread stderr pipe would
+        # hold up to twice it per worker and stall the CLI once full.
+        assert captured["stderr"] == asyncio.subprocess.DEVNULL
+        assert worker._reader_task is not None
+        worker._reader_task.cancel()
+        await asyncio.gather(worker._reader_task, return_exceptions=True)
 
 
 # ---------------------------------------------------------------------------

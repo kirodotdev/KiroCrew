@@ -49,6 +49,7 @@ from kiro_crew.config.paths import data_home, kiro_agents_dir
 from kiro_crew.env import sanitize_spec_env
 from kiro_crew.github_runner import prevalidated_gh_env
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
+from kiro_crew.json_line import parse_json_object_line
 from kiro_crew.loopback_http import loopback_urlopen
 from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
 from kiro_crew.port_resolution import resolve_serving_port
@@ -71,6 +72,7 @@ from kiro_crew.security import (
     sensitive_path_refusal,
 )
 from kiro_crew.sel import sel
+from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 # Env vars stripped from EVERY cron subprocess (command and script), regardless
 # of OS sandbox mode. The OS sandbox can fall back to backend "none" (e.g.
@@ -1428,7 +1430,9 @@ class McpToolClient:
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=self._stderr_file,
-                text=True,
+                # errors="replace": a byte that is not UTF-8 costs its line
+                # (it does not parse) rather than raising out of readline.
+                **UTF8_TEXT,
                 env=proc_env,
             )
         except Exception:
@@ -1460,13 +1464,20 @@ class McpToolClient:
         self._proc.stdin.flush()
 
     def _recv(self) -> dict | None:
+        """The next line the server wrote as a JSON object, or ``None`` at EOF.
+
+        A line that is not one (a blank, banner or log line on stdout, a
+        scalar, a value nested past the decoder's ceiling) comes back as an
+        empty object, so it costs that line rather than the call, and every
+        line read counts toward ``_rpc``'s cap: a server that writes only
+        noise fails the call instead of holding it.
+        """
         assert self._proc.stdout is not None
-        while True:
-            line = self._proc.stdout.readline()
-            if not line:  # EOF
-                return None
-            if line.strip():
-                return json.loads(line)
+        line = self._proc.stdout.readline()
+        if not line:  # EOF
+            return None
+        msg = parse_json_object_line(line)
+        return {} if msg is None else msg
 
     def _stderr_tail(self, limit: int = 1024) -> str:
         """Return the last `limit` bytes of the subprocess's captured stderr.
@@ -1509,9 +1520,7 @@ class McpToolClient:
                 )
             if msg.get("id") == req_id:
                 return msg
-        raise RuntimeError(
-            f"MCP server '{name}' did not respond to '{method}' within 1000 messages"
-        )
+        raise RuntimeError(f"MCP server '{name}' did not respond to '{method}' within 1000 lines")
 
     def call_tool(self, name: str, arguments: dict) -> str:
         r = self._rpc("tools/call", {"name": name, "arguments": arguments})

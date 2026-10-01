@@ -1582,8 +1582,8 @@ class TestMcpToolClientProtocol:
         client._proc = MagicMock()
         client._proc.stdout = MagicMock()
         client._proc.stdout.readline.side_effect = ["\n", "  \n", '{"id":1,"result":"ok"}\n']
-        msg = client._recv()
-        assert msg == {"id": 1, "result": "ok"}
+        # Each skipped line is one read, so _rpc's line cap counts it.
+        assert [client._recv() for _ in range(3)] == [{}, {}, {"id": 1, "result": "ok"}]
 
     def test_rpc_sends_and_receives(self):
         from kiro_crew.cron_script import McpToolClient

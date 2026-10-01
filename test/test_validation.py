@@ -17,6 +17,7 @@ from kiro_crew.validation import (
     SPAWN_RUN_SCHEMA,
     TASK_RUN_SCHEMA,
     FieldSpec,
+    JsonRpcEnvelopeError,
     McpTextContent,
     ValidationError,
     build_tool_response,
@@ -482,9 +483,23 @@ class TestValidateJsonrpcRequest:
         with pytest.raises(ValidationError, match="must be a string"):
             validate_jsonrpc_request({"method": 123})
 
-    def test_non_dict_params_defaults(self):
-        _, _, params = validate_jsonrpc_request({"method": "x", "params": "bad"})
-        assert params == {}
+    def test_absent_or_null_params_read_as_empty(self):
+        assert validate_jsonrpc_request({"method": "x"})[2] == {}
+        assert validate_jsonrpc_request({"method": "x", "params": None})[2] == {}
+
+    @pytest.mark.parametrize("params", ["bad", [1], 5, True])
+    def test_non_object_params_are_refused_with_the_id_to_answer(self, params):
+        """Read as ``{}``, a ``tools/call`` with list params was served as a
+        call that named no tool; the refusal carries the id it is owed to."""
+        with pytest.raises(JsonRpcEnvelopeError) as excinfo:
+            validate_jsonrpc_request({"id": 4, "method": "tools/call", "params": params})
+        assert (excinfo.value.req_id, excinfo.value.method) == (4, "tools/call")
+        assert excinfo.value.invalid_params is True
+
+    def test_a_malformed_envelope_carries_its_id(self):
+        with pytest.raises(JsonRpcEnvelopeError) as excinfo:
+            validate_jsonrpc_request({"id": 5, "method": 123})
+        assert excinfo.value.req_id == 5 and excinfo.value.invalid_params is False
 
 
 # ── Response Schema ──

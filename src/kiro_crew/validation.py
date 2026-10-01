@@ -1151,24 +1151,68 @@ def sanitize_response(text: str, max_len: int = MAX_RESPONSE_LEN) -> str:
 # ── JSON-RPC Envelope Validation ──
 
 
+#: JSON-RPC 2.0 reserved error codes for a request that cannot be served: a
+#: frame that does not parse, a malformed envelope, params a method cannot
+#: take, and a server-side fault. Here, beside the envelope validator, so a
+#: stdio MCP server can answer with them without importing the ACP layer.
+JSONRPC_PARSE_ERROR = -32700
+JSONRPC_INVALID_REQUEST = -32600
+JSONRPC_INVALID_PARAMS = -32602
+JSONRPC_INTERNAL_ERROR = -32603
+
+
+class JsonRpcEnvelopeError(ValidationError):
+    """A JSON-RPC request envelope that cannot be served, with what answers it.
+
+    ``req_id`` is the request's own id (``None`` for a notification, which is
+    never answered); ``invalid_params`` tells a ``params`` that is not an
+    object (JSON-RPC ``-32602``) from a malformed envelope (``-32600``).
+    """
+
+    def __init__(
+        self, field: str, message: str, *, req_id: Any, method: Any, invalid_params: bool
+    ) -> None:
+        super().__init__(field, message)
+        self.req_id = req_id
+        self.method = method
+        self.invalid_params = invalid_params
+
+
 def validate_jsonrpc_request(req: dict[str, Any]) -> tuple[str, Any, dict[str, Any]]:
     """Validate a JSON-RPC 2.0 request envelope.
 
-    Returns (method, id, params). Raises ValidationError on invalid structure.
+    Returns (method, id, params). Raises ValidationError on invalid structure:
+    :class:`JsonRpcEnvelopeError` for an object envelope, carrying the id the
+    refusal is owed to. Absent or ``null`` params read as ``{}``; params of any
+    other non-object type are refused rather than read as ``{}``, so a request
+    that names no usable arguments is answered as such instead of served as
+    one that sent none.
     """
     if not isinstance(req, dict):
         raise ValidationError("request", "must be a JSON object")
-    if req.get("jsonrpc") not in ("2.0", None):
-        raise ValidationError("jsonrpc", "must be '2.0'")
-
-    method = req.get("method")
-    if method is not None and not isinstance(method, str):
-        raise ValidationError("method", "must be a string")
-
     req_id = req.get("id")
-    params = req.get("params", {})
-    if not isinstance(params, dict):
+    method = req.get("method")
+    if req.get("jsonrpc") not in ("2.0", None):
+        raise JsonRpcEnvelopeError(
+            "jsonrpc", "must be '2.0'", req_id=req_id, method=method, invalid_params=False
+        )
+
+    if method is not None and not isinstance(method, str):
+        raise JsonRpcEnvelopeError(
+            "method", "must be a string", req_id=req_id, method=method, invalid_params=False
+        )
+
+    params = req.get("params")
+    if params is None:
         params = {}
+    elif not isinstance(params, dict):
+        raise JsonRpcEnvelopeError(
+            "params",
+            f"must be an object, not {type(params).__name__}",
+            req_id=req_id,
+            method=method,
+            invalid_params=True,
+        )
 
     return method or "", req_id, params
 
