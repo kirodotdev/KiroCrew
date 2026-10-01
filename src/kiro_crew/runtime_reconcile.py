@@ -244,20 +244,28 @@ RECLAIM_PLATFORM = sys.platform == "linux"
 
 
 def same_uid_process_table() -> dict[int, tuple[int, int]]:
-    """``{pid: (ppid, rss bytes)}`` for every process this uid owns, from ``/proc/<pid>/stat``."""
+    """``{pid: (ppid, rss bytes)}`` for every process this uid owns, from ``/proc/<pid>/stat``.
+
+    Each ``stat`` goes through ``platform_compat.read_proc_stat``, so a process
+    whose name is not UTF-8 is in the table with every runtime below it.
+    """
     page = os.sysconf("SC_PAGE_SIZE")
     uid = os.getuid()
+    root = Path("/proc")
     table: dict[int, tuple[int, int]] = {}
-    for entry in Path("/proc").iterdir():
+    for entry in root.iterdir():
         if not entry.name.isdigit():
             continue
         try:
             if entry.stat().st_uid != uid:
                 continue
-            fields = (entry / "stat").read_text().rsplit(")", 1)[1].split()
-            table[int(entry.name)] = (int(fields[1]), int(fields[21]) * page)
-        except (OSError, ValueError, IndexError):
+        except OSError:
             continue
+        pid = int(entry.name)
+        stat = platform_compat.read_proc_stat(pid, proc_root=root)
+        if stat is None or stat.ppid is None or stat.rss_pages is None:
+            continue
+        table[pid] = (stat.ppid, stat.rss_pages * page)
     return table
 
 
@@ -286,7 +294,7 @@ def _session_leader_alive(pid: int) -> bool:
     sid = session_pid._linux_pid_sid(pid)
     if sid <= 0:
         return True
-    return sid != pid and session_pid._linux_pid_sid(sid) == sid
+    return sid != pid and session_pid._linux_session_leader_alive(sid)
 
 
 def _group_leader_alive(pid: int) -> bool:

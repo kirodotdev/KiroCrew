@@ -114,9 +114,6 @@ _SCOPE_ERROR_REWARN_SECS = 3600.0
 #: the scopes failing.
 _SCOPE_ERRORS_WARNED: dict[tuple[str, str], tuple[str, float]] = {}
 
-#: The reading for a pid whose stat cannot be read: every field unknown.
-_NO_STAT = platform_compat.ProcStat(state=None, ppid=None, pgrp=None, start_ticks=None)
-
 
 #: ``pid -> start_ticks`` of the members a reclaim attributed before its stop.
 _Pinned = Mapping[int, int]
@@ -250,7 +247,10 @@ class _ProcReads:
 
         @functools.cache
         def stat(pid: int) -> platform_compat.ProcStat:
-            return platform_compat.read_proc_stat(pid, proc_root=proc_root) or _NO_STAT
+            return (
+                platform_compat.read_proc_stat(pid, proc_root=proc_root)
+                or platform_compat.ProcStat()
+            )
 
         @functools.cache
         def marker(pid: int) -> bool | None:

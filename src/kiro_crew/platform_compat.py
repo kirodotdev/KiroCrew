@@ -1802,18 +1802,13 @@ def process_cwd(pid: int) -> str | None:
 def get_ppid(pid: int) -> int:
     """Return the parent PID of *pid*, or ``-1`` on failure.
 
-    Linux: ``/proc/<pid>/status``.
+    Linux: ``PPid:`` of ``/proc/<pid>/status``, through :func:`read_proc_status_int`.
     macOS: ``libproc.proc_pidinfo`` (no entitlement required).
     Windows: ``CreateToolhelp32Snapshot``.
     """
     if sys.platform == "linux":
-        try:
-            for ln in Path(f"/proc/{pid}/status").read_text().splitlines():
-                if ln.startswith("PPid:"):
-                    return int(ln.split()[1])
-        except Exception:
-            pass
-        return -1
+        ppid = read_proc_status_int(pid, "PPid")
+        return -1 if ppid is None else ppid
     if sys.platform == "darwin":
         try:
             path = ctypes.util.find_library("proc")
@@ -1967,22 +1962,10 @@ def get_process_start_identity(
     if pid <= 0:
         return None
     if sys.platform == "linux":
-        stat_path = (
-            Path(f"/proc/{pid}/stat") if proc_root is None else proc_root / str(pid) / "stat"
-        )
-        try:
-            stat_data = stat_path.read_text(encoding="utf-8", errors="replace")
-            close_paren = stat_data.rfind(")")
-            if close_paren < 0:
-                return None
-            fields = stat_data[close_paren + 2 :].split()
-            ppid = int(fields[1])
-            start_id = fields[19]
-            if ppid < 0 or not start_id.isdigit():
-                return None
-            return ProcessStartIdentity(start_id, ppid)
-        except (OSError, ValueError, IndexError):
+        stat = read_proc_stat(pid, proc_root=proc_root)
+        if stat is None or stat.ppid is None or stat.start_ticks is None:
             return None
+        return ProcessStartIdentity(str(stat.start_ticks), stat.ppid)
     if sys.platform == "darwin":
         return _darwin_process_start_identity(pid)
     return None
@@ -6019,15 +6002,10 @@ def pid_is_zombie(pid: int) -> bool | None:
     if pid <= 0:
         return None
     if sys.platform == "linux":
-        try:
-            stat_data = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8", errors="replace")
-        except OSError:
+        stat = read_proc_stat(pid)
+        if stat is None or stat.state is None:
             return None
-        close_paren = stat_data.rfind(")")
-        fields = stat_data[close_paren + 2 :].split() if close_paren >= 0 else []
-        if not fields:
-            return None
-        return fields[0] in ("Z", "X", "x")
+        return stat.state in _LINUX_EXITED_STATES
     if sys.platform == "darwin":
         return darwin_pid_is_zombie(pid)
     return None
@@ -6081,13 +6059,10 @@ def process_start_time(pid: int) -> str | None:
       guard decline to act, never act on the wrong process.
     """
     if sys.platform == "linux":
-        try:
-            stat = Path(f"/proc/{pid}/stat").read_text()
-            # The comm field can contain spaces and parens; split after the
-            # LAST ')' so a process named "(evil) 1 2 3" cannot shift the index.
-            return stat.rsplit(")", 1)[1].split()[19]
-        except (OSError, ValueError, IndexError):
+        stat = read_proc_stat(pid)
+        if stat is None or stat.start_ticks is None:
             return None
+        return str(stat.start_ticks)
     if IS_WINDOWS:
         # Opened and closed through the shared seams so this READ and the
         # identity-pinned TERMINATE below cannot drift in how they acquire or
@@ -6215,13 +6190,7 @@ def process_thread_count(pid: int) -> int | None:
     """
     if sys.platform != "linux":
         return None
-    try:
-        for ln in Path(f"/proc/{pid}/status").read_text().splitlines():
-            if ln.startswith("Threads:"):
-                return int(ln.split()[1])
-    except (OSError, ValueError, IndexError):
-        return None
-    return None
+    return read_proc_status_int(pid, "Threads")
 
 
 def flock_owner_pid(path: str | os.PathLike) -> int | None:
@@ -6288,15 +6257,8 @@ def parent_pid(pid: int) -> int | None:
     """
     if sys.platform != "linux":
         return None
-    try:
-        stat_data = Path(f"/proc/{pid}/stat").read_text()
-        # comm (field 2) may contain spaces/parens -- parse after the LAST ')'
-        close_paren = stat_data.rfind(")")
-        if close_paren < 0:
-            return None
-        return int(stat_data[close_paren + 2 :].split()[1])
-    except Exception:
-        return None
+    stat = read_proc_stat(pid)
+    return stat.ppid if stat is not None else None
 
 
 def pids_holding_file(path: str | os.PathLike) -> list[int] | None:
@@ -8288,14 +8250,8 @@ def _proc_status_rss_kb(pid: int) -> int:
     has a Windows path: this one is the Linux subtree walk's per-process read and
     keeps ``-1`` as its "unreadable" sentinel rather than ``None``.
     """
-    try:
-        with open(f"/proc/{pid}/status", encoding="ascii") as fh:
-            for line in fh:
-                if line.startswith("VmRSS:"):
-                    return int(line.split()[1])
-    except (OSError, ValueError, IndexError):
-        pass
-    return -1
+    rss_kb = read_proc_status_int(pid, "VmRSS")
+    return -1 if rss_kb is None else rss_kb
 
 
 def _stat_tokens(stat: bytes) -> "list[bytes] | None":
@@ -8340,12 +8296,25 @@ class ProcStat(NamedTuple):
 
     Each is None on its own when its token is missing or not a number, which no
     line the kernel writes produces; a fixture or a truncated read can.
+    ``ProcStat()`` is the reading with every field unknown.
     """
 
-    state: str | None
-    ppid: int | None
-    pgrp: int | None
-    start_ticks: int | None
+    state: str | None = None
+    ppid: int | None = None
+    pgrp: int | None = None
+    session: int | None = None
+    start_ticks: int | None = None
+    rss_pages: int | None = None
+
+
+def _linux_proc_root(proc_root: "Path | None") -> "Path | None":
+    """*proc_root* when a fixture process table is given, else ``/proc`` on Linux.
+
+    None off Linux with no fixture: the ``/proc`` readers then answer "unknown".
+    """
+    if proc_root is not None:
+        return proc_root
+    return Path("/proc") if IS_LINUX else None
 
 
 def read_proc_stat(pid: int, *, proc_root: "Path | None" = None) -> "ProcStat | None":
@@ -8357,16 +8326,16 @@ def read_proc_stat(pid: int, *, proc_root: "Path | None" = None) -> "ProcStat | 
     UTF-8, which an ``except OSError`` does not catch. Every field comes from the
     same read, so a caller needing several never mixes two processes behind a
     recycled pid. ``start_ticks`` is in clock ticks since boot;
-    :func:`process_age_secs` turns it into an age.
+    :func:`process_age_secs` turns it into an age. ``rss_pages`` is in pages of
+    ``SC_PAGE_SIZE``.
 
     None when the file cannot be read (gone, permission, no ``/proc``) or the
     line has no ``)``; otherwise a :class:`ProcStat` whose fields may each be
     None. *proc_root* substitutes a fixture process table on every host.
     """
+    proc_root = _linux_proc_root(proc_root)
     if proc_root is None:
-        if not IS_LINUX:
-            return None
-        proc_root = Path("/proc")
+        return None
     try:
         raw = (proc_root / str(pid) / "stat").read_bytes()
     except OSError:
@@ -8378,11 +8347,86 @@ def read_proc_stat(pid: int, *, proc_root: "Path | None" = None) -> "ProcStat | 
         state=tokens[0].decode("ascii", "replace") if tokens else None,
         ppid=_stat_token_int(tokens, 1),
         pgrp=_stat_token_int(tokens, 2),
+        session=_stat_token_int(tokens, 3),
         start_ticks=_stat_token_int(tokens, 19),
+        rss_pages=_stat_token_int(tokens, 21),
     )
 
 
-def proc_child_map() -> "dict[int, list[int]] | None":
+#: ``stat`` states of a process that has finished running: a zombie, or one
+#: being torn down (``X``; older kernels print ``x``).
+_LINUX_EXITED_STATES = frozenset({"Z", "X", "x"})
+
+
+def linux_pgroup_members(
+    pgid: int, *, proc_root: "Path | None" = None
+) -> "dict[int, int | None] | None":
+    """``{pid: start_ticks}`` for every RUNNING member of process group *pgid*. Linux only.
+
+    The Linux counterpart of :func:`darwin_pgroup_members`: one pass over
+    ``/proc``, each ``stat`` read as bytes with ``comm`` never decoded, so a
+    member whose name is not UTF-8 is still a member. A process that has
+    finished running (``Z``/``X``) does not hold the group open and is left
+    out. The start ticks come from the SAME read as the group and state, so a
+    caller pinning a later signal to them never pairs a recycled pid with the
+    member it admitted; a member whose start cannot be read maps to None.
+
+    None -- off Linux, and when ``/proc`` cannot be listed -- means "unknown",
+    never "empty". *proc_root* substitutes a fixture process table on every host.
+    """
+    proc_root = _linux_proc_root(proc_root)
+    if proc_root is None:
+        return None
+    try:
+        names = os.listdir(proc_root)
+    except OSError:
+        logger.debug("linux_pgroup_members: cannot list %s", proc_root, exc_info=True)
+        return None
+    members: dict[int, int | None] = {}
+    for name in names:
+        if not name.isdigit():
+            continue
+        try:
+            with open(f"{proc_root}/{name}/stat", "rb") as fh:
+                tokens = _stat_tokens(fh.read())
+        except OSError:
+            continue  # exited between the listing and the read
+        if (
+            tokens
+            and _stat_token_int(tokens, 2) == pgid
+            and tokens[0].decode("ascii", "replace") not in _LINUX_EXITED_STATES
+        ):
+            members[int(name)] = _stat_token_int(tokens, 19)
+    return members
+
+
+def read_proc_status_int(pid: int, label: str, *, proc_root: "Path | None" = None) -> "int | None":
+    """The first number on *label*'s line of ``/proc/<pid>/status``, or None. Linux only.
+
+    ``PPid``, ``Threads`` and ``VmRSS`` (in KiB) are the labels callers read.
+    ONE bytes read, never decoded as a whole: the ``Name:`` line is the raw
+    comm, so a strict text read raises ``UnicodeDecodeError`` on a process whose
+    name is not UTF-8 -- and a strict ASCII read on any non-ASCII name, even a
+    valid UTF-8 one. None when the file is unreadable, the label is absent, or
+    its value is not a number. *proc_root* substitutes a fixture process table
+    on every host.
+    """
+    proc_root = _linux_proc_root(proc_root)
+    if proc_root is None:
+        return None
+    prefix = label.encode("ascii") + b":"
+    try:
+        with open(f"{proc_root}/{pid}/status", "rb") as fh:
+            for line in fh:
+                if line.startswith(prefix):
+                    value = line[len(prefix) :].split()
+                    return _stat_token_int(value, 0)
+    except OSError:
+        return None
+    return None
+
+
+def proc_child_map(*, proc_root: "Path | None" = None) -> "dict[int, list[int]] | None":
     """Every live process's children, from ONE pass over ``/proc``. Linux only.
 
     For the caller that needs the subtrees of MANY roots at once. Asking the
@@ -8415,28 +8459,39 @@ def proc_child_map() -> "dict[int, list[int]] | None":
       browser poll. ``_get_rss_tree_mb``'s own note records the same choice for
       the same reason: the Linux branch reads ``/proc`` directly and never
       spawns.
-    * :func:`parent_pid` parses one pid's ppid out of the same ``stat`` line, but
-      through ``read_text``, so a process whose ``comm`` is not valid UTF-8 --
-      any process may set its own name to arbitrary bytes with
-      ``prctl(PR_SET_NAME)`` -- raises and is reported as unknown. In a map that
-      would drop that process AND every descendant behind it from a caller's
-      tree, silently. :func:`_parse_ppid` reads bytes, so it answers. The
-      difference is pinned by a test.
+    * :func:`parent_pid` answers the same question for one pid through
+      :func:`read_proc_stat`, which parses every field of the line. This pass
+      needs only the ppid of every process on the host, so it parses that one
+      field with :func:`_parse_ppid`. Both read the file as bytes: a process
+      whose ``comm`` is not valid UTF-8 -- any process may set its own name to
+      arbitrary bytes with ``prctl(PR_SET_NAME)`` -- answers through either,
+      and one test pins both.
+
+    *proc_root* substitutes a fixture process table and is honoured on every
+    host, as :func:`read_proc_stat` does.
+
+    Windows deliberately has NO branch here: Toolhelp's ``th32ParentProcessID``
+    is never cleared when a parent exits and Windows recycles PIDs aggressively,
+    so a raw Toolhelp parent map can attach an unrelated subtree to a recycled
+    PID. A Windows caller walks a lineage-validated route instead
+    (:func:`proc_rss_tree_mb_for_pid`).
 
     Blocking: one read per process on the host. Executor thread, never the loop.
     """
-    if not IS_LINUX:
+    proc_root = _linux_proc_root(proc_root)
+    if proc_root is None:
         return None
     try:
-        names = os.listdir("/proc")
+        names = os.listdir(proc_root)
     except OSError:
+        logger.debug("proc_child_map: cannot list %s", proc_root, exc_info=True)
         return None
     children: dict[int, list[int]] = {}
     for name in names:
         if not name.isdigit():
             continue
         try:
-            with open(f"/proc/{name}/stat", "rb") as fh:
+            with open(f"{proc_root}/{name}/stat", "rb") as fh:
                 raw = fh.read()
         except OSError:
             # Exited between the listing and the open: it is in no live tree.
@@ -9200,15 +9255,18 @@ def process_start_boot_secs(starttime_ticks: float) -> float | None:
     return starttime_ticks / hz
 
 
-def process_age_secs(starttime_ticks: int) -> float | None:
+def process_age_secs(starttime_ticks: int, *, now: float | None = None) -> float | None:
     """Age of a process whose stat ``starttime`` is *starttime_ticks*, or None.
 
     ``boottime_now() - process_start_boot_secs(ticks)``, floored at 0: both are
-    on the suspend-inclusive clock ``starttime`` counts on. None when either
-    side cannot be read, which callers read as "age unknown".
+    on the suspend-inclusive clock ``starttime`` counts on. *now* replaces the
+    ``boottime_now()`` reading, for a fixture process table that carries its
+    own ``uptime``. None when either side cannot be read, which callers read as
+    "age unknown".
     """
     started = process_start_boot_secs(starttime_ticks)
-    now = boottime_now()
+    if now is None:
+        now = boottime_now()
     if started is None or now is None:
         return None
     return max(0.0, now - started)
