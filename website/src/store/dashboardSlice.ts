@@ -21,7 +21,11 @@ interface CloseHold {
   requestId: string
   /** Deadline while the DELETE is in flight; `null` once the server has answered. */
   inFlightUntil: number | null
-  /** Straggler frames the hold survives after confirmation. */
+  /** This attempt received 404 because another close popped the key; wait for
+   *  that close's durable removal or rollback signal. */
+  awaitingOutcome?: true
+  /** Straggler lists an awaiting or confirmed hold still survives. The same
+   *  counter carries across a durable `removed` outcome. */
   graceFrames: number
   /** `fetchSlots` requests that were already in flight when the server
    *  confirmed the close. Their replies may predate the pop, so the hold
@@ -47,12 +51,16 @@ interface DashboardState {
   slotsGeneration: number
   /** Per-key optimistic/reconciliation pin writes, independent of other slot fields. */
   slotPinGenerations: Record<string, number>
-  /** Keys whose close is in flight or just confirmed, held out of `slots` until an
-   *  authoritative list omits them. See `applySlots` for why membership alone is
-   *  not enough: the server still lists a slot whose DELETE has not finished.
-   *  Bounded twice over — by the wall clock while the request is in flight, and
-   *  by a small frame budget after the server has confirmed. */
+  /** Keys whose close is in flight, awaiting another close's outcome, or just
+   *  confirmed. An ordinary in-flight key is held out of `slots`; an awaiting
+   *  key also survives `CLOSE_CONFIRMED_GRACE_FRAMES` lists before a WebSocket
+   *  membership can release it, while a post-404 HTTP reply may release it at
+   *  once. Bounded by the wall clock and that shared list budget. */
   closingSlots: Record<string, CloseHold>
+  /** Keys this tab saw leave through the server's durable `removed` patch.
+   *  History rewrites may trust this immediately; slot-list visibility still
+   *  follows `closingSlots` and its straggler budget. */
+  durablyRemoved: Record<string, true>
   /** `fetchSlots` requests currently in flight, by thunk requestId — read by
    *  a confirmed close to know which replies could still predate its pop. */
   slotFetchesInFlight: string[]
@@ -286,6 +294,7 @@ const initialState: DashboardState = {
   slotsGeneration: 0,
   slotPinGenerations: {},
   closingSlots: {},
+  durablyRemoved: {},
   slotFetchesInFlight: [],
   staleSlotFetches: {},
   slotWriteSeq: 0,
@@ -450,7 +459,20 @@ const evictSlotSubagents = (state: DashboardState, slotKey: string): void => {
  *  older than the live frames that arrived while it travelled (see
  *  `fetchSlots.fulfilled`), so a post-pop frame that omitted the key could
  *  release the hold and a pre-pop reply still in flight would then re-add the
- *  row. The tombstone is instead retired by the close's OWN lifecycle: while
+ *  row. One narrow exception follows a 404 DELETE: that attempt knows another
+ *  close popped the key and waits for the other close's outcome. An unpaired
+ *  WebSocket list can still predate the pop, so the awaiting hold first spends
+ *  `CLOSE_CONFIRMED_GRACE_FRAMES`; after that, membership releases it. A
+ *  post-404 HTTP reply may release it immediately because every fetch already
+ *  in flight at the 404 is paired and filtered first. A durable `removed` patch
+ *  confirms the hold instead. An awaiting hold that sees neither `removed` nor
+ *  a list including the key expires on `CLOSE_IN_FLIGHT_MAX_MS` (evaluated by
+ *  the next list, and by a timer `deleteSlot` arms so an idle tab that receives
+ *  no list still reaches it), and the key's entry then degrades to `main`'s
+ *  behaviour: the hold is dropped, the next list applies membership, and the
+ *  URL writer pushes over the entry rather than rewriting it.
+ *
+ *  Every other tombstone is retired by the close's OWN lifecycle: while
  *  the DELETE is in flight it holds unconditionally, and once the server has
  *  answered it survives a small, fixed budget of further authoritative lists
  *  (listing the key or not — a straggler can only be that far behind) and then
@@ -533,7 +555,7 @@ const staleKeysForSlotFetch = (state: DashboardState, requestId: string): Set<st
  *  belt-and-braces; the second call is a no-op. */
 const confirmHold = (state: DashboardState, key: string, requestId: string): void => {
   const hold = isUnsafeKey(key) ? undefined : state.closingSlots?.[key]
-  if (!hold || hold.requestId !== requestId || hold.inFlightUntil === null) return
+  if (!hold || hold.requestId !== requestId || hold.inFlightUntil === null || hold.awaitingOutcome) return
   hold.inFlightUntil = null
   hold.awaitingFetches = [...(state.slotFetchesInFlight ?? [])]
   hold.confirmedUntil = Date.now() + CLOSE_CONFIRMED_MAX_MS
@@ -669,6 +691,13 @@ const localWritesOutranking = (state: DashboardState, requestId: string | undefi
 }
 
 const applySlots = (state: DashboardState, incomingRows: ChatSlot[]): void => {
+  // `durablyRemoved` is the durable fast path for browser-history rewrites: a
+  // full list naming the key proves it is live again and clears that evidence.
+  // This does not change slot-list visibility; the hold and frame budget below
+  // still decide whether the named row is shown in this application.
+  for (const { key } of incomingRows) {
+    if (!isUnsafeKey(key)) delete state.durablyRemoved?.[key]
+  }
   let next = incomingRows
   const closing = state.closingSlots ?? {}
   const closingKeys = Object.keys(closing)
@@ -678,7 +707,23 @@ const applySlots = (state: DashboardState, incomingRows: ChatSlot[]): void => {
     for (const key of closingKeys) {
       const hold = closing[key]
       if (hold.inFlightUntil !== null) {
-        if (now < hold.inFlightUntil) { held.add(key); continue }
+        if (now < hold.inFlightUntil) {
+          if (hold.awaitingOutcome) {
+            if (hold.graceFrames > 0) {
+              hold.graceFrames -= 1
+              held.add(key)
+              continue
+            }
+            if (incomingRows.some(s => s.key === key)) {
+              // The straggler budget is spent, so membership now means the
+              // competing close restored the slot or a same-key session exists.
+              delete closing[key]
+              continue
+            }
+          }
+          held.add(key)
+          continue
+        }
         // Stalled past the cap: stop hiding a session nobody has confirmed gone.
         delete closing[key]
         continue
@@ -906,11 +951,28 @@ const dashboardSlice = createSlice({
         for (const key of Object.keys(state.closingSlots ?? {})) if (!gone.has(key)) live.add(key)
         reconcileSlots(state, live)
       }
+      // `removed` is durable, so record it even before the first reconnect
+      // snapshot and confirm any awaiting hold. History may trust this at once;
+      // the hold still spends its list budget before the row can reappear.
+      for (const key of removed ?? []) {
+        if (isUnsafeKey(key)) continue
+        if (!state.durablyRemoved) state.durablyRemoved = {}
+        state.durablyRemoved[key] = true
+        const hold = state.closingSlots?.[key]
+        if (!hold || hold.inFlightUntil === null) continue
+        hold.inFlightUntil = null
+        hold.awaitingFetches = [...(state.slotFetchesInFlight ?? [])]
+        hold.confirmedUntil = Date.now() + CLOSE_CONFIRMED_MAX_MS
+        delete hold.awaitingOutcome
+      }
     },
     addSlotOptimistic(state, action: PayloadAction<ChatSlot>) {
       // A resume or fork under a key that was closing supersedes the tombstone:
       // the caller has a fresh server acknowledgement that the key is live.
-      if (!isUnsafeKey(action.payload.key)) delete state.closingSlots?.[action.payload.key]
+      if (!isUnsafeKey(action.payload.key)) {
+        delete state.closingSlots?.[action.payload.key]
+        delete state.durablyRemoved?.[action.payload.key]
+      }
       if (!state.slots.find(s => s.key === action.payload.key)) { // row-read: membership test, adds a row rather than changing one
         state.slots.push(action.payload)
       }
@@ -931,6 +993,28 @@ const dashboardSlice = createSlice({
       const { key, requestId, distrustInFlight } = action.payload
       if (distrustInFlight && !isUnsafeKey(key)) markStaleSlotFetches(state, key, [...(state.slotFetchesInFlight ?? [])])
       releaseHold(state, key, requestId)
+    },
+    /** This attempt's DELETE received 404 after another close popped the key.
+     *  Distrust lists already in flight, then wait for that close's outcome. */
+    awaitCloseOutcome(state, action: PayloadAction<{ key: string; requestId: string }>) {
+      const { key, requestId } = action.payload
+      const hold = isUnsafeKey(key) ? undefined : state.closingSlots?.[key]
+      if (!hold || hold.requestId !== requestId || hold.inFlightUntil === null) return
+      hold.awaitingOutcome = true
+      markStaleSlotFetches(state, key, [...(state.slotFetchesInFlight ?? [])])
+    },
+    /** The wall-clock cap on an awaiting hold, reached without a list. `applySlots`
+     *  evaluates `inFlightUntil` only when an authoritative list arrives, and an
+     *  idle main-dashboard tab may receive none, so `deleteSlot` arms a timer for
+     *  the deadline that dispatches this. Drops the hold exactly as the stalled
+     *  branch of `applySlots` would; a confirmed, released, retried or already
+     *  expired hold is left alone, so a late or redundant fire is a no-op. */
+    expireCloseHold(state, action: PayloadAction<{ key: string; requestId: string }>) {
+      const { key, requestId } = action.payload
+      const hold = isUnsafeKey(key) ? undefined : state.closingSlots?.[key]
+      if (!hold || hold.requestId !== requestId || !hold.awaitingOutcome || hold.inFlightUntil === null) return
+      if (Date.now() < hold.inFlightUntil) return
+      delete state.closingSlots[key]
     },
     /** The DELETE resolved: the server has popped the slot. Dispatched by
      *  `deleteSlot` before it awaits the peer navigation (see `confirmHold`). */
@@ -1261,12 +1345,16 @@ const dashboardSlice = createSlice({
         // that close's pop, so the closed key is filtered out of it — but ONLY
         // that key. Whatever else the reply carries (an unrelated rename, a
         // slot created meanwhile) is still the newest thing this transport has
-        // said and still applies. Before the first live snapshot the reply is
-        // the only list there is and applies unfiltered: an empty sidebar is
-        // worse than one stale row.
+        // said and still applies. Not gated on `slotsLoaded`: a pairing exists
+        // only once this tab saw a close or a `removed` for the key, and a
+        // reconnect clears the flag while such pairings (a 404 close awaiting
+        // its outcome) are still live — an unfiltered pre-pop row would then
+        // read as that close's rollback. On a cold boot nothing is paired, so
+        // the first list still applies whole: an empty sidebar is worse than
+        // one stale row.
         // `meta` is optional-chained for the hand-built actions in older tests.
         const requestId = action.meta?.requestId
-        const staleKeys = requestId && state.slotsLoaded ? staleKeysForSlotFetch(state, requestId) : new Set<string>()
+        const staleKeys = requestId ? staleKeysForSlotFetch(state, requestId) : new Set<string>()
         // Keys a single-slot writer touched while this request was in flight.
         // The server serialized the reply before that write existed, so for
         // THOSE keys the reply is older than the screen and its row is dropped
@@ -1303,6 +1391,15 @@ const dashboardSlice = createSlice({
         // unread drain still runs — that is this path's documented job, and a
         // badge self-heals — but eviction is withheld once the stream is live.
         const fresh = !state.slotsLoaded
+        // `awaitCloseOutcome` pairs every fetch already in flight at the 404, so
+        // an unfiltered reply was requested afterwards and serialized after the
+        // pop. Membership there is a live restored or recreated key, not a
+        // straggler, and releases the awaiting hold without spending its budget.
+        const replyKeys = new Set(rows.map((s: ChatSlot) => s.key))
+        for (const key of Object.keys(state.closingSlots ?? {})) {
+          const hold = state.closingSlots[key]
+          if (hold.awaitingOutcome && replyKeys.has(key)) delete state.closingSlots[key]
+        }
         applySlots(state, rows)
         state.slotsGeneration = (state.slotsGeneration ?? 0) + 1
         state.slotsLoaded = true
@@ -1326,7 +1423,10 @@ const dashboardSlice = createSlice({
         (action): action is PayloadAction<ChatSlot> => action.type === 'chat/createSlot/fulfilled',
         (state, action) => {
           // A same-key recreation supersedes any tombstone (idempotent otherwise).
-          if (!isUnsafeKey(action.payload.key)) delete state.closingSlots?.[action.payload.key]
+          if (!isUnsafeKey(action.payload.key)) {
+            delete state.closingSlots?.[action.payload.key]
+            delete state.durablyRemoved?.[action.payload.key]
+          }
           if (!state.slots.find(s => s.key === action.payload.key)) { // row-read: membership test, adds a row rather than changing one
             state.slots.push(action.payload)
           }
@@ -1381,7 +1481,7 @@ const dashboardSlice = createSlice({
   },
 })
 
-export const { sseStatus, sseYolo, setYoloDuration, sseConnected, sseDisconnected, sseSlots, setSidebarOrder, sseTodoUpdate, sseMcpReportUpdate, touchSlotActivity, setChannelTrusted, sseSlotTitle, sseSlotPatch, addSlotOptimistic, removeSlotOptimistic, releaseCloseHold, confirmCloseHold, armConfirmedCloseHold, updateSlot, updateSlotFolder, updateSlotPin, triggerRefresh, markSlotUnread, markSlotRead, remoteSlotRead, setUpdateProgress,
+export const { sseStatus, sseYolo, setYoloDuration, sseConnected, sseDisconnected, sseSlots, setSidebarOrder, sseTodoUpdate, sseMcpReportUpdate, touchSlotActivity, setChannelTrusted, sseSlotTitle, sseSlotPatch, addSlotOptimistic, removeSlotOptimistic, releaseCloseHold, awaitCloseOutcome, expireCloseHold, confirmCloseHold, armConfirmedCloseHold, updateSlot, updateSlotFolder, updateSlotPin, triggerRefresh, markSlotUnread, markSlotRead, remoteSlotRead, setUpdateProgress,
   setDesktopUpdateAvailable, sseSubagentStatus, sseSubagentText, sseSlotColor, setSessionDefaultColor, setSessionColorsMode, setSessionColorsPalette, setSessionColorsIntensity, setEnabledAppIds, patchSlotSourceLinks, patchSlotLink, dropSlotLinks } = dashboardSlice.actions
 
 /**

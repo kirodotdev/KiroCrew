@@ -16,7 +16,7 @@ import { whenScrollQuiet } from '../lib/scrollQuiet'
 import { nextActiveAfterClose } from '../lib/sessionTabs'
 import { api } from '../api/client'
 import { isNotFoundError } from '../api/apiError'
-import { releaseCloseHold, confirmCloseHold, removeSlotOptimistic, fetchSlots, slotSurfaceKey } from './dashboardSlice'
+import { releaseCloseHold, awaitCloseOutcome, expireCloseHold, confirmCloseHold, removeSlotOptimistic, fetchSlots, slotSurfaceKey } from './dashboardSlice'
 import { isChatPageSurface } from '../utils/channelOrigin'
 import { isNoteRow } from '../lib/noteContract'
 import { gcSessionStorage } from '../utils/storageGc'
@@ -613,16 +613,18 @@ export const deleteSlot = createAsyncThunk<
         alreadyGone = true
       })
       if (alreadyGone) {
-        // This request closed nothing: another close popped the key, and that
-        // close can still fail and put the slot back. Drop the hold rather than
-        // confirm it, so the next authoritative list decides, and a restored
-        // row shows again instead of staying hidden behind this tombstone.
-        // A slot list serialized before the server popped the key may still be
-        // in flight, and with the hold gone nothing else would stop its reply
-        // re-adding the row: `distrustInFlight` pairs those requests with the
-        // key before the release. The refetch after it is the post-pop list
-        // that shows the row again if the popping close restored it.
-        dispatch(releaseCloseHold({ key, requestId, distrustInFlight: true }))
+        // Another `_close_slot` popped the key first. Wait for its outcome:
+        // `push_slot_removed` confirms the durable close, while the restore arm
+        // puts the key back and publishes a list that releases this hold.
+        dispatch(awaitCloseOutcome({ key, requestId }))
+        // The hold's wall-clock cap is otherwise evaluated only when a list
+        // arrives, and an idle main-dashboard tab may receive none; the timer
+        // makes the bound real. Fire-and-forget: the reducer's guards make a
+        // late or redundant fire a no-op.
+        const inFlightUntil = (getState() as RootState).dashboard.closingSlots?.[key]?.inFlightUntil
+        if (inFlightUntil !== null && inFlightUntil !== undefined) {
+          setTimeout(() => dispatch(expireCloseHold({ key, requestId })), Math.max(0, inFlightUntil - Date.now()) + 1)
+        }
         dispatch(fetchSlots())
       } else {
         // Confirm the close hold NOW, not on `fulfilled`: that action trails the

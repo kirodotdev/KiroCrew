@@ -24,6 +24,11 @@ import { shouldReplaceSessionUrl, popMaySwitchSession } from '../../utils/sessio
 import { toSlug } from '../../utils/shareUrl'
 import { focusComposer } from './composerFocus'
 
+/** Read a URL-derived key from the close-hold record without traversing its prototype. */
+export function closeHoldForUrl<T>(closing: Record<string, T>, key: string | null): T | undefined {
+  return key && Object.prototype.hasOwnProperty.call(closing, key) ? closing[key] : undefined
+}
+
 interface UseChatPageSessionControllerArgs {
   activeSlot: string | null
   activeSlotRef: MutableRefObject<string | null>
@@ -282,6 +287,10 @@ export function useChatPageSessionController({
   /** A push has been issued and its destination key is not minted yet — the sync
    *  effect records it on the commit that push lands in. */
   const pushedEntryPending = useRef(false)
+  /** The one URL write a close holds back while its DELETE is unanswered: the
+   *  entry naming the closing `sid`, standing under the `landing` session the
+   *  close switched to. Per-mount, cleared once the URL moves off that sid. */
+  const closeLandingRef = useRef<{ sid: string; landing: string } | null>(null)
   const [sidError, setSidError] = useState('')
   const [newSlotFailed, setNewSlotFailed] = useState(false)
   const [highlightTs, setHighlightTs] = useState<string | null>(null)
@@ -471,6 +480,59 @@ export function useChatPageSessionController({
   // for.
   //
   // Embed mode: react to ANY ?sid change (the host app drives the URL).
+  // Where the session the URL names stands in its own close: 'in-flight' while
+  // our DELETE is unanswered, 'confirmed' once the server popped it, 'none'
+  // otherwise (live, never closed here, or a close that failed and released).
+  const urlSidKey = searchParams.get('sid') || searchParams.get('slot')
+  const urlSidClose = useAppSelector(s => {
+    const closing = s.dashboard.closingSlots ?? {}
+    const hold = closeHoldForUrl(closing, urlSidKey)
+    if (!hold) return 'none'
+    return hold.inFlightUntil !== null ? 'in-flight' : 'confirmed'
+  })
+  const urlSidRemoved = useAppSelector(s => !!closeHoldForUrl(
+    s.dashboard.durablyRemoved ?? {},
+    urlSidKey,
+  ))
+  // Confirmed holds are bounded, so remember every key this mount observed in
+  // that phase. Primitive selector results stay stable across unrelated store
+  // updates while exposing both the confirmed and retained hold populations.
+  const confirmedCloseKeys = useAppSelector(s => Object.entries(s.dashboard.closingSlots ?? {})
+    .filter(([, hold]) => hold.inFlightUntil === null)
+    .map(([key]) => key)
+    .sort()
+    .join('\u0000'))
+  const allHoldKeys = useAppSelector(s => Object.keys(s.dashboard.closingSlots ?? {})
+    .sort()
+    .join('\u0000'))
+  const slotsGeneration = useAppSelector(s => s.dashboard.slotsGeneration)
+  const confirmedClosedRef = useRef<Map<string, { retiredAtGen: number | null }>>(new Map())
+  useEffect(() => {
+    const held = new Set(allHoldKeys ? allHoldKeys.split('\u0000') : [])
+    if (confirmedCloseKeys) {
+      for (const key of confirmedCloseKeys.split('\u0000')) {
+        if (!confirmedClosedRef.current.has(key)) confirmedClosedRef.current.set(key, { retiredAtGen: null })
+      }
+    }
+    for (const [key, close] of confirmedClosedRef.current) {
+      if (held.has(key)) {
+        close.retiredAtGen = null
+      } else if (close.retiredAtGen === null) {
+        close.retiredAtGen = slotsGeneration
+      }
+    }
+  }, [confirmedCloseKeys, allHoldKeys, slotsGeneration])
+  // A resume or fork under a closed key makes it live again: forget it, so a
+  // later list that omits the live session cannot get its entry rewritten.
+  useEffect(() => {
+    for (const s of slots) confirmedClosedRef.current.delete(s.key)
+  }, [slots])
+  const rewriteEligible = useCallback((key: string) => {
+    if (key === urlSidKey && urlSidRemoved) return true
+    const close = confirmedClosedRef.current.get(key)
+    return close?.retiredAtGen !== null && close?.retiredAtGen !== undefined
+      && slotsGeneration > close.retiredAtGen
+  }, [slotsGeneration, urlSidKey, urlSidRemoved])
   // Main dashboard: react ONLY to a genuine Back/Forward (navigationType POP).
   // Our own activeSlot→URL writes are PUSH/REPLACE, so they never re-enter here
   // — that is what avoids the activeSlot↔URL ping-pong. A session switch pushes
@@ -562,8 +624,26 @@ export function useChatPageSessionController({
     if (filteredSlots.some(s => s.key === urlSid)) {
       popInFlightRef.current = true
       dispatch(switchSlot(urlSid))
+      return
     }
-  }, [searchParams, filteredSlots, activeSlot, activeSlotRef, dispatch, embedMode, navigationType, locationKey, locationPathname, locationHash, connected, noUrlSync, navigate, isMobile])
+    if (embedMode || !activeSlotRef.current || slots.some(s => s.key === urlSid)) return
+    // A durable `removed` frame is post-pop truth for this tab, so repair this
+    // history entry immediately even while its row hold is still retained.
+    if (urlSidRemoved) {
+      popInFlightRef.current = true
+      repairPoppedSid()
+      return
+    }
+    // Without that frame, keep the budget-plus-one-list fallback: another tab
+    // may have resumed the key while the hold filters its row.
+    if (urlSidClose !== 'none' || (confirmedClosedRef.current.has(urlSid) && !rewriteEligible(urlSid))) {
+      closeLandingRef.current = { sid: urlSid, landing: activeSlotRef.current }
+      return
+    }
+    if (!rewriteEligible(urlSid)) return
+    popInFlightRef.current = true
+    repairPoppedSid()
+  }, [searchParams, filteredSlots, slots, slotsGeneration, urlSidClose, urlSidRemoved, rewriteEligible, activeSlot, activeSlotRef, dispatch, embedMode, navigationType, locationKey, locationPathname, locationHash, connected, noUrlSync, navigate, isMobile])
 
   // Timeout: if slot never appears after 5s, show an error. Keep the denied key
   // so a later authoritative slots frame can revoke that verdict; keeping
@@ -699,11 +779,15 @@ export function useChatPageSessionController({
       return
     }
     pendingSidRef.current = false
-    const current = sp.get('sid')
+    // `current` is the key the URL names, legacy `?slot=` included, so close
+    // eligibility below reads the same key as the POP reader. The no-op bail
+    // compares the canonical `?sid=` alone: a legacy URL naming the active
+    // session still falls through and is rewritten to `?sid=`.
+    const current = sp.get('sid') || sp.get('slot')
     const slot = filteredSlots.find(s => s.key === activeSlot)
     const slug = slot?.title && slot.title !== slot.key ? toSlug(slot.title) : ''
     const expectedPath = `${basePath}${slug ? '/' + slug : ''}`
-    if (current === activeSlot && locationPathname === expectedPath) return
+    if (sp.get('sid') === activeSlot && locationPathname === expectedPath) return
     const next = new URLSearchParams(sp)
     next.set('sid', activeSlot)
     next.delete('slot')
@@ -714,7 +798,38 @@ export function useChatPageSessionController({
     // Push vs replace — see `shouldReplaceSessionUrl` for why mobile never
     // pushes. Kept as a named predicate rather than an inline boolean so the
     // reasoning has somewhere to live and a test can pin it.
-    const isSessionSwitch = !!current && current !== activeSlot
+    // Closing the session on screen leaves the URL naming it. While our DELETE
+    // is unanswered, only the LANDING write waits: a failed close brings the
+    // session back, and its entry must still lead there. A later switch during
+    // that window pushes as usual, leaving the closing entry behind for the POP
+    // reader to repair once this tab sees the close confirmed. Once the server
+    // confirms while the landing is still on screen, the entry is dead —
+    // replace it, because a push would leave it reachable and the POP reader
+    // would have to repair it on every Back.
+    const currentAbsent = !!current && current !== activeSlot && !slots.some(s => s.key === current)
+    const currentConfirmed = !!current && confirmedClosedRef.current.has(current)
+    const eligibleByRule = !!current && rewriteEligible(current)
+    // The durable patch is immediate history truth. If this tab missed it, the
+    // retired-hold generation rule remains the conservative fallback.
+    const currentGone = currentAbsent && (
+      urlSidRemoved || (urlSidClose === 'none' && eligibleByRule)
+    )
+    const pendingClose = currentAbsent && !currentGone && (
+      urlSidClose !== 'none' || (currentConfirmed && !eligibleByRule)
+    )
+    // Keep the landing latch throughout in-flight -> confirmed -> retired ->
+    // eligible. If the key becomes live again, or the URL moves elsewhere, the
+    // latch no longer describes the entry we are standing on.
+    if (closeLandingRef.current && (closeLandingRef.current.sid !== current || (!pendingClose && !currentGone))) {
+      closeLandingRef.current = null
+    }
+    if (pendingClose) {
+      // The first session on screen while the URL still names the closing key
+      // is the landing. A Back onto a dying entry lands the same way.
+      closeLandingRef.current ??= { sid: current, landing: activeSlot }
+      if (activeSlot === closeLandingRef.current.landing) return
+    }
+    const isSessionSwitch = !!current && current !== activeSlot && !currentGone
     const replace = shouldReplaceSessionUrl({ isSessionSwitch, isMobile })
     // A push leaves the entry we are standing on behind, still naming the session
     // it was showing, and CREATES another naming the session switched to. Both
@@ -745,7 +860,7 @@ export function useChatPageSessionController({
     // POPs are still funnelled through the `popInFlightRef` bail above, so this
     // adds a re-check, not a new writer.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeSlot, filteredSlots, navigate, basePath, locationPathname, locationKey, embedded, noUrlSync, isMobile])
+  }, [activeSlot, filteredSlots, slots, slotsGeneration, urlSidClose, urlSidRemoved, rewriteEligible, navigate, basePath, locationPathname, locationKey, embedded, noUrlSync, isMobile])
 
   // Re-fetch slot messages on mount (handles nav away + back).
   // Skip when newSession=1 — createSlot in send() will set the active slot;

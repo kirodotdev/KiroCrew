@@ -10,11 +10,16 @@
  */
 import reducer, {
   sseSlots,
+  sseConnected,
   fetchSlots,
   addSlotOptimistic,
   removeSlotOptimistic,
   releaseCloseHold,
+  awaitCloseOutcome,
+  expireCloseHold,
+  confirmCloseHold,
   armConfirmedCloseHold,
+  sseSlotPatch,
   sseSubagentStatus,
 } from '../store/dashboardSlice'
 import type { ChatSlot } from '../types'
@@ -49,9 +54,140 @@ function closing(state = live()) {
   return reducer(state, removeSlotOptimistic('chat-b'))
 }
 
+/** A 404 close waiting for the competing close's durable outcome. */
+function awaitingOutcome(state = closing()) {
+  return reducer(state, awaitCloseOutcome({ key: 'chat-b', requestId: 'r' }))
+}
+
 describe('dashboardSlice close tombstone', () => {
   it('starts with no closing keys', () => {
     expect(reducer(undefined, { type: '@@INIT' }).closingSlots).toEqual({})
+  })
+
+  it('releases an awaiting-outcome hold after the straggler budget', () => {
+    let s = awaitingOutcome()
+    expect(keys(s)).toEqual(['chat-a', 'chat-c'])
+    for (let i = 0; i < 3; i++) {
+      s = reducer(s, sseSlots([A, B, C]))
+      expect(keys(s)).toEqual(['chat-a', 'chat-c'])
+      expect(s.closingSlots['chat-b']?.awaitingOutcome).toBe(true)
+    }
+    s = reducer(s, sseSlots([A, B, C]))
+    expect(keys(s)).toEqual(['chat-a', 'chat-b', 'chat-c'])
+    expect(s.closingSlots).toEqual({})
+  })
+
+  it('releases an awaiting-outcome hold at once from a post-404 reply that lists the key', () => {
+    let s = awaitingOutcome()
+    s = reducer(s, fetchStarted('h2'))
+    s = reducer(s, httpReply([A, B, C], 'h2'))
+    expect(keys(s)).toEqual(['chat-a', 'chat-b', 'chat-c'])
+    expect(s.closingSlots).toEqual({})
+  })
+
+  it('holds through budget-spending frames that omit the key and keeps waiting after them', () => {
+    let s = awaitingOutcome()
+    for (let i = 0; i < 4; i++) s = reducer(s, sseSlots([A, C]))
+    expect(keys(s)).toEqual(['chat-a', 'chat-c'])
+    expect(s.closingSlots['chat-b']?.awaitingOutcome).toBe(true)
+    expect(s.closingSlots['chat-b']?.graceFrames).toBe(0)
+  })
+
+  it('confirms an awaiting-outcome hold only from a durable removed frame', () => {
+    let s = awaitingOutcome()
+    s = reducer(s, sseSlotPatch({ slots: [], removed: ['chat-b'] }))
+    expect(s.closingSlots['chat-b']?.inFlightUntil).toBeNull()
+    expect(s.closingSlots['chat-b']?.awaitingOutcome).toBeUndefined()
+  })
+
+  it('does not confirm an awaiting-outcome hold from confirm or fulfilled', () => {
+    let s = awaitingOutcome()
+    s = reducer(s, confirmCloseHold({ key: 'chat-b', requestId: 'r' }))
+    s = reducer(s, fulfilled('chat-b'))
+    expect(s.closingSlots['chat-b']?.awaitingOutcome).toBe(true)
+    expect(s.closingSlots['chat-b']?.inFlightUntil).not.toBeNull()
+  })
+
+  // A reconnect clears `slotsLoaded` until the first snapshot. The `removed`
+  // frame is the one durable signal an awaiting hold has, so it must still
+  // confirm the hold in that window; only the row teardown waits.
+  it('confirms an awaiting-outcome hold from a removed frame during a reconnect', () => {
+    let s = awaitingOutcome()
+    s = reducer(s, sseConnected())
+    expect(s.slotsLoaded).toBe(false)
+    s = reducer(s, sseSlotPatch({ slots: [], removed: ['chat-b'] }))
+    expect(s.closingSlots['chat-b']?.inFlightUntil).toBeNull()
+    expect(s.closingSlots['chat-b']?.awaitingOutcome).toBeUndefined()
+    expect(keys(s)).toEqual(['chat-a', 'chat-c'])
+  })
+
+  // A reply from a fetch already in flight at the 404 predates the pop. Landing
+  // in the reconnect window it is still paired with the key, so its row does
+  // not read as the competing close's rollback.
+  it('keeps distrusting a pre-404 reply that lands during a reconnect', () => {
+    let s = closing()
+    s = reducer(s, fetchStarted('h'))
+    s = reducer(s, awaitCloseOutcome({ key: 'chat-b', requestId: 'r' }))
+    s = reducer(s, sseConnected())
+    s = reducer(s, httpReply([A, B, C], 'h'))
+    expect(keys(s)).toEqual(['chat-a', 'chat-c'])
+    expect(s.closingSlots['chat-b']?.awaitingOutcome).toBe(true)
+  })
+
+  it('drops an awaiting-outcome hold after its in-flight deadline', () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date('2026-09-16T06:00:00Z'))
+      let s = awaitingOutcome()
+      vi.setSystemTime(new Date('2026-09-16T06:00:31Z'))
+      s = reducer(s, sseSlots([A, B, C]))
+      expect(keys(s)).toEqual(['chat-a', 'chat-b', 'chat-c'])
+      expect(s.closingSlots).toEqual({})
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  // The cap above is evaluated only by an arriving list; `deleteSlot` also arms a
+  // timer that dispatches `expireCloseHold` at the deadline, so an idle tab that
+  // receives no list still drops the hold. The reducer must be exactly as narrow
+  // as the stalled branch: past the deadline, this attempt, still awaiting.
+  it('expireCloseHold drops an awaiting hold past its deadline and is a no-op before it', () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date('2026-09-16T06:00:00Z'))
+      let s = awaitingOutcome()
+      s = reducer(s, expireCloseHold({ key: 'chat-b', requestId: 'r' }))
+      expect(s.closingSlots['chat-b']?.awaitingOutcome).toBe(true)
+      vi.setSystemTime(new Date('2026-09-16T06:00:31Z'))
+      s = reducer(s, expireCloseHold({ key: 'chat-b', requestId: 'r' }))
+      expect(s.closingSlots).toEqual({})
+      // The hold is gone, so the next list applies membership as on `main`.
+      s = reducer(s, sseSlots([A, B, C]))
+      expect(keys(s)).toEqual(['chat-a', 'chat-b', 'chat-c'])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('expireCloseHold is a no-op after confirmation, for another attempt, and for a plain in-flight hold', () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date('2026-09-16T06:00:00Z'))
+      const confirmed = reducer(awaitingOutcome(), sseSlotPatch({ slots: [], removed: ['chat-b'] }))
+      const retried = reducer(awaitingOutcome(), pending('chat-b', 'r2'))
+      const inFlight = closing()
+      vi.setSystemTime(new Date('2026-09-16T06:00:31Z'))
+      let s = reducer(confirmed, expireCloseHold({ key: 'chat-b', requestId: 'r' }))
+      expect(s.closingSlots['chat-b']?.inFlightUntil).toBeNull()
+      s = reducer(retried, expireCloseHold({ key: 'chat-b', requestId: 'r' }))
+      expect(s.closingSlots['chat-b']?.requestId).toBe('r2')
+      s = reducer(inFlight, expireCloseHold({ key: 'chat-b', requestId: 'r' }))
+      expect(s.closingSlots['chat-b']?.requestId).toBe('r')
+      expect(s.closingSlots['chat-b']?.awaitingOutcome).toBeUndefined()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('holds the closing row out of a live frame that still lists it (the flicker)', () => {
