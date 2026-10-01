@@ -32,7 +32,11 @@ LOGGER_NAME = "kiro_crew.session_token_sig"
 
 
 def _path_for(cfg, token: str):
-    return cfg / f"session_token_{hashlib.sha256(token.encode()).hexdigest()}.sig"
+    # ``surrogatepass`` so this helper can name the file for a token carrying a
+    # lone surrogate, which is what a header value decoded with
+    # ``surrogateescape`` hands the module.
+    digest = hashlib.sha256(token.encode("utf-8", "surrogatepass")).hexdigest()
+    return cfg / f"session_token_{digest}.sig"
 
 
 @pytest.fixture
@@ -185,6 +189,55 @@ class TestFailsClosed:
         good = path.read_text(encoding="utf-8")
         path.write_text(good + "#" * 5000, encoding="utf-8")
         assert session_token_sig.verify_session_token(TOKEN) == ""
+
+    def test_a_non_ascii_mac_line_returns_empty(self, cfg):
+        """A mapping whose MAC line is not hex is a mismatch, not a ``TypeError``.
+
+        ``hmac.compare_digest`` raises on a ``str`` holding a non-ASCII character,
+        and the file is same-uid writable, so its MAC line can hold any UTF-8.
+        """
+        session_token_sig.publish_session_token(TOKEN, SESSION_KEY)
+        path = _path_for(cfg, TOKEN)
+        body = path.read_text(encoding="utf-8").partition("\n")[2]
+        path.write_text(f"{'é' * 64}\n{body}", encoding="utf-8")
+        assert session_token_sig.verify_session_token(TOKEN) == ""
+
+    def test_a_token_with_a_lone_surrogate_returns_empty(self, cfg):
+        """aiohttp decodes a header value with ``surrogateescape``.
+
+        So a non-UTF-8 byte in ``X-Session-Token`` reaches this function as a
+        lone surrogate, which a strict ``encode("utf-8")`` refuses by raising.
+        """
+        session_token_sig.publish_session_token(TOKEN, SESSION_KEY)
+        assert session_token_sig.verify_session_token(TOKEN + "\udcff") == ""
+        assert session_token_sig.verify_session_token("\udcff") == ""
+        # The good mapping is untouched, so the refusal above is not vacuous.
+        assert session_token_sig.verify_session_token(TOKEN) == SESSION_KEY
+
+    def test_a_surrogate_token_with_a_planted_mapping_returns_empty(self, cfg):
+        """Reaches the MAC compute, not only the path digest.
+
+        The mapping directory is same-uid writable, so a file CAN exist at the
+        name a surrogate-bearing token hashes to; without that file the refusal
+        above stops at the absent-file arm and never signs anything.
+        """
+        surrogate_token = TOKEN + "\udcff"
+        session_token_sig.publish_session_token(TOKEN, SESSION_KEY)
+        planted = _path_for(cfg, surrogate_token)
+        planted.write_bytes(_path_for(cfg, TOKEN).read_bytes())
+        assert session_token_sig.verify_session_token(surrogate_token) == ""
+
+    def test_a_surrogate_token_round_trips_through_publish_and_verify(self, cfg):
+        """Publication signs the same bytes verification does."""
+        surrogate_token = TOKEN + "\udcff"
+        session_token_sig.publish_session_token(surrogate_token, SESSION_KEY)
+        assert session_token_sig.verify_session_token(surrogate_token) == SESSION_KEY
+
+    def test_a_non_ascii_token_round_trips(self, cfg):
+        """Comparing bytes changes no verdict for a token that encodes cleanly."""
+        token = "é" * 32
+        session_token_sig.publish_session_token(token, SESSION_KEY)
+        assert session_token_sig.verify_session_token(token) == SESSION_KEY
 
     def test_missing_sel_key_refuses_and_warns(self, cfg, caplog):
         session_token_sig.publish_session_token(TOKEN, SESSION_KEY)

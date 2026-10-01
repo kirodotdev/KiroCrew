@@ -152,7 +152,10 @@ def _sig_path(token: str, cfg: Path) -> Path:
     a token, while a reader that HOLDS the token still finds its file in one
     ``open`` with no scan.
     """
-    digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    # ``surrogatepass``: aiohttp decodes a header value with ``surrogateescape``,
+    # so a presented token can hold a lone surrogate, which a strict encode
+    # refuses by raising. It encodes every other string exactly as plain UTF-8.
+    digest = hashlib.sha256(token.encode("utf-8", "surrogatepass")).hexdigest()
     return cfg / f"session_token_{digest}.sig"
 
 
@@ -177,9 +180,9 @@ def _compute_sig(key: bytes, token: str, body: str) -> str:
     the reader presents. Binding the body means editing the session key
     invalidates it.
     """
-    return hmac.new(
-        _derive_subkey(key), f"{token}:{body}".encode("utf-8"), hashlib.sha256
-    ).hexdigest()
+    # ``surrogatepass`` for the reason :func:`_sig_path` gives.
+    message = f"{token}:{body}".encode("utf-8", "surrogatepass")
+    return hmac.new(_derive_subkey(key), message, hashlib.sha256).hexdigest()
 
 
 def _split_record(raw: str) -> tuple[str, str] | None:
@@ -385,7 +388,12 @@ def verify_session_token(token: str) -> str:
             sel_hmac_key_path(),
         )
         return ""
-    if not hmac.compare_digest(_compute_sig(key, token, body), mac):
+    # Bytes, not ``str``: ``compare_digest`` raises ``TypeError`` on a str holding
+    # a non-ASCII character, and the MAC line comes from a same-uid writable file.
+    # ``surrogatepass`` on both sides for the reason :func:`_sig_path` gives, so no
+    # arm of this function depends on what the file reader's decode admits.
+    expected = _compute_sig(key, token, body).encode("utf-8", "surrogatepass")
+    if not hmac.compare_digest(expected, mac.encode("utf-8", "surrogatepass")):
         # The token is a secret, so it is NOT logged — the digest that names the
         # file is, which is enough to find the mapping on disk and carries no
         # bearer value.

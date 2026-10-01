@@ -215,7 +215,14 @@ def consume(nonce: str) -> PendingUpdate:
                 "no armed update request (it may have expired) — arm one from the "
                 "dashboard's About panel first"
             )
-        if not nonce or not hmac.compare_digest(pending.nonce, nonce):
+        # Bytes, not ``str``: ``compare_digest`` raises ``TypeError`` on a str
+        # holding a non-ASCII character, which would skip the caller's audited
+        # StepUpError refusal. ``surrogatepass`` because a JSON body can carry
+        # a lone surrogate, which a strict encode would refuse by raising.
+        if not nonce or not hmac.compare_digest(
+            pending.nonce.encode("utf-8", "surrogatepass"),
+            nonce.encode("utf-8", "surrogatepass"),
+        ):
             raise StepUpError("approval nonce does not match the armed request")
         _consume_pending_file()
         return pending

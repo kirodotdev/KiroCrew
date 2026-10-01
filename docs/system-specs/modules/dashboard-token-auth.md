@@ -603,7 +603,10 @@ either auth flavor can grant (see `_verify_unix_peer`):
    key — the token's MAC is keyed by the agent-unreadable SEL trust root and
    names ONE session, which peer credentials cannot distinguish on a shared
    runtime. No token, or a token naming another session → **403**
-   `peer_session_unattested`. A truncated roster does not weaken this: a
+   `peer_session_unattested`, and so does a token this resolver cannot even
+   name: the header arrives decoded with `surrogateescape`, so the resolver
+   compares the MAC as BYTES and answers an ordinary refusal for a token whose
+   text a `str` comparison cannot hold. A truncated roster does not weaken this: a
    recorded count above one is the evidence the token is required, so a
    declared key absent from a SHORT membership is still challenged rather than
    admitted as "membership unknown". Both outcomes are SEL-recorded, including

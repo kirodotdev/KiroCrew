@@ -179,6 +179,21 @@ class TestStepUpModule:
         finally:
             update_stepup.clear_pending()
 
+    @pytest.mark.parametrize("bad", ["é" * 64, "0" * 63 + "\udcff"])
+    def test_a_non_ascii_nonce_is_refused_and_not_consumed(self, bad: str) -> None:
+        # The nonce arrives in a JSON body, where non-ASCII text and lone
+        # surrogates are ordinary str values. hmac.compare_digest raises
+        # TypeError on a non-ASCII str, which is not the StepUpError the
+        # approve handler refuses (and audits) on.
+        pending = update_stepup.arm("9.9.9", "stable")
+        try:
+            with pytest.raises(update_stepup.StepUpError, match="does not match"):
+                update_stepup.consume(bad)
+            assert update_stepup.read_pending() is not None
+            update_stepup.consume(pending.nonce)
+        finally:
+            update_stepup.clear_pending()
+
     def test_expired_request_reads_as_absent_and_is_removed(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -456,6 +471,26 @@ class TestApproveEndpoint:
             resp = await updates.api_update_approve(_request({"nonce": "0" * 64}))
             assert resp.status == 403
             assert json.loads(resp.body.decode())["code"] == "approve_refused"
+        finally:
+            update_stepup.clear_pending()
+
+    async def test_a_non_ascii_nonce_is_refused_and_audited(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        audited: list[dict[str, object]] = []
+
+        async def fake_audit(request: object, **kwargs: object) -> None:
+            audited.append(kwargs)
+
+        monkeypatch.setattr(updates, "_audit_update_event", fake_audit)
+        update_stepup.arm("9.9.9", "stable")
+        try:
+            resp = await updates.api_update_approve(_request({"nonce": "é" * 64}))
+            assert resp.status == 403
+            assert json.loads(resp.body.decode())["code"] == "approve_refused"
+            assert [a["outcome"] for a in audited] == ["denied"]
+            assert audited[0]["operation"] == "update.approve"
+            assert update_stepup.read_pending() is not None
         finally:
             update_stepup.clear_pending()
 
