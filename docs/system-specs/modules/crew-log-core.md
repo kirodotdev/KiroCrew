@@ -48,10 +48,10 @@ Line 1 is the header; every later line is an entry. This section is the part tha
 
 | Field | Meaning |
 |---|---|
-| `type` | `domain/action`, or the one guest form `app:<name>/<action>`. A type carries the FACT; who wrote it is `src`. |
+| `type` | `domain/action`, or the one guest form `app:<name>/<action>`. Each name is anchored at `\Z`, so a name carrying a trailing newline is `bad_type` rather than an accepted plain name. A type carries the FACT; who wrote it is `src`. |
 | `seq` | Contiguous from 1 after the header. Writer-assigned. |
 | `time` | Epoch milliseconds. Writer-assigned. |
-| `src` | The emitter. Which names a kind accepts is per kind: 4a through 4c. |
+| `src` | The emitter. Which names a kind accepts is per kind: 4a through 4c. A guest's name is anchored at `\Z` too, so `crew:qa\n` is `bad_src`. |
 | `thread` | Optional. The seq of an earlier entry in this same file -- a grouping key, like a chat thread id. |
 | `ref` | Optional. `{unit, id, from, to?}`, a pointer to a segment of another (or the same) crew log. `to` absent means one line. |
 | `ignorable` | Optional, `true` only. The writer's promise that a reader which does not know this `type` may skip the line. Absent on every entry that does not set it. |

@@ -3789,9 +3789,11 @@ directory that merely *contains* skills rather than being one. Each refusal logs
 its reason. The alternative — writing the subset — reports success for a skill
 missing a file its own instructions reference, so it fails later, elsewhere, as a
 puzzle. Paths go through ONE allowlist -- a segment matches
-`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`, depth at most 4, no two paths equal under
+`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z`, depth at most 4, no two paths equal under
 `casefold` -- which is narrower than any filesystem and narrower than the bundle
-writer's own `".." in rel_path` guard. An allowlist rather than a refusal list
+writer's own `".." in rel_path` guard. The anchor is `\Z`, not `$`, because `$`
+also matches just before a trailing newline;
+`test_regex_anchor_contract.py` holds this package to that anchor. An allowlist rather than a refusal list
 because a refusal list is something review can keep extending: successive rounds
 named Windows-illegal characters, control characters, trailing dots and spaces,
 byte-versus-character limits, Unicode normalisation, reserved device names and

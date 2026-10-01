@@ -756,7 +756,6 @@ test/test_recovery_card_parity.py
 test/test_redact_meta_snapshot.py
 test/test_redaction_mirror_parity.py
 test/test_refresh_tokens.py
-test/test_regex_anchor_contract.py
 test/test_registry_hero_fields.py
 test/test_release_promotion.py
 test/test_remote_artifacts.py

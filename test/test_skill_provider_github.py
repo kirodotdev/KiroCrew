@@ -267,10 +267,31 @@ class TestParseRepoSpec:
             "-acme/widgets",  # nor may an owner
             "acme/widgets@ref?query=1",
             "acme/wid gets",
+            # The ceilings are enforced by the end anchor and by nothing else: a
+            # pattern that stopped anchoring would accept these and carry the
+            # overlong name into the request URL and the recorded pin.
+            "a" * 40 + "/widgets",
+            "acme/" + "r" * 101,
         ],
     )
     def test_refusals(self, raw):
         assert gh.parse_repo_spec(raw) is None
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            "acme\n/widgets",  # owner
+            "acme/widgets\n@v1",  # repository
+            "acme/widgets@v1\n:skills/reviewer",  # ref
+            "acme/widgets:skills\n/reviewer",  # path segment
+        ],
+    )
+    def test_a_newline_ending_any_part_is_refused(self, raw):
+        # Each part is judged by a pattern anchored at ``\Z``. A ``$``-anchored
+        # one also accepts the same text followed by one newline, which would
+        # carry the newline into the request URL and the recorded pin.
+        assert gh.parse_repo_spec(raw) is None
+        assert gh.parse_repo_spec(raw.replace("\n", "")) is not None
 
     def test_non_string_is_refused(self):
         # search() forwards whatever the caller passed; a non-string must not
@@ -669,6 +690,24 @@ class TestFetchBundle:
             assert await gh.GitHubRepoProvider().fetch_skill_bundle("acme/widgets") is None
 
     @pytest.mark.asyncio
+    async def test_a_listed_file_name_ending_in_a_newline_refuses_the_bundle(self):
+        # The tree listing is external input, so the grammar has to reach the
+        # true end of the name. A newline is unnameable on Windows, where the write raises
+        # OSError and refuses the whole install at the handler; on POSIX it
+        # succeeds and installs a file whose name no instruction can reference.
+        # Refusing here is what keeps the answer complete-or-refused.
+        fake = _Fake(
+            json_routes={"/git/trees/": _tree(("SKILL.md", 10), ("rules/tests.md\n", 10))},
+            text_routes={
+                "/commits/": _COMMIT,
+                "/SKILL.md": _SKILL_MD,
+                "/rules/tests.md": "always ask for a test",
+            },
+        )
+        with fake.install():
+            assert await gh.GitHubRepoProvider().fetch_skill_bundle("acme/widgets") is None
+
+    @pytest.mark.asyncio
     async def test_nested_skill_files_are_excluded(self):
         # Importing a directory that holds both its own SKILL.md and a nested
         # skill must take only its own files -- the nested one is a separate
@@ -1048,6 +1087,8 @@ class TestWriterCompatibility:
             "back\\slash.md",
             "trailing space.md ",
             "tab\tname.md",
+            "SKILL.md\n",  # a trailing newline, which no platform can name a file with
+            "rules\n/tests.md",
             # Refused by the allowlist rather than by a rule of their own. Each was
             # a separate check once; the shape covers all of them.
             "rules/my file.md",
@@ -1103,6 +1144,11 @@ class TestWriterCompatibility:
 
     def test_an_absurdly_long_ref_is_refused(self):
         assert gh._valid_ref("a/" * 5000 + "b") is False
+
+    def test_a_ref_ending_in_a_newline_is_refused(self):
+        assert gh._valid_ref("main") is True
+        assert gh._valid_ref("main\n") is False
+        assert gh._valid_ref("release/2\n") is False
 
 
 class TestMaterialisation:

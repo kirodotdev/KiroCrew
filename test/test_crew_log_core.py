@@ -664,7 +664,22 @@ def test_message_is_owned_by_both_kinds_because_both_have_messages():
     )
 
 
-@pytest.mark.parametrize("bad", ["noslash", "/leading", "trailing/", "a/b/c", "-bad/x", "x/-bad"])
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "noslash",
+        "/leading",
+        "trailing/",
+        "a/b/c",
+        "-bad/x",
+        "x/-bad",
+        # The name pattern ends at ``\Z``: a trailing newline is not part of a
+        # plain name, and an accepted one would be persisted into every reader of
+        # the entry.
+        "activity/tick\n",
+        "activity\n/tick",
+    ],
+)
 def test_a_type_that_is_not_domain_slash_action_is_refused(bad):
     crew = _crew()
     with _raises(lg.CODE_BAD_TYPE) as exc:
@@ -678,7 +693,10 @@ def test_a_crew_log_accepts_its_own_emitters(src):
     assert _crew().append(entry_type, {}, src=src).src == src
 
 
-@pytest.mark.parametrize("bad", ["", "Gate way", "session:s-1", "crew:", "app:bad/name", "unknown"])
+@pytest.mark.parametrize(
+    "bad",
+    ["", "Gate way", "session:s-1", "crew:", "app:bad/name", "unknown", "crew:qa\n", "app:radar\n"],
+)
 def test_an_unrecognized_src_is_refused(bad):
     crew = _crew()
     with _raises(lg.CODE_BAD_SRC) as exc:

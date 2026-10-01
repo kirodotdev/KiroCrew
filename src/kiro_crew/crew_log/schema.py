@@ -215,8 +215,11 @@ GUEST_TYPE_PREFIX = APP_SOURCE_PREFIX
 
 # A name segment: a domain, an action, a crew name, an app name. No separator,
 # so it can never widen a type into another namespace or a path into another
-# directory.
-_SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+# directory. Ends at ``\Z``, never at ``$``: Python's ``$`` also matches just
+# before a trailing newline, so a ``$``-anchored pattern would accept ``"scan\n"``
+# as a plain name and the newline would reach a persisted entry and every reader
+# of it. ``test/test_regex_anchor_contract.py`` holds this package to that rule.
+_SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 
 
 # --------------------------------------------------------------------------- #

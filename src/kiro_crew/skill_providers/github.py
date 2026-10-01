@@ -1,4 +1,4 @@
-"""GitHub-repo skill provider — import a SKILL.md bundle pinned to one commit.
+r"""GitHub-repo skill provider — import a SKILL.md bundle pinned to one commit.
 
 The user already keeps skills in their own repositories; this provider makes such
 a repository addressable from the same Discover surface as a public registry, so
@@ -58,7 +58,7 @@ outside the allowed shape -- refuses the whole import and logs why, rather than
 writing a subset.
 
 **One allowlist decides every path.** A segment must match
-``^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$``, at most four levels deep, and no two paths may
+``^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z``, at most four levels deep, and no two paths may
 be equal under ``casefold``. That is deliberately NARROWER than any filesystem: a
 repository carrying ``my file.md`` or a non-ASCII name is refused outright, with the
 file named. The alternative -- admit everything writable -- means maintaining a
@@ -126,9 +126,16 @@ _ALLOWED_HOSTS = frozenset({"api.github.com", "raw.githubusercontent.com"})
 # repository shapes are GitHub's own, a ref may not contain a path-traversal or
 # an empty segment, and a path segment is held to the same characters the skills
 # loader can represent on every platform.
-_OWNER_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$")
-_REPO_RE = re.compile(r"^[A-Za-z0-9._][A-Za-z0-9._-]{0,99}$")
-_FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+#
+# Every pattern below ends at ``\Z``, never at ``$``: Python's ``$`` also matches
+# just before a trailing newline, so a ``$``-anchored pattern accepts its own
+# shape plus one ``"\n"`` -- a name that then reaches a request URL, the recorded
+# pin and the installed file names. ``\Z`` is the true end of the string, which
+# also keeps each length ceiling honest. ``test/test_regex_anchor_contract.py``
+# holds this whole package to that rule.
+_OWNER_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\Z")
+_REPO_RE = re.compile(r"^[A-Za-z0-9._][A-Za-z0-9._-]{0,99}\Z")
+_FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}\Z")
 
 # Characters no path segment may contain. The first group is what Windows
 # genuinely cannot create -- a write would raise OSError out of the bundle
@@ -150,7 +157,7 @@ _FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 # outright, with the file named, rather than imported. That is a real cost, and it
 # buys the property that matters more -- an import either lands complete or says
 # exactly why it cannot.
-_SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+_SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
 
 # Directory depth inside one skill. Four levels covers every shape a skill actually
 # has (``rules/``, ``scripts/``, ``assets/`` and one more) and bounds the total path
@@ -173,11 +180,11 @@ _RESERVED_SEGMENT_STEMS = frozenset(
 # rather than split on "/", so an empty, leading, trailing or doubled separator is
 # refused by the shape itself and no filesystem-separator assumption is expressed.
 _REF_SEGMENT = r"\.?[A-Za-z0-9_][A-Za-z0-9_-]*(?:\.[A-Za-z0-9_][A-Za-z0-9_-]*)*"
-_REF_RE = re.compile(rf"^{_REF_SEGMENT}(?:/{_REF_SEGMENT})*$")
+_REF_RE = re.compile(rf"^{_REF_SEGMENT}(?:/{_REF_SEGMENT})*\Z")
 
 # An owner/repo address, optionally in pasted tree/blob-URL form.
 _ADDRESS_RE = re.compile(
-    r"^(?P<owner>[^/@:]+)/(?P<repo>[^/@:]+)(?:/(?P<kind>tree|blob)/(?P<rest>.+))?$"
+    r"^(?P<owner>[^/@:]+)/(?P<repo>[^/@:]+)(?:/(?P<kind>tree|blob)/(?P<rest>.+))?\Z"
 )
 
 # The ref's ceiling, applied before its pattern runs so a regex never sees an
