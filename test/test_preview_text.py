@@ -100,6 +100,20 @@ class TestStripMarkdownPreview:
         assert strip_markdown_preview("![screenshot](/tmp/a.png)") == "screenshot"
         assert strip_markdown_preview("![](/tmp/a.png)") == "(image)"
 
+    def test_a_balanced_pair_in_a_link_url_leaves_only_the_label(self):
+        url = "https://en.wikipedia.org/wiki/Python_(programming_language)"
+        assert strip_markdown_preview(f"see [Python]({url}) now") == "see Python now"
+
+    def test_a_balanced_pair_in_an_image_url_leaves_only_the_alt(self):
+        assert strip_markdown_preview("![chart](https://x.y/a_(b).png) now") == "chart now"
+        assert strip_markdown_preview("![](https://x.y/a_(b).png) now") == "(image) now"
+
+    def test_an_unbalanced_link_url_is_left_as_written(self):
+        # No channel renderer and no CommonMark reader links this, so the
+        # preview shows what the message shows.
+        src = "see [a](https://x.y/(b) now"
+        assert strip_markdown_preview(src) == src
+
     def test_headers_quotes_bullets_stripped(self):
         src = "## Summary\n> quoted\n- item one\n2. item two"
         assert strip_markdown_preview(src) == "Summary quoted item one item two"

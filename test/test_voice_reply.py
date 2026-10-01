@@ -69,6 +69,11 @@ class TestStripMarkdown:
     def test_removes_markdown_links(self) -> None:
         assert strip_markdown("[click](https://example.com)") == "click"
 
+    def test_a_balanced_pair_in_a_link_url_leaves_only_the_label(self) -> None:
+        url = "https://en.wikipedia.org/wiki/Python_(programming_language)"
+        assert strip_markdown(f"see [Python]({url}) now") == "see Python now"
+        assert strip_markdown("see [docs](https://example.com/a_(b)_c) now") == "see docs now"
+
     def test_removes_bold_italic(self) -> None:
         assert strip_markdown("**bold** and *italic*") == "bold and italic"
 

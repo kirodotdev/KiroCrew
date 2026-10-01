@@ -32,6 +32,18 @@ def test_markdown_escapes_html():
     assert "&lt;script&gt;" in out
 
 
+def test_markdown_link_href_keeps_a_balanced_pair():
+    url = "https://en.wikipedia.org/wiki/Python_(programming_language)"
+    out = render_standalone("markdown", f"see [Python]({url}) now")
+    assert f'<a href="{url}">Python</a> now' in out
+
+
+def test_markdown_link_with_an_unbalanced_url_is_left_as_text():
+    out = render_standalone("markdown", "see [a](https://example.com/(b) now")
+    assert "<a href" not in out
+    assert "see [a](https://example.com/(b) now" in out
+
+
 def test_full_html_passthrough():
     doc = "<html><head></head><body>hi</body></html>"
     assert render_standalone("html", doc) == doc

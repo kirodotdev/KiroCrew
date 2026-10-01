@@ -38,7 +38,7 @@ import tempfile
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew import aws_consent, piper_runtime
-from kiro_crew.constants import strip_control_comments
+from kiro_crew.constants import md_link_destination, strip_control_comments
 from kiro_crew.deploy.engine import resolve_aws_bin
 from kiro_crew.piper_runtime import REQUEST_TIMEOUT_SECONDS as _PIPER_STREAM_TIMEOUT_SECONDS
 from kiro_crew.piper_worker import MAX_AUDIO_BYTES as _PIPER_MAX_AUDIO_BYTES
@@ -367,6 +367,12 @@ def validated_config_bool(value: object) -> bool | None:
     return value
 
 
+#: A Markdown link whose destination keeps a balanced ``(...)`` pair; see
+#: :func:`kiro_crew.constants.md_link_destination`. The label stops at the next
+#: ``[``, so a run of ``[`` cannot make every opener rescan the text.
+_MARKDOWN_LINK_RE = re.compile(rf"\[([^\[\]]+)\]\({md_link_destination('[^()]')}+\)")
+
+
 def strip_markdown(text: str) -> str:
     """Strip Slack mrkdwn / markdown to plain speakable text."""
     t = text
@@ -411,7 +417,7 @@ def strip_markdown(text: str) -> str:
     # Remove remaining HTML/XML tags (after Slack links are processed)
     t = re.sub(r"</?[a-zA-Z][^>]*>", "", t)
     # Markdown links: [label](url) → label
-    t = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", t)
+    t = _MARKDOWN_LINK_RE.sub(r"\1", t)
     # Bold / italic / strikethrough markers
     t = re.sub(r"[*_~]+", "", t)
     # Emoji shortcodes
