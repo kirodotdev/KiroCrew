@@ -10638,6 +10638,7 @@
         "reject": "Rechazar",
         "rejected": "Rechazado",
         "resolved": "Resuelto",
+        "never_started": "Nunca se inició",
         "resolving": "Resolviendo…",
         "resolving_2": "resolviendo...",
         "resource_type_issue": "Incidencia",
@@ -11043,7 +11044,9 @@
         "waiting_to_start_queued_behind_the_concurrency_l": "Esperando para iniciar — en cola por el límite de concurrencia",
         "stop_failed": "No se pudo detener el subagente {{name}}",
         "stop_all_failed": "No se pudieron detener los subagentes",
-        "retry_failed_error": "No se pudieron reintentar algunos subagentes fallidos"
+        "retry_failed_error": "No se pudieron reintentar algunos subagentes fallidos",
+        "checking_whether_it_started": "Comprobando si se inició…",
+        "liveness_check_failed": "No se pudo comprobar si se inició. Reintentando…"
       },
       "subagentQueued": {
         "low_memory": "esperando para iniciar — necesita {{required}} de memoria libre, ahora hay {{available}} libres; libera memoria para continuar",

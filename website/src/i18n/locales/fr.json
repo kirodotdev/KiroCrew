@@ -10638,6 +10638,7 @@
         "reject": "Refuser",
         "rejected": "Refusé",
         "resolved": "Résolu",
+        "never_started": "Jamais démarré",
         "resolving": "Résolution…",
         "resolving_2": "résolution...",
         "resource_type_issue": "Issue",
@@ -11043,7 +11044,9 @@
         "waiting_to_start_queued_behind_the_concurrency_l": "En attente de démarrage — mis en file derrière la limite de concurrence",
         "stop_failed": "Impossible d’arrêter le sous-agent {{name}}",
         "stop_all_failed": "Impossible d’arrêter les sous-agents",
-        "retry_failed_error": "Impossible de réessayer certains sous-agents en échec"
+        "retry_failed_error": "Impossible de réessayer certains sous-agents en échec",
+        "checking_whether_it_started": "Vérification du démarrage…",
+        "liveness_check_failed": "Impossible de vérifier s'il a démarré. Nouvelle tentative…"
       },
       "subagentQueued": {
         "low_memory": "en attente de démarrage — nécessite {{required}} de mémoire libre, {{available}} libres actuellement ; libère de la mémoire pour continuer",

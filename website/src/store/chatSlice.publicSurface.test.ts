@@ -34,8 +34,8 @@ const ACTION_CREATORS = [
   'clearSlotReveal', 'clearSlotState', 'clearSubagentsForSnapshot', 'clearSwitchSlotGone',
   'clearTerminalSubagents', 'clearUndeletableHistory', 'clearUnresumableResume',
   'clearWorkflowRun', 'confirmOptimisticSend', 'dismissFollowupItem', 'editQueuedMessage',
-  'endLocalTurn', 'finalizeAssistant', 'hydrateSlotMessages', 'markSendUnconfirmed', 'markSubagentApproving',
-  'openActivityPanel', 'openActivityToTab', 'openActivityToTool', 'reconcileSubagentQueuedFromSlots', 'reconcileWorkflowRuns',
+  'endLocalTurn', 'finalizeAssistant', 'hydrateSlotMessages', 'markSendUnconfirmed', 'markSubagentApprovalGone', 'markSubagentApproving',
+  'openActivityPanel', 'openActivityToTab', 'openActivityToTool', 'reconcileSubagentApprovalGone', 'reconcileSubagentQueuedFromSlots', 'reconcileWorkflowRuns',
   'removeAutomation', 'removeByApprovalId', 'removeQueuedMessage', 'removeThinking',
   'reorderQueuedMessages', 'replaceMessages', 'requestFolderReveal', 'requestSlotReveal',
   'resolveByApprovalId', 'resolveOptimisticSteer', 'resolveQuestionCard', 'selectSubagent',
@@ -61,6 +61,7 @@ const THUNKS: Record<string, string> = {
   forkSlot: 'chat/forkSlot',
   loadOlderMessages: 'chat/loadOlder',
   loadOlderSlotMessages: 'chat/loadOlderSlot',
+  reconcileGoneSubagent: 'chat/reconcileGoneSubagent',
   refreshSlot: 'chat/refreshSlot',
   requestStop: 'chat/requestStop',
   resumeFromHistory: 'chat/resumeFromHistory',
@@ -70,7 +71,7 @@ const THUNKS: Record<string, string> = {
 
 const FUNCTIONS = [
   'abortActiveOlderFetch', 'batchedTextAboveFloor', 'capturePendingAskId', 'clampToolOutput',
-  'countMatchedFetchLimit', 'floorForGen', 'hasUnidentifiedDurableRow', 'isAwaitingSpawnApproval',
+  'countMatchedFetchLimit', 'floorForGen', 'hasUnidentifiedDurableRow', 'isActiveSubagent', 'isAwaitingSpawnApproval', 'isSpawnApprovalGone', 'isSpawnApprovalRetired',
   'isSupersededPagingRejection', 'isTerminalWorkflowStatus', 'mcpAppKey', 'missedChunkMarker',
   'pendingQuestionFor', 'queueEditBroadcastAt', 'queueEntryAttachments', 'queueEntryQuote', 'raiseChunkSeq',
   'selectActiveSlotProject', 'selectAutomationForSlot', 'selectComposerBusy', 'selectContinuable',

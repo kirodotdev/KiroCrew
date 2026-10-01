@@ -10326,6 +10326,7 @@
         "reject": "拒绝",
         "rejected": "已拒绝",
         "resolved": "已解决",
+        "never_started": "未启动",
         "resolving": "解析中…",
         "resolving_2": "解析中…",
         "resource_type_issue": "问题",
@@ -10721,7 +10722,9 @@
         "waiting_to_start_queued_behind_the_concurrency_l": "等待开始 — 受并发上限限制正在排队",
         "stop_failed": "无法停止子代理 {{name}}",
         "stop_all_failed": "无法停止子代理",
-        "retry_failed_error": "部分失败的子代理无法重试"
+        "retry_failed_error": "部分失败的子代理无法重试",
+        "checking_whether_it_started": "正在确认是否已启动…",
+        "liveness_check_failed": "无法确认它是否已启动。正在重试…"
       },
       "subagentQueued": {
         "low_memory": "等待开始 — 需要 {{required}} 可用内存，当前可用 {{available}}；请释放内存以继续",

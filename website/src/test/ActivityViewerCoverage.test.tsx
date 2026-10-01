@@ -23,6 +23,7 @@ vi.mock('../api/client', () => ({
     spawnStatus: vi.fn().mockResolvedValue({ result: '' }),
     spawnDelete: vi.fn().mockResolvedValue({}),
     spawnRetry: vi.fn().mockResolvedValue({}),
+    spawnList: vi.fn().mockResolvedValue({ agents: [] }),
     resolveApproval: vi.fn().mockResolvedValue({}),
     approveChatSlot: vi.fn().mockResolvedValue({}),
     fileDiff: vi.fn().mockResolvedValue({ diff: '' }),
@@ -51,7 +52,7 @@ import ActivityViewer from '../pages/chat/ActivityViewer'
 import { countDiffStats } from '../utils/diffLineCounts'
 import { api } from '../api/client'
 import { createTestStore } from './helpers'
-import { openActivityToTab, selectSubagent } from '../store/chatSlice'
+import { openActivityToTab, selectSubagent, selectSlotPendingSpawnApprovals, markSubagentApprovalGone } from '../store/chatSlice'
 import { __resetPanelTabs } from '../hooks/usePanelTabs'
 import type { SubagentActivity, ToolActivity, Artifact } from '../types'
 import type { ExtractedLink } from '../utils/extractChatLinks'
@@ -324,6 +325,117 @@ describe('ActivityViewer — subagent card controls', () => {
     expect(screen.getByRole('alert')).toHaveTextContent(
       i18nT('components.approvalCard.approval_no_longer_pending'),
     )
+  })
+
+  it('a terminal refusal here withdraws the composer banner copy of the same approval', async () => {
+    // The composer's spawn banner resolves the same id from the store, not
+    // from this pane, so the verdict must land where that banner reads it.
+    vi.mocked(api.resolveApproval).mockRejectedValue(Object.assign(new Error('not found or expired'), { status: 404 }))
+    const pending = mkAgent('p1', { status: 'pending', approval_id: 'ap-1' })
+    const { store } = renderPanel(
+      <ActivityViewer {...baseProps} view="subagents" subagents={{ p1: pending }} />,
+      storeTracking(pending),
+    )
+    expect(selectSlotPendingSpawnApprovals(store.getState(), SLOT)).toHaveLength(1)
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }))
+
+    await waitFor(() => {
+      expect(selectSlotPendingSpawnApprovals(store.getState(), SLOT)).toEqual([])
+    })
+    // The authoritative list is empty, so the unresolved card retires.
+    await waitFor(() => expect(store.getState().chat.subagents.p1?.status).toBe('stopped'))
+  })
+
+  it('withholds the buttons for an approval the composer found gone', () => {
+    const gone = mkAgent('p1', { status: 'pending', approval_id: 'ap-1', approvalGone: 'ap-1' })
+    renderPanel(
+      <ActivityViewer {...baseProps} view="subagents" subagents={{ p1: gone }} />,
+      storeTracking(gone),
+    )
+    expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Reject' })).not.toBeInTheDocument()
+    // Still open: whether it started. "Never started" is reserved for a retired card.
+    expect(screen.getByText('Checking whether it started…')).toBeInTheDocument()
+    expect(screen.queryByText('Never started')).not.toBeInTheDocument()
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      i18nT('components.approvalCard.approval_no_longer_pending'),
+    )
+  })
+
+  it('renders an absent reconciled approval as resolved without fake runtime output', () => {
+    const retired = mkAgent('p1', {
+      status: 'stopped', approval_id: 'ap-1', approvalGone: 'ap-1', approvalRetired: true,
+    })
+    renderPanel(
+      <ActivityViewer {...baseProps} view="subagents" subagents={{ p1: retired }} />,
+      storeTracking(retired),
+    )
+    // The inventory found no process: the card says it never started.
+    expect(screen.getByText('Never started')).toBeInTheDocument()
+    expect(screen.queryByText('Pending Approval')).not.toBeInTheDocument()
+    expect(screen.queryByText('Load output from disk')).not.toBeInTheDocument()
+    expect(screen.queryByText('0s')).not.toBeInTheDocument()
+    // Expanded too: a never-launched card shows no run usage either.
+    fireEvent.click(screen.getByText('Never started').closest('[aria-expanded]')!)
+    expect(screen.queryByTestId('subagent-credit-usage')).not.toBeInTheDocument()
+  })
+
+  it('a terminal verdict from the store outranks an older transient failure here', async () => {
+    // First press fails transiently: the card keeps its buttons and says retry.
+    vi.mocked(api.resolveApproval).mockRejectedValue(new Error('boom'))
+    const pending = mkAgent('p1', { status: 'pending', approval_id: 'ap-1' })
+    const { store, rerender } = renderPanel(
+      <ActivityViewer {...baseProps} view="subagents" subagents={{ p1: pending }} />,
+      storeTracking(pending),
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }))
+    const retry = i18nT('components.approvalCard.decision_not_recorded_error', { error: 'boom' })
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(retry))
+
+    // Then the composer finds the SAME approval gone and records it in the
+    // store; SidePanel feeds the pane from that store (selectSlotSubagents).
+    act(() => { store.dispatch(markSubagentApprovalGone({ id: 'p1', approval_id: 'ap-1' })) })
+    const fromStore = store.getState().chat.subagents.p1!
+    expect(fromStore.approvalGone).toBe('ap-1')
+    rerender(<ActivityViewer {...baseProps} view="subagents" subagents={{ p1: fromStore }} />)
+
+    expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Reject' })).not.toBeInTheDocument()
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      i18nT('components.approvalCard.approval_no_longer_pending'),
+    )
+    expect(screen.getByRole('alert')).not.toHaveTextContent(retry)
+  })
+
+  it('keeps re-reading liveness while the progress bar is hidden, and reports a failed read', async () => {
+    // With this tab open SubagentProgressBar is unmounted, so its 30s
+    // reconciliation cannot settle a gone approval; the card must, and a
+    // failed inventory read must not leave the composer silently busy.
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      vi.mocked(api.resolveApproval).mockRejectedValue(Object.assign(new Error('not found or expired'), { status: 404 }))
+      vi.mocked(api.spawnList).mockResolvedValue({ agents: [] })
+      vi.mocked(api.spawnList).mockRejectedValueOnce(new Error('offline'))
+      const pending = mkAgent('p1', { status: 'pending', approval_id: 'ap-1' })
+      const { store, rerender } = renderPanel(
+        <ActivityViewer {...baseProps} view="subagents" subagents={{ p1: pending }} />,
+        storeTracking(pending),
+      )
+      fireEvent.click(screen.getByRole('button', { name: 'Approve' }))
+      await waitFor(() => expect(store.getState().chat.subagents.p1?.approvalGone).toBe('ap-1'))
+      rerender(<ActivityViewer {...baseProps} view="subagents" subagents={{ p1: store.getState().chat.subagents.p1! }} />)
+
+      const failed = i18nT('pages.chat.subagentProgressBar.liveness_check_failed')
+      await waitFor(() => expect(screen.getByText(failed)).toBeInTheDocument())
+      expect(store.getState().chat.subagents.p1?.status).toBe('pending')
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
+      await waitFor(() => expect(store.getState().chat.subagents.p1?.status).toBe('stopped'))
+      rerender(<ActivityViewer {...baseProps} view="subagents" subagents={{ p1: store.getState().chat.subagents.p1! }} />)
+      expect(screen.queryByText(failed)).not.toBeInTheDocument()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('re-offers the buttons when the pane gets a NEW approval id (#11180)', async () => {
@@ -739,6 +851,28 @@ describe('ActivityViewer — panel behaviour', () => {
     await waitFor(() => expect(api.spawnDelete).toHaveBeenCalledTimes(2))
     expect(api.spawnDelete).toHaveBeenCalledWith('d1')
     expect(api.spawnDelete).toHaveBeenCalledWith('s1')
+    expect(store.getState().chat.selectedSubagentId).toBeNull()
+  })
+
+  it('clears a retired never-launched card locally, with no DELETE', async () => {
+    const { store } = renderPanel(
+      <ActivityViewer
+        {...baseProps}
+        view="subagents"
+        subagents={{
+          d1: mkAgent('d1', { status: 'done' }),
+          gone: mkAgent('gone', { status: 'stopped', approvalRetired: true, approval_id: 'spawn:gone', approvalGone: 'spawn:gone' }),
+        }}
+      />,
+    )
+    const btn = screen.getByTestId('dismiss-done-btn')
+    expect(btn).toHaveTextContent('Dismiss done (2)')
+    fireEvent.click(btn)
+
+    await waitFor(() => expect(api.spawnDelete).toHaveBeenCalledTimes(1))
+    expect(api.spawnDelete).toHaveBeenCalledWith('d1')
+    expect(api.spawnDelete).not.toHaveBeenCalledWith('gone')
+    expect(screen.queryByText(i18nT('pages.chat.activityViewer.dismiss_failed'))).not.toBeInTheDocument()
     expect(store.getState().chat.selectedSubagentId).toBeNull()
   })
 

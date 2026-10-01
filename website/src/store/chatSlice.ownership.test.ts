@@ -164,7 +164,7 @@ const REEXPORTS: Array<[string, Record<string, unknown>, string[]]> = [
   ['composerCards', composerCards, ['FOLDER_SUGGESTION_MAX_TURNS', 'capturePendingAskId', 'pendingQuestionFor', 'shouldResolveAskOnSend']],
   ['mcpApps', mcpApps, ['mcpAppKey']],
   ['subagents', subagents, [
-    'isAwaitingSpawnApproval', 'selectSidebarApprovalCounts', 'selectSidebarStartedSubagentCounts', 'selectSidebarSubagentCounts', 'selectSlotPendingSpawnApprovals',
+    'isActiveSubagent', 'isAwaitingSpawnApproval', 'isSpawnApprovalGone', 'isSpawnApprovalRetired', 'selectSidebarApprovalCounts', 'selectSidebarStartedSubagentCounts', 'selectSidebarSubagentCounts', 'selectSlotPendingSpawnApprovals',
     'selectSlotSubagents', 'selectSlotSubagentsActive', 'selectSubagentActivityCount',
   ]],
   ['workflows', workflows, ['WORKFLOW_TERMINAL_STATUSES', 'isTerminalWorkflowStatus', 'selectSidebarWorkflowActive', 'selectSidebarWorkflowActiveKeys']],
@@ -182,7 +182,7 @@ const REEXPORTS: Array<[string, Record<string, unknown>, string[]]> = [
 ]
 
 /** Names the facade itself defines rather than re-exports. */
-const FACADE_OWN = ['batchedTextAboveFloor', 'default', 'deleteSlot', 'loadOlderMessages', 'loadOlderSlotMessages', 'missedChunkMarker', 'requestStop']
+const FACADE_OWN = ['batchedTextAboveFloor', 'default', 'deleteSlot', 'loadOlderMessages', 'loadOlderSlotMessages', 'missedChunkMarker', 'reconcileGoneSubagent', 'requestStop']
 
 describe('facade re-exports', () => {
   const surface = facade as unknown as Record<string, unknown>

@@ -10482,6 +10482,7 @@
         "reject": "अस्वीकार करें",
         "rejected": "अस्वीकृत",
         "resolved": "हल हो गया",
+        "never_started": "कभी शुरू नहीं हुआ",
         "resolving": "हल किया जा रहा है…",
         "resolving_2": "हल किया जा रहा है...",
         "resource_type_issue": "इश्यू",
@@ -10882,7 +10883,9 @@
         "waiting_to_start_queued_behind_the_concurrency_l": "शुरू होने की प्रतीक्षा — समांतरता सीमा के कारण कतार में",
         "stop_failed": "सबएजेंट {{name}} को रोका नहीं जा सका",
         "stop_all_failed": "सबएजेंट रोके नहीं जा सके",
-        "retry_failed_error": "कुछ विफल सबएजेंट फिर से आज़माए नहीं जा सके"
+        "retry_failed_error": "कुछ विफल सबएजेंट फिर से आज़माए नहीं जा सके",
+        "checking_whether_it_started": "जाँच रहे हैं कि यह शुरू हुआ या नहीं…",
+        "liveness_check_failed": "यह जाँच नहीं हो सकी कि यह शुरू हुआ या नहीं। फिर से कोशिश की जा रही है…"
       },
       "subagentQueued": {
         "low_memory": "शुरू होने की प्रतीक्षा — {{required}} खाली मेमोरी चाहिए, अभी {{available}} खाली है; जारी रखने के लिए मेमोरी खाली करो",
