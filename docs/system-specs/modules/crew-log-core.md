@@ -493,6 +493,8 @@ After locking, the held inode is compared with the file now at the lease path, a
 
 A crew log is one or more SEGMENT files. `log.jsonl` is the segment beginning at seq 1; a later
 segment is `log.<first_seq>.jsonl`, with its first seq in the name so ordering needs no file read.
+The first seq is spelled canonically, in ASCII digits with no leading zero. Any other name
+(`log.².jsonl`, `log.١٢.jsonl`, `log.05.jsonl`) is a stray file, not a segment, and a reader ignores it.
 A reader walks segments in ascending first-seq order and requires seq to stay contiguous ACROSS each
 boundary (`segment_gap`), because two files are independent objects: a half-finished copy or a
 deleted middle segment is invisible unless it is checked. Inside one file a missing seq is a damaged

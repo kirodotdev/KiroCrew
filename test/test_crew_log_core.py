@@ -2339,6 +2339,52 @@ def test_a_neighbour_file_sharing_the_prefix_is_ignored_not_refused(tmp_path):
     assert [e.seq for e in reader.iter_from(1)] == [1, 2, 3, 4]
 
 
+@pytest.mark.parametrize(
+    "stray",
+    [
+        # isdigit() but not decimal: int() raises on it.
+        "log.\u00b2.jsonl",
+        # Decimal but not ASCII: int() parses it as 12, so it would pass for a
+        # real segment starting at seq 12.
+        "log.\u0661\u0662.jsonl",
+        # A leading zero: int() parses it as 5, a second "segment" at seq 5.
+        "log.05.jsonl",
+    ],
+)
+def test_a_non_ascii_digit_neighbour_is_ignored_not_raised(tmp_path, stray):
+    # The segment name's number is ASCII decimal only. Any other digit
+    # character makes the file a stray like log.backup.jsonl, never a segment.
+    led = _session("seg-unicode")
+    for n in range(1, 5):
+        led.append("turn/started", {"turn": n, "actor": "user", "depth": 0}, src="gateway")
+    directory = lg.crew_log_dir(lg.KIND_SESSION, "seg-unicode")
+    (directory / stray).write_text("not a segment\n")
+
+    assert [p.name for p in lg.segment_paths(lg.KIND_SESSION, "seg-unicode")] == ["log.jsonl"]
+    reader = lg.CrewLog.open(lg.KIND_SESSION, "seg-unicode")
+    assert [e.seq for e in reader.iter_from(1)] == [1, 2, 3, 4]
+
+
+@pytest.mark.parametrize(
+    ("name", "is_history"),
+    [
+        ("log.jsonl", True),
+        # Removal is broader than a reader on purpose: no real segment starts
+        # below seq 2, yet a numbered file is still history by shape.
+        ("log.0.jsonl", True),
+        ("log.1.jsonl", True),
+        ("log.12.jsonl", True),
+        # A name a reader ignores as a stray is not history either.
+        ("log.\u00b2.jsonl", False),
+        ("log.\u0661\u0662.jsonl", False),
+        ("log.05.jsonl", False),
+        ("log.backup.jsonl", False),
+    ],
+)
+def test_removal_orders_history_by_the_readers_number_spelling(name, is_history):
+    assert store._is_segment_name(name) is is_history
+
+
 def test_a_chmod_refusing_filesystem_warns_once_not_once_per_append(monkeypatch, caplog):
     # Every append goes through the private-mkdir helper, so a filesystem that
     # refuses chmod would log a full traceback per entry. That buries the very
