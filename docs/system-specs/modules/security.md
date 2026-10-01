@@ -825,7 +825,14 @@ For bounded no-hardlink reads and both containment checks of pinned replacement
 the resolved root without following links and compares its kernel pathname with
 the opened descriptor's kernel pathname. No folded-prefix containment is used.
 Hardlink, regular-file, sensitive-path, byte-limit and staged-rename identity
-checks retain their existing contracts. Linux and Windows retain their existing
+checks retain their existing contracts. The reader's one hardlink exception is
+opt-in per call (`admit_hardlinked`) and decided on content: a hardlinked inode
+still passes every other check, is never returned truncated, and is returned only
+when the caller's callback accepts the exact bytes read. Its single caller is the
+global skill-body reader, which accepts an installed package `SKILL.md` whose bytes
+match the distribution `RECORD` digest
+([memory-skills-hooks](memory-skills-hooks.md)); every other caller, and every
+agent-writable root, keeps the plain refusal. Linux and Windows retain their existing
 pathname and no-reparse checks. SEL event schemas are unchanged.
 
 The outbox notify and download handlers run path resolution, containment and

@@ -21,7 +21,7 @@ import tempfile
 import threading
 import time
 import uuid
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field
@@ -3295,6 +3295,7 @@ def safe_read_file_bytes_nolink(
     max_bytes: int | None = None,
     allow_truncate: bool = False,
     within_root_is_canonical: bool = False,
+    admit_hardlinked: Callable[[str, bytes], bool] | None = None,
 ) -> bytes | None:
     """Like :func:`safe_read_file_bytes` but also rejects hardlinked inodes.
 
@@ -3317,6 +3318,14 @@ def safe_read_file_bytes_nolink(
     window remains. If the fd's real path cannot be determined, fail closed.
     ``within_root_is_canonical`` preserves a caller's already-resolved admission
     root literally, so replacing that directory with a link cannot redefine it.
+
+    ``admit_hardlinked`` is the one opt-in exception to the hardlink refusal, and
+    it is decided on CONTENT, never on the link count alone. A hardlinked inode
+    still passes every other check here (regular file, opened-path identity,
+    containment, sensitive path, size cap); then the callback receives the
+    validated path and the exact bytes read from the descriptor, and only a
+    ``True`` answer returns them. Without it, ``st_nlink > 1`` is refused as
+    before.
 
     That final-component refusal comes from
     :func:`kiro_crew.platform_compat.open_file_no_reparse`, not from an
@@ -3348,7 +3357,8 @@ def safe_read_file_bytes_nolink(
         return None
     try:
         st = os.fstat(fd)
-        if st.st_nlink > 1 or not _stat.S_ISREG(st.st_mode):
+        hardlinked = st.st_nlink > 1
+        if (hardlinked and admit_hardlinked is None) or not _stat.S_ISREG(st.st_mode):
             return None
         if not _opened_file_matches_validated_path(fd, path):
             return None
@@ -3370,9 +3380,13 @@ def safe_read_file_bytes_nolink(
             # as fits" rather than "refuse oversize" -- the artifact store
             # displays a truncated view of a large linked file. The memory bound
             # is unaffected: at most ``read_limit + 1`` bytes were ever read.
-            if allow_truncate:
+            # An admitted hardlink is judged on its WHOLE content, so it is
+            # never handed back as a prefix the admission did not see.
+            if allow_truncate and not hardlinked:
                 return data[:read_limit]
             raise FileTooLargeError(f"File exceeds {read_limit // (1024 * 1024)} MB safety cap")
+        if hardlinked and not (admit_hardlinked is not None and admit_hardlinked(path, data)):
+            return None
         return data
     except OSError:
         return None

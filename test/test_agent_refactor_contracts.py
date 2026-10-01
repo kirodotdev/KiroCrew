@@ -344,7 +344,7 @@ BASE_SURFACE: dict[str, str] = {
     "reset_agent_model": "callable reset_agent_model(name: 'str') -> 'tuple[Path, str]'",
     "run_first_run_setup": "callable run_first_run_setup() -> 'None'",
     "safe_context_call": "callable safe_context_call(fn: \"'Callable[[], _T]'\", *, fallback: '_T' = <object object at 0x>, fallback_factory: \"'Optional[Callable[[], _T]]'\" = None, log_message: \"'str | None'\" = None) -> '_T'",
-    "safe_read_file_bytes_nolink": "callable safe_read_file_bytes_nolink(raw: 'str', within_root: 'str | None' = None, *, max_bytes: 'int | None' = None, allow_truncate: 'bool' = False, within_root_is_canonical: 'bool' = False) -> 'bytes | None'",
+    "safe_read_file_bytes_nolink": "callable safe_read_file_bytes_nolink(raw: 'str', within_root: 'str | None' = None, *, max_bytes: 'int | None' = None, allow_truncate: 'bool' = False, within_root_is_canonical: 'bool' = False, admit_hardlinked: 'Callable[[str, bytes], bool] | None' = None) -> 'bytes | None'",
     "sanitize_spec_env": "callable sanitize_spec_env(pairs: 'Iterable[tuple[str, str]]') -> 'dict[str, str]'",
     "sel": "callable sel() -> 'SecurityEventLog'",
     "shared_kiro_agents_writable": "callable shared_kiro_agents_writable() -> 'bool'",

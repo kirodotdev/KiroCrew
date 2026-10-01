@@ -3569,7 +3569,31 @@ including rendered framing. Exceeding the capacity or refusing a required read
 raises `SkillContextCapacityError`; no final slice may silently discard required
 instructions. Bounded global reads use `safe_read_file_bytes_nolink`, retaining
 sensitive-path, descriptor identity and hardlink checks while allowing validated
-provider links. Project reads retain descriptor confinement and their byte cap.
+provider links. One hardlink is admitted, on content: a hardlinking installer (uv's
+default on Linux and Windows) gives every installed package file `st_nlink > 1`, so
+a built-in app skill symlinked into the tree by `apps.bridges._register_skills`
+listed but never loaded, and an `always: true` one raised
+`SkillContextCapacityError` on every session start. `_read_global_skill_text`
+therefore passes `admit_hardlinked=_installed_package_bytes_match`: a hardlinked
+file loads only when it is a `SKILL.md` the owning distribution's `RECORD` lists
+inside the installed `kiro_crew` tree AND the bytes read from the descriptor hash
+to the recorded digest (sha256 or stronger). Any other hardlink — the skills dir,
+apps under the data home, `extra_paths`, a project — has no `RECORD` entry and stays
+refused. The `RECORD` is found by name (`release_channel._DISTRIBUTION_NAME`) in one
+listing of the site dir, so no other distribution's metadata is read; an upgrade
+that left the previous `dist-info` behind contributes a second candidate, which can
+only vouch for the previous release's bytes. A `RECORD` that does not list the
+package's own `__init__.py` vouches for nothing, and an editable install keeps its
+`dist-info` in site-packages rather than beside the source tree, so it admits
+nothing. Rows are prefiltered by substring before CSV parsing, keeping the one read
+per install at a few milliseconds on the synchronous body read that asks for it.
+The digests are cached per process under the site dir's stamp and each candidate
+`RECORD`'s (inode, mtime, size), taken before and after its parse, so the steady
+state costs a few `stat` calls; a `dist-info` added or removed, a `RECORD`
+rewritten, or one replaced mid-read is read again on the next call.
+Rewriting `RECORD` takes write access to the tree holding the package code, which
+already decides what the gateway runs. Project reads retain descriptor confinement
+and their byte cap.
 The explicit unbudgeted catalog renderer remains available to non-startup callers.
 
 Native Kiro 2.21.2 progressively loads bodies but places every mapped skill's

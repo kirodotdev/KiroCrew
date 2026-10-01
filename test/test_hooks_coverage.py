@@ -1204,6 +1204,50 @@ class TestSafeReadFileBytesNolink:
         _try_hardlink(f, tmp_path / "b.txt")
         assert safe_read_file_bytes_nolink(str(f)) is None
 
+    def test_a_hardlink_is_admitted_only_by_the_callback_on_its_bytes(self, tmp_path):
+        """``admit_hardlinked`` is opt-in and judges the bytes actually read."""
+        f = _write(tmp_path / "a.txt", "body")
+        _try_hardlink(f, tmp_path / "b.txt")
+        seen: list[tuple[str, bytes]] = []
+
+        def admit(path: str, data: bytes) -> bool:
+            seen.append((path, data))
+            return data == b"body"
+
+        assert safe_read_file_bytes_nolink(str(f), admit_hardlinked=admit) == b"body"
+        assert [data for _path, data in seen] == [b"body"]
+        assert os.path.samefile(seen[0][0], f)
+        assert safe_read_file_bytes_nolink(str(f), admit_hardlinked=lambda p, d: False) is None
+
+    def test_the_callback_is_not_consulted_for_a_single_link(self, tmp_path):
+        f = _write(tmp_path / "a.txt", "body")
+        calls: list[str] = []
+        assert (
+            safe_read_file_bytes_nolink(str(f), admit_hardlinked=lambda p, d: bool(calls.append(p)))
+            == b"body"
+        )
+        assert calls == []
+
+    def test_an_admitted_hardlink_still_passes_containment(self, tmp_path):
+        root = tmp_path / "root"
+        root.mkdir()
+        outside = _write(tmp_path / "outside.txt", "out")
+        _try_hardlink(outside, tmp_path / "alias.txt")
+        assert (
+            safe_read_file_bytes_nolink(
+                str(outside), within_root=str(root), admit_hardlinked=lambda p, d: True
+            )
+            is None
+        )
+
+    def test_an_admitted_hardlink_is_never_truncated(self, tmp_path):
+        f = _write(tmp_path / "a.txt", "0123456789")
+        _try_hardlink(f, tmp_path / "b.txt")
+        with pytest.raises(FileTooLargeError):
+            safe_read_file_bytes_nolink(
+                str(f), max_bytes=4, allow_truncate=True, admit_hardlinked=lambda p, d: True
+            )
+
     def test_non_regular_refused(self, tmp_path):
         d = tmp_path / "adir"
         d.mkdir()
