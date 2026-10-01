@@ -163,6 +163,7 @@ from kiro_crew.dashboard.remote_relay import (
     relay_remote_turn,
     remote_bound_refusal,
 )
+from kiro_crew.dashboard.request_priority import owner_start_priority
 from kiro_crew.dashboard.slot_buffers import (
     MAX_DEFERRED_NOTE_CHARS,
     MAX_DEFERRED_NOTES,
@@ -4711,7 +4712,7 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
     # kiro-cli spawned here would idle until it timed out, having consumed a
     # process and a model handshake for a session that never uses it.
     if not slot.is_remote:
-        schedule_eager_spawn(state, slot)
+        schedule_eager_spawn(state, slot, start_priority=owner_start_priority(request))
     return web.json_response(state.serialize_slot(slot))
 
 
@@ -9596,7 +9597,7 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
     # project), so re-arm the speculative spawn for the new bindings.
     if slot.agent is committed_agent:
         slot.agent_kind = bindings.selection_kind if assignment_resolved else ""
-    schedule_eager_spawn(state, slot)
+    schedule_eager_spawn(state, slot, start_priority=owner_start_priority(request))
     state.push_slots_update()
     resp_body: dict = {
         "ok": True,
@@ -12000,7 +12001,7 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
             # cwd change is paid during think-time. The eager task consumes the
             # deferred reset itself, but only when no turn is running — the
             # same killpg constraint that deferred the reset applies to it.
-            schedule_eager_spawn(state, slot)
+            schedule_eager_spawn(state, slot, start_priority=owner_start_priority(request))
     state.push_slots_update()
     return web.json_response({"ok": True, "project": project})
 

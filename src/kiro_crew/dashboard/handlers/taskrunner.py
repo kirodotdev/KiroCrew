@@ -17,6 +17,7 @@ from kiro_crew.dashboard.handlers._shared import (
     read_bounded_json,
     require_owner_dashboard_request,
 )
+from kiro_crew.dashboard.request_priority import owner_start_priority
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.execution_context import ExecutionContext, bind_session_execution
 from kiro_crew.hooks import FileTooLargeError, validate_file_path
@@ -27,6 +28,7 @@ from kiro_crew.security import (
     redact_credentials,
     redact_exfiltration_urls,
 )
+from kiro_crew.start_priority import StartPriority
 from kiro_crew.task_planner import plan_to_yaml
 from kiro_crew.taskrunner import WorkflowInitializing
 from kiro_crew.workflow_memory import capture_admission_execution
@@ -871,6 +873,8 @@ async def api_taskrunner_plan(request: web.Request) -> web.Response:
             workspace_dir=workspace_dir,
             session_key=origin,
             execution_context=execution,
+            # The owner pressed Plan and watches the banner; an app token does not.
+            start_priority=owner_start_priority(request),
         )
         state.task_runner._plan_task = asyncio.current_task()
         run = await plan_coro
@@ -1132,7 +1136,10 @@ _REFINE_PROMPT = (
 
 
 async def _run_refine(
-    state: DashboardState, user_input: str, execution: ExecutionContext | None = None
+    state: DashboardState,
+    user_input: str,
+    execution: ExecutionContext | None = None,
+    start_priority: StartPriority = StartPriority.BACKGROUND,
 ) -> None:
     """Background task: multi-turn LLM refine with tool access and Q&A."""
     import time as _time  # noqa: F811
@@ -1162,7 +1169,9 @@ async def _run_refine(
         prompt = _REFINE_PROMPT.format(input=user_input)
         state._refine_text = ""
         _push()
-        client, _is_new, _resumed = await state.sessions.get_or_create(session_key)
+        client, _is_new, _resumed = await state.sessions.get_or_create(
+            session_key, start_priority=start_priority
+        )
 
         async for event in client.stream(prompt):
             if event.kind == EVENT_TEXT_CHUNK:
@@ -1257,7 +1266,10 @@ async def api_taskrunner_refine(request: web.Request) -> web.Response:
     state._refine_error = ""
     state._refine_status = "running"
     state._refine_input = user_input
-    task = asyncio.create_task(_run_refine(state, user_input, execution))
+    # The owner pressed Refine and watches it stream; an app token does not.
+    task = asyncio.create_task(
+        _run_refine(state, user_input, execution, owner_start_priority(request))
+    )
     state._refine_task = task
     state._background_tasks.add(task)
     task.add_done_callback(state._background_tasks.discard)

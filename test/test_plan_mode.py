@@ -20,7 +20,9 @@ def _make_mock_sessions() -> MagicMock:
     sessions._sessions = {}
     sessions.get_or_create = AsyncMock()
 
-    async def _open_task_session(_pk, session_key, *, agent=None, cwd=None, approval_policy=""):
+    async def _open_task_session(
+        _pk, session_key, *, agent=None, cwd=None, approval_policy="", start_priority=None
+    ):
         return await sessions.get_or_create(session_key, agent=agent, cwd=cwd)
 
     sessions.open_task_session = _open_task_session
@@ -57,7 +59,7 @@ def _make_runner(tmp_path: Path, steps_json: list[dict] | None = None) -> TaskRu
 
     if steps_json is not None:
 
-        async def _mock_decompose(spec, work_dir="", task_id=""):
+        async def _mock_decompose(spec, work_dir="", task_id="", start_priority=None):
             return runner._parse_tasks(json.dumps(steps_json))
 
         runner._decompose = _mock_decompose  # type: ignore[assignment]

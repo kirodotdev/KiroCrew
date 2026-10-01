@@ -80,6 +80,7 @@ from kiro_crew.constants import (
     DEFAULT_SPAWN_MIN_MEMORY_GB,
     DEFAULT_SUBAGENT_COST_GB,
     DEFAULT_SUBAGENT_MAX_TURNS,
+    INITIALIZE_TIMEOUT_SECS,
     SUBAGENT_COMPLETION_PREFIX,
     SUBAGENT_TIMEOUT_SECS,
 )
@@ -1154,9 +1155,17 @@ _BOUNDARY_CANCELLATION_SCOPE_CAP_REASON = "pending_scope_cap"
 # state beats unbounded shutdown.
 _STATE_DRAIN_TIMEOUT = 5.0
 # The startup watchdog's window (``SubagentManager._startup_deadline``) covers one
-# start clock: the ``session/new`` budget, then the late-start collector's wait
-# (timeout plus ``_await_late_start``'s grace), plus a launch margin; floor 120.
+# start clock, which pauses only while the start is QUEUED (see
+# ``RunEventCoordinator._gate_exit_reset_impl``) and therefore spans every phase
+# that does work: ``_STARTUP_HANDSHAKES`` rounds of process spawn plus
+# ``initialize`` and ``session/new`` (or ``session/load``), then the late-start
+# collector's wait (timeout plus ``_await_late_start``'s grace), plus a launch
+# margin; floor 120.
 _STARTUP_TIMEOUT_SECS = 120
+# Handshake rounds one start may legitimately run: a retried start runs two (the
+# companion spawn's dead-runtime retry, the spawn's one re-derive retry, a resume
+# whose runtime died respawning before ``session/new``, a re-projected claim).
+_STARTUP_HANDSHAKES = 2
 _STARTUP_COLLECT_GRACE_SECS = 5
 _STARTUP_LAUNCH_MARGIN_SECS = 30
 # Derived in-startup bound, in rounds of the session-start gate: one round
@@ -2669,11 +2678,11 @@ class SubagentInfo:
     _startup_cotenant_frames: int = 0
     # (start clock, deadline) the startup watchdog fixed for this start.
     _startup_deadline_stamp: tuple[float, int] | None = None
-    # Wall-clock moment this run began waiting for a ``SessionStartGate``
-    # permit (``_gate_wait_mark``); None outside that wait. While set, the
-    # startup watchdog reads the start clock as frozen at this moment: time
-    # queued for a permit is not start time. Cleared by ``_gate_exit_reset`` at
-    # acquisition, which also restarts the clock.
+    # Wall-clock moment this run began waiting for a start-queue permit
+    # (``_gate_wait_mark``); None outside that wait. While set, the startup
+    # watchdog reads the start clock as paused at this moment: time queued for a
+    # permit is not start time. Cleared by ``_gate_exit_reset`` at acquisition,
+    # which adds the wait to ``_start_queue_wait_ms``.
     _gate_wait_started: float | None = None
     # Learned-cost high-water marks (dynamic-subagent-sizing.md §4.1), sampled
     # periodically by the reaper loop and folded into the cost store at exit.
@@ -2775,7 +2784,8 @@ class SubagentInfo:
     _taskq_generation: int = 0
     # Scheduler-core fields (session-start gate, lane-slot waits; see
     # docs/system-specs/modules/subagent.md § Lane-slot waits).
-    # Queue wait behind the session-start gate, ms; 0 when the gate was free.
+    # Time this start spent queued at its start queues in total, ms (the paused
+    # part of the startup clock); 0 when every queue was free.
     _start_queue_wait_ms: float = 0.0
     # True once the durable row was written ``running`` -- at the FIRST stream
     # event addressed to the run's own session, not at execution start, so a row is never
@@ -4107,7 +4117,13 @@ class SubagentManager:
         agent = snap.agent if snap is not None else AgentConfig()
         budget = max(SESSION_START_TIMEOUT_MIN, agent.session_start_timeout_secs)
         collect = agent.start_collect_timeout_secs + _STARTUP_COLLECT_GRACE_SECS
-        derived = int(budget + collect + _STARTUP_LAUNCH_MARGIN_SECS)
+        # ``_INITIALIZE_TIMEOUT`` as well, once per handshake round: the clock
+        # pauses in a queue but runs through the spawn's own handshakes, so a
+        # retried start that spends its whole ``initialize`` and ``session/new``
+        # budgets twice must still be inside the window -- or the watchdog reaps
+        # a start whose own budgets have not expired.
+        handshakes = _STARTUP_HANDSHAKES * (budget + INITIALIZE_TIMEOUT_SECS)
+        derived = int(handshakes + collect + _STARTUP_LAUNCH_MARGIN_SECS)
         return max(_STARTUP_TIMEOUT_SECS, derived)
 
     def _is_startup_stalled(self, info: SubagentInfo, now: float) -> bool:
@@ -4839,7 +4855,7 @@ class SubagentManager:
         moment and every other admitted start is a spawned process (dedicated
         path) or a claimed slot holding nothing but a place in the gate's
         queue. Time spent in that queue is not charged to the startup deadline
-        (the clock freezes at gate entry and restarts at acquisition --
+        (the clock pauses at queue entry and resumes at acquisition --
         ``_gate_wait_mark`` / ``_gate_exit_reset``), so the queue's length is
         not what reaps a healthy start; what the bound decides is how much of
         the running cap may sit in startup contending for ``G`` permits at
@@ -5979,10 +5995,10 @@ class SubagentManager:
     ) -> "LLMProvider":
         return await self._run_events._create_shared_session_impl(info, session_key, agent)
 
-    def _gate_exit_reset(self, info: SubagentInfo) -> Callable[[float], None]:
+    def _gate_exit_reset(self, info: SubagentInfo) -> Callable[..., None]:
         return self._run_events._gate_exit_reset_impl(info)
 
-    def _gate_wait_mark(self, info: SubagentInfo) -> Callable[[], None]:
+    def _gate_wait_mark(self, info: SubagentInfo) -> Callable[..., None]:
         return self._run_events._gate_wait_mark_impl(info)
 
     # Facades for the session-start gate's late-adoption path;

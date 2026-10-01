@@ -36,6 +36,7 @@ from kiro_crew.essential_delivery import EssentialDelivery
 # import-light rule: ``abort`` imports only ``mcp_gateway.transport`` outside the
 # standard library, and that module is already loaded by the time this one is.
 from kiro_crew.mcp_gateway.abort import RuntimeAbortTarget
+from kiro_crew.start_priority import StartPriority
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     # Type-only: this module's runtime imports are deliberately narrow, and
@@ -98,6 +99,11 @@ class SessionMcpReport(Protocol):
 
 class LLMProvider(ABC):
     """Abstract LLM backend."""
+
+    #: The priority of this provider's next ``start()``, set by ``SessionManager``
+    #: just before it starts the provider (rule: ``kiro_crew.start_priority``); a
+    #: provider started anywhere else starts BACKGROUND.
+    start_priority: StartPriority = StartPriority.BACKGROUND
 
     @cached_property
     def essential_delivery(self) -> EssentialDelivery:

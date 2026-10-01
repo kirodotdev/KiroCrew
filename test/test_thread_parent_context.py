@@ -67,7 +67,7 @@ class FakeSessionManager:
         self._provider = FakeProvider()
         self._is_new = True
 
-    async def get_or_create(self, key, agent=None, channel_id=None, approval_policy=None):
+    async def get_or_create(self, key, agent=None, channel_id=None, approval_policy=None, start_priority=None):
         was_new = self._is_new
         self._is_new = False
         return self._provider, was_new, False

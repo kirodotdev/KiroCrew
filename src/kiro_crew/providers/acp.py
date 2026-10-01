@@ -432,8 +432,8 @@ class AcpProvider(LLMProvider):
         member_context: bool = False,
         memory_mode: str = "persistent",
         shared_scratch: Path | None = None,
-        on_gate_acquired: Callable[[float], None] | None = None,
-        on_gate_queued: Callable[[], None] | None = None,
+        on_gate_acquired: Callable[..., None] | None = None,
+        on_gate_queued: Callable[..., None] | None = None,
         disposable_work_dir: bool = False,
     ) -> None:
         # An unrecognized backend would pass every ``_is_<backend>`` check and
@@ -471,16 +471,15 @@ class AcpProvider(LLMProvider):
         # ``AcpRuntime`` it constructs itself, and a dedicated subagent's
         # inherited work directory has to reach THAT process.
         self._shared_scratch: Path | None = shared_scratch
-        # Forwarded to ``runtime.create_session`` on the fresh-session path only
-        # (``session/load`` takes no gate permit). Fires at ``SessionStartGate``
-        # EXIT with the queue wait in ms, so a dedicated subagent process can
-        # restart its start clock the way a session-shared one does in
-        # ``_create_shared_session``: a wait for a permit is admission's cost,
-        # not this start's. None -- every non-subagent session -- is inert.
-        self._on_gate_acquired: Callable[[float], None] | None = on_gate_acquired
-        # Its companion for gate ENTRY: the manager freezes the start clock for
-        # the span spent waiting for a permit. Same None-is-inert rule.
-        self._on_gate_queued: Callable[[], None] | None = on_gate_queued
+        # Start-queue exit/entry callbacks, forwarded to BOTH ``runtime.spawn`` calls
+        # (the first spawn and the resume-died respawn: the cold-start admission)
+        # and to ``runtime.create_session`` on the fresh-session path
+        # (``session/load`` takes no gate permit). A dedicated subagent pauses its
+        # start clock while queued at each, as a session-shared one does at the
+        # gate in ``_create_shared_session``: a wait for a permit is admission's
+        # cost, not this start's. None -- every non-subagent session -- is inert.
+        self._on_gate_acquired: Callable[..., None] | None = on_gate_acquired
+        self._on_gate_queued: Callable[..., None] | None = on_gate_queued
         # Whether ``work_dir`` was DERIVED for a one-run session (a subagent, a
         # stateless cron run) and is this provider's to reclaim at shutdown. An
         # explicit caller cwd is never marked, whatever key the session has; and
@@ -1210,9 +1209,16 @@ class AcpProvider(LLMProvider):
             # subagent runs in, so the second window has to be mounted HERE.
             shared_scratch=self._shared_scratch,
         )
+        # One priority for both start queues this path enters, set by the session
+        # layer for this start (rule: ``kiro_crew.start_priority``).
+        start_priority = self.start_priority
         _t_spawn = time.monotonic()
         try:
-            await runtime.spawn()
+            await runtime.spawn(
+                start_priority=start_priority,
+                on_gate_queued=self._on_gate_queued,
+                on_gate_acquired=self._on_gate_acquired,
+            )
         except AcpRuntimeError as exc:
             # An OS sandbox that refused to build this child is checked FIRST and
             # on all three of this module's startup paths: it is the narrower
@@ -1356,7 +1362,11 @@ class AcpProvider(LLMProvider):
                         shared_scratch=self._shared_scratch or runtime.work_scratch_dir,
                     )
                     try:
-                        await runtime.spawn()
+                        await runtime.spawn(
+                            start_priority=start_priority,
+                            on_gate_queued=self._on_gate_queued,
+                            on_gate_acquired=self._on_gate_acquired,
+                        )
                     except AcpRuntimeError as exc:
                         sandbox_failure = await sandbox_init_failure_for_runtime(runtime)
                         if sandbox_failure is not None:
@@ -1377,6 +1387,7 @@ class AcpProvider(LLMProvider):
                         channel_id=self._owning_channel_id() or "",
                         on_gate_acquired=self._on_gate_acquired,
                         on_gate_queued=self._on_gate_queued,
+                        start_priority=start_priority,
                     )
                 except AcpRuntimeError as exc:
                     sandbox_failure = await sandbox_init_failure_for_runtime(runtime)

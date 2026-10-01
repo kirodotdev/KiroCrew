@@ -67,6 +67,14 @@ QUEUED_CHANNEL_KEY = "queued_channel"
 #: decides what "the same principal" means is that function.
 QUEUED_OWNER_KEY = "queued_owner"
 
+#: Neutral key recording whether a PERSON sent a queue entry
+#: (``InboundMessage.person_origin``). A drain replays the entry later as a fresh turn,
+#: and that turn's start priority (:mod:`kiro_crew.start_priority`) is the entry's own:
+#: neither the finished turn's opener's nor assumed, because a gateway-built wake can
+#: reach the busy-queue path too. Written by :func:`person_tag`, read by
+#: :func:`entry_person_origin`.
+QUEUED_PERSON_KEY = "queued_person_origin"
+
 #: Separates the parts inside an owner token. A unit separator, because every part is an
 #: id, an email or a room name from a transport, and none of them can contain one -- so
 #: two different principals cannot collide by spelling their parts with the separator.
@@ -148,6 +156,17 @@ def tag_entry(kwargs: dict[str, str], channel_type: str, owner: str) -> dict[str
     kwargs[QUEUED_CHANNEL_KEY] = str(channel_type)
     kwargs[QUEUED_OWNER_KEY] = str(owner)
     return kwargs
+
+
+def person_tag(person_origin: bool) -> dict[str, bool]:
+    """The queue-entry keyword argument recording whether a person sent the entry."""
+    return {QUEUED_PERSON_KEY: bool(person_origin)}
+
+
+def entry_person_origin(kwargs: dict) -> bool:
+    """Whether a person sent this queue entry. Absent reads False: an entry that does
+    not say so takes no person's start priority."""
+    return kwargs.get(QUEUED_PERSON_KEY) is True
 
 
 def entry_owner(kwargs: dict) -> str:

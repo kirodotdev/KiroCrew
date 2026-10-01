@@ -29,6 +29,7 @@ the single-agent contract of ``test_subagent_startup_watchdog.py`` intact.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import time
 from types import SimpleNamespace
@@ -1520,50 +1521,49 @@ class TestLeavingStartupStartsTheHeldSpawn:
                 await _close(mgr, runs)
 
 
-# ── Gate-exit start-clock reset on the DEDICATED-process path ─────────────
+# ── The start clock pauses while queued, on both start paths ───────────────
 #
-# ``_create_shared_session`` hands ``runtime.create_session`` an
-# ``on_gate_acquired`` that resets ``_exec_started`` at ``SessionStartGate``
-# exit, so time parked at the gate is not charged to the startup deadline. The
-# dedicated path (``get_or_create`` -- every ``model`` / ``reasoning_effort``
-# spawn) gets the same reset, riding ``get_or_create`` -> provider factory ->
-# ``AcpProvider`` -> ``create_session``. ONE definition (``_gate_exit_reset``)
+# ``_gate_wait_mark`` (queue entry) and ``_gate_exit_reset`` (permit granted)
+# bracket every start-queue wait: the shared path's ``session/new`` gate, and the
+# dedicated path's cold-start semaphore, spawn admission and gate (riding
+# ``get_or_create`` -> provider factory -> ``AcpProvider``). The waits accumulate
+# into ``_start_queue_wait_ms``, which the watchdog subtracts. ONE definition
 # serves both paths.
 
 
 class TestGateExitResetIsOneDefinition:
-    def test_reset_moves_the_start_clock_and_records_the_wait(self, monkeypatch) -> None:
+    def test_acquisition_pauses_the_clock_and_accumulates_the_wait(self, monkeypatch) -> None:
         mgr = _manager()
         info = _starting("a1", exec_started=100.0)
         info.last_activity = 100.0
+        mark, reset = mgr._gate_wait_mark(info), mgr._gate_exit_reset(info)
+        with patch.object(subagent_mod, "time", SimpleNamespace(time=lambda: 100.0)):
+            mark("cold-start")
         monkeypatch.setattr(subagent_mod, "time", SimpleNamespace(time=lambda: 250.0))
-        reset = mgr._gate_exit_reset(info)
-        reset(150_000.0)
-        assert info._exec_started == 250.0
+        reset(1.0, "cold-start")  # marked at 100.0, granted at 250.0 -> 150s
+        reset(5_000.0)  # never marked: the queue's own measurement is the fallback
+        assert info._exec_started == 100.0, "the clock pauses; it does not restart"
         assert info.last_activity == 250.0
-        assert info._start_queue_wait_ms == 150_000.0
+        assert info._start_queue_wait_ms == 155_000.0
 
-    def test_the_watchdog_measures_from_gate_exit_not_admission(self) -> None:
-        """Gate wait is admission's cost: a start that queued 200s and then
-        began is judged from the moment it began."""
+    def test_the_watchdog_does_not_count_queued_time(self) -> None:
+        """Queue wait is admission's cost: a start that queued 200s is judged on
+        the time it spent starting."""
         mgr = _manager(startup_timeout=120)
         info = _starting("a1", exec_started=1_000.0)
         _register(mgr, info)
-        # Without the reset, 200s past _exec_started reaps it.
+        # Without the queued time, 200s past _exec_started reaps it.
         assert mgr._is_startup_stalled(info, now=1_000.0 + 200.0) is True
         with patch.object(subagent_mod, "time", SimpleNamespace(time=lambda: 1_200.0)):
             mgr._gate_exit_reset(info)(200_000.0)
         assert mgr._is_startup_stalled(info, now=1_200.0 + 100.0) is False
-        # A dedicated start wedged AFTER it holds its permit is still reaped at
-        # the base deadline, counted from gate exit.
+        # A start wedged AFTER it holds its permit is still reaped at the base
+        # deadline of time spent starting.
         assert mgr._is_startup_stalled(info, now=1_200.0 + 120.5) is True
 
     def test_the_clock_does_not_run_while_queued_for_a_permit(self) -> None:
-        """Pre-permit wait is not start time. A run 30s into its start that
-        begins waiting for a permit reads 30s for as long as it waits -- a
-        wait longer than the deadline, behind holders whose own clocks reset
-        at acquisition, does not reap it -- and at acquisition the clock
-        restarts from zero."""
+        """A run 30s into its start that begins waiting for a permit reads 30s for
+        as long as it waits, and resumes from 30s -- not from zero -- when served."""
         mgr = _manager(startup_timeout=120)
         info = _starting("q1", exec_started=1_000.0)
         _register(mgr, info)
@@ -1575,18 +1575,61 @@ class TestGateExitResetIsOneDefinition:
         with patch.object(subagent_mod, "time", SimpleNamespace(time=lambda: 1_430.0)):
             mgr._gate_exit_reset(info)(400_000.0)
         assert info._gate_wait_started is None
-        assert mgr._is_startup_stalled(info, now=1_430.0 + 119.0) is False
-        assert mgr._is_startup_stalled(info, now=1_430.0 + 120.5) is True
+        assert mgr._is_startup_stalled(info, now=1_430.0 + 89.0) is False
+        assert mgr._is_startup_stalled(info, now=1_430.0 + 90.5) is True
+
+    def test_waits_at_three_queues_then_a_stall_is_reaped_at_the_right_total(self) -> None:
+        """The dedicated path queues at the cold-start semaphore, the spawn
+        admission and the gate; only the time between them counts."""
+        mgr = _manager(startup_timeout=120)
+        info = _starting("t3", exec_started=0.0)
+        _register(mgr, info)
+        clock = 0.0
+        for queue, queued_for, worked_after in (
+            ("cold-start", 300.0, 10.0),
+            ("spawn admission", 200.0, 20.0),
+            ("session/new", 100.0, 30.0),
+        ):
+            with patch.object(subagent_mod, "time", SimpleNamespace(time=lambda: clock)):
+                mgr._gate_wait_mark(info)(queue)
+            clock += queued_for
+            with patch.object(subagent_mod, "time", SimpleNamespace(time=lambda: clock)):
+                mgr._gate_exit_reset(info)(queued_for * 1000.0, queue)
+            clock += worked_after
+        # 600s queued, 60s worked: 60s more of a stalled initialize is the deadline.
+        assert mgr._is_startup_stalled(info, now=clock + 59.0) is False
+        assert mgr._is_startup_stalled(info, now=clock + 60.5) is True
 
     def test_a_start_wedged_before_the_gate_keeps_its_running_clock(self) -> None:
-        """The freeze covers exactly the wait for a permit: a start that has
-        not reached the gate (a hung process spawn, say) is on a running clock
-        and is reaped at the base deadline."""
+        """The pause covers exactly the wait for a permit: a start that has not
+        reached a queue (a hung process spawn, say) is on a running clock and is
+        reaped at the base deadline."""
         mgr = _manager(startup_timeout=120)
         info = _starting("w1", exec_started=1_000.0)
         _register(mgr, info)
         assert info._gate_wait_started is None
         assert mgr._is_startup_stalled(info, now=1_000.0 + 120.5) is True
+
+    def test_a_start_parked_in_the_queues_past_the_cap_is_reaped_as_never_started(self) -> None:
+        """The paused clock is bounded: a start parked behind holders no watchdog
+        bounds (wedged cron runs, say) is not left waiting forever."""
+        from kiro_crew.subagent_manager.monitoring import _START_QUEUE_MAX_SECS
+
+        mgr = _manager(startup_timeout=120)
+        info = _starting("p1", exec_started=1_000.0)
+        _register(mgr, info)
+        with patch.object(subagent_mod, "time", SimpleNamespace(time=lambda: 1_010.0)):
+            mgr._gate_wait_mark(info)("cold-start")
+        monitor = mgr._monitor
+        assert monitor._start_queue_saturated_secs(info, 1_010.0 + _START_QUEUE_MAX_SECS) == 0.0
+        assert mgr._is_startup_stalled(info, now=1_010.0 + _START_QUEUE_MAX_SECS + 1) is False
+        saturated = monitor._start_queue_saturated_secs(info, 1_010.0 + _START_QUEUE_MAX_SECS + 1)
+        assert saturated > _START_QUEUE_MAX_SECS
+        # A start that got going is not this case.
+        info.turns = 1
+        assert (
+            monitor._start_queue_saturated_secs(info, 1_010.0 + 10 * _START_QUEUE_MAX_SECS) == 0.0
+        )
 
     @pytest.mark.asyncio
     async def test_shared_path_uses_the_same_reset(self, tmp_path) -> None:
@@ -1601,14 +1644,79 @@ class TestGateExitResetIsOneDefinition:
         info.parent_session_key = "dash:p"
         _register(mgr, info)
         await mgr._create_shared_session(info, "subagent:shared", "")
+        # The companion acquisition above paused the clock too, for a few
+        # microseconds of real time.
+        before = info._start_queue_wait_ms
         kwargs = runtime.create_session.await_args.kwargs
         with patch.object(subagent_mod, "time", SimpleNamespace(time=lambda: 700.0)):
             kwargs["on_gate_queued"]()
         assert info._gate_wait_started == 700.0
         with patch.object(subagent_mod, "time", SimpleNamespace(time=lambda: 777.0)):
             kwargs["on_gate_acquired"](5.0)
-        assert info._exec_started == 777.0 and info._start_queue_wait_ms == 5.0
+        # The pause is the span on the WATCHDOG's clock (mark -> grant), not the
+        # queue's monotonic measurement, which a suspended host leaves short.
+        assert info._exec_started == 100.0
+        assert info._start_queue_wait_ms - before == 77_000.0
         assert info._gate_wait_started is None
+
+    @pytest.mark.asyncio
+    async def test_the_companion_acquisition_gets_this_starts_clock_pair(self) -> None:
+        """A shared start with no parent runtime hands ``get_subagent_runtime`` its
+        own clock pair, so that call pauses the clock at its WAITS only; the
+        caller itself pauses nothing around the call."""
+        mgr = _manager(startup_timeout=120)
+        runtime = MagicMock()
+        runtime.create_session = AsyncMock()
+        info = _starting("companion", exec_started=1_000.0)
+        info.parent_session_key = "dash:p"
+        paused_during_call: list[bool] = []
+
+        async def _companion(_parent, **kwargs):
+            paused_during_call.append(info._gate_wait_started is not None)
+            with patch.object(subagent_mod, "time", SimpleNamespace(time=lambda: 1_010.0)):
+                kwargs["on_gate_queued"]("companion runtime")
+            assert info._gate_wait_started == 1_010.0
+            with patch.object(subagent_mod, "time", SimpleNamespace(time=lambda: 1_410.0)):
+                kwargs["on_gate_acquired"](400_000.0, "companion runtime")
+            return runtime
+
+        mgr._sessions.get_subagent_runtime = AsyncMock(side_effect=_companion)
+        mgr._get_parent_runtime = MagicMock(return_value=None)  # type: ignore[method-assign]
+        mgr._bind_shared_handle = AsyncMock()  # type: ignore[method-assign]
+        _register(mgr, info)
+        await mgr._create_shared_session(info, "subagent:companion", "")
+        assert paused_during_call == [False]
+        assert info._gate_wait_started is None
+        assert info._start_queue_wait_ms == 400_000.0
+
+    @pytest.mark.asyncio
+    async def test_a_hung_companion_spawn_is_reaped_at_the_startup_deadline(self) -> None:
+        """A companion spawn wedged in its own work (an untimed step before
+        ``initialize``) fires no queue callback, so the start clock keeps running
+        and the watchdog reaps the start at its deadline -- not at the queue cap,
+        whose text would blame other starts."""
+        mgr = _manager(startup_timeout=120)
+        info = _starting("hung", exec_started=1_000.0)
+        info.parent_session_key = "dash:p"
+        entered = asyncio.Event()
+
+        async def _wedged(_parent, **_kwargs):
+            entered.set()
+            await asyncio.Event().wait()
+
+        mgr._sessions.get_subagent_runtime = AsyncMock(side_effect=_wedged)
+        mgr._get_parent_runtime = MagicMock(return_value=None)  # type: ignore[method-assign]
+        _register(mgr, info)
+        task = asyncio.ensure_future(mgr._create_shared_session(info, "subagent:hung", ""))
+        try:
+            await asyncio.wait_for(entered.wait(), timeout=5)
+            assert info._gate_wait_started is None
+            assert mgr._is_startup_stalled(info, now=1_000.0 + 120.5) is True
+            assert mgr._monitor._start_queue_saturated_secs(info, 1_000.0 + 120.5) == 0.0
+        finally:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
 
 
 class TestDedicatedPathGateExitReset:
@@ -1665,10 +1773,13 @@ class TestDedicatedPathGateExitReset:
         with patch.object(subagent_mod, "time", SimpleNamespace(time=lambda: 4_300.0)):
             mark()
         assert info._gate_wait_started == 4_300.0
+        started = info._exec_started
         with patch.object(subagent_mod, "time", SimpleNamespace(time=lambda: 4_321.0)):
-            reset(90_000.0)
-        assert info._exec_started == 4_321.0
-        assert info._start_queue_wait_ms == 90_000.0
+            reset(90_000.0, "spawn admission")
+        assert info._exec_started == started
+        # mark at 4300.0, grant at 4321.0: the watchdog's own 21s, not the 90s the
+        # queue measured on a clock that stops when the host suspends.
+        assert info._start_queue_wait_ms == 21_000.0
         assert info._gate_wait_started is None
 
     def test_provider_factory_names_the_kwarg_and_forwards_it(self, monkeypatch) -> None:

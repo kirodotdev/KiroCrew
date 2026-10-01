@@ -44,6 +44,7 @@ from kiro_crew.metrics.sessions import (
     record_sessions_ended,
 )
 from kiro_crew.process_identity import ProcessHandle, process_handle_of
+from kiro_crew.start_priority import PrioritySemaphore
 
 CancelOutcome = Literal["acked", "timeout", "no_turn", "error"]
 
@@ -547,7 +548,7 @@ class SessionLifecycleOwner(Protocol):
     _lock: asyncio.Lock
     _closing: bool
     _update_pause_owned: bool
-    _start_sem: asyncio.Semaphore
+    _start_sem: PrioritySemaphore
     _starting_pids: set[int]
 
     _pool_fill_lock: asyncio.Lock
@@ -641,7 +642,6 @@ class SessionLifecycleConstants:
     """Patch-sensitive policy values resolved as one call-time snapshot."""
 
     max_pool: int
-    max_concurrent_cold_starts: int
     background_key: str
     stateless_prefixes: tuple[str, ...]
     close_all_concurrency: int
@@ -1920,13 +1920,11 @@ class SessionLifecycleService:
         """
         owner = self._owner
         logger = self._deps.logger
-        constants = self._deps.constants()
         doomed: list[tuple[str, Any]] = []
         teardown_children_by_key: dict[str, tuple[str, ...]] = {}
         skipped = False
-        # One sweep at a time. Two peers draining permits one-by-one could each
-        # hold a partial barrier forever, preventing both finally blocks from
-        # restoring cold-start capacity.
+        # One sweep at a time: the drain below is not re-entrant (a second
+        # concurrent drain raises), so a peer sweep waits here for this one.
         async with self._identity_sweep_lock:
             # Before the barrier, and before any key becomes claimable: every
             # provider already queued in the warm pool authenticated as the
@@ -1936,11 +1934,10 @@ class SessionLifecycleService:
             # while ``_retire_kiro_warm_pool`` (which must run outside the
             # barrier -- see ``mark_identity_epoch``) is still pending.
             owner._mark_identity_epoch()
-            held = 0
-            try:
-                for _ in range(constants.max_concurrent_cold_starts):
-                    await owner._start_sem.acquire()
-                    held += 1
+            # The barrier: every cold-start permit, collected ahead of both start
+            # priorities (``PrioritySemaphore.drain``), so a stream of person-started
+            # cold starts cannot keep taking the permits this sweep waits for.
+            async with owner._start_sem.drain():
                 async with owner._lock:
                     # An outstanding sweep is its own retirement trigger, so the
                     # pending fingerprint is recorded before anything is retired
@@ -2027,9 +2024,6 @@ class SessionLifecycleService:
                 # disk and must not run under the registry lock.
                 for key in invalidated_keys:
                     owner._session_map.clear_sid(key)
-            finally:
-                for _ in range(held):
-                    owner._start_sem.release()
 
         retired: list[str] = []
         for key, provider in doomed:

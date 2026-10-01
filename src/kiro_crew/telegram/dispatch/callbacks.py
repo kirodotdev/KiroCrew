@@ -335,6 +335,8 @@ async def on_callback(self: TelegramDispatcher, cb: "TelegramCallback") -> None:
             ),
             chat_type=cb.chat_type,
             from_widget=True,
+            # A person's own message, re-dispatched (kiro_crew.start_priority).
+            person_origin=True,
         )
         # The label is MODEL-AUTHORED. A leading command token is ordinary
         # turn content, never permission for the model to execute `/new`,

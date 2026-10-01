@@ -66,6 +66,7 @@ from kiro_crew.session_lifecycle import (
     decline_stop,
     force_stop_keeping_others,
 )
+from kiro_crew.start_priority import person_priority
 from kiro_crew.weixin.attachments import process_weixin_attachments
 from kiro_crew.weixin.commands import ConversationState, build_help, parse_command
 from kiro_crew.weixin.transport import WEIXIN_CAPABILITIES
@@ -385,6 +386,7 @@ class WeixinDispatcher:
         # messaging.dispatch. Only the weixin-specific pieces are injected.
         await drive_turn(
             ChannelTurn(
+                start_priority=person_priority(inbound.person_origin),
                 channel_type="weixin",
                 session_key=session_key,
                 # Durable inbound spool: the peer id IS the reply

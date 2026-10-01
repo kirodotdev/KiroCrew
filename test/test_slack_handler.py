@@ -91,7 +91,7 @@ class FakeSessionManager:
         self._is_new = True
         self.removed: list[str] = []
 
-    async def get_or_create(self, key, agent=None, channel_id=None):
+    async def get_or_create(self, key, agent=None, channel_id=None, start_priority=None):
         self.keys_seen.append(key)
         self.last_agent = agent
         self.last_channel_id = channel_id
@@ -761,7 +761,7 @@ class TestHandleMessage:
     @pytest.mark.asyncio
     async def test_session_create_failure_does_not_raise_unbound_client(self):
         class _FailingSessions(FakeSessionManager):
-            async def get_or_create(self, key, agent=None, channel_id=None):
+            async def get_or_create(self, key, agent=None, channel_id=None, start_priority=None):
                 raise ConnectionResetError("Connection lost")
 
         slack = MockSlackClient()
@@ -2322,7 +2322,7 @@ class TestAutoTitleSlack:
         from kiro_crew.slack.handler import _mark_titled, _maybe_auto_title_slack, _titled_threads
 
         class ExplodingSessionManager(FakeSessionManager):
-            async def get_or_create(self, key, agent=None, channel_id=None):
+            async def get_or_create(self, key, agent=None, channel_id=None, start_priority=None):
                 raise RuntimeError("bound to a different event loop")
 
         slack = MockSlackClient()
@@ -2366,7 +2366,7 @@ class TestAutoTitleSlack:
         from kiro_crew.slack.handler import _mark_titled, _maybe_auto_title_slack, _titled_threads
 
         class TimingOutSessionManager(FakeSessionManager):
-            async def get_or_create(self, key, agent=None, channel_id=None):
+            async def get_or_create(self, key, agent=None, channel_id=None, start_priority=None):
                 raise asyncio.TimeoutError()
 
         slack = MockSlackClient()

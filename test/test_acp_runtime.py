@@ -75,6 +75,7 @@ from kiro_crew.kiro_cli import SPEC_PERMISSIONS_MIN_VERSION
 from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS
 from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
 from kiro_crew.metrics.events import CHILD_PERMISSION_DENIED
+from kiro_crew.start_priority import StartPriority
 
 # ── Harness ──
 
@@ -1984,13 +1985,13 @@ def test_cold_start_admission_registry_releases_contended_closed_loop(monkeypatc
     async def contend_and_drain():
         admission = runtime_mod._cold_start_admission()
         assert runtime_mod._cold_start_admission() is admission
-        await admission.acquire()
-        queued = asyncio.create_task(admission.acquire())
+        await admission.acquire(StartPriority.BACKGROUND)
+        queued = asyncio.create_task(admission.acquire(StartPriority.BACKGROUND))
         await _wait_for_queued(admission, 1)
         admission_ref = weakref.ref(admission)
         queued.cancel()
         await asyncio.gather(queued, return_exceptions=True)
-        admission.release()
+        admission.release(StartPriority.BACKGROUND)
         assert admission.active == 0
         assert admission.queued == 0
         return admission_ref

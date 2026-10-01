@@ -25,6 +25,7 @@ from kiro_crew.kiro_prerequisite import pre_spawn_identity, spawn_pid, stamp_spa
 
 if TYPE_CHECKING:
     from kiro_crew.providers.base import LLMProvider
+    from kiro_crew.start_priority import PrioritySemaphore
 else:
     # The aliases below subscript LLMProvider at module scope, so a name must
     # exist at runtime; a real import would cross the agent-SDK boundary gate.
@@ -53,7 +54,7 @@ class WarmPoolOwner(Protocol):
     _cfg: Any
     _provider_factory: ProviderFactory | None
     _session_map: _SessionMapPort
-    _start_sem: asyncio.Semaphore
+    _start_sem: PrioritySemaphore
     _background_tasks: set[asyncio.Task[Any]]
     _starting_pids: set[int]
 

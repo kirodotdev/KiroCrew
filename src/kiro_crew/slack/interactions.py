@@ -99,6 +99,7 @@ from kiro_crew.slack.renderer import (
     split_approval_token,
 )
 from kiro_crew.slack.scope_probe import log_probe_failure, warn_unreadable_tracked_channels
+from kiro_crew.start_priority import StartPriority
 
 if TYPE_CHECKING:
     from kiro_crew.slack.gateway import GatewayOrchestrator
@@ -655,6 +656,7 @@ async def _handle_shortcut_submission(payload: dict) -> None:
             subagent_manager=_orch.subagent_mgr,
             task_runner=_orch.task_runner,
             action_context=action_context,
+            start_priority=StartPriority.FOREGROUND,
         )
     )
     _orch._handler_tasks.add(t)
@@ -1508,6 +1510,7 @@ async def _route_action_to_session(
             subagent_manager=_orch.subagent_mgr,
             task_runner=_orch.task_runner,
             action_context=action_context,
+            start_priority=StartPriority.FOREGROUND,
         )
     )
     _orch._handler_tasks.add(t)
@@ -1902,6 +1905,7 @@ async def _handle_options_submit(payload: dict, channel: str, msg_ts: str) -> No
             target_slot_name=_pinned_slot_name,
             route_pinned=_route_pinned,
             asker_key=_asker_key,
+            start_priority=StartPriority.FOREGROUND,
         )
     )
     _orch._handler_tasks.add(t)
@@ -2152,6 +2156,7 @@ async def _handle_options(payload: dict, action: dict, channel: str, msg_ts: str
             target_slot_name=_pinned_slot_name,
             route_pinned=_route_pinned,
             asker_key=_asker_key,
+            start_priority=StartPriority.FOREGROUND,
         )
     )
     _orch._handler_tasks.add(t)
@@ -3829,6 +3834,7 @@ async def _handle_review_revise_submit(payload: dict) -> None:
                 subagent_manager=_orch.subagent_mgr,
                 task_runner=_orch.task_runner,
                 channel_activation=ACTIVATION_REVIEW,
+                start_priority=StartPriority.FOREGROUND,
             )
             logger.info("Review revision requested by %s in %s", caller, channel)
         except Exception:

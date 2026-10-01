@@ -390,7 +390,7 @@ class _Sessions:
     def is_busy(self, key) -> bool:
         return False
 
-    async def get_or_create(self, key, *, agent=None, channel_id=None):
+    async def get_or_create(self, key, *, agent=None, channel_id=None, start_priority=None):
         return SimpleNamespace(supports_steer=False), False, False
 
     async def set_channel(self, key, channel_id) -> None:

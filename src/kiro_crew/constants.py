@@ -211,6 +211,14 @@ COMPACT_WAIT_TIMEOUT_SECS = 300.0
 # investigation); the reaper still force-kills at the deadline.
 SUBAGENT_TIMEOUT_SECS = 10800
 
+# Budget for an agent backend's ``initialize`` handshake, in seconds. Spent by
+# ``acp.runtime`` (which re-exports it as ``_INITIALIZE_TIMEOUT`` and documents why
+# the value is what it is), and read by the subagent startup watchdog, whose window
+# has to cover a handshake that spends all of it
+# (``SubagentManager._startup_deadline``). Owned here because that second reader is
+# outside the ACP layer, and may not import it.
+INITIALIZE_TIMEOUT_SECS = 90.0
+
 # Tool-call budget for long subagent work. Shared by the config default, loader,
 # manager fallback and tool description; the wall-clock deadline still bounds a
 # run that makes little progress or spends a long time inside one tool.

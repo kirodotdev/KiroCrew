@@ -52,6 +52,7 @@ from kiro_crew.messaging.inbound_spool import InboundRoute
 from kiro_crew.messaging.link import build_dm_session_key, seed_generation
 from kiro_crew.messaging.pre_turn import resolve_pre_turn
 from kiro_crew.safety_override import safety_override
+from kiro_crew.start_priority import person_priority
 
 if TYPE_CHECKING:
     from kiro_crew.config.loader import KiroCrewConfig
@@ -257,6 +258,7 @@ class IMessageDispatcher:
 
         await drive_turn(
             ChannelTurn(
+                start_priority=person_priority(inbound.person_origin),
                 channel_type="imessage",
                 session_key=session_key,
                 inbound_route=inbound_route,

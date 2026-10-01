@@ -239,7 +239,18 @@ def _stub_turn(monkeypatch, *, hold: asyncio.Event | None = None):
     """
     calls: list[dict[str, Any]] = []
 
-    async def _fake(state, slot, mid, run_id, text, parent, context_before, flight_key, identity):
+    async def _fake(
+        state,
+        slot,
+        mid,
+        run_id,
+        text,
+        parent,
+        context_before,
+        flight_key,
+        identity,
+        start_priority=None,
+    ):
         calls.append({"mid": mid, "text": text, "parent": parent, "context_before": context_before})
         if hold is not None:
             await hold.wait()
@@ -1054,7 +1065,18 @@ async def test_second_reply_while_the_crewmate_is_replying_is_refused(tmp_path, 
     state = _make_state(tmp_path)
     _, mid = _member_slot(state)
 
-    async def _hold(state, slot, mid, run_id, text, parent, context_before, flight_key, identity):
+    async def _hold(
+        state,
+        slot,
+        mid,
+        run_id,
+        text,
+        parent,
+        context_before,
+        flight_key,
+        identity,
+        start_priority=None,
+    ):
         pass  # never clears the mark: the turn is still running
 
     monkeypatch.setattr(chat_threads, "_run_thread_turn", _hold)

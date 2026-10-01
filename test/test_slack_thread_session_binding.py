@@ -67,7 +67,7 @@ class _RoutingSessions(FakeSessions):
     def get_session_for_thread(self, thread_ts):
         return self._thread_index.get(thread_ts)
 
-    async def get_or_create(self, session_key, agent=None, channel_id=None):
+    async def get_or_create(self, session_key, agent=None, channel_id=None, start_priority=None):
         self.acquired_keys.append(session_key)
         return await super().get_or_create(session_key, agent=agent, channel_id=channel_id)
 
@@ -333,7 +333,7 @@ def test_a_link_created_mid_turn_is_not_clobbered(monkeypatch):
 
     original = sessions.get_or_create
 
-    async def claim_during_acquisition(session_key, agent=None, channel_id=None):
+    async def claim_during_acquisition(session_key, agent=None, channel_id=None, start_priority=None):
         # Stand in for the dashboard's send-to-Slack landing mid-turn.
         sessions._thread_index[_THREAD_TS] = _DASHBOARD_KEY
         return await original(session_key, agent=agent, channel_id=channel_id)

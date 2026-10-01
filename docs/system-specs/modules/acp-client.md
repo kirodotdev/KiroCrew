@@ -1912,11 +1912,11 @@ re-exports every name.
 
 Every `AcpRuntime.spawn()` enters one gateway-wide, event-loop-affine admission
 coordinator before subprocess preparation and holds the permit through
-`initialize`. The default cap is 2, matching worker-pool `max_starting`; this is
+`initialize`. It orders spawns by start priority; see § Session-start gate. The default cap is 2, matching worker-pool `max_starting`; this is
 the common backstop for interactive, authoring, background, shared, and unpooled
 runtime callers, including callers that bypass `SessionManager` or a worker pool.
-The coordinator is keyed by event loop so embedded/test loops never share an
-`asyncio.Semaphore`; cancellation while queued or starting returns the permit,
+The coordinator is keyed by event loop because a waiter's future is created on
+the running loop, so embedded/test loops never share one `PrioritySemaphore`; cancellation while queued or starting returns the permit,
 and the existing spawn guard still kills a subprocess when initialization is
 cancelled or fails. It uses only asyncio/threading primitives and has no POSIX-only
 behavior. A spawn-level `OSError` gets exactly one retry after two seconds while
@@ -1942,19 +1942,139 @@ Cold-start admission bounds runtime spawn + `initialize`. The **session-start
 gate** bounds the other expensive start: `session/new` on an already-running
 runtime, which blocks while the backend initializes the session's MCP servers.
 `AcpRuntime.create_session` acquires the current loop's `SessionStartGate`
-(`agent.session_start_concurrency`, default 2, FIFO, sized once per loop from
-config; `restart=True`) BEFORE `session/new` goes on the wire and releases it
-as soon as the answer arrives. The gate is a FIXED semaphore: the adaptive
+(`agent.session_start_concurrency`, default 2, FIFO within a start priority,
+sized once per loop from config; `restart=True`) BEFORE `session/new` goes on
+the wire and releases it as soon as the answer arrives. The gate is a FIXED semaphore: the adaptive
 loop is the gatewayd spawn gate plus the execution-cap controller, and two
 adapting loops on one resource oscillate. It is one gate for every harness
 (kiro-cli, KAS, a later Claude host), because every backend's session start
 runs through `create_session` (harness-parity: no per-backend branch).
 
-`on_gate_acquired(queue_wait_ms)` fires at gate EXIT: the caller starts its
-own clocks there, so queue time behind the gate never counts against the
-session-start budget (`agent.session_start_timeout_secs`, 90s floor) or the
-subagent startup watchdog. Structured `acp_startup_stage ... outcome=collecting`
-logs carry the gate's active/queued counts.
+**Start priority: a start a person is waiting on is served ahead of background
+starts.** Three in-process queues bound a start, and all three are one primitive,
+`kiro_crew.start_priority.PrioritySemaphore`: `SessionManager._start_sem` (cold
+starts, held across the provider's own spawn and `session/new` waits), the
+cold-start admission (`_COLD_START_MAX_CONCURRENT` spawns) and this gate
+(`agent.session_start_concurrency`, collector headroom unchanged). The rule is
+owned by the `kiro_crew.start_priority` module docstring; this section lists who
+applies it.
+
+- **Everything is BACKGROUND unless its caller claims FOREGROUND.** Nothing is
+  derived from a session key: automation runs on interactive keys too (an
+  auto-nudge or monitor wake, a cron or sub-agent completion injection, an
+  agent's `session_send` into a slot), so a key says where a turn lands, not who
+  waits for it. `get_or_create`, `open_task_session`, `get_bg_session`,
+  `get_subagent_runtime`, `AcpRuntime.spawn` and `create_session` all default to
+  BACKGROUND; the session layer hands the resolved priority to the provider it
+  starts (`LLMProvider.start_priority`), which passes it to both of its runtime
+  queues, and a task run that falls back to the companion runtime hands it to
+  that runtime's `spawn`.
+- **The claimers.** The dashboard runner, for a turn a person sent
+  (`_turn_start_priority`: user-origin provenance and `_crew_log_actor ==
+  "user"`, not a restored queue entry — a typed turn, a Resume/Continue press,
+  the runner's requeue of a person's failed turn, a typed follow-up in a cron
+  tab). The eager respawn that turn arms takes its priority, and so does the
+  poisoned-conversation canary inside it. An eager spawn from the dashboard
+  owner's own slot create, agent switch or project switch; the focus resume
+  prefetch, a reload and any app-token request stay BACKGROUND. Every messaging
+  channel, for a message a person sent: each transport's `receive` sets
+  `person_origin` on the inbound it dispatches, a message the gateway built
+  itself (a nudge or monitor wake, built by `build_inbound`) does not, and the
+  dispatchers pass `person_priority(inbound.person_origin)`; a dispatcher that
+  REBUILDS an inbound for a person (a button press, a slash command) carries the
+  flag over, and a drained replay takes the flag its queued entries recorded at
+  enqueue time (messaging.md § `InboundMessage`), because a gateway wake can be
+  queued too. Slack's event and interaction
+  paths pass FOREGROUND unless a trusted bot posted. The CLI chat. **Every
+  dashboard claimer reads WHO ASKED**
+  (`dashboard/request_priority.owner_start_priority`, which reads
+  `is_owner_dashboard_request`): the composer optimizer, Side Chat, crewmate
+  reply threads, Task Runner Refine and Plan, workflow authoring, Issue Radar's
+  AI routes (`_run_oneshot_model`), and the eager spawn a slot action arms. An
+  app token on its own slot is BACKGROUND there, because the person-only
+  reserve is the one resource an app must not take from a person. STT
+  endpointing, and the poisoned-conversation canary inside a person's turn,
+  claim it through `run_bg_oneliner` -> `get_bg_session`, which passes it to its
+  own `session/new` on the shared `_bg` runtime, to that runtime's (re)spawn
+  admission when this call is the one that respawns it, and to the
+  provider-backed entry's cold start on a backend with no shared runtime. A
+  respawn runs under `_bg_runtime_lock` at the priority of the caller holding
+  the lock (see the residuals below).
+  Meeting translation is a per-line stream nobody waits on, so it claims nothing
+  and takes the BACKGROUND default; so does STT polish, which the browser does
+  not wait for.
+- **Ordering.** FIFO within a priority, FOREGROUND first; a BACKGROUND waiter is
+  passed by at most `_FOREGROUND_BYPASS_LIMIT` later FOREGROUND grants before it
+  is served. Strict priority plus a named bypass, not weighted round-robin,
+  because a person waiting must win outright whenever the bypass allows.
+- **The outer reserve.** Ordering alone cannot help a person when every
+  `_start_sem` permit belongs to a background start stuck behind a fan-out at an
+  inner queue, so `_start_sem` carries `FOREGROUND_COLD_START_RESERVE` permits on
+  top of `MAX_CONCURRENT_COLD_STARTS` that only a FOREGROUND start may hold
+  (`session_allocation.new_cold_start_semaphore`, which owns the rationale).
+  Background keeps its full width; the first concurrent person start always gets
+  an outer permit at once and then goes ahead at the inner queues; further
+  concurrent person starts are served ahead of background ones as permits free.
+  The inner queues keep no reserve: at their width it would halve background and
+  collide with `_COLLECTOR_PERMIT_HEADROOM`.
+- **The identity-sweep barrier** takes every `_start_sem` permit through
+  `PrioritySemaphore.drain()`, which outranks both priorities while it waits and
+  ignores the reserve, and hands back what it holds even when cancelled.
+- **The guarantee, precisely.** At each in-process queue a person's start waits
+  only for the permits held there and for at most `_FOREGROUND_BYPASS_LIMIT`
+  background grants per queued background start. One exception: while the
+  identity sweep runs (after an account change, after an incomplete sweep, or
+  on every turn while the identity store cannot be fingerprinted), the person's
+  turn waits at the drain for every holder, background ones included. A fourth
+  queue is not covered yet: with `mcp_gateway.stub_servers` configured, a stub's
+  `ensure_backend` waits in gatewayd's daemon-wide FIFO `SpawnGate` (#15830).
+  A warm-pool refill (`session.pool_size > 0`) waits for its BACKGROUND permit
+  with `_pool_fill_lock` released (#15857), so that lock's other waiters are not
+  held behind foreground load. Known residual: `get_bg_session`
+  (re)spawns the shared `_bg` runtime while holding `_bg_runtime_lock`, at the
+  lock holder's priority: a FOREGROUND caller that arrives while a BACKGROUND
+  caller's respawn is queued at the spawn admission waits on the lock for that
+  whole background spawn, and its priority reaches only its own `session/new`.
+  This needs the `_bg` runtime to be respawning (it died, or was recycled for
+  age or RSS) at the moment a person's call arrives.
+- **Clocks and telemetry.** A subagent's startup clock PAUSES while it is queued:
+  the dedicated path at all three queues, the shared path at this gate and, when
+  it needs a companion runtime, at that runtime's per-parent lock
+  (`START_QUEUE_COMPANION`) and its spawn's admission, never across the spawn's
+  own work. The
+  callbacks receive the queue's name, and each wait accumulates into
+  `_start_queue_wait_ms` -- measured on the WATCHDOG's own clock, between the
+  mark and the grant, not on the queue's monotonic reading, which stops while a
+  laptop is suspended and would charge that sleep as start time. The watchdog
+  measures `_exec_started` minus that total, and a re-stamped `_exec_started` (a
+  recovery respawn, a late adoption) clears it: the new attempt did not pay the
+  old one's waits. Because one clock spans the spawn handshake,
+  `session/new` and the collector wait, `_startup_deadline` includes the
+  `initialize` budget as well, once per handshake round of a retried start
+  (subagent.md § startup deadline). A paused total
+  past `_START_QUEUE_MAX_SECS` ends the run as "Never started: start queues
+  saturated". Connection warm-up's 90 s `wait_for(spawn())` includes queue time;
+  a timed-out warm-up degrades to a cold first use, so it is left as is.
+  `run_bg_oneliner`'s `timeout` bounds the DRIVE only: cancelling its
+  acquisition would kill the shared `_bg` (re)spawn that every later caller
+  reuses, and leak a backend session whose `session/new` had already gone out.
+  `acp_cold_start stage=queue_wait`, the collector line and
+  `session_cold_start stage=queue_wait` (logged only above
+  `START_QUEUE_LOG_MIN_MS`) carry the priority and `PrioritySemaphore.describe()`
+  (per-class depth and bypass count).
+
+Pinned by `test/test_start_priority.py` and
+`test_session_start_gate.py::test_a_chat_start_acquires_the_gate_ahead_of_queued_child_starts`.
+
+`on_gate_queued(queue)` fires before the wait and
+`on_gate_acquired(queue_wait_ms, queue)` at gate EXIT, both naming which queue
+fired them, so a caller can PAUSE its own clock for exactly the span spent
+queued: queue time never counts against the session-start budget
+(`agent.session_start_timeout_secs`, 90s floor) or the subagent startup
+watchdog, which accumulates the pauses rather than restarting its clock (see
+§ Start priority, and subagent.md § startup deadline). Structured
+`acp_startup_stage ... outcome=collecting` logs carry the gate's active/queued
+counts and its per-class depth.
 
 **Timeout never abandons the request.** On `session/new` timeout
 `_send_and_await` does NOT pop the request: it re-registers a fresh future

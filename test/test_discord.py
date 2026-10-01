@@ -441,6 +441,7 @@ class FakeSessions:
         channel_id: Any = None,
         model: Any = None,
         wait_if_busy: bool = True,
+        start_priority=None,
     ) -> Any:
         self.last_agent = agent
         self.last_model = model
@@ -5930,6 +5931,7 @@ class TestDrainSenderIdentity:
                 msg.conversation_id,
                 msg.text,
                 origin=_dc_origin(msg.user_id, msg.conversation_id, thread=msg.thread_id or ""),
+                person_origin=msg.person_origin,
             ), "the fake session must accept a mid-turn enqueue"
         sess._busy = False  # the turn they queued behind has finished
 
@@ -5948,6 +5950,27 @@ class TestDrainSenderIdentity:
         finally:
             d.handle_message = original
         return seen
+
+    @pytest.mark.asyncio
+    async def test_a_drained_turn_carries_its_queued_entries_own_person_flag(self) -> None:
+        """A gateway-built wake (``person_origin=False``) can reach the busy-queue path
+        too, so the drain reads each entry's recorded flag instead of assuming a person:
+        the wake replays without it, a person's message with it, and a collapsed turn
+        holding a person's message is theirs."""
+        from dataclasses import replace
+
+        d, _cli, sess = _dispatcher({"u1", "u2"}, dm_scope="unified")
+        person = replace(_inbound("mine", user_id="u1", conversation_id="c1"), person_origin=True)
+        wake = _inbound("nudge", user_id="u2", conversation_id="c2")
+        follow_up = replace(person, text="and mine")
+        await self._queue(d, sess, wake, person, follow_up)
+
+        seen = await self._drain(d, self._UNIFIED)
+
+        assert [(m.text, m.person_origin) for m in seen] == [
+            ("nudge", False),
+            ("mine\n\nand mine", True),
+        ]
 
     @pytest.mark.asyncio
     async def test_the_receipt_counts_only_the_answered_senders_own_deferrals(self) -> None:

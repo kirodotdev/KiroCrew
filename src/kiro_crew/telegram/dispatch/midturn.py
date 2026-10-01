@@ -199,6 +199,7 @@ async def _handle_busy(
         # the route resolved to, while the replay needs the message's own
         # ``thread_id`` so ``handle_message`` re-derives that route itself.
         origin=_origin._inbound_origin(msg),
+        person_origin=msg.person_origin,
     ):
         # Not queued, so re-run it now. The ORIGINAL msg, whose text still
         # carries the modifier, so command parsing re-derives the request rather

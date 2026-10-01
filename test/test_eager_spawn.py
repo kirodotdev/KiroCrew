@@ -28,6 +28,7 @@ from kiro_crew.dashboard.chat_runner import _eager_spawn, schedule_eager_spawn
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 from kiro_crew.execution_context import ExecutionContext, MemoryStoreRef
 from kiro_crew.session import FirstTurnState
+from kiro_crew.start_priority import StartPriority
 
 
 @pytest.fixture(autouse=True)
@@ -792,7 +793,9 @@ class TestProjectSetWiring:
             async with TestClient(TestServer(app)) as client:
                 resp = await client.post("/api/chat/slots/t1/agent", json={"agent": "kirocrew"})
                 assert resp.status == 200
-            sched.assert_called_once_with(state, slot)
+            # No owner identity on this request, so BACKGROUND (test_start_priority
+            # pins the owner case).
+            sched.assert_called_once_with(state, slot, start_priority=StartPriority.BACKGROUND)
 
     @pytest.mark.asyncio
     async def test_project_change_schedules_eager_spawn(self, tmp_path):
@@ -817,7 +820,9 @@ class TestProjectSetWiring:
                     "/api/chat/slots/t1/project", json={"project": str(tmp_path)}
                 )
                 assert resp.status == 200
-            sched.assert_called_once_with(state, slot)
+            # No owner identity on this request, so BACKGROUND (test_start_priority
+            # pins the owner case).
+            sched.assert_called_once_with(state, slot, start_priority=StartPriority.BACKGROUND)
 
     @pytest.mark.asyncio
     async def test_noop_project_set_does_not_schedule(self, tmp_path):

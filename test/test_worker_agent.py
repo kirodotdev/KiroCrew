@@ -3029,11 +3029,16 @@ def _runtime_for_spawn(monkeypatch, attempts_outcomes):
         active = 0
         queued = 0
 
-        async def acquire(self):
+        async def acquire(self, priority=None):
             return 0.0
 
-        def release(self):
+        def release(self, priority=None):
             return None
+
+        class semaphore:  # noqa: N801 - the attribute the spawn log reads
+            @staticmethod
+            def describe() -> str:
+                return ""
 
     monkeypatch.setattr(runtime_mod, "_cold_start_admission", lambda: _Admission())
     return rt, calls

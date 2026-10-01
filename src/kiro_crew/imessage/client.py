@@ -187,6 +187,9 @@ class IMessageInbound:
     chat_id: int = 0
     is_group: bool = False
     is_from_me: bool = False
+    #: Set by the transport's ``receive`` on a message a person sent, so its turn
+    #: starts FOREGROUND (kiro_crew.start_priority); False on anything built elsewhere.
+    person_origin: bool = False
 
     @property
     def chat_selector(self) -> dict[str, Any]:

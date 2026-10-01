@@ -341,7 +341,9 @@ class _PipelineSessions:
         self.created: list[str] = []
         self.released = 0
 
-    async def get_or_create(self, key: str, agent: str = "", channel_id: str = "") -> Any:
+    async def get_or_create(
+        self, key: str, agent: str = "", channel_id: str = "", start_priority=None
+    ) -> Any:
         self.created.append(key)
         return object(), False, False
 

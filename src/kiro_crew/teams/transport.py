@@ -468,4 +468,6 @@ class TeamsTransport(MessagingTransport):
         # mid-turn arrival is queued with its descriptors and re-ingested when the
         # drained turn runs, so nothing is fetched for a message that waits and
         # nothing is unlinked before its reader opens it.
+        # Received from a person: its start is FOREGROUND (kiro_crew.start_priority).
+        inbound.person_origin = True
         await self._dispatch(inbound)

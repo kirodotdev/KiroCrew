@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from kiro_crew.acp.types import JsonRpcMessage
 from kiro_crew.config import live
+from kiro_crew.start_priority import PrioritySemaphore, StartPriority
 
 if TYPE_CHECKING:
     from kiro_crew.acp.runtime import AcpRuntime
@@ -43,31 +44,35 @@ _COLD_START_MAX_CONCURRENT = 2
 
 
 class _ColdStartAdmission:
-    """Loop-affine admission state for runtime spawn + initialize."""
+    """Loop-affine admission state for runtime spawn + initialize.
+
+    A :class:`PrioritySemaphore` (rule: ``kiro_crew.start_priority``).
+    """
 
     def __init__(self, limit: int) -> None:
-        self.semaphore = asyncio.Semaphore(limit)
-        self.active = 0
-        self.queued = 0
+        self.semaphore = PrioritySemaphore(limit)
 
-    async def acquire(self) -> float:
+    @property
+    def active(self) -> int:
+        """Spawns holding admission (the semaphore's own count)."""
+        return self.semaphore.held_count
+
+    @property
+    def queued(self) -> int:
+        """Spawns waiting for admission (the semaphore's own count)."""
+        return self.semaphore.queued
+
+    async def acquire(self, priority: StartPriority) -> float:
         from kiro_crew.acp.runtime import time
 
         started = time.monotonic()
-        self.queued += 1
-        acquired = False
-        try:
-            await self.semaphore.acquire()
-            acquired = True
-        finally:
-            self.queued -= 1
-        if acquired:
-            self.active += 1
+        await self.semaphore.acquire(priority)
         return (time.monotonic() - started) * 1000.0
 
-    def release(self) -> None:
-        self.active = max(0, self.active - 1)
-        self.semaphore.release()
+    def release(self, priority: StartPriority) -> None:
+        # No default: a release must name the priority its acquire took, and a
+        # defaulted one would mis-count silently while that class holds a permit.
+        self.semaphore.release(priority)
 
 
 # asyncio synchronization primitives are loop-affine. Gateways normally have one
@@ -107,7 +112,8 @@ def _cold_start_counts() -> tuple[int, int]:
 # each one gets slower, and the 90s budget is hit by requests that would have
 # completed in isolation -- a timeout that says nothing about the runtime's
 # health. The gate keeps at most ``agent.session_start_concurrency`` (default 2)
-# session/new requests outstanding per event loop; waiters queue in FIFO order.
+# session/new requests outstanding per event loop; waiters are ordered by
+# ``StartPriority`` (rule: ``kiro_crew.start_priority``).
 # It is a FIXED semaphore on purpose: the adaptive loop lives in the gatewayd
 # spawn gate and the execution-cap controller, and two adapting loops on one
 # resource oscillate. The same gate serves every harness (kiro-cli, KAS, a
@@ -178,7 +184,10 @@ def _record_session_start(start_t0: float, *, ok: bool, attributable_timeout: bo
 
 
 class SessionStartGate:
-    """Loop-affine FIFO semaphore around ``session/new``.
+    """Loop-affine :class:`PrioritySemaphore` around ``session/new``.
+
+    Ordered by :class:`StartPriority` (rule: ``kiro_crew.start_priority``); no
+    foreground reserve, so the width and the collector headroom are as configured.
 
     ``acquire()`` returns a :class:`StartPermit` carrying the queue wait in
     milliseconds so the caller can set the run's start clock at gate EXIT --
@@ -190,9 +199,7 @@ class SessionStartGate:
 
     def __init__(self, limit: int) -> None:
         self.limit = max(_SESSION_START_CONCURRENCY_FLOOR, int(limit))
-        self._semaphore = asyncio.Semaphore(self.limit)
-        self.active = 0
-        self.queued = 0
+        self.semaphore = PrioritySemaphore(self.limit)
         self.releases = 0
         # Permits currently held by a StartCollector rather than by a live
         # ``session/new``. Bounded by ``collector_hold_ceiling`` so a fresh start
@@ -200,21 +207,26 @@ class SessionStartGate:
         self.collector_holds = 0
 
     @property
+    def active(self) -> int:
+        """Starts holding a permit, collector-held ones included."""
+        return self.semaphore.held_count
+
+    @property
+    def queued(self) -> int:
+        """Starts waiting for a permit (the semaphore's own count)."""
+        return self.semaphore.queued
+
+    @property
     def collector_hold_ceiling(self) -> int:
         """How many permits :class:`StartCollector` instances may hold at once."""
         return max(0, self.limit - _COLLECTOR_PERMIT_HEADROOM)
 
-    async def acquire(self) -> "StartPermit":
+    async def acquire(self, priority: StartPriority = StartPriority.BACKGROUND) -> "StartPermit":
         from kiro_crew.acp.runtime import time
 
         started = time.monotonic()
-        self.queued += 1
-        try:
-            await self._semaphore.acquire()
-        finally:
-            self.queued -= 1
-        self.active += 1
-        return StartPermit(self, (time.monotonic() - started) * 1000.0)
+        await self.semaphore.acquire(priority)
+        return StartPermit(self, (time.monotonic() - started) * 1000.0, priority)
 
     def _reserve_collector_hold(self) -> bool:
         """Claim one collector hold, or refuse when the ceiling is reached."""
@@ -223,24 +235,30 @@ class SessionStartGate:
         self.collector_holds += 1
         return True
 
-    def _release(self, *, collector_held: bool = False) -> None:
+    def _release(self, priority: StartPriority, *, collector_held: bool = False) -> None:
         if collector_held:
             self.collector_holds = max(0, self.collector_holds - 1)
-        self.active = max(0, self.active - 1)
         self.releases += 1
-        self._semaphore.release()
+        self.semaphore.release(priority)
 
 
 class StartPermit:
     """One acquired gate slot; ``release()`` is a no-op after the first call."""
 
-    def __init__(self, gate: SessionStartGate, queue_wait_ms: float) -> None:
+    def __init__(
+        self, gate: SessionStartGate, queue_wait_ms: float, priority: StartPriority
+    ) -> None:
         self._gate = gate
         self.queue_wait_ms = queue_wait_ms
+        self.priority = priority
         self.released = False
         # True once a StartCollector owns this permit for the rest of its life,
         # which is what the gate counts against ``collector_hold_ceiling``.
         self.collector_held = False
+
+    def gate_state(self) -> str:
+        """The gate's queue state, for a log line (``PrioritySemaphore.describe``)."""
+        return self._gate.semaphore.describe()
 
     def hold_for_collector(self) -> bool:
         """Let a :class:`StartCollector` keep this permit, if the gate allows it.
@@ -262,7 +280,7 @@ class StartPermit:
         if self.released:
             return False
         self.released = True
-        self._gate._release(collector_held=self.collector_held)
+        self._gate._release(self.priority, collector_held=self.collector_held)
         return True
 
 

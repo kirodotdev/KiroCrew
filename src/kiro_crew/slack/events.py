@@ -124,6 +124,7 @@ from kiro_crew.slack.sessions_view import (
     sessions_include_ended,
 )
 from kiro_crew.slack.transport_dispatch import flat_dm_session_key, handle_message_transport
+from kiro_crew.start_priority import person_priority
 from kiro_crew.stats import Stats
 from kiro_crew.transcribe import audio_exceeds_secs, batch_duration_cap_secs
 from kiro_crew.transcribe import is_available as stt_available
@@ -1859,6 +1860,7 @@ async def _dispatch_queued(
     """Dispatch a queued message — remove ⏳ reaction and call handle_message."""
     channel = kwargs.get("channel", "")
     thread_ts = kwargs.get("thread_ts")
+    from_trusted_bot = bool(kwargs.get("from_trusted_bot", False))
     if orch.slack:
         try:
             await orch.slack.remove_reaction(channel, msg_ts, "hourglass_flowing_sand")
@@ -1905,8 +1907,9 @@ async def _dispatch_queued(
                 gateway=orch,
                 # Echo-loop guard travels with the queued turn (parity with the
                 # immediate dispatch above).
-                from_trusted_bot=bool(kwargs.get("from_trusted_bot", False)),
+                from_trusted_bot=from_trusted_bot,
                 dm_single_session=KiroCrewConfig.load().slack.dm_single_session,
+                start_priority=person_priority(not from_trusted_bot),
             )
             return
         await handle_message(
@@ -1927,7 +1930,8 @@ async def _dispatch_queued(
             task_runner=orch.task_runner,
             channel_agent=kwargs.get("agent_override"),
             user_display_name=kwargs.get("user_display_name"),
-            from_trusted_bot=bool(kwargs.get("from_trusted_bot", False)),
+            from_trusted_bot=from_trusted_bot,
+            start_priority=person_priority(not from_trusted_bot),
         )
     finally:
         # The enqueue path deferred temp-image cleanup to here so the queued
@@ -3107,6 +3111,7 @@ async def _route_message(
                 # admits, so replying would ping-pong).
                 from_trusted_bot=from_trusted_bot,
                 dm_single_session=_dm_single_session,
+                start_priority=person_priority(not from_trusted_bot),
             )
         )
         orch._session_tasks[session_key] = t
@@ -3167,6 +3172,7 @@ async def _route_message(
                 from_trusted_bot=from_trusted_bot,
                 channel_activation=activation,
                 had_voice_input=_had_voice_input,
+                start_priority=person_priority(not from_trusted_bot),
             )
         )
     except Exception:

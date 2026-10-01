@@ -71,6 +71,7 @@ from kiro_crew.session_lifecycle import (
     decline_stop,
     force_stop_keeping_others,
 )
+from kiro_crew.start_priority import person_priority
 from kiro_crew.wecom.attachments import process_wecom_attachments
 from kiro_crew.wecom.commands import (
     ConversationState,
@@ -336,6 +337,7 @@ class WeComDispatcher:
             await self._bind_origin_mirror(session_key, inbound)
             await drive_turn(
                 ChannelTurn(
+                    start_priority=person_priority(inbound.person_origin),
                     channel_type="wecom",
                     session_key=session_key,
                     inbound_route=inbound_route,

@@ -26,6 +26,7 @@ from kiro_crew.config.loader import (
     refresh_materialized_agents,
     resolve_agent_bindings,
 )
+from kiro_crew.dashboard.request_priority import owner_start_priority
 from kiro_crew.dashboard.side_context import build_side_message
 from kiro_crew.dashboard.side_readonly_spec import ReadOnlySpecError, publish_readonly_spec
 from kiro_crew.dashboard.side_state import (
@@ -46,6 +47,7 @@ from kiro_crew.llm_helpers import (
 )
 from kiro_crew.security import StreamRedactor, redact
 from kiro_crew.sel import sel
+from kiro_crew.start_priority import StartPriority
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +70,13 @@ def _side_session_key(slot_key: str, gen: str = "") -> str:
     return f"side:{slot_key}:{gen}" if gen else f"side:{slot_key}"
 
 
-def _dispatch_side_turn(state: DashboardState, slot, question: str) -> str:
+def _dispatch_side_turn(
+    state: DashboardState,
+    slot,
+    question: str,
+    *,
+    start_priority: StartPriority = StartPriority.BACKGROUND,
+) -> str:
     """Start a side turn for *question* and return its run_id.
 
     Callers must have established that no side turn is in flight; there is no
@@ -97,6 +105,7 @@ def _dispatch_side_turn(state: DashboardState, slot, question: str) -> str:
             run_id,
             question,
             is_first_turn=is_first_turn,
+            start_priority=start_priority,
         )
     )
     state._background_tasks.add(task)
@@ -289,6 +298,7 @@ async def _run_side_turn(
     question: str,
     *,
     is_first_turn: bool,
+    start_priority: StartPriority = StartPriority.BACKGROUND,
 ) -> None:
     """Background task: drive one side turn and broadcast chunks over WS."""
     # Local import: chat_runner imports this package, so a module-level import
@@ -558,6 +568,7 @@ async def _run_side_turn(
             # reason. The derived spec itself lives in the user-level registry,
             # which kiro-cli searches after the project scope.
             cwd=project,
+            start_priority=start_priority,
         )
         acquired_key = side_key
         # ``get_or_create`` suspended this task as well. A close landing during
@@ -1146,7 +1157,11 @@ async def api_side_turn(request: web.Request) -> web.Response:
             }
         )
 
-    run_id = _dispatch_side_turn(state, slot, question)
+    # The owner asking is waiting on the panel; an app token is not. A queued
+    # question drains BACKGROUND, onto the side session the turn before it warmed.
+    run_id = _dispatch_side_turn(
+        state, slot, question, start_priority=owner_start_priority(request)
+    )
 
     sel().log_api_access(
         caller=request.get("app", "") or "dashboard",

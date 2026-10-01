@@ -38,6 +38,7 @@ from kiro_crew.llm_helpers import (
     stream_and_collect,
 )
 from kiro_crew.member_memory_auth import private_memory_store_for_session
+from kiro_crew.start_priority import StartPriority
 from kiro_crew.task_planner import decompose_yaml
 from kiro_crew.workflow_memory import (
     WorkflowMemoryError,
@@ -855,11 +856,14 @@ class WorkflowService:
         on_progress: Optional[Callable[[str], None]] = None,
         _memory_scope: WorkflowScope | None = None,
         expected_store: str | None = None,
+        start_priority: StartPriority = StartPriority.BACKGROUND,
     ) -> dict:
         """Turn a NL intent into a validated workflow script (or report errors).
 
         ``on_progress(msg)`` streams human-readable authoring progress (each
         attempt, retries) so author-in-run can surface it live in the sidebar/chat.
+        ``start_priority`` orders the authoring session's start: FOREGROUND only from
+        the dashboard owner's own request (rule: ``kiro_crew.start_priority``).
         """
         memory_scope = _memory_scope
         if memory_scope is None:
@@ -902,7 +906,7 @@ class WorkflowService:
             try:
                 await memory_scope.prepare(self._context_builder, key)
                 provider, author_is_new, _resumed = await self._sessions.get_or_create(
-                    key, agent="kirocrew-lite"
+                    key, agent="kirocrew-lite", start_priority=start_priority
                 )
             except Exception as exc:
                 try:

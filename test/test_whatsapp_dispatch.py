@@ -146,7 +146,7 @@ class FakeSessions:
         self.generation_lookups.append(bucket)
         return self.persisted_generations.get(bucket, 0)
 
-    async def get_or_create(self, key, agent=None, channel_id=None):
+    async def get_or_create(self, key, agent=None, channel_id=None, start_priority=None):
         return self.provider, True, False
 
     def begin_turn(self, key: str) -> None:

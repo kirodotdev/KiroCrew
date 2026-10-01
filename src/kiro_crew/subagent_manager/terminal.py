@@ -934,6 +934,11 @@ class TerminalCoordinator(ManagerComponent):
                         info.error = f"Reaped after {int(elapsed)}s while still awaiting an unanswered spawn approval (never started) [{_timeout_context(info, include_elapsed=False, turn_limit=self._manager._effective_turn_limit(info))}]"
                     elif release_parked:
                         info.error = f"Reaped after {int(elapsed)}s while still waiting to be admitted into startup after spawn approval (never started) [{_timeout_context(info, include_elapsed=False, turn_limit=self._manager._effective_turn_limit(info))}]"
+                    elif reason == "start_queue_saturated":
+                        # Imported here: this ``_impl`` resolves globals in ``subagent``.
+                        from kiro_crew.subagent_manager.monitoring import _START_QUEUE_MAX_SECS
+
+                        info.error = f"Never started: start queues saturated (over {int(_START_QUEUE_MAX_SECS)}s queued for start permits in total, behind other starts) [{_timeout_context(info, include_elapsed=False, turn_limit=self._manager._effective_turn_limit(info))}]"
                     elif reason == "startup_timeout":
                         info.error = f"Failed to start within {self._manager._startup_deadline}s (no runtime launched, no turn produced; {info._startup_cotenant_frames} co-tenant frame(s) received, none addressed to this session) [{_timeout_context(info, include_elapsed=False, turn_limit=self._manager._effective_turn_limit(info))}]"
                     else:

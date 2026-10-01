@@ -310,6 +310,47 @@ class TestDrain:
         assert turns == ["first\n\nsecond"], "the burst must collapse, order preserved"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("queued_person", "opener_person", "expected"),
+        [
+            # A person's queued message drains FOREGROUND whoever opened the turn.
+            (True, False, "fg"),
+            # A gateway-built inbound that reached the queue stays BACKGROUND, even
+            # behind a person's turn.
+            (False, True, "bg"),
+        ],
+    )
+    async def test_a_drained_turn_takes_the_queued_entrys_own_person_flag(
+        self, monkeypatch, queued_person, opener_person, expected
+    ) -> None:
+        """The replay is built ON the finished turn's inbound, so the opener's flag is
+        the wrong source both ways: the entry records its own at enqueue time."""
+        from dataclasses import replace
+
+        from kiro_crew.start_priority import StartPriority
+
+        priorities: list[StartPriority] = []
+
+        async def _fake_drive(turn, **kw):
+            priorities.append(turn.start_priority)
+
+        monkeypatch.setattr("kiro_crew.teams.transport_dispatch.drive_turn", _fake_drive)
+        monkeypatch.setattr(
+            "kiro_crew.teams.transport_dispatch.inbound_permitted",
+            lambda _c: _true(),
+        )
+        sessions = _Sessions(_Provider())
+        d = _dispatcher(sessions, _Client())
+        key = d._session_key(_EMAIL)
+        queued = replace(_inbound("queued"), person_origin=queued_person)
+        assert await d._enqueue_with_receipt(key, queued, "queued")
+        sessions._busy = False
+
+        await d._drain_queue(key, replace(_inbound("opener"), person_origin=opener_person))
+
+        assert priorities == [StartPriority(expected)]
+
+    @pytest.mark.asyncio
     async def test_the_drained_turn_does_not_nest_another_drain(self, monkeypatch) -> None:
         """A replay that re-entered the drain would nest one per burst round."""
         seen: list[bool] = []

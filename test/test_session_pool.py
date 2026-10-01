@@ -15,6 +15,7 @@ import pytest
 
 from kiro_crew import platform_compat
 from kiro_crew.acp.session_handle import WatchdogSettings
+from kiro_crew.start_priority import PrioritySemaphore, StartPriority
 
 
 @pytest.fixture(autouse=True)
@@ -127,7 +128,11 @@ class TestMemberContextAllocation:
             )
         assert result is expected
         mgr.get_or_create.assert_awaited_once_with(
-            "task:child", agent="review", approval_policy="", cwd="/work"
+            "task:child",
+            agent="review",
+            approval_policy="",
+            cwd="/work",
+            start_priority=StartPriority.BACKGROUND,
         )
         mgr._get_or_bootstrap_run_runtime.assert_not_awaited()
 
@@ -1810,7 +1815,7 @@ class TestFillLockReleasedAcrossStart:
         # Serialize starts so the refill blocks one provider at a time, the way a
         # busy ``_start_sem`` does under a stream of foreground starts.
         mgr, _ = _make_manager(pool_size=3)
-        mgr._start_sem = asyncio.Semaphore(1)
+        mgr._start_sem = PrioritySemaphore(1)
 
         first_started = asyncio.Event()
         release_start = asyncio.Event()
@@ -1864,7 +1869,7 @@ class TestFillLockReleasedAcrossStart:
         # it the second fill runs and parks inside its own start() on
         # ``release_start``, so the wrapped call below times out.
         mgr, _ = _make_manager(pool_size=2)
-        mgr._start_sem = asyncio.Semaphore(2)
+        mgr._start_sem = PrioritySemaphore(2)
 
         release_start = asyncio.Event()
         in_start = asyncio.Event()
@@ -1915,7 +1920,7 @@ class TestFillLockReleasedAcrossStart:
         # not a size check -- is the sole reason the stale provider is dropped:
         # the next iteration builds from the new factory and fills the one slot.
         mgr, old_factory = _make_manager(pool_size=1)
-        mgr._start_sem = asyncio.Semaphore(1)
+        mgr._start_sem = PrioritySemaphore(1)
 
         in_start = asyncio.Event()
         release_start = asyncio.Event()
@@ -1970,7 +1975,7 @@ class TestFillLockReleasedAcrossStart:
         # TTL only, so an enqueued stale-identity provider would run until it
         # ages out (up to the TTL) holding a pool slot.
         mgr, _ = _make_manager(pool_size=1)
-        mgr._start_sem = asyncio.Semaphore(1)
+        mgr._start_sem = PrioritySemaphore(1)
 
         in_start = asyncio.Event()
         release_start = asyncio.Event()

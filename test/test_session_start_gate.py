@@ -13,6 +13,7 @@ import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from test_start_priority import settle_tasks, until
 
 import kiro_crew.acp.runtime as runtime_mod
 from kiro_crew.acp.runtime import (
@@ -24,6 +25,7 @@ from kiro_crew.acp.runtime import (
     SessionStartGate,
 )
 from kiro_crew.acp.types import METHOD_MCP_SERVER_INITIALIZED, METHOD_SESSION_NEW
+from kiro_crew.start_priority import StartPriority
 
 # The run.py tests below drive ``SubagentManager.spawn``, which refuses while
 # the host looks short of memory -- the runner's state, not this test's input.
@@ -196,6 +198,59 @@ async def test_gate_is_acquired_before_session_new_and_bounds_concurrency(monkey
 
 
 @pytest.mark.asyncio
+async def test_a_chat_start_acquires_the_gate_ahead_of_queued_child_starts(monkeypatch):
+    """Two permits held by child starts and three more child starts queued: a chat
+    ``create_session`` is the next ``session/new`` on the wire, not the sixth.
+
+    The children name no priority (BACKGROUND, the default for every caller); the
+    chat passes FOREGROUND as the provider does for a person's start (rule:
+    ``kiro_crew.start_priority``). The width is unchanged."""
+    rt, _, _ = _make_runtime()
+    gate = await _gate()
+    entered: list[str] = []
+    answer: dict[str, asyncio.Event] = {}
+
+    async def _fake_send(method, params, timeout=None):
+        if method == METHOD_SESSION_NEW:
+            name = str(params["cwd"]).rsplit("/", 1)[-1]
+            assert gate.active <= 2
+            entered.append(name)
+            await answer.setdefault(name, asyncio.Event()).wait()
+            return {"sessionId": f"sid-{name}"}
+        return {}
+
+    def _start(name: str, **kwargs) -> asyncio.Task:
+        return asyncio.create_task(rt.create_session(cwd=f"/w/{name}", mcp_servers=[], **kwargs))
+
+    monkeypatch.setattr(rt, "_send_and_await", _fake_send)
+    children = [f"child{i}" for i in range(1, 6)]
+    tasks: list[asyncio.Task] = []
+    try:
+        tasks += [_start(name, session_key=f"subagent:{name}") for name in children]
+        await until(lambda: len(entered) == 2 and gate.queued == 3, "two held, three queued")
+        tasks.append(
+            _start(
+                "chat",
+                session_key="dashboard:chat-1-1785445181",
+                start_priority=StartPriority.FOREGROUND,
+            )
+        )
+        await until(lambda: gate.queued == 4, "the chat queued")
+        answer.setdefault(entered[0], asyncio.Event()).set()
+        await until(lambda: len(entered) == 3, "the next session/new")
+        assert entered[2] == "chat"
+        for name in [*children, "chat"]:
+            answer.setdefault(name, asyncio.Event()).set()
+        await asyncio.wait_for(asyncio.gather(*tasks), _SETTLE_BACKSTOP)
+        assert gate.releases == 6
+        assert gate.active == 0 and gate.queued == 0
+    finally:
+        for name in [*children, "chat"]:
+            answer.setdefault(name, asyncio.Event()).set()
+        await settle_tasks(tasks, "gate starts")
+
+
+@pytest.mark.asyncio
 async def test_gate_exit_callback_reports_queue_wait_not_start_time(monkeypatch):
     """``on_gate_acquired`` fires at gate EXIT with the queue wait: a start that
     queued behind a held gate reports a positive wait, a free gate reports ~0.
@@ -220,7 +275,9 @@ async def test_gate_exit_callback_reports_queue_wait_not_start_time(monkeypatch)
     # Fill the gate so the observed start has to queue.
     permits = [await gate.acquire() for _ in range(gate.limit)]
     observed = asyncio.create_task(
-        rt.create_session(cwd="/w", mcp_servers=[], on_gate_acquired=waits.append)
+        rt.create_session(
+            cwd="/w", mcp_servers=[], on_gate_acquired=lambda ms, _queue: waits.append(ms)
+        )
     )
     for _ in range(10):
         await asyncio.sleep(0)
@@ -258,8 +315,8 @@ async def test_gate_entry_callback_fires_before_the_wait_and_exit_after(monkeypa
         rt.create_session(
             cwd="/w",
             mcp_servers=[],
-            on_gate_queued=lambda: order.append("queued"),
-            on_gate_acquired=lambda _ms: order.append("acquired"),
+            on_gate_queued=lambda _queue: order.append("queued"),
+            on_gate_acquired=lambda _ms, _queue: order.append("acquired"),
         )
     )
     for _ in range(10):
@@ -748,7 +805,10 @@ async def test_run_start_timeout_continues_on_adopted_late_session():
     assert info.error == "", info.error
     assert info.result == "shared response"
     assert info._session_sharing is True
-    assert info._start_queue_wait_ms == 123.0
+    # The adoption is this run's real start, so its clock starts there: the queue
+    # wait the abandoned attempt accumulated is not charged to it.
+    assert info._start_queue_wait_ms == 0.0
+    assert info._gate_wait_started is None
 
 
 @pytest.mark.asyncio
@@ -767,7 +827,7 @@ async def test_a_gate_queued_claim_already_counts_as_initializing():
     admitted = asyncio.Event()
 
     class _BlockingGate:
-        async def acquire(self):
+        async def acquire(self, priority=None):
             await admitted.wait()
             raise RuntimeError("not admitted in this test")
 
@@ -807,7 +867,7 @@ async def test_a_cancelled_gate_wait_closes_the_init_scope():
     entered = asyncio.Event()
 
     class _HangingGate:
-        async def acquire(self):
+        async def acquire(self, priority=None):
             entered.set()
             await asyncio.Event().wait()
 

@@ -1337,9 +1337,13 @@ class AgentConfig:
             "gateway event loop (the SessionStartGate). session/new blocks while "
             "the backend initializes the session's MCP servers, so a burst of "
             "subagent starts on one shared runtime slows every start until the "
-            "budget is hit; queued starts wait in FIFO order and their queue time "
-            "is not counted against the start budget or the startup watchdog. A "
-            "fixed bound, not adaptive: the adaptive loop is the MCP gateway spawn "
+            "budget is hit; queued starts a person is waiting on are served first, "
+            "except that a waiting background start is let through after a bounded "
+            "run of them so it is never starved, and FIFO within each class. Queue "
+            "time is not charged to the start budget "
+            "or the startup deadline, but a subagent start that stays queued past "
+            "the start-queue cap ends as never started, unless its subagent "
+            "timeout ends it first. A fixed bound, not adaptive: the adaptive loop is the MCP gateway spawn "
             "gate and the execution-cap controller. Clamped to 1..64.",
             restart=True,
         ),

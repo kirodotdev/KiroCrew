@@ -108,7 +108,7 @@ class FakeSessions:
         self.begin_turns = 0
         self.reserved_generations: set[str] = set()
 
-    async def get_or_create(self, key, *, agent=None, channel_id=None):
+    async def get_or_create(self, key, *, agent=None, channel_id=None, start_priority=None):
         self.last_agent = agent
         if self._raise is not None:
             raise self._raise
@@ -1666,6 +1666,42 @@ class TestQueueAndDrain:
 
         assert turns[0] == "t-a\n\nt-a2"
         assert turns[1] == "t-b"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("queued_person", "opener_person", "expected"),
+        [
+            # A person's queued message drains FOREGROUND whoever opened the turn.
+            (True, False, "fg"),
+            # A gateway-built wake that reached the queue stays BACKGROUND, even
+            # behind a person's turn.
+            (False, True, "bg"),
+        ],
+    )
+    async def test_a_drained_turn_takes_the_queued_entrys_own_person_flag(
+        self, queued_person, opener_person, expected
+    ) -> None:
+        """The replay is built ON the finished turn's inbound, so the opener's flag is
+        the wrong source both ways: the entry records its own at enqueue time."""
+        from kiro_crew.start_priority import StartPriority
+
+        provider = FakeProvider([AcpEvent(kind=EVENT_COMPLETE)])
+        sessions = FakeSessions(provider)
+        sessions._busy = True
+        d = _dispatcher(sessions, FakeCtx(), FakeClient())
+        queued = replace(_inbound("queued"), person_origin=queued_person)
+        assert await d._enqueue_with_receipt(d._session_key(_EMAIL), "queued", queued)
+        sessions._busy = False
+        priorities: list[StartPriority] = []
+
+        async def _capture(turn, *, sessions, ctx_builder):
+            priorities.append(turn.start_priority)
+
+        opener = replace(_inbound("opener"), person_origin=opener_person)
+        with mock.patch("kiro_crew.webex.transport_dispatch.drive_turn", _capture):
+            await d._drain_queue(d._session_key(_EMAIL), opener)
+
+        assert priorities == [StartPriority(expected)]
 
     @pytest.mark.asyncio
     async def test_an_empty_queue_drains_to_nothing(self) -> None:

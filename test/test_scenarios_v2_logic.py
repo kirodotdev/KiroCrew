@@ -36,7 +36,9 @@ def _make_mock_sessions() -> MagicMock:
     sessions.check_context_usage = MagicMock()
     sessions.recycle_background = AsyncMock()
 
-    async def _open_task_session(_parent_key, session_key, *, agent=None, cwd=None, approval_policy=""):
+    async def _open_task_session(
+        _parent_key, session_key, *, agent=None, cwd=None, approval_policy="", start_priority=None
+    ):
         return await sessions.get_or_create(session_key, agent=agent, cwd=cwd)
 
     sessions.open_task_session = _open_task_session

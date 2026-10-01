@@ -168,6 +168,9 @@ class WeComInbound:
     #: Downloadable media records paired with their per-object aeskey. Consumed
     #: (and cleared) by the dispatcher before the turn runs.
     attachments: list = field(default_factory=list)
+    #: Set by the transport's ``receive`` on a message a person sent, so its turn
+    #: starts FOREGROUND (kiro_crew.start_priority); False on anything built elsewhere.
+    person_origin: bool = False
 
 
 class WeComClient:

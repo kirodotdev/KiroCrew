@@ -93,6 +93,7 @@ if TYPE_CHECKING:
     from kiro_crew.taskq.adapters import runner as _runner_adapter
 
 from kiro_crew.learn import Lesson
+from kiro_crew.start_priority import StartPriority
 
 logger = logging.getLogger(__name__)
 
@@ -1079,6 +1080,7 @@ class TaskRunner:
         workflow_source: str = "",
         session_key: str = "",
         execution_context: ExecutionContext | None = None,
+        start_priority: StartPriority = StartPriority.BACKGROUND,
     ) -> Project:
         execution = await capture_admission_execution(
             self._ctx,
@@ -1174,7 +1176,9 @@ class TaskRunner:
             else:
                 try:
                     run.tasks = await asyncio.wait_for(
-                        self._decompose(decompose_input, run.work_dir, task_id),
+                        self._decompose(
+                            decompose_input, run.work_dir, task_id, start_priority=start_priority
+                        ),
                         timeout=180,
                     )
                 except asyncio.TimeoutError:
@@ -2547,6 +2551,8 @@ class TaskRunner:
         spec: str,
         work_dir: str = "",
         task_id: str = "",
+        *,
+        start_priority: StartPriority = StartPriority.BACKGROUND,
     ) -> list[Task]:
         return await decompose(
             spec,
@@ -2555,6 +2561,7 @@ class TaskRunner:
             work_dir=work_dir or str(self._work_dir),
             task_id=task_id,
             agent=self._agent,
+            start_priority=start_priority,
         )
 
     # ── Notifications ──

@@ -5160,8 +5160,8 @@ class KiroCrewConfig:
             # is: swallowed by the catch-all, the dedicated path would silently
             # keep charging session-start-gate queue time to the startup
             # watchdog, which is the exact defect the callback exists to end.
-            on_gate_acquired: Callable[[float], None] | None = None,
-            on_gate_queued: Callable[[], None] | None = None,
+            on_gate_acquired: Callable[..., None] | None = None,
+            on_gate_queued: Callable[..., None] | None = None,
             **_kwargs: object,
         ) -> AcpProvider:
             wdir = Path(cwd) if cwd else _session_work_dir(session_key)

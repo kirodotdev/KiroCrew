@@ -369,4 +369,6 @@ class FeishuTransport(MessagingTransport):
                     self._seen.popitem(last=False)
 
         if self._dispatch is not None:
+            # Received from a person: its start is FOREGROUND (kiro_crew.start_priority).
+            inbound.person_origin = True
             await self._dispatch(inbound)

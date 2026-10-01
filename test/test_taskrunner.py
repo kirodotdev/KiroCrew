@@ -70,7 +70,7 @@ def _make_mock_sessions() -> MagicMock:
     sessions.close_all = AsyncMock()
 
     async def _open_task_session(
-        _parent_key, session_key, *, agent=None, cwd=None, approval_policy=""
+        _parent_key, session_key, *, agent=None, cwd=None, approval_policy="", start_priority=None
     ):
         # Fake: the run-scoped shared runtime is mocked away; forward to whatever
         # get_or_create is set to (preserves per-step key/call assertions).

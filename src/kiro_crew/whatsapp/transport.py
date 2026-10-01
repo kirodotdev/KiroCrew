@@ -662,6 +662,8 @@ class WhatsAppTransport(MessagingTransport):
         self.pending_operator[id(msg)] = sender_is_operator
         self.pending_message_id[id(msg)] = message_id
         try:
+            # Received from a person: its start is FOREGROUND (kiro_crew.start_priority).
+            msg.person_origin = True
             await self._dispatch(msg)
         finally:
             # The shared ingest hands path ownership to the caller.

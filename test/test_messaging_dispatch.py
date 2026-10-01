@@ -635,7 +635,7 @@ class _RetrySessions(_Sessions):
         self.gap_open = False
         self.gap_events: list[str] = []
 
-    async def get_or_create(self, key, agent=None, channel_id=None):
+    async def get_or_create(self, key, agent=None, channel_id=None, start_priority=None):
         self.acquired += 1
         # The conversation exists (first acquire: not new); a reacquire after a
         # reset cold-starts a runtime and reports ``is_new=True``, exactly what

@@ -278,6 +278,10 @@ class InboundMessage:
     thread_id: str | None = None
     attachments: list[Any] = field(default_factory=list)
     is_mention: bool = False
+    # Set by a transport's ``receive`` on a message a person sent; a message the
+    # gateway built itself (a nudge or monitor wake) leaves it False. The channel
+    # dispatchers start a person's turn FOREGROUND from it (kiro_crew.start_priority).
+    person_origin: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {

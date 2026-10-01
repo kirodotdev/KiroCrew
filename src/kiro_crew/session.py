@@ -249,6 +249,7 @@ from kiro_crew.session_pid import (
 from kiro_crew.session_pool import WarmPoolDeps, WarmSessionPool
 from kiro_crew.session_scope_reap import reap_abandoned_agent_scopes
 from kiro_crew.shell_audit_log import rotate_shell_audit_log
+from kiro_crew.start_priority import PrioritySemaphore, StartPriority
 from kiro_crew.stats import Stats
 from kiro_crew.watchdog import CleanupHook, SessionWatchdog
 
@@ -571,11 +572,6 @@ _STATELESS_PREFIXES = (
 # agent without forcing other background callers (chat-title, consolidator,
 # taskkeeper) to load the same MCP servers.
 BACKGROUND_KEY = "_bg"
-# Concurrent cold starts allowed by ``_start_sem``. Named rather than inline so the
-# identity sweep can ask how many starts are in flight (see
-# ``_cold_starts_in_flight``): a provider inside ``start()`` has not published a PID
-# yet, so the semaphore is the only evidence it exists.
-_MAX_CONCURRENT_COLD_STARTS = 4
 # Kiro agent the background session runs as. Named once because it is needed in
 # TWO places — the provider factory call AND the ``_Session`` record — and when
 # only the factory got it, ``_Session.agent`` stayed at its "" default, so every
@@ -1232,7 +1228,6 @@ class SessionManager:
 
     def _allocation_deps(self) -> AllocationDeps:
         constants = AllocationConstants(
-            max_concurrent_cold_starts=_MAX_CONCURRENT_COLD_STARTS,
             won_race_max_retries=_WON_RACE_MAX_RETRIES,
             circuit_breaker_threshold=_CIRCUIT_BREAKER_THRESHOLD,
             agent_model_cache_ttl=lambda: _AGENT_MODEL_CACHE_TTL,
@@ -1330,7 +1325,6 @@ class SessionManager:
             default_project_dir=lambda: default_project_dir(),
             constants=lambda: SessionLifecycleConstants(
                 max_pool=_MAX_POOL,
-                max_concurrent_cold_starts=_MAX_CONCURRENT_COLD_STARTS,
                 background_key=BACKGROUND_KEY,
                 stateless_prefixes=_STATELESS_PREFIXES,
                 close_all_concurrency=_CLOSE_ALL_CONCURRENCY,
@@ -1646,11 +1640,13 @@ class SessionManager:
         self._registry_state().update_restart_fenced = value
 
     @property
-    def _start_sem(self) -> asyncio.Semaphore:
+    def _start_sem(self) -> PrioritySemaphore:
         return self._registry_state().start_sem
 
     @_start_sem.setter
-    def _start_sem(self, value: asyncio.Semaphore) -> None:
+    def _start_sem(self, value: PrioritySemaphore) -> None:
+        if not isinstance(value, PrioritySemaphore):
+            raise TypeError("_start_sem must be a PrioritySemaphore")
         self._registry_state().start_sem = value
 
     @property
@@ -1951,9 +1947,7 @@ class SessionManager:
         # Installed by the gateway once it owns this manager (set_injection_probe);
         # None means "no gateway, so no completion injection can be in flight".
         self._injection_probe: "Callable[[str], bool] | None" = None
-        self._allocation_state = SessionRegistryState(
-            start_sem=asyncio.Semaphore(_MAX_CONCURRENT_COLD_STARTS)
-        )
+        self._allocation_state = SessionRegistryState()
         self._allocation_boundary()
         self._lifecycle_state = SessionLifecycleState()
         self._compaction_state = CompactionState()
@@ -2193,9 +2187,11 @@ class SessionManager:
         """Delegate background and warm-pool startup."""
         await self._pool.start_pool(blocking=blocking)
 
-    async def _ensure_background(self) -> None:
+    async def _ensure_background(
+        self, *, start_priority: StartPriority = StartPriority.BACKGROUND
+    ) -> None:
         """Delegate creation of the persistent background session."""
-        await self._background_runtime._ensure_background()
+        await self._background_runtime._ensure_background(start_priority=start_priority)
 
     # ── Warm Pool ──
 
@@ -2239,26 +2235,44 @@ class SessionManager:
         """Delegate the periodic idle-and-stale retirement of the shared runtime."""
         return await self._background_runtime.reap_idle_stale_bg_runtime()
 
-    async def _provider_backed_bg_session(self) -> "_ProviderBgSession":
+    async def _provider_backed_bg_session(
+        self, start_priority: StartPriority = StartPriority.BACKGROUND
+    ) -> "_ProviderBgSession":
         """Return the serialized provider-backed background adapter."""
         return cast(
             "_ProviderBgSession",
-            await self._background_runtime._provider_backed_bg_session(),
+            await self._background_runtime._provider_backed_bg_session(start_priority),
         )
 
-    async def get_bg_session(self) -> "AcpSessionHandle | _ProviderBgSession":
-        """Acquire a background handle from the configured runtime shape."""
+    async def get_bg_session(
+        self, start_priority: StartPriority = StartPriority.BACKGROUND
+    ) -> "AcpSessionHandle | _ProviderBgSession":
+        """Acquire a background handle from the configured runtime shape.
+
+        ``start_priority`` orders its ``session/new`` (rule: ``kiro_crew.start_priority``).
+        """
         return cast(
             "AcpSessionHandle | _ProviderBgSession",
-            await self._background_runtime.get_bg_session(),
+            await self._background_runtime.get_bg_session(start_priority),
         )
 
     async def get_subagent_runtime(
-        self, parent_session_key: str, agent: str | None = None
+        self,
+        parent_session_key: str,
+        agent: str | None = None,
+        *,
+        start_priority: StartPriority = StartPriority.BACKGROUND,
+        on_gate_queued: Callable[..., None] | None = None,
+        on_gate_acquired: Callable[..., None] | None = None,
     ) -> "AcpRuntime":
-        """Get or spawn the shared companion runtime for a parent."""
+        """Get or spawn the shared companion runtime for a parent (the priority
+        and clock callbacks: the allocation boundary's ``get_subagent_runtime``)."""
         return await self._allocation_boundary().get_subagent_runtime(
-            parent_session_key, agent=agent
+            parent_session_key,
+            agent=agent,
+            start_priority=start_priority,
+            on_gate_queued=on_gate_queued,
+            on_gate_acquired=on_gate_acquired,
         )
 
     async def release_subagent_runtime(
@@ -2274,11 +2288,16 @@ class SessionManager:
         )
 
     async def _get_or_bootstrap_run_runtime(
-        self, parent_session_key: str, *, agent: str | None = None, cwd: str | None = None
+        self,
+        parent_session_key: str,
+        *,
+        agent: str | None = None,
+        cwd: str | None = None,
+        start_priority: StartPriority = StartPriority.BACKGROUND,
     ) -> "AcpRuntime":
         """Get or bootstrap a task-runner shared runtime."""
         return await self._allocation_boundary()._get_or_bootstrap_run_runtime(
-            parent_session_key, agent=agent, cwd=cwd
+            parent_session_key, agent=agent, cwd=cwd, start_priority=start_priority
         )
 
     async def _reacquire_and_validate(
@@ -2310,8 +2329,10 @@ class SessionManager:
         cwd: str | None = None,
         approval_policy: str = "",
         _won_race_retries: int = 0,
+        start_priority: StartPriority = StartPriority.BACKGROUND,
     ) -> tuple[LLMProvider, bool, bool]:
-        """Open a task session on its run-scoped shared runtime."""
+        """Open a task session on its run-scoped shared runtime (``start_priority``:
+        rule ``kiro_crew.start_priority``)."""
         return await self._allocation_boundary().open_task_session(
             parent_session_key,
             session_key,
@@ -2319,6 +2340,7 @@ class SessionManager:
             cwd=cwd,
             approval_policy=approval_policy,
             _won_race_retries=_won_race_retries,
+            start_priority=start_priority,
         )
 
     def _get_session_agent(self, session_key: str) -> str:
@@ -2537,9 +2559,14 @@ class SessionManager:
         speculative_resume: bool = False,
         wait_if_busy: bool = True,
         _won_race_retries: int = 0,
+        start_priority: StartPriority = StartPriority.BACKGROUND,
         **extra_factory_kwargs: Any,
     ) -> tuple[LLMProvider, bool, bool]:
-        """Claim or allocate a session and return its held lease."""
+        """Claim or allocate a session and return its held lease.
+
+        ``start_priority`` orders a cold start in the start queues; a caller passes
+        FOREGROUND only where a person waits on it (rule: ``kiro_crew.start_priority``).
+        """
         return await self._allocation_boundary().get_or_create(
             key,
             agent=agent,
@@ -2552,6 +2579,7 @@ class SessionManager:
             speculative_resume=speculative_resume,
             wait_if_busy=wait_if_busy,
             _won_race_retries=_won_race_retries,
+            start_priority=start_priority,
             **extra_factory_kwargs,
         )
 

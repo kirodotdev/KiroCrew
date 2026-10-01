@@ -103,6 +103,10 @@ async def run_oneshot_translation(sessions: Any, prompt: str) -> str:
 
     It reuses the user's own Kiro Crew backend, so live translation needs no
     separate API key or cloud account.
+
+    BACKGROUND, like any start no caller claims: the live stream runs unattended,
+    one start per line, whether or not anyone has the panel open (rule:
+    ``kiro_crew.start_priority``).
     """
     from kiro_crew.llm_helpers import ToolApprovalPolicy, stream_and_collect
 

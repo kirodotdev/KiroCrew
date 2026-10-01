@@ -168,6 +168,7 @@ from kiro_crew.browser_cli.launch import browser_session_env, browser_socket_env
 from kiro_crew.config import live
 from kiro_crew.config.paths import data_home, kiro_agents_dir
 from kiro_crew.constants import (
+    INITIALIZE_TIMEOUT_SECS,
     KIROCREW_SPAWN_HOME_ENV,
     KIROCREW_SPAWN_INSTANCE_ENV,
     KIROCREW_SPAWNED_ENV,
@@ -229,6 +230,12 @@ from kiro_crew.session_pid import (
     unregister_protected_pid,
 )
 from kiro_crew.session_token_sig import publish_session_token
+from kiro_crew.start_priority import (
+    START_QUEUE_ADMISSION,
+    START_QUEUE_SESSION_NEW,
+    StartPriority,
+    notify_start_queue,
+)
 from kiro_crew.validation import MAX_ACP_SESSION_ID_LEN, MODEL_ID_RE
 
 logger = logging.getLogger(__name__)
@@ -462,7 +469,7 @@ _MCP_URL_NOT_OPENED = -32000
 # The budget therefore has to expire first, with room for the spawn that
 # precedes the handshake, so ``AcpRuntimeOverloaded`` is what the caller sees
 # rather than a reaper kill. ``test_agents_slice_admission`` pins the ordering.
-_INITIALIZE_TIMEOUT = 90.0
+_INITIALIZE_TIMEOUT = INITIALIZE_TIMEOUT_SECS
 
 
 class _PendingRequests(dict):
@@ -1858,24 +1865,42 @@ class AcpRuntime:
                 "and retry."
             ) from exc
 
-    async def spawn(self) -> None:
-        """Start the ACP runtime behind the gateway-wide cold-start admission gate."""
+    async def spawn(
+        self,
+        *,
+        start_priority: StartPriority = StartPriority.BACKGROUND,
+        on_gate_queued: Callable[..., None] | None = None,
+        on_gate_acquired: Callable[..., None] | None = None,
+    ) -> None:
+        """Start the ACP runtime behind the gateway-wide cold-start admission gate.
+
+        ``start_priority`` orders this spawn in the admission queue (rule:
+        ``kiro_crew.start_priority``). ``on_gate_queued(queue)`` /
+        ``on_gate_acquired(queue_wait_ms, queue)`` bracket the admission wait, with
+        ``queue`` = :data:`START_QUEUE_ADMISSION`, as they bracket the
+        ``session/new`` gate in :meth:`create_session`.
+        """
         if self._process is not None:
             raise AcpRuntimeError("Runtime already spawned")
         self._process_tree_confirmed_dead = False
 
         admission = runtime_start._cold_start_admission()
-        wait_ms = await admission.acquire()
-        logger.info(
-            "acp_cold_start stage=queue_wait outcome=admitted wait_ms=%.1f "
-            "active_starts=%d queued_starts=%d",
-            wait_ms,
-            admission.active,
-            admission.queued,
-        )
+        notify_start_queue(logger, on_gate_queued, START_QUEUE_ADMISSION)
+        wait_ms = await admission.acquire(start_priority)
         started = time.monotonic()
         outcome = "error"
         try:
+            # Inside the try: the permit is released below whatever the callback does.
+            notify_start_queue(logger, on_gate_acquired, wait_ms, START_QUEUE_ADMISSION)
+            logger.info(
+                "acp_cold_start stage=queue_wait outcome=admitted priority=%s wait_ms=%.1f "
+                "active_starts=%d queued_starts=%d %s",
+                start_priority.value,
+                wait_ms,
+                admission.active,
+                admission.queued,
+                admission.semaphore.describe(),
+            )
             await self._spawn_admitted_rederiving_once()
             outcome = "ready"
         except asyncio.CancelledError:
@@ -1899,7 +1924,7 @@ class AcpRuntime:
                 admission.queued,
                 process_state,
             )
-            admission.release()
+            admission.release(start_priority)
 
     async def _spawn_admitted_rederiving_once(self) -> None:
         """``_spawn_admitted``, retried ONCE when the post-handshake bracket fires.
@@ -6689,9 +6714,10 @@ class AcpRuntime:
         session_key: str = "",
         channel_id: str = "",
         memory_mode: str = "persistent",
-        on_gate_acquired: Callable[[float], None] | None = None,
+        on_gate_acquired: Callable[..., None] | None = None,
         late_adopter: "Callable[[AcpSessionHandle], Awaitable[bool]] | None" = None,
-        on_gate_queued: Callable[[], None] | None = None,
+        on_gate_queued: Callable[..., None] | None = None,
+        start_priority: StartPriority = StartPriority.BACKGROUND,
     ) -> AcpSessionHandle:
         """Create a new ACP session on this runtime. Returns a session handle.
 
@@ -6717,11 +6743,13 @@ class AcpRuntime:
         element. Empty — and unread — for a host with no mirror.
 
         ``session/new`` runs under the loop's :class:`SessionStartGate`
-        (``agent.session_start_concurrency``). ``on_gate_queued()`` fires
+        (``agent.session_start_concurrency``). ``on_gate_queued(queue)`` fires
         immediately before the wait for a permit begins and
-        ``on_gate_acquired(queue_wait_ms)`` at gate EXIT, so the caller can
-        stop its own clocks for exactly the span spent queued and restart them
-        at acquisition: the queue wait is not start time. On a ``session/new`` timeout the request
+        ``on_gate_acquired(queue_wait_ms, queue)`` at gate EXIT, so the caller can
+        PAUSE its own clock for exactly the span spent queued and resume it at
+        acquisition: the queue wait is not start time. ``start_priority``
+        orders this start in the gate's queue (rule: ``kiro_crew.start_priority``);
+        the callbacks receive ``queue`` = :data:`START_QUEUE_SESSION_NEW`. On a ``session/new`` timeout the request
         is NOT abandoned: a :class:`StartCollector` keeps it for
         ``agent.start_collect_timeout_secs`` and either hands the late session
         to ``late_adopter`` (which returns True to keep it) or tears it down;
@@ -6929,17 +6957,15 @@ class AcpRuntime:
             # gate protects), on a timeout by the collector that now owns the
             # request, on any other failure here.
             gate = await runtime_start.session_start_gate()
-            if on_gate_queued is not None:
-                try:
-                    on_gate_queued()
-                except Exception:
-                    logger.debug("on_gate_queued callback raised", exc_info=True)
-            permit = await gate.acquire()
-            if on_gate_acquired is not None:
-                try:
-                    on_gate_acquired(permit.queue_wait_ms)
-                except Exception:
-                    logger.debug("on_gate_acquired callback raised", exc_info=True)
+            notify_start_queue(logger, on_gate_queued, START_QUEUE_SESSION_NEW)
+            permit = await gate.acquire(start_priority)
+            try:
+                notify_start_queue(
+                    logger, on_gate_acquired, permit.queue_wait_ms, START_QUEUE_SESSION_NEW
+                )
+            except BaseException:
+                permit.release()
+                raise
         except BaseException:
             self._finish_session_init("")
             raise
@@ -7134,10 +7160,12 @@ class AcpRuntime:
         self._start_collectors[int(req_id)] = collector
         logger.warning(
             "acp_startup_stage stage=session_new outcome=collecting req_id=%d "
-            "collect_budget_s=%g gate_active=%d gate_queued=%d",
+            "collect_budget_s=%g priority=%s gate_active=%d gate_queued=%d %s",
             int(req_id),
             timeout,
+            permit.priority.value,
             *session_start_gate_counts(),
+            permit.gate_state(),
         )
         return collector.start()
 

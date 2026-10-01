@@ -343,7 +343,8 @@ BASE_MEMBERS = {
         "function",
         "(self, session_key: 'str', chat_id: 'int', text: 'str', *, "
         "thread: 'int | None' = None, attachments: 'list[Any] | None' = None, "
-        "privacy_request: 'str' = '', origin: '_QueuedOrigin') -> 'bool'",
+        "privacy_request: 'str' = '', origin: '_QueuedOrigin', "
+        "person_origin: 'bool' = False) -> 'bool'",
     ),
     "_handle_agent": (
         "function",

@@ -229,6 +229,9 @@ class WebexInbound:
     #: Card-action inputs, when this envelope came from an Adaptive Card submit
     #: rather than a typed message. Empty for an ordinary message.
     card_inputs: Mapping[str, Any] | None = None
+    #: Set by the transport's ``receive`` on a message a person sent, so its turn
+    #: starts FOREGROUND (kiro_crew.start_priority); False on anything built elsewhere.
+    person_origin: bool = False
 
 
 def hydra_id(raw_id: str, resource_type: str = "MESSAGE", cluster: str = _DEFAULT_CLUSTER) -> str:

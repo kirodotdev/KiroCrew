@@ -256,7 +256,7 @@ class TaskRunner:
     # task_executor.execute_task()/self_review(), task_reporter.build_status()
 
     def attach_workflow_service(self, service: WorkflowRunPublisher | None) -> None
-    async def plan(self, input_text: str = "", source: str = "text", spec_path: str = "", agent: str = "", workspace_dir: str = "", workflow_name: str = "", workflow_id: str = "", workflow_slug: str = "", workflow_revision: int = 0, workflow_source: str = "", session_key: str = "", execution_context: ExecutionContext | None = None) -> Project
+    async def plan(self, input_text: str = "", source: str = "text", spec_path: str = "", agent: str = "", workspace_dir: str = "", workflow_name: str = "", workflow_id: str = "", workflow_slug: str = "", workflow_revision: int = 0, workflow_source: str = "", session_key: str = "", execution_context: ExecutionContext | None = None, start_priority: StartPriority = BACKGROUND) -> Project
     async def run(self, spec_path: str | Path, task_id: str = "", name: str = "", source: str = "", workspace_dir: str = "", auto_approve: bool = False, input_content: str | None = None) -> Project
     async def start_background(self, spec_path: str | Path, agent: str = "", name: str = "", source: str = "", workspace_dir: str = "", auto_approve: bool = False, *, session_key: str = "", execution_context: ExecutionContext | None = None, input_content: str | None = None) -> str
     def cancel(self, task_id: str | None = None, *, exact: bool = False) -> None  # None = cancel all

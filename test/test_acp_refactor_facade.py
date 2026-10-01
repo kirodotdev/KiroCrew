@@ -51,6 +51,7 @@ from kiro_crew.acp import (
     transport_framing,
 )
 from kiro_crew.credential_errors import is_credential_propagation_delay
+from kiro_crew.start_priority import StartPriority
 
 # The patch-target scan parses every test file once; keep it on one worker.
 pytestmark = pytest.mark.xdist_group(name="tree_scan_acp_refactor_facade")
@@ -667,8 +668,8 @@ async def test_a_clock_rebound_on_the_runtime_reaches_the_cold_start_admission(
 ) -> None:
     monkeypatch.setattr(acp_runtime, "time", _Clock(10.0, 10.25))
     admission = runtime_start._ColdStartAdmission(1)
-    assert await admission.acquire() == 250.0
-    admission.release()
+    assert await admission.acquire(StartPriority.BACKGROUND) == 250.0
+    admission.release(StartPriority.BACKGROUND)
 
 
 @pytest.mark.asyncio

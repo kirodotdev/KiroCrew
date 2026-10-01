@@ -49,6 +49,7 @@ from dashboard_owner_helpers import NoConfiguredOwner
 from kiro_crew import llm_helpers
 from kiro_crew.apps.builtins.issue_radar.backend import github_client as gh
 from kiro_crew.apps.builtins.issue_radar.backend import provider, routes, store
+from kiro_crew.start_priority import StartPriority
 
 BASE = "/api/apps/issue-radar"
 
@@ -193,9 +194,32 @@ class TestRunOneshotModel(unittest.IsolatedAsyncioTestCase):
         # Tool-less by construction: the ephemeral session may not run anything.
         _, kwargs = stream.call_args
         self.assertEqual(kwargs["approval_policy"], llm_helpers.ToolApprovalPolicy.REJECT_ALL)
-        state.sessions.get_or_create.assert_awaited_once_with("k1", agent="kirocrew-lite")
+        state.sessions.get_or_create.assert_awaited_once_with(
+            "k1", agent="kirocrew-lite", start_priority=StartPriority.BACKGROUND
+        )
         state.sessions.release.assert_called_once_with("k1")
         state.sessions.destroy.assert_awaited_once_with("k1")
+
+    async def test_the_start_priority_is_read_from_who_asked(self):
+        """Only the dashboard owner's own click claims FOREGROUND (and with it the
+        person-only cold-start reserve); an app token or an internal caller with no
+        user is BACKGROUND, like every other dashboard claimer."""
+        for user, app_token, expected in (
+            ("local-app", "", StartPriority.FOREGROUND),
+            ("local-app", "some-third-party-app", StartPriority.BACKGROUND),
+            ("", "", StartPriority.BACKGROUND),
+        ):
+            with self.subTest(user=user, app=app_token):
+                state = _sessions()
+                state.owner_id = ""
+                request = _get("issue-ai", state=state)
+                request["user"] = user
+                request["app"] = app_token
+                with _stream("hello"):
+                    await routes._run_oneshot_model(request, "k1", "prompt")
+                self.assertIs(
+                    state.sessions.get_or_create.await_args.kwargs["start_priority"], expected
+                )
 
     async def test_a_missing_session_manager_is_a_runtime_error(self):
         request = _get("issue-ai")

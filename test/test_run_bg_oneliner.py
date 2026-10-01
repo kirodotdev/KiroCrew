@@ -62,7 +62,7 @@ class _FakeSessions:
     def __init__(self, session):
         self._session = session
 
-    async def get_bg_session(self):
+    async def get_bg_session(self, start_priority=None):
         return self._session
 
 

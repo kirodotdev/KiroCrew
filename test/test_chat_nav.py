@@ -68,7 +68,7 @@ class TestResolveLinkSummaries:
                 pass
 
         class FakeSessions:
-            async def get_bg_session(self):
+            async def get_bg_session(self, start_priority=None):
                 return FakeClient()
 
         class FakeState:
@@ -102,7 +102,7 @@ class TestResolveLinkSummaries:
                 pass
 
         class FakeSessions:
-            async def get_bg_session(self):
+            async def get_bg_session(self, start_priority=None):
                 return FakeClient()
 
         class FakeState:
@@ -136,7 +136,7 @@ class TestResolveLinkSummaries:
                 pass
 
         class FakeSessions:
-            async def get_bg_session(self):
+            async def get_bg_session(self, start_priority=None):
                 return FakeClient()
 
         class FakeState:

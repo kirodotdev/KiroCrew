@@ -14,7 +14,7 @@ import contextlib
 import logging
 import threading
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import AsyncIterator, Callable, Sequence
 from concurrent.futures import Executor
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -35,6 +35,14 @@ from kiro_crew.runtime_ownership import (
     release_session_lease,
 )
 from kiro_crew.session_lifecycle import adopt_parked_queue
+from kiro_crew.start_priority import (
+    START_QUEUE_COLD_START,
+    START_QUEUE_COMPANION,
+    START_QUEUE_LOG_MIN_MS,
+    PrioritySemaphore,
+    StartPriority,
+    notify_start_queue,
+)
 from kiro_crew.validation import bounded_session_id
 
 if TYPE_CHECKING:
@@ -105,7 +113,6 @@ class SpeculativeResumeRefused(RuntimeError):
 class AllocationConstants:
     """Behavioral constants supplied by the facade's patchable namespace."""
 
-    max_concurrent_cold_starts: int
     won_race_max_retries: int
     circuit_breaker_threshold: int
     agent_model_cache_ttl: Callable[[], float]
@@ -180,6 +187,30 @@ class AllocationDeps:
     agent_model_cache: Callable[[], dict[str, tuple[str, float, float]]]
 
 
+# Concurrent cold starts ``SessionManager._start_sem`` allows background starts. A
+# provider inside ``start()`` has not published a PID yet, so the semaphore is the
+# only evidence it exists, which is why the identity sweep drains it
+# (``PrioritySemaphore.drain``) as its barrier.
+MAX_CONCURRENT_COLD_STARTS = 4
+# Cold-start permits on top of those that only a FOREGROUND start may hold (rule:
+# ``kiro_crew.start_priority``). ``_start_sem`` is held across the provider's own
+# spawn admission and ``session/new`` waits, so ordering alone cannot help a person
+# when every permit belongs to a background start stuck behind a fan-out further
+# in. With this reserve the first concurrent person start always gets an outer
+# permit at once and then goes ahead at the inner queues; further concurrent person
+# starts are served ahead of background ones as permits free. Additive, so
+# background keeps the full width while no person is starting.
+FOREGROUND_COLD_START_RESERVE = 1
+
+
+def new_cold_start_semaphore() -> PrioritySemaphore:
+    """``SessionManager._start_sem``: the background width plus the person reserve."""
+    return PrioritySemaphore(
+        MAX_CONCURRENT_COLD_STARTS + FOREGROUND_COLD_START_RESERVE,
+        foreground_reserve=FOREGROUND_COLD_START_RESERVE,
+    )
+
+
 @dataclass(slots=True)
 class SessionRegistryState:
     """Mutable state exclusively owned by the allocation boundary."""
@@ -189,7 +220,7 @@ class SessionRegistryState:
     closing: bool = False
     update_pause_owned: bool = False
     update_restart_fenced: bool = False
-    start_sem: asyncio.Semaphore = field(default_factory=lambda: asyncio.Semaphore(4))
+    start_sem: PrioritySemaphore = field(default_factory=new_cold_start_semaphore)
     #: COUNTED, not listed: two starts can legitimately shield one pid (the
     #: allocator carries a race budget for starting one session twice), and as a
     #: plain set the first to finish tore the shield off a process the other was
@@ -290,7 +321,13 @@ class _AllocationOwner(Protocol):
     def get_provider(self, key: str) -> LLMProvider | None: ...
 
     async def get_subagent_runtime(
-        self, parent_session_key: str, agent: str | None = None
+        self,
+        parent_session_key: str,
+        agent: str | None = None,
+        *,
+        start_priority: StartPriority = StartPriority.BACKGROUND,
+        on_gate_queued: Callable[..., None] | None = None,
+        on_gate_acquired: Callable[..., None] | None = None,
     ) -> Any: ...
 
     async def _get_or_bootstrap_run_runtime(
@@ -299,6 +336,7 @@ class _AllocationOwner(Protocol):
         *,
         agent: str | None = None,
         cwd: str | None = None,
+        start_priority: StartPriority = StartPriority.BACKGROUND,
     ) -> Any: ...
 
     async def _reacquire_and_validate(
@@ -444,11 +482,11 @@ class SessionAllocationService:
         self.state.closing = value
 
     @property
-    def _start_sem(self) -> asyncio.Semaphore:
+    def _start_sem(self) -> PrioritySemaphore:
         return self.state.start_sem
 
     @_start_sem.setter
-    def _start_sem(self, value: asyncio.Semaphore) -> None:
+    def _start_sem(self, value: PrioritySemaphore) -> None:
         self.state.start_sem = value
 
     @property
@@ -788,15 +826,50 @@ class SessionAllocationService:
         except AttributeError:
             return None
 
-    async def get_subagent_runtime(self, parent_session_key: str, agent: str | None = None) -> Any:
-        """Get or spawn the canonical shared companion runtime for a parent."""
+    async def get_subagent_runtime(
+        self,
+        parent_session_key: str,
+        agent: str | None = None,
+        *,
+        start_priority: StartPriority = StartPriority.BACKGROUND,
+        on_gate_queued: Callable[..., None] | None = None,
+        on_gate_acquired: Callable[..., None] | None = None,
+    ) -> Any:
+        """Get or spawn the canonical shared companion runtime for a parent.
+
+        ``start_priority`` orders the runtime's own cold start at the spawn
+        admission; a task run a person opened passes FOREGROUND through
+        ``_get_or_bootstrap_run_runtime``.
+
+        ``on_gate_queued(queue)`` / ``on_gate_acquired(queue_wait_ms, queue)`` are a
+        waiting start's clock callbacks. They bracket the two WAITS only: the
+        per-parent lock (``queue`` = :data:`START_QUEUE_COMPANION`), behind a sibling
+        that is spawning the runtime, and this caller's own spawn admission, which
+        the spawn brackets itself. The caller's own spawn work is not bracketed, so
+        a spawn that hangs stays on the caller's running clock.
+        """
         runtime_type, runtime_dead = self._deps.runtime_types()
         max_retries = 1
         attempt = 0
         selected_agent = agent
+        spawn_kwargs: dict[str, Any] = {"start_priority": start_priority}
+        if on_gate_queued is not None or on_gate_acquired is not None:
+            spawn_kwargs["on_gate_queued"] = on_gate_queued
+            spawn_kwargs["on_gate_acquired"] = on_gate_acquired
         while True:
             lock = self._subagent_runtime_locks.setdefault(parent_session_key, asyncio.Lock())
-            async with lock:
+            notify_start_queue(self._deps.logger, on_gate_queued, START_QUEUE_COMPANION)
+            waited_from = time.monotonic()
+            try:
+                await lock.acquire()
+            finally:
+                notify_start_queue(
+                    self._deps.logger,
+                    on_gate_acquired,
+                    (time.monotonic() - waited_from) * 1000.0,
+                    START_QUEUE_COMPANION,
+                )
+            try:
                 if self._subagent_runtime_locks.get(parent_session_key) is not lock:
                     # release_subagent_runtime removed the lock while we waited;
                     # retry under the newly-canonical lock without spending a
@@ -833,7 +906,7 @@ class SessionAllocationService:
                     getattr(self._owner, "spawn_identity_reader", None)
                 )
                 try:
-                    await runtime.spawn()
+                    await runtime.spawn(**spawn_kwargs)
                 except runtime_dead:
                     if attempt >= max_retries:
                         raise
@@ -874,6 +947,8 @@ class SessionAllocationService:
                     if starting_pid is not None:
                         self._starting_pids.discard(starting_pid)
                 return runtime
+            finally:
+                lock.release()
 
     async def release_subagent_runtime(
         self, parent_session_key: str, *, expected: Any = None
@@ -925,13 +1000,16 @@ class SessionAllocationService:
         *,
         agent: str | None = None,
         cwd: str | None = None,
+        start_priority: StartPriority = StartPriority.BACKGROUND,
     ) -> Any:
         """Adopt a configured bootstrap provider's runtime for a task run."""
         owner = self._owner
         if not owner._provider_factory:
             # Outside the per-key lock: get_subagent_runtime takes that lock and
             # asyncio.Lock is not reentrant.
-            return await owner.get_subagent_runtime(parent_session_key, agent=agent)
+            return await owner.get_subagent_runtime(
+                parent_session_key, agent=agent, start_priority=start_priority
+            )
 
         if parent_session_key not in self._subagent_runtime_locks:
             self._subagent_runtime_locks[parent_session_key] = asyncio.Lock()
@@ -969,6 +1047,7 @@ class SessionAllocationService:
                         "not starting a replacement beside it"
                     )
             provider = owner._provider_factory(parent_session_key, agent=agent, cwd=cwd)
+            provider.start_priority = start_priority
             pre_spawn = await pre_spawn_identity(getattr(owner, "spawn_identity_reader", None))
             await provider.start()
             # The stamp read below suspends before this provider's runtime is
@@ -1040,7 +1119,9 @@ class SessionAllocationService:
             finally:
                 if starting_pid is not None:
                     self._starting_pids.discard(starting_pid)
-        return await owner.get_subagent_runtime(parent_session_key, agent=agent)
+        return await owner.get_subagent_runtime(
+            parent_session_key, agent=agent, start_priority=start_priority
+        )
 
     async def _reacquire_and_validate(
         self,
@@ -1117,6 +1198,7 @@ class SessionAllocationService:
         cwd: str | None = None,
         approval_policy: str = "",
         _won_race_retries: int = 0,
+        start_priority: StartPriority = StartPriority.BACKGROUND,
     ) -> tuple[LLMProvider, bool, bool]:
         """Open a per-step session on the task run's shared runtime.
 
@@ -1136,7 +1218,11 @@ class SessionAllocationService:
             # A restricted task starts a fresh native conversation whose
             # retention policy is fixed before launch; do not borrow a parent.
             return await owner.get_or_create(
-                key, agent=agent, approval_policy=approval_policy, cwd=cwd
+                key,
+                agent=agent,
+                approval_policy=approval_policy,
+                cwd=cwd,
+                start_priority=start_priority,
             )
         if not owner._bg_backend_supports_runtime():
             # Dispatch on the SAME membership rule ``get_bg_session`` uses: only
@@ -1149,7 +1235,11 @@ class SessionAllocationService:
             # those to the dedicated per-session path instead, exactly as
             # ``get_bg_session`` serves them a provider-backed session.
             return await owner.get_or_create(
-                key, agent=agent, approval_policy=approval_policy, cwd=cwd
+                key,
+                agent=agent,
+                approval_policy=approval_policy,
+                cwd=cwd,
+                start_priority=start_priority,
             )
         async with self._lock:
             # The other publication door: a key whose run is being ended
@@ -1177,10 +1267,14 @@ class SessionAllocationService:
         prepared = await asyncio.to_thread(prepare_runtime, agent, None, cwd)
         if prepared.revision:
             return await owner.get_or_create(
-                key, agent=agent, approval_policy=approval_policy, cwd=cwd
+                key,
+                agent=agent,
+                approval_policy=approval_policy,
+                cwd=cwd,
+                start_priority=start_priority,
             )
         runtime = await owner._get_or_bootstrap_run_runtime(
-            parent_session_key, agent=agent, cwd=cwd
+            parent_session_key, agent=agent, cwd=cwd, start_priority=start_priority
         )
         try:
             handle = await runtime.create_session(
@@ -1192,6 +1286,7 @@ class SessionAllocationService:
                 # resolved to the run's parent session.
                 session_key=key,
                 memory_mode=execution.memory_mode if execution is not None else "persistent",
+                start_priority=start_priority,
             )
         except AcpWorkspaceBindingError:
             return await owner.get_or_create(
@@ -1199,6 +1294,7 @@ class SessionAllocationService:
                 agent=agent,
                 approval_policy=approval_policy,
                 cwd=cwd,
+                start_priority=start_priority,
             )
         provider = self._deps.session_provider_type()(handle, runtime)
         setattr(
@@ -1273,6 +1369,7 @@ class SessionAllocationService:
                 cwd=cwd,
                 approval_policy=approval_policy,
                 _won_race_retries=_won_race_retries + 1,
+                start_priority=start_priority,
             )
         assert won_race_session is session
         await session.semaphore.acquire()
@@ -1890,6 +1987,38 @@ class SessionAllocationService:
         if cancellation is not None:
             raise cancellation
 
+    @contextlib.asynccontextmanager
+    async def _held_start_permit(
+        self,
+        key: str,
+        priority: StartPriority,
+        *,
+        on_queued: Callable[..., None] | None,
+        on_acquired: Callable[..., None] | None,
+    ) -> AsyncIterator[None]:
+        """Hold a ``_start_sem`` permit at *priority* for one cold start.
+
+        ``on_queued`` / ``on_acquired`` are a subagent run's start-clock callbacks
+        (``on_gate_queued`` / ``on_gate_acquired``), fired with
+        :data:`START_QUEUE_COLD_START` so its watchdog clock pauses while it waits
+        here, as it does at the provider's admission and ``session/new`` queues.
+        """
+        sem = self._start_sem
+        notify_start_queue(self._deps.logger, on_queued, START_QUEUE_COLD_START)
+        started = time.monotonic()
+        async with sem.held(priority):
+            wait_ms = (time.monotonic() - started) * 1000.0
+            notify_start_queue(self._deps.logger, on_acquired, wait_ms, START_QUEUE_COLD_START)
+            if wait_ms >= START_QUEUE_LOG_MIN_MS:
+                self._deps.logger.info(
+                    "session_cold_start stage=queue_wait priority=%s wait_ms=%.1f key=%s %s",
+                    priority.value,
+                    wait_ms,
+                    key,
+                    sem.describe(),
+                )
+            yield
+
     async def get_or_create(
         self,
         key: str,
@@ -1903,6 +2032,7 @@ class SessionAllocationService:
         speculative_resume: bool = False,
         wait_if_busy: bool = True,
         _won_race_retries: int = 0,
+        start_priority: StartPriority = StartPriority.BACKGROUND,
         **extra_factory_kwargs: Any,
     ) -> tuple[LLMProvider, bool, bool]:
         """Reserve logical ownership for the complete claim/allocation call, held while the key is being ended."""
@@ -1951,6 +2081,7 @@ class SessionAllocationService:
                     wait_if_busy=wait_if_busy,
                     _won_race_retries=_won_race_retries,
                     _reservation=token,
+                    start_priority=start_priority,
                     **extra_factory_kwargs,
                 )
             except SessionEndingError:
@@ -2002,6 +2133,7 @@ class SessionAllocationService:
         wait_if_busy: bool = True,
         _won_race_retries: int = 0,
         _reservation: object | None = None,
+        start_priority: StartPriority = StartPriority.BACKGROUND,
         **extra_factory_kwargs: Any,
     ) -> tuple[LLMProvider, bool, bool]:
         """Claim a live session or cold-start one, returning its held lease.
@@ -2144,6 +2276,7 @@ class SessionAllocationService:
                 speculative_resume=speculative_resume,
                 wait_if_busy=wait_if_busy,
                 _won_race_retries=_won_race_retries + 1,
+                start_priority=start_priority,
                 **extra_factory_kwargs,
             )
 
@@ -2442,7 +2575,15 @@ class SessionAllocationService:
                 elif self._deps.is_claude_provider(provider):
                     cast(Any, provider).set_resume_session_id(resume_sid)
                     self._deps.logger.info("CC resume for %s (sid=%s)", key, resume_sid)
-            async with self._start_sem:
+            # Ordered by start priority (rule: ``kiro_crew.start_priority``); the
+            # provider's own spawn and session/new queues read the same answer.
+            provider.start_priority = start_priority
+            async with self._held_start_permit(
+                key,
+                start_priority,
+                on_queued=extra_factory_kwargs.get("on_gate_queued"),
+                on_acquired=extra_factory_kwargs.get("on_gate_acquired"),
+            ):
                 try:
                     if preparation.revision:
                         from kiro_crew.session_capabilities import (
@@ -2752,6 +2893,7 @@ class SessionAllocationService:
                 speculative_resume=speculative_resume,
                 wait_if_busy=wait_if_busy,
                 _won_race_retries=_won_race_retries + 1,
+                start_priority=start_priority,
                 **extra_factory_kwargs,
             )
 

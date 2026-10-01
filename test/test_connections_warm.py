@@ -508,7 +508,7 @@ async def test_spawn_and_session_mode_both_resolve_from_one_private_generation(
         def __init__(self, **kwargs: Any) -> None:
             built.append(kwargs)
 
-        async def spawn(self) -> None:
+        async def spawn(self, start_priority=None) -> None:
             return None
 
         def is_alive(self) -> bool:
@@ -2467,7 +2467,7 @@ async def test_a_global_same_name_agent_never_blocks_the_private_generation(
         def __init__(self, **kwargs: Any) -> None:
             constructed.append(kwargs)
 
-        async def spawn(self) -> None:
+        async def spawn(self, start_priority=None) -> None:
             return None
 
         def is_alive(self) -> bool:
@@ -2522,7 +2522,7 @@ async def test_a_spec_set_this_module_owns_is_activated_normally(
         def __init__(self, **kwargs):
             built.append(str(kwargs.get("agent")))
 
-        async def spawn(self):
+        async def spawn(self, start_priority=None):
             return None
 
         def is_alive(self):
@@ -2583,7 +2583,7 @@ async def test_a_cancel_during_the_spawn_kills_the_partial_runtime(
         def __init__(self, **kwargs):
             pass
 
-        async def spawn(self):
+        async def spawn(self, start_priority=None):
             raise asyncio.CancelledError()
 
         def is_alive(self):
@@ -3295,7 +3295,7 @@ async def test_an_unaddressable_abandoned_session_quarantines_its_generation(
         def __init__(self, **kwargs) -> None:
             pass
 
-        async def spawn(self) -> None:
+        async def spawn(self, start_priority=None) -> None:
             return None
 
         def is_alive(self) -> bool:
@@ -3545,7 +3545,7 @@ class _SpecEnumeratingRuntime:
         self._mounted = mounted
         self._modes: dict[str, frozenset[str]] = {}
 
-    async def spawn(self) -> None:
+    async def spawn(self, start_priority=None) -> None:
         for path in self._agents_dir.glob("*.json"):
             try:
                 body = json.loads(path.read_text(encoding="utf-8"))

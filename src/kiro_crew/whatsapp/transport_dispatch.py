@@ -49,6 +49,7 @@ from kiro_crew.session_lifecycle import (
     consume_stop_declined,
     decline_stop,
 )
+from kiro_crew.start_priority import person_priority
 from kiro_crew.whatsapp.commands import (
     COMPACT_AUTO_TEXT,
     COMPACT_BUSY_TEXT,
@@ -484,6 +485,7 @@ class WhatsAppDispatcher:
         await self._react(inbound, REACTION_WORKING, session_key=session_key)
         await drive_turn(
             ChannelTurn(
+                start_priority=person_priority(inbound.person_origin),
                 channel_type="whatsapp",
                 session_key=session_key,
                 conversation_id=f"whatsapp:{scope}",

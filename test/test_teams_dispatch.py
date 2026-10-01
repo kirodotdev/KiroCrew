@@ -114,7 +114,7 @@ class FakeSessions:
         self.cleared.append(key)
         self.queues.pop(key, None)
 
-    async def get_or_create(self, key, *, agent, channel_id):
+    async def get_or_create(self, key, *, agent, channel_id, start_priority=None):
         self.last_agent = agent
         if self._raise is not None:
             raise self._raise

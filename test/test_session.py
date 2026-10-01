@@ -25,6 +25,7 @@ from kiro_crew.session import (
     SessionEndingError,
     SessionManager,
 )
+from kiro_crew.start_priority import StartPriority
 
 
 @pytest.fixture
@@ -6299,6 +6300,7 @@ class TestOpenTaskSession:
             agent="kirocrew",
             approval_policy="auto",
             cwd="/repo/packages/app",
+            start_priority=StartPriority.BACKGROUND,
         )
 
 

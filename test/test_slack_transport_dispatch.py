@@ -64,7 +64,7 @@ class _CapturingSessions(FakeSessions):
         self.agents: list = []
         self.background_keys: list = []
 
-    async def get_or_create(self, session_key, agent=None, channel_id=None):
+    async def get_or_create(self, session_key, agent=None, channel_id=None, start_priority=None):
         from kiro_crew.session import BACKGROUND_KEY
 
         if session_key == BACKGROUND_KEY:
@@ -1764,7 +1764,7 @@ class _LinkCapturingSessions(FakeSessions):
     def get_session_for_thread(self, thread_ts):
         return self.thread_owner
 
-    async def get_or_create(self, session_key, agent=None, channel_id=None):
+    async def get_or_create(self, session_key, agent=None, channel_id=None, start_priority=None):
         self.keys.append(session_key)
         return await super().get_or_create(session_key, agent=agent, channel_id=channel_id)
 

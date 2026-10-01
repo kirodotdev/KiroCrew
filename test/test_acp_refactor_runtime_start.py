@@ -27,6 +27,7 @@ import kiro_crew.config.live as live_mod
 from kiro_crew.acp import runtime as acp_runtime
 from kiro_crew.acp.session_handle import AcpRuntimeDead
 from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.start_priority import StartPriority
 
 # Upper bound for an await the test itself must unblock. It exists so a hang fails
 # here by name rather than as pytest's --timeout; no passing run measures it.
@@ -260,8 +261,8 @@ def test_gate_limit_is_clamped_to_the_floor(requested, limit):
 @pytest.mark.asyncio
 async def test_cold_start_admission_cancelled_while_queued():
     admission = acp_runtime._ColdStartAdmission(1)
-    await asyncio.wait_for(admission.acquire(), timeout=_BACKSTOP)
-    queued = asyncio.ensure_future(admission.acquire())
+    await asyncio.wait_for(admission.acquire(StartPriority.BACKGROUND), timeout=_BACKSTOP)
+    queued = asyncio.ensure_future(admission.acquire(StartPriority.BACKGROUND))
     try:
 
         async def _until_queued() -> None:
@@ -277,7 +278,7 @@ async def test_cold_start_admission_cancelled_while_queued():
             queued.cancel()
             await asyncio.gather(queued, return_exceptions=True)
     assert (admission.queued, admission.active) == (0, 1)
-    admission.release()
+    admission.release(StartPriority.BACKGROUND)
     assert admission.active == 0
 
 

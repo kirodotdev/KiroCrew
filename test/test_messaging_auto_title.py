@@ -74,7 +74,7 @@ class _Sessions:
         self.released: list[str] = []
         self.recycled = 0
 
-    async def get_or_create(self, key, agent=None, channel_id=None):
+    async def get_or_create(self, key, agent=None, channel_id=None, start_priority=None):
         self.acquired.append(key)
         return self._provider, True, False
 

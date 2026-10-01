@@ -118,7 +118,7 @@ class FakeSessions:
     def is_busy(self, key):
         return self._busy
 
-    async def get_or_create(self, key, agent=None, channel_id=None):
+    async def get_or_create(self, key, agent=None, channel_id=None, start_priority=None):
         return self.provider, True, False
 
     def begin_turn(self, key):

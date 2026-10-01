@@ -404,6 +404,9 @@ class TeamsInbound:
     silently discards every button press. Untrusted client input: it is only ever
     a lookup key into state this process already holds.
     """
+    #: Set by the transport's ``receive`` on a message a person sent, so its turn
+    #: starts FOREGROUND (kiro_crew.start_priority); False on anything built elsewhere.
+    person_origin: bool = False
 
     @property
     def is_card_action(self) -> bool:

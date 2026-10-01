@@ -65,7 +65,7 @@ class _Sessions:
         self.successes = 0
         self.failures = 0
 
-    async def get_or_create(self, key, agent=None, channel_id=None):
+    async def get_or_create(self, key, agent=None, channel_id=None, start_priority=None):
         return object(), False, False
 
     def begin_turn(self, key):

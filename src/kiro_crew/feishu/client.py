@@ -85,6 +85,9 @@ class LarkInbound:
     #: mention-free) or a message naming somebody else as well, which must NOT
     #: be read as a bare command.
     command_text: str = ""
+    #: Set by the transport's ``receive`` on a message a person sent, so its turn
+    #: starts FOREGROUND (kiro_crew.start_priority); False on anything built elsewhere.
+    person_origin: bool = False
 
 
 # Signature for the async dispatch callback the transport injects.
