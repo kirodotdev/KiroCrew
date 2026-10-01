@@ -93,6 +93,44 @@ def kept_for_reexec() -> dict[str, str]:
     return dict(_KEPT_FOR_REEXEC)
 
 
+#: The one module whose work must not outlive this process image: the
+#: managed-venv update apply, whose build child would otherwise keep writing a
+#: tree after the process that supervised it is gone.
+_WHEEL_APPLY_MODULE = "kiro_crew.platform.wheel_apply"
+
+
+def cancel_wheel_applies_in_flight(reason: str) -> None:
+    """Cancel every managed-venv apply this process is running, if any can be.
+
+    Called by both exec seams and :func:`hard_exit`, and directly by a shutdown
+    that wants the apply stopped before its own teardown starts. The apply
+    module is looked up in ``sys.modules`` and never imported: no apply can be
+    in flight in a process that never loaded it, so an unloaded module costs
+    nothing, and the exit paths must not import from a tree an update may have
+    changed. Its cancel is synchronous and quick; one that raises never stops
+    the exit or exec that called this.
+    """
+    module = sys.modules.get(_WHEEL_APPLY_MODULE)
+    if module is None:
+        return
+    try:
+        module.cancel_wheel_applies(reason)
+    except Exception:
+        pass
+
+
+def hard_exit(code: int) -> None:
+    """End the process at once, after cancelling any apply, skipping teardown.
+
+    The one spelling for an ``os._exit`` that is not the gateway's own final
+    exit: the owner's ``/kirocrew restart``, the second-signal force exit. Same
+    contract as the exec seams: a managed-venv apply in flight does not outlive
+    this one.
+    """
+    cancel_wheel_applies_in_flight("exit")
+    os._exit(code)
+
+
 def _disarm_process_alarm_before_exec() -> None:
     """Cancel any pending process alarm before ``execv`` replaces this image.
 
@@ -122,6 +160,7 @@ def reexec_launcher(launcher: str, args: Sequence[str]) -> None:
     argv = [launcher, *args]
     if IS_WINDOWS:
         argv = [subprocess.list2cmdline([arg]) for arg in argv]
+    cancel_wheel_applies_in_flight("exec")
     _disarm_process_alarm_before_exec()
     os.execv(launcher, argv)
 
@@ -156,6 +195,7 @@ def reexec_python_module(module: str, args: Sequence[str], executable: str | Non
     # there would shadow the stdlib in the restarted process.
     argv = isolated_python_argv("-P", "-m", module, *args, executable=resolved)
     argv[0] = argv0
+    cancel_wheel_applies_in_flight("exec")
     _disarm_process_alarm_before_exec()
     os.execv(resolved, argv)
 
@@ -6824,6 +6864,30 @@ def _shares_own_process_group(pid: int) -> bool:
         return False
 
 
+def kill_popen_tree(proc: subprocess.Popen[Any]) -> None:
+    """Kill a ``Popen`` child and its descendants; never raises.
+
+    The synchronous counterpart of :func:`kill_and_reap`'s kill step, for a child
+    started in its own process group (``start_new_session`` on POSIX, a new
+    process group on Windows). The group is signalled only while *proc* is
+    unreaped: its pid (also its group id) cannot be reused before ``waitpid``,
+    so the signal cannot land on an unrelated group. The direct ``kill``
+    afterwards covers a platform where the tree walk failed. That ``kill`` polls
+    first (``Popen.send_signal``), so it may reap a child that already exited:
+    the caller collects through ``Popen.wait()``/``poll()`` (which then report the
+    status) and must tolerate ``ChildProcessError`` from any lower-level wait.
+    """
+    if proc.returncode is None:
+        if IS_POSIX:
+            with contextlib.suppress(OSError, ValueError):
+                kill_process_group(proc.pid, SIGKILL)
+        else:
+            with contextlib.suppress(Exception):
+                kill_process_tree(proc.pid)
+    with contextlib.suppress(OSError):
+        proc.kill()
+
+
 async def kill_and_reap(proc: asyncio.subprocess.Process, *, timeout: float | None = None) -> None:
     """Kill *proc* AND its descendants, then wait for it under a bound.
 
@@ -10262,6 +10326,7 @@ _EXPORTS_BY_OWNER: dict[str, tuple[str, ...]] = {
         "acquire_lock",
         "release_lock",
         "try_acquire_lock",
+        "try_acquire_lock_or_raise",
         "probe_file_persistence",
         "tempfile",
     ),
@@ -10394,6 +10459,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         release_lock,
         tempfile,
         try_acquire_lock,
+        try_acquire_lock_or_raise,
     )
     from kiro_crew.platform_owner_compat import (  # noqa: F401
         _OWNER_RIGHTS_SID,

@@ -4292,6 +4292,29 @@ class TestRestartCommandHint:
 
 
 class TestKirocrewBinOverride:
+    @pytest.mark.parametrize("source", ["which", "argv"])
+    def test_managed_tree_launch_path_is_persisted_through_the_stable_link(
+        self, source, monkeypatch, tmp_path
+    ):
+        from kiro_crew.platform import tree_liveness, wheel_engine
+
+        tree = tmp_path / "crew-venv-1.0"
+        binary = tree / "bin" / "kirocrew"
+        binary.parent.mkdir(parents=True)
+        binary.touch()
+        (tree / tree_liveness.TREE_MARKER).write_text("layout\n", encoding="utf-8")
+        stable = str(tmp_path / "crew-venv-current" / "bin" / "kirocrew")
+        rewrite = MagicMock(return_value=stable)
+        monkeypatch.setattr(wheel_engine, "stable_launch_path", rewrite)
+        monkeypatch.delenv("KIROCREW_SERVICE_BIN", raising=False)
+        monkeypatch.setattr(
+            common.shutil, "which", lambda _name: str(binary) if source == "which" else None
+        )
+        monkeypatch.setattr(common.sys, "argv", [str(binary)])
+
+        assert kirocrew_bin() == stable
+        rewrite.assert_called_once_with(str(binary.resolve()))
+
     def test_service_bin_override_wins_over_which(self, monkeypatch):
         monkeypatch.setenv("KIROCREW_SERVICE_BIN", "/opt/wrapper/kirocrew")
         with patch(

@@ -1,8 +1,7 @@
 """Which update step this gateway is running owns a missing dashboard bundle.
 
-Some update steps leave the served bundle missing while they run: the
-managed-venv installer or a policy ``apply_command`` replacing the install in
-place, and a frontend build while ``static/dist`` is still the dev-mode link
+Some update steps leave the served bundle missing while they run: a policy
+``apply_command`` replacing the install in place, and a frontend build while ``static/dist`` is still the dev-mode link
 into ``website/dist`` (Vite empties its output directory first). If the
 stale-asset watchdog shuts the gateway down then, the shutdown cancels the step
 mid-write, and a cancelled installer leaves a venv without its console scripts.
@@ -58,7 +57,6 @@ class Step(enum.Enum):
     """
 
     GIT_AUTO_UPDATE = ("the git auto-update", 3600.0)
-    MANAGED_VENV_INSTALLER = ("the managed-venv installer", 1800.0)
     POLICY_APPLY = ("the policy apply command", 900.0)
     DASHBOARD_UPDATE = ("the dashboard update", 3600.0)
     RESTART = ("the restart into an applied update", 300.0)

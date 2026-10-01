@@ -1044,6 +1044,24 @@ else
   VENV="${KIROCREW_VENV:-${_DATA_HOME_FOR_VENV%/}-venv}"
   _OLD_VENV="${_DATA_HOME_FOR_VENV%/}/venv"
   echo "Installing into managed venv at $VENV ..."
+  # One update lease for this layout. The shadow-venv update engine
+  # (`kirocrew update`, and the gateway's automatic and approved updates)
+  # takes this same lock file before it builds or promotes a tree beside
+  # $VENV, so this run and an engine apply never interleave a rebuild with a
+  # promotion. Held on fd 9 until this branch ends; the kernel drops it on any
+  # exit. Never deleted, for the reason the pipx branch's lock is not.
+  _VENV_LOCK="${VENV%/}.update.lock"
+  mkdir -p "${VENV%/*}" 2>/dev/null || true
+  if ! : >> "$_VENV_LOCK" 2>/dev/null; then
+    err "could not create the update lock $_VENV_LOCK (is ${VENV%/*} writable?). Nothing was changed."
+  fi
+  exec 9>>"$_VENV_LOCK"
+  _wait_install_lock 900 && _st=0 || _st=$?
+  if [ "$_st" -ne 0 ]; then
+    [ "$_st" -eq 3 ] \
+      && err "another kirocrew update has been working on $VENV for 15 minutes (lock $_VENV_LOCK). Nothing was changed. Wait for it to finish, or stop it, then re-run this installer." \
+      || err "could not take the update lock $_VENV_LOCK. Nothing was changed."
+  fi
   # Debian/Ubuntu ship the base `python3` WITHOUT the venv/ensurepip module (it
   # lives in the separate `python3-venv` / `python3.X-venv` package), so
   # `python3 -m venv` there dies with "ensurepip is not available" and, under
@@ -1220,6 +1238,8 @@ except OSError:
       echo "WARNING: new venv at $VENV failed an import check; leaving $_OLD_VENV in place." >&2
     fi
   fi
+  # The managed venv is complete; let a waiting update proceed.
+  exec 9>&-
 fi
 
 _DATA_HOME="${KIROCREW_HOME:-$HOME/.kiro/crew}"

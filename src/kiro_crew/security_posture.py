@@ -276,15 +276,28 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "through the shared credential + exfiltration-URL chain before serialization.",
     ),
     (
-        "CLI wheel-update failures",
+        "Managed-venv update failures",
+        "platform/wheel_apply.py",
+        "The failure text a managed-venv shadow update shows an operator -- "
+        "`kirocrew update`'s print, the dashboard's failed update step, the "
+        "approve route's audit record -- plus the fallback installer one-liner "
+        "printed next to it. The engine's error quotes the URL it tried and the "
+        "fallback command embeds the artifact CDN base -- with a token-bearing "
+        "KIROCREW_CDN_BASE either would land credentials in terminal scrollback, "
+        "the dashboard or the audit chain, so both strings run the context "
+        "redactor (redact_via_context: credentials and exfiltration URLs, plus a "
+        "loaded companion's patterns) in full before any cap.",
+    ),
+    (
+        "CLI update output",
         "cli_server.py",
-        "The failure text `kirocrew update` prints when a managed-venv shadow "
-        "update fails, plus the fallback installer one-liner printed next to it. "
-        "The engine's error quotes the URL it tried and the fallback command "
-        "embeds the artifact CDN base -- with a token-bearing "
-        "KIROCREW_CDN_BASE either would land credentials in terminal "
-        "scrollback and shell history, so both strings run the shared "
-        "credential + exfiltration-URL chain immediately before print.",
+        "What `kirocrew update` prints around a wheel update: the release-feed "
+        "URL it is checking and the plain-pip in-place upgrade hint (its command "
+        "or failure note). Both embed the CDN base -- with a userinfo-bearing "
+        "KIROCREW_CDN_BASE either would land credentials in terminal scrollback, "
+        "so each displayed string runs only the shared credential redactor "
+        "(no exfiltration-URL pass: the value is the operator's own CDN base) "
+        "immediately before print; the fetch still uses the real URL.",
     ),
     (
         "Central policy fetch failures",
@@ -1712,6 +1725,12 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # third party — the redaction is defensive so a credential-bearing
         # installer error cannot leak into the log ring / /api/logs stream.
         "platform/update_provider.py",
+        # The managed-venv shadow engine, same shape: it redacts a build child's
+        # stderr IN FULL before cutting it into an error message. The operator
+        # surface is the registered "Managed-venv update failures" sink
+        # (platform/wheel_apply.py); redacting at capture is what keeps a
+        # credential from being split by the cut and surviving in halves.
+        "platform/wheel_engine.py",
         # Same shape: redacts the unparseable LLM decomposition response before
         # writing the diagnostic ERROR line to the gateway log. Defensive log
         # hygiene so a response echoing a credential or exfiltration URL cannot

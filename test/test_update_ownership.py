@@ -19,8 +19,8 @@ def test_no_step_owns_no_gap():
 
 
 def test_a_step_owns_the_gap_while_it_runs():
-    with update_ownership.step(Step.MANAGED_VENV_INSTALLER):
-        assert update_ownership.current_owner() == "the managed-venv installer"
+    with update_ownership.step(Step.POLICY_APPLY):
+        assert update_ownership.current_owner() == "the policy apply command"
     assert update_ownership.current_owner() is None
 
 

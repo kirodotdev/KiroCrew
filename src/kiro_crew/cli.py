@@ -3215,6 +3215,15 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
 
     args = parser.parse_args()
 
+    # MCP servers and CLI commands hold their managed-venv tree for the process
+    # lifetime, so another process's update cannot prune it underneath them.
+    # The gateway takes the same hold off-loop AFTER readiness, before updates;
+    # even the no-op stat must stay off its boot path.
+    if args.command != "gateway":
+        from kiro_crew.platform.tree_liveness import hold_running_tree_lock
+
+        hold_running_tree_lock()
+
     # Direct agent-bearing CLI commands do not construct the long-lived
     # prerequisite service. Pin an explicit override before the jail gate or
     # provider factory can launch it, preserving the same process-start trust

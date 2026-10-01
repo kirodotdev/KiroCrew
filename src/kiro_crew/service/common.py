@@ -139,10 +139,14 @@ def kirocrew_bin() -> str:
     override = os.environ.get("KIROCREW_SERVICE_BIN", "").strip()
     if override:
         return os.path.abspath(override)
+    # Neither automatic source may name a versioned tree in a persisted
+    # ExecStart: a later update's prune can remove it after this process exits.
+    from kiro_crew.platform.tree_liveness import through_stable_link
+
     found = shutil.which("kirocrew")
     if found:
-        return found
-    return os.path.realpath(sys.argv[0])
+        return through_stable_link(found)
+    return through_stable_link(os.path.realpath(sys.argv[0]))
 
 
 def service_environment(home: str) -> "dict[str, str]":

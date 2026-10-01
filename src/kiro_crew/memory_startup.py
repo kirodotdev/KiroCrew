@@ -132,6 +132,17 @@ async def wait_for_memory_preparation(task: asyncio.Future | None) -> None:
     require_memory_prepared()
 
 
+def memory_startup_preparing() -> bool:
+    """Is this process's memory startup still preparing? Never raises.
+
+    False when no startup runs in this process (the CLI), once it is ready, and
+    once it failed or stopped: :func:`require_memory_prepared` tells those apart.
+    """
+    with _lock:
+        startup = _active
+        return startup is not None and not (startup.error or startup.stopped or startup.ready)
+
+
 def memory_store_startup_error(store: str = DEFAULT_MEMORY_STORE) -> str:
     """Owner recovery diagnostics remain available without opening live data."""
     with _lock:

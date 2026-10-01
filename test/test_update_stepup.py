@@ -12,7 +12,7 @@ import json
 import threading
 import time
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -458,12 +458,108 @@ class TestArmEndpoint:
         assert json.loads(resp.body.decode())["code"] == "arm_policy_managed"
 
 
+def _assert_update_lock_free() -> None:
+    """The layout's update lock can be taken again (raises ``WheelUpdateBusy`` if not).
+
+    The layout sits beside the scratch data home (the conftest floor clears
+    ``KIROCREW_VENV``), so this takes a real lock no operator install uses.
+    """
+    from kiro_crew.platform import wheel_engine
+
+    wheel_engine.release_update_lock(wheel_engine.hold_update_lock())
+
+
 @pytest.mark.asyncio
 class TestApproveEndpoint:
+    @pytest.fixture(autouse=True)
+    def _host_isolated(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The host's AppArmor state is never read, and no apply is in flight."""
+        from kiro_crew.platform import wheel_apply
+
+        monkeypatch.setattr(wheel_apply, "userns_reattach_needed", lambda _version: False)
+        monkeypatch.setattr(wheel_apply, "_IN_FLIGHT", set())
+
     async def test_non_loopback_peer_refused(self) -> None:
         resp = await updates.api_update_approve(_request({"nonce": "x"}, remote="10.0.0.9"))
         assert resp.status == 403
         assert json.loads(resp.body.decode())["code"] == "approve_not_local"
+
+    @pytest.mark.parametrize("reason", ["nonce", "version", "floor", "audit"])
+    async def test_refusal_releases_the_lock_once_off_loop(
+        self, monkeypatch: pytest.MonkeyPatch, reason: str
+    ) -> None:
+        from kiro_crew.platform import wheel_engine
+
+        loop_thread = threading.current_thread()
+        released: list[tuple[int, threading.Thread]] = []
+        real_release = wheel_engine.release_update_lock
+
+        def release(fd: int) -> None:
+            released.append((fd, threading.current_thread()))
+            real_release(fd)
+
+        async def audit(_request: object, **kwargs: object) -> None:
+            if reason == "audit" and kwargs["outcome"] == "granted":
+                raise OSError("audit unavailable")
+
+        monkeypatch.setattr(wheel_engine, "release_update_lock", release)
+        monkeypatch.setattr(updates, "_audit_update_event", audit)
+        monkeypatch.setattr(updates, "resolve_provider", lambda: None)
+        monkeypatch.setattr(updates, "min_version", lambda: "0.6.0" if reason == "floor" else "")
+        monkeypatch.setattr(updates, "_local_version", "0.7.0")
+        version = {"version": "9.9/9", "floor": "0.5.0"}.get(reason, "9.9.9")
+        pending = update_stepup.arm(version, "stable")
+        try:
+            nonce = "0" * 64 if reason == "nonce" else pending.nonce
+            req = _request({"nonce": nonce})
+            resp = await updates.api_update_approve(req)
+            assert resp.status == {"nonce": 403, "version": 409, "floor": 409, "audit": 503}[reason]
+            assert req.app["state"]._background_tasks == set()
+            assert len(released) == 1, "each refusal releases exactly once"
+            assert released[0][1] is not loop_thread
+            _assert_update_lock_free()
+        finally:
+            update_stepup.clear_pending()
+
+    async def test_cancelling_a_refusal_cannot_cancel_its_lock_release(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import asyncio
+
+        from kiro_crew.platform import wheel_engine
+
+        entered, finish, released = threading.Event(), threading.Event(), threading.Event()
+        loop_thread = threading.current_thread()
+        releases: list[threading.Thread] = []
+        real_release = wheel_engine.release_update_lock
+
+        def release(fd: int) -> None:
+            releases.append(threading.current_thread())
+            entered.set()
+            assert finish.wait(30), "the test never allowed refusal cleanup to finish"
+            real_release(fd)
+            released.set()
+
+        monkeypatch.setattr(wheel_engine, "release_update_lock", release)
+        monkeypatch.setattr(updates, "resolve_provider", lambda: None)
+        monkeypatch.setattr(updates, "_audit_update_event", AsyncMock())
+        update_stepup.arm("9.9.9", "stable")
+        req = _request({"nonce": "0" * 64})
+        task = asyncio.create_task(updates.api_update_approve(req))
+        try:
+            assert await asyncio.to_thread(entered.wait, 30), "refusal never reached cleanup"
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, timeout=30)
+            assert not released.is_set()
+        finally:
+            finish.set()
+            assert await asyncio.to_thread(released.wait, 30), "refusal did not release the lock"
+            await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), timeout=30)
+            update_stepup.clear_pending()
+        assert len(releases) == 1 and releases[0] is not loop_thread
+        assert req.app["state"]._background_tasks == set()
+        await asyncio.to_thread(_assert_update_lock_free)
 
     async def test_wrong_nonce_refused(self) -> None:
         update_stepup.arm("9.9.9", "stable")
@@ -471,6 +567,7 @@ class TestApproveEndpoint:
             resp = await updates.api_update_approve(_request({"nonce": "0" * 64}))
             assert resp.status == 403
             assert json.loads(resp.body.decode())["code"] == "approve_refused"
+            _assert_update_lock_free()
         finally:
             update_stepup.clear_pending()
 
@@ -550,6 +647,29 @@ class TestApproveEndpoint:
         assert payload["governance"] is True
         assert update_stepup.read_pending() is None
         assert req.app["state"]._background_tasks == set()
+        _assert_update_lock_free()
+
+    async def test_a_version_outside_the_release_grammar_refuses_approve(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Refused before anything names its tree, with the update lock released."""
+        audited: list[dict[str, object]] = []
+
+        async def fake_audit(request: object, **kwargs: object) -> None:
+            audited.append(kwargs)
+
+        monkeypatch.setattr(updates, "_audit_update_event", fake_audit)
+        monkeypatch.setattr(updates, "resolve_provider", lambda: None)
+        pending = update_stepup.arm("9.9/9", "stable")
+        req = _request({"nonce": pending.nonce})
+        resp = await updates.api_update_approve(req)
+        payload = json.loads(resp.body.decode())
+        assert resp.status == 409
+        assert payload["code"] == "approve_refused"
+        assert "fails validation" in payload["error"]
+        assert [a["outcome"] for a in audited] == ["denied"]
+        assert req.app["state"]._background_tasks == set()
+        _assert_update_lock_free()
 
     async def test_no_armed_request_refused(self) -> None:
         update_stepup.clear_pending()
@@ -569,9 +689,10 @@ class TestApproveEndpoint:
             restarted.append(state)
             return True
 
-        from kiro_crew.platform import wheel_engine
+        from kiro_crew.platform import wheel_apply, wheel_engine
 
         monkeypatch.setattr(wheel_engine, "apply_wheel_update", fake_apply)
+        monkeypatch.setattr(wheel_apply, "restart_reaches", lambda _version: True)
         monkeypatch.setattr(updates, "_restart_gateway", fake_restart)
         pending = update_stepup.arm("9.9.9", "stable")
         req = _request({"nonce": pending.nonce})
@@ -587,6 +708,7 @@ class TestApproveEndpoint:
         assert restarted, "a promoted update must restart the gateway"
         # Single-use: the nonce file is gone.
         assert update_stepup.read_pending() is None
+        _assert_update_lock_free()
 
     async def test_unwritable_audit_refuses_the_install(
         self, monkeypatch: pytest.MonkeyPatch
@@ -620,6 +742,7 @@ class TestApproveEndpoint:
         for task in list(req.app["state"]._background_tasks):
             await task
         assert applied == []
+        _assert_update_lock_free()
 
     async def test_failed_apply_reports_and_does_not_restart(
         self, monkeypatch: pytest.MonkeyPatch
@@ -653,6 +776,231 @@ class TestApproveEndpoint:
             if c.args and c.args[0] == "failed"
         ]
         assert failed, "the failure must reach the progress feed"
+        _assert_update_lock_free()
+
+    async def test_an_incompatible_release_names_the_installer_rerun(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.platform import wheel_engine
+
+        def incompatible(**kwargs: object) -> None:
+            raise wheel_engine.WheelUpdateIncompatible(
+                "kirocrew 9.9.9 requires Python >= 3.99", version="9.9.9", sha256="a" * 64
+            )
+
+        monkeypatch.setattr(updates, "resolve_provider", lambda: None)
+        monkeypatch.setattr(wheel_engine, "apply_wheel_update", incompatible)
+        pending = update_stepup.arm("9.9.9", "stable")
+        req = _request({"nonce": pending.nonce})
+        await updates.api_update_approve(req)
+        for task in list(req.app["state"]._background_tasks):
+            await task
+        steps = [c.args for c in req.app["state"].push_update_progress.call_args_list]
+        assert any(
+            step == "failed" and "3.99" in detail and "Re-run the installer" in detail
+            for step, detail in steps
+        ), steps
+        _assert_update_lock_free()
+
+    async def test_a_restart_in_progress_refuses_before_the_nonce_is_used(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The restart's exec would stop the apply before its outcome is audited."""
+        from kiro_crew.platform import wheel_engine
+
+        monkeypatch.setattr(updates, "resolve_provider", lambda: None)
+        locked: list[int] = []
+        monkeypatch.setattr(wheel_engine, "hold_update_lock", lambda: locked.append(1) or 0)
+        pending = update_stepup.arm("9.9.9", "stable")
+        try:
+            req = _request({"nonce": pending.nonce})
+            req.app["state"]._gateway_restart_in_progress = True
+            resp = await updates.api_update_approve(req)
+            assert (resp.status, json.loads(resp.body.decode())["code"]) == (
+                409,
+                "approve_restarting",
+            )
+            assert update_stepup.read_pending() is not None, "the armed request is intact"
+            assert locked == [] and req.app["state"]._background_tasks == set()
+        finally:
+            update_stepup.clear_pending()
+
+    async def test_an_apply_already_holding_the_lock_refuses_before_the_nonce_is_used(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.platform import wheel_engine
+
+        def busy() -> int:
+            raise wheel_engine.WheelUpdateBusy("another kirocrew update is already in progress")
+
+        monkeypatch.setattr(updates, "resolve_provider", lambda: None)
+        monkeypatch.setattr(wheel_engine, "hold_update_lock", busy)
+        audited: list[str] = []
+        monkeypatch.setattr(
+            updates,
+            "_audit_update_event",
+            AsyncMock(side_effect=lambda *a, **k: audited.append(k["outcome"])),
+        )
+        pending = update_stepup.arm("9.9.9", "stable")
+        try:
+            resp = await updates.api_update_approve(_request({"nonce": pending.nonce}))
+            assert resp.status == 409
+            assert json.loads(resp.body.decode())["code"] == "approve_busy"
+            assert update_stepup.read_pending() is not None, "the armed request is intact"
+            assert audited == [], "a busy lock is not a failed install"
+        finally:
+            update_stepup.clear_pending()
+
+    async def test_memory_still_preparing_defers_before_the_nonce_is_used(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.platform import wheel_apply, wheel_engine
+
+        def preparing() -> None:
+            raise wheel_engine.WheelUpdateNotReady("memory is still being prepared")
+
+        monkeypatch.setattr(updates, "resolve_provider", lambda: None)
+        monkeypatch.setattr(wheel_apply, "check_memory_ready", preparing)
+        pending = update_stepup.arm("9.9.9", "stable")
+        try:
+            resp = await updates.api_update_approve(_request({"nonce": pending.nonce}))
+            assert resp.status == 409
+            assert json.loads(resp.body.decode())["code"] == "approve_memory_preparing"
+            assert update_stepup.read_pending() is not None, "the armed request is intact"
+        finally:
+            update_stepup.clear_pending()
+
+    async def test_a_memory_failure_refuses_with_its_own_words_before_the_nonce(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.platform import wheel_apply, wheel_engine
+
+        def failed() -> None:
+            raise wheel_engine.WheelUpdateSnapshotFailed("Memory recovery failed: journal broken")
+
+        monkeypatch.setattr(updates, "resolve_provider", lambda: None)
+        monkeypatch.setattr(wheel_apply, "check_memory_ready", failed)
+        pending = update_stepup.arm("9.9.9", "stable")
+        try:
+            resp = await updates.api_update_approve(_request({"nonce": pending.nonce}))
+            payload = json.loads(resp.body.decode())
+            assert (resp.status, payload["code"]) == (409, "approve_memory")
+            assert "journal broken" in payload["error"]
+            assert update_stepup.read_pending() is not None
+        finally:
+            update_stepup.clear_pending()
+
+    async def test_a_cancelled_apply_is_audited_as_cancelled_not_failed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.platform import wheel_engine
+
+        def stopped(**_kw: object) -> None:
+            raise wheel_engine.WheelUpdateCancelled("stopped", reason="exec")
+
+        monkeypatch.setattr(updates, "resolve_provider", lambda: None)
+        monkeypatch.setattr(wheel_engine, "apply_wheel_update", stopped)
+        audited: list[str] = []
+        monkeypatch.setattr(
+            updates,
+            "_audit_update_event",
+            AsyncMock(side_effect=lambda *a, **k: audited.append(k["outcome"])),
+        )
+        pending = update_stepup.arm("9.9.9", "stable")
+        req = _request({"nonce": pending.nonce})
+        await updates.api_update_approve(req)
+        for task in list(req.app["state"]._background_tasks):
+            await task
+        assert audited == ["granted", "cancelled"]
+        _assert_update_lock_free()
+        failed = [
+            c.args
+            for c in req.app["state"].push_update_progress.call_args_list
+            if c.args and c.args[0] == "failed"
+        ]
+        assert failed == [], "a deliberate stop pushes no failure"
+
+    async def test_an_unlocked_apply_in_flight_here_does_not_burn_the_approval(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The approval holds the lock, so an in-process apply that has not taken
+        it yet loses on the lock and this one runs: the nonce is never spent on a
+        ``busy`` that would make the operator approve again."""
+        import asyncio
+
+        from kiro_crew.platform import wheel_apply, wheel_engine
+        from kiro_crew.platform.wheel_engine import ApplyCancel
+
+        monkeypatch.setattr(updates, "resolve_provider", lambda: None)
+        monkeypatch.setattr(wheel_engine, "apply_wheel_update", lambda **_kw: None)
+        monkeypatch.setattr(wheel_apply, "restart_reaches", lambda _version: True)
+        restart = AsyncMock(return_value=True)
+        monkeypatch.setattr(updates, "_restart_gateway", restart)
+        other = asyncio.get_running_loop().create_future()
+        wheel_apply._IN_FLIGHT.add(wheel_apply._Running(ApplyCancel(), other))
+        audited: list[str] = []
+        monkeypatch.setattr(
+            updates,
+            "_audit_update_event",
+            AsyncMock(side_effect=lambda *a, **k: audited.append(k["outcome"])),
+        )
+        pending = update_stepup.arm("9.9.9", "stable")
+        req = _request({"nonce": pending.nonce})
+        resp = await updates.api_update_approve(req)
+        assert resp.status == 200
+        for task in list(req.app["state"]._background_tasks):
+            await task
+        assert audited == ["granted", "success"]
+        restart.assert_awaited_once()
+        other.cancel()
+        _assert_update_lock_free()
+
+    async def test_a_promotion_that_detaches_the_sandbox_profile_says_how_to_reattach(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.platform import wheel_apply, wheel_engine
+
+        monkeypatch.setattr(updates, "resolve_provider", lambda: None)
+        monkeypatch.setattr(wheel_engine, "apply_wheel_update", lambda **_kw: None)
+        monkeypatch.setattr(wheel_apply, "userns_reattach_needed", lambda _version: True)
+        monkeypatch.setattr(wheel_apply, "restart_reaches", lambda _version: True)
+        monkeypatch.setattr(updates, "_restart_gateway", AsyncMock(return_value=True))
+        pending = update_stepup.arm("9.9.9", "stable")
+        req = _request({"nonce": pending.nonce})
+        await updates.api_update_approve(req)
+        for task in list(req.app["state"]._background_tasks):
+            await task
+        state = req.app["state"]
+        state.notify.assert_called_once()
+        assert "kirocrew service install" in state.notify.call_args.args[2]
+        # Sent after the promotion: the update is done, only the re-attach is left.
+        assert "is installed" in state.notify.call_args.args[2]
+        assert "Run `kirocrew update`" not in state.notify.call_args.args[2]
+
+    async def test_a_restart_that_would_rerun_the_old_version_is_not_started(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A promotion the restart cannot reach (the stable link leads elsewhere)
+        must not exec the running version again: that successor would find the
+        same update, promote and restart, for ever."""
+        from kiro_crew.platform import wheel_apply, wheel_engine
+
+        monkeypatch.setattr(updates, "resolve_provider", lambda: None)
+        monkeypatch.setattr(wheel_engine, "apply_wheel_update", lambda **_kw: None)
+        monkeypatch.setattr(wheel_apply, "restart_reaches", lambda _version: False)
+        restart = AsyncMock(return_value=True)
+        monkeypatch.setattr(updates, "_restart_gateway", restart)
+        pending = update_stepup.arm("9.9.9", "stable")
+        req = _request({"nonce": pending.nonce})
+        await updates.api_update_approve(req)
+        for task in list(req.app["state"]._background_tasks):
+            await task
+        restart.assert_not_awaited()
+        steps = [c.args for c in req.app["state"].push_update_progress.call_args_list]
+        assert any(
+            step == "failed" and "Re-run the installer" in detail for step, detail in steps
+        ), steps
+        _assert_update_lock_free()
 
 
 class TestCanArmOnTheWire:

@@ -3,7 +3,9 @@
 ``cli.sh`` moves the managed venv aside before it rebuilds it, and restores it
 from a TERM trap when it is interrupted. A SIGKILL skips that trap and leaves
 no venv and no console script, so the cancel arm (shutdown) and the timeout arm
-of every apply route must give the installer's group SIGTERM and a grace first.
+of every apply route that runs an installer (the policy-defined command
+provider; the managed venv's unattended apply builds beside the live tree and
+runs no installer) must give the installer's group SIGTERM and a grace first.
 
 These tests drive the REAL apply routes against a cli.sh-shaped stand-in (move
 aside, a TERM trap that restores, a long step) and assert the venv is back.
@@ -17,11 +19,8 @@ import asyncio
 import contextlib
 import os
 import shlex
-import shutil
 import time
-import types
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -137,141 +136,10 @@ def reap_groups(tmp_path):
         time.sleep(0.05)
 
 
-@pytest.fixture
-def wheel_route(monkeypatch, tmp_path, reap_groups):
-    """Point the wheel route's installer command at the cli.sh-shaped stand-in."""
-    import kiro_crew.dashboard.handlers as handlers
-
-    case = _case(tmp_path)
-    monkeypatch.setitem(
-        handlers._update_info, "remediation", {"command": _installer_command(tmp_path, case)}
-    )
-    monkeypatch.setattr("kiro_crew.platform.update_layout.cdn_bases_are_safe", lambda: True)
-    monkeypatch.setattr(
-        "kiro_crew.platform.update_governance.update_blocked_reason", lambda _base: None
-    )
-    orch = _orchestrator()
-    return orch, case
-
-
-def _orchestrator() -> SimpleNamespace:
-    """Just what the wheel update reads, with its installer step bound to it."""
-    from kiro_crew.slack.gateway import GatewayOrchestrator
-
-    orch = SimpleNamespace(dashboard_state=None, _restart_after_update=None)
-    orch._run_wheel_installer = types.MethodType(GatewayOrchestrator._run_wheel_installer, orch)
-    return orch
-
-
 async def _cancel_and_settle(task: asyncio.Task) -> None:
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await asyncio.wait_for(task, timeout=15)
-
-
-class TestWheelInstallerRollsBack:
-    @pytest.mark.asyncio
-    async def test_cancel_arm_lets_the_installer_restore_the_venv(self, wheel_route):
-        from kiro_crew.slack.gateway import GatewayOrchestrator
-
-        orch, case = wheel_route
-        task = asyncio.create_task(GatewayOrchestrator._auto_apply_wheel_update(orch))
-        try:
-            await _wait_for_file(case / "phase")
-        finally:
-            await _cancel_and_settle(task)
-
-        _assert_restored(case)
-
-    @pytest.mark.asyncio
-    async def test_timeout_arm_lets_the_installer_restore_the_venv(self, wheel_route, monkeypatch):
-        from kiro_crew.platform import update_provider
-        from kiro_crew.slack.gateway import GatewayOrchestrator
-
-        orch, case = wheel_route
-        real = update_provider._read_bounded_output
-
-        async def _short(proc, *, timeout, want_stdout):
-            # The 300 s installer budget, expired as soon as the venv is aside.
-            await _wait_for_file(case / "phase")
-            return await real(proc, timeout=0, want_stdout=want_stdout)
-
-        monkeypatch.setattr(update_provider, "_read_bounded_output", _short)
-
-        await asyncio.wait_for(GatewayOrchestrator._auto_apply_wheel_update(orch), timeout=15)
-
-        _assert_restored(case)
-
-
-@pytest.mark.skipif(shutil.which("setsid") is None, reason="needs setsid(1), as cli.sh does")
-class TestSetsidStepRollsBack:
-    @pytest.mark.asyncio
-    async def test_cancel_during_a_setsid_step_restores_the_venv(
-        self, monkeypatch, tmp_path, reap_groups
-    ):
-        """The group SIGTERM reaches the installer shell, not the setsid'd step.
-
-        The installer's own trap must stop that step and roll back; the grace
-        is what gives it the time to.
-        """
-        import kiro_crew.dashboard.handlers as handlers
-        from kiro_crew.slack.gateway import GatewayOrchestrator
-
-        case = _case(tmp_path)
-        (tmp_path / "installer.sh").write_text(_SETSID_INSTALLER, encoding="utf-8")
-        monkeypatch.setitem(
-            handlers._update_info, "remediation", {"command": _installer_command(tmp_path, case)}
-        )
-        monkeypatch.setattr("kiro_crew.platform.update_layout.cdn_bases_are_safe", lambda: True)
-        monkeypatch.setattr(
-            "kiro_crew.platform.update_governance.update_blocked_reason", lambda _base: None
-        )
-        orch = _orchestrator()
-        task = asyncio.create_task(GatewayOrchestrator._auto_apply_wheel_update(orch))
-        try:
-            await _wait_for_file(case / "phase")
-        finally:
-            await _cancel_and_settle(task)
-
-        _assert_restored(case)
-        step = int((case / "steppid").read_text(encoding="utf-8").strip())
-        deadline = time.monotonic() + 5
-        while platform_compat.pgroup_exists(step):
-            assert time.monotonic() < deadline, "the setsid'd step outlived the rollback"
-            await asyncio.sleep(0.05)
-
-
-@pytest.mark.skipif(shutil.which("setsid") is None, reason="needs setsid(1), as cli.sh does")
-def test_the_cli_route_stop_rolls_back_a_setsid_step(tmp_path, reap_groups):
-    """``kirocrew update``'s installer (a terminal ``Popen``) is stopped the same way.
-
-    After the stop the trap has restored the venv, and nothing from the tree
-    remains: not the installer's group, and not the setsid'd step.
-    """
-    import subprocess
-
-    case = _case(tmp_path)
-    (tmp_path / "installer.sh").write_text(_SETSID_INSTALLER, encoding="utf-8")
-    proc = subprocess.Popen(
-        ["sh", str(tmp_path / "installer.sh"), str(case)],
-        cwd=str(tmp_path),
-        start_new_session=True,
-    )
-    reap_groups.append(proc.pid)
-    deadline = time.monotonic() + 10
-    while not (case / "phase").exists():
-        assert time.monotonic() < deadline, "the installer never moved the venv aside"
-        time.sleep(0.02)
-
-    platform_compat.terminate_and_reap_sync(proc, grace=10, reap_timeout=5)
-
-    assert proc.returncode is not None
-    _assert_restored(case)
-    step = int((case / "steppid").read_text(encoding="utf-8").strip())
-    deadline = time.monotonic() + 5
-    while platform_compat.pgroup_exists(step) or platform_compat.pgroup_exists(proc.pid):
-        assert time.monotonic() < deadline, "a process from the installer tree survived"
-        time.sleep(0.05)
 
 
 class TestTerminateAndReapSync:

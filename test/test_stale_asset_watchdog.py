@@ -555,7 +555,7 @@ async def test_watchdog_stands_down_while_an_update_step_owns_the_gap(caplog):
         asked["n"] += 1
         if asked["n"] >= 4:
             asyncio.get_running_loop().call_soon(shutdown.set)
-        return "the managed-venv installer"
+        return "the policy apply command"
 
     with _gap(), _owner_is(_owner):
         fired = await _run(shutdown)
@@ -563,7 +563,7 @@ async def test_watchdog_stands_down_while_an_update_step_owns_the_gap(caplog):
     assert fired is False
     standing = _records(caplog, text="standing down")
     # Named, once per gap.
-    assert len(standing) == 1 and "the managed-venv installer" in standing[0]
+    assert len(standing) == 1 and "the policy apply command" in standing[0]
     assert not _records(caplog, level=logging.CRITICAL)
 
 
@@ -620,7 +620,7 @@ async def test_a_step_live_at_arm_time_is_waited_out_then_the_watchdog_arms():
         return reads["n"] in (3, 4)
 
     def _owner():
-        return "the managed-venv installer" if reads["n"] < 3 else None
+        return "the policy apply command" if reads["n"] < 3 else None
 
     with patch(
         "kiro_crew.dashboard.stale_asset_watchdog.assets_present",
@@ -645,7 +645,7 @@ async def test_a_gap_a_boot_time_step_leaves_behind_arms_the_watchdog(caplog):
 
     def _owner():
         owner_reads["n"] += 1
-        return "the managed-venv installer" if owner_reads["n"] <= 2 else None
+        return "the policy apply command" if owner_reads["n"] <= 2 else None
 
     with patch(
         "kiro_crew.dashboard.stale_asset_watchdog.assets_present",
@@ -674,7 +674,7 @@ async def test_a_restart_into_an_update_is_not_raced(caplog):
         shutdown.set()  # stands for the exec
 
     async def _apply_then_restart():
-        with update_ownership.step(update_ownership.Step.MANAGED_VENV_INSTALLER):
+        with update_ownership.step(update_ownership.Step.POLICY_APPLY):
             await asyncio.sleep(0)
         await _restart()
 

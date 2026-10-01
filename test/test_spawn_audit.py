@@ -371,34 +371,26 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # ``pdfplumber`` commits a page's whole character list before any caller
         # can measure it, so the memory bound has to sit one process down.
         "pdf_extract.py::extract_pdf_segments",
-        # The shadow-venv update engine's spawns. None is agent-influenced and
-        # none can route through sandboxed_spawn_argv, because the engine's whole
-        # job is to build the NEXT gateway install outside the agent sandbox.
-        # Manifest-signature verification runs the openssl binary resolved via
-        # trusted_system_bin (never PATH) and writes NO verification input to any
-        # agent-reachable path: _check_key_fingerprint pipes the embedded public
-        # key to `openssl pkey -pubin -outform DER` on stdin and reads the DER on
-        # stdout (no file); _verify_over_fds hands `openssl dgst -verify` the key
-        # and signature over anonymous pipe FDs the gateway created and the
-        # payload on stdin (no file); _verify_over_nofollow_files is the Windows
-        # fallback only (no `/dev/fd`), staging into a gateway-private temp dir
-        # with every file opened `O_CREAT|O_EXCL|O_NOFOLLOW` so a pre-planted
-        # symlink is refused, never followed. The remaining spawns: _run spawns
-        # `sys.executable -m venv <tree>` and `<shadow python> -m pip install
-        # <wheel>` where the tree name is composed from the SIGNED manifest's
-        # validated version string and the wheel path from the same workdir;
-        # build_shadow_venv's best-effort pip self-upgrade in the shadow tree;
-        # verify_shadow_venv's `-I` isolated import probe against the shadow
-        # interpreter. The update flow is reachable only from the CLI on the
-        # operator's terminal or the gateway's approve endpoint behind the OQ7
-        # host-local step-up — the agent's own bash path is closed by the
+        # The shadow-venv update engine's one spawn seam. Nothing it runs is
+        # agent-influenced, and none of it can route through sandboxed_spawn_argv,
+        # because the engine's whole job is to build the NEXT gateway install
+        # outside the agent sandbox. _spawn_build_child runs, in its own session
+        # (inside the gateway with the trusted-PATH scrubbed environment, under
+        # `kirocrew update` with the operator's own shell environment; interpreter
+        # children run -I either way): the openssl binary
+        # resolved via trusted_system_bin (never PATH), which reads the pinned key
+        # on stdin and the key and signature over anonymous pipe FDs (no file is
+        # staged by name; the Windows fallback opens each one
+        # O_CREAT|O_EXCL|O_NOFOLLOW), `sys.executable -I -m venv <tree>`, the shadow
+        # interpreter's `-I -m pip` refresh, install and `pip check`, and the `-I`
+        # import probe. The tree name is composed from the SIGNED manifest's
+        # validated version string and the wheel path from the same workdir. The
+        # update flow is reachable only from the CLI on the operator's terminal,
+        # the gateway's approve endpoint behind the OQ7 host-local step-up, and the
+        # gateway's own update coordinator (auto_update or a policy floor, against
+        # the check's own verdict) — the agent's own bash path is closed by the
         # self-update denied rule.
-        "platform/wheel_engine.py::_run",
-        "platform/wheel_engine.py::_check_key_fingerprint",
-        "platform/wheel_engine.py::_verify_over_fds",
-        "platform/wheel_engine.py::_verify_over_nofollow_files",
-        "platform/wheel_engine.py::build_shadow_venv",
-        "platform/wheel_engine.py::verify_shadow_venv",
+        "platform/wheel_engine.py::_spawn_build_child",
         # The userns probe child: ONE fixed argv, `sys.executable -I -S -c <shim>`,
         # no shell, no cwd, stdin/stdout are the two handshake pipes. Nothing is
         # agent-influenced -- the shim is a module-level string constant and takes
@@ -1668,13 +1660,6 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # and spawns nothing, so neither PATH nor an agent can choose it.
         "gateway_restart.py::_systemd_show",
         "slack/gateway.py::_auto_apply_update",
-        # Wheel/cli.sh auto-update: runs the signed installer command
-        # (composed locally from a validated channel name and https-pinned
-        # artifact base, never from feed data). The child is the cli.sh
-        # installer, which performs its own RSA-SHA256 signature verification.
-        # NOT sandbox-routed because the installer must write to the managed
-        # venv and symlink ~/.local/bin/kirocrew.
-        "slack/gateway.py::_run_wheel_installer",
         # Pluggable update provider: CommandProvider runs operator-configured
         # shell commands from security_policy.json or config.json (sensitive
         # home dirs the agent cannot write). The check command probes for a

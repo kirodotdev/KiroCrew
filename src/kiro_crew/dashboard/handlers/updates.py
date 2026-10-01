@@ -3118,9 +3118,11 @@ async def api_update_approve(request: web.Request) -> web.Response:
     """POST /api/update/approve — consume the nonce and run the shadow apply.
 
     Called by ``kirocrew update approve`` on the gateway host, which read the
-    nonce from the data home. On success the apply runs as a background task:
-    shadow build + verify + promote (all off-loop), then the shared gateway
-    restart, with progress on the same SSE feed the git apply uses.
+    nonce from the data home. On success the apply runs as a background task
+    through :func:`kiro_crew.platform.wheel_apply.run_wheel_apply`, the path the
+    gateway's unattended apply runs too: shadow build + verify + promote (all
+    off-loop), then the shared gateway restart, with progress on the same SSE
+    feed the git apply uses. A shutdown or an exec restart stops it first.
     """
     if not _loopback_peer(request):
         return web.json_response(
@@ -3139,12 +3141,12 @@ async def api_update_approve(request: web.Request) -> web.Response:
             {"error": "nonce must be a string", "code": "invalid_nonce"}, status=400
         )
     # Function-local: boot-path rule, same as the other update handlers.
-    from kiro_crew.platform import update_stepup
-    from kiro_crew.platform.update_layout import cdn_bases as _cdn
-    from kiro_crew.platform.update_layout import cdn_bases_are_safe as _cdn_safe
+    from kiro_crew.platform import update_stepup, wheel_apply
     from kiro_crew.platform.wheel_engine import (
         WheelUpdateError,
-        apply_wheel_update,
+        check_release_version,
+        hold_update_lock,
+        release_update_lock,
         respawn_executable,
     )
 
@@ -3162,24 +3164,44 @@ async def api_update_approve(request: web.Request) -> web.Response:
             },
             status=409,
         )
-    # Source pin BEFORE the nonce is consumed: a pinned fleet's policy decides
-    # where this host may take code from, and a host approval is not that
-    # authority (same seam the git apply and the CLI wheel path enforce).
-    # Checked pre-consume so a policy-refused attempt leaves the armed request
-    # intact rather than burning it on a request that could never proceed.
-    feed_base, artifact_base = _cdn()
-    blocked = update_blocked_reason(feed_base) or update_blocked_reason(artifact_base)
-    if blocked:
-        logger.warning("In-app update approval refused by source pin: %s", blocked)
+    # Every refusal that does not depend on the approval itself runs BEFORE the
+    # nonce is consumed, so a refused attempt leaves the armed request intact:
+    # the preflight (a pinned fleet's policy decides where this host may take
+    # code from, and a host approval is not that authority), the memory copy's
+    # readiness, and the update lock, which is then HELD through the apply so
+    # "is another update running" is decided exactly once.
+    try:
+        feed_base, artifact_base = wheel_apply.preflight_bases()
+    except wheel_apply.WheelApplyRefused as exc:
+        if exc.code == "blocked_by_policy":
+            logger.warning("In-app update approval refused by source pin: %s", exc.message)
+            return web.json_response(
+                {"error": exc.message, "code": "approve_blocked_by_policy", "governance": True},
+                status=403,
+            )
+        return web.json_response({"error": exc.message, "code": "approve_bad_cdn"}, status=409)
+    try:
+        await asyncio.to_thread(wheel_apply.check_memory_ready)
+    except WheelUpdateError as exc:
+        outcome = wheel_apply.classify(exc)
+        code = "approve_memory_preparing" if outcome.status == "deferred" else "approve_memory"
+        return web.json_response({"error": outcome.message, "code": code}, status=409)
+    state: DashboardState = request.app["state"]
+    if state._gateway_restart_in_progress is True:
+        # The restart's exec would stop the apply before it could be audited.
         return web.json_response(
-            {"error": blocked, "code": "approve_blocked_by_policy", "governance": True},
-            status=403,
-        )
-    if not _cdn_safe():
-        return web.json_response(
-            {"error": "CDN base URL contains disallowed characters", "code": "approve_bad_cdn"},
+            {
+                "error": "the gateway is restarting; approve the update again once it is back",
+                "code": "approve_restarting",
+            },
             status=409,
         )
+    try:
+        lock_fd = await asyncio.to_thread(hold_update_lock)
+    except WheelUpdateError as exc:
+        outcome = wheel_apply.classify(exc)
+        code = "approve_busy" if outcome.status == "busy" else "approve_lock_failed"
+        return web.json_response({"error": outcome.message, "code": code}, status=409)
 
     # SEL-audited at every verdict: an approval is a code-install
     # authorization, which is exactly the class of event the audit chain
@@ -3197,11 +3219,24 @@ async def api_update_approve(request: web.Request) -> web.Response:
             required=required,
         )
 
+    async def _refuse(response: web.Response) -> web.Response:
+        await asyncio.shield(asyncio.to_thread(release_update_lock, lock_fd))
+        return response
+
     try:
         pending = await asyncio.to_thread(update_stepup.consume, body["nonce"])
     except update_stepup.StepUpError as exc:
         await _audit("denied", error=str(exc))
-        return web.json_response({"error": str(exc), "code": "approve_refused"}, status=403)
+        return await _refuse(
+            web.json_response({"error": str(exc), "code": "approve_refused"}, status=403)
+        )
+    try:
+        check_release_version(pending.version)
+    except WheelUpdateError as exc:
+        await _audit("denied", error=str(exc))
+        return await _refuse(
+            web.json_response({"error": str(exc), "code": "approve_refused"}, status=409)
+        )
     if _downgrade_target_below_min_version(pending.version, pending.channel):
         error = "selected release is below the required minimum version"
         await _audit(
@@ -3209,13 +3244,15 @@ async def api_update_approve(request: web.Request) -> web.Response:
             error=error,
             resources=f"v{pending.version} ({pending.channel})",
         )
-        return web.json_response(
-            {
-                "error": error,
-                "code": "approve_below_min_version",
-                "governance": True,
-            },
-            status=409,
+        return await _refuse(
+            web.json_response(
+                {
+                    "error": error,
+                    "code": "approve_below_min_version",
+                    "governance": True,
+                },
+                status=409,
+            )
         )
     try:
         await _audit("granted", resources=f"v{pending.version} ({pending.channel})", required=True)
@@ -3227,54 +3264,59 @@ async def api_update_approve(request: web.Request) -> web.Response:
             "update.approve audit could not be written; refusing unaudited install",
             exc_info=True,
         )
-        return web.json_response(
-            {
-                "error": "approval audit could not be recorded; the update was not started",
-                "code": "approve_audit_failed",
-            },
-            status=503,
+        return await _refuse(
+            web.json_response(
+                {
+                    "error": "approval audit could not be recorded; the update was not started",
+                    "code": "approve_audit_failed",
+                },
+                status=503,
+            )
         )
 
-    state: DashboardState = request.app["state"]
-    loop = asyncio.get_running_loop()
-
-    def _progress(msg: str) -> None:
-        # Called from the executor thread; push on the serving loop.
-        loop.call_soon_threadsafe(state.push_update_progress, "building", msg)
+    # Asked before the promotion moves the launcher it compares against.
+    reattach = await asyncio.to_thread(wheel_apply.userns_reattach_needed, pending.version)
 
     async def _apply() -> None:
         state.push_refresh("updating")
-        state.push_update_progress("pulling", f"Applying update to v{pending.version}…")
-        try:
-            await asyncio.to_thread(
-                apply_wheel_update,
-                channel=pending.channel,
-                feed_base=feed_base,
-                artifact_base=artifact_base,
-                expected_version=pending.version,
-                progress=_progress,
-            )
-        except WheelUpdateError as exc:
-            # Redacted BEFORE the log line as well as the progress push: the
-            # message can embed the CDN base (an operator override may carry
-            # basic-auth credentials in the URL), and the kiro_crew logger
-            # feeds the ring buffer that /api/logs streams to the dashboard —
-            # a raw log line is the same exposure as a raw progress push.
-            message, _ = redact_credentials(str(exc))
-            message, _ = redact_exfiltration_urls(message)
-            logger.warning("In-app wheel update failed: %s", message)
-            await _audit("failed", error=message, resources=f"v{pending.version}")
-            state.push_update_progress("failed", message)
-            state.push_refresh("update_failed")
+        outcome = await wheel_apply.run_wheel_apply(
+            channel=pending.channel,
+            version=pending.version,
+            feed_base=feed_base,
+            artifact_base=artifact_base,
+            state=state,
+            held_lock_fd=lock_fd,
+        )
+        resources = f"v{pending.version}"
+        if outcome.status == "promoted":
+            await _audit("success", resources=f"{resources} promoted")
+            if reattach:
+                state.notify(
+                    "update",
+                    f"Kiro Crew {pending.version}: re-attach the sandbox profile",
+                    wheel_apply.userns_reattach_after_apply(pending.version),
+                )
+            if not await asyncio.to_thread(wheel_apply.restart_reaches, pending.version):
+                # A restart would exec the running version again; say so instead.
+                remedy = wheel_apply.restart_unreachable_remedy(pending.version, pending.channel)
+                logger.error("In-app wheel update to v%s: %s", pending.version, remedy)
+                state.push_update_progress("failed", remedy)
+                state.push_refresh("update_failed")
+                return
+            logger.info("In-app wheel update to v%s promoted; restarting", pending.version)
+            await _restart_gateway(state, resolver=respawn_executable)
             return
-        except Exception:
-            logger.exception("In-app wheel update failed unexpectedly")
-            state.push_update_progress("failed", "Update failed — check logs")
-            state.push_refresh("update_failed")
+        if outcome.status == "cancelled":
+            # A deliberate stop (a shutdown, an exec), not a failed install: no
+            # failure is pushed over the restart or shutdown the stop belongs to.
+            await _audit("cancelled", error=outcome.message, resources=resources)
             return
-        logger.info("In-app wheel update to v%s promoted; restarting", pending.version)
-        await _audit("success", resources=f"v{pending.version} promoted")
-        await _restart_gateway(state, resolver=respawn_executable)
+        await _audit("failed", error=outcome.message, resources=resources)
+        detail = outcome.message
+        if outcome.status == "incompatible":
+            detail = f"{detail}. {wheel_apply.incompatible_remedy(pending.channel)}"
+        state.push_update_progress("failed", detail)
+        state.push_refresh("update_failed")
 
     task = asyncio.create_task(_apply())
     state._background_tasks.add(task)

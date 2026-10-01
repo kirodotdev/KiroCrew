@@ -239,6 +239,63 @@ class TestReexecPythonModule:
         assert "👻 restarted".encode() in result.stdout
 
 
+class TestCancelWheelAppliesInFlight:
+    """Every exit path cancels a managed-venv apply through ONE lookup, not a registry.
+
+    The apply module is found in ``sys.modules`` and never imported, so an exit
+    in a process that never loaded it costs nothing and imports nothing from a
+    tree an update may have changed.
+    """
+
+    _MODULE = "kiro_crew.platform.wheel_apply"
+
+    def _stub_module(self, monkeypatch, cancel) -> None:
+        stub = types.ModuleType(self._MODULE)
+        stub.cancel_wheel_applies = cancel  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, self._MODULE, stub)
+
+    def test_calls_the_loaded_module_with_the_reason(self, monkeypatch):
+        reasons: list[str] = []
+        self._stub_module(monkeypatch, reasons.append)
+
+        pc.cancel_wheel_applies_in_flight("shutdown")
+
+        assert reasons == ["shutdown"]
+
+    def test_does_nothing_and_imports_nothing_when_the_module_is_not_loaded(self, monkeypatch):
+        monkeypatch.delitem(sys.modules, self._MODULE, raising=False)
+
+        pc.cancel_wheel_applies_in_flight("exit")
+
+        assert self._MODULE not in sys.modules
+
+    @pytest.mark.parametrize("seam", ["reexec_launcher", "reexec_python_module", "hard_exit"])
+    def test_every_exit_path_cancels_first_and_survives_a_raising_cancel(
+        self, monkeypatch, tmp_path, seam, nonbundled_python_without_user_site
+    ):
+        """The cancel runs before the exec / ``os._exit``; one that raises never stops it."""
+        order: list[str] = []
+
+        def cancel(reason: str) -> None:
+            order.append(f"cancel:{reason}")
+            raise RuntimeError("the apply's cancel blew up")
+
+        self._stub_module(monkeypatch, cancel)
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        monkeypatch.setattr(pc.os, "execv", lambda path, argv: order.append("execv"))
+        monkeypatch.setattr(pc.os, "_exit", lambda code: order.append(f"_exit:{code}"))
+
+        if seam == "hard_exit":
+            pc.hard_exit(3)
+            assert order == ["cancel:exit", "_exit:3"]
+        elif seam == "reexec_launcher":
+            pc.reexec_launcher(str(tmp_path / "kirocrew"), ["gateway"])
+            assert order == ["cancel:exec", "execv"]
+        else:
+            pc.reexec_python_module("kiro_crew", ["gateway"], executable=str(tmp_path / "python"))
+            assert order == ["cancel:exec", "execv"]
+
+
 class TestWindowsOnArm:
     """``is_windows_on_arm`` answers "will pip accept a win_amd64 wheel here?".
 

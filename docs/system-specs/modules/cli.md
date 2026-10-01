@@ -1869,6 +1869,14 @@ on crash, and starts on boot. Implemented in `src/kiro_crew/service/`.
 - **Other platforms**: install/uninstall return exit code 2 with a
   message pointing to manual setup.
 
+Persisted service launch paths follow the managed-venv stable link: the shared
+`service.common.kirocrew_bin` resolver rewrites both its PATH hit and its
+`sys.argv[0]` fallback through `tree_liveness.through_stable_link`. The explicit
+`KIROCREW_SERVICE_BIN` override remains operator-owned and is only made absolute.
+The macOS missing-launcher repair uses that override or the console script beside
+the running interpreter, with the same stable-link rewrite for the latter; it
+never consults PATH.
+
 `kirocrew stop` is service-aware: if the service is active it calls
 the platform's stop instead of SIGTERM, so the manager does not
 immediately restart the gateway under us.
@@ -1953,15 +1961,20 @@ shape and policy alone, before any check runs: a policy provider owns the update
 and installs only with an `apply_command` it can run; a git checkout installs only
 past the unattended git apply's static gates (a trusted `git`, a primary branch,
 no repository-named exec driver, tracking `origin/<branch>`, the pinned source);
-a managed venv only past the installer's (POSIX, the managed venv itself, a safe
-HTTPS CDN, the pinned source); anything else is updated by its own updater. The
+a managed venv only past the shadow apply's (POSIX, a trusted `openssl`, the
+managed venv itself, a safe HTTPS CDN, the pinned source); anything else is updated by its own updater. The
 gateway's update loop branches on that answer, and `notify` never reaches
 `_prepare_auto_update_apply`, so admission is not paused for an update the install
 will not apply (a provider with no `apply_command`, a feature-branch checkout).
 `notify` is also what a source pin produces, and no badge then points at a
 `kirocrew update` the same pin refuses.
 Dynamic conditions stay with the update itself: the git route still requires
-`version_newer`, the installer route a newer build. The status frame carries the
+`version_newer`, the managed-venv route a newer build. The managed-venv route
+does not pause admission before it builds; only its restart does, through
+`_retry_pending_update_restart`, which calls `_prepare_auto_update_apply`.
+`_auto_apply_wheel_update` makes the first attempt, and while
+`_pending_update_respawn` is set every `_run_update_checks` cycle retries that
+restart on the short cadence instead of checking again. The status frame carries the
 same answer as `update_auto_effect`, re-derived off the loop at most once every
 five minutes once the update loop's first cycle has armed that refresh. A frame
 served BEFORE that derivation answers for itself wherever no git subprocess is

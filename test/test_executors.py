@@ -51,6 +51,7 @@ def test_thread_name_prefixes_distinguish_pools() -> None:
     # Named for the crew log rather than "ledger": three other mechanisms in this
     # codebase are also called a ledger, and a stack dump has to name which one.
     assert ex.crew_log_executor()._thread_name_prefix == "mc-crewlog"
+    assert ex.update_executor()._thread_name_prefix == "mc-update"
 
 
 def test_pools_are_bounded() -> None:
@@ -59,6 +60,8 @@ def test_pools_are_bounded() -> None:
     assert ex.cron_executor()._max_workers == ex._MAX_CRON_WORKERS
     assert ex.maintenance_executor()._max_workers == ex._MAX_MAINT_WORKERS
     assert ex.subprocess_executor()._max_workers == ex._MAX_SUBPROCESS_WORKERS
+    # One apply holds the exclusive update lock for its whole run.
+    assert ex.update_executor()._max_workers == ex._MAX_UPDATE_WORKERS == 1
 
 
 def test_memory_preparation_pool_is_one_named_worker_and_fresh_per_pass() -> None:

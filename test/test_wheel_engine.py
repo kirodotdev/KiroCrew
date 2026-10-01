@@ -17,9 +17,18 @@ import platform
 import re
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
+from typing import Callable
 
 import pytest
+from spawn_test_helpers import (
+    LONG_CHILD_WITH_GRANDCHILD,
+    await_gone,
+    await_pids,
+    kill_leftovers,
+)
 
 from kiro_crew.platform import wheel_engine
 from kiro_crew.platform.wheel_engine import (
@@ -73,6 +82,23 @@ def _manifest(
 
 def _raw(manifest: dict[str, object]) -> bytes:
     return json.dumps(manifest).encode("utf-8")
+
+
+def _stub_children(
+    monkeypatch: pytest.MonkeyPatch,
+    answer: "Callable[[list[str]], tuple[int, bytes, bytes]]" = lambda _argv: (0, b"", b""),
+) -> list[tuple[list[str], dict[str, object]]]:
+    """Replace the one build-child seam; return the ``(argv, kwargs)`` it saw."""
+    seen: list[tuple[list[str], dict[str, object]]] = []
+
+    def fake(
+        argv: list[str], timeout: float, step: str, **kwargs: object
+    ) -> tuple[int, bytes, bytes]:
+        seen.append((list(argv), kwargs))
+        return answer(list(argv))
+
+    monkeypatch.setattr(wheel_engine, "_spawn_build_child", fake)
+    return seen
 
 
 class TestTrustRootMatchesInstaller:
@@ -350,6 +376,32 @@ class TestSignatureVerification:
         wheel_engine._create_exclusive_nofollow(dest, payload)
         assert dest.read_bytes() == payload
 
+    def test_an_openssl_timeout_is_not_reported_as_a_bad_signature(
+        self, keypair: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Only a genuine refusal may say "signature verification failed"."""
+        canonical = b'{"v":"1"}\n'
+        signature = self._sign(keypair, canonical, tmp_path)
+        monkeypatch.setattr(wheel_engine, "_OPENSSL_TIMEOUT_SECS", 0)
+        workdir = tmp_path / "work"
+        workdir.mkdir()
+        with pytest.raises(WheelUpdateError) as info:
+            wheel_engine._verify_signature(canonical, signature, workdir)
+        assert "timed out after 0s" in str(info.value)
+        assert "signature verification failed" not in str(info.value)
+
+
+class TestEngineLockMatchesInstaller:
+    def test_cli_sh_takes_the_engine_lock_in_its_managed_venv_branch(self) -> None:
+        """One update lease per layout: cli.sh and the engine lock the same file."""
+        cli_sh = (_REPO_ROOT / "cli.sh").read_text(encoding="utf-8")
+        assert '_VENV_LOCK="${VENV%/}.update.lock"' in cli_sh
+        assert 'exec 9>>"$_VENV_LOCK"' in cli_sh
+        layout = ManagedVenvLayout(
+            legacy=Path("/srv/crew-venv"), stable_link=Path("/srv/crew-venv-current")
+        )
+        assert wheel_engine._update_lock_path(layout) == Path("/srv/crew-venv.update.lock")
+
 
 class TestWheelDownload:
     class _FakeResponse:
@@ -360,7 +412,7 @@ class TestWheelDownload:
             self._pos = 0
             self._chunk = chunk
 
-        def read(self, n: int) -> bytes:
+        def read1(self, n: int) -> bytes:
             take = min(self._chunk, n, len(self._view) - self._pos)
             out = bytes(self._view[self._pos : self._pos + take])
             self._pos += take
@@ -420,10 +472,12 @@ class TestWheelDownload:
             )
         assert not (tmp_path / "w.whl").exists(), "an over-cap partial must be removed"
 
-    def test_disk_write_failure_is_operator_facing(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    @pytest.mark.parametrize("deadline_elapsed", [False, True])
+    def test_disk_write_failure_names_the_destination_not_the_url(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, deadline_elapsed: bool
     ) -> None:
-        """ENOSPC mid-stream narrates, never tracebacks."""
+        """ENOSPC mid-stream narrates as ``could not write <dest>``, never as a CDN
+        fetch failure and never as the fetch's own total-time deadline."""
         self._serve(monkeypatch, b"wheel-bytes")
 
         import builtins
@@ -435,6 +489,9 @@ class TestWheelDownload:
                 pass
 
             def write(self, data: bytes) -> int:
+                if deadline_elapsed:
+                    # The write itself outlives the fetch's total budget (below).
+                    time.sleep(0.3)
                 raise OSError(28, "No space left on device")
 
             def __enter__(self) -> "_FullDisk":
@@ -449,14 +506,20 @@ class TestWheelDownload:
             return real_open(path, mode, *a, **k)  # type: ignore[call-overload]
 
         monkeypatch.setattr(builtins, "open", fake_open)
-        with pytest.raises(WheelUpdateError, match="could not fetch"):
+        dest = tmp_path / "w.whl"
+        with pytest.raises(WheelUpdateError) as info:
             wheel_engine._download_to_file(
                 f"{_ARTIFACT_BASE}/cli/stable/9.9.9/kirocrew-9.9.9-py3-none-any.whl",
-                tmp_path / "w.whl",
+                dest,
                 cap=1 << 20,
                 timeout=5,
                 expected_sha="0" * 64,
+                total_secs=0.2 if deadline_elapsed else 5,
             )
+        text = str(info.value)
+        assert text.startswith(f"could not write {dest}: ") and "No space left" in text
+        assert "could not fetch" not in text and "did not finish" not in text
+        assert isinstance(info.value.__cause__, OSError), "the OSError stays on the chain"
 
     def test_http_url_refused(self) -> None:
         with pytest.raises(WheelUpdateError, match="non-HTTPS"):
@@ -473,8 +536,9 @@ class TestFetchBytes:
             def __init__(self, body: bytes) -> None:
                 self._body = body
 
-            def read(self, n: int) -> bytes:
-                return self._body[:n]
+            def read1(self, n: int) -> bytes:
+                out, self._body = self._body[:n], self._body[n:]
+                return out
 
             def __enter__(self) -> "_Resp":
                 return self
@@ -505,29 +569,268 @@ class TestFetchBytes:
 
 class TestRunHelper:
     def test_nonzero_exit_carries_stderr_detail(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        class _P:
-            returncode = 3
-            stderr = b"broken pipe"
-
-        monkeypatch.setattr(wheel_engine.subprocess, "run", lambda *a, **k: _P())
+        _stub_children(monkeypatch, lambda _argv: (3, b"", b"broken pipe"))
         with pytest.raises(WheelUpdateError, match="exited 3.*broken pipe"):
             wheel_engine._run(["x"], 5, "step-x")
 
-    def test_timeout_is_operator_facing(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        def raising(*a: object, **k: object) -> object:
-            raise wheel_engine.subprocess.TimeoutExpired(cmd="x", timeout=5)
+    def test_a_timeout_names_the_step(self, tmp_path: Path) -> None:
+        with pytest.raises(WheelUpdateError, match=r"^step-x timed out after 0s$"):
+            wheel_engine._run([sys.executable, "-c", "import time; time.sleep(30)"], 0, "step-x")
 
-        monkeypatch.setattr(wheel_engine.subprocess, "run", raising)
-        with pytest.raises(WheelUpdateError, match="timed out"):
-            wheel_engine._run(["x"], 5, "step-x")
+    def test_a_missing_binary_names_the_step(self, tmp_path: Path) -> None:
+        with pytest.raises(WheelUpdateError, match="^step-x could not run"):
+            wheel_engine._run([str(tmp_path / "no-such-binary")], 5, "step-x")
 
-    def test_missing_binary_is_operator_facing(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        def raising(*a: object, **k: object) -> object:
-            raise OSError("no such file")
+    @pytest.mark.parametrize(
+        "secret",
+        [
+            "AKIAIOSFODNN7EXAMPLE",
+            "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8",
+        ],
+    )
+    def test_a_credential_straddling_the_cut_is_redacted_whole(
+        self, monkeypatch: pytest.MonkeyPatch, secret: str
+    ) -> None:
+        """The stderr is redacted IN FULL before it is cut to its tail.
 
-        monkeypatch.setattr(wheel_engine.subprocess, "run", raising)
-        with pytest.raises(WheelUpdateError, match="could not run"):
-            wheel_engine._run(["x"], 5, "step-x")
+        Cutting first can split a credential, and the half that survives does not
+        match the redactor's pattern. Every cut position inside the token is tried.
+        """
+        limit = wheel_engine._ERROR_DETAIL_CHARS
+        for keep in range(1, len(secret)):
+            # `keep` characters of the token fall inside the kept tail.
+            stderr = ("x" * (limit + 50) + secret + "y" * (limit - keep)).encode()
+            _stub_children(monkeypatch, lambda _argv, err=stderr: (1, b"", err))
+            with pytest.raises(WheelUpdateError) as info:
+                wheel_engine._run(["x"], 5, "step-x")
+            assert secret[-keep:] not in str(info.value), keep
+
+
+@pytest.fixture(params=["waitid", "no-waitid"])
+def reap_platform(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> str:
+    """Run a kill test as it runs on Linux and as it runs on macOS CPython < 3.13,
+    which has no ``os.waitid``: the reap must not depend on it."""
+    if request.param == "no-waitid":
+        monkeypatch.delattr(os, "waitid", raising=False)
+    return request.param
+
+
+class TestCancellableBuildChild:
+    """Every child is killed WITH its group and reaped, on every way out."""
+
+    @staticmethod
+    def _run_in_thread(
+        argv: list[str], timeout: float, ctx: object
+    ) -> tuple[threading.Thread, list[BaseException]]:
+        outcome: list[BaseException] = []
+
+        def _build() -> None:
+            try:
+                wheel_engine._run(argv, timeout, "venv creation", ctx=ctx)  # type: ignore[arg-type]
+            except BaseException as exc:  # noqa: BLE001 - the outcome IS the assertion
+                outcome.append(exc)
+
+        worker = threading.Thread(target=_build)
+        worker.start()
+        return worker, outcome
+
+    def test_cancel_kills_and_reaps_the_child_and_its_group(
+        self, tmp_path: Path, reap_platform: str
+    ) -> None:
+        pidfile = tmp_path / "pids"
+        cancel = wheel_engine.ApplyCancel()
+        worker, outcome = self._run_in_thread(
+            [sys.executable, "-c", LONG_CHILD_WITH_GRANDCHILD, str(pidfile)],
+            60,
+            wheel_engine._BuildContext(cancel=cancel),
+        )
+        pids: tuple[int, ...] = ()
+        try:
+            pids = await_pids(pidfile)
+            cancel.set("shutdown")
+            worker.join(timeout=30)
+            assert not worker.is_alive(), "a cancelled build child must not be waited out"
+            assert len(outcome) == 1
+            assert isinstance(outcome[0], wheel_engine.WheelUpdateCancelled)
+            assert outcome[0].reason == "shutdown"
+            assert all(await_gone(pid) for pid in pids), "the whole group must die"
+        finally:
+            cancel.set()
+            worker.join(timeout=30)
+            kill_leftovers(pids)
+
+    def test_a_set_cancel_spawns_nothing(self, tmp_path: Path) -> None:
+        cancel = wheel_engine.ApplyCancel()
+        cancel.set()
+        pidfile = tmp_path / "pids"
+        with pytest.raises(wheel_engine.WheelUpdateCancelled):
+            wheel_engine._run(
+                [sys.executable, "-c", LONG_CHILD_WITH_GRANDCHILD, str(pidfile)],
+                60,
+                "venv creation",
+                ctx=wheel_engine._BuildContext(cancel=cancel),
+            )
+        assert not pidfile.exists()
+
+    def test_the_timeout_kills_the_group_and_never_reports_a_status(
+        self, tmp_path: Path, reap_platform: str
+    ) -> None:
+        pidfile = tmp_path / "pids"
+        pids: tuple[int, ...] = ()
+        try:
+            with pytest.raises(WheelUpdateError, match="timed out"):
+                wheel_engine._spawn_build_child(
+                    [
+                        sys.executable,
+                        "-c",
+                        LONG_CHILD_WITH_GRANDCHILD + "",
+                        str(pidfile),
+                    ],
+                    1,
+                    "venv creation",
+                )
+            if pidfile.exists():
+                pids = await_pids(pidfile)
+                assert all(await_gone(pid) for pid in pids)
+        finally:
+            kill_leftovers(pids)
+
+    def test_an_error_while_waiting_kills_reaps_and_names_the_step(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, reap_platform: str
+    ) -> None:
+        """An OSError out of the wait (here from the poll interval) kills the group."""
+        pidfile = tmp_path / "pids"
+        real_sleep = time.sleep
+        raised: list[bool] = []
+
+        def failing_sleep(secs: float) -> None:
+            if pidfile.exists() and not raised:
+                raised.append(True)
+                raise OSError(12, "Cannot allocate memory")
+            real_sleep(secs)
+
+        monkeypatch.setattr(wheel_engine.time, "sleep", failing_sleep)
+        pids: tuple[int, ...] = ()
+        try:
+            with pytest.raises(WheelUpdateError, match="venv creation failed while running"):
+                wheel_engine._run(
+                    [sys.executable, "-c", LONG_CHILD_WITH_GRANDCHILD, str(pidfile)],
+                    60,
+                    "venv creation",
+                )
+            monkeypatch.setattr(wheel_engine.time, "sleep", real_sleep)
+            pids = await_pids(pidfile)
+            assert all(await_gone(pid) for pid in pids)
+        finally:
+            kill_leftovers(pids)
+
+    def test_a_failure_arming_the_cancel_still_kills_and_reaps(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Everything after the spawn sits inside the kill-and-reap guard."""
+        pidfile = tmp_path / "pids"
+        cancel = wheel_engine.ApplyCancel()
+        started: list[int] = []
+        real_popen = wheel_engine.subprocess.Popen
+
+        def recording_popen(*args: object, **kwargs: object) -> object:
+            proc = real_popen(*args, **kwargs)  # type: ignore[call-overload]
+            started.append(proc.pid)
+            return proc
+
+        def broken_on_set(hook: object) -> object:
+            raise RuntimeError("cannot arm")
+
+        monkeypatch.setattr(wheel_engine.subprocess, "Popen", recording_popen)
+        monkeypatch.setattr(cancel, "on_set", broken_on_set)
+        try:
+            with pytest.raises(RuntimeError, match="cannot arm"):
+                wheel_engine._run(
+                    [sys.executable, "-c", LONG_CHILD_WITH_GRANDCHILD, str(pidfile)],
+                    60,
+                    "venv creation",
+                    ctx=wheel_engine._BuildContext(cancel=cancel),
+                )
+            assert started and all(await_gone(pid) for pid in started)
+        finally:
+            kill_leftovers(started)
+
+    def test_a_finished_child_reports_its_output(self) -> None:
+        rc, out, err = wheel_engine._spawn_build_child(
+            [sys.executable, "-c", "import sys; print('out'); sys.stderr.write('err')"],
+            30,
+            "probe",
+            want_stdout=True,
+        )
+        assert (rc, out.strip(), err) == (0, b"out", b"err")
+
+    @pytest.mark.parametrize("trusted", [True, False])
+    def test_children_run_in_their_own_session_with_the_build_umask(
+        self, monkeypatch: pytest.MonkeyPatch, trusted: bool
+    ) -> None:
+        """The real Popen call: own session, owner-only umask, cwd ``/``, and the
+        environment the route chooses (the gateway's scrubbed one, or the CLI's own)."""
+        seen: list[dict[str, object]] = []
+        real_popen = wheel_engine.subprocess.Popen
+
+        def recording_popen(*args: object, **kwargs: object) -> object:
+            seen.append(kwargs)
+            return real_popen(*args, **kwargs)  # type: ignore[call-overload]
+
+        monkeypatch.setattr(wheel_engine.subprocess, "Popen", recording_popen)
+        monkeypatch.setenv("PYTHONPATH", "/somewhere/foreign")
+        monkeypatch.setenv("LD_PRELOAD", "/somewhere/evil.so")
+        monkeypatch.setenv("LD_LIBRARY_PATH", "/opt/python/lib")
+        wheel_engine._run(
+            [sys.executable, "-c", "pass"],
+            30,
+            "probe",
+            ctx=wheel_engine._BuildContext(trusted_env=trusted),
+        )
+        (kwargs,) = seen
+        assert kwargs["start_new_session"] is True
+        assert kwargs["umask"] == wheel_engine._BUILD_UMASK
+        assert kwargs["cwd"] == "/"
+        env = kwargs["env"]
+        assert isinstance(env, dict)
+        assert env["LD_LIBRARY_PATH"] == "/opt/python/lib", "library paths are kept"
+        if trusted:
+            assert "PYTHONPATH" not in env and "LD_PRELOAD" not in env
+        else:
+            assert env["PYTHONPATH"] == "/somewhere/foreign", "the CLI passes its own shell"
+
+    def test_every_child_holds_the_update_lock_past_its_parent(self, tmp_path: Path) -> None:
+        """The lock fd is handed to the child, so an orphaned child keeps the lock."""
+        from kiro_crew.platform_compat import try_acquire_lock
+
+        lock_path = tmp_path / "crew-venv.update.lock"
+        parent_fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
+        assert try_acquire_lock(parent_fd, exclusive=True)
+        pidfile = tmp_path / "pids"
+        cancel = wheel_engine.ApplyCancel()
+        worker, _outcome = self._run_in_thread(
+            [sys.executable, "-c", LONG_CHILD_WITH_GRANDCHILD, str(pidfile)],
+            60,
+            wheel_engine._BuildContext(cancel=cancel, lock_fd=parent_fd),
+        )
+        pids: tuple[int, ...] = ()
+        probe = os.open(str(lock_path), os.O_RDWR)
+        try:
+            pids = await_pids(pidfile)
+            os.close(parent_fd)  # the parent lets go WITHOUT unlocking, as an exit does
+            parent_fd = -1
+            assert not try_acquire_lock(probe, exclusive=True), "the child must still hold it"
+            cancel.set()
+            worker.join(timeout=30)
+            assert all(await_gone(pid) for pid in pids)
+            assert try_acquire_lock(probe, exclusive=True), "freed once the child is gone"
+        finally:
+            cancel.set()
+            worker.join(timeout=30)
+            kill_leftovers(pids)
+            os.close(probe)
+            if parent_fd >= 0:
+                os.close(parent_fd)
 
 
 class TestBuildGuards2:
@@ -567,27 +870,18 @@ class TestBuildUmask:
         """venv creation, the pip refresh, and the wheel install all get the owner-only
         build umask via subprocess's umask= (thread-safe, no preexec_fn), so bin/ is
         born non-group-writable."""
-        seen: list[object] = []
-
-        def fake_subprocess_run(*a: object, **k: object):  # type: ignore[no-untyped-def]
-            seen.append(k.get("umask"))
-            return type("P", (), {"returncode": 0, "stdout": b"", "stderr": b""})()
-
-        monkeypatch.setattr(wheel_engine.subprocess, "run", fake_subprocess_run)
+        seen = _stub_children(monkeypatch)
         monkeypatch.setattr(wheel_engine, "_BUILD_UMASK", 0o077)
 
         wheel_engine.build_shadow_venv(tmp_path / "w.whl", tmp_path / "crew-venv-1.0.0")
 
-        assert seen == [0o077, 0o077, 0o077]
+        assert [kwargs.get("umask") for _argv, kwargs in seen] == [0o077, 0o077, 0o077]
 
     def test_build_creates_owner_only_root(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         """The shadow root is born 0o700 -- not group-writable even under umask 002."""
         monkeypatch.setattr(wheel_engine, "_run", lambda *a, **k: None)
-        monkeypatch.setattr(
-            wheel_engine.subprocess, "run", lambda *a, **k: type("P", (), {"returncode": 0})()
-        )
         shadow = tmp_path / "crew-venv-1.0.0"
         saved = os.umask(0o002)
         try:
@@ -624,12 +918,14 @@ class TestManifestFetchOrchestration:
         calls: list[str] = []
         raw = _raw(_manifest())
         monkeypatch.setattr(
-            wheel_engine, "_fetch_bytes", lambda url, cap, timeout: (calls.append("fetch"), raw)[1]
+            wheel_engine,
+            "_fetch_bytes",
+            lambda url, cap, timeout, **_kw: (calls.append("fetch"), raw)[1],
         )
         monkeypatch.setattr(
             wheel_engine,
             "_verify_signature",
-            lambda canonical, signature, workdir: calls.append("verify"),
+            lambda canonical, signature, workdir, **_kw: calls.append("verify"),
         )
         payload = wheel_engine.fetch_verified_manifest(
             channel="stable",
@@ -687,6 +983,24 @@ class TestLayoutAndDetection:
         from kiro_crew.config.paths import data_home
 
         assert layout.legacy == Path(f"{str(data_home()).rstrip('/')}-venv")
+
+    @pytest.mark.parametrize("version", ["9.9/9", "../9", "9.9.9\n", "", "x" * 129])
+    def test_a_version_outside_the_release_grammar_names_no_tree(
+        self, tmp_path: Path, version: str
+    ) -> None:
+        """The update paths read the version before the signed manifest, so a
+        malformed one is the engine's own refusal, never pathlib's ``ValueError``."""
+        layout = ManagedVenvLayout(
+            legacy=tmp_path / "crew-venv", stable_link=tmp_path / "crew-venv-current"
+        )
+        with pytest.raises(WheelUpdateError, match="fails validation"):
+            layout.versioned_tree(version)
+
+    def test_a_release_version_names_its_sibling_tree(self, tmp_path: Path) -> None:
+        layout = ManagedVenvLayout(
+            legacy=tmp_path / "crew-venv", stable_link=tmp_path / "crew-venv-current"
+        )
+        assert layout.versioned_tree("1.2.3rc1+local") == tmp_path / "crew-venv-1.2.3rc1+local"
 
     def test_running_from_legacy_tree_detects_symlinked_interpreter(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -804,7 +1118,7 @@ class TestRespawnExecutable:
 
         monkeypatch.setenv("KIROCREW_VENV", str(legacy))
         monkeypatch.setattr(sys, "executable", str(old_exe))
-        assert respawn_executable() == str(stable / "bin" / "python3")
+        assert respawn_executable() == str(Path(os.path.realpath(stable)) / "bin" / "python3")
 
     def test_link_repointed_outside_managed_trees_falls_back(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -867,7 +1181,7 @@ class TestRespawnExecutable:
 
         monkeypatch.setenv("KIROCREW_VENV", str(legacy))
         monkeypatch.setattr(sys, "executable", str(old_exe))
-        assert respawn_executable() == str(stable / "bin" / "python3")
+        assert respawn_executable() == str(Path(os.path.realpath(stable)) / "bin" / "python3")
 
     def _nested_venv_home(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
         """A data home whose ``venv/`` is the retired in-data-home install."""
@@ -903,7 +1217,7 @@ class TestRespawnExecutable:
         shutil.rmtree(home / "venv")
 
         assert not Path(sys.executable).exists()
-        assert respawn_executable() == str(stable / "bin" / "python3")
+        assert respawn_executable() == str(Path(os.path.realpath(stable)) / "bin" / "python3")
 
     def test_nested_venv_before_migration_keeps_sys_executable(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -1105,7 +1419,7 @@ class TestShadowBuildGuards:
         assert stable.resolve() == live.resolve()
 
     def test_refuses_a_completed_tree_without_sentinel(self, tmp_path: Path) -> None:
-        """No sentinel = completed or foreign; might serve a gateway. Refused."""
+        """No marker and no sentinel: this engine did not build it. Refused."""
         tree = tmp_path / "crew-venv-9.9.9"
         (tree / "bin").mkdir(parents=True)
         (tree / "pyvenv.cfg").write_text("")
@@ -1136,10 +1450,7 @@ class TestShadowBuildGuards:
         monkeypatch.setattr(
             wheel_engine,
             "_run",
-            lambda argv, timeout, step, cwd=None: calls.append(step),
-        )
-        monkeypatch.setattr(
-            wheel_engine.subprocess, "run", lambda *a, **k: type("P", (), {"returncode": 0})()
+            lambda argv, timeout, step, ctx=None: calls.append(step),
         )
         wheel_engine.build_shadow_venv(tmp_path / "kirocrew.whl", tree)
         assert "venv creation" in calls, "the retry must rebuild after clearing debris"
@@ -1171,13 +1482,14 @@ class TestShadowVerification:
         stdout: str = "9.9.9\n",
         stderr: str = "",
     ) -> None:
-        class _Proc:
-            def __init__(self) -> None:
-                self.returncode = returncode
-                self.stdout = stdout
-                self.stderr = stderr
+        # Bytes, as the real probe returns them: it runs without text mode and
+        # decodes the UTF-8 its `-X utf8` child writes.
+        def answer(argv: list[str]) -> tuple[int, bytes, bytes]:
+            if argv[-2:] == ["pip", "check"]:
+                return 0, b"No broken requirements found.\n", b""
+            return returncode, stdout.encode("utf-8"), stderr.encode("utf-8")
 
-        monkeypatch.setattr(wheel_engine.subprocess, "run", lambda *a, **k: _Proc())
+        _stub_children(monkeypatch, answer)
 
     def test_version_match_with_console_script_passes(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -1219,7 +1531,13 @@ class TestApplyWheelUpdateOrchestration:
     """The full flow with the heavy steps stubbed: ordering and refusal seams."""
 
     def _wire(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, feed_version: str = "9.9.9"
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        *,
+        feed_version: str = "9.9.9",
+        real_manifest: bool = False,
+        python_requires: str = ">=3.10",
     ) -> tuple[ManagedVenvLayout, list[str]]:
         legacy = tmp_path / "crew-venv"
         (legacy / "bin").mkdir(parents=True)
@@ -1233,26 +1551,30 @@ class TestApplyWheelUpdateOrchestration:
             return {
                 "version": feed_version,
                 "sha256": "a" * 64,
+                "python_requires": python_requires,
                 "wheel_url": f"{_ARTIFACT_BASE}/cli/stable/{feed_version}/"
                 f"kirocrew-{feed_version}-py3-none-any.whl",
             }
 
-        def fake_download(payload: dict[str, str], dest: Path) -> Path:
+        def fake_download(payload: dict[str, str], dest: Path, **_kw: object) -> Path:
             calls.append("download")
             out = dest / "kirocrew.whl"
             out.write_bytes(b"wheel")
             return out
 
-        def fake_build(wheel: Path, shadow: Path, stable_link: Path | None = None) -> None:
+        def fake_build(
+            wheel: Path, shadow: Path, stable_link: Path | None = None, **_kw: object
+        ) -> None:
             calls.append("build")
             (shadow / "bin").mkdir(parents=True)
             (shadow / "pyvenv.cfg").write_text("")
             (shadow / wheel_engine._SHADOW_SENTINEL).write_text("")
 
-        def fake_verify(shadow: Path, version: str) -> None:
+        def fake_verify(shadow: Path, version: str, **_kw: object) -> None:
             calls.append("verify")
 
-        monkeypatch.setattr(wheel_engine, "fetch_verified_manifest", fake_manifest)
+        if not real_manifest:
+            monkeypatch.setattr(wheel_engine, "fetch_verified_manifest", fake_manifest)
         monkeypatch.setattr(wheel_engine, "download_verified_wheel", fake_download)
         monkeypatch.setattr(wheel_engine, "build_shadow_venv", fake_build)
         monkeypatch.setattr(wheel_engine, "verify_shadow_venv", fake_verify)
@@ -1291,6 +1613,10 @@ class TestApplyWheelUpdateOrchestration:
         promoted = layout.versioned_tree("9.9.9")
         (promoted / "bin").mkdir(parents=True)
         (promoted / "pyvenv.cfg").write_text("")
+        (promoted / "bin" / "python3").write_text("")
+        (promoted / "bin" / "python3").chmod(0o755)
+        # A sentinel stranded by a failed post-promote unlink is cleared here.
+        (promoted / wheel_engine._SHADOW_SENTINEL).write_text("")
         os.symlink(str(promoted.resolve()), str(layout.stable_link))
         repointed: list[bool] = []
         monkeypatch.setattr(
@@ -1306,6 +1632,37 @@ class TestApplyWheelUpdateOrchestration:
         assert result == promoted
         assert repointed == [True], "the launcher handoff must be completed"
         assert calls == [], "recovery must NOT re-fetch, re-download, or rebuild"
+        assert not (promoted / wheel_engine._SHADOW_SENTINEL).exists()
+
+    def test_a_dangling_stable_link_is_rebuilt_not_reported_promoted(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A link naming a tree that is gone would otherwise restart into nothing."""
+        layout, calls = self._wire(monkeypatch, tmp_path)
+        os.symlink(str(layout.versioned_tree("9.9.9")), str(layout.stable_link))
+        result = self._apply()
+        assert calls == ["manifest", "download", "build", "verify"]
+        assert layout.stable_link.resolve(strict=True) == result.resolve()
+
+    def test_a_dangling_stable_link_is_repointed_even_when_the_apply_fails(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """As cli.sh does: a link naming a tree that is gone is repointed at a tree
+        that exists (here the legacy venv) before anything else, so the launcher
+        and a service start work again whatever the rest of the apply does."""
+        layout, _calls = self._wire(monkeypatch, tmp_path)
+        python = layout.legacy / "bin" / "python3"
+        python.write_text("", encoding="utf-8")
+        python.chmod(0o755)
+        os.symlink(str(layout.versioned_tree("9.9.9")), str(layout.stable_link))
+
+        def offline(**_kw: object) -> dict[str, str]:
+            raise WheelUpdateError("could not fetch the manifest")
+
+        monkeypatch.setattr(wheel_engine, "fetch_verified_manifest", offline)
+        with pytest.raises(WheelUpdateError, match="could not fetch"):
+            self._apply()
+        assert layout.stable_link.resolve(strict=True) == layout.legacy.resolve()
 
     def test_feed_moving_between_check_and_apply_is_refused(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -1334,23 +1691,203 @@ class TestApplyWheelUpdateOrchestration:
         holder = _os.open(str(lock_path), _os.O_CREAT | _os.O_RDWR, 0o600)
         try:
             assert _try(holder, exclusive=True)
-            with pytest.raises(WheelUpdateError, match="already in progress"):
+            locked: list[bool] = []
+            with pytest.raises(wheel_engine.WheelUpdateBusy, match="already in progress"):
                 wheel_engine.apply_wheel_update(
                     channel="stable",
                     feed_base=_FEED_BASE,
                     artifact_base=_ARTIFACT_BASE,
                     expected_version="9.9.9",
+                    on_locked=lambda: locked.append(True),
                 )
             assert calls == [], "a refused run must do no work at all"
+            assert locked == [], "a run that lost the lock reports no progress"
+            with pytest.raises(wheel_engine.WheelUpdateBusy):
+                wheel_engine.hold_update_lock()
         finally:
             _os.close(holder)
+
+    def test_a_cancel_before_promotion_leaves_the_stable_link_alone(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A cancel that lands while the tree is verified wins over the promotion."""
+        layout, calls = self._wire(monkeypatch, tmp_path)
+        os.symlink(str(layout.legacy), str(layout.stable_link))
+        cancel = wheel_engine.ApplyCancel()
+
+        def verify_then_cancel(shadow: Path, version: str, **_kw: object) -> None:
+            calls.append("verify")
+            cancel.set("shutdown")
+
+        monkeypatch.setattr(wheel_engine, "verify_shadow_venv", verify_then_cancel)
+        with pytest.raises(wheel_engine.WheelUpdateCancelled):
+            wheel_engine.apply_wheel_update(
+                channel="stable",
+                feed_base=_FEED_BASE,
+                artifact_base=_ARTIFACT_BASE,
+                expected_version="9.9.9",
+                cancel=cancel,
+            )
+        assert calls == ["manifest", "download", "build", "verify"]
+        assert layout.stable_link.resolve() == layout.legacy.resolve()
+        assert not layout.versioned_tree("9.9.9").exists(), "the partial tree is set aside"
+        tombstones = [p for p in tmp_path.iterdir() if ".deleting-" in p.name]
+        assert len(tombstones) == 1, "a cancel only renames; the deletion is the next sweep's"
+        wheel_engine._sweep_layout_debris(layout)
+        assert not tombstones[0].exists()
+
+    def test_a_cancel_before_the_build_builds_nothing(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # The real manifest fetch, so the cancel it checks first is what is pinned.
+        layout, calls = self._wire(monkeypatch, tmp_path, real_manifest=True)
+        fetched: list[str] = []
+        monkeypatch.setattr(
+            wheel_engine, "_fetch_bytes", lambda url, cap, timeout: fetched.append(url) or b""
+        )
+        cancel = wheel_engine.ApplyCancel()
+        cancel.set()
+        with pytest.raises(wheel_engine.WheelUpdateCancelled):
+            wheel_engine.apply_wheel_update(
+                channel="stable",
+                feed_base=_FEED_BASE,
+                artifact_base=_ARTIFACT_BASE,
+                expected_version="9.9.9",
+                cancel=cancel,
+            )
+        assert fetched == [], "nothing is fetched once the cancel is set"
+        assert calls == []
+        assert not layout.versioned_tree("9.9.9").exists()
+        assert not layout.stable_link.exists()
+
+    def _apply(self, **kwargs: object) -> Path:
+        return wheel_engine.apply_wheel_update(
+            channel="stable",
+            feed_base=_FEED_BASE,
+            artifact_base=_ARTIFACT_BASE,
+            expected_version="9.9.9",
+            **kwargs,  # type: ignore[arg-type]
+        )
+
+    def test_a_python_floor_this_host_fails_refuses_before_any_download(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        layout, calls = self._wire(monkeypatch, tmp_path, python_requires=">=3.99")
+        with pytest.raises(
+            wheel_engine.WheelUpdateIncompatible, match="requires Python >= 3.99"
+        ) as info:
+            self._apply()
+        assert (info.value.version, info.value.sha256) == ("9.9.9", "a" * 64)
+        assert calls == ["manifest"], "an unbuildable release downloads nothing"
+        assert not layout.stable_link.exists()
+
+    def test_a_no_wheel_build_failure_is_an_ordinary_failure(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """pip's "No matching distribution" can be an unreachable index too, so it is
+        never read as "this release can never build here": only the signed
+        metadata decides that."""
+        layout, _calls = self._wire(monkeypatch, tmp_path)
+
+        def no_wheel(
+            wheel: Path, shadow: Path, stable_link: Path | None = None, **_kw: object
+        ) -> None:
+            shadow.mkdir()
+            (shadow / wheel_engine._SHADOW_SENTINEL).write_text("")
+            raise WheelUpdateError("pip found no prebuilt wheel of numpy>=2.0")
+
+        monkeypatch.setattr(wheel_engine, "build_shadow_venv", no_wheel)
+        with pytest.raises(WheelUpdateError) as info:
+            self._apply()
+        assert not isinstance(info.value, wheel_engine.WheelUpdateIncompatible)
+        assert not layout.versioned_tree("9.9.9").exists(), "the failed tree is cleared"
+
+    def test_a_deadline_cancel_removes_the_partial_tree_at_once(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The process keeps running after a deadline, so no tombstone is left."""
+        _layout, _calls = self._wire(monkeypatch, tmp_path)
+        cancel = wheel_engine.ApplyCancel()
+
+        def verify_then_expire(shadow: Path, version: str, **_kw: object) -> None:
+            cancel.set("deadline")
+
+        monkeypatch.setattr(wheel_engine, "verify_shadow_venv", verify_then_expire)
+        with pytest.raises(wheel_engine.WheelUpdateCancelled):
+            self._apply(cancel=cancel)
+        assert not [p for p in tmp_path.iterdir() if ".deleting-" in p.name]
+
+    def test_a_lock_the_filesystem_cannot_take_is_a_failure_not_busy(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        import errno as _errno
+        import fcntl as _fcntl
+
+        layout, _calls = self._wire(monkeypatch, tmp_path)
+
+        def no_locks(fd: int, op: int) -> None:
+            raise OSError(_errno.ENOLCK, "No locks available")
+
+        monkeypatch.setattr(_fcntl, "flock", no_locks)
+        with pytest.raises(WheelUpdateError) as info:
+            self._apply()
+        assert not isinstance(info.value, wheel_engine.WheelUpdateBusy)
+        assert "cannot lock" in str(info.value)
+        assert str(wheel_engine._update_lock_path(layout)) in str(info.value)
+
+    def test_a_cancel_set_while_queued_never_reports_promoted(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Even an already-promoted release is not reported once the cancel is set."""
+        layout, calls = self._wire(monkeypatch, tmp_path)
+        cancel = wheel_engine.ApplyCancel()
+        cancel.set("shutdown")
+        locked: list[bool] = []
+        with pytest.raises(wheel_engine.WheelUpdateCancelled):
+            self._apply(cancel=cancel, on_locked=lambda: locked.append(True))
+        assert calls == [] and locked == []
+
+    def test_a_held_lock_is_used_and_left_to_its_owner(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        layout, calls = self._wire(monkeypatch, tmp_path)
+        fd = wheel_engine.hold_update_lock()
+        try:
+            self._apply(held_lock_fd=fd)
+            assert calls == ["manifest", "download", "build", "verify"]
+            with pytest.raises(wheel_engine.WheelUpdateBusy):
+                wheel_engine.hold_update_lock()
+        finally:
+            wheel_engine.release_update_lock(fd)
+        wheel_engine.release_update_lock(wheel_engine.hold_update_lock())
+
+    def test_a_failed_memory_snapshot_refuses_the_promotion(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        layout, _calls = self._wire(monkeypatch, tmp_path)
+
+        def refuse() -> None:
+            raise WheelUpdateError("the pre-update memory snapshot failed")
+
+        with pytest.raises(WheelUpdateError, match="memory snapshot failed"):
+            self._apply(before_promote=refuse)
+        assert not layout.stable_link.exists()
+        assert not layout.versioned_tree("9.9.9").exists(), "the unpromoted tree is cleared"
+
+    def test_progress_starts_only_once_the_lock_is_held(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        _layout, _calls = self._wire(monkeypatch, tmp_path)
+        events: list[str] = []
+        self._apply(on_locked=lambda: events.append("locked"), progress=events.append)
+        assert events[0] == "locked"
 
     def test_failed_verification_never_promotes(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         layout, calls = self._wire(monkeypatch, tmp_path)
 
-        def failing_verify(shadow: Path, version: str) -> None:
+        def failing_verify(shadow: Path, version: str, **_kw: object) -> None:
             raise WheelUpdateError("shadow venv cannot import kiro_crew — not promoting")
 
         monkeypatch.setattr(wheel_engine, "verify_shadow_venv", failing_verify)
@@ -1378,11 +1915,11 @@ class TestBinaryOnlyDependencies:
     def _capture(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
         seen: list[list[str]] = []
 
-        def fake_subprocess_run(argv, *a: object, **k: object):  # type: ignore[no-untyped-def]
-            seen.append(list(argv))
-            return type("P", (), {"returncode": 0, "stdout": b"", "stderr": b""})()
+        def answer(argv: list[str]) -> tuple[int, bytes, bytes]:
+            seen.append(argv)
+            return 0, b"", b""
 
-        monkeypatch.setattr(wheel_engine.subprocess, "run", fake_subprocess_run)
+        _stub_children(monkeypatch, answer)
         return seen
 
     def test_the_wheel_install_is_binary_only(
@@ -1450,27 +1987,20 @@ class TestBinaryOnlyDependencies:
     def _failing_install(monkeypatch: pytest.MonkeyPatch, wheel: Path, stderr: bytes) -> None:
         """Every build child succeeds except the wheel install, which fails with ``stderr``."""
 
-        def fake_subprocess_run(argv, *a: object, **k: object):  # type: ignore[no-untyped-def]
+        def answer(argv: list[str]) -> tuple[int, bytes, bytes]:
             failing = str(wheel) in argv
-            return type(
-                "P",
-                (),
-                {
-                    "returncode": 1 if failing else 0,
-                    "stdout": b"",
-                    "stderr": stderr if failing else b"",
-                },
-            )()
+            return (1 if failing else 0), b"", (stderr if failing else b"")
 
-        monkeypatch.setattr(wheel_engine.subprocess, "run", fake_subprocess_run)
+        _stub_children(monkeypatch, answer)
 
     def test_a_no_wheel_failure_names_the_platform_and_the_opt_in(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         """The update refuses in the installer's words, not pip's: which packages
         have no wheel, what host this is, and how to opt into compiling -- including
-        that the opt-in has to reach the gateway's own environment (the service
-        unit), which is the one fact an install-time success hides."""
+        that only `kirocrew update` from the operator's shell honours it (the
+        gateway's own build steps run on the trusted system PATH), which is the one
+        fact an install-time success hides."""
         monkeypatch.delenv("KIROCREW_ALLOW_SOURCE_BUILDS", raising=False)
         wheel = tmp_path / "w.whl"
         self._failing_install(monkeypatch, wheel, self._NO_WHEEL_TAIL)
@@ -1487,8 +2017,8 @@ class TestBinaryOnlyDependencies:
         assert "Usually this means the host is older than the wheels' floor" in text
         assert "package index could not be reached or does not carry these releases" in text
         assert "KIROCREW_ALLOW_SOURCE_BUILDS=1" in text
-        assert "service unit" in text
-        assert "kirocrew update" in text
+        assert "trusted system PATH only" in text
+        assert "kirocrew update` from a shell" in text
         # pip's own verdict is kept, so the operator can check the classification.
         assert "No matching distribution found for numpy>=2.0" in text
         # Nothing was compiled: the install command was the only pip install of

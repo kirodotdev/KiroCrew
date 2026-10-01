@@ -526,7 +526,7 @@ def bundled_by_desktop_app(dist: str | None = None) -> bool:
 
 
 def _installer_runs_here() -> bool:
-    """cli.sh is POSIX shell; the seam tests pin instead of ``sys.platform``."""
+    """The managed venv is cli.sh's, a POSIX install; the seam tests pin this."""
     return sys.platform != "win32"
 
 
@@ -567,19 +567,20 @@ def _runs_from_managed_venv() -> bool:
 
 
 def _wheel_route() -> tuple[str | None, str]:
-    """The unattended installer re-run's STATIC gates."""
+    """The unattended shadow apply's STATIC gates (``wheel_apply.preflight_bases``)."""
     from kiro_crew.platform.update_governance import update_blocked_reason
     from kiro_crew.platform.update_layout import cdn_bases, cdn_bases_are_safe
     from kiro_crew.platform_compat import trusted_system_bin
 
     if not _installer_runs_here():
-        return None, "the installer is POSIX shell"
-    if not trusted_system_bin("sh"):
-        # The apply refuses rather than fall back to a bare name, so a host
-        # with no trusted shell cannot install unattended at all.
-        return None, "no trusted shell outside PATH to run the installer"
+        return None, "the managed venv is a POSIX install"
+    if not trusted_system_bin("openssl"):
+        # The engine verifies the signed manifest with a trusted openssl and
+        # refuses rather than fall back to a bare name, so a host with none
+        # cannot install unattended at all.
+        return None, "no trusted openssl outside PATH to verify the signed release"
     if not _runs_from_managed_venv():
-        return None, "only the managed venv re-runs its own installer"
+        return None, "only the managed venv updates itself unattended"
     if not cdn_bases_are_safe():
         return None, "the CDN base is not a safe HTTPS URL"
     if any(update_blocked_reason(base) for base in cdn_bases()):
