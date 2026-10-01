@@ -178,7 +178,7 @@ class TestTheStepActuallyEmitsWhatItClaims:
     def test_the_operator_sees_the_trap_and_the_remedy(self, posix_test_shell: str) -> None:
         out = self._run_commit_count_step(posix_test_shell)
         assert "Update branch" in out
-        assert "git rebase origin/main" in out
+        assert "git rebase refs/remotes/origin/main" in out
 
 
 class TestTheExecutedShellIsHermetic:

@@ -841,9 +841,10 @@ Fill `{...}` from the spec; keep every clause — each one closes a failure mode
 > no `tox`, no `nox`, no `run-tests`/`local-gate`/"run the gates" wrapper of any
 > kind: a wrapper that escalates to the full suite satisfies the letter of a
 > targeted-only brief. The ban is on suite wrappers, NOT on the push gate
-> below — `preflight.py` and `push_guard.py` shell out only to `git` and `gh`
-> and run no test at all, so a targeted-test brief never licenses an unguarded
-> push. Pass `-n0` **explicitly** on every run: omitting `-n`
+> below — `preflight.py` and `push_guard.py` spawn only `git`, `gh` and the
+> OS tree-kill tool, and run no test at all (`--commit` / `--squash` run the
+> repository's own git hooks, as any commit does), so a targeted-test brief
+> never licenses an unguarded push. Pass `-n0` **explicitly** on every run: omitting `-n`
 > does not mean single process, it inherits whatever the project's pytest
 > `addopts` sets, and `-n auto` is a common default. Canonical line —
 > `timeout 900 python3 -m pytest -n0 <test file> -x -q </dev/null`. Do not
@@ -867,7 +868,8 @@ Fill `{...}` from the spec; keep every clause — each one closes a failure mode
 > look partly correct for entirely the wrong reason.
 > NEVER COMMIT FROM THE SHARED CHECKOUT. You may `cd` there for `gh` calls, but
 > its index is not yours and may hold hundreds of staged files left by another
-> operation, so one `git commit -a` there sweeps unrelated work into your PR.
+> operation, so one `git commit -a` there — or any commit after staging even a
+> single file — sweeps that staged work into your PR.
 > Each worktree has its own index; commit only from yours. Run nothing there
 > that moves its HEAD or writes its index or files (merge, pull, reset, clean,
 > checkout, restore, `gh pr checkout`, `gh repo sync`); report its state and
@@ -891,16 +893,37 @@ Fill `{...}` from the spec; keep every clause — each one closes a failure mode
 > every push.
 > Run `preflight.py` before the first commit. Then before EVERY push confirm
 > `git status --porcelain` is empty and run `<gate>/push_guard.py
-> --base {default_branch} --max-ahead {max_commits}`, which refuses a stale base
-> or a replayed upstream commit. Pass `--max-ahead` explicitly and fill it from
+> --base {default_branch} --max-ahead {max_commits}`, which refuses a stale base,
+> a replayed upstream commit, anything staged that HEAD lacks, or a changed path
+> the gate did not commit on this branch and no other author's pushed commit
+> carries (a commit made by hand). When it lists such paths, read each diff: name
+> the ones that are yours after `--` on the same command (that vouch rewrites
+> nothing), and report any that are not.
+> Pass `--max-ahead` explicitly and fill it from
 > the spec, never from memory: the script defaults to 5, which is looser than
 > most repositories' own PR commit-count gate, so omitting it lets a branch read
 > `SAFE TO PUSH` and then fail that gate. Add `--require-single-on-base` only
-> when you actually squashed to one commit; it asserts `HEAD~1 ==
-> origin/<base>` and refuses a legitimate multi-commit branch.
-> Read the exit code, do not just test for zero: `0` proceed; `30`/`40` the gate
-> REFUSED, so do not push and report the code with the branch state; `2` the gate
-> could not RUN — an environment error, not a verdict — so do not push and report
+> when you actually squashed to one commit with the gate's `--squash`; it
+> asserts HEAD's only parent is `origin/<base>` and that the gate committed
+> every path HEAD changes, and refuses a legitimate multi-commit branch or a
+> squash made by hand.
+> Commit and amend through the gate, by name: `<gate>/push_guard.py --commit -m
+> "<subject>" -- <path>...` (or `-F <message file>`) and `--amend -- <path>...`,
+> never `git commit -a` or a bare `git commit`: the index can hold paths you
+> did not stage. Squash, if you squash, with `<gate>/push_guard.py --base {default_branch} --squash`
+> after writing the message to `<git-dir>/prepare-pr-commit-msg-<branch>.txt`
+> (`/` as `-`): it runs the checks above on the commits BEFORE squashing them
+> (so never `--max-ahead {max_commits}` there), then commits your branch's tree,
+> never an index, and `--require-single-on-base` then enforces the one commit.
+> A `40` whose text is the commits-ahead refusal, on commits you authored, is
+> answered once with the `--max-ahead N` it prints. Before any `git rebase
+> --continue`, `<gate>/push_guard.py --check-index` must exit `0`.
+> Read the exit code, do not just test for zero: `0` proceed; `30`/`40`/`41` the gate
+> REFUSED, so do not push and report the code with the branch state and stderr (a
+> git or network failure inside the gate is a `40` whose stderr names the failed
+> command; a `41` prints the staged paths and their remedy — follow it); `64` is
+> your own command-line mistake — fix it and retry; `2` the gate could not RUN —
+> not a git repository, no git, or a missing script — so do not push and report
 > `BLOCKED: push gate inoperative` with the code and stderr, because a worker
 > whose sandbox cannot reach the scripts has to surface that once instead of
 > stalling every item silently. A non-empty `git status --porcelain` is also a
