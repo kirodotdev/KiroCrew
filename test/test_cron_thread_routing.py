@@ -138,6 +138,54 @@ class TestCronCallbackStoresThread:
         _run_callback(gateway, _make_job())
         gateway.sessions.set_thread.assert_not_awaited()
 
+    # ── Regression: a cron must NOT claim a thread it did not create ──
+    #
+    # When a run delivers into an INHERITED or explicit ``job.thread_ts`` -- a
+    # human's own Slack thread, keyed ``slack:<ts>`` -- claiming it for
+    # ``cron:<id>`` via ``set_thread`` evicts the human's owner from the
+    # thread->session index permanently (``cron:`` is not self-derived, so
+    # ``set_slack_link`` sweeps rivals), and the human's next message in their
+    # own thread then runs in the cron session. The cron may claim the thread
+    # ONLY when it created it itself (no ``job.thread_ts``, so ``thread_root`` is
+    # this run's own newly-posted ``parent_ts``).
+
+    def test_does_not_claim_inherited_thread(self) -> None:
+        # job.thread_ts is set (inherited from the caller or explicit): the cron
+        # posts INTO the human's thread but must NOT claim it.
+        gateway = _make_gateway()
+        gateway.slack.post_blocks = AsyncMock(return_value="1711957800.001234")
+        _run_callback(gateway, _make_job(thread_ts="1699999999.000111"))
+        gateway.sessions.set_thread.assert_not_awaited()
+
+    def test_still_binds_channel_for_inherited_thread(self) -> None:
+        # The channel bind is harmless (set_channel writes an empty ts for an
+        # unclaimed cron, which evicts no one) and still happens, so subagent
+        # replies can resolve the cron's channel.
+        gateway = _make_gateway()
+        gateway.slack.post_blocks = AsyncMock(return_value="1711957800.001234")
+        _run_callback(gateway, _make_job(channel="C999", thread_ts="1699999999.000111"))
+        gateway.sessions.set_channel.assert_awaited_once_with("cron:j1", "C999")
+
+    def test_overflow_still_threads_under_inherited_thread(self) -> None:
+        # Not claiming the thread must not stop overflow parts from threading:
+        # they still post under the inherited thread_ts.
+        gateway = _make_gateway()
+        gateway.slack.post_blocks = AsyncMock(return_value="1711957800.001234")
+        gateway.slack.post_message = AsyncMock()
+        long = "x" * 60000  # forces render_for_slack to split into overflow parts
+        _run_callback(gateway, _make_job(thread_ts="1699999999.000111"), stream_result=long)
+        assert gateway.slack.post_message.await_count >= 1, "expected overflow parts"
+        for call in gateway.slack.post_message.await_args_list:
+            assert call.args[2] == "1699999999.000111", "overflow part did not thread"
+
+    def test_claims_self_created_thread(self) -> None:
+        # Inverse / unchanged behavior: with NO job.thread_ts the cron created
+        # the thread itself (parent_ts), so it legitimately claims it.
+        gateway = _make_gateway()
+        gateway.slack.post_blocks = AsyncMock(return_value="1711957800.001234")
+        _run_callback(gateway, _make_job(thread_ts=None))
+        gateway.sessions.set_thread.assert_awaited_once_with("cron:j1", "1711957800.001234")
+
 
 # ── Tests: _subagent_done injects cron results via session ──
 

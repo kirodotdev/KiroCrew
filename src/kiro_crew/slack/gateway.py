@@ -5376,9 +5376,28 @@ class GatewayOrchestrator:
                                 channel, blocks, parts[0], job.thread_ts
                             )
                             thread_root = job.thread_ts or parent_ts
-                            # Store thread_ts so subagents can route replies here
+                            # Store the thread so subagents can route replies here
+                            # -- but CLAIM the thread for inbound routing only when
+                            # the cron POSTED it itself (no ``job.thread_ts``, so
+                            # ``thread_root`` is this run's own ``parent_ts``).
+                            #
+                            # ``set_thread`` -> ``set_slack_link("cron:<id>", ts)``
+                            # is a NON-self-derived claim (``cron:`` is not in
+                            # ``CHANNEL_SESSION_NAMESPACES``), so it EVICTS whatever
+                            # else owns ``ts`` in ``_thread_to_session``. For an
+                            # inherited/explicit ``job.thread_ts`` -- a human's own
+                            # Slack thread, keyed ``slack:<ts>`` -- that eviction is
+                            # permanent: the self-link that would restore the owner
+                            # (``transport_dispatch.py``) only fires on an UNCLAIMED
+                            # thread, so the human's next message in their own thread
+                            # would run in ``cron:<id>`` forever. A cron must never
+                            # take over a thread it did not create. The channel bind
+                            # is harmless (``set_channel`` writes an empty ``ts`` for
+                            # an unclaimed cron, which never evicts) and overflow
+                            # parts below still thread under ``thread_root``.
                             if thread_root and self.sessions:
-                                await self.sessions.set_thread(session_key, thread_root)
+                                if not job.thread_ts:
+                                    await self.sessions.set_thread(session_key, thread_root)
                                 await self.sessions.set_channel(session_key, channel)
                             # Overflow parts as threaded follow-up messages
                             for part in parts[1:]:

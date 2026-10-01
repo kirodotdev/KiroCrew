@@ -1771,7 +1771,10 @@ def _list_tools() -> list[dict[str, Any]]:
                     "thread_ts": {
                         "type": "string",
                         "description": "Slack thread timestamp to reply in. "
-                        "Use with channel to post results as a thread reply instead of a new message.",
+                        "Use with channel to post results as a thread reply instead of a new message. "
+                        "When omitted and the cron is scheduled from inside a Slack thread in the "
+                        "same channel it posts to, it DEFAULTS to the caller's own thread. "
+                        "Pass an empty string to opt out and deliver at the channel top level.",
                     },
                     "agent": {
                         "type": "string",
@@ -2487,6 +2490,48 @@ def _call_tool(name: str, raw_args: dict[str, Any]) -> str:
             channel = _caller_channel_id() or os.environ.get("KIROCREW_CHANNEL_ID")
             if channel:
                 args["channel"] = channel
+        # Default the reply thread on the runtime side, ONLY when ``thread_ts``
+        # is ABSENT (an explicit value -- including ``""``, a top-level opt-out --
+        # is the caller's, and wins). ``channel`` is still guarded by
+        # ``isinstance`` FIRST: a non-string ``channel`` (e.g. a model emitting a
+        # Slack ts/id as a JSON number) must fall through to schema validation to
+        # be rejected cleanly, not raise ``AttributeError`` from the
+        # pre-validation ``.strip()`` below. A non-string value is left untouched.
+        channel_arg = args.get("channel")
+        if (
+            name == "cron_add"
+            and "thread_ts" not in args
+            and isinstance(channel_arg, (str, type(None)))
+        ):
+            # Default the reply thread HERE, on the runtime side, because the
+            # verified caller channel (``_caller_channel_id()``) is only
+            # reliable before the gateway hop -- the HTTP boundary rebuilds the
+            # CallerContext without ``channel_id`` (dashboard/handlers/cron.py),
+            # so a comparison made on the gateway side would always see an empty
+            # caller channel and wrongly skip (or, worse, mis-apply) the
+            # inherit. A thread_ts is scoped to the channel it was created in,
+            # so only inherit the caller's thread when the resolved delivery
+            # channel IS the caller's own channel: a defaulted channel is the
+            # caller's own by construction, and an explicit channel must equal
+            # it. Forward the result as an ordinary argument, mirroring the
+            # channel default above; explicit thread_ts (handled by the guard
+            # above) still wins, and a non-Slack caller gets no thread.
+            #
+            # The inherit fires ONLY when the ``thread_ts`` key is ABSENT. An
+            # explicit ``"thread_ts": ""`` is a caller opting OUT -- asking for
+            # top-level delivery to its own channel -- and must NOT be
+            # overridden with the inherited thread; it falls through unchanged
+            # for the gateway side to normalize ``""`` to no thread. (The
+            # ``isinstance`` guard on ``channel`` still matters: a non-string
+            # channel -- a model emitting one as a JSON number -- must fall
+            # through to schema validation, not raise ``AttributeError`` from a
+            # pre-validation ``.strip()`` below.)
+            caller_channel = _caller_channel_id() or os.environ.get("KIROCREW_CHANNEL_ID") or None
+            resolved_channel = (channel_arg or "").strip() or None
+            if caller_channel and resolved_channel == caller_channel:
+                thread = _caller_thread_id()
+                if thread:
+                    args["thread_ts"] = thread
         response = _post(
             "/api/crons/tools", {"name": name, "arguments": args}, session_key=session_key
         )
@@ -2552,6 +2597,37 @@ def _caller_channel_id() -> str:
     """
     ctx = current_caller()
     return ctx.channel_id if ctx is not None else ""
+
+
+def _caller_thread_id() -> str:
+    """The Slack thread the calling session runs in, or ``""``.
+
+    A cron created from within a Slack thread should reply INTO that thread, but
+    ``cron_add`` only set ``thread_ts`` when passed explicitly -- so a cron
+    scheduled by an agent running in a Slack thread produced a job with no
+    thread, and its results posted as a NEW top-level channel message instead of
+    a thread reply.
+
+    The thread is recoverable with no extra gateway state: a Slack session key
+    is ``canonical_key(reply_ts)`` == ``"slack:<thread_ts>"`` (see
+    slack/transport_dispatch.py), where ``reply_ts`` is the bare thread
+    timestamp. So the caller's own strict session key already names its thread.
+    Parsing it here keeps the fix entirely inside the MCP tool (no CallerContext
+    schema change, no claim/rekey plumbing, no SessionManager import), and is
+    correct under pooling because the key comes from the strict resolver, not the
+    forgeable environment.
+
+    The parse is delegated to ``messaging.link.legacy_key`` -- the SAME helper
+    the Slack transport uses to build the key -- rather than re-spelling the
+    ``slack:<ts>`` shape here, so the two cannot drift. It returns the bare
+    ``<thread_ts>`` for a legacy ``slack:<ts>`` key and ``None`` for any other
+    shape (DM buckets, dashboard, cron, canonical multi-segment keys), which a
+    canonical multi-segment ``slack:agent:...`` key is NOT -- so the caller
+    falls back to no thread.
+    """
+    from kiro_crew.messaging.link import legacy_key
+
+    return legacy_key(_authz_session_key()) or ""
 
 
 def _authz_session_key() -> str:
@@ -3088,8 +3164,9 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             local = datetime.fromtimestamp(at_ts, shown_tz)
             return f"Error: resolved time {local.strftime('%I:%M %p %Z')} is in the past"
         channel = (args.get("channel") or "").strip() or None
+        caller_channel = _caller_channel_id() or None
         if channel is None:
-            channel = _caller_channel_id() or os.environ.get("KIROCREW_CHANNEL_ID") or None
+            channel = caller_channel or os.environ.get("KIROCREW_CHANNEL_ID") or None
         if not every and not cron_expr and not at_ts:
             return "Error: provide every, cron_expr, at, delay, or at_time"
         # Validate model BEFORE add_job so an invalid value never leaves an
@@ -3116,7 +3193,40 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             for d in skip_dates:
                 if not is_valid_skip_date(d):
                     return f"Error: invalid skip_date: {redact(str(d))!r} (expected YYYY-MM-DD)"
+        thread_ts_absent = "thread_ts" not in args
         thread_ts = (args.get("thread_ts") or "").strip() or None
+        # Auto-inherit the caller's thread when not passed explicitly: a cron
+        # scheduled from inside a Slack thread replies INTO that thread rather
+        # than posting a new top-level message. A thread_ts is scoped to the
+        # channel it was created in, so it may only be inherited when the
+        # resolved delivery channel IS the caller's OWN channel.
+        #
+        # This inherit runs ONLY when the caller's channel is known HERE
+        # (``caller_channel`` is set) -- i.e. the direct-local dispatch path,
+        # where ``_caller_channel_id()`` is reliable. On the gateway path the
+        # HTTP boundary rebuilds the CallerContext WITHOUT ``channel_id``
+        # (dashboard/handlers/cron.py), so ``_caller_channel_id()`` is empty
+        # server-side; the thread was already resolved on the runtime side in
+        # ``_call_tool`` (where the caller channel is reliable) and forwarded as
+        # an explicit ``thread_ts`` argument, so re-deriving it here would at
+        # best duplicate that and at worst inherit a thread ``_call_tool``
+        # deliberately withheld for a cross-channel target. Requiring a known
+        # ``caller_channel`` is what keeps the guard effective on the primary
+        # routed path. Explicit ``thread_ts`` always wins; a non-Slack caller
+        # gets no thread.
+        #
+        # The gate is the thread_ts key being ABSENT, not merely falsy: an
+        # explicit ``"thread_ts": ""`` is a caller opting OUT (top-level delivery
+        # to its own channel), which normalizes to ``None`` above but must NOT be
+        # overridden with the inherited thread.
+        if (
+            thread_ts_absent
+            and thread_ts is None
+            and channel
+            and caller_channel is not None
+            and channel == caller_channel
+        ):
+            thread_ts = _caller_thread_id() or None
         # Resolve EVERY first-save field before the single locked add_job() so
         # the job is persisted fully-formed in one transaction -- no
         # create-then-mutate + second unlocked _save() window that a crash or a
