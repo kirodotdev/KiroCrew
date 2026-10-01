@@ -664,6 +664,30 @@ def _runtime_rpc_exception(error: object) -> AcpRuntimeError:
 _PROJECTED_MODE_RETRY_DELAYS_SECS: tuple[float, ...] = (0.5, 0.5, 0.5, 0.5, 1.0)
 
 
+async def _prepare_projection_to_completion(
+    prepare: Callable[..., Any], *args: Any, **kwargs: Any
+) -> tuple[Any, bool]:
+    """Run *prepare* in a worker thread and wait for it even through cancellation.
+
+    Returns ``(result, cancelled)``. A cancelled start must not leave the
+    projection lock while its worker is still running: the worker may already
+    have read an edit, and the caller adopts that view before re-raising. The
+    wait is bounded by the preparation itself (its alias lock times out)."""
+    worker = asyncio.ensure_future(asyncio.to_thread(prepare, *args, **kwargs))
+    cancelled = False
+    while not worker.done():
+        try:
+            # ``wait`` never cancels the worker when this task is cancelled.
+            await asyncio.wait({worker})
+        except asyncio.CancelledError:
+            cancelled = True
+    if cancelled and worker.exception() is not None:
+        # The worker's own failure must not replace the cancellation the caller
+        # asked for; an unadopted preparation is recorded by the caller either way.
+        raise asyncio.CancelledError
+    return worker.result(), cancelled
+
+
 # ── Unroutable-frame drop accounting ──
 #
 # The reader drops any frame it cannot route (see _reader_loop). That is
@@ -1862,9 +1886,14 @@ class AcpRuntime:
             if self.acp_backend == ACP_BACKEND_KIRO:
                 from kiro_crew.acp.skill_projection import prepare_native_skill_projection
 
-                self._native_skill_projection = await asyncio.to_thread(
-                    prepare_native_skill_projection, self._work_dir
-                )
+                async with self._skill_projection_lock():
+                    generation = self._issue_skill_projection_generation()
+                    spawned = await asyncio.to_thread(
+                        prepare_native_skill_projection, self._work_dir
+                    )
+                    # Issued and adopted under the lock, so nothing newer exists.
+                    self._native_skill_projection = spawned
+                    self._skill_projection_generation = generation
                 # Held for the process's life: the aliases kiro-cli listed at
                 # startup are ones it is guaranteed to have loaded, so later
                 # projections keep translating them in inbound frames
@@ -4741,6 +4770,89 @@ class AcpRuntime:
             self._stdin_lock = lock
         return lock
 
+    # ── Skill-view projection: one preparation at a time, newest view wins ──
+    #
+    # Every session start re-prepares the native skill projection and sends the
+    # alias it published, and starts on one runtime overlap. A preparation reads
+    # the agent specs BEFORE it waits on the cross-process alias lock, so without
+    # ordering a start that read the spec before an edit revoked a grant could
+    # return last, become ``_native_skill_projection`` and activate that alias.
+    #
+    # Two mechanisms close it, and each needs the other:
+    #
+    # * ``_skill_projection_lock`` serializes preparation AND adoption per runtime,
+    #   so preparations read the specs in the order they are adopted. It is held
+    #   only across the ``to_thread`` preparation and the in-memory adoption,
+    #   never across ``session/set_mode`` (which can take a whole handshake budget
+    #   while a switched-to MCP server boots), and never across blocking I/O on
+    #   the loop: the file I/O runs in the worker thread.
+    # * a generation, issued under the lock before the read, stamps each adopted
+    #   projection. Adoption refuses one older than the adopted generation, and a
+    #   start whose ``set_mode`` is still pending re-checks it before every attempt
+    #   and after the answer: a newer view adopted meanwhile is the one it uses, or,
+    #   once the host has already answered for the older alias, the start fails.
+    #   The after-answer check first takes the lock itself, so a preparation that
+    #   was still running when the answer arrived is adopted before it is judged.
+    #   A preparation runs to completion even when its start is cancelled, and its
+    #   view is adopted before the cancellation propagates; one that yields no
+    #   view (or raises) is recorded as unadopted, and until a later view is
+    #   adopted a pending start cannot prove its view current and fails.
+    #   The lock is what makes the counter mean "read later": issued outside it, a
+    #   later generation could belong to a thread that read the spec first.
+    #
+    # Lock order (outermost first): ``_skill_projection_lock`` (asyncio, this
+    # runtime) -> the alias file lock ``_projection_alias_lock`` (flock, taken in
+    # the worker thread) -> the workspace ``cli.json`` settings lock -> the
+    # projection lease. Nothing that holds a file lock ever awaits the asyncio
+    # lock: the file locks are taken and released inside one synchronous call on a
+    # worker thread, so the thread cannot wait on the loop, and the loop never
+    # blocks on a file lock. ``_stdin_write_lock`` is never taken while this lock
+    # is held, because the send happens after adoption releases it, and the
+    # after-answer check takes this lock with no other lock held.
+
+    def _skill_projection_lock(self) -> asyncio.Lock:
+        """The per-runtime lock around skill-view preparation and adoption.
+
+        Created on first use, like :meth:`_stdin_write_lock`, so a runtime built
+        without ``__init__`` (test doubles) has one."""
+        lock = getattr(self, "_skill_projection_lock_obj", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._skill_projection_lock_obj = lock
+        return lock
+
+    def _issue_skill_projection_generation(self) -> int:
+        """The next preparation generation. Call with the projection lock held."""
+        generation = int(getattr(self, "_skill_projection_issued", 0)) + 1
+        self._skill_projection_issued = generation
+        return generation
+
+    def _adopted_skill_projection_generation(self) -> int:
+        return int(getattr(self, "_skill_projection_generation", 0))
+
+    def _note_unadopted_skill_projection(self, generation: int) -> None:
+        """Record that preparation *generation* ended without being adopted.
+
+        It may have read an edit no adopted view reflects (it returned no view, or
+        raised), so until a later preparation is adopted a pending start cannot
+        prove its view is current. Call with the projection lock held."""
+        if generation > self._unadopted_skill_projection_generation():
+            self._skill_projection_unadopted = generation
+
+    def _unadopted_skill_projection_generation(self) -> int:
+        return int(getattr(self, "_skill_projection_unadopted", 0))
+
+    def _adopt_skill_projection(self, prepared: Any, generation: int) -> bool:
+        """Make *prepared* this runtime's projection unless a newer one was adopted.
+
+        Call with the projection lock held. Returns ``False`` -- and changes
+        nothing -- for a preparation older than (or as old as) the adopted one."""
+        if generation <= self._adopted_skill_projection_generation():
+            return False
+        self._native_skill_projection = prepared
+        self._skill_projection_generation = generation
+        return True
+
     async def _write_response_bounded(self, data: bytes, request_id: str | int) -> None:
         """Write a response/error frame under the write lock and a no-progress bound.
 
@@ -5331,6 +5443,85 @@ class AcpRuntime:
             f"--agent-only` to rewrite the agent config."
         )
 
+    def _superseding_alias(self, projection: Any, mode_agent: str) -> str:
+        """*mode_agent*'s alias in a newer view adopted while its start was pending.
+
+        The start's own preparation is older than that view, so its alias is never
+        sent again; when the newer view does not offer the agent at all, the
+        start fails rather than fall back to the older one."""
+        try:
+            return str(projection.agent(mode_agent))
+        except ValueError as exc:
+            emit_counter(SKILL_VIEW_FALLBACKS, {"outcome": "refused_superseded"})
+            raise AcpRuntimeError(
+                f"Agent {mode_agent!r} changed while this session was starting, and its "
+                f"new skill view cannot be used ({exc}). The session was not started on "
+                "the copy from before the change, which could carry permissions the change "
+                "removed. Fix the agent and start the session again; if it keeps failing, "
+                "restart the gateway."
+            ) from exc
+
+    def _refuse_if_view_unverified(self, mode_agent: str, used_generation: int) -> None:
+        """Fail a start while the newest preparation of this runtime was not adopted.
+
+        A preparation that began after this start's own and ended without a view
+        (no view could be prepared, or it raised) may have read an edit to
+        *mode_agent*'s spec that no adopted view reflects, so nothing proves the
+        alias this start sends, or the host activated, is current. A view adopted
+        after that preparation read the specs later still, and clears it."""
+        unadopted = self._unadopted_skill_projection_generation()
+        if unadopted <= max(used_generation, self._adopted_skill_projection_generation()):
+            return
+        emit_counter(SKILL_VIEW_FALLBACKS, {"outcome": "refused_superseded"})
+        logger.warning(
+            "AcpRuntime set_mode: a newer skill-view preparation did not complete while "
+            "agent=%s was starting; refusing to start the session on a view it cannot "
+            "verify",
+            mode_agent,
+        )
+        raise AcpRuntimeError(
+            f"Agent {mode_agent!r}: a newer preparation of its skill view did not "
+            "complete while this session was starting, so nothing proves the view "
+            "kiro-cli would run still matches the agent's spec. The session was not "
+            "started. Start it again; if it keeps failing, restart the gateway."
+        )
+
+    def _refuse_if_view_superseded(
+        self, mode_agent: str, sent_alias: str, used_generation: int
+    ) -> None:
+        """Fail a start the host answered after a newer view changed its agent.
+
+        A concurrent start may adopt a newer projection while this start's
+        ``set_mode`` is pending. Nothing says whether the host activated the older
+        alias before or after that newer preparation read the spec, so when the
+        newer view gives *mode_agent* a different alias the session may be running
+        a view an edit has since revoked grants from, and it is not started. A
+        newer view that leaves this agent's alias unchanged refuses nothing. Call
+        with the projection lock held, so no preparation is mid-flight."""
+        self._refuse_if_view_unverified(mode_agent, used_generation)
+        if self._adopted_skill_projection_generation() == used_generation:
+            return
+        projection = getattr(self, "_native_skill_projection", None)
+        try:
+            newest = projection.agent(mode_agent) if projection is not None else None
+        except ValueError:
+            newest = None
+        if newest == sent_alias:
+            return
+        emit_counter(SKILL_VIEW_FALLBACKS, {"outcome": "refused_superseded"})
+        logger.warning(
+            "AcpRuntime set_mode: skill view %s for agent=%s was replaced by a newer "
+            "preparation while the request was pending; refusing to start the session",
+            sent_alias,
+            mode_agent,
+        )
+        raise AcpRuntimeError(
+            f"Agent {mode_agent!r} changed while this session was starting, and kiro-cli "
+            f"may have activated the skill view prepared before the change ({sent_alias}), "
+            "which could carry permissions the change removed. The session was not "
+            "started. Start it again; if it keeps failing, restart the gateway."
+        )
+
     async def _activate_mode_bracketed(
         self,
         session_id: str,
@@ -5393,44 +5584,71 @@ class AcpRuntime:
                 await self.terminate_session(session_id)
                 raise AcpRuntimeError(str(exc)) from exc
         try:
-            previous = getattr(self, "_native_skill_projection", None)
-            if previous is not None:
+            projection_now: Any = None
+            used_generation = 0
+            if getattr(self, "_native_skill_projection", None) is not None:
                 from kiro_crew.acp.skill_projection import prepare_native_skill_projection
 
-                # Keep the transport mode selected at spawn for this process.
-                # The rollback environment switch takes effect after restart.
-                prepared = await asyncio.to_thread(
-                    prepare_native_skill_projection, self._work_dir, enabled=True
-                )
-                if prepared is None:
-                    # No view could be prepared (the alias lock is busy), so nothing
-                    # proves any alias this process holds still says what the agent's
-                    # spec says now. Fail the start rather than activate one.
-                    emit_counter(SKILL_VIEW_FALLBACKS, {"outcome": "refused_unprepared"})
-                    logger.warning(
-                        "skill projection: re-preparation unavailable at set_mode; "
-                        "refusing to start agent %r on a view it cannot verify",
-                        mode_agent,
-                    )
-                    raise AcpRuntimeError(
-                        f"Agent {mode_agent!r}: its skill view could not be prepared (the "
-                        "skill-view lock is held by another Kiro Crew process), so this "
-                        "session was not started. Try again in a moment; if it keeps "
-                        "failing, restart the gateway."
-                    )
-                # set_mode always names the FRESH alias, never an older one: an alias
-                # the host loaded earlier (the spawn one included) may hold a
-                # generation of the spec an edit has since revoked grants from.
-                # Inbound frames keep translating every alias this process published
-                # before (``recognise``), so an agent the host still lists under an
-                # older alias stays selectable. Holding ``_spawn_skill_projection``
-                # keeps those aliases -- and so the host's view of them -- out of the
-                # prune.
-                spawn = getattr(self, "_spawn_skill_projection", None)
-                if spawn is not None:
-                    prepared.recognise(spawn)
-                prepared.recognise(previous)
-                self._native_skill_projection = prepared
+                # Preparation and adoption run under the per-runtime projection
+                # lock, so overlapping starts read the specs in the order their
+                # views are adopted (see _skill_projection_lock for the lock order).
+                async with self._skill_projection_lock():
+                    previous = getattr(self, "_native_skill_projection", None)
+                    generation = self._issue_skill_projection_generation()
+                    adopted = False
+                    try:
+                        # Keep the transport mode selected at spawn for this process.
+                        # The rollback environment switch takes effect after restart.
+                        prepared, cancelled = await _prepare_projection_to_completion(
+                            prepare_native_skill_projection, self._work_dir, enabled=True
+                        )
+                        if prepared is not None:
+                            # set_mode always names the FRESH alias, never an older
+                            # one: an alias the host loaded earlier (the spawn one
+                            # included) may hold a generation of the spec an edit has
+                            # since revoked grants from. Inbound frames keep
+                            # translating every alias this process published before
+                            # (``recognise``), so an agent the host still lists under
+                            # an older alias stays selectable. Holding
+                            # ``_spawn_skill_projection`` keeps those aliases -- and so
+                            # the host's view of them -- out of the prune.
+                            spawn = getattr(self, "_spawn_skill_projection", None)
+                            if spawn is not None:
+                                prepared.recognise(spawn)
+                            if previous is not None:
+                                prepared.recognise(previous)
+                            # Under the lock a fresh generation is always the
+                            # newest; the refusal keeps an older preparation from
+                            # ever replacing a newer one should adoption be reached
+                            # any other way.
+                            adopted = self._adopt_skill_projection(prepared, generation)
+                        if cancelled:
+                            # Adopted first: a view this preparation read must not
+                            # vanish with the start that asked for it.
+                            raise asyncio.CancelledError
+                        if prepared is None:
+                            # No view could be prepared (the alias lock is busy), so
+                            # nothing proves any alias this process holds still says
+                            # what the agent's spec says now. Fail the start rather
+                            # than activate one.
+                            emit_counter(SKILL_VIEW_FALLBACKS, {"outcome": "refused_unprepared"})
+                            logger.warning(
+                                "skill projection: re-preparation unavailable at set_mode; "
+                                "refusing to start agent %r on a view it cannot verify",
+                                mode_agent,
+                            )
+                            raise AcpRuntimeError(
+                                f"Agent {mode_agent!r}: its skill view could not be "
+                                "prepared (the skill-view lock is held by another Kiro "
+                                "Crew process), so this session was not started. Try "
+                                "again in a moment; if it keeps failing, restart the "
+                                "gateway."
+                            )
+                    finally:
+                        if not adopted:
+                            self._note_unadopted_skill_projection(generation)
+                    projection_now = self._native_skill_projection
+                    used_generation = self._adopted_skill_projection_generation()
             # set_mode is a handshake request: switching to an agent boots THAT
             # agent's MCP servers, the same server (re-)initialization that gives
             # session/new and session/load their 90s budget. A switched-to server
@@ -5448,14 +5666,16 @@ class AcpRuntime:
             # to match the spec on disk, so none is activated in its place. Every other
             # error propagates as before.
             params = set_mode_params(session_id, mode_agent)
-            # Translated ONCE, from the projection this bracket just adopted, and
-            # sent as fixed wire params on every attempt: the retry sleeps, and a
-            # concurrent session start may replace ``_native_skill_projection``
-            # meanwhile with an older preparation whose alias still carries grants
-            # a spec edit removed. ``translate`` is passed only when a projection
-            # exists, so the send is the same call as before for every caller
-            # without one.
-            projection_now = getattr(self, "_native_skill_projection", None)
+            # Translated from the projection this bracket adopted and sent as
+            # fixed wire params -- past the send's own translation, which reads
+            # ``_native_skill_projection`` at send time. The projection lock is
+            # NOT held across the send, so a concurrent start may adopt a newer
+            # view while this request is pending or between retries: before each
+            # attempt the alias is re-derived from the newest adopted view (never
+            # an older one), and an answer that arrives after a newer view
+            # changed this agent fails the start (``_refuse_if_view_superseded``).
+            # ``translate`` is passed only when a projection exists, so the send
+            # is the same call as before for every caller without one.
             wire = params
             sent_alias: str | None = None
             untranslated: dict[str, Any] = {}
@@ -5466,6 +5686,22 @@ class AcpRuntime:
             retries = iter(_PROJECTED_MODE_RETRY_DELAYS_SECS)
             missed: str | None = None
             while True:
+                if (
+                    sent_alias is not None
+                    and self._adopted_skill_projection_generation() != used_generation
+                ):
+                    projection_now = self._native_skill_projection
+                    used_generation = self._adopted_skill_projection_generation()
+                    newest = self._superseding_alias(projection_now, mode_agent)
+                    if newest != sent_alias:
+                        # The retry schedule and the miss record belong to the
+                        # alias being replaced; the newer one starts its own.
+                        sent_alias = newest
+                        wire = {**params, "modeId": sent_alias}
+                        retries = iter(_PROJECTED_MODE_RETRY_DELAYS_SECS)
+                        missed = None
+                if sent_alias is not None:
+                    self._refuse_if_view_unverified(mode_agent, used_generation)
                 try:
                     await self._send_and_await(
                         METHOD_SET_MODE, wire, timeout=budget, **untranslated
@@ -5501,6 +5737,13 @@ class AcpRuntime:
                     await asyncio.sleep(delay)
                     continue
                 break
+            if sent_alias is not None:
+                # Wait out any preparation already running: one that began before
+                # this answer may have read an edit the host's activation predates,
+                # and it is adopted only when it finishes. Nothing else is held
+                # here, so this cannot invert the lock order.
+                async with self._skill_projection_lock():
+                    self._refuse_if_view_superseded(mode_agent, sent_alias, used_generation)
             if missed is not None:
                 emit_counter(SKILL_VIEW_FALLBACKS, {"outcome": "loaded_after_retry"})
                 logger.info(
@@ -7441,8 +7684,9 @@ class AcpRuntime:
         tighter value than the default so an unresponsive runtime can't stall
         session eviction. ``translate=False`` sends *params* as given, past the
         skill projection's name translation: the one caller is the ``set_mode``
-        bracket, which translates once and resends the same wire params on every
-        retry (:meth:`_activate_mode_bracketed`).
+        bracket, which passes params it translated itself and, between attempts,
+        re-derives them only from the newest adopted projection
+        (:meth:`_activate_mode_bracketed`).
         """
         if not self._process or not self._process.stdin:
             raise AcpRuntimeDead("process not running")

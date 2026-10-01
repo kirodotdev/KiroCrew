@@ -362,9 +362,36 @@ reload by itself). If the host still has not loaded it, the session start FAILS
 with an error naming the agent and saying to restart the gateway; no other copy
 is activated in its place. A re-preparation that could not run (the alias lock is
 busy) fails the start the same way, since nothing proves any alias still matches
-the spec. The bracket translates once and resends the same wire params on every
-attempt, so a concurrent start replacing the projection mid-retry cannot redirect
-it. The adopted projection keeps translating, in inbound frames, every alias an
+the spec.
+
+Overlapping starts on one runtime are ordered so the newest view always wins. A
+preparation reads the agent specs before it waits on the alias file lock, so
+without ordering a start that read a spec before an edit revoked a grant could
+return last and activate that alias. Preparation and adoption therefore run under
+a per-runtime asyncio lock (`_skill_projection_lock`), so specs are read in
+adoption order, and each adopted projection is stamped with a generation issued
+under that lock; adoption refuses one older than the adopted generation. The lock
+covers only the `to_thread` preparation and the in-memory adoption, never
+`set_mode` itself, so a slow MCP server boot on one start does not hold up the
+others. Instead, a start whose `set_mode` is pending re-checks the generation
+before every attempt (it sends the newest adopted view's alias, never its own
+older one, and fails if that view does not offer the agent) and after the
+answer, after first taking the lock so a preparation still running when the
+answer arrived is adopted before the check: if a newer view gave the agent a
+different alias while the request was in flight, the host may have activated the
+older one, so the session is terminated
+and the start fails with "start it again; if it keeps failing, restart the
+gateway". A newer view that leaves the agent's alias unchanged refuses nothing.
+A preparation whose start is cancelled still runs to completion under the lock
+and its view is adopted before the cancellation propagates. A newer preparation
+that yields no view (or raises) leaves pending starts unable to prove their view
+current, so they fail the same way until a later view is adopted.
+Lock order, outermost first: `_skill_projection_lock` -> the alias file lock ->
+the workspace `cli.json` settings lock -> the projection lease. The file locks
+are taken and released inside one synchronous call on a worker thread, which
+never waits on the asyncio lock, so the two cannot deadlock.
+
+The adopted projection keeps translating, in inbound frames, every alias an
 earlier projection of the process published (`recognise`: alias-shaped names
 mapped to admissible agent names only, spawn aliases first, at most
 `_RECOGNISED_ALIASES_MAX`, with one warning per projection past the bound), and
