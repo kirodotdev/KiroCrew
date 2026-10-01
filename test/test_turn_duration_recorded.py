@@ -41,11 +41,13 @@ class _Ev:
 
 
 def _record(usage: TurnUsage, **kw: object) -> dict:
-    return _build_token_record("slot-1", "claude-opus-5", _Ev(usage), "acp",
-                               datetime.now().astimezone(), **kw)  # type: ignore[arg-type]
+    return _build_token_record(
+        "slot-1", "claude-opus-5", _Ev(usage), "acp", datetime.now().astimezone(), **kw
+    )  # type: ignore[arg-type]
 
 
 # ─────────────────────── builder semantics ───────────────────────
+
 
 def test_local_wall_clock_is_recorded_when_provider_reports_nothing():
     """The acp reality: usage.duration_ms is 0, so elapsed_ms must land."""
@@ -59,8 +61,7 @@ def test_provider_reported_duration_wins_over_local_clock():
     Without this, `test_local_wall_clock_is_recorded...` would still pass if the
     implementation unconditionally overwrote duration_ms with elapsed_ms.
     """
-    rec = _record(TurnUsage(input_tokens=10, output_tokens=5, duration_ms=999),
-                  elapsed_ms=227589)
+    rec = _record(TurnUsage(input_tokens=10, output_tokens=5, duration_ms=999), elapsed_ms=227589)
     assert rec["duration_ms"] == 999
 
 
@@ -87,13 +88,21 @@ def test_non_numeric_elapsed_cannot_break_serialization(junk):
 # surface MUST be added here deliberately, which is the point: the counts make
 # an unnoticed drift fail loudly instead of silently recording zeros.
 EXPECTED_SITES = {
-    "dashboard/chat_runner.py": 1,
+    "dashboard/chat_runner.py": 2,  # EVENT_COMPLETE + the abnormal-end seam
+    # (_persist_abnormal_turn_usage), both passing elapsed_ms to the row write.
+    # BOTH persists opt out with emit_metric=False: EVENT_COMPLETE emits its
+    # sample SEPARATELY (keyed on the effective session_key so a linked-channel
+    # turn is attributed to its channel surface, and surviving the
+    # usage_has_billing gate), and the abnormal-end seam emits NOTHING —
+    # abnormal-turn sampling is out of this change's scope, and letting its
+    # persist emit (default True) would mis-file a linked-channel turn under the
+    # slot's `dashboard` key.
     "dashboard/handlers/hooks.py": 1,
-    "slack/gateway.py": 3,          # 2 cron + _persist_turn_row helper
-                                    # (the helper is the single call site for
-                                    # heartbeat + its timeout + monitor + its
-                                    # timeout)
-    "task_executor.py": 2,          # task step + self-review
+    "slack/gateway.py": 3,  # 2 cron + _persist_turn_row helper
+    # (the helper is the single call site for
+    # heartbeat + its timeout + monitor + its
+    # timeout)
+    "task_executor.py": 2,  # task step + self-review
     "subagent_manager/run.py": 1,
     "workflows/agent_exec.py": 1,
 }
@@ -141,8 +150,7 @@ def test_the_structural_check_can_actually_fail():
     per-file assertions vacuous everywhere.
     """
     tree = ast.parse(
-        "async def f():\n"
-        "    await persist_token_record_async('k', 'm', ev, surface='x')\n"
+        "async def f():\n" "    await persist_token_record_async('k', 'm', ev, surface='x')\n"
     )
     calls = _persist_calls(tree)
     assert len(calls) == 1
@@ -150,6 +158,7 @@ def test_the_structural_check_can_actually_fail():
 
 
 # ───────────────── the dead Stats block is gone ─────────────────
+
 
 def test_chat_runner_no_longer_builds_the_dead_stats_object():
     """The per-turn Stats() was constructed, incremented, and never read.

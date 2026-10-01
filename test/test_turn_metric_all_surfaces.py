@@ -201,20 +201,23 @@ def test_a_zero_duration_still_emits_nothing(recorder) -> None:
 
 
 def test_the_emit_has_exactly_one_site_per_owner() -> None:
-    """Exactly one sample per turn, with the two owners kept distinct.
+    """One sample per turn, from the single EVENT_COMPLETE owner.
 
     Every background surface is sampled by ``persist_token_record_async`` — the
     one call they all make once per turn, which is what ended this metric being a
-    dashboard-only reading. The dashboard emits itself instead, because its
-    persist call sits behind ``usage_has_billing``: a zero-billing timeout writes
-    no row, and letting that swallow the sample would drop exactly the faults
-    fault_rate counts.
+    dashboard-only reading. The dashboard's EVENT_COMPLETE path emits SEPARATELY,
+    for two reasons its persist cannot serve: the persist sits behind
+    ``usage_has_billing`` (a zero-billing timeout writes no row, and letting that
+    swallow the sample would drop exactly the faults fault_rate counts), and the
+    sample must be keyed on the EFFECTIVE ``session_key`` so a linked-channel
+    turn is not filed under ``dashboard`` by the slot key the row is keyed on.
 
-    Both halves are asserted because the failure modes are opposite: a second
-    emit in the persist path double-counts every surface, while the dashboard
-    emitting AND letting persist emit double-counts its own turns. The
-    ``emit_metric=False`` argument is what keeps the two from overlapping, so its
-    presence is pinned too.
+    The abnormal-end seam (``_persist_abnormal_turn_usage``) writes only the
+    usage ROW — abnormal-turn histogram sampling is out of this change's scope
+    (the row is the deliverable) — so it does NOT emit, and opts its persist out of the
+    metric so the boundary does not file a sample under the slot key either.
+    Hence exactly ONE ``_emit_turn_metric`` site and two persists, both opting
+    out.
     """
     tree = ast.parse((SRC / "dashboard" / "handlers" / "usage.py").read_text(encoding="utf-8"))
     emits = [
@@ -234,8 +237,9 @@ def test_the_emit_has_exactly_one_site_per_owner() -> None:
         and getattr(n.func, "id", getattr(n.func, "attr", "")) == "_emit_turn_metric"
     ]
     assert len(calls) == 1, (
-        f"_run_chat should emit exactly once, found {len(calls)}. Two emits "
-        "double-count every dashboard turn; none loses zero-billing timeouts."
+        f"_run_chat should emit at exactly one owner (EVENT_COMPLETE), found "
+        f"{len(calls)}. The abnormal-end seam writes only the row (abnormal "
+        "sampling is out of this change's scope)."
     )
 
     persists = [
@@ -244,12 +248,71 @@ def test_the_emit_has_exactly_one_site_per_owner() -> None:
         if isinstance(n, ast.Call)
         and getattr(n.func, "id", getattr(n.func, "attr", "")) == "persist_token_record_async"
     ]
-    assert len(persists) == 1
-    kwargs = {kw.arg: kw.value for kw in persists[0].keywords if kw.arg}
-    assert "emit_metric" in kwargs, (
-        "the dashboard persist must opt out of the shared emit, or its turns are " "sampled twice"
+    assert len(persists) == 2, (
+        f"expected two persist sites (EVENT_COMPLETE + the abnormal-end seam), "
+        f"found {len(persists)}"
     )
-    assert getattr(kwargs["emit_metric"], "value", None) is False
+
+    # Identify the two sites by WHERE they live, not merely how many opt out: an
+    # unordered walk + a bare count would stay green if an opt-out were dropped
+    # from one site and added to a third. Resolve the
+    # ``_persist_abnormal_turn_usage`` FunctionDef span and split the persists by
+    # whether they fall inside it.
+    seam_fn = next(
+        (
+            n
+            for n in ast.walk(runner)
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and n.name == "_persist_abnormal_turn_usage"
+        ),
+        None,
+    )
+    assert seam_fn is not None, "could not find _persist_abnormal_turn_usage"
+    seam_lo, seam_hi = seam_fn.lineno, (seam_fn.end_lineno or seam_fn.lineno)
+
+    def _in_seam(call: ast.Call) -> bool:
+        return seam_lo <= call.lineno <= seam_hi
+
+    def _opts_out(call: ast.Call) -> bool:
+        return any(
+            kw.arg == "emit_metric" and getattr(kw.value, "value", None) is False
+            for kw in call.keywords
+            if kw.arg
+        )
+
+    seam_persists = [p for p in persists if _in_seam(p)]
+    other_persists = [p for p in persists if not _in_seam(p)]
+    assert len(seam_persists) == 1 and len(other_persists) == 1, (
+        "expected exactly one persist inside _persist_abnormal_turn_usage and "
+        f"one outside it (EVENT_COMPLETE); found {len(seam_persists)} inside, "
+        f"{len(other_persists)} outside"
+    )
+    # BOTH persists opt out. EVENT_COMPLETE opts out because it emits its own
+    # sample separately (keyed on the effective session_key). The seam opts out
+    # because it emits NOTHING — abnormal-turn sampling is out of this change's
+    # scope, and letting its persist emit would file a linked-channel abnormal turn
+    # under the slot's `dashboard` key. Pinning the SITE, not just the count,
+    # catches an opt-out moved onto a third persist.
+    assert _opts_out(other_persists[0]), (
+        "the EVENT_COMPLETE persist must pass emit_metric=False (its sample is "
+        "emitted separately, keyed on the effective session_key)"
+    )
+    assert _opts_out(seam_persists[0]), (
+        "the abnormal-seam persist must pass emit_metric=False (it emits no "
+        "sample of its own, and letting the boundary emit would file a "
+        "linked-channel abnormal turn under `dashboard`)"
+    )
+
+    # The one emit lives in EVENT_COMPLETE (outside the seam) and keys its sample
+    # on the effective session_key (positional arg 3), not a slot key — the
+    # attribution the separate emit exists to get right.
+    assert not _in_seam(calls[0]), "the sole emit must be in EVENT_COMPLETE, not the abnormal seam"
+    third = calls[0].args[2] if len(calls[0].args) >= 3 else None
+    key_name = getattr(third, "id", "")
+    assert key_name == "session_key", (
+        "the EVENT_COMPLETE _emit_turn_metric must key its sample on the "
+        f"effective session_key (positional arg 3), found {key_name or '<non-name>'}"
+    )
 
 
 def test_the_dashboard_emit_is_not_behind_the_billing_gate() -> None:
