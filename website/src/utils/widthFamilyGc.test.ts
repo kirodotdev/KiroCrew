@@ -316,19 +316,32 @@ describe('width-family bound fires on the FIRST flush of a NEW width', () => {
     // one -- open the scope, measure a row, flush. A broken construction-time
     // trigger would never prune here, because at construction the width's own
     // blob does not exist yet (keepExists is false).
-    const widths = Array.from({ length: MAX_WIDTH_FAMILIES + 12 }, (_, i) => 1024 + i * 16)
-    for (const w of widths) {
-      const cache = openWidth(w)
-      cache.set('row-a', 300)
-      cache.flush() // first persist of THIS width -> onFirstPersist -> bound
+    //
+    // Each flush stamps `lastTouched` from Date.now(). This loop runs in well
+    // under a millisecond, so on the real clock most widths would share ONE
+    // stamp and recency could not order them: the sort then falls back to
+    // storage enumeration order and evicts an arbitrary tied member (seen in
+    // CI as the OLDEST width surviving). Drive the clock so every flush lands
+    // one ms after the previous one and the recency order is the write order.
+    let now = 1_000_000
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => ++now)
+    try {
+      const widths = Array.from({ length: MAX_WIDTH_FAMILIES + 12 }, (_, i) => 1024 + i * 16)
+      for (const w of widths) {
+        const cache = openWidth(w)
+        cache.set('row-a', 300)
+        cache.flush() // first persist of THIS width -> onFirstPersist -> bound
+      }
+      // The family never exceeded the bound: each new width's first flush evicted
+      // the least-recently-used older width, so growth stayed capped throughout.
+      expect(familyBuckets(base)).toHaveLength(MAX_WIDTH_FAMILIES)
+      // The most-recently-written widths are the survivors.
+      const survivors = familyBuckets(base)
+      expect(survivors).toContain(widths[widths.length - 1])
+      expect(survivors).not.toContain(widths[0])
+    } finally {
+      clock.mockRestore()
     }
-    // The family never exceeded the bound: each new width's first flush evicted
-    // the least-recently-used older width, so growth stayed capped throughout.
-    expect(familyBuckets(base)).toHaveLength(MAX_WIDTH_FAMILIES)
-    // The most-recently-written widths are the survivors.
-    const survivors = familyBuckets(base)
-    expect(survivors).toContain(widths[widths.length - 1])
-    expect(survivors).not.toContain(widths[0])
   })
 
   it('spares the just-written current width and keeps it after its own first flush', () => {
