@@ -719,8 +719,8 @@ def test_provider_executable_strict_mode_rejects_untrusted_ancestor(
     monkeypatch.setenv("KIROCREW_PROVIDER_BIN_STRICT", "1")
     monkeypatch.setattr(
         github_runner.platform_compat,
-        "traversed_components",
-        lambda _path: [parent, executable.resolve()],
+        "traversed_components_and_links",
+        lambda _path: ([parent, executable.resolve()], []),
     )
     monkeypatch.setattr(github_runner.Path, "stat", fake_stat)
     monkeypatch.setattr(github_runner.os, "access", lambda _path, mode: mode == github_runner.os.X_OK)
@@ -798,6 +798,9 @@ def test_provider_executable_relaxed_mode_still_accepts_a_chain_through_tight_di
     trusted.mkdir()
     hops = tmp_path / "hops"
     hops.mkdir()
+    # Only the link's side reads this directory, so its group bit decides
+    # whether the entry keeps its name; pin it whatever the umask.
+    hops.chmod(0o755)
     target = trusted / "real-gh"
     target.write_text("#!/bin/sh\nexit 0\n")
     target.chmod(0o755)
@@ -809,7 +812,9 @@ def test_provider_executable_relaxed_mode_still_accepts_a_chain_through_tight_di
     monkeypatch.setattr(github_runner, "agent_writable_roots", lambda: ())
     _trust_ancestors_above(monkeypatch, tmp_path)
 
-    assert github_runner.validate_provider_executable(str(entry)) == str(target.resolve())
+    # The entry is named differently from its target and every hop is the
+    # user's, so the entry's own spelling is what gets launched.
+    assert github_runner.validate_provider_executable(str(entry)) == str(entry)
 
 
 def test_provider_executable_refuses_a_chain_the_walk_cannot_enumerate(
@@ -821,7 +826,9 @@ def test_provider_executable_refuses_a_chain_the_walk_cannot_enumerate(
     executable.chmod(0o755)
     monkeypatch.delenv("KIROCREW_PROVIDER_BIN_STRICT", raising=False)
     monkeypatch.setattr(github_runner, "agent_writable_roots", lambda: ())
-    monkeypatch.setattr(github_runner.platform_compat, "traversed_components", lambda _path: None)
+    monkeypatch.setattr(
+        github_runner.platform_compat, "traversed_components_and_links", lambda _path: None
+    )
 
     with pytest.raises(ValueError, match="executable hierarchy is not accessible"):
         github_runner.validate_provider_executable(str(executable))

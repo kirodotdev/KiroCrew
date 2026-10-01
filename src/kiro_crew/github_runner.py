@@ -136,13 +136,15 @@ PROVIDER_CLI_OVERRIDE_ENV = {
 # 65534 and the ownership walk in validate_provider_executable refuses ANY gh
 # on the host -- the uid signal is destroyed, not merely inconvenient. The
 # gateway therefore runs the FULL validation outside the sandbox (real uids)
-# and hands the child `<resolved path>|<st_dev>:<st_ino>`; the child re-checks
+# and hands the child `<launch path>|<st_dev>:<st_ino>`: the path gh is
+# launched by, which is its resolved path or a multicall link the validation
+# keeps, and the identity of the file that path reaches. The child re-checks
 # everything the namespace leaves intact (regular file, executable, not
 # world-writable, outside the agent-writable tree) plus the device:inode
 # identity pin, which closes the swap-between-validate-and-exec window the
-# skipped ownership walk would otherwise reopen. Private (underscore) because
-# only the script-cron spawn path may set it; a set-but-malformed value fails
-# loudly like the operator overrides above.
+# skipped ownership walk would otherwise reopen, a repointed link included.
+# Private (underscore) because only the script-cron spawn path may set it; a
+# set-but-malformed value fails loudly like the operator overrides above.
 GH_PREVALIDATED_ENV = "_KIROCREW_GH_PREVALIDATED"
 
 # gh's own auth + network/TLS vars, forwarded (when present) on top of the
@@ -327,8 +329,181 @@ def check_provider_path_component_windows(
         raise ValueError(f"{label} can be replaced by {joined}")
 
 
+def _root_alone_can_change(path: Path, *, uid: int) -> bool:
+    """Whether *path* passes the strict component policy: owned by root and not
+    writable by the gateway user, so nothing short of root can replace it.
+
+    An unreadable component raises like the rest of the walk instead of
+    answering either way.
+    """
+    try:
+        path.stat()
+    except OSError as exc:
+        raise ValueError("executable hierarchy is not accessible") from exc
+    try:
+        check_provider_path_component(path, label="component", uid=uid, strict=True)
+    except ValueError:
+        return False
+    return True
+
+
+def _who_can_change(path: Path, *, uid: int) -> tuple[bool, bool]:
+    """Who besides root can change *path*: ``(gateway_user, anyone_else)``.
+
+    The gateway user can when it owns the component or may write to it. Write
+    access to a sticky directory someone else owns does not count, because only
+    an entry's owner may replace that entry there. Anyone else can when a third
+    account owns the component or its mode lets a group or everyone write to it;
+    a group bit counts even for a group the gateway user belongs to, since that
+    group may have other members.
+
+    An unreadable component raises like the rest of the walk instead of
+    answering either way.
+    """
+    try:
+        path_stat = path.stat()
+    except OSError as exc:
+        raise ValueError("executable hierarchy is not accessible") from exc
+    mode = path_stat.st_mode
+    sticky_directory = stat.S_ISDIR(mode) and bool(mode & stat.S_ISVTX)
+    gateway_user = path_stat.st_uid == uid or (not sticky_directory and os.access(path, os.W_OK))
+    anyone_else = path_stat.st_uid not in (0, uid) or bool(mode & (stat.S_IWGRP | stat.S_IWOTH))
+    return gateway_user, anyone_else
+
+
+def _symlink_owner(link: Path) -> int:
+    """The uid owning the symlink *link* itself, not whatever it points at.
+
+    An unreadable link raises like the rest of the walk instead of answering
+    either way.
+    """
+    try:
+        return link.lstat().st_uid
+    except OSError as exc:
+        raise ValueError("executable hierarchy is not accessible") from exc
+
+
+def _ownership_note(path: Path) -> str:
+    """``uid N, mode 0NNN`` of *path* for an operator-facing message, or
+    ``unreadable`` when it cannot be read."""
+    try:
+        info = path.stat()
+    except OSError:
+        return "unreadable"
+    return f"uid {info.st_uid}, mode {stat.S_IMODE(info.st_mode):04o}"
+
+
+def _link_launch_risk(
+    original: Path, resolved: Path, walked: list[Path], links: list[Path], *, uid: int
+) -> str | None:
+    """What rules out launching a multicall link by its own spelling, or ``None``.
+
+    A multicall binary installed behind one symlink per command (busybox-style)
+    picks its command from the name in ``argv[0]``. Launched by its resolved path
+    it sees its own name and cannot run, so a relaxed-mode POSIX executable found
+    as a link named differently from its target is worth launching by that link;
+    the caller asks only about such a link.
+
+    Launching by the link makes the kernel follow it again at exec time, so
+    whoever can replace an entry the link's side of the walk reads can retarget
+    the launch after this walk. That grants nothing in two cases, and only those
+    keep the link:
+
+    * the gateway user can already change the target side, by rewriting the
+      target or replacing an entry above it, and nobody but the gateway user and
+      root can change what only the link's side reads: whoever can retarget the
+      link could already have changed the target;
+    * every walked directory and the target are root's alone to change, so
+      neither spelling moves without root.
+
+    What only the link's side reads is each directory the target's side does not
+    read, and each symlink the walk follows. A symlink's directory decides who
+    may replace it, except in a sticky directory, where an account that may write
+    the directory replaces only its own entries. There the symlink's owner
+    decides, so a symlink another account owns rules the link out even in a
+    directory both sides read. The second case needs no such check: a directory
+    only root can write lets nobody else replace an entry in it, sticky or not.
+
+    Every other layout has someone who can retarget the link but cannot change
+    the target: a target only root or another group can change, reached through
+    a link the gateway user can retarget; a link in a directory another account
+    or group can write; or a symlink another account owns. The same holds for a
+    link whose walk passes through an agent-writable root, which the agent
+    writes to whatever the ownership says. For each of these the returned text
+    names the component that rules the link out.
+
+    *walked* is every directory the walk read on either side and *links* every
+    symlink it followed: the two lists
+    :func:`kiro_crew.platform_compat.traversed_components_and_links` returns,
+    the first without its final entry, the target.
+    """
+    roots = agent_writable_roots()
+    for directory in walked:
+        for root in roots:
+            if directory == root or root in directory.parents:
+                return f"{str(directory)!r} is in the agent-writable tree {str(root)!r}"
+    # ``resolved`` is canonical, so its lexical parents are exactly the
+    # directories its own side of the walk reads.
+    target_side = [resolved, *resolved.parents]
+    if any(_who_can_change(path, uid=uid)[0] for path in target_side):
+        # A component the gateway user can change is never root's alone, so
+        # only the first case can keep the link from here.
+        for directory in walked:
+            if directory not in target_side and _who_can_change(directory, uid=uid)[1]:
+                return (
+                    f"{str(directory)!r} ({_ownership_note(directory)}) can be changed "
+                    "by an account other than the gateway user and root"
+                )
+        for link in links:
+            owner = _symlink_owner(link)
+            if owner not in (0, uid):
+                return f"the symlink {str(link)!r} belongs to another account (uid {owner})"
+        return None
+    for path in [resolved, *walked]:
+        if not _root_alone_can_change(path, uid=uid):
+            return (
+                f"the gateway user cannot change the target or a directory above it, and "
+                f"{str(path)!r} ({_ownership_note(path)}) is not root's alone to change"
+            )
+    return None
+
+
+# Every (link, reason) :func:`_report_resolved_launch` has warned about. The
+# resolution runs again on every cache miss, and the layout that rules a link
+# out rarely changes in between.
+_REPORTED_RESOLVED_LAUNCHES: set[tuple[str, str]] = set()
+
+
+def _report_resolved_launch(original: Path, resolved: Path, reason: str) -> None:
+    """Warn, once per link and reason, that a differently named link is launched
+    by its resolved path.
+
+    A multicall CLI launched that way fails with an error of its own that names
+    neither the cause nor a remedy, so this warning names both.
+    """
+    key = (str(original), reason)
+    if key in _REPORTED_RESOLVED_LAUNCHES:
+        return
+    _REPORTED_RESOLVED_LAUNCHES.add(key)
+    override = PROVIDER_CLI_OVERRIDE_ENV.get(original.name)
+    remedy = (
+        f"{override} (or the calling feature's own path override)"
+        if override
+        else "the calling feature's path override"
+    )
+    logger.warning(
+        "%r is launched as %r, not by its own name, because %s. A CLI that picks its "
+        "command from the name it runs by fails this way; for one that does, change "
+        "what that names or set %s to the tool's own binary.",
+        str(original),
+        str(resolved),
+        reason,
+        remedy,
+    )
+
+
 def validate_provider_executable(candidate: str, *, require_protected: bool = False) -> str:
-    """Return the canonical path of a provider CLI we will run, or raise.
+    """Return the path a provider CLI is launched by, or raise.
 
     Default policy — *if `gh` works in your terminal, it works here*. Any
     executable the gateway user could run interactively is accepted, including
@@ -374,6 +549,15 @@ def validate_provider_executable(candidate: str, *, require_protected: bool = Fa
     unwritable by the gateway user through every parent. Callers that expose
     provider credentials to the child set ``require_protected`` to apply that
     rule regardless of the operator's global mode.
+
+    The path returned is the resolved one, save for a multicall link on POSIX in
+    relaxed mode: when the link's name differs from its target's and launching
+    by the link lets nobody retarget the launch who could not already change the
+    target, the link's own spelling is returned, so the binary still sees the
+    name it dispatches on (see :func:`_link_launch_risk`). A differently named
+    link that is launched by its resolved path instead is reported once, in a
+    warning naming the component that rules it out. Strict mode refuses links,
+    so it always returns the resolved path.
     """
     if not os.path.isabs(candidate):
         raise ValueError("path must be absolute")
@@ -441,6 +625,7 @@ def validate_provider_executable(candidate: str, *, require_protected: bool = Fa
                 raise ValueError(f"executable is inside the agent-writable tree {root}")
 
     _check(resolved, label="executable")
+    links: list[Path] = []
     if windows:
         # The ACL walk asks its question of lexical spellings, and the
         # component-by-component walker below is POSIX-shaped (``os.sep``-rooted),
@@ -458,10 +643,12 @@ def validate_provider_executable(candidate: str, *, require_protected: bool = Fa
         # walker's and not ``Path.parents``. The set is a superset of both chains:
         # every lexical ancestor of ``resolved`` is walked, and a symlinked
         # directory component's lexical spelling stats the same inode as the
-        # target-side directory the walk records in its place.
-        components = platform_compat.traversed_components(original)
-        if components is None:
+        # target-side directory the walk records in its place. The same walk
+        # names every symlink it follows, for the multicall-link rule.
+        walk = platform_compat.traversed_components_and_links(original)
+        if walk is None:
             raise ValueError("executable hierarchy is not accessible")
+        components, links = walk
         if components[-1] != resolved:
             raise ValueError("executable path did not resolve consistently")
         parents = components[:-1]
@@ -472,6 +659,11 @@ def validate_provider_executable(candidate: str, *, require_protected: bool = Fa
         except OSError as exc:
             raise ValueError("executable hierarchy is not accessible") from exc
         _check(parent, label="executable parent")
+    if not windows and not strict and original.name != resolved.name:
+        reason = _link_launch_risk(original, resolved, parents, links, uid=uid)
+        if reason is None:
+            return str(original)
+        _report_resolved_launch(original, resolved, reason)
     return str(resolved)
 
 
@@ -560,14 +752,19 @@ def reset_cache() -> None:
 def _consume_prevalidated(value: str) -> str:
     """Validate a parent-prevalidated gh handoff inside a sandboxed child.
 
-    ``value`` is ``<resolved path>|<st_dev>:<st_ino>`` written by
+    ``value`` is ``<launch path>|<st_dev>:<st_ino>`` written by
     :func:`prevalidated_gh_env` in the gateway, where the full ownership walk
-    already ran with real uids. Inside the child's user namespace that walk is
+    already ran with real uids. The launch path is what
+    :func:`validate_provider_executable` returned there: the resolved path, or
+    a multicall link it keeps. Inside the child's user namespace that walk is
     unavailable (root maps to the overflow uid), so this re-checks every
-    property the namespace leaves intact and pins the file's identity to the
-    device:inode the parent validated -- a binary swapped in after the parent's
-    check has a different inode and is refused. Any failure raises loudly:
-    a set-but-wrong handoff is a defect to surface, never to silently skip.
+    property the namespace leaves intact on the file the path reaches, and pins
+    that file's identity to the device:inode the parent validated -- a binary
+    swapped in after the parent's check, or a link repointed at another file,
+    has a different inode and is refused. The agent-writable check reads the
+    path as handed over; the parent keeps a link only when no directory its
+    walk read, on either side, lies in that tree. Any failure raises loudly: a
+    set-but-wrong handoff is a defect to surface, never to silently skip.
     """
     try:
         path_part, _, identity = value.rpartition("|")

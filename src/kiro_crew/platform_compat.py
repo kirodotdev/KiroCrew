@@ -2913,7 +2913,11 @@ def traversed_components(path: str | os.PathLike[str]) -> list[Path] | None:
     is asked over a superset of ``resolved.parents`` plus the target. Symlinks
     met on the way are deliberately absent: their mode is meaningless (0777 on
     Linux) and they cannot be edited in place, only replaced, which the directory
-    holding them — present in the result — already governs.
+    holding them — present in the result — governs, except in a sticky directory,
+    where an account that may write the directory replaces only the entries it
+    owns. A question that admits a sticky directory therefore also needs each
+    symlink's owner, and asks :func:`traversed_components_and_links`, the same
+    walk reporting the symlinks as well.
 
     POSIX path semantics (``os.sep``-rooted); Windows callers keep their own
     ACL-driven chains and must not route through here.
@@ -2922,6 +2926,25 @@ def traversed_components(path: str | os.PathLike[str]) -> list[Path] | None:
     :data:`_MAX_SYMLINK_HOPS` expansions. The fail direction is "could not
     enumerate", never a shorter list: a caller that treats ``None`` as anything
     but a refusal is answering a question it did not ask.
+    """
+    walk = traversed_components_and_links(path)
+    return None if walk is None else walk[0]
+
+
+def traversed_components_and_links(
+    path: str | os.PathLike[str],
+) -> tuple[list[Path], list[Path]] | None:
+    """:func:`traversed_components` together with every symlink that walk follows.
+
+    The first list is exactly what :func:`traversed_components` returns. The
+    second names each symlink the walk expands, in visit order and each once,
+    spelled as the directory the walk read it from joined with its name, so the
+    directory holding each link is in the first list. A trust question needs
+    these links when it admits a sticky directory: an account that may write one
+    replaces only the entries it owns there, so a symlink's owner, which neither
+    the directory's owner nor its mode reveals, decides who can retarget it.
+
+    ``None`` exactly when :func:`traversed_components` answers ``None``.
     """
     text = os.fspath(path)
     if not os.path.isabs(text):
@@ -2933,6 +2956,7 @@ def traversed_components(path: str | os.PathLike[str]) -> list[Path] | None:
     resolved = os.sep
     hops = 0
     visited: dict[str, None] = {}
+    links: dict[str, None] = {}
     while pending:
         name = pending.pop()
         if name in ("", os.curdir):
@@ -2952,6 +2976,7 @@ def traversed_components(path: str | os.PathLike[str]) -> list[Path] | None:
         if not is_link:
             resolved = candidate
             continue
+        links[candidate] = None
         hops += 1
         if hops > _MAX_SYMLINK_HOPS:
             return None
@@ -2963,7 +2988,7 @@ def traversed_components(path: str | os.PathLike[str]) -> list[Path] | None:
             resolved = os.sep
         pending.extend(reversed(target.split(os.sep)))
     visited[resolved] = None
-    return [Path(component) for component in visited]
+    return [Path(component) for component in visited], [Path(link) for link in links]
 
 
 def _is_root_owned_path(path: str) -> bool:
