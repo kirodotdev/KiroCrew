@@ -11633,6 +11633,8 @@
       "delivery_unconfirmed_pending": "Доставка не подтверждена — возможно, это сообщение ещё ожидает доставки. Если ответ не придёт, отправь его снова.",
       "could_not_read_file_reason": "Не удалось прочитать {{path}} ({{reason}})",
       "screenshot_failed_reason": "Не удалось сделать снимок экрана: {{reason}}",
+      "source_hosts_failed_reason": "Не удалось загрузить настройки ссылок GitLab и Jira: {{reason}}",
+      "artifact_reference_failed_reason": "Не удалось связать артефакт с этим чатом: {{reason}}",
       "http_status": "HTTP {{status}}",
       "could_not_rename_session": "Не удалось переименовать сессию",
       "could_not_generate_title": "Не удалось создать заголовок",

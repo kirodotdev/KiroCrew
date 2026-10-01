@@ -11162,6 +11162,8 @@
       "delivery_unconfirmed_pending": "送信が確認できません — このメッセージはまだ確認待ちの可能性があります。返信が届かない場合は、もう一度送信してください。",
       "could_not_read_file_reason": "{{path}} を読み取れませんでした（{{reason}}）",
       "screenshot_failed_reason": "スクリーンショットに失敗しました：{{reason}}",
+      "source_hosts_failed_reason": "GitLab と Jira のリンク設定の読み込みに失敗しました：{{reason}}",
+      "artifact_reference_failed_reason": "このチャットへのアーティファクトの関連付けに失敗しました：{{reason}}",
       "http_status": "HTTP {{status}}",
       "could_not_rename_session": "セッション名を変更できませんでした",
       "could_not_generate_title": "タイトルを生成できませんでした",

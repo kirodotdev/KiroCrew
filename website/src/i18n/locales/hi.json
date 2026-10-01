@@ -11319,6 +11319,8 @@
       "delivery_unconfirmed_pending": "डिलीवरी की पुष्टि नहीं हुई — यह संदेश अभी भी लंबित हो सकता है। अगर कोई जवाब नहीं आता, तो इसे दोबारा भेजो।",
       "could_not_read_file_reason": "{{path}} पढ़ा नहीं जा सका ({{reason}})",
       "screenshot_failed_reason": "स्क्रीनशॉट विफल: {{reason}}",
+      "source_hosts_failed_reason": "GitLab और Jira लिंक सेटिंग लोड करना विफल: {{reason}}",
+      "artifact_reference_failed_reason": "इस चैट से आर्टिफ़ैक्ट जोड़ना विफल: {{reason}}",
       "http_status": "HTTP {{status}}",
       "could_not_rename_session": "सत्र का नाम नहीं बदल सके",
       "could_not_generate_title": "शीर्षक नहीं बना सके",

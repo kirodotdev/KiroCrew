@@ -67,6 +67,7 @@ vi.mock('../api/client', () => ({
     chatSlotDetail: (...a: unknown[]) => chatSlotDetail(...a),
     sendChat: (...a: unknown[]) => sendChat(...a),
     chatHistory: vi.fn().mockResolvedValue({ sessions: [] }),
+    dashboardConfig: vi.fn().mockResolvedValue({}),
     models: vi.fn().mockResolvedValue([]),
     agents: vi.fn().mockResolvedValue([]),
     agentDetail: vi.fn().mockResolvedValue({}),

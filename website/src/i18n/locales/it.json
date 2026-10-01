@@ -11476,6 +11476,8 @@
       "delivery_unconfirmed_pending": "Consegna non confermata: questo messaggio potrebbe essere ancora in attesa. Se non arriva alcuna risposta, invialo di nuovo.",
       "could_not_read_file_reason": "Impossibile leggere {{path}} ({{reason}})",
       "screenshot_failed_reason": "Screenshot non riuscito: {{reason}}",
+      "source_hosts_failed_reason": "Caricamento delle impostazioni dei link GitLab e Jira non riuscito: {{reason}}",
+      "artifact_reference_failed_reason": "Collegamento dell’artefatto a questa chat non riuscito: {{reason}}",
       "http_status": "HTTP {{status}}",
       "could_not_rename_session": "Impossibile rinominare la sessione",
       "could_not_generate_title": "Impossibile generare un titolo",

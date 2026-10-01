@@ -11162,6 +11162,8 @@
       "delivery_unconfirmed_pending": "尚未确认送达——这条消息可能仍在等待中。如果没有收到回复，请再次发送。",
       "could_not_read_file_reason": "无法读取 {{path}}（{{reason}}）",
       "screenshot_failed_reason": "截图失败：{{reason}}",
+      "source_hosts_failed_reason": "加载 GitLab 和 Jira 链接设置失败：{{reason}}",
+      "artifact_reference_failed_reason": "将工件关联到此聊天失败：{{reason}}",
       "http_status": "HTTP {{status}}",
       "could_not_rename_session": "无法重命名会话",
       "could_not_generate_title": "无法生成标题",

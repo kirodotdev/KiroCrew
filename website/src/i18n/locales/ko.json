@@ -11162,6 +11162,8 @@
       "delivery_unconfirmed_pending": "전송이 확인되지 않았습니다 — 이 메시지는 아직 대기 중일 수 있습니다. 답변이 오지 않으면 다시 보내세요.",
       "could_not_read_file_reason": "{{path}}을(를) 읽을 수 없습니다 ({{reason}})",
       "screenshot_failed_reason": "스크린샷 실패: {{reason}}",
+      "source_hosts_failed_reason": "GitLab 및 Jira 링크 설정 불러오기 실패: {{reason}}",
+      "artifact_reference_failed_reason": "이 채팅에 아티팩트 연결 실패: {{reason}}",
       "http_status": "HTTP {{status}}",
       "could_not_rename_session": "세션 이름을 바꿀 수 없습니다",
       "could_not_generate_title": "제목을 생성할 수 없습니다",
