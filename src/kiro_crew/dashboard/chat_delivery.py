@@ -144,10 +144,11 @@ def queued_text_for_display(text: str, *, user_origin: bool) -> str:
     that row reaches every surface allowed to read the slot, apps holding a
     slot scope included. Text waiting in the queue, or steered into a running
     turn, is the same text from the same author, so its card and its cancel
-    restore reach those same surfaces in the same form. A queued entry is still
-    redacted where the drain turns it into the next turn's input and row
-    (``chat_runner._start_next_queued_turn``); this helper decides only what the
-    pending card shows.
+    restore reach those same surfaces in the same form. This helper is the one
+    decision for both: the drain
+    (``chat_runner._start_next_queued_turn``), rewind and edit-resend route the
+    owner's own text through it, so the pending card and the delivery the model
+    and the saved row receive carry the identical form by construction.
 
     Anything else -- a ``session_send`` peer, an app's own message, a channel --
     is not the session's own human and keeps the full display redaction. An app

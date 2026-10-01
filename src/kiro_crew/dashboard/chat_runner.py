@@ -115,6 +115,7 @@ from kiro_crew.dashboard.chat_delivery import TURN_ACTOR_META_KEY as _TURN_ACTOR
 from kiro_crew.dashboard.chat_delivery import (
     attachment_meta,
     find_written_steer_row,
+    queue_entry_is_user_origin,
     queued_text_for_display,
 )
 from kiro_crew.dashboard.chat_folders import (
@@ -9010,8 +9011,21 @@ async def _start_next_queued_turn(
         )
         slot._stopping = False
 
-    next_msg, _ = redact_exfiltration_urls(next_msg)
-    next_msg, _ = redact_credentials(next_msg)
+    # The session's own human's queued text is delivered AS TYPED, the same rule
+    # an ordinary idle send and a steer already follow: a `role == "user"` row is
+    # stored and served unredacted (chat_persistence), and here the drained entry
+    # becomes BOTH that row and the turn's LLM input, so redacting it would strip
+    # a link the human pasted from the model that a straight send would receive.
+    # `queue_entry_is_user_origin` is the exact discriminator the pending card
+    # uses: user-stamped, not channel-stamped, and carrying no
+    # producer `kind` -- so a cron / subagent / MCP-app / peer / disk-restored
+    # entry (none of them the reader's own words) never reaches this arm and is
+    # redacted as before. A merge folds only user sends together, so requiring
+    # EVERY consumed entry to qualify keeps a mixed batch on the redacted path.
+    deliver_as_typed = bool(consumed) and all(queue_entry_is_user_origin(item) for item in consumed)
+    if not deliver_as_typed:
+        next_msg, _ = redact_exfiltration_urls(next_msg)
+        next_msg, _ = redact_credentials(next_msg)
     is_cron = next_msg.startswith(CRON_NOTIFY_PREFIX)
     is_subagent = next_msg.startswith(SUBAGENT_COMPLETION_PREFIXES)
     # STRUCTURAL, not prefix: an MCP-App message's text is app-authored, so
@@ -9033,12 +9047,16 @@ async def _start_next_queued_turn(
         # `chat_message` echo follows for a user row), so the attachment lists
         # the entry carries travel with it -- without them the rebuilt row
         # resolves `[attached_file N]` markers by whitespace and a spaced path
-        # is truncated until the next reload. The text stays redacted whatever
-        # its origin: it stands for the row this drain writes from `next_msg`,
-        # which is redacted above and is also the text the turn receives.
+        # is truncated until the next reload. The text follows the row this
+        # drain writes from `next_msg`: as typed when this is the session's own
+        # human's send (`deliver_as_typed`, matching the pending card and the
+        # row/input the turn receives), redacted otherwise.
         _pop: dict = {
             "slot": slot.key,
-            "content": _redact_for_display(content),
+            "content": queued_text_for_display(
+                item["content"] if deliver_as_typed else content,
+                user_origin=deliver_as_typed,
+            ),
             "queue_id": item["id"],
             # The DRAIN's own verdict rides the pop: True when this drain
             # writes its own row for the turn these entries become (inject /

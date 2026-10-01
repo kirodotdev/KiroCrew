@@ -1513,9 +1513,13 @@ app, a channel, an entry restored from disk, which carries no provenance) is
 display-redacted. The single decision is `chat_delivery.queued_text_for_display`,
 with a queue entry's origin read by `queue_entry_is_user_origin`: the
 `_directive_user_origin` stamp without `_directive_channel_origin` (a linked
-Slack channel's message carries both). The drain is outside that rule:
-`_start_next_queued_turn` redacts a queued entry before it becomes the next
-turn's input and row, and its `queue_pop` frame carries that same redacted text.
+Slack channel's message carries both). The drain follows that same rule, not an
+exception to it: `_start_next_queued_turn` delivers the owner's own queued entry
+as typed into both the next turn's input and its row, and its `queue_pop` frame
+carries that same as-typed text, so the card and the delivery agree. The rewind
+and edit-resend endpoints route the owner's own edited text (`not request_app`)
+through the same helper. Any non-owner entry -- a peer, an app, a channel, a
+disk-restored entry, or an app-driven edit -- stays fully redacted on delivery.
 Pinned by `test_queued_user_text_display.py`.
 
 **Send identity through the REQUEUE path (#6751).** A steer whose turn dies
