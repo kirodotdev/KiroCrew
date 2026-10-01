@@ -41,6 +41,7 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
+    ACP_BACKEND_QODER,
     ACP_BACKENDS_ACP_RUNTIME,
     ACP_BACKENDS_COMPACT,
     ACP_BACKENDS_CONTEXT_RECYCLE,
@@ -711,6 +712,11 @@ class AcpProvider(LLMProvider):
     def is_deepseek_backend(self) -> bool:
         """True when this ACP provider talks to DeepSeek Harness (vs kiro-cli)."""
         return self._client.backend == ACP_BACKEND_DEEPSEEK
+
+    @property
+    def is_qoder_backend(self) -> bool:
+        """True when this ACP provider talks to Qoder CLI (vs kiro-cli)."""
+        return self._client.backend == ACP_BACKEND_QODER
 
     @property
     def is_kas_backend(self) -> bool:

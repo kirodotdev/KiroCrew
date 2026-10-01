@@ -70,6 +70,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
+    ACP_BACKEND_QODER,
     ACP_BACKENDS_KNOWN,
 )
 
@@ -738,6 +739,39 @@ AGENT_AUTH_DECLARATIONS: Tuple[AgentAuthDeclaration, ...] = (
         # ``session/prompt`` with -32603 ``... no API key for provider route
         # "deepseek-official"; store DEEPSEEK_API_KEY ...``.
         signed_out_signature="no API key for provider route",
+    ),
+    AgentAuthDeclaration(
+        backend=ACP_BACKEND_QODER,
+        # NO credential leaf is declared, and that is a gap rather than a finding. The
+        # harness signs in through ``qodercli login`` and its ACP ``initialize``
+        # advertises one auth method, ``qodercli-login``, which reuses that login; where
+        # the login is STORED was not located, and a leaf declared from documentation
+        # would fence a path nobody checked while leaving the real one readable. The
+        # harness is not selectable, so no session runs on the strength of this row --
+        # locating the store and declaring it (with ``adapter_own_leaves``, which must be
+        # a subset of it) is part of what makes it selectable.
+        credential_leaves=(),
+        home_override_env_vars=(),
+        adapter_own_leaves=(),
+        # Action only, no state: nothing here measured whether the operator is signed in.
+        sign_in_remedy=(
+            "Qoder signs in on its own — run qodercli login in a terminal and "
+            "complete its sign-in. It is not checked here: the harness reads it."
+        ),
+        signed_out_message=(
+            "Qoder is not signed in. Run `qodercli login` in your terminal and "
+            "complete its sign-in, then start a new chat."
+        ),
+        # Excluded deliberately: it signs in through its own login, so a
+        # ``kiro-cli logout`` says nothing about whether a running qodercli session is
+        # still authenticated.
+        host_logout_retires_children=False,
+        entitlement_source=ENTITLEMENT_OWN_CREDENTIAL_FILE,
+        # No ``signed_out_signature``, deliberately. qodercli 1.1.17 answers an
+        # unauthenticated ``session/new`` with -32000 ``Authentication required:
+        # Authentication is required.``, which is the SDK's generic prefix and the same
+        # words goose's auth answer carries, so a phrase drawn from it would match
+        # another harness's failure. Its own phrase for a missing login was not captured.
     ),
 )
 

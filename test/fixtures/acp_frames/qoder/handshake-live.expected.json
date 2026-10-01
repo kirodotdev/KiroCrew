@@ -1,0 +1,205 @@
+[
+  {
+    "agent_capabilities": {
+      "_meta": {
+        "qoder": {
+          "promptQueueing": true
+        }
+      },
+      "loadSession": true,
+      "mcpCapabilities": {
+        "http": true,
+        "sse": true
+      },
+      "promptCapabilities": {
+        "embeddedContext": true,
+        "image": true
+      },
+      "sessionCapabilities": {
+        "additionalDirectories": {},
+        "close": {},
+        "delete": {},
+        "fork": {},
+        "list": {},
+        "resume": {}
+      }
+    },
+    "agent_version": "1.1.17",
+    "frame": "response",
+    "id": 1,
+    "protocol_version": 1
+  },
+  {
+    "frame": "response",
+    "id": 2
+  },
+  {
+    "config_options": [
+      {
+        "category": "mode",
+        "currentValue": "default",
+        "id": "mode",
+        "name": "Mode",
+        "options": [
+          {
+            "description": "Prompts for approval",
+            "name": "Default",
+            "value": "default"
+          },
+          {
+            "description": "Auto-approves edit tools",
+            "name": "Accept Edits",
+            "value": "acceptEdits"
+          },
+          {
+            "description": "Auto-approves all tools",
+            "name": "Bypass Permissions",
+            "value": "bypassPermissions"
+          },
+          {
+            "description": "Read-only mode",
+            "name": "Plan",
+            "value": "plan"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "model",
+        "currentValue": "qmodel_38max",
+        "id": "model",
+        "name": "Model",
+        "options": [
+          {
+            "description": "Reasoning · Vision · New · 0.20x Credit",
+            "name": "Qwen3.8-Max (default)",
+            "value": "qmodel_38max"
+          },
+          {
+            "description": "Reasoning · Vision · New · 0.00x Credit",
+            "name": "Qwen3.8-Flash",
+            "value": "qfmodel"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "model",
+        "currentValue": "xhigh",
+        "id": "reasoning_effort",
+        "name": "Reasoning Effort",
+        "options": [
+          {
+            "name": "Extra High",
+            "value": "xhigh"
+          },
+          {
+            "name": "Low",
+            "value": "low"
+          },
+          {
+            "name": "Medium",
+            "value": "medium"
+          },
+          {
+            "name": "None",
+            "value": "none"
+          }
+        ],
+        "type": "select"
+      }
+    ],
+    "frame": "response",
+    "id": 3,
+    "modes": {
+      "advertised": true,
+      "current": "default",
+      "ids": [
+        "default",
+        "acceptEdits",
+        "bypassPermissions",
+        "plan"
+      ]
+    },
+    "session_id": "sess-synthetic-a"
+  },
+  {
+    "config_options": [
+      {
+        "category": "mode",
+        "currentValue": "default",
+        "id": "mode",
+        "name": "Mode",
+        "options": [
+          {
+            "description": "Prompts for approval",
+            "name": "Default",
+            "value": "default"
+          },
+          {
+            "description": "Auto-approves edit tools",
+            "name": "Accept Edits",
+            "value": "acceptEdits"
+          },
+          {
+            "description": "Auto-approves all tools",
+            "name": "Bypass Permissions",
+            "value": "bypassPermissions"
+          },
+          {
+            "description": "Read-only mode",
+            "name": "Plan",
+            "value": "plan"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "model",
+        "currentValue": "qfmodel",
+        "id": "model",
+        "name": "Model",
+        "options": [
+          {
+            "description": "Reasoning · Vision · New · 0.20x Credit",
+            "name": "Qwen3.8-Max (default)",
+            "value": "qmodel_38max"
+          },
+          {
+            "description": "Reasoning · Vision · New · 0.00x Credit",
+            "name": "Qwen3.8-Flash",
+            "value": "qfmodel"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "model",
+        "currentValue": "xhigh",
+        "id": "reasoning_effort",
+        "name": "Reasoning Effort",
+        "options": [
+          {
+            "name": "Extra High",
+            "value": "xhigh"
+          },
+          {
+            "name": "Low",
+            "value": "low"
+          },
+          {
+            "name": "Medium",
+            "value": "medium"
+          },
+          {
+            "name": "None",
+            "value": "none"
+          }
+        ],
+        "type": "select"
+      }
+    ],
+    "frame": "response",
+    "id": 4
+  }
+]

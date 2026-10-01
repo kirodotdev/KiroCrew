@@ -5042,10 +5042,11 @@ class TestReclaimOwnsEveryHarnessItTracked:
         from kiro_crew.agent_sdk.backends import (
             ACP_BACKEND_PROCESS_NAMES,
             ACP_BACKENDS_KNOWN,
+            DORMANT_BACKENDS,
             agent_process_markers,
         )
 
-        missing = sorted(ACP_BACKENDS_KNOWN - set(ACP_BACKEND_PROCESS_NAMES))
+        missing = sorted(ACP_BACKENDS_KNOWN - set(ACP_BACKEND_PROCESS_NAMES) - DORMANT_BACKENDS)
         assert not missing, (
             "these registered backends have no argv0 basename, so the PID-file "
             f"reclaim cannot recognise their orphans: {missing}"
@@ -5061,9 +5062,12 @@ class TestReclaimOwnsEveryHarnessItTracked:
         from kiro_crew.agent_sdk.backends import (
             ACP_BACKEND_LAUNCH,
             ACP_BACKEND_PROCESS_NAMES,
+            DORMANT_BACKENDS,
         )
 
         for backend, record in ACP_BACKEND_LAUNCH.items():
+            if backend in DORMANT_BACKENDS:
+                continue
             assert ACP_BACKEND_PROCESS_NAMES[backend] == record.binary, (
                 f"{backend!r} names its process twice and the two disagree: "
                 f"{ACP_BACKEND_PROCESS_NAMES[backend]!r} vs {record.binary!r}"

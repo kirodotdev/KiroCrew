@@ -42,7 +42,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from kiro_crew.acp import client as client_mod
 from kiro_crew.acp import runtime as runtime_mod
-from kiro_crew.acp.client import AcpClient
+from kiro_crew.acp.client import AcpClient, AcpError
 from kiro_crew.acp.harness import codex as codex_harness_mod
 from kiro_crew.acp.runtime import AcpRuntime
 from kiro_crew.acp.skill_projection import NativeSkillProjection
@@ -50,6 +50,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_OPENCODE,
+    ACP_BACKEND_QODER,
     ACP_BACKENDS_ACP_RUNTIME,
     ACP_BACKENDS_KIRO_SLASH_COMMANDS,
     ACP_BACKENDS_KNOWN,
@@ -78,6 +79,7 @@ _DSH_PATCH = "/opt/run/kiro_crew_dsh_gate.patch.yml"
 _OPENCODE_BIN = "/opt/bin/opencode"
 _GOOSE_BIN = "/opt/bin/goose"
 _DEEPSEEK_BIN = "/opt/bin/dsh"
+_QODER_BIN = "/opt/bin/qodercli"
 _SEARCH_PATH = "/opt/bin"
 _OPENCODE_CONFIG = '{"permission":"ask"}'
 
@@ -449,6 +451,7 @@ def _stub_common(stack: list, rec: _Recorder, tmp_path: Path, backend: str = "")
                     ACP_BACKEND_OPENCODE: (_OPENCODE_BIN, _SEARCH_PATH),
                     ACP_BACKEND_GOOSE: (_GOOSE_BIN, _SEARCH_PATH),
                     ACP_BACKEND_DEEPSEEK: (_DEEPSEEK_BIN, _SEARCH_PATH),
+                    ACP_BACKEND_QODER: (_QODER_BIN, _SEARCH_PATH),
                 }[backend],
             ),
         ]
@@ -506,6 +509,12 @@ def _reset_bin_caches() -> None:
 #: like every other harness; a runtime-only host has no client arm to drive, and its
 #: launch is the plan its harness resolves at Seam 1.
 RUNTIME_ONLY_BACKENDS = frozenset(ACP_BACKENDS_ACP_RUNTIME - ACP_BACKENDS_KIRO_SLASH_COMMANDS)
+
+#: Known harnesses whose spawn REFUSES rather than launches. Their golden records the
+#: refusal, because that is the launch fact: an id with no spawn arm would fall through
+#: to the kiro-cli spawn and run under the wrong identity, so "it refuses" is the answer
+#: worth pinning until the harness is selectable and has a launch to record.
+REFUSED_AT_SPAWN_BACKENDS = frozenset({ACP_BACKEND_QODER})
 
 
 class _Captured(Exception):
@@ -690,6 +699,7 @@ def capture(backend: str, tmp_path: Path) -> dict[str, Any]:
     # The environment the child inherits, read back from ``os.environ`` inside the
     # patched context (see :func:`_env_delta`).
     inherited_env: dict[str, str] = {}
+    refused = ""
     try:
         for ctx in stack:
             entered.append(ctx.__enter__())
@@ -700,7 +710,15 @@ def capture(backend: str, tmp_path: Path) -> dict[str, Any]:
             acp_backend=backend,
             model="auto",
         )
-        asyncio.run(client._spawn())
+        if backend in REFUSED_AT_SPAWN_BACKENDS:
+            try:
+                asyncio.run(client._spawn())
+            except AcpError as exc:
+                refused = str(exc)
+            else:  # pragma: no cover - the refusal is the fact under test
+                raise AssertionError(f"{backend!r} launched; its golden expects a refusal")
+        else:
+            asyncio.run(client._spawn())
     finally:
         for ctx in reversed(stack):
             try:
@@ -708,6 +726,8 @@ def capture(backend: str, tmp_path: Path) -> dict[str, Any]:
             except Exception:  # pragma: no cover - teardown must not mask a failure
                 pass
         restore_bin_caches(saved_caches)
+    if refused:
+        return {"refused": refused}
     added, _removed = _env_delta(inherited_env, rec.env)
     return {
         "argv": rec.argv,

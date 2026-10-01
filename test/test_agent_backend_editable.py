@@ -24,6 +24,7 @@ from kiro_crew.acp_backends import (
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
+    ACP_BACKEND_QODER,
 )
 from kiro_crew.agent_sdk import backends as acp_backends
 from kiro_crew.config.loader import KiroCrewConfig
@@ -35,14 +36,19 @@ FIELD = "agent.acp_backend"
 #: Known ids the public baseline deliberately does not offer, each entry carrying its
 #: reason in ``test_baseline_ships_every_known_backend``. An entry is a reasoned
 #: exclusion rather than a defect, and it earns its place by naming what the id fails.
-#: Empty today: no id is excluded. ``deepseek`` was the one member while it failed the
-#: ROUTING half of the selectability bar -- its sandbox decides its own tool calls and
+#: ``qoder`` is the one member today, and it fails the ROUTING half of the selectability
+#: bar by lack of a measurement rather than by a known hole: in ``default`` mode it
+#: raises ``session/request_permission`` for a mutating command and honours a reject,
+#: but nothing has established that an allow rule in the operator's own Qoder settings
+#: cannot pre-approve a call without one, and its credential store is unlocated. It
+#: leaves the set when ``Routing`` names its mechanism and that read-back exists.
+#: ``deepseek`` was the member before it: its sandbox decides its own tool calls and
 #: its ``session/request_permission`` carries only a model-initiated escalation, so
 #: Crew's PreToolUse gate never ran for what a session did. It left the set when Crew
 #: composed its own gate plugin into the harness and read the plugin's load marker
 #: back before the first prompt (``Routing.VERIFIED_GATE_EXTENSION``), which is the
 #: routing half met the way the exclusion said it had to be.
-NOT_SHIPPED_SELECTABLE: frozenset = frozenset()
+NOT_SHIPPED_SELECTABLE: frozenset = frozenset({ACP_BACKEND_QODER})
 
 
 @pytest.fixture

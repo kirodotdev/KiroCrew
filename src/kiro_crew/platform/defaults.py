@@ -55,7 +55,7 @@ from kiro_crew.platform.interfaces import (
 
 
 class DefaultProviderRegistry:
-    """Registers nothing: every KNOWN backend is already in the baseline."""
+    """Registers nothing: every SELECTABLE backend is already in the baseline."""
 
     def create_factory(self, cfg: Any) -> Callable[..., Any]:
         return cfg.create_provider_factory()
@@ -64,10 +64,11 @@ class DefaultProviderRegistry:
         return None
 
     def register_acp_backends(self) -> None:
-        # Nothing to register, and nothing this seam could register: the baseline now
-        # covers every id in ``ACP_BACKENDS_KNOWN``, and
-        # ``register_selectable_backend`` rejects an id outside that set, so there is
-        # no id it accepts that is not already selectable. The seam stays because the
+        # Nothing to register, and nothing this seam could register: the baseline covers
+        # every known id that is selectable, and ``register_selectable_backend`` rejects
+        # an id outside ``ACP_BACKENDS_KNOWN`` and a known id whose routing is
+        # ``UNVERIFIED`` (``qoder`` today), so there is no id it accepts that is not
+        # already selectable. The seam stays because the
         # ProviderRegistry protocol declares it and an edition overrides this method;
         # an edition adding a genuinely new harness has to widen
         # ``ACP_BACKENDS_KNOWN`` as well, which is a core change, not an extension

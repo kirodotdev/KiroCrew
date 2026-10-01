@@ -145,5 +145,8 @@
     },
     "spawn_label": "pi-acp via /opt/lib/pi-acp/index.js",
     "stderr_label": "pi-acp via /opt/lib/pi-acp/index.js"
+  },
+  "qoder": {
+    "refused": "Qoder is known to this build but not selectable yet: Kiro Crew has not established that its tool calls reach the security gate."
   }
 }

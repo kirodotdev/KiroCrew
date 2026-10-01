@@ -148,6 +148,7 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
+    ACP_BACKEND_QODER,
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
     ACP_BACKENDS_HARNESS_OWNED_SESSIONS,
     ACP_BACKENDS_INLINE_COMPACTION,
@@ -347,6 +348,10 @@ PROTOCOL_VERSION_GOOSE = launch_for(ACP_BACKEND_GOOSE).protocol_version
 # so it speaks the SPEC dialect too. Verified off its own wire, and its own literal
 # for the same reason the two above have one (harness-parity H10).
 PROTOCOL_VERSION_DEEPSEEK = launch_for(ACP_BACKEND_DEEPSEEK).protocol_version
+# qodercli answers ``initialize`` with an integer ``protocolVersion`` of 1 (captured off
+# 1.1.17's own wire), so it speaks the SPEC dialect; its own literal for the same H10
+# reason as the rows above.
+PROTOCOL_VERSION_QODER = launch_for(ACP_BACKEND_QODER).protocol_version
 #: Handshake dialect per harness. A TABLE, not an if-chain: the handshake runs on
 #: the construction path kiro-cli shares with every adapter, and harness-parity H13
 #: keeps that path free of conditionals added in service of one. A harness added
@@ -3841,6 +3846,10 @@ class AcpClient:
     @property
     def _is_deepseek(self) -> bool:
         return self.backend == ACP_BACKEND_DEEPSEEK
+
+    @property
+    def _is_qoder(self) -> bool:
+        return self.backend == ACP_BACKEND_QODER
 
     @property
     def _model_registry_namespace(self) -> str:
@@ -7719,6 +7728,21 @@ class AcpClient:
                     )
                 except acp_tool_gate.ToolGateUnroutable as exc:
                     raise AcpToolGateUnroutable(str(exc)) from None
+        elif self._is_qoder:
+            # KNOWN BUT NOT SELECTABLE: this arm exists so the id cannot fall through to
+            # the kiro-cli spawn below and run under the wrong identity, which is what
+            # any id without an arm would do. It resolves the launch record first so a
+            # missing binary is reported the way every self-served harness reports it,
+            # and then refuses: nothing has established that this harness's tool calls
+            # reach Kiro Crew's security gate (``Routing.UNVERIFIED``), and a spawn that
+            # went further would run them unasked. Selectability is a separate change --
+            # see ``ACP_BACKEND_QODER`` for what it has to establish first.
+            await self._resolve_self_served_launch()
+            raise AcpError(
+                f"{launch_for(self.backend).label} is known to this build but not "
+                "selectable yet: Kiro Crew has not established that its tool calls "
+                "reach the security gate."
+            )
         else:
             # Pin ONE reading of the environment for both the search and the
             # message that reports it. The previous code resolved against the live

@@ -38,6 +38,7 @@ from kiro_crew.acp_backends import (
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
+    ACP_BACKEND_QODER,
 )
 from kiro_crew.providers.mirrors.base import AgentConfigMirror
 from kiro_crew.providers.mirrors.claude_code import ClaudeCodeMirror
@@ -362,6 +363,28 @@ PROJECTIONS: dict[str, McpProjection] = {
             "the WHOLE session rather than being dropped"
         ),
         tracking="docs/request-for-change/rfc-agent-config-mirror.md#5-migration",
+    ),
+    ACP_BACKEND_QODER: McpProjection(
+        kind=ProjectionKind.NO_CHANNEL,
+        reason=(
+            "qoder is known but not selectable, and nothing has measured how its "
+            "session carries an MCP server, so no channel is claimed for it. Its "
+            "initialize result advertises mcpCapabilities of http and sse with no stdio "
+            "flag, which is the reading that once had opencode and goose declared "
+            "no-channel and is not evidence either way: ACP's McpCapabilities schema has "
+            "no stdio field, so a conforming agent cannot advertise one. What decides it "
+            "is a round trip, and none has been captured. It also has to be measured "
+            "rather than assumed because harnesses differ on the failure: pi accepts the "
+            "array and mounts nothing, goose drops an element that cannot start, and "
+            "deepseek fails the whole session"
+        ),
+        channel=(
+            "the session/new mcpServers array, once a stdio element shaped as "
+            "mcp_gateway.session_servers._acp_server_entry emits it is captured being "
+            "asked initialize, tools/list and tools/call by qodercli itself -- or "
+            "qodercli's own --mcp-config flag, if the array proves inert"
+        ),
+        tracking="docs/system-specs/modules/harness-onboarding.md#worked-example-the-qoder-harness",
     ),
 }
 
