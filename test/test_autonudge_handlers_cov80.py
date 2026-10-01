@@ -26,6 +26,7 @@ from aiohttp.test_utils import make_mocked_request
 from kiro_crew.autonudge import AutoNudgeService, NudgeLoop
 from kiro_crew.dashboard.handlers import autonudge as h
 from kiro_crew.monitoring.models import (
+    MAX_MONITOR_STOP_REASON_CHARS,
     MonitorCreationSurface,
     MonitorObservationStatus,
     MonitorOutcome,
@@ -1136,6 +1137,49 @@ async def test_legacy_reads_withhold_every_owner_scoped_monitor_field(
 
 
 @pytest.mark.asyncio
+async def test_reduced_structured_row_withholds_stopped_detail_but_plain_rows_keep_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``stopped_detail`` is free text and follows ``banner``, not ``stopped_reason``.
+
+    A structured monitor's reduced row publishes only what an ungated caller is
+    entitled to, and every other free-text field on it is withheld -- so a stop
+    detail written into the agent-writable store must not ride the reduced row
+    out through either ungated read. A plain loop keeps the field, normalised
+    (capped and redacted) as ``_serialize`` has always done.
+    """
+    structured = _monitor_loop("mon-1", "chat-2-222")
+    structured.active = False
+    structured.stopped_reason = "manual"
+    structured.stopped_detail = "watching acme/widgets#7 for the owner -- must-not-escape"
+    plain = _loop("lp-1", "chat-1-111")
+    plain.active = False
+    plain.stopped_reason = "autonudge_stop"
+    plain.stopped_detail = "done for today " + "x" * 600
+    _svc(monkeypatch, _FakeSvc([structured, plain]))
+
+    listed = _body(await h.api_autonudge_list(_mk("GET", "/api/autonudge")))
+    per_slot = _body(
+        await h.api_autonudge_get(
+            _mk("GET", "/api/autonudge/slot/chat-2-222", match={"slot_key": "chat-2-222"})
+        )
+    )
+
+    rows = {row["id"]: row for row in listed["loops"]}
+    for reduced in (rows["mon-1"], per_slot["loop"]):
+        assert reduced["record_kind"] == "structured_monitor"
+        assert "stopped_detail" not in reduced
+        assert reduced["stopped_reason"] == "manual"
+    assert "must-not-escape" not in json.dumps(listed)
+    assert "must-not-escape" not in json.dumps(per_slot)
+    # The plain row carries the field, through the output normaliser.
+    assert "record_kind" not in rows["lp-1"]
+    assert rows["lp-1"]["stopped_detail"].startswith("done for today ")
+    assert len(rows["lp-1"]["stopped_detail"]) <= MAX_MONITOR_STOP_REASON_CHARS
+    assert "stopped_detail" in h._MONITOR_WITHHELD_LEGACY_FIELDS
+
+
+@pytest.mark.asyncio
 async def test_structured_legacy_row_carries_exactly_the_entitled_keys(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1158,6 +1202,8 @@ async def test_structured_legacy_row_carries_exactly_the_entitled_keys(
         "created_ts",
         "max_runtime_secs",
         "gate",
+        # ``stopped_reason`` is a closed code and stays; ``stopped_detail`` is the
+        # stop's free text and is withheld with ``banner`` and ``message``.
         "stopped_reason",
         "approval_stalled",
         # Same class as ``approval_stalled``: the automation's own reading of
@@ -1173,15 +1219,18 @@ async def test_structured_legacy_row_carries_exactly_the_entitled_keys(
         "max_cycles",
         "cycle_count",
         "last_fire_ts",
+        "record_kind",
     }
     mapped = {name for name, _ in h._MONITOR_MAPPED_LEGACY_FIELDS}
     assert mapped <= set(row)
+    assert row["record_kind"] == "structured_monitor"
     # Withheld + published still covers every loop field, and the mapped names
     # are the exact overlap between the two sets.
-    assert set(h._MONITOR_WITHHELD_LEGACY_FIELDS) | set(row) == {
+    loop_fields = set(row) - {"record_kind"}
+    assert set(h._MONITOR_WITHHELD_LEGACY_FIELDS) | loop_fields == {
         field.name for field in dataclasses.fields(loop)
     }
-    assert mapped == set(h._MONITOR_WITHHELD_LEGACY_FIELDS) & set(row)
+    assert mapped == set(h._MONITOR_WITHHELD_LEGACY_FIELDS) & loop_fields
 
 
 @pytest.mark.asyncio
@@ -1217,6 +1266,8 @@ async def test_legacy_list_omits_cycle_accounting_only_for_structured_rows(
     assert rows["lp-1"]["cycle_count"] == 4
     assert rows["lp-1"]["last_fire_ts"] == 1700.0
     # The monitor carries its OWN values under the same names, because each has a
+    assert "record_kind" not in rows["lp-1"]
+    assert rows["mon-1"]["record_kind"] == "structured_monitor"
     # truthful equivalent. Withholding them let the component default max_cycles
     # to 0, whose label reads "0 = infinity" -- a stronger falsehood about a
     # budget-bounded record than a coarse-but-true number.

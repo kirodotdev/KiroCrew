@@ -33,6 +33,21 @@ if TYPE_CHECKING:
     from kiro_crew.autonudge import AutoNudgeService
 
 
+async def _await_future_deferring_cancellation(
+    future: "asyncio.Future[Any]",
+) -> tuple[Any, bool]:
+    """Join *future* and report cancellation only after its result is known.
+
+    The service's spelling of :func:`autonudge_selfarm.await_future_deferring_cancellation`,
+    kept here so the facade and the owners keep one name to bind and to patch. The
+    leaf is imported at call time: the facade imports this module while it loads, and
+    it must not pull ``autonudge_selfarm`` into every process that imports the facade.
+    """
+    from kiro_crew import autonudge_selfarm  # read at call time: the facade stays lazy
+
+    return await autonudge_selfarm.await_future_deferring_cancellation(future)
+
+
 def _maintenance_lock(base_dir: Path) -> asyncio.Lock:
     """Per-event-loop lock serializing store maintenance with service startup."""
     from kiro_crew import autonudge as seams  # read at call time: the facade imports us

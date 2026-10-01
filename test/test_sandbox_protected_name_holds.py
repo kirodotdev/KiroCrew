@@ -57,6 +57,12 @@ TIERS = ("standard", "cc", "strict")
 #: A fix that gives a name a durable hold adds it here, and the equality
 #: assertion below then locks it: the name can never fall back to leaf-name
 #: holding without this constant being edited in the same diff.
+#:
+#: A name held INSIDE a masked host is not the same as a name LISTED under one.
+#: The auto-nudge arm record (``tag-grants/autonudge-trust``) is held by its
+#: host's stand-in without being a protected name of its own, so it is absent
+#: here on purpose -- see ``TestNoHiddenLeafNestsUnderAnother`` for why it may
+#: not be listed.
 HELD_BY_ENCLOSING_MASK: frozenset[str] = frozenset()
 
 
@@ -321,6 +327,12 @@ class TestLeafOnlyPopulationIsRecorded:
     #: launch fingerprints; ``mcp/resolved`` holds executables substituted for an
     #: approved launch. Each sits beside writable siblings, so no parent stand-in
     #: can hold it.
+    #:
+    #: The auto-nudge arm record (``tag-grants/autonudge-trust``) is deliberately
+    #: NOT among them: it lives inside an existing whole-directory stand-in
+    #: (``tag-grants``) and is not a protected name of its own, so it costs this
+    #: count nothing. A root-level ``autonudge-trust`` leaf would add three
+    #: entries per tier and weaken the existing enclosing-directory hold.
     EXPECTED: dict[str, int] = {"standard": 262, "cc": 269, "strict": 270}
 
     @pytest.mark.parametrize("tier", TIERS)
@@ -333,3 +345,53 @@ class TestLeafOnlyPopulationIsRecorded:
             "leave writable inside a live namespace; hold it with an enclosing directory "
             "mask instead of adding it here."
         )
+
+
+class TestNoHiddenLeafNestsUnderAnother:
+    """No ``_CREW_HIDDEN_LEAVES`` entry may be a descendant of another entry.
+
+    A nested hidden leaf is not merely redundant under its host's stand-in; on
+    a launcher that carries pre-spawn occupant identities into the mask loop it
+    is a spawn refusal. The alias pass records an identity for every hidden leaf
+    present on disk, the host's mask then makes the child's name ABSENT inside
+    the empty stand-in, and the pin reads an established object that is now
+    absent as one that moved -- fail closed, on every spawn, once the child
+    exists. ``tag-grants/autonudge-trust`` is the case in point: the record's
+    directory is created by the gateway's first arm, so a listing of it would
+    hold until that arm and refuse every spawn after it.
+
+    The record stays held by its host's stand-in without a listing of its own;
+    the lexical nesting subtraction the launcher applies to REQUIRED targets is
+    not applied to carried occupants, and widening that pin is not a leaf's
+    change to make. A future nested leaf therefore needs the launcher change
+    first, and this pin is what says so.
+    """
+
+    def test_no_hidden_leaf_is_a_descendant_of_another(self) -> None:
+        leaves = [leaf.rstrip("/") for leaf in sandbox._CREW_HIDDEN_LEAVES]
+        nested = sorted(
+            (child, host)
+            for child in leaves
+            for host in leaves
+            if child != host and child.startswith(host + "/")
+        )
+        assert not nested, (
+            f"hidden leaves nested under another hidden leaf: {nested}. The host's "
+            "stand-in already holds the child; listing it too makes a launcher that "
+            "pins carried occupant identities refuse the spawn once the child exists, "
+            "because the host's mask leaves the child's name absent at pin time."
+        )
+
+    def test_the_arm_record_is_held_by_its_host_and_not_listed(self) -> None:
+        from kiro_crew import autonudge_selfarm as sa
+
+        assert sa.ARM_RECORD_HOST_DIRNAME in sandbox._CREW_HIDDEN_LEAVES
+        assert sa.ARM_RECORD_LEAF not in sandbox._CREW_HIDDEN_LEAVES
+        for tier in TIERS:
+            masked, _readonly = _launcher_sets(tier)
+            hosts = [path for path in masked if path.endswith("/" + sa.ARM_RECORD_HOST_DIRNAME)]
+            assert hosts, f"{tier}: the arm record's host is not a stand-in mask"
+            for host in hosts:
+                child = host + "/" + sa.ARM_RECORD_DIRNAME
+                assert child not in masked, f"{tier}: {child} is listed as a leaf of its own"
+                assert _enclosing_hold(child, set(masked)) == host

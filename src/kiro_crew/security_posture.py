@@ -1632,6 +1632,9 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # WOULD need redaction and refuses the pin when it would. Nothing is
         # emitted here; the chat routes that act on the answer are the sinks.
         "members.py",
+        # Inbound store normalization: redacts and caps an agent-writable stop
+        # detail before the model record is retained. It emits nothing itself.
+        "autonudge_service/model.py",
         # Inbound / gate-side: redacts what comes IN or what a gate logs, not what
         # goes out to a human.
         "context.py",

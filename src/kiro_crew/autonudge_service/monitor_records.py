@@ -21,9 +21,12 @@ import math
 import time
 from copy import deepcopy
 from dataclasses import fields
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
-from kiro_crew.autonudge_service.maintenance import _maintenance_lock
+from kiro_crew.autonudge_service.maintenance import (
+    _await_future_deferring_cancellation,
+    _maintenance_lock,
+)
 from kiro_crew.autonudge_service.model import (
     _MAX_IDLE_SECS,
     _MIN_IDLE_SECS,
@@ -129,7 +132,10 @@ async def add_monitor(
             logger.warning("detached structured monitor add failed", exc_info=t.exception())
 
     inner.add_done_callback(_finish)
-    return await asyncio.shield(inner)
+    result, cancelled = await _await_future_deferring_cancellation(inner)
+    if cancelled:
+        raise asyncio.CancelledError
+    return result
 
 
 async def _add_monitor_locked(
@@ -154,6 +160,7 @@ async def _add_monitor_locked(
     creation_surface: MonitorCreationSurface,
 ) -> NudgeLoop:
     created = time.time() if now is None else now
+    transaction_cancelled = False
     cadence = max(_MIN_IDLE_SECS, min(_MAX_IDLE_SECS, int(cadence_secs)))
     async with _maintenance_lock(self._base_dir):
         async with self._lock:
@@ -170,6 +177,7 @@ async def _add_monitor_locked(
                 ):
                     raise MonitorUpdateConflict("monitor changed before restart")
             if existing:
+                self._assert_monitor_replacement_mutable(existing.id)
                 # Same split as the legacy add: create-only refuses ANY
                 # record unless the caller opted into ``replace_stopped``,
                 # which under the owner's ruling displaces only
@@ -249,24 +257,31 @@ async def _add_monitor_locked(
                 else None
             )
             restore_prior_provider_credentials = False
-            if existing is not None and defer_replaced_trust_revocation:
-                restore_prior_provider_credentials = await self._provider_credentials_authorized(
-                    existing
-                )
-                await self._revoke_provider_credentials_before_removal(existing.id)
-            replacement_payload = {
-                "version": _STORE_VERSION,
-                "loops": self._serialized_loops(
-                    skip={existing.id} if existing is not None else None,
-                    extra=[loop],
-                ),
-            }
+            prior_owner_revocation: Any = None
             try:
-                await self._write_monitor_snapshot_locked(replacement_payload)
+                if existing is not None:
+                    (
+                        prior_owner_revocation,
+                        restore_prior_provider_credentials,
+                    ) = await self._prepare_trust_before_removal(existing)
+                replacement_payload = {
+                    "version": _STORE_VERSION,
+                    "loops": self._serialized_loops(
+                        skip={existing.id} if existing is not None else None,
+                        extra=[loop],
+                    ),
+                }
+                transaction_cancelled = await self._write_monitor_snapshot_locked(
+                    replacement_payload,
+                    defer_cancellation=True,
+                )
             except BaseException:
-                if restore_prior_provider_credentials:
-                    assert existing is not None
-                    await self._restore_provider_credentials(existing)
+                if existing is not None:
+                    await self._rollback_trust_after_failed_removal(
+                        existing,
+                        prior_owner_revocation,
+                        restore_prior_provider_credentials,
+                    )
                 raise
             if existing is not None:
                 self.remove_sync(existing.id, persist=False)
@@ -275,8 +290,14 @@ async def _add_monitor_locked(
                         deferred_prior,
                         deepcopy(loop),
                         restore_prior_provider_credentials,
+                        prior_owner_revocation,
+                        existing,
                     )
                 else:
+                    transaction_cancelled = (
+                        await self._commit_owner_revocation(prior_owner_revocation)
+                        or transaction_cancelled
+                    )
                     # The snapshot above already committed the replacement.
                     self._revoke_self_arm_for(existing)
             elif defer_replaced_trust_revocation:
@@ -284,23 +305,51 @@ async def _add_monitor_locked(
                     None,
                     deepcopy(loop),
                     False,
+                    None,
+                    None,
                 )
             self._loops[loop.id] = loop
-            if self._on_monitor_tick is not None:
+            if self._on_monitor_tick is not None and not defer_replaced_trust_revocation:
                 self._arm_from_deadline(loop)
     self._emit("added", loop)
+    if transaction_cancelled:
+        raise asyncio.CancelledError
     return loop
 
 
-def commit_monitor_replacement(self: AutoNudgeService, loop_id: str) -> None:
-    """Release prior trust after a replacement's authorization commits."""
-    if loop_id not in self._deferred_monitor_replacements:
-        raise MonitorUpdateConflict("monitor replacement is no longer pending")
-    prior, _replacement, _restore_prior_provider_credentials = (
-        self._deferred_monitor_replacements.pop(loop_id)
-    )
-    if prior is not None:
-        self._revoke_self_arm_for(prior)
+async def commit_monitor_replacement(self: AutoNudgeService, loop_id: str) -> bool:
+    """CAS-finalize prior trust after a replacement authorization commits.
+
+    Returns whether cancellation landed while the owner-fence writer was
+    joined. The caller propagates it only after the deferred transaction is
+    complete.
+    """
+    async with _maintenance_lock(self._base_dir):
+        async with self._lock:
+            pending = self._deferred_monitor_replacements.get(loop_id)
+            if pending is None:
+                raise MonitorUpdateConflict("monitor replacement is no longer pending")
+            (
+                prior,
+                replacement,
+                _restore_prior_provider_credentials,
+                prior_owner_revocation,
+                _original_prior,
+            ) = pending
+            current = self._loops.get(loop_id)
+            if current is None or self._serialize_loop(current) != self._serialize_loop(
+                replacement
+            ):
+                raise MonitorUpdateConflict(
+                    "monitor changed before replacement authorization committed"
+                )
+            cancelled = await self._commit_owner_revocation(prior_owner_revocation)
+            self._deferred_monitor_replacements.pop(loop_id, None)
+            if prior is not None:
+                self._revoke_self_arm_for(prior)
+            if current.active and self._on_monitor_tick is not None:
+                self._arm_from_deadline(current)
+            return cancelled
 
 
 async def rollback_monitor_replacement(self: AutoNudgeService, loop_id: str) -> bool:
@@ -312,20 +361,45 @@ async def rollback_monitor_replacement(self: AutoNudgeService, loop_id: str) -> 
     """
     removed: NudgeLoop | None = None
     prior: NudgeLoop | None = None
+    transaction_cancelled = False
     async with _maintenance_lock(self._base_dir):
         async with self._lock:
             if loop_id not in self._deferred_monitor_replacements:
                 return False
-            prior, replacement, restore_prior_provider_credentials = (
-                self._deferred_monitor_replacements.pop(loop_id)
-            )
+            (
+                prior,
+                replacement,
+                restore_prior_provider_credentials,
+                prior_owner_revocation,
+                original_prior,
+            ) = self._deferred_monitor_replacements[loop_id]
             current = self._loops.get(loop_id)
             if current is None or self._serialize_loop(current) != self._serialize_loop(
                 replacement
             ):
+                transaction_cancelled = await self._commit_owner_revocation(prior_owner_revocation)
+                self._deferred_monitor_replacements.pop(loop_id, None)
                 if prior is not None:
                     self._revoke_self_arm_for(prior)
+                if transaction_cancelled:
+                    raise asyncio.CancelledError
                 return False
+            current_owner_revocation: Any = None
+            restore_current_provider_credentials = False
+            try:
+                (
+                    current_owner_revocation,
+                    restore_current_provider_credentials,
+                ) = await self._prepare_trust_before_removal(current)
+            except BaseException:
+                self._deferred_monitor_replacements[loop_id] = (
+                    prior,
+                    replacement,
+                    restore_prior_provider_credentials,
+                    prior_owner_revocation,
+                    original_prior,
+                )
+                raise
             payload = {
                 "version": _STORE_VERSION,
                 "loops": self._serialized_loops(
@@ -334,25 +408,55 @@ async def rollback_monitor_replacement(self: AutoNudgeService, loop_id: str) -> 
                 ),
             }
             try:
-                await self._write_monitor_snapshot_locked(payload)
+                transaction_cancelled = await self._write_monitor_snapshot_locked(
+                    payload,
+                    defer_cancellation=True,
+                    allow_deferred_replacement_ids={loop_id},
+                )
             except BaseException:
+                await self._rollback_trust_after_failed_removal(
+                    current,
+                    current_owner_revocation,
+                    restore_current_provider_credentials,
+                )
                 self._deferred_monitor_replacements[loop_id] = (
                     prior,
                     replacement,
                     restore_prior_provider_credentials,
+                    prior_owner_revocation,
+                    original_prior,
                 )
                 raise
+            self._deferred_monitor_replacements.pop(loop_id, None)
             removed = self.remove_sync(loop_id, persist=False, emit=False)
+            transaction_cancelled = (
+                await self._commit_owner_revocation(current_owner_revocation)
+                or transaction_cancelled
+            )
+            if removed is not None:
+                self._revoke_self_arm_for(removed)
             if prior is not None:
+                if original_prior is not None and self._serialize_loop(
+                    original_prior
+                ) == self._serialize_loop(prior):
+                    prior = original_prior
                 self._loops[prior.id] = prior
-                if restore_prior_provider_credentials:
-                    await self._restore_provider_credentials(prior)
+                transaction_cancelled = (
+                    await self._rollback_trust_after_failed_removal(
+                        prior,
+                        prior_owner_revocation,
+                        restore_prior_provider_credentials,
+                    )
+                    or transaction_cancelled
+                )
                 if prior.active and self._on_monitor_tick is not None:
                     self._arm_from_deadline(prior)
     if removed is not None:
         self._emit("removed", removed)
     if prior is not None:
         self._emit("added", prior)
+    if transaction_cancelled:
+        raise asyncio.CancelledError
     return True
 
 
@@ -391,6 +495,7 @@ async def _persist_staged_monitor_locked(
     staged: NudgeLoop,
 ) -> None:
     """Persist a complete replacement before publishing it to live readers."""
+    self._assert_monitor_replacement_mutable(loop.id)
     payload = self._monitor_snapshot_with_replacement(loop, staged)
     try:
         await self._write_monitor_snapshot_locked(payload)

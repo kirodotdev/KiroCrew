@@ -3755,7 +3755,7 @@ async def test_add_monitor_persistence_failure_keeps_existing_monitor_running(sv
     )
     persisted_before = svc._path.read_bytes()
 
-    async def fail_snapshot(_payload):
+    async def fail_snapshot(_payload, **_kwargs):
         raise OSError("disk full")
 
     monkeypatch.setattr(svc, "_write_monitor_snapshot_locked", fail_snapshot)
@@ -5376,13 +5376,16 @@ class TestAutonudgeUpdateConcurrency:
             one = asyncio.ensure_future(svc.update(loop_obj.id, message="first"))
             await asyncio.sleep(0.1)  # let it reach the gated write
             one.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await one
-            # The shielded inner task still holds the lock, so this waits.
+            # The joined cancellation keeps the first mutation and its lock alive.
+            # Start the second update before releasing the worker, then prove both
+            # wait on the same commit point.
             two = asyncio.ensure_future(svc.update(loop_obj.id, message="second"))
             await asyncio.sleep(0.1)
+            assert not one.done(), "cancelled update returned before its write settled"
             assert not two.done(), "second update ran before the first released the lock"
             gate.set()
+            with pytest.raises(asyncio.CancelledError):
+                await one
             await asyncio.wait_for(two, timeout=5)
             on_disk = json.loads((tmp_path / "autonudge.json").read_text(encoding="utf-8"))
             stored = {lp["id"]: lp for lp in on_disk["loops"]}[loop_obj.id]

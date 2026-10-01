@@ -62,6 +62,7 @@ SHIPPED = SHIPPED_SMOKE | {
     "crewmate-chat-clean",
     "crewmate-create-first",
     "crewmate-panel-tabs",
+    "crewmate-perpetual-off",
     "crewmate-reply-thread",
     "crewmate-team-view",
     "customize-tabs",
@@ -246,6 +247,7 @@ class TestShippedScenarios:
                 "crewmate-chat-clean",
                 "crewmate-create-first",
                 "crewmate-panel-tabs",
+                "crewmate-perpetual-off",
                 "crewmate-reply-thread",
                 "crewmate-team-view",
                 "members-dm-hello",
@@ -665,7 +667,7 @@ class TestReport:
         md = report.render_features(catalog, _summary(), run_url="https://x/run")
         assert md.startswith("# GUI user-test feature catalog\n")
         assert (
-            f"_18 of {len(scenarios.FEATURES)} features covered · 41 scenarios (32 smoke / 9 nightly)._"
+            f"_18 of {len(scenarios.FEATURES)} features covered · 42 scenarios (32 smoke / 10 nightly)._"
             in md
         )
         assert (

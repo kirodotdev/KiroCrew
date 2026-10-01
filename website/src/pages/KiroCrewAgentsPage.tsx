@@ -31,6 +31,8 @@ import {
 } from '../lib/crewAvatarState'
 import CrewAvatarButton from '../components/crew/CrewAvatarButton'
 import CrewWakeSection from '../components/CrewWakeSection'
+import CrewPerpetualSection from '../components/crew/CrewPerpetualSection'
+import { useCrewPerpetual } from '../components/crew/useCrewPerpetual'
 import CrewWebhookSection from '../components/CrewWebhookSection'
 import CrewEditorRail from '../components/crew/CrewEditorRail'
 import CrewOverviewPane from '../components/crew/CrewOverviewPane'
@@ -1669,6 +1671,8 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
    *  pointed somewhere else, so a crew never opens on the pane the previous one
    *  happened to be left on. */
   const [pane, setPane] = useState<CrewPaneKey>('overview')
+  /** Whether Schedules currently shows the Perpetual switch the footer names. */
+  const [perpetualCanSwitch, setPerpetualCanSwitch] = useState(false)
   const [schedDraft, setSchedDraft] = useState(false)
   /** True while the schedule draft's create request is in flight. Discarding
    *  then would unmount the form WITHOUT cancelling the POST, so the schedule
@@ -1704,6 +1708,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     // agent data the link effect can run before `sheet` is set, and a null-sheet
     // pass here would otherwise spend the ref on nothing and land on Overview.
     if (sheet) { setPane(linkedPaneRef.current ?? 'overview'); linkedPaneRef.current = null } else setPane('overview')
+    setPerpetualCanSwitch(false)
     setSchedDraft(false); setSchedSaving(false); setDiscardAsk(null)
   }, [sheet])
 
@@ -1955,6 +1960,10 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
   /** Keywords the orchestrator can match, counted the way the field is authored:
    *  comma-separated, blanks ignored, so a trailing comma is not a keyword. */
   const routingWords = triggers.split(',').map(s => s.trim()).filter(Boolean).length
+  // Perpetual mode is the crew's restart policy -- a setting, so it is read
+  // here on the detail page (the overview node and the schedules pane), not
+  // in the chat's side panel. One reading feeds both surfaces.
+  const perpetual = useCrewPerpetual(editing || '')
 
   const sections = useCrewEditorSections({
     templateLabel: i18nT('pages.kiroCrewAgentsPage.built_from'),
@@ -1976,6 +1985,8 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
   // pane's own "saved as you go" copy. Hide the footer there — the dialog's
   // built-in ✕ still closes it, and the pane surfaces its own errors.
   const templatePaneActive = !creating && pane === 'template'
+  const saveChangesDisabled =
+    sheetBusy || dirtyPanes.size === 0 || schedDraft || capabilityDirty || capabilityBusy
 
   return (
     <>
@@ -2325,6 +2336,8 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
                       // the Crewmates panel, which does have one, passes it.
                       activeSchedules={wakeJobs.filter(j => j.enabled).length}
                       schedulesUnknown={wakeQuery.isError}
+                      perpetual={perpetual.state}
+                      perpetualUnknown={!perpetual.loaded || perpetual.failed}
                       routingWords={routingWords}
                       sharingCrews={collidingCrews.length}
                       workspaceShared={sharingWorkspace.length > 0}
@@ -2499,7 +2512,19 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
                   )}
 
                   {pane === 'schedules' && (
-                    <CrewWakeSection crew={editing} memberId={editing} agentTemplate={kiroAgent} isDefaultCrew={editing === defaultAgent} onDraftChange={setSchedDraft} onSavingChange={setSchedSaving} onRequestCancel={requestCancelDraft} />
+                    <>
+                      {/* Keyed per crew so a pending press or a refusal for one
+                          crew never shows on the next one opened. The section's
+                          refusal offers no agent hand-off: its fact list links
+                          the crewmate's own chat directly (new tab, so nothing
+                          in this sheet is unmounted), which is the remedy. */}
+                      <CrewPerpetualSection
+                        key={editing}
+                        crew={editing}
+                        onCanSwitchChange={setPerpetualCanSwitch}
+                      />
+                      <CrewWakeSection crew={editing} memberId={editing} agentTemplate={kiroAgent} isDefaultCrew={editing === defaultAgent} onDraftChange={setSchedDraft} onSavingChange={setSchedSaving} onRequestCancel={requestCancelDraft} />
+                    </>
                   )}
 
                   {pane === 'webhook' && <CrewWebhookSection crew={editing} />}
@@ -2610,11 +2635,19 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
                   : i18nT('pages.kiroCrewAgentsPage.create')}
               </SendBtn>
             ) : (
-              <SendBtn
-                onClick={saveEdit}
-                disabled={sheetBusy || dirtyPanes.size === 0 || schedDraft || capabilityDirty || capabilityBusy}
-                title={capabilityDirty ? i18nT('crewCapabilities.finishDraftFirst') : schedDraft ? i18nT('pages.kiroCrewAgentsPage.finish_the_new_schedule_first') : undefined}
-              >{i18nT('pages.kiroCrewAgentsPage.save_changes')}</SendBtn>
+              <>
+                {pane === 'schedules' && perpetualCanSwitch && (
+                  <span className="max-w-64 text-right text-[11px] leading-relaxed text-muted" data-testid="crew-perpetual-save-split">
+                    {i18nT('components.crewPerpetualSection.save_split')}
+                  </span>
+                )}
+                <SendBtn
+                  onClick={saveEdit}
+                  disabled={saveChangesDisabled}
+                  className="disabled:bg-bg-hover disabled:text-muted disabled:opacity-100"
+                  title={capabilityDirty ? i18nT('crewCapabilities.finishDraftFirst') : schedDraft ? i18nT('pages.kiroCrewAgentsPage.finish_the_new_schedule_first') : undefined}
+                >{i18nT('pages.kiroCrewAgentsPage.save_changes')}</SendBtn>
+              </>
             )}
           </DialogFooter>
           )}

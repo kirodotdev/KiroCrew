@@ -3972,7 +3972,18 @@ class TestTheReadingHappensBeforeTheJudge:
         return next(row for row in rows if row["id"] == loop_id)["judge_pr_seen"]
 
     @staticmethod
+    def _held_baseline(service: AutoNudgeService, loop: NudgeLoop) -> dict:
+        """The baseline memory holds, in the canonical shape a staged row carries.
+
+        Rows are serialized through ``_bounded_judge_pr_seen``, so a blank in-memory
+        ``{}`` is written as ``{"remarks": []}``. Comparing a staged row against the raw
+        in-memory value would read every ordinary snapshot as a commit.
+        """
+        return service._serialize_loop(loop)["judge_pr_seen"]
+
+    @classmethod
     def _tap_commit_writes(
+        cls,
         service: AutoNudgeService,
         loop: NudgeLoop,
         answers: list[bool],
@@ -3997,7 +4008,7 @@ class TestTheReadingHappensBeforeTheJudge:
             row = None
             if payload is not None:
                 row = next((r for r in payload["loops"] if r["id"] == loop.id), None)
-            if row is not None and row["judge_pr_seen"] != loop.judge_pr_seen:
+            if row is not None and row["judge_pr_seen"] != cls._held_baseline(service, loop):
                 seen.append((dict(row["judge_pr_seen"]), dict(loop.judge_pr_seen or {})))
                 if not answers.pop(0):
                     if on_refuse is not None:
@@ -4093,7 +4104,8 @@ class TestTheReadingHappensBeforeTheJudge:
             assert (
                 loop.judge_pr_seen == {}
             ), "a baseline whose write was refused must never reach memory"
-            assert self._stored_baseline(tmp_path, loop.id) == {}
+            # A blank baseline is stored in its canonical bounded shape.
+            assert self._stored_baseline(tmp_path, loop.id) == {"remarks": []}
         finally:
             service.stop()
 
@@ -4231,7 +4243,7 @@ class TestTheReadingHappensBeforeTheJudge:
             if payload is None:
                 return
             row = next(r for r in payload["loops"] if r["id"] == loop.id)
-            if row["judge_pr_seen"] != loop.judge_pr_seen:
+            if row["judge_pr_seen"] != self._held_baseline(service, loop):
                 # What the turn-completion hook does, at the point it really can: after
                 # the commit's snapshot was taken and before the commit publishes.
                 service.notify_cycle_landed(loop.slot_key)
@@ -4287,7 +4299,7 @@ class TestTheReadingHappensBeforeTheJudge:
             if payload is None:
                 return
             row = next(r for r in payload["loops"] if r["id"] == loop.id)
-            if row["judge_pr_seen"] != loop.judge_pr_seen:
+            if row["judge_pr_seen"] != self._held_baseline(service, loop):
                 raise asyncio.CancelledError()
 
         service._judge_tick_is_quiet = _answer  # type: ignore[method-assign]

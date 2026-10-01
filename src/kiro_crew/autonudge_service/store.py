@@ -134,6 +134,24 @@ class LoopStore:
         # "could not vet" rather than "empty" and every persist raises, never deletes.
         self.load_refused: bool = False
 
+    def durable_loop_row(
+        self,
+        candidate: NudgeLoop,
+        serialize: Callable[[NudgeLoop], dict[str, Any]],
+        *,
+        serialized: NudgeLoop | None = None,
+    ) -> dict[str, Any]:
+        """Serialize one durable row, including disk-only claim markers."""
+        row = serialize(serialized or candidate)
+        claimed = self.delivering_claim.get(candidate.id)
+        if claimed is not None:
+            row["inflight_cycle"], row["last_fire_ts"] = claimed
+        elif candidate.id in self.unreconciled_claim:
+            row["inflight_cycle"] = self.unreconciled_claim[candidate.id]
+        if candidate.id in self.undelivered_claim and "inflight_cycle" in row:
+            row["inflight_undelivered"] = True
+        return row
+
     def serialized_loops(
         self,
         loops: Mapping[str, NudgeLoop],
@@ -156,21 +174,13 @@ class LoopStore:
         for candidate in list(loops.values()) + list(extra or []):
             if skip and candidate.id in skip:
                 continue
-            row = serialize((replace or {}).get(candidate.id, candidate))
-            claimed = self.delivering_claim.get(candidate.id)
-            if claimed is not None:
-                # BESIDE the spent count, never inside it: a restart must be able to tell a
-                # claimed-but-undelivered cycle from a spent one. Disk-only, so no client sees it.
-                row["inflight_cycle"], row["last_fire_ts"] = claimed
-            elif candidate.id in self.unreconciled_claim:
-                # Carried from an earlier run: dropping it here would leave the next restart
-                # with no marker at all, and re-activation would then replay that turn.
-                row["inflight_cycle"] = self.unreconciled_claim[candidate.id]
-            if candidate.id in self.undelivered_claim and "inflight_cycle" in row:
-                # Disk-only, like the claim it qualifies: without it a restart cannot tell a
-                # turn that never went out from one whose delivery is merely unknown.
-                row["inflight_undelivered"] = True
-            rows.append(row)
+            rows.append(
+                self.durable_loop_row(
+                    candidate,
+                    serialize,
+                    serialized=(replace or {}).get(candidate.id, candidate),
+                )
+            )
         return rows + list(self.unparsed_rows)
 
     @staticmethod
@@ -179,6 +189,9 @@ class LoopStore:
         # In-memory only: the load path re-mints it unconditionally, so a persisted
         # value could never be honoured and writing one would dirty a clean store.
         payload.pop("goal_token", None)
+        from kiro_crew import autonudge as seams
+
+        payload["judge_pr_seen"] = seams._bounded_judge_pr_seen(payload.get("judge_pr_seen"))
         if loop.monitor is None:
             # Preserve the legacy wire shape instead of eagerly migrating every
             # record the next time an unrelated loop is saved.

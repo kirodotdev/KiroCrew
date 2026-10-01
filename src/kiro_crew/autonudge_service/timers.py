@@ -111,7 +111,12 @@ def notify_approval_stalled(self: AutoNudgeService, slot_key: str) -> None:
     window does not provide for dashboard slots (their turn outlives it).
     """
     loop = self._find_by_slot(slot_key)
-    if not loop or not loop.active or loop.approval_stalled:
+    if (
+        not loop
+        or loop.id in self._deferred_monitor_replacements
+        or not loop.active
+        or loop.approval_stalled
+    ):
         return
     loop.approval_stalled = True
     logger.warning(
@@ -137,7 +142,7 @@ def notify_cycle_start_failed(self: AutoNudgeService, slot_key: str) -> None:
     touching a timer that may be mid-fire.
     """
     loop = self._find_by_slot(slot_key)
-    if not loop or not loop.active:
+    if not loop or loop.id in self._deferred_monitor_replacements or not loop.active:
         return
     loop.consecutive_start_failures += 1
     logger.warning(
@@ -160,7 +165,11 @@ def notify_cycle_landed(self: AutoNudgeService, slot_key: str) -> None:
     let a loop keep running, never stop one.
     """
     loop = self._find_by_slot(slot_key)
-    if not loop or not loop.consecutive_start_failures:
+    if (
+        not loop
+        or loop.id in self._deferred_monitor_replacements
+        or not loop.consecutive_start_failures
+    ):
         return
     loop.consecutive_start_failures = 0
     # Drop the paid-deferral marker with the streak it belonged to: a streak
@@ -396,6 +405,9 @@ def _arm_from_deadline(self: AutoNudgeService, loop: NudgeLoop) -> None:
     """
     from kiro_crew import autonudge as seams  # read at call time: the facade imports us
 
+    if loop.id in self._deferred_monitor_replacements:
+        return
+
     monitor = loop.monitor
     if monitor is not None and monitor.version != MONITOR_STATE_VERSION:
         logger.info(
@@ -536,6 +548,8 @@ def _reconcile_once(self: AutoNudgeService) -> None:
         return
     eligible: set[str] = set()
     for loop in list(self._loops.values()):
+        if loop.id in self._deferred_monitor_replacements:
+            continue
         # Mirror _timer's own re-arm guard, not a stricter one: an
         # INACTIVE loop still waiting for terminal-completion evidence
         # owns a finite accepted-turn correlation whose expiry needs a

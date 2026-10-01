@@ -6,6 +6,7 @@
  */
 
 import type { KiroCrewAgent } from '../../components/AgentSelector'
+import type { AutoNudgeLoop } from '../../components/autoNudgeLoop'
 import type { ProjectionsBlock } from '../../state/memberProjectionTypes'
 import type { ClientTransport } from './transport'
 
@@ -50,6 +51,15 @@ export interface MemberRosterRow {
   source?: 'kirocrew' | 'builtin' | 'package' | string
   /** User's favourite mark; toggled via PUT /api/agents/{name}. */
   starred?: boolean
+  /** Perpetual mode on this crewmate's own thread, as the SERVER reads it
+   *  (`perpetual_state_of`): 'on' = its nudge loop is armed, 'off' = a record
+   *  exists and is paused, 'none' = no record the switch owns — which is also
+   *  what a STRUCTURED MONITOR on the same slot reads as
+   *  (`is_structured_monitor_loop`), so the switch, the badge and the status
+   *  filter never mistake a watch task for this mode. Absent on an older
+   *  gateway that predates the field, where the readers fall back to the loop
+   *  registry alone. */
+  perpetual?: 'on' | 'off' | 'none'
   /** Baseline projections (roster/activity/wake/driving) at a known seq, fed
    *  to the per-member projection store so the page renders from pushed
    *  frames. Absent on an older gateway that predates the event log. */
@@ -241,6 +251,17 @@ export function createAgentsEndpoints({ post, put, del, j, sessionKeyHeader: _sk
         put('/api/teams/' + encodeURIComponent(id), body).then(j) as Promise<{ team: CrewTeam }>,
       remove: (id: string) => del('/api/teams/' + encodeURIComponent(id)).then(j) as Promise<{ ok: boolean }>,
     },
+    // The owner's Perpetual mode switch for one member's own thread. `member` is
+    // the exact crew name (slug-match is re-checked server-side); the slot key is
+    // derived on the server from the slug's binding, never sent. ON arms (or
+    // resumes) the member's nudge loop with no cycle or time cap; OFF pauses it,
+    // keeping the record and its stop reason. The returned `loop` is the
+    // backend's record after the change (null when OFF found nothing to pause).
+    memberPerpetualSet: (slug: string, member: string, enabled: boolean) =>
+      post('/api/members/' + encodeURIComponent(slug) + '/perpetual', { member, enabled }).then(j) as Promise<{
+        ok: boolean
+        loop: AutoNudgeLoop | null
+      }>,
     updateKirocrewAgent: (name: string, body: object) =>
       put('/api/agents/' + encodeURIComponent(name), body).then(j),
     deleteKirocrewAgent: (name: string) =>

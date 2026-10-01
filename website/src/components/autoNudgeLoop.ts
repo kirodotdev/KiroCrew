@@ -28,8 +28,15 @@ export interface AutoNudgeLoop {
    *  the REST list carries it; the websocket frame for a plain loop does not,
    *  so a consumer merging frames over a fetched record must keep it. */
   stopped_reason?: string
+  /** The stopping party's own words for a directive stop (`autonudge_stop`),
+   *  redacted and length-capped by the server; '' or absent = none. Withheld
+   *  on the reduced structured-monitor row like `banner`. */
+  stopped_detail?: string
   /** Short stand-in for `message` in the visible transcript row; '' = none. */
   banner?: string
+  /** Subject-free marker on the reduced legacy projection only. Plain and
+   *  gated loops omit it; structured monitors carry this exact value. */
+  record_kind?: 'structured_monitor'
   /** The kill-switch file the server substitutes for `{{STOP_FILE}}` at fire
    *  time; '' when the loop was armed with none. Carried by the REST list and
    *  the arm/update responses (`asdict(loop)`), NOT by the websocket frame,
@@ -54,9 +61,9 @@ export interface AutoNudgeLoop {
  *  `message`, `banner`, the sentinel path and the cycle accounting, which its
  *  tick path never maintains. The fields below are therefore absent on such a
  *  row even though they are typed as required; marking them optional belongs
- *  with the popover rendering that reads them. Such a row also carries no
- *  positive marker: it is told apart by that absence. The full monitor record
- *  lives on the owner-gated `/api/monitors`. (The module spec reserves an optional `denied` array beside
+ *  with the popover rendering that reads them. A subject-free `record_kind`
+ *  marker identifies that reduced row without exposing its monitor kind. The full monitor
+ *  record lives on the owner-gated `/api/monitors`. (The module spec reserves an optional `denied` array beside
  *  `loops` for refused arms; no backend emits it yet, so it is deliberately
  *  not typed here — a consumer must not render a verdict nothing produces.) */
 export interface AutoNudgeListResponse {

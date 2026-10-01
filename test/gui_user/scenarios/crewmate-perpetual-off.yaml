@@ -1,0 +1,47 @@
+# Nightly: the owner's Perpetual mode switch on a crewmate's detail page (the
+# crew editor's Schedules pane). Perpetual mode is the crewmate's restart
+# policy: ON keeps it waking on its own chat thread with no cycle or time cap,
+# OFF makes it work only when asked. The switch addresses the crewmate's own
+# chat, so that chat has to have been opened once first -- which is why the
+# scenario walks through the Crew Members page before the editor.
+#
+# The `rich` seed ships no loop, so the tester turns the mode ON first (the
+# card must read "On. Waking on its own.") and then OFF; the final state is the
+# owner's own pause, "Turned off by you.", read on the detail page and again in
+# the crewmate's side panel on the Crew Members page, where the avatar carries
+# no Perpetual mode badge. The Crew Members page sits behind a feature-preview
+# switch (per-device localStorage), enabled through the GUI as a user would;
+# the preview card is described by what both of its titles share, like
+# members-dm-hello. The page that hosts the editor is titled "Agent
+# Capabilities" on older builds and "Customize" on newer ones; both are named.
+name: crewmate-perpetual-off
+tier: nightly
+feature: members
+user_story: >-
+  As a crew owner with a standing crewmate, I want one switch that decides whether
+  it keeps waking on its own, so that turning it off is my decision and I can
+  see why it is off afterwards.
+docs_url: docs/system-specs/modules/learn-cron-dashboard.md
+summary: Open a crewmate's chat once, then turn Perpetual mode on and off from its detail page and read the paused state
+preconditions:
+  seed: rich
+  members: [nova-sky]
+  start_url: /settings
+steps:
+  - You are on the Settings page. Open the Developer section and find the Feature Previews list.
+  - Turn on the preview whose title starts with "Crew Members" (it may read "Crew Members" or "Crew Members and Crew Mode"; either is the right one). Ignore the Webhooks preview.
+  - Open the Crew Members page from the left rail (the item appears directly under Sessions once the preview is on). Click the crewmate named Nova Sky (its row may read "nova-sky") so that its conversation opens. Wait about two seconds; you do not need to send anything.
+  - Open the page that lists your agents from the left rail (it is titled "Agent Capabilities" on some builds and "Customize" on others). In its tab rail, click the first tab under "Agent" (labelled "Agents" or "Crewmates").
+  - Click the "nova-sky" card or row to open its editor. A dialog opens whose title reads "nova-sky".
+  - In the dialog's left rail, under "How work arrives", click "Schedules". The pane opens with a section titled "Perpetual mode" at the top, a switch on its title row, and a card underneath that reads "Off." followed by "Perpetual mode has never been turned on."
+  - Click the "Perpetual mode" switch to turn it on. While it saves the switch is greyed out and the word "Saving" appears beside it. Wait until the card underneath reads "On. Waking on its own." with rows for Interval, Wakes, Last wake and Next wake.
+  - Click the "Perpetual mode" switch again to turn it off. Wait until the card reads "Off." followed by "Turned off by you."
+  - Close the editor with its close control or the Escape key.
+  - Open the Crew Members page again from the left rail and click Nova Sky. Look at the side panel beside the conversation for the block titled "Perpetual mode" (if the panel shows tabs and the block is not on the first one, open the "Work log" tab).
+expectations:
+  - On the crewmate's detail page, after the last press, the Perpetual mode card read "Off." and "Turned off by you." and the switch was in the off position.
+  - On the Crew Members page, the side panel's "Perpetual mode" block reads "Off." followed by "Turned off by you."
+  - The Nova Sky avatar in the roster carries no badge whose label starts with "Perpetual mode".
+  - No red error notice is visible on the detail page or the Crew Members page.
+max_steps: 18
+max_seconds: 480

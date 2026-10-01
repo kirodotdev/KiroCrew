@@ -55,6 +55,7 @@ _BASE_DEFINED = frozenset(
         "AutoNudgeService",
         "AutoNudgeStaleBaseline",
         "AutoNudgeStoreUnvetted",
+        "INVALID_BOUNDS_REASON",
         "MANUAL_STOP_REASON",
         "MONITOR_TERMINAL_REASON",
         "MonitorUpdateConflict",
@@ -97,6 +98,7 @@ _BASE_DEFINED = frozenset(
         "_TERMINAL_BOUND_REASONS",
         "_WAKE_FOLLOWUP_TICKS",
         "_addressing_value_unsafe_why",
+        "_await_future_deferring_cancellation",
         "_assert_mutation_lock_owned",
         "_bounded_judge_cursors",
         "_bounded_judge_pr_seen",
@@ -130,6 +132,7 @@ _BASE_DEFINED = frozenset(
         "logger",
         "loop_subject",
         "new_goal_token",
+        "normalize_stopped_detail",
         "nudge_cycle_header",
         "redact_store_value",
         "repair_sentinel_path",
@@ -174,15 +177,19 @@ _BASE_SERVICE_MEMBERS: dict[str, tuple[str, str]] = {
     "_apply_staged_monitor": ("method", "1eecbc416bc8"),
     "_arm_from_deadline": ("method", "fa9fb3019298"),
     "_arm_timer": ("method", "e290ef84f151"),
+    "_assert_deferred_replacements_unchanged": ("method", "2f402819d471"),
+    "_assert_monitor_replacement_mutable": ("method", "f7956b1e6531"),
     "_begin_maintenance_quiesce": ("method", "f7956b1e6531"),
     "_cancel_timer": ("method", "bbb2f1624984"),
     "_compact_quarantine_sidecar": ("method", "35d06f40fb45"),
     "_compact_quarantine_sidecar_locked": ("method", "35d06f40fb45"),
+    "_commit_owner_revocation": ("static+async", "f3a68881bfa2"),
     "_commit_judge_pr_seen": ("method+async", "441c236a15de"),
     "_confirm_judge_delivery": ("method", "fa9fb3019298"),
     "_deactivate_and_wait_unserialized": ("method+async", "4aa7e82c7c52"),
     "_deactivate_unwired_monitor": ("method+async", "f7956b1e6531"),
     "_drop_quarantine_sidecar": ("method", "35d06f40fb45"),
+    "_durable_loop_row": ("method", "c26d4d7a7020"),
     "_emit": ("method", "2a11698d553e"),
     "_end_maintenance_quiesce": ("method", "f7956b1e6531"),
     "_find_by_slot": ("method", "1a9a46af4d72"),
@@ -199,6 +206,7 @@ _BASE_SERVICE_MEMBERS: dict[str, tuple[str, str]] = {
     "_persist_locked": ("method+async", "35d06f40fb45"),
     "_persist_soon": ("method", "35d06f40fb45"),
     "_persist_staged_monitor_locked": ("method+async", "1eecbc416bc8"),
+    "_prepare_trust_before_removal": ("method+async", "82f8b8df1f2f"),
     "_provider_credentials_authorized": ("static+async", "1009d6af5d26"),
     "_publish_pr_observation": ("method+async", "c0572291a250"),
     "_quarantine_rows_on_disk": ("method", "f21967637259"),
@@ -210,6 +218,7 @@ _BASE_SERVICE_MEMBERS: dict[str, tuple[str, str]] = {
     "_refuse_writes_and_preserve_sidecar": ("method", "35d06f40fb45"),
     "_remove_unserialized": ("method+async", "f25b8e2642a7"),
     "_restore_provider_credentials": ("static+async", "c0e5298bfbb4"),
+    "_rollback_trust_after_failed_removal": ("static+async", "4a90f461115f"),
     "_retain_accepted_terminal_completion": ("method", "0d02c6c3b88e"),
     "_revoke_provider_credentials_before_removal": ("static+async", "631ee4d210f4"),
     "_revoke_self_arm": ("static", "631ee4d210f4"),
@@ -224,11 +233,11 @@ _BASE_SERVICE_MEMBERS: dict[str, tuple[str, str]] = {
     "_sync_terminal_completion_timer": ("method", "fa9fb3019298"),
     "_terminal_still_holds": ("method+async", "75f382f079fb"),
     "_timer": ("method+async", "e290ef84f151"),
-    "_update_locked": ("method+async", "ee9cb229b3ef"),
-    "_update_unserialized": ("method+async", "ee9cb229b3ef"),
+    "_update_locked": ("method+async", "408d332142a9"),
+    "_update_unserialized": ("method+async", "408d332142a9"),
     "_waits_for_terminal_completion": ("method", "3a33d55b099b"),
     "_withdraw_judge_suppression": ("method", "fa9fb3019298"),
-    "_write_monitor_snapshot_locked": ("method+async", "048a7479cdcf"),
+    "_write_monitor_snapshot_locked": ("method+async", "5681cc691081"),
     "_write_quarantine_rows": ("method", "54f84a64e0fe"),
     "_write_quarantine_sidecar": ("method", "35d06f40fb45"),
     "_write_quarantine_sidecar_locked": ("method", "35d06f40fb45"),
@@ -237,7 +246,7 @@ _BASE_SERVICE_MEMBERS: dict[str, tuple[str, str]] = {
     "add_monitor": ("method+async", "b07c1299b741"),
     "apply_monitor_probe": ("method+async", "7e318e77ec64"),
     "clear_terminal_monitor": ("method+async", "82db71923663"),
-    "commit_monitor_replacement": ("method", "f7956b1e6531"),
+    "commit_monitor_replacement": ("method+async", "61dc2e194fa8"),
     "deactivate_and_wait": ("method+async", "61dc2e194fa8"),
     "fire_now": ("method+async", "c7320d325386"),
     "get_by_id": ("method", "c7cdaf3c2920"),
@@ -271,7 +280,7 @@ _BASE_SERVICE_MEMBERS: dict[str, tuple[str, str]] = {
     "stop_monitor": ("method+async", "bddc1c278f12"),
     "stop_monitor_if_budget_exhausted": ("method+async", "7ab50d99dd32"),
     "subscribe": ("method", "7a1b8e1c52f1"),
-    "update": ("method+async", "ee9cb229b3ef"),
+    "update": ("method+async", "408d332142a9"),
     "update_monitor": ("method+async", "15a27e52eef4"),
 }
 
@@ -318,6 +327,7 @@ _BASE_NUDGELOOP_FIELDS: list[tuple[str, str | None]] = [
     ("banner", "''"),
     ("self_armed", "False"),
     ("config_generation", "0"),
+    ("stopped_detail", "''"),
 ]
 
 
@@ -347,7 +357,9 @@ _GOLDEN_STORE = """\
       "gate": false,
       "judge": {},
       "judge_cursors": {},
-      "judge_pr_seen": {},
+      "judge_pr_seen": {
+        "remarks": []
+      },
       "judge_quiet_streak": 0,
       "judge_wake_pending": false,
       "judge_last_verdict": {},
@@ -360,7 +372,8 @@ _GOLDEN_STORE = """\
       "terminal_notification_stopped_at": 0.0,
       "banner": "",
       "self_armed": false,
-      "config_generation": 0
+      "config_generation": 0,
+      "stopped_detail": ""
     },
     {
       "id": "claim001",
@@ -377,7 +390,9 @@ _GOLDEN_STORE = """\
       "gate": false,
       "judge": {},
       "judge_cursors": {},
-      "judge_pr_seen": {},
+      "judge_pr_seen": {
+        "remarks": []
+      },
       "judge_quiet_streak": 0,
       "judge_wake_pending": false,
       "judge_last_verdict": {},
@@ -391,6 +406,7 @@ _GOLDEN_STORE = """\
       "banner": "",
       "self_armed": false,
       "config_generation": 0,
+      "stopped_detail": "",
       "inflight_cycle": 4,
       "inflight_undelivered": true
     },
@@ -414,7 +430,9 @@ _GOLDEN_STORE = """\
         ]
       },
       "judge_cursors": {},
-      "judge_pr_seen": {},
+      "judge_pr_seen": {
+        "remarks": []
+      },
       "judge_quiet_streak": 0,
       "judge_wake_pending": false,
       "judge_last_verdict": {},
@@ -428,7 +446,8 @@ _GOLDEN_STORE = """\
       "terminal_notification_stopped_at": 0.0,
       "banner": "patrol",
       "self_armed": true,
-      "config_generation": 0
+      "config_generation": 0,
+      "stopped_detail": ""
     },
     {
       "id": "struct01",
@@ -445,7 +464,9 @@ _GOLDEN_STORE = """\
       "gate": false,
       "judge": {},
       "judge_cursors": {},
-      "judge_pr_seen": {},
+      "judge_pr_seen": {
+        "remarks": []
+      },
       "judge_quiet_streak": 0,
       "judge_wake_pending": false,
       "judge_last_verdict": {},
@@ -459,7 +480,8 @@ _GOLDEN_STORE = """\
       "terminal_notification_stopped_at": 0.0,
       "banner": "",
       "self_armed": false,
-      "config_generation": 0
+      "config_generation": 0,
+      "stopped_detail": ""
     },
     {
       "id": "broken01",
@@ -978,9 +1000,9 @@ class TestInstanceSeamsReachEveryInternalCaller:
             staged.append(loop.id)
             await real_staged(loop, replacement)
 
-        async def _snapshot(payload=None):
+        async def _snapshot(payload=None, **kwargs):
             written.append(len(payload["loops"]) if payload else -1)
-            await real_snapshot(payload)
+            return await real_snapshot(payload, **kwargs)
 
         monkeypatch.setattr(svc, "_persist_staged_monitor_locked", _staged)
         monkeypatch.setattr(svc, "_write_monitor_snapshot_locked", _snapshot)
@@ -1114,6 +1136,10 @@ _BINDINGS = {
     "_revoke_provider_credentials_before_removal": "mutations",
     "_provider_credentials_authorized": "mutations",
     "_restore_provider_credentials": "mutations",
+    "_assert_monitor_replacement_mutable": "mutations",
+    "_prepare_trust_before_removal": "mutations",
+    "_rollback_trust_after_failed_removal": "mutations",
+    "_commit_owner_revocation": "mutations",
     "add_monitor": "monitor_records",
     "_add_monitor_locked": "monitor_records",
     "commit_monitor_replacement": "monitor_records",
@@ -1170,6 +1196,7 @@ _SEAMS = frozenset(
         "_MAINTENANCE_LOCKS",
         "_MUTATION_LOCK_OWNERS",
         "_OVERDUE_REARM_SECS",
+        "_bounded_judge_pr_seen",
         "_RECONCILE_INTERVAL_SECS",
         "fsync_dir",
         "replace_with_retry",
@@ -1421,6 +1448,10 @@ _FACADE_PATCHES_FOR_CONSUMERS = {
     # dashboard/session_directive_apply.py imports is_structured_monitor_loop per call;
     # these tests hand it a SimpleNamespace service, so no owner code runs.
     ("test/test_autonudge_member_self_arm.py", "is_structured_monitor_loop"): "directive consumer",
+    (
+        "test/test_autonudge_owner_arm.py",
+        "is_structured_monitor_loop",
+    ): "owner-arm directive consumer",
 }
 
 

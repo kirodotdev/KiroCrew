@@ -98,6 +98,64 @@ fences that whole parent. The panel record reader uses flat `.json` names, so
 the marker subdirectory is outside its record namespace. Reusing this masked
 parent avoids adding another root-level leaf held only by its own mount name.
 
+The auto-nudge ARM record (`autonudge_selfarm.py`) — the entry that lets a
+crew/member session's own loop fire and the whole of the owner's Perpetual mode
+authorization for a member loop — lives INSIDE an existing whole-directory mask
+rather than in a masked leaf of its own: `tag-grants/autonudge-trust/`, a child of
+the chat_tag grant store's root. The distinction is the hold's lifetime. A leaf
+masked at the data-home root is held only by its own name: the mask attaches to the
+object present at spawn, so a host-side atomic replace of that name puts a fresh,
+writable object at the protected path for the rest of a running namespace's life —
+for an authorization record, the hole itself. A name inside a stand-in directory is
+held for the namespace lifetime, present and future, because the sandbox's lookup
+terminates in the empty directory the launcher created (`_enclosing_hold` in
+`test_sandbox_protected_name_holds.py` is the measured form of this rule).
+`tag-grants/` is the host because it already holds owner authorization state of the
+same class, is written and read by the gateway alone, is pre-created 0o700 before
+every spawn, and is never swept or staged through; the grant store's own files stay
+siblings of the record's directory, never inside it. The nested path is NOT listed
+in `_CREW_HIDDEN_LEAVES` as a leaf of its own, and no hidden leaf may nest under
+another (`TestNoHiddenLeafNestsUnderAnother` pins it): the mount a listing would
+place is redundant under the host's stand-in, and the launcher's identity pin
+refuses the spawn on it — the pre-spawn alias pass records an occupant for every
+hidden leaf present on disk, the host's mask then makes the child's name absent
+inside the stand-in, and an established object that is absent at pin time reads
+as moved (fail closed, every spawn, once the first arm has created the
+directory). The lexical nesting subtraction the launcher applies to required
+targets is not applied to carried occupants; widening that pin is a launcher
+decision, not a leaf's. The record is also NOT pre-created (the materialiser
+refuses intermediate directories on purpose, and an absent child of a masked host
+is as invisible as a present one) and NOT in `_CREW_NO_ALIAS_LEAVES` (a link at
+the host refuses the spawn as every masked leaf does; the gateway opens host and
+child through held no-follow handles). The file-tool fence is prefix-matched, so the host's
+`_CREW_SECRET_LEAVES` entry fences the record without a second name to keep in step.
+The gateway opens the host and child through held, no-follow directory handles,
+then performs each lock, read, quarantine and publish relative to the held child.
+A link at either name therefore refuses the arm and is never traversed;
+`chat_tag_grants._store_dir` may separately replace a linked host during its own
+boot path.
+
+It is NOT under `trust/`, which is a declared sandbox read-write exception (the
+in-sandbox MCP servers append to the audit log there and `verify_session_pid` reads
+the SEL key), so a record placed there stayed writable by a same-UID sandboxed
+command that built the path at runtime; the loop store the record agrees with is
+agent-writable by design, so this file is the one factor a forged loop cannot
+supply. Only the gateway opens it (authorizer, fire-time guard, member route, the
+store's remove), and a record an upgraded install still has at the `trust/` layout
+is DISCARDED on the gateway's first access, never migrated — that file sat in a
+sandbox-writable directory, so a forged entry in it cannot be told from a real one;
+the loops behind it are refused at fire time (audited) until armed again. The mask
+says cleanup may not follow that writable directory either: retirement opens
+`trust/` relative to a pinned data-home directory and removes only descriptor-
+relative names, while Windows holds and verifies the directory handle. A link or
+junction at `trust/` is refused and cannot name the live record or lock. The mask
+says nothing about bytes planted at the record's path before the boot that first
+masked its host, so the record is also SEALED: an HMAC over its entries under
+`token_signing.key` (masked and fenced in every build that ships it), which a plant
+cannot mint. Unsealed content reads as nothing recorded and the next writer moves it
+aside; a token-key rotation breaks the seals the same way, and the loops are armed
+again.
+
 The MASKED leaves are a separate population with a separate pass.
 `sandbox._refuse_aliased_masked_leaves` refuses a SYMLINK at every entry in
 `_CREW_HIDDEN_LEAVES` except the ones in `_CREW_ALIAS_TOLERATED_LEAVES`, and it runs last
@@ -2187,7 +2245,8 @@ coarse reason only.
 Legacy AutoNudge reads return a structured record REDUCED to what a caller with
 no owner gate is entitled to -- presence, cadence, liveness and state, with the
 monitor record itself plus `message` (which on a structured monitor holds the wake
-instructions), `banner` and the sentinel path all withheld -- so the full record
+instructions), `banner`, the free-text `stopped_detail` and the sentinel path all
+withheld -- so the full record
 stays readable only through the owner-gated monitor routes. Structured WebSocket
 state is sent only to the owner-authorized client set. If a structured id is
 presented to the legacy DELETE route, that route applies the same owner gate

@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 MONITOR_OWNER_CREDENTIALS_RECORD_NAME = "autonudge-monitor-owner-credentials.json"
 MONITOR_OWNER_CREDENTIALS_REVOCATIONS_NAME = "autonudge-monitor-owner-credential-revocations.json"
 _LOCK_NAME = MONITOR_OWNER_CREDENTIALS_RECORD_NAME + ".lock"
+_REPLACEMENT_KEY = "replacement"
 _PENDING_REVOCATIONS: set[str] = set()
 _PENDING_REVOCATIONS_LOCK = threading.Lock()
 
@@ -54,6 +55,27 @@ def monitor_owner_credentials_path() -> Path:
 def monitor_owner_credentials_revocations_path() -> Path:
     """Absolute path of the protected durable revocation record."""
     return data_home() / ".vault" / MONITOR_OWNER_CREDENTIALS_REVOCATIONS_NAME
+
+
+def _valid_identity_entry(entry: Any, *, active: bool | None = None) -> bool:
+    return bool(
+        isinstance(entry, dict)
+        and all(isinstance(entry.get(field), str) for field in ("slot_key", "kind", "target"))
+        and isinstance(entry.get("active"), bool)
+        and (active is None or entry.get("active") is active)
+    )
+
+
+def _valid_replacement(entry: dict[str, Any]) -> bool:
+    replacement = entry.get(_REPLACEMENT_KEY)
+    if replacement is None:
+        return True
+    return bool(
+        entry.get("active") is False
+        and isinstance(replacement, dict)
+        and isinstance(replacement.get("monitor_id"), str)
+        and _valid_identity_entry(replacement.get("entry"), active=True)
+    )
 
 
 def _read_record(*, strict: bool = False) -> dict[str, dict[str, Any]]:
@@ -79,9 +101,7 @@ def _read_record(*, strict: bool = False) -> dict[str, dict[str, Any]]:
     valid_entries = {
         str(monitor_id): entry
         for monitor_id, entry in entries.items()
-        if isinstance(entry, dict)
-        and all(isinstance(entry.get(field), str) for field in ("slot_key", "kind", "target"))
-        and isinstance(entry.get("active"), bool)
+        if _valid_identity_entry(entry) and _valid_replacement(entry)
     }
     if strict and len(valid_entries) != len(entries):
         raise OSError("monitor credential provenance record is invalid")
@@ -165,13 +185,30 @@ def prepare_monitor_owner_credentials(
     slot_key: str,
     kind: str,
     target: str,
+    *,
+    replaces_monitor_id: str = "",
 ) -> None:
-    """Write a non-authorizing identity before the monitor row commits."""
+    """Write a non-authorizing identity before the monitor row commits.
+
+    For a replacement, copy the exact active prior grant into the pending row.
+    The service may then revoke the old id before publishing its snapshot; a
+    restart can still restore that exact grant when the prior row remains.
+    """
     monitor_id = str(monitor_id)
+    replaces_monitor_id = str(replaces_monitor_id)
     with _record_lock():
         revocations = _read_revocations_strict()
         entries = _read_record(strict=True)
-        entries[monitor_id] = _entry(slot_key, kind, target, active=False)
+        pending = _entry(slot_key, kind, target, active=False)
+        if replaces_monitor_id:
+            prior = entries.get(replaces_monitor_id)
+            if not isinstance(prior, dict) or not _valid_identity_entry(prior, active=True):
+                raise OSError("prior monitor credential provenance is unavailable")
+            pending[_REPLACEMENT_KEY] = {
+                "monitor_id": replaces_monitor_id,
+                "entry": dict(prior),
+            }
+        entries[monitor_id] = pending
         _write_record(entries)
         if monitor_id in revocations:
             revocations.remove(monitor_id)
@@ -179,8 +216,13 @@ def prepare_monitor_owner_credentials(
     _clear_pending_revocation(monitor_id)
 
 
-def activate_monitor_owner_credentials(monitor_id: str) -> None:
-    """Activate an existing prepared identity, or fail closed."""
+def activate_monitor_owner_credentials(
+    monitor_id: str,
+    slot_key: str,
+    kind: str,
+    target: str,
+) -> None:
+    """Activate the exact prepared identity, or fail closed."""
     monitor_id = str(monitor_id)
     with _record_lock():
         revocations = _read_revocations_strict()
@@ -188,10 +230,82 @@ def activate_monitor_owner_credentials(monitor_id: str) -> None:
             raise OSError("prepared monitor credential provenance is revoked")
         entries = _read_record(strict=True)
         entry = entries.get(monitor_id)
-        if entry is None:
-            raise OSError("prepared monitor credential provenance is unavailable")
+        expected = _entry(slot_key, kind, target, active=False)
+        if entry is None or any(entry.get(key) != value for key, value in expected.items()):
+            raise OSError("prepared monitor credential provenance does not match the monitor")
+        replacement = entry.get(_REPLACEMENT_KEY)
+        if isinstance(replacement, dict) and replacement["monitor_id"] in entries:
+            raise OSError("prior monitor credential provenance is still active")
         entry["active"] = True
+        entry.pop(_REPLACEMENT_KEY, None)
         _write_record(entries)
+
+
+def recover_monitor_owner_credentials(
+    live_monitors: dict[str, tuple[str, str, str]],
+) -> None:
+    """Resolve pending grants against monitor rows loaded from durable storage."""
+    with _record_lock():
+        entries = _read_record(strict=True)
+        revocations = _read_revocations_strict()
+        changed = False
+        for monitor_id, entry in list(entries.items()):
+            if entry.get("active") is not False:
+                continue
+            replacement = entry.get(_REPLACEMENT_KEY)
+            prior_id = ""
+            if isinstance(replacement, dict):
+                replacement_monitor_id = replacement.get("monitor_id")
+                if not isinstance(replacement_monitor_id, str):
+                    raise OSError("monitor credential replacement record is invalid")
+                prior_id = replacement_monitor_id
+            identity = (entry["slot_key"], entry["kind"], entry["target"])
+            if live_monitors.get(monitor_id) == identity and prior_id not in live_monitors:
+                if isinstance(replacement, dict):
+                    # The replacement snapshot committed, so finish revoking the
+                    # displaced grant before the pending replacement can authorize.
+                    # Keep the pending entry in every intermediate record: a crash
+                    # before the tombstone clear must restart fail-closed.
+                    if prior_id in entries:
+                        if prior_id not in revocations:
+                            revocations.add(prior_id)
+                            _write_revocations(revocations)
+                        del entries[prior_id]
+                        _write_record(entries)
+                    if prior_id in revocations:
+                        revocations.remove(prior_id)
+                        _write_revocations(revocations)
+                    _clear_pending_revocation(prior_id)
+                entry["active"] = True
+                entry.pop(_REPLACEMENT_KEY, None)
+                _write_record(entries)
+                continue
+            if isinstance(replacement, dict):
+                prior = replacement["entry"]
+                prior_identity = (prior["slot_key"], prior["kind"], prior["target"])
+                if (
+                    monitor_id not in live_monitors
+                    and live_monitors.get(prior_id) == prior_identity
+                ):
+                    # The prior monitor snapshot survived. Restore its exact grant
+                    # while the replacement stays pending, then clear any durable
+                    # denial before dropping the recovery record. Each write is a
+                    # restart-safe checkpoint: the prior is denied until the
+                    # tombstone clear lands, and the replacement never authorizes.
+                    entries[prior_id] = dict(prior)
+                    _write_record(entries)
+                    if prior_id in revocations:
+                        revocations.remove(prior_id)
+                        _write_revocations(revocations)
+                    _clear_pending_revocation(prior_id)
+                    del entries[monitor_id]
+                    _write_record(entries)
+                    continue
+            if monitor_id not in live_monitors and not prior_id:
+                del entries[monitor_id]
+                changed = True
+        if changed:
+            _write_record(entries)
 
 
 def record_monitor_owner_credentials(

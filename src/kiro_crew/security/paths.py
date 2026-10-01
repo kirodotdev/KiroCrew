@@ -527,7 +527,7 @@ _CREW_SECRET_LEAVES: list[str] = [
     # The chat_tag authorization store. Grant rows decide which tags an agent
     # may self-apply, so agent file tools must neither read nor write them;
     # the OS-sandbox counterpart is ``sandbox._CREW_HIDDEN_LEAVES``. Only the
-    # gateway opens the path.
+    # gateway opens the path; its mask also holds nested owner-arm records.
     "tag-grants",
     # Crewmate teams (``crew_teams.py``): the owner's grouping of the roster. Not
     # a secret, but it decides which team view a crewmate's questions and work
