@@ -479,7 +479,10 @@ class TestInitializeHandshakeUnderThrottle:
         assert "_initialize_handshake(client_capabilities)" in src
         before, after = src.split("_initialize_handshake(client_capabilities)", 1)
         assert "require_unchanged_derived_spec" in after
-        assert "failed init handshake cleanup" in after
+        # The guard runs its teardown as one shielded task; the kill lives there.
+        assert "self._failed_start_cleanup()" in after
+        cleanup = inspect.getsource(AcpRuntime._failed_start_cleanup)
+        assert "failed init handshake cleanup" in cleanup
 
 
 def test_overload_error_is_exported_from_the_runtime_module():

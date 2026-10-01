@@ -78,7 +78,12 @@ from kiro_crew.acp.mcp_session_report import (
     roster_names,
     sanitize_sink_text,
 )
-from kiro_crew.acp.runtime_process_tree import ChildRecord, _capture_child_records, _get_child_pids
+from kiro_crew.acp.runtime_process_tree import (
+    ChildRecord,
+    _capture_child_records,
+    _get_child_pids,
+    _kill_escaped_children,
+)
 from kiro_crew.acp.runtime_start import (
     _INIT_NOTIFICATION_BUFFER_LIMIT,
     _SESSION_NEW_TIMEOUT,
@@ -2518,25 +2523,129 @@ class AcpRuntime:
             # cancellation reaches this arm.
             await self._snapshot_descendants(retry_when_empty=True)
         except BaseException:
-            # BEFORE the kill, which is the whole point of the ordering. The
-            # cleanup below cancels the stderr drain, and a line still in the pipe
-            # when it does is a line nobody will ever read -- so the caller's own
-            # settle finds the task already done and learns nothing. Draining here
-            # is the last moment the child's own account of why it could not start
-            # is still reachable, and a sandbox refusal is exactly the failure that
-            # arrives this way: the child writes its signature and closes stdout
-            # together. Bounded and swallowing (see ``settle_stderr``); this is
-            # already the failure path.
-            await self.settle_stderr()
-            try:
-                # This death IS abnormal (failed spawn/handshake): kill()'s
-                # expected=False default keeps its log at WARNING.
-                await self.kill(reason="failed init handshake cleanup")
-            except Exception:
-                logger.debug(
-                    "AcpRuntime: cleanup kill after failed spawn/handshake failed", exc_info=True
+            # One task this frame only WAITS on, so a cancellation cannot cut the
+            # cleanup short. Two ordinary dashboard paths (a newer slot signal, a
+            # slot deletion) cancel this same eager-spawn task, and a cancel that
+            # landed inside the descendant scan below would drop the only record
+            # of the MCP servers the group kill cannot reach. A cancel delivered
+            # while the cleanup runs is absorbed until it settles, then propagated
+            # in place of the original failure. Same shape as the tracking reap
+            # guard above.
+            cleanup = asyncio.ensure_future(self._failed_start_cleanup())
+            cancelled = False
+            while not cleanup.done():
+                try:
+                    await asyncio.shield(cleanup)
+                except asyncio.CancelledError:
+                    cancelled = True
+                except Exception:
+                    break
+            if not cleanup.cancelled() and cleanup.exception() is not None:
+                logger.warning(
+                    "AcpRuntime: failed-start cleanup raised",
+                    exc_info=cleanup.exception(),
                 )
+            if cancelled:
+                raise asyncio.CancelledError()
             raise
+
+    async def _failed_start_cleanup(self) -> None:
+        """Settle stderr, record the tree, kill it, and reap what left the group.
+
+        Runs as its own task under ``_spawn_admitted``'s failed-start guard, which
+        shields it, so every step completes even when the spawning task is
+        cancelled mid-cleanup.
+        """
+        # BEFORE the kill, which is the whole point of the ordering. The
+        # cleanup below cancels the stderr drain, and a line still in the pipe
+        # when it does is a line nobody will ever read -- so the caller's own
+        # settle finds the task already done and learns nothing. Draining here
+        # is the last moment the child's own account of why it could not start
+        # is still reachable, and a sandbox refusal is exactly the failure that
+        # arrives this way: the child writes its signature and closes stdout
+        # together. Bounded and swallowing (see ``settle_stderr``); this is
+        # already the failure path.
+        await self.settle_stderr()
+        # The group kill below reaches only kiro-cli's own process group, and
+        # every stdio MCP server it launches leads a group of its own. A
+        # runtime that served a session has those recorded by the descendant
+        # scan at the end of a successful start; one that failed before it has
+        # none, so its MCP servers outlive it unrecorded. Record the tree now,
+        # while the root still links it, and kill whatever of it survives the
+        # group kill.
+        escapees = await self._record_tree_before_failed_start_kill()
+        # Withheld from the kill's own teardown, which would otherwise report
+        # every recorded MCP server as a survivor it leaves to the orphan sweep,
+        # milliseconds before the reap below kills it. The reap prunes their
+        # tracking entries itself, and owns the verdict on whether any survived.
+        self._child_pids = {}
+        try:
+            # This death IS abnormal (failed spawn/handshake): kill()'s
+            # expected=False default keeps its log at WARNING.
+            await self.kill(reason="failed init handshake cleanup")
+        except Exception:
+            logger.debug(
+                "AcpRuntime: cleanup kill after failed spawn/handshake failed", exc_info=True
+            )
+        if escapees:
+            await self._kill_failed_start_escapees(escapees)
+
+    async def _record_tree_before_failed_start_kill(self) -> dict[int, ChildRecord]:
+        """The descendants of a runtime whose start failed, read before its kill.
+
+        Best-effort and bounded: the scan swallows its own failures. The caller
+        runs it inside a shielded cleanup task, so the spawning task's
+        cancellation never reaches it; a cancellation of the cleanup task itself
+        (loop shutdown) is absorbed so the kill that follows still runs, leaving
+        the tree to the group kill alone.
+        """
+        if platform_compat.IS_WINDOWS:
+            return {}
+        try:
+            await self._snapshot_descendants()
+        except asyncio.CancelledError:
+            return {}
+        return dict(self._child_pids)
+
+    #: How long the failed-start reap waits for SIGKILLed descendants to be
+    #: reaped by their new parent before reporting them as survivors.
+    _FAILED_START_REAP_WAIT = 1.0
+
+    async def _kill_failed_start_escapees(self, escapees: dict[int, ChildRecord]) -> None:
+        """SIGKILL the recorded descendants of a failed start that are still ours.
+
+        Each is checked against the identity recorded at the scan, so a number
+        reused since then is skipped. Entries of the ones confirmed gone are
+        pruned from the tracking file; a survivor keeps its entry for the sweep.
+        A just-killed process is not gone at once (it is a zombie until its new
+        parent reaps it), so the verdict waits a bounded moment for the exits
+        before calling anything a survivor.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self._FAILED_START_REAP_WAIT
+        try:
+            await asyncio.to_thread(_kill_escaped_children, escapees)
+            pending = escapees
+            while True:
+                survivors = await asyncio.to_thread(_prune_dead_descendants, pending)
+                if not survivors or loop.time() >= deadline:
+                    break
+                pending = {pid: escapees[pid] for pid in survivors}
+                await asyncio.sleep(0.05)
+        except Exception:
+            self._process_tree_confirmed_dead = False
+            logger.warning(
+                "AcpRuntime: could not reap the descendants of a failed start", exc_info=True
+            )
+            return
+        if survivors:
+            self._process_tree_confirmed_dead = False
+            logger.warning(
+                "AcpRuntime: %d descendant PID(s) of a failed start survived SIGKILL; "
+                "left tracked for the orphan sweep: %s",
+                len(survivors),
+                survivors,
+            )
 
     #: One retry for a descendant scan that came back empty. The spawned root
     #: is a launcher that forks the agent, which forks again, so a scan racing a

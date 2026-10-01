@@ -2747,6 +2747,8 @@ class _ChatSlot:
         "_pending_discard_conversation_key",
         "_pending_model_pick",
         "_eager_spawn_task",
+        "_eager_spawn_failures",
+        "_eager_spawn_retry_at",
         "_prefetch_ttl_task",
         "_dirty_flag",
         "_dirty_gen",
@@ -3395,6 +3397,10 @@ class _ChatSlot:
         # At most one per slot: scheduling a new one cancels the previous, so
         # rapid signals (create + project set) collapse into a single spawn.
         self._eager_spawn_task: asyncio.Task[None] | None = None
+        # Consecutive failed background starts, and the monotonic time before
+        # which the next one waits (chat_runner._note_eager_spawn_failure).
+        self._eager_spawn_failures: int = 0
+        self._eager_spawn_retry_at: float = 0.0
         # Unclaimed-prefetch teardown timer (resume prefetch). At most one per
         # slot: a newer resumed prefetch cancels the previous timer.
         self._prefetch_ttl_task: asyncio.Task[None] | None = None

@@ -2191,6 +2191,24 @@ reparented to init and unreachable. Teardown prunes by descendant liveness and
 retains survivors for the orphan sweep. See
 [session](session.md) for the file formats and the sweeps that read them.
 
+**A failed start reaps its MCP servers too.** The group kill that ends a failed
+spawn or `initialize` handshake reaches only kiro-cli's own process group, and
+kiro-cli launches every stdio MCP server as the leader of a group of its own. The
+descendant scan above runs only after a successful start, so a runtime that failed
+before it had recorded nothing and its MCP servers outlived it untracked. The
+failed-start arm of `AcpRuntime._spawn_admitted` therefore scans the tree first
+(`_record_tree_before_failed_start_kill`, while the root still links it; POSIX
+only), kills
+the group, then `_kill_failed_start_escapees` SIGKILLs each recorded descendant
+whose identity still matches the scan and prunes the confirmed-dead entries; a
+survivor keeps its entry for the orphan sweep. The whole cleanup (stderr settle,
+scan, kill, reap) runs as one task, `_failed_start_cleanup`, that the guard only
+waits on behind `asyncio.shield`. A cancel of the spawning task, which ordinary
+slot signals deliver to the eager-spawn task, is absorbed until the cleanup
+settles and is then propagated in place of the original failure. Without that, a
+cancel landing inside the scan would drop the only record of the MCP servers.
+Pinned by `test/test_acp_runtime_failed_start_reap.py`.
+
 **A reaped root does not end the teardown.** `kill_process_tree` is
 `killpg(getpgid(pid))`, and `getpgid` raises once the root has exited — read as
 "already dead", that leaves the launcher's children, the agent and its chat
