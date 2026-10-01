@@ -128,7 +128,6 @@ test/test_sandbox_launcher_sweep.py::TestNamespaceArgvPlacement::test_launcher_i
 test/test_sandbox_launcher_sweep.py::TestNamespaceArgvPlacement::test_launcher_is_executable
 test/test_sandbox_launcher_sweep.py::TestRunDirMode::test_run_dir_mode_0o700
 test/test_sandbox_launcher_sweep.py::TestRunDirMode::test_run_dir_mode_enforced_on_existing
-test/test_sel.py::TestHmacKeyManagement::test_key_file_permissions
 test/test_service.py::TestKirocrewBinOverride::test_service_bin_override_wins_over_which
 test/test_service.py::TestLinuxUnitRendering::test_install_writes_unit_via_sudo_install_and_invokes_systemctl
 test/test_service.py::TestServiceEnvironment::test_plist_includes_locale_and_kiro_bin

@@ -154,7 +154,45 @@ class TestHmacKeyManagement:
         assert key_path.exists()
         assert len(key_path.read_bytes()) == 32
 
-    def test_key_file_permissions(self, sel_dir):
+    def test_key_file_permissions(self, sel_dir, monkeypatch):
+        if sys.platform == "win32":
+            # No POSIX mode bits on Windows; the mode bits are inert there and
+            # 0o600 is unobservable. The real owner-only guarantee is the DACL
+            # platform_compat.restrict_to_owner applies to sel_hmac.key (the SEL
+            # trust-root key) at creation — exactly as sel.py's write site does
+            # with restrict_to_owner=True. Assert that applied DACL directly,
+            # the same way test_workflows_run_identity.py and
+            # test_config_rmw_preserves_settings.py do. The pin that this key is
+            # locked down (lockdown precedes the key bytes) lives in
+            # test_key_lockdown_precedes_content.
+            #
+            # conftest's autouse _windows_restrict_to_owner_stub no-ops the
+            # lockdown module-wide for hermeticity, which would leave the key
+            # under its inherited DACL and make this assertion vacuous (it would
+            # observe no DACL at all). Opt out for THIS test only — the same
+            # thing test_workflows_run_identity's native-Windows test does — by
+            # restoring the real file-shape lockdown so the key is actually
+            # locked down before we read its descriptor. _apply_owner_only_dacl
+            # is the real engine both restrict_to_owner and restrict_dir_to_owner
+            # route through and is itself never stubbed.
+            from kiro_crew import windows_acl
+
+            monkeypatch.setattr(
+                platform_compat,
+                "restrict_to_owner",
+                lambda p: platform_compat._apply_owner_only_dacl(p, inherit=False),
+            )
+            SecurityEventLog(base_dir=sel_dir, sync=True)
+            key_path = sel_dir / "trust" / "sel_hmac.key"
+            sid = platform_compat.current_user_sid()
+            assert sid
+            # The SID set restrict_to_owner applies for a FILE (inherit=False):
+            # OWNER RIGHTS (S-1-3-4) plus the current user — see
+            # platform_compat._apply_owner_only_dacl.
+            assert windows_acl.owner_only_dacl_matches(
+                key_path, inherit=False, sids=("S-1-3-4", sid)
+            )
+            return
         SecurityEventLog(base_dir=sel_dir, sync=True)
         key_path = sel_dir / "trust" / "sel_hmac.key"
         mode = oct(key_path.stat().st_mode & 0o777)
