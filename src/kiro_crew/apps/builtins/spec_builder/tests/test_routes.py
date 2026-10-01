@@ -175,10 +175,23 @@ def _never_touch_the_real_state(monkeypatch, tmp_path):
 _REAL_STATE_DIR: Path | None = None
 
 
+#: The local bootstrap subject the dashboard owner gate accepts when no owner is
+#: configured. Execute, handoff and stop are owner-gated, so the default caller
+#: is the owner; a test that wants a non-owner builds its own middleware.
+_OWNER_USER = "local-app"
+
+
+class _NoConfiguredOwner:
+    """The standalone-local state shape: no owner configured yet."""
+
+    owner_id = ""
+
+
 @web.middleware
 async def _auth_mw(request, handler):
-    """Inject a middleware-set user (mirrors the gateway's auth middleware)."""
-    request["user"] = "tester"
+    """Inject the owner's claims (mirrors the gateway's auth middleware)."""
+    request["user"] = _OWNER_USER
+    request["app"] = ""
     return await handler(request)
 
 
@@ -8468,7 +8481,7 @@ async def test_approve_records_the_version_and_the_user(tmp_path, monkeypatch):
         await client.close()
 
     stored = routes._load_index()["live"]["approvals"]["requirements"]
-    assert stored["hash"] == digest and stored["user"] == "tester" and stored["at"] > 0
+    assert stored["hash"] == digest and stored["user"] == _OWNER_USER and stored["at"] > 0
     assert detail["approvals"]["requirements"]["stale"] is False
 
 
@@ -14918,6 +14931,7 @@ async def test_stale_stop_does_not_revoke_the_current_creation_claim(tmp_path, m
         halted.append("halted")
 
     monkeypatch.setattr(routes, "_halt_execution", _halt)
+    client.app["state"] = _NoConfiguredOwner()
     await client.start_server()
     try:
         response = await client.post(
@@ -17140,3 +17154,168 @@ async def test_create_refuses_an_unreadable_ledger_before_inserting(
     assert body["code"] == "decision_record_unreadable"
     assert routes._load_index() == {}
     assert dispatched == []
+
+
+# ── owner gate on execute / handoff / stop ───────────────────────────────────
+
+_GATE_OWNER = "owner-subject"
+_GATE_NON_OWNER = "allowlisted-messaging-user"
+
+
+class _ConfiguredOwnerState:
+    """A state with a configured owner, so a different subject is a non-owner."""
+
+    owner_id = _GATE_OWNER
+
+    def get_or_create_slot(self, name, app=""):
+        raise AssertionError("an owner-gated route acquired a worker slot")
+
+    def get_slot(self, key):
+        return None
+
+
+def _claims_mw(user: str, app_claim: str):
+    @web.middleware
+    async def _mw(request, handler):
+        request["user"] = user
+        request["app"] = app_claim
+        return await handler(request)
+
+    return _mw
+
+
+def _gated_client(monkeypatch, tmp_path, user: str, app_claim: str) -> TestClient:
+    _redirect_state(monkeypatch, tmp_path)
+    app = web.Application(middlewares=[_claims_mw(user, app_claim)])
+    routes.register_routes(app)
+    app["state"] = _ConfiguredOwnerState()
+    return TestClient(TestServer(app))
+
+
+def _gated_spec(tmp_path) -> Path:
+    spec_dir = tmp_path / "wd" / ".kiro" / "specs" / "s"
+    spec_dir.mkdir(parents=True)
+    (spec_dir / "tasks.md").write_text("- [ ] task")
+    routes._save_index(
+        {
+            "s": {
+                "spec_dir": str(spec_dir),
+                "working_dir": str(tmp_path / "wd"),
+                "slot_key": "spec-builder-s",
+            }
+        }
+    )
+    return spec_dir
+
+
+def _record_side_effects(monkeypatch) -> list[str]:
+    effects: list[str] = []
+
+    def _sync(label):
+        def _spy(*_a, **_k):
+            effects.append(label)
+            return (False, "")
+
+        return _spy
+
+    def _async(label):
+        async def _spy(*_a, **_k):
+            effects.append(label)
+            return None, "recorded by test", 403
+
+        return _spy
+
+    monkeypatch.setattr(routes, "_prepare_handoff", _sync("prepare_handoff"))
+    monkeypatch.setattr(routes, "_autonudge_instance", lambda: object())
+    monkeypatch.setattr(routes, "authorize_and_add_nudge", _async("arm"))
+    monkeypatch.setattr(routes, "_dispatch_turn", _sync("dispatch"))
+    monkeypatch.setattr(routes, "_halt_execution", _async("halt"))
+    monkeypatch.setattr(routes, "_remove_nudge_loop_for_slot", _async("remove_loop"))
+    monkeypatch.setattr(routes, "_halt_active_turn", _async("halt_turn"))
+    return effects
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("verb", ["execute", "handoff"])
+async def test_non_owner_dashboard_subject_cannot_execute_or_handoff(verb, tmp_path, monkeypatch):
+    """An allow-listed non-owner holds a dashboard credential with an empty app
+    claim. Arming the run's loop makes its message the owner session's next turn,
+    so it gets the owner gate's 403 before anything -- including the STOP-sentinel
+    clear in _prepare_handoff -- runs."""
+    client = _gated_client(monkeypatch, tmp_path, _GATE_NON_OWNER, "")
+    spec_dir = _gated_spec(tmp_path)
+    effects = _record_side_effects(monkeypatch)
+
+    await client.start_server()
+    try:
+        resp = await client.post(
+            f"{_BASE}/specs/s/{verb}",
+            json={"spec_dir": str(spec_dir), "slot_key": "spec-builder-s"},
+        )
+        body = await resp.json()
+    finally:
+        await client.close()
+
+    assert (resp.status, body.get("code")) == (403, "owner_only"), (resp.status, body)
+    assert effects == [], f"a non-owner {verb} reached {effects}"
+
+
+@pytest.mark.asyncio
+async def test_non_owner_dashboard_subject_cannot_stop_spec_execution(tmp_path, monkeypatch):
+    """Stop removes the owner session's loop, the partner of arming it, so a
+    non-owner is refused before any halt, loop removal or STOP write."""
+    client = _gated_client(monkeypatch, tmp_path, _GATE_NON_OWNER, "")
+    spec_dir = _gated_spec(tmp_path)
+    effects = _record_side_effects(monkeypatch)
+
+    await client.start_server()
+    try:
+        resp = await client.post(
+            f"{_BASE}/specs/s/stop",
+            json={"spec_dir": str(spec_dir), "slot_key": "spec-builder-s"},
+        )
+        body = await resp.json()
+    finally:
+        await client.close()
+
+    assert (resp.status, body.get("code")) == (403, "owner_only"), (resp.status, body)
+    assert effects == [], f"a non-owner stop reached {effects}"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("verb", ["execute", "handoff", "stop"])
+async def test_spec_app_token_cannot_execute_handoff_or_stop(verb, tmp_path, monkeypatch):
+    """The same refusal POST /api/autonudge gives an app token: even this app's
+    own token carries the owner's subject but is not the owner's dashboard."""
+    client = _gated_client(monkeypatch, tmp_path, _GATE_OWNER, "spec-builder")
+    spec_dir = _gated_spec(tmp_path)
+    effects = _record_side_effects(monkeypatch)
+
+    await client.start_server()
+    try:
+        resp = await client.post(
+            f"{_BASE}/specs/s/{verb}",
+            json={"spec_dir": str(spec_dir), "slot_key": "spec-builder-s"},
+        )
+        body = await resp.json()
+    finally:
+        await client.close()
+
+    assert (resp.status, body.get("code")) == (403, "owner_only"), (resp.status, body)
+    assert effects == [], f"an app token {verb} reached {effects}"
+
+
+@pytest.mark.asyncio
+async def test_non_owner_keeps_the_ungated_spec_routes(tmp_path, monkeypatch):
+    """Only execute, handoff and stop take the owner gate; listing specs keeps
+    its current callers."""
+    client = _gated_client(monkeypatch, tmp_path, _GATE_NON_OWNER, "")
+    _gated_spec(tmp_path)
+
+    await client.start_server()
+    try:
+        resp = await client.get(f"{_BASE}/specs")
+    finally:
+        await client.close()
+
+    assert resp.status == 200, resp.status

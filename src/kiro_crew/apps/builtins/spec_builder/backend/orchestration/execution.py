@@ -16,6 +16,8 @@ from typing import Any
 
 from aiohttp import web
 
+from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
 from ..decisions import _CLAIM_TAKEN
 from ..parsers import _decision_key
 from ..repository import (
@@ -65,6 +67,11 @@ logger = logging.getLogger("kirocrew.app.spec-builder")
 
 async def _handle_handoff(request: web.Request) -> web.Response:
     if denied := _require_auth(request):
+        return denied
+    # The armed loop's message becomes the owner session's next turn, so arming
+    # it is an owner decision -- the same gate POST /api/autonudge applies. It
+    # runs before _prepare_handoff, which clears the STOP sentinel.
+    if denied := await require_owner_dashboard_request(request, "spec_builder_execute"):
         return denied
     name = request.match_info["name"]
     index = await _aload_index()
@@ -579,6 +586,10 @@ async def _handle_handoff(request: web.Request) -> web.Response:
 
 async def _handle_stop_execution(request: web.Request) -> web.Response:
     if denied := _require_auth(request):
+        return denied
+    # Removing the owner session's loop is the partner of arming it, so it takes
+    # the same owner gate as DELETE /api/autonudge/{loop_id}.
+    if denied := await require_owner_dashboard_request(request, "spec_builder_stop"):
         return denied
     name = request.match_info["name"]
     # Parse the body FIRST. Reading it is an await, so doing it after the index
