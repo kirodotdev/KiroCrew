@@ -1548,6 +1548,16 @@ class SessionManager:
         return self._closing
 
     @property
+    def final_drain_started(self) -> bool:
+        """Whether ``close_all()`` began, so no turn here outlives this process.
+
+        An update pause also closes admission, but it can resume. ``close_all``
+        revokes that pause, so closing without an owned pause is the final drain
+        of a shutdown or an in-app re-exec restart.
+        """
+        return self._closing and not self._update_pause_owned
+
+    @property
     def _update_pause_owned(self) -> bool:
         return self._registry_state().update_pause_owned
 

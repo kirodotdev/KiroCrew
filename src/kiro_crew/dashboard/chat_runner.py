@@ -9842,9 +9842,14 @@ async def _clear_local_turn_marker(state: DashboardState, slot: _ChatSlot, gener
     )
 
 
-def _gateway_shutdown_requested() -> bool:
-    """Whether the process is shutting down, read without retaining the event."""
-    return shutdown_event.is_set()
+def _gateway_shutdown_requested(state: DashboardState) -> bool:
+    """Whether the process is going away, read without retaining the event.
+
+    A signal shutdown sets ``shutdown_event``. The in-app restart (dashboard
+    restart and update apply) never does: it drains with ``close_all()`` and
+    re-execs. Both end turns because the process is ending, so both count.
+    """
+    return shutdown_event.is_set() or state.sessions.final_drain_started is True
 
 
 # Event kinds that prove the model READ this turn's prompt: it produced text or
@@ -20727,7 +20732,7 @@ async def _run_chat(
         # that landed inside the shutdown grace keeps its clear. Before the queue
         # drain below, so the successor's own marker is never overtaken by this
         # omission. Guarded so a failing save cannot skip the steer requeue.
-        if not (_gateway_shutdown_requested() and not _turn_landed):
+        if not (_gateway_shutdown_requested(state) and not _turn_landed):
             try:
                 await _clear_local_turn_marker(state, slot, _local_turn_marker_generation)
             except Exception:
