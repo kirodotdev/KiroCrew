@@ -381,6 +381,44 @@
       ]
     },
     {
+      "name": "subagents",
+      "mode": "session",
+      "advertised": true,
+      "affects": [
+        "subagent/completed",
+        "subagent/failed",
+        "subagent/spawned"
+      ],
+      "answers": "Which subagents this session dispatched, in dispatch order, and how each one ended, how long it ran, and what it was charged",
+      "fields": [
+        {
+          "name": "by_id",
+          "type": "dict",
+          "optional": false
+        },
+        {
+          "name": "omitted",
+          "type": "int",
+          "optional": false
+        },
+        {
+          "name": "running",
+          "type": "int",
+          "optional": false
+        },
+        {
+          "name": "running_exact",
+          "type": "bool",
+          "optional": false
+        },
+        {
+          "name": "totals",
+          "type": "dict",
+          "optional": false
+        }
+      ]
+    },
+    {
       "name": "class",
       "mode": "session",
       "advertised": false,

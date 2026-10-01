@@ -29,6 +29,7 @@ slot ran under.
 | `timeline` | session | The ordered moments of the session, and how many were dropped |
 | `tools` | session | Which tools ran, how often, for how long, how many errored, and what is still open |
 | `approvals` | session | What was requested, what was decided, and what is still pending |
+| `subagents` | session | Which subagents this session dispatched, in dispatch order, and how each one ended, how long it ran, and what it was charged |
 | `class` *(internal)* | session | What KIND of session this log belongs to, over the log's whole life |
 | `ledger` | slot | One workstream's goal, phase and next step, what was tried and rejected, and its artifacts |
 | `radar` | slot | An issue crew's items, counts, phase lines and recorded skips |
@@ -140,6 +141,20 @@ Moved by: `approval/decided`, `approval/requested`.
 | `requested` | `int` | no |
 | `unidentified_requests` | `int` | no |
 | `unmatched_decisions` | `int` | no |
+
+## `subagents`
+
+Which subagents this session dispatched, in dispatch order, and how each one ended, how long it ran, and what it was charged.
+
+Moved by: `subagent/completed`, `subagent/failed`, `subagent/spawned`.
+
+| Field | Type | Optional |
+|---|---|---|
+| `by_id` | `dict` | no |
+| `omitted` | `int` | no |
+| `running` | `int` | no |
+| `running_exact` | `bool` | no |
+| `totals` | `dict` | no |
 
 ## `class`
 

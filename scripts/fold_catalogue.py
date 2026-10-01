@@ -88,6 +88,10 @@ _ANSWERS: dict[str, str] = {
     "timeline": "The ordered moments of the session, and how many were dropped",
     "tools": ("Which tools ran, how often, for how long, how many errored, and what is still open"),
     "approvals": "What was requested, what was decided, and what is still pending",
+    "subagents": (
+        "Which subagents this session dispatched, in dispatch order, and how each one "
+        "ended, how long it ran, and what it was charged"
+    ),
     "class": "What KIND of session this log belongs to, over the log's whole life",
     "ledger": (
         "One workstream's goal, phase and next step, what was tried and rejected, and "
