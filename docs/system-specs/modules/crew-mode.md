@@ -889,7 +889,14 @@ so the scan never gates readiness. The slot restores do not wait for it
 either: a removed row's DM thread held no turn, and a session that ran its
 agent elsewhere resolves the same name onto the installed agent on the default
 crew's workspace and memory — the binding the removed row carried — so no
-restore depends on the row. The headless `start_api_server` / `--slack-only`
+restore depends on the row. A session with no execution record gets that from
+the installed-agent lookup in `resolve_agent_bindings`; one whose record names
+the crewmate as a `member` selection does not, because a member selection never
+takes that lookup, so `resolve_session_agent_bindings` resolves exactly the shape
+this pass removes (the shared store, named after its agent) as that agent, and
+every other missing member stays refused. A recorded `kirocrew-skill-view-*`
+name is mapped back to its source agent through the projection's sidecar
+(`source_agent_name`) before either lookup. The headless `start_api_server` / `--slack-only`
 entrypoint has no dashboard and does not run it) and settles that without any
 UI — removal only; nothing is created or rebound:
 

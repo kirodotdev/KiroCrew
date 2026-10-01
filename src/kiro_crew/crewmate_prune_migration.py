@@ -94,6 +94,12 @@ Design:
   held no turn, and a session that ran its agent elsewhere resolves the same
   name onto the installed agent on the default crew's workspace and memory --
   the binding the removed row carried -- so no restore depends on the row.
+  A session with no execution record gets that from the installed-agent
+  lookup in ``resolve_agent_bindings``. One whose record names the crewmate as
+  a ``member`` selection does not, because a member selection never takes that
+  lookup; ``session_agent_selection.resolve_session_agent_bindings`` resolves
+  exactly the shape this pass removes (the shared store, named after its
+  agent) as that agent instead, and every other missing member stays refused.
   That
   function's middleware holds every mutating request on it -- the chat send,
   slot create, slot agent switch, member thread, channel and import routes
