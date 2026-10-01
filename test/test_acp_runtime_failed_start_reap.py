@@ -27,8 +27,7 @@ pytestmark = pytest.mark.skipif(
     not platform_compat.IS_POSIX, reason="process groups are a POSIX mechanism"
 )
 
-_FAKE_AGENT = textwrap.dedent(
-    """
+_FAKE_AGENT = textwrap.dedent("""
     import subprocess, sys, time
     # Stand-in for a stdio MCP server: the leader of a process group of its own.
     child = subprocess.Popen(
@@ -41,12 +40,11 @@ _FAKE_AGENT = textwrap.dedent(
     import os
     os.replace(sys.argv[1] + ".tmp", sys.argv[1])
     time.sleep(120)
-    """
-)
+    """)
 
 
 def _gone(pid: int) -> bool:
-    """True once *pid* no longer runs (absent, or a zombie awaiting its reaper)."""
+    """True once *pid* has stopped running (absent, or a zombie awaiting its reaper)."""
     if not platform_compat.pid_exists(pid):
         return True
     stat = Path(f"/proc/{pid}/stat")
@@ -102,9 +100,9 @@ async def test_a_failed_init_leaves_no_child_processes(tmp_path, monkeypatch):
         with pytest.raises(AcpRuntimeError, match="initialize timed out"):
             await rt.spawn()
         assert child_pid, "the stand-in tree never started"
-        assert await _wait_gone(child_pid[0]), (
-            f"the MCP stand-in (PID {child_pid[0]}) outlived the failed start"
-        )
+        assert await _wait_gone(
+            child_pid[0]
+        ), f"the MCP stand-in (PID {child_pid[0]}) outlived the failed start"
     finally:
         for pid in child_pid:
             try:
