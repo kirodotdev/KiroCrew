@@ -5,7 +5,7 @@
  *  a programmatic expansion, so a failed-and-rolled-back server expand cannot
  *  surprise-collapse a column that was explicitly opened. */
 import { describe, it, expect, beforeEach } from 'vitest'
-import { boardColumnFromDroppableId, loadBoardFolderCollapse, persistBoardOverride, persistClearFolderOverrides, clearFolderOverrides } from '../utils/boardFolderCollapse'
+import { boardColumnFromDroppableId, loadBoardFolderCollapse, persistBoardOverride, persistClearFolderOverrides, clearFolderOverrides, persistClearExpandedFolderOverrides, clearExpandedFolderOverrides } from '../utils/boardFolderCollapse'
 
 beforeEach(() => localStorage.clear())
 
@@ -109,6 +109,46 @@ describe('clearFolderOverrides', () => {
     const m = new Map<string, boolean>([['col-a:xf1', true]])
     const next = clearFolderOverrides(m, 'f1')
     expect(next.get('col-a:xf1')).toBe(true)
+  })
+})
+
+describe('clearExpandedFolderOverrides', () => {
+  // The collapse-all mirror. Which overrides it drops is inverted, and for the
+  // same reason: only the override that contradicts the write being made has to
+  // go, because dropping the agreeing one would hand the column back to a
+  // server flag that may yet roll back.
+  it('clears expanded overrides for one folder across all columns, leaving other folders alone', () => {
+    const m = new Map<string, boolean>([
+      ['col-a:f1', false],
+      ['col-b:f1', false],
+      ['col-a:f2', false],
+    ])
+    const next = clearExpandedFolderOverrides(m, 'f1')
+    expect(next.has('col-a:f1')).toBe(false)
+    expect(next.has('col-b:f1')).toBe(false)
+    expect(next.get('col-a:f2')).toBe(false)
+  })
+
+  it('keeps collapsed overrides: a rolled-back collapse must not reopen a column that was closed locally', () => {
+    const m = new Map<string, boolean>([['col-a:f1', true]])
+    const next = clearExpandedFolderOverrides(m, 'f1')
+    expect(next.get('col-a:f1')).toBe(true)
+  })
+
+  it('returns the same map instance when nothing matches (no spurious rerender)', () => {
+    const m = new Map<string, boolean>([['col-a:f2', false], ['col-a:f1', true]])
+    expect(clearExpandedFolderOverrides(m, 'f1')).toBe(m)
+  })
+
+  it('persistClearExpandedFolderOverrides removes only expanded overrides for that folder', () => {
+    persistBoardOverride('col-a', 'f1', false)
+    persistBoardOverride('col-b', 'f1', true)
+    persistBoardOverride('col-a', 'f2', false)
+    persistClearExpandedFolderOverrides('f1')
+    const loaded = loadBoardFolderCollapse()
+    expect(loaded.has('col-a:f1')).toBe(false)
+    expect(loaded.get('col-b:f1')).toBe(true)
+    expect(loaded.get('col-a:f2')).toBe(false)
   })
 })
 

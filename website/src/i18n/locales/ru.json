@@ -11688,6 +11688,8 @@
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 пропущена — выбрана сейчас)",
+      "collapse_all_folders": "Свернуть все папки",
+      "expand_all_folders": "Развернуть все папки",
       "no_sessions_match_folders": "Нет подходящих сеансов — совпало только имя папки",
       "add_column_after_this_one": "Добавить столбец после этого",
       "agent_finished_your_turn": "Агент завершил — ваш ход",

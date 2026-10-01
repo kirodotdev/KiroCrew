@@ -27,6 +27,10 @@ import { cn } from '../lib/utils'
  * carried as a table so the field is pixel-identical wherever it is mounted.
  * Three entries — none, one, two controls — because two is the most any
  * mount has (the sidebar's menu + folder toggle); a wider row adds its entry.
+ * Note `max-two-buttons-per-row` in `website/AUTOSDE.yaml`: a third ACTION in
+ * this row is a blocking violation, so a fourth entry here should only ever
+ * serve a control that rule does not count (a field affordance, a segmented
+ * single-choice control), never another action button.
  */
 const INPUT_PAD_RIGHT = [12, 36, 56] as const
 const CLEAR_RIGHT = [8, 32, 56] as const

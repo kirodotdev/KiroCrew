@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, memo, useMemo, useCallback, useId, Fragment } from 'react'
 import { createPortal } from 'react-dom'
 import { LayoutGroup, AnimatePresence, motion } from 'framer-motion'
-import { Plus, X, Pin, Monitor, ArrowUpDown, Eye, EyeOff, VenetianMask, Ghost, FolderPlus, FolderX, MessageSquare, MessageSquarePlus, Folder, ChevronRight, ChevronDown, ChevronUp, Clock, Pencil, BrushCleaning, Link2, Circle, MoreVertical, Tag as TagIcon, Columns3, CornerDownRight, GripVertical, Check, GitFork, List, ListTree, Loader, Loader2, Settings, RotateCcw, Bot, ExternalLink, Cpu, GitMerge, Workflow, CircleDot, Users, TriangleAlert, Goal, MessageCircleQuestionMark, ShieldCheck, Server } from 'lucide-react'
+import { Plus, X, Pin, Monitor, ArrowUpDown, Eye, EyeOff, VenetianMask, Ghost, FolderPlus, FolderX, MessageSquare, MessageSquarePlus, Folder, ChevronRight, ChevronDown, ChevronUp, ChevronsDownUp, ChevronsUpDown, Clock, Pencil, BrushCleaning, Link2, Circle, MoreVertical, Tag as TagIcon, Columns3, CornerDownRight, GripVertical, Check, GitFork, List, ListTree, Loader, Loader2, Settings, RotateCcw, Bot, ExternalLink, Cpu, GitMerge, Workflow, CircleDot, Users, TriangleAlert, Goal, MessageCircleQuestionMark, ShieldCheck, Server } from 'lucide-react'
 import GithubLogo from '../components/icons/GithubLogo'
 import GitlabLogo from '../components/icons/GitlabLogo'
 import { FolderBody } from '../components/FolderBody'
@@ -3157,7 +3157,8 @@ function ChatSidebar({
   // Whether any folder ROW is on screen to drag: the tree, and the board unless
   // flat view empties its columns of folders (`relevantFolders`). The flat lane
   // explodes chats out of their folders and the conductor lane nests by lineage.
-  // Gates only the copy about DRAGGING (the menu's reorder note) -- the folder
+  // Gates the copy about DRAGGING (the menu's reorder note) and the collapse-all
+  // control, both of which act on a folder row the lane is drawing -- the folder
   // order itself is read and offered in every lane.
   const folderRowsDrawn = boardLaneActive ? !flatView : !flatLaneActive && !conductorLaneActive
 
@@ -3254,7 +3255,7 @@ function ChatSidebar({
     createFolderMutation, deleteFolderMutation, updateFolderMutation, toggleCollapse,
   } = useFolderMutations({ queryClient, setFolderActionError, folders })
 
-  const { clearBoardCollapse, boardFolderCollapsed, toggleColumnCollapse } = useBoardFolderCollapse()
+  const { clearBoardCollapse, clearBoardExpand, boardFolderCollapsed, toggleColumnCollapse } = useBoardFolderCollapse()
 
   // ── Folder drag-to-reorder ──
   // Mouse and touch are split on purpose; the split and its WebKit reasoning
@@ -3268,7 +3269,29 @@ function ChatSidebar({
   const {
     reorderFolders, moveFolderTo,
   } = useFolderDropOps({ folderReorderable, queryClient, setFolderActionError, updateFolderMutation })
-  const { folderSubtrees, expandFolderAncestors } = useFolderTree({ folders, updateFolderMutation, clearBoardCollapse })
+  const { folderSubtrees, expandFolderAncestors, collapseAllFolders, expandAllFolders, openFolderCount, closedFolderCount } = useFolderTree({ folders, updateFolderMutation, clearBoardCollapse, clearBoardExpand })
+  /**
+   * Is anything open to the person looking at THIS lane — the question the bulk
+   * folder row's direction turns on.
+   *
+   * The list lanes draw the server flag, so the flag count answers it. The BOARD
+   * lane draws `override ?? flag` per column, so a column can hold a folder open
+   * against a collapsed flag: the flag count is then 0 while something is
+   * visibly open, and a flag-only reading would offer to EXPAND everything at
+   * the moment that one folder is what the person wants shut.
+   *
+   * Asked over the folders that exist and the columns actually rendered, not
+   * over the stored override map. Overrides are keyed by (column, folder) and
+   * nothing prunes them when a folder or column is deleted, so a map-wide
+   * "is any override expanded" test latches true on a stale key and makes expand
+   * permanently unreachable — worse than the bug it would be fixing, because it
+   * never clears.
+   */
+  const anyFolderOpen = useMemo(() => (
+    boardLaneActive
+      ? orderedColumns.some(c => folders.some(f => !boardFolderCollapsed(c.id, f)))
+      : openFolderCount > 0
+  ), [boardLaneActive, orderedColumns, folders, boardFolderCollapsed, openFolderCount])
 
   const {
     revealFlash,
@@ -5399,6 +5422,59 @@ function ChatSidebar({
                       <DropdownMenuItem onSelect={e => { e.preventDefault(); showAllFolders() }} data-testid="folder-filter-show-all">
                         <RotateCcw size={12} className="text-muted shrink-0" />
                         <span className="flex-1">{i18nT('pages.chatSidebar.show_all_folders')}</span>
+                      </DropdownMenuItem>
+                    )}
+                    {/* The other one-shot reset on this list, beside the one that
+                        undoes hiding.
+
+                        ONE row both ways, pointing wherever the tree is not: it
+                        offers collapse while anything is open, and expand once
+                        everything is shut. A collapse-all that leaves no way back
+                        is a trap, and two rows would mean one of them is always a
+                        dead click. The label carries the direction, so the icon
+                        never has to be read alone.
+
+                        In the MENU, not docked beside the search field: this row
+                        is an action and `max-two-buttons-per-row`
+                        (`website/AUTOSDE.yaml`) caps that row at two, which the
+                        lane toggle and this menu's own trigger already fill. The
+                        overflow menu is the pattern that rule names, and it buys
+                        the text label and the width immunity a 24px icon in the
+                        field could not have.
+
+                        Only in a lane that DRAWS folder disclosures
+                        (`folderRowsDrawn`), and only with folders to act on: the
+                        flat lane explodes chats out of their folders and the
+                        conductor lane nests by lineage, so in both a press would
+                        rewrite stored state with nothing on screen to show it.
+                        Unlike the folder-order rows below, which stay in every
+                        lane because the order they set is read everywhere, this
+                        acts on what the lane is currently drawing.
+
+                        Direction comes from `anyFolderOpen`, which asks the
+                        question per LANE (see its comment): the board lane draws
+                        `override ?? flag` per column, so the server-flag count
+                        alone would offer to expand everything at the moment one
+                        column-open folder is what the person wants shut.
+
+                        Lets the menu close, because the result is the list the
+                        menu is covering — and closing on select is also what
+                        keeps a double-click from landing its second press on the
+                        opposite action. */}
+                    {folderRowsDrawn && openFolderCount + closedFolderCount > 0 && (
+                      <DropdownMenuItem
+                        onSelect={() => { if (anyFolderOpen) collapseAllFolders(); else expandAllFolders() }}
+                        data-folder-disclosure={anyFolderOpen ? 'collapse' : 'expand'}
+                        data-testid="folder-collapse-all"
+                      >
+                        {anyFolderOpen
+                          ? <ChevronsDownUp size={12} className="text-muted shrink-0" />
+                          : <ChevronsUpDown size={12} className="text-muted shrink-0" />}
+                        <span className="flex-1">
+                          {anyFolderOpen
+                            ? i18nT('pages.chatSidebar.collapse_all_folders')
+                            : i18nT('pages.chatSidebar.expand_all_folders')}
+                        </span>
                       </DropdownMenuItem>
                     )}
                     {folderFilterRows.map(({ folder: f, depth, count, hidden, hiddenByAncestor }) => (

@@ -11217,6 +11217,8 @@
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1개 건너뜀 — 현재 선택됨)",
+      "collapse_all_folders": "모든 폴더 접기",
+      "expand_all_folders": "모든 폴더 펼치기",
       "no_sessions_match_folders": "일치하는 세션이 없습니다 — 폴더 이름만 일치",
       "add_column_after_this_one": "이 열 뒤에 열 추가",
       "agent_finished_your_turn": "에이전트 작업 완료 — 이제 차례입니다",

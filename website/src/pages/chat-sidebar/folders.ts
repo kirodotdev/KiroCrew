@@ -443,10 +443,11 @@ export function useFolderMutations({ queryClient, setFolderActionError, folders 
 export type FolderMutations = ReturnType<typeof useFolderMutations>
 
 /** The subtree index and the ancestor expansion a reveal or create needs. */
-export function useFolderTree({ folders, updateFolderMutation, clearBoardCollapse }: {
+export function useFolderTree({ folders, updateFolderMutation, clearBoardCollapse, clearBoardExpand }: {
   folders: ChatFolder[]
   updateFolderMutation: FolderMutations['updateFolderMutation']
   clearBoardCollapse: (folderId: string, columnId?: string) => void
+  clearBoardExpand: (folderId: string) => void
 }) {
   // Subtree sets for every folder, recomputed only when the folder list
   // changes — the facade's render paths (menu target filters + drag data)
@@ -484,7 +485,71 @@ export function useFolderTree({ folders, updateFolderMutation, clearBoardCollaps
     }
     expand(folderId)
   }, [folders, updateFolderMutation, clearBoardCollapse])
-  return { folderSubtrees, expandFolderAncestors }
+
+  /** The folders a collapse-all would close, and the ones an expand-all would
+   *  open. The PATCH sets; the facade decides direction (it owns the lane). */
+  const openFolderIds = useMemo(() => folders.filter(f => !f.collapsed).map(f => f.id), [folders])
+  const closedFolderIds = useMemo(() => folders.filter(f => f.collapsed).map(f => f.id), [folders])
+
+
+  /**
+   * Close every open folder, so a tree that has grown past the height of the
+   * sidebar can be reset in one action instead of one disclosure at a time.
+   *
+   * Collapses everything, including the branch holding the active session: the
+   * reveal paths reopen that branch the next time it is navigated to
+   * (`expandFolderAncestors` above), so the opinionated "all but the active
+   * branch" variant would be spending a behavior exception on something the
+   * sidebar already restores.
+   *
+   * One PATCH per open folder, which is what `expandFolderAncestors` already
+   * does for the inverse operation. There is no bulk `collapsed` write — the
+   * reorder endpoint applies only `order` — and the two shapes do not carry the
+   * same risk: `order` is a sequence shared across sibling rows, so a partial
+   * failure leaves a sequence nobody chose, while each `collapsed` flag stands
+   * alone, so a partial failure just leaves some folders open, which the
+   * mutation's own rollback and error banner already report.
+   *
+   * The override clearing runs over EVERY folder, not just the ones written.
+   * Board columns keep per-column expansion overrides layered over the server
+   * flag, so a folder whose flag already says collapsed can still be held OPEN
+   * in a column by an expanded override — it needs no PATCH and would be
+   * skipped by a loop over the open set, leaving it visibly open in that column
+   * with the control now offering only expand, so nothing could shut it.
+   * `expandFolderAncestors` clears unconditionally for the same reason.
+   */
+  const collapseAllFolders = useCallback(() => {
+    for (const id of openFolderIds) updateFolderMutation.mutate({ id, body: { collapsed: true } })
+    for (const f of folders) clearBoardExpand(f.id)
+  }, [openFolderIds, folders, updateFolderMutation, clearBoardExpand])
+
+  /**
+   * Open every closed folder — the way back out of a collapse-all, and the
+   * reason the control is a toggle rather than a one-way trip.
+   *
+   * Deliberately NOT an undo: it opens every folder, including ones that were
+   * already closed before the collapse. Restoring the exact prior shape would
+   * mean persisting a pre-collapse snapshot somewhere, and a tree that reopens
+   * to something other than "all open" is harder to predict than this.
+   *
+   * Same write shape as the collapse half, and the same whole-list override
+   * sweep for the mirror of its reason: a folder whose flag already says open
+   * can still be held SHUT in a column by a collapsed override, which only
+   * `clearBoardCollapse` removes.
+   */
+  const expandAllFolders = useCallback(() => {
+    for (const id of closedFolderIds) updateFolderMutation.mutate({ id, body: { collapsed: false } })
+    for (const f of folders) clearBoardCollapse(f.id)
+  }, [closedFolderIds, folders, updateFolderMutation, clearBoardCollapse])
+
+  return {
+    folderSubtrees,
+    expandFolderAncestors,
+    collapseAllFolders,
+    expandAllFolders,
+    openFolderCount: openFolderIds.length,
+    closedFolderCount: closedFolderIds.length,
+  }
 }
 
 /** The tree lane root folders and the ungrouped rows. */
