@@ -191,6 +191,7 @@ from kiro_crew.sandbox import (
     bind_voice_safe_agent_workspace_async,
     cgroup_scope_argv,
     create_subprocess_limited,
+    credential_file_grants,
     name_scope_unit,
     release_bound_agent_workspace,
     resolve_bound_session_workspace,
@@ -2032,6 +2033,10 @@ class AcpRuntime:
         # (config read) and pass it to both the sandbox wrap and the parent scrub
         # below, so neither reads config on the loop. Scoped to this agent spawn.
         forward_ssh_auth_sock = await asyncio.to_thread(_forward_ssh_auth_sock)
+        # Edition-granted credential files, resolved off-loop per spawn for the
+        # same reason (the edition adapter may read its own grant state). Empty
+        # under the Default sandbox policy, so the public edition's argv is unchanged.
+        secret_files = await asyncio.to_thread(credential_file_grants)
         argv, self._sandbox_cleanup = await wrap_argv_async(
             argv,
             mode=self._sandbox_mode,
@@ -2041,6 +2046,7 @@ class AcpRuntime:
             extra_hidden_dirs=plan.extra_hidden_dirs,
             extra_private_dirs=scratch_window,
             extra_expose_files=plan.extra_expose_files,
+            extra_secret_files=secret_files,
             _prepare=wrap_argv,
         )
         # Twin of acp/client.py's record: the wrap's own account of the branch it
