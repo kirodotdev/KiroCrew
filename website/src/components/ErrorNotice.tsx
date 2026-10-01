@@ -86,6 +86,13 @@ export function ErrorNoticeMenuItem({
  * run of text that sits inside an existing button row — those sites are laid out
  * as flex children, so dropping a bordered box into one would break the row. The
  * variant is a layout choice only; both carry the same agent hand-off.
+ *
+ * There is deliberately NO severity axis here. Every value this component renders
+ * is the outcome of something that failed, and `errors-use-error-notice` counts a
+ * warn- or status-toned failure as the same violation as a hand-rolled red div:
+ * toning a failure down to a polite status does not make it status. A refusal that
+ * withheld an action is still a rejected request, so it keeps `role="alert"` and
+ * the danger palette.
  */
 export default function ErrorNotice({
   id,
@@ -98,6 +105,7 @@ export default function ErrorNotice({
   variant = 'block',
   askAgent = false,
   askAgentLabel,
+  gate,
   actionPlacement = 'beside',
   messagePlacement = 'beside',
   footer,
@@ -171,6 +179,16 @@ export default function ErrorNotice({
    * `askAgent` is off.
    */
   askAgentLabel?: string
+  /**
+   * Forwarded to `AskAgentButton`'s own `gate`, and the companion to `askAgent`
+   * above: that doc explains the hand-off unmounts whatever rendered this banner
+   * and destroys any unsaved value in that subtree. `askAgent` decides whether the
+   * button exists; `gate` is how a surface that DOES hold a draft still offers it
+   * — `useGuardedLeave`'s `leave` asks the guard first and vetoes the navigation
+   * when the user says keep editing. Without it the hand-off navigates directly,
+   * so a guarded surface must pass it rather than rely on `askAgent` alone.
+   */
+  gate?: (proceed: () => void) => void
   /**
    * Where the hand-off sits in the block variant. `beside` (default) puts it in
    * the banner's right-hand column, which is right for a banner that spans a
@@ -247,6 +265,7 @@ export default function ErrorNotice({
   // the icon-only ✕ sees the same promise a screen reader announces.
   const dismissName = dismissLabel ?? i18nT('components.errorNotice.dismiss')
 
+
   if (variant === 'inline') {
     return (
       <span
@@ -264,6 +283,7 @@ export default function ErrorNotice({
             message={message}
             onHandoff={onHandoff}
             label={askAgentLabel}
+            gate={gate}
           />
         )}
         {onDismiss && (
@@ -344,6 +364,7 @@ export default function ErrorNotice({
           message={message}
           onHandoff={onHandoff}
           label={askAgentLabel}
+          gate={gate}
           className="mt-[1px]"
         />
       )}
