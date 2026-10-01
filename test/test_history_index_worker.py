@@ -743,10 +743,24 @@ def test_a_contended_write_waits_instead_of_failing(tmp_path):
 
     hold_secs = 0.3
     outcome: dict[str, object] = {}
+    # Contention is proven by ORDER, not by a stopwatch. Windows' monotonic clock
+    # on Python 3.12 is GetTickCount64 (~15.6ms steps), so an elapsed-time check
+    # can read a real 0.3s hold as 0.296s; and elapsed time does not show that the
+    # writer met the lock at all, since the main thread's own sleep accounts for it.
+    at_lock = threading.Event()
+    released = threading.Event()
 
     def contended_write() -> None:
         # Its own thread, so it gets its own connection (they are thread-local).
         try:
+            mine = writer._ensure_open()
+            # sqlite reports a statement as it STARTS to run, i.e. before the
+            # busy handler begins waiting on the held lock.
+            mine.set_trace_callback(
+                lambda sql: (
+                    at_lock.set() if sql.lstrip().upper().startswith("BEGIN IMMEDIATE") else None
+                )
+            )
             writer.sync(
                 "contended",
                 mtime_ns=1,
@@ -755,7 +769,7 @@ def test_a_contended_write_waits_instead_of_failing(tmp_path):
                 ino=1,
                 texts=["a write that had to wait for the other writer"],
             )
-            outcome["ok"] = True
+            outcome["finished_after_release"] = released.is_set()
         except Exception as exc:  # pragma: no cover - would be a real regression
             outcome["error"] = repr(exc)
 
@@ -766,16 +780,19 @@ def test_a_contended_write_waits_instead_of_failing(tmp_path):
         conn.execute("SELECT 1").fetchone()
 
         thread = threading.Thread(target=contended_write, name="contended-writer")
-        started = time.monotonic()
         thread.start()
-        time.sleep(hold_secs)
+        assert at_lock.wait(30.0), "the writer never reached its BEGIN IMMEDIATE"
+        time.sleep(hold_secs)  # let the busy handler actually spin on the lock
+        assert thread.is_alive(), "the write did not wait for the held lock"
+        # Mark the release BEFORE it happens: a writer that finishes while this is
+        # still unset finished while the lock was held, i.e. it never waited.
+        released.set()
         conn.execute("COMMIT")
         thread.join(timeout=30.0)
-        elapsed = time.monotonic() - started
 
         assert not thread.is_alive(), "the contended write never finished"
         assert "error" not in outcome, f"contended write raised: {outcome.get('error')}"
-        assert elapsed >= hold_secs, "the write did not actually contend"
+        assert outcome.get("finished_after_release") is True, "the write did not actually contend"
         # The proof: the row is there, so the write waited out the lock rather
         # than being swallowed as a failure.
         assert "contended" in writer.indexed_keys()
