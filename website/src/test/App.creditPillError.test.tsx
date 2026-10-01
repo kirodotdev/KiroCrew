@@ -28,8 +28,12 @@ vi.mock('../hooks/useAgents', () => ({ useAgents: vi.fn(() => ({ agents: [{ name
 vi.mock('../providers/context', () => ({ useProvider: () => ({ id: 'acp' }) }))
 vi.mock('../components/MarkdownRenderer', () => ({ default: ({ content }: { content: string }) => <span>{content}</span>, Lightbox: () => null }))
 
-const { sessionsUsageMock, isMobileMock } = vi.hoisted(() => ({
+const { sessionsUsageMock, kirocrewConfigMock, isMobileMock } = vi.hoisted(() => ({
   sessionsUsageMock: vi.fn(),
+  // Which harness the gateway runs. Per-test, because the whole point of the
+  // non-kiro cases below is that the SAME failed usage read renders differently
+  // depending on this answer.
+  kirocrewConfigMock: vi.fn(),
   isMobileMock: vi.fn(() => false),
 }))
 vi.mock('../hooks/useIsMobile', () => ({ useIsMobile: () => isMobileMock() }))
@@ -39,8 +43,7 @@ vi.mock('../api/client', () => ({
     notifications: vi.fn().mockResolvedValue({ notifications: [] }),
     status: vi.fn().mockResolvedValue({ uptime: '1h', sessions: 0, messages: 0, cron_jobs: 0, subagents: 0, lessons: 0 }),
     sessionsUsage: sessionsUsageMock,
-    // The kiro-cli harness: the no-reading dash below is a Kiro-backend surface.
-    kirocrewConfig: vi.fn().mockResolvedValue({ agent: { acp_backend: '' } }),
+    kirocrewConfig: kirocrewConfigMock,
     listApps: vi.fn().mockResolvedValue([]),
     system: vi.fn().mockResolvedValue({ mem_used_gb: 4.0, mem_total_gb: 16.0, cpu_pct: 25.0, disk_total_gb: 100.0, disk_free_gb: 60.0 }),
     chatSlotAgent: vi.fn().mockResolvedValue({}),
@@ -76,6 +79,10 @@ const connectedState = {
 describe('top-bar credit segment — failed vs loading', () => {
   beforeEach(() => {
     sessionsUsageMock.mockReset()
+    // Default: the kiro-cli harness, so the no-reading dash below is a
+    // Kiro-backend surface and every pre-existing case reads as it did before.
+    kirocrewConfigMock.mockReset()
+    kirocrewConfigMock.mockResolvedValue({ agent: { acp_backend: '' } })
     isMobileMock.mockReturnValue(false)
   })
 
@@ -150,6 +157,59 @@ describe('top-bar credit segment — failed vs loading', () => {
     expect(screen.queryByLabelText(i18nT('app.kiro_credit_usage_checking_2'))).toBeNull()
     expect(screen.queryByLabelText(i18nT('app.kiro_credit_usage_api_key'))).toBeNull()
     expect(screen.queryByLabelText(i18nT('app.kiro_credit_usage_unavailable'))).toBeNull()
+  })
+
+  it('renders no credit segment on a non-kiro harness when the usage read fails', async () => {
+    // The defect: `/api/sessions/usage` is refused with 503
+    // `kiro_prerequisite_required` whenever the kiro-cli readiness latch is not
+    // verified-ready -- which is the STANDING state of an install that runs a
+    // different harness and never signs kiro-cli in. The pill's hide rule only
+    // covered `none`, so that 503 resurrected a segment the harness had already
+    // ruled out and the modal behind it said "Could not read your balance" about
+    // a balance this harness does not have. Whether the surface exists is the
+    // harness's verdict; the reading only decides what it shows.
+    kirocrewConfigMock.mockResolvedValue({ agent: { acp_backend: 'kas' } })
+    sessionsUsageMock.mockRejectedValue(Object.assign(new Error('Service Unavailable'), { status: 503 }))
+    renderWithProviders(<App />, { route: '/chat', preloadedState: connectedState })
+
+    // Wait for a capsule that renders, so "absent" is a settled fact rather
+    // than a read taken before the config query resolved.
+    await waitFor(() => expect(document.querySelector('.tb-capsule')).toBeTruthy())
+    await waitFor(() => expect(screen.queryByLabelText(i18nT('app.kiro_credit_usage_unavailable'))).toBeNull())
+    expect(screen.queryByLabelText(i18nT('app.kiro_credit_usage_checking_2'))).toBeNull()
+    expect(screen.queryByLabelText(i18nT('app.kiro_credit_usage_no_reading'))).toBeNull()
+  })
+
+  it('closes an already-open account modal when a failed read is ruled out by the harness', async () => {
+    // Opened while the cache was warming, then the read fails on a non-kiro
+    // harness. The segment goes away, so the modal over it must go too -- an
+    // overlay left behind a pill that no longer exists is the dead-end this
+    // hide rule exists to prevent, and its Refresh could never succeed here.
+    kirocrewConfigMock.mockResolvedValue({ agent: { acp_backend: 'kas' } })
+    sessionsUsageMock.mockResolvedValueOnce({ usage: {} })
+    sessionsUsageMock.mockRejectedValue(Object.assign(new Error('Service Unavailable'), { status: 503 }))
+    const { queryClient } = renderWithProviders(<App />, { route: '/chat', preloadedState: connectedState })
+
+    fireEvent.click(await screen.findByLabelText(i18nT('app.kiro_credit_usage_checking_2')))
+    await screen.findByRole('dialog', { name: i18nT('components.kiroAccountModal.kiro_account') })
+
+    await queryClient.invalidateQueries({ queryKey: ['kiro-usage'] })
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: i18nT('components.kiroAccountModal.kiro_account') })).toBeNull(),
+    )
+    expect(screen.queryByText(i18nT('components.kiroAccountModal.credit_usage_unavailable'))).toBeNull()
+  })
+
+  it('keeps the failed dash on the kiro-cli harness, where the balance is real', async () => {
+    // The counterpart of the two cases above: on kiro-cli a failed read is a
+    // failure to report, not a surface that should not exist -- so the segment
+    // stays and the modal carries the retry. Without this the hide rule could
+    // be widened until it swallowed the state it was written to show.
+    sessionsUsageMock.mockRejectedValue(Object.assign(new Error('Service Unavailable'), { status: 503 }))
+    renderWithProviders(<App />, { route: '/chat', preloadedState: connectedState })
+
+    fireEvent.click(await screen.findByLabelText(i18nT('app.kiro_credit_usage_unavailable')))
+    await screen.findByText(i18nT('components.kiroAccountModal.credit_usage_unavailable'))
   })
 
   it('keeps the account modal open with Refresh when usage resolves to no reading', async () => {
