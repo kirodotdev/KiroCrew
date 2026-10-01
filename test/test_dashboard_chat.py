@@ -9267,11 +9267,14 @@ class TestRuntimeWiring:
         [
             ("manual_resume", True, True),
             ("conn_recover", True, True),
+            ("busy_recover", True, True),
             # A cold start that did NOT natively resume carries the Kiro Crew
             # replay, which already holds the interrupted turn.
             ("manual_resume", False, False),
             # Continue on a turn that ended normally: kiro-cli logged it.
             ("manual_continue", True, False),
+            # A cron delivery opened the interrupted turn as an ``inject``.
+            ("cron_opener", True, True),
         ],
     )
     @pytest.mark.asyncio
@@ -9287,6 +9290,7 @@ class TestRuntimeWiring:
 
         from kiro_crew.context import ContextBuilder
         from kiro_crew.dashboard.chat_utils import (
+            _BUSY_RECOVER_MSG,
             _CONN_RECOVER_MSG,
             _MANUAL_CONTINUE_MSG,
             _MANUAL_RESUME_MSG,
@@ -9298,7 +9302,9 @@ class TestRuntimeWiring:
         resume_text = {
             "manual_resume": _MANUAL_RESUME_MSG,
             "conn_recover": _CONN_RECOVER_MSG,
+            "busy_recover": _BUSY_RECOVER_MSG,
             "manual_continue": _MANUAL_CONTINUE_MSG,
+            "cron_opener": _MANUAL_RESUME_MSG,
         }[message_kind]
         built: list[str] = []
 
@@ -9321,11 +9327,21 @@ class TestRuntimeWiring:
         slot = state.get_or_create_slot("resume-native")
         slot.append("user", "Earlier request, answered long ago")
         slot.append("assistant", "Earlier answer")
-        slot.append("user", "Summarise the incident timeline for TICKET-42")
+        if message_kind == "cron_opener":
+            slot.append(
+                "inject",
+                "Summarise the incident timeline for TICKET-42",
+                meta={"injectKind": "cron"},
+            )
+        else:
+            slot.append("user", "Summarise the incident timeline for TICKET-42")
         slot.append("assistant", "Pulling the timeline now; first event at 09:14")
         resume_row = slot.append("inject", resume_text, meta={"injectKind": "recovery"})
 
-        async def stream(_message):
+        streamed: list[str] = []
+
+        async def stream(stream_message):
+            streamed.append(stream_message)
             yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="ok")
             yield LLMEvent(kind=EVENT_COMPLETE, stop_reason="end_turn")
 
@@ -9346,9 +9362,12 @@ class TestRuntimeWiring:
             _synthetic_recovery_turn=True,
         )
 
-        assert len(built) == 1
-        sent = built[0]
-        assert sent.endswith(resume_text)
+        assert len(built) == 1 and len(streamed) == 1
+        sent = streamed[0]
+        # Minted after the egress scrub, as a prefix of the final prompt: the
+        # builder's own input stays the bare recovery text.
+        assert built[0] == resume_text
+        assert sent.startswith("[INTERRUPTED TURN") is expect_restore
         assert ("Summarise the incident timeline for TICKET-42" in sent) is expect_restore
         assert ("first event at 09:14" in sent) is expect_restore
         # Only the interrupted turn is restored, never the one before it.

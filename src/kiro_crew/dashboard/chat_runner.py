@@ -213,6 +213,7 @@ from kiro_crew.dashboard.state import (
     SUBAGENT_SYNTHESIS_PREFIX,
     SUBAGENT_SYNTHESIS_PROMPT,
     TOOL_STALL_RECOVERY_PREFIX,
+    TURN_OPENING_INJECT_KINDS,
     CrewLogPrevious,
     DashboardState,
     _ChatSlot,
@@ -414,6 +415,7 @@ logger = logging.getLogger(__name__)
 # historical names so existing imports keep working.
 from kiro_crew.dashboard.chat_utils import (  # noqa: E402
     _ACTIVITY_NO_REPLY_CONTINUE_MSG,
+    _BUSY_RECOVER_MSG,
     _COMPACTION_CONTINUE_MSG,
     _CONN_RECOVER_MSG,
     _EMPTY_AUTO_CONTINUE_MSG,
@@ -9641,8 +9643,11 @@ def _local_turn_generation_for(slot: _ChatSlot) -> int:
 _LOCAL_TURN_PROMPT_META_KEYS = ("mid", "files", "dirs", "injectKind")
 #: Roles whose row opens a turn by itself. ``inject`` opens one only with a
 #: dispatching ``injectKind`` (``_is_turn_inject``). Mirrors
-#: ``_LOCAL_TURN_PROMPT_ROLES`` in ``chat_persistence.py`` minus ``inject``.
-_LOCAL_TURN_OPENER_ROLES = frozenset({"user", "nudge"})
+#: ``_LOCAL_TURN_PROMPT_ROLES`` in ``chat_persistence.py`` minus ``inject``. A
+#: drained sub-agent completion opens its own turn too; without its copy a crash
+#: before the flush loses the row, and the interrupted-turn restore would walk
+#: past it to the previous, already-answered request.
+_LOCAL_TURN_OPENER_ROLES = frozenset({"user", "nudge", "subagent"})
 
 
 def _local_turn_opening_row(slot: _ChatSlot) -> "dict[str, Any] | None":
@@ -12516,6 +12521,9 @@ async def _run_chat(
         # the debt is settled only by the turn that delivers it. A slash command
         # or a warm turn never carries it and must not clear it.
         _todo_recovery_carried = False
+        # The interrupted turn a natively resumed session lost (see the restore
+        # below); minted after the egress scrub.
+        _interrupted_turn_preamble = ""
         _provider_has_history = resumed
         if not _provider_has_history:
             # An ACP provider exposes its native client; ``resumed`` is True only
@@ -12612,21 +12620,25 @@ async def _run_chat(
                 is_new
                 and _provider_has_history
                 and _synthetic_recovery_turn
-                and message in (_MANUAL_RESUME_MSG, _CONN_RECOVER_MSG)
+                and message in (_MANUAL_RESUME_MSG, _CONN_RECOVER_MSG, _BUSY_RECOVER_MSG)
             ):
                 from kiro_crew.context import (  # circular: context -> chat
                     build_interrupted_turn_preamble,
                 )
 
                 preamble = build_interrupted_turn_preamble(
-                    list(slot.messages), current=_current_replay_message
+                    list(slot.messages),
+                    current=_current_replay_message,
+                    opener_inject_kinds=TURN_OPENING_INJECT_KINDS,
                 )
                 if preamble:
                     logger.info(
                         "Restoring the interrupted turn for natively resumed session %s",
                         session_key,
                     )
-                    message = preamble + "\n\n" + message
+                    # Minted after the egress scrub below, which would otherwise
+                    # neutralize its own (registered) frame.
+                    _interrupted_turn_preamble = preamble
             logger.info("🔍 Chat slot=%s is_new=%s mode=%r", slot.key, is_new, slot.mode)
             # Drain any pending subagent delivery failures so the LLM knows
             # about timed-out results and can read them from disk.
@@ -12920,6 +12932,9 @@ async def _run_chat(
                     _neutralize_structural_markers,
                     full_message,
                 )
+
+        if _interrupted_turn_preamble:
+            full_message = f"{_interrupted_turn_preamble}\n\n{full_message}"
 
         # Checklist resync. The pill's snapshot outlives the native conversation
         # that produced it (agent switch, failed session/load, poisoned discard,

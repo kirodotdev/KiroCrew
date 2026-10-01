@@ -15,6 +15,7 @@ import time
 import unicodedata
 from collections import defaultdict, deque
 from collections.abc import Awaitable, Callable, Iterator
+from collections.abc import Set as AbstractSet
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
@@ -667,6 +668,13 @@ _STRUCTURAL_MARKER_RES: tuple[re.Pattern[str], ...] = (
     # frame. The em dash the block uses folds to ``-`` before matching.
     re.compile(r"\[\s*TASK\s*CHECKLIST\s*[-]{1,2}", re.IGNORECASE),
     re.compile(r"\[\s*END\s*TASK\s*CHECKLIST\s*\]", re.IGNORECASE),
+    # The interrupted-turn restore (``build_interrupted_turn_preamble``). Its frame
+    # names the request inside it as the one the model is to carry on with, so a
+    # copy planted in a fetched page or a channel message would hand attacker
+    # text that authority. Minted AFTER the egress scrub by the runner, like the
+    # checklist, with its own payload scrubbed first.
+    re.compile(r"\[\s*INTERRUPTED\s*TURN\s*[-]{1,2}", re.IGNORECASE),
+    re.compile(r"\[\s*END\s*INTERRUPTED\s*TURN\s*\]", re.IGNORECASE),
 )
 _STRUCTURAL_MARKER_NEUTRALIZED = "[marker-removed]"
 
@@ -2752,8 +2760,11 @@ def build_cancelled_turn_preamble(
 
 
 # Roles that OPEN a turn in a dashboard transcript: the row an interrupted turn
-# was answering. Every other row between it and the resume (tool cards, error and
-# notice rows, the resume's own ``inject``) is walked past.
+# was answering. An ``inject`` row opens one only when its ``meta.injectKind`` is
+# in the caller's *opener_inject_kinds* (a cron delivery, an app message, a
+# synthesis); every other row between the opener and the resume -- tool cards,
+# error and notice rows, a recovery inject such as an earlier Resume press -- is
+# walked past.
 _TURN_OPENER_ROLES = frozenset({"user", "nudge", "subagent"})
 
 
@@ -2761,6 +2772,7 @@ def build_interrupted_turn_preamble(
     messages: list[dict],
     current: dict | None = None,
     *,
+    opener_inject_kinds: AbstractSet[str] = frozenset(),
     user_cap: int = 8000,
     assist_cap: int = 4000,
 ) -> str:
@@ -2779,7 +2791,9 @@ def build_interrupted_turn_preamble(
     turn-in-flight marker restores its opener after a restart). Walk back from
     *current* -- the resume row this turn is running, excluded -- to the row that
     opened the interrupted turn, collecting the assistant text it had streamed.
-    Returns "" when no opener is found.
+    Returns "" when no opener is found. The caller mints the result AFTER the
+    prompt's egress scrub (its markers are in ``_STRUCTURAL_MARKER_RES``); the
+    payload is scrubbed here instead.
     """
     end = len(messages)
     if current is not None:
@@ -2789,7 +2803,13 @@ def build_interrupted_turn_preamble(
                 break
     opener_idx = -1
     for i in range(end - 1, -1, -1):
-        if messages[i].get("role") in _TURN_OPENER_ROLES:
+        role = messages[i].get("role")
+        meta = messages[i].get("meta")
+        if role in _TURN_OPENER_ROLES or (
+            role == "inject"
+            and isinstance(meta, dict)
+            and meta.get("injectKind") in opener_inject_kinds
+        ):
             opener_idx = i
             break
     if opener_idx < 0:
@@ -2807,6 +2827,10 @@ def build_interrupted_turn_preamble(
         user_text = user_text[:user_cap] + "… [truncated]"
     if len(assistant_text) > assist_cap:
         assistant_text = assistant_text[:assist_cap] + "… [truncated]"
+    # The frame is minted outside the prompt's egress scrub, so its payload is
+    # scrubbed here: a transcript row must not carry a structural marker past it.
+    user_text = _neutralize_structural_markers(user_text)
+    assistant_text = _neutralize_structural_markers(assistant_text)
     lines = [
         "[INTERRUPTED TURN — context restore]",
         "The turn below was cut off when the agent process serving this "
