@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from kiro_crew.acp.client import AcpError
+from kiro_crew.acp.client import AcpError, AcpProcessDied
 from kiro_crew.cron import CronJob, CronSchedule
 
 
@@ -128,6 +128,179 @@ class TestCronAcpRetry:
         assert call_count == 2  # First call fails, retry succeeds
         assert result == "recovered"
         gw.sessions.reset.assert_awaited()
+
+    def test_acp_pipe_broken_before_dispatch_triggers_retry(
+        self, gw_and_cb: tuple[Any, Any, Any]
+    ) -> None:
+        """AcpProcessDied worded 'pipe broken' before dispatch is retried by type."""
+        gw, get_cb, capture_cron = gw_and_cb
+        live = gw.sessions.get_or_create.return_value
+        gw.sessions.get_or_create = AsyncMock(
+            side_effect=[AcpProcessDied("ACP process pipe broken: Connection lost"), live]
+        )
+
+        async def mock_stream(*args: Any, **kwargs: Any) -> str:
+            return "recovered from pipe"
+
+        job = CronJob(
+            id="j-pipe",
+            name="test-pipe",
+            message="msg",
+            schedule=CronSchedule(kind="every", every_secs=60),
+        )
+
+        with (
+            patch("kiro_crew.slack.gateway.stream_and_collect", side_effect=mock_stream),
+            patch("kiro_crew.slack.gateway.redact_exfiltration_urls", return_value=("", False)),
+            patch("kiro_crew.slack.gateway.redact_credentials", return_value=("", False)),
+            patch("kiro_crew.slack.gateway.CronService.create", new=AsyncMock(side_effect=capture_cron)),
+        ):
+
+            async def _init_and_run() -> str:
+                await gw._init_cron()
+                cb = get_cb()
+                assert cb is not None
+                return await cb(job)
+
+            result = asyncio.run(_init_and_run())
+
+        assert gw.sessions.get_or_create.await_count == 2
+        assert result == "recovered from pipe"
+        gw.sessions.reset.assert_awaited()
+
+    def test_acp_pipe_broken_after_dispatch_is_not_replayed(
+        self, gw_and_cb: tuple[Any, Any, Any]
+    ) -> None:
+        """A pipe-broken death mid-turn is not replayed: tools may already have run."""
+        gw, get_cb, capture_cron = gw_and_cb
+        gw.dashboard_state = MagicMock()
+        call_count = 0
+
+        async def mock_stream(*args: Any, **kwargs: Any) -> str:
+            nonlocal call_count
+            call_count += 1
+            raise AcpProcessDied("ACP process pipe broken: Connection lost")
+
+        job = CronJob(
+            id="j-pipe-mid",
+            name="test-pipe-mid",
+            message="msg",
+            schedule=CronSchedule(kind="every", every_secs=60),
+        )
+
+        with (
+            patch("kiro_crew.slack.gateway.stream_and_collect", side_effect=mock_stream),
+            patch("kiro_crew.slack.gateway.redact_exfiltration_urls", return_value=("", False)),
+            patch("kiro_crew.slack.gateway.redact_credentials", return_value=("", False)),
+            patch("kiro_crew.slack.gateway.CronService.create", new=AsyncMock(side_effect=capture_cron)),
+        ):
+
+            async def _init_and_run() -> str:
+                await gw._init_cron()
+                cb = get_cb()
+                assert cb is not None
+                return await cb(job)
+
+            with pytest.raises(AcpProcessDied):
+                asyncio.run(_init_and_run())
+
+        assert call_count == 1  # no replay of the turn
+
+    def test_failed_acp_retry_does_not_reach_the_transient_ladder(
+        self, gw_and_cb: tuple[Any, Any, Any]
+    ) -> None:
+        """A transient pre-dispatch death whose retry dispatched and died is sent once."""
+        gw, get_cb, capture_cron = gw_and_cb
+        gw.dashboard_state = MagicMock()
+        live = gw.sessions.get_or_create.return_value
+        gw.sessions.get_or_create = AsyncMock(
+            side_effect=[
+                AcpProcessDied("ACP process pipe broken: [Errno 104] Connection reset by peer"),
+                live,
+                live,
+            ]
+        )
+        dispatches = 0
+
+        async def mock_stream(*args: Any, **kwargs: Any) -> str:
+            nonlocal dispatches
+            dispatches += 1
+            raise AcpProcessDied("ACP process pipe broken: Connection lost")
+
+        job = CronJob(
+            id="j-once",
+            name="test-once",
+            message="msg",
+            schedule=CronSchedule(kind="every", every_secs=60),
+        )
+
+        with (
+            patch("kiro_crew.slack.gateway.stream_and_collect", side_effect=mock_stream),
+            patch("kiro_crew.slack.gateway.redact_exfiltration_urls", return_value=("", False)),
+            patch("kiro_crew.slack.gateway.redact_credentials", return_value=("", False)),
+            patch("kiro_crew.slack.gateway.asyncio.sleep", new=AsyncMock()),
+            patch("kiro_crew.slack.gateway.CronService.create", new=AsyncMock(side_effect=capture_cron)),
+        ):
+
+            async def _init_and_run() -> str:
+                await gw._init_cron()
+                cb = get_cb()
+                assert cb is not None
+                return await cb(job)
+
+            with pytest.raises(AcpProcessDied):
+                asyncio.run(_init_and_run())
+
+        assert dispatches == 1
+
+    def test_failed_reset_still_gets_the_transient_retry(
+        self, gw_and_cb: tuple[Any, Any, Any]
+    ) -> None:
+        """A reset that raises runs no attempt, so the transient ladder still runs one."""
+        gw, get_cb, capture_cron = gw_and_cb
+        live = gw.sessions.get_or_create.return_value
+        gw.sessions.get_or_create = AsyncMock(
+            side_effect=[
+                AcpProcessDied("ACP process pipe broken: [Errno 104] Connection reset by peer"),
+                live,
+            ]
+        )
+        # Only the ACP arm's reset fails; later cleanup resets succeed.
+        gw.sessions.reset = AsyncMock(
+            side_effect=[RuntimeError("reset failed"), None, None, None]
+        )
+        dispatches = 0
+
+        async def mock_stream(*args: Any, **kwargs: Any) -> str:
+            nonlocal dispatches
+            dispatches += 1
+            return "recovered by the ladder"
+
+        job = CronJob(
+            id="j-reset",
+            name="test-reset",
+            message="msg",
+            schedule=CronSchedule(kind="every", every_secs=60),
+        )
+
+        with (
+            patch("kiro_crew.slack.gateway.stream_and_collect", side_effect=mock_stream),
+            patch("kiro_crew.slack.gateway.redact_exfiltration_urls", return_value=("", False)),
+            patch("kiro_crew.slack.gateway.redact_credentials", return_value=("", False)),
+            patch("kiro_crew.slack.gateway.asyncio.sleep", new=AsyncMock()),
+            patch("kiro_crew.slack.gateway.CronService.create", new=AsyncMock(side_effect=capture_cron)),
+        ):
+
+            async def _init_and_run() -> str:
+                await gw._init_cron()
+                cb = get_cb()
+                assert cb is not None
+                return await cb(job)
+
+            result = asyncio.run(_init_and_run())
+
+        assert dispatches == 1
+        assert result == "recovered by the ladder"
 
     def test_acp_retry_only_once(self, gw_and_cb: tuple[Any, Any, Any]) -> None:
         """Second AcpError after retry raises instead of infinite loop."""
