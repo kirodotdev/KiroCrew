@@ -2,6 +2,7 @@
  * Dev Fleet — worktree management page ported to KiroCrew SPA.
  * Manages git worktrees, pod instances, syncing, pruning, and rebasing.
  */
+import { relocateRequestUrl } from '../lib/dashboardRuntime'
 import { useState, useRef, useCallback, useEffect, type CSSProperties, type ReactNode, type RefObject } from 'react'
 import { createPortal } from 'react-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
@@ -204,11 +205,11 @@ async function awaitGatewayBackGlobal(capturedId: string | null): Promise<'reloa
     if (ac.signal.aborted) return 'aborted'
     try {
       if (capturedId == null) {
-        await fetch('/', { signal: AbortSignal.timeout(3000) })
+        await fetch(relocateRequestUrl('/'), { signal: AbortSignal.timeout(3000) })
         window.location.reload()
         return 'reloaded'
       }
-      const res = await fetch('/apps/dev-fleet/api/health', { credentials: 'same-origin', signal: AbortSignal.timeout(3000) })
+      const res = await fetch(relocateRequestUrl('/apps/dev-fleet/api/health'), { credentials: 'same-origin', signal: AbortSignal.timeout(3000) })
       if (res.status === 404) { window.location.reload(); return 'reloaded' }
       if (res.ok) {
         const j = (await res.json().catch(() => null)) as { start_id?: string | null } | null

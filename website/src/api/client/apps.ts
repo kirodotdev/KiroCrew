@@ -5,6 +5,7 @@
  * actions.
  */
 
+import { relocateRequestUrl } from '../../lib/dashboardRuntime'
 import { normalizeInstalledApps, normalizeInstalledApp } from '../../components/appstore/types'
 import { i18nT } from '../../i18n/t'
 import { SESSION_CONTROL_STATUS_PATH_RE } from '../../lib/sessionControlStatusPath'
@@ -75,9 +76,9 @@ export function createAppsEndpoints({ get, post, put, del, j, sessionKeyHeader: 
     // `useQuery`; `/api/apps` has four (the Apps page, the left rail, the command
     // palette, the migration check), and normalizing per consumer is how the
     // fourth one gets forgotten. This is the boundary all four share.
-    listApps: () => fetch('/api/apps').then(j).then(normalizeInstalledApps),
-    getApp: (name: string) => fetch('/api/apps/' + encodeURIComponent(name)).then(j).then(normalizeInstalledApp),
-    getAppManifest: (name: string) => fetch('/api/apps/' + encodeURIComponent(name) + '/manifest').then(j),
+    listApps: () => fetch(relocateRequestUrl('/api/apps')).then(j).then(normalizeInstalledApps),
+    getApp: (name: string) => fetch(relocateRequestUrl('/api/apps/' + encodeURIComponent(name))).then(j).then(normalizeInstalledApp),
+    getAppManifest: (name: string) => fetch(relocateRequestUrl('/api/apps/' + encodeURIComponent(name) + '/manifest')).then(j),
     installApp: (source: string) => post('/api/apps/install', { source }).then(j),
     enableApp: (name: string, sessionApprovalConsent = false) => post('/api/apps/' + encodeURIComponent(name) + '/enable', { sessionApprovalConsent }).then(j),
     disableApp: (name: string) => post('/api/apps/' + encodeURIComponent(name) + '/disable').then(j),
@@ -89,7 +90,7 @@ export function createAppsEndpoints({ get, post, put, del, j, sessionKeyHeader: 
         ...(keepSpecific?.length ? { keep_specific: keepSpecific } : {}),
       }).then(j),
     uninstallPreview: (name: string) =>
-      fetch('/api/apps/' + encodeURIComponent(name) + '/uninstall/preview').then(j) as Promise<{
+      fetch(relocateRequestUrl('/api/apps/' + encodeURIComponent(name) + '/uninstall/preview')).then(j) as Promise<{
         app: string
         resources: { agents: string[]; skills: string[]; crons: string[] }
         dependencies: {
@@ -104,8 +105,8 @@ export function createAppsEndpoints({ get, post, put, del, j, sessionKeyHeader: 
     // narrows it to its own local RegistryApp shape at the call site. Typing it as
     // unknown[] here would break those structural assignments across files.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    listRegistry: () => fetch('/api/apps/registry').then(j) as Promise<{ apps: any[]; serverPlatform: { os: string; arch: string }; categoryOrder?: string[]; editorialSections?: unknown[] }>,
-    listRegistries: () => fetch('/api/apps/registries').then(j) as Promise<{ registries: ExternalRegistryRow[]; pinned?: ExternalRegistryRow[] }>,
+    listRegistry: () => fetch(relocateRequestUrl('/api/apps/registry')).then(j) as Promise<{ apps: any[]; serverPlatform: { os: string; arch: string }; categoryOrder?: string[]; editorialSections?: unknown[] }>,
+    listRegistries: () => fetch(relocateRequestUrl('/api/apps/registries')).then(j) as Promise<{ registries: ExternalRegistryRow[]; pinned?: ExternalRegistryRow[] }>,
     updateRegistries: (registries: { name: string; repo: string; branch: string; trust?: string }[]) => put('/api/apps/registries', { registries }).then(j) as Promise<{ ok: boolean; registries: ExternalRegistryRow[]; newlyTrustedHosts: string[] }>,
     // Drops the server's on-disk caches of the published documents (catalog /
     // category order / editorial) so the NEXT listRegistry() is rebuilt from
@@ -126,7 +127,7 @@ export function createAppsEndpoints({ get, post, put, del, j, sessionKeyHeader: 
       onLog: (line: string) => void,
       signal?: AbortSignal,
     ): Promise<InstallStreamResult> => {
-      const res = await fetch('/api/apps/registry/install-stream', {
+      const res = await fetch(relocateRequestUrl('/api/apps/registry/install-stream'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ..._sk },
         body: JSON.stringify({ name }),

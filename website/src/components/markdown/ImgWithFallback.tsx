@@ -16,6 +16,7 @@ import {
   useApprovalFocus,
 } from './remoteMedia'
 import { dispatchLightbox } from './Lightbox'
+import { relocateRequestUrl } from '../../lib/dashboardRuntime'
 
 /** Markdown image with a React-rendered fallback chip when the URL is broken
  *  (see `BrokenImage`). The fallback is React-rendered rather than a hand-built
@@ -208,6 +209,8 @@ export function ImgWithFallback({
   } else {
     url = src
   }
+  // Media checks use the logical URL; only byte requests use the pane URL.
+  const loadUrl = relocateRequestUrl(url)
   if (isGatewayRouteMediaUrl(url)) return <GatewayMediaRefused />
   if (isRemoteMediaUrl(url) && !remoteApproved) {
     return (
@@ -226,7 +229,7 @@ export function ImgWithFallback({
     )
   }
   if (errored) {
-    return <BrokenImage path={diskPath} alt={alt} probeUrl={isLocal ? url : undefined} />
+    return <BrokenImage path={diskPath} alt={alt} probeUrl={isLocal ? loadUrl : undefined} />
   }
   // SVGs authored with only a `viewBox` (no width/height) carry no intrinsic
   // size. Under the max-w/max-h-only CSS below they collapse to ~0px and look
@@ -313,7 +316,7 @@ export function ImgWithFallback({
           preview is presentational here. */}
       {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions */}
       <img
-        src={url} alt={alt || ''} loading="lazy"
+        src={loadUrl} alt={alt || ''} loading="lazy"
         // A remote image the user approved is fetched with NO referrer. The
         // approval binds the request this renderer initiates, but a server can
         // still 302 it onward, and a redirect target that receives the

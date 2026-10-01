@@ -30,7 +30,7 @@ function inst(id: string, state?: string): InstanceView {
 }
 
 const warmOf = (...ids: string[]): Record<string, WarmConn> =>
-  Object.fromEntries(ids.map(id => [id, { port: 1, token: 't' }]))
+  Object.fromEntries(ids.map(id => [id, { kind: 'direct-loopback', port: 1, token: 't' }]))
 
 describe('selectAutoConnectTargets', () => {
   it('targets every crew when none is live', () => {

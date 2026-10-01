@@ -30,6 +30,7 @@
 
 // The rules themselves live in a stylesheet (see that file's header for why);
 // imported as text because this guard must be injected LAST into <head>.
+import { relocateRequestUrl } from '../../lib/dashboardRuntime'
 import transparentCss from './windowTransparent.css?raw'
 
 /** Marks each stylesheet link we inject so a second call is a no-op. */
@@ -92,7 +93,7 @@ export function extractStylesheetHrefs(html: string): string[] {
  */
 async function findDashboardStylesheets(): Promise<string[]> {
   try {
-    const res = await fetch('/', { credentials: 'same-origin' })
+    const res = await fetch(relocateRequestUrl('/'), { credentials: 'same-origin' })
     if (!res.ok) return []
     return extractStylesheetHrefs(await res.text())
   } catch {

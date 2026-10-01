@@ -256,9 +256,142 @@ reports the first broken link, which is usually the whole answer.
 | `tunnel_down` | The forward died. Reconnect. |
 | An SSH auth error on connect | Re-add your key to `ssh-agent`. Kiro Crew never prompts for a password, so a missing credential fails immediately — and the tunnel heals itself once the key is back. |
 | A blank or black pane | The embedded dashboard never announced itself. Use **Retry** on the error panel. |
+| A pane fails to load over an HTTPS tunnel with "this Remote Crew is too old for same-origin panes" | Over a published HTTPS origin the pane rides the same-origin relay, which needs the remote to advertise the hub's pane-relay protocol. Update the remote crew's Kiro Crew, then reconnect — see [Panes over an HTTPS tunnel](#panes-over-an-https-tunnel). |
 | "local port N was taken while connecting" | Something grabbed the port first. Retry, or move `instances.tunnel_base_port` somewhere quieter. |
 | A machine that keeps dropping | The tunnel already retried on its own for about two minutes before giving up, and then ran a diagnosis. Check the remote gateway and the link itself. |
 | Every token mint fails on one machine, whose gateway is healthy | The remote's `kirocrew` on `PATH` probably points at an install that is not the one running. Reinstall it there. |
+
+## Panes over an HTTPS tunnel
+
+A remote pane is embedded as the remote dashboard on a hub-local loopback port
+(`http://<hub-host>:<forward-port>`). That works when you reach the hub on
+`localhost` — the desktop app, or an SSH-forwarded `http://localhost:<port>` —
+because your browser can reach the same loopback the hub does.
+
+When you reach the hub through a tunnel that publishes **one exact HTTPS host**
+(for example `https://crew.example.ts.net`), that direct URL cannot be used: it
+would be `http://<published-host>:<forward-port>`, which the browser blocks as
+mixed content and which points at a hub-local port your browser can never reach.
+So on a published HTTPS origin the hub embeds each pane through a **same-origin
+capability relay** instead — panes work over the tunnel with no extra host, no
+second port, and no mixed content. The switcher, the Remote Crew control plane,
+and the chat proxy work over the tunnel unchanged too.
+
+**How the relay works.** The hub serves each pane from a short-lived capability
+path on its own published origin (`/instance-pane/<capability>/…`) inside a
+sandboxed, **opaque-origin** iframe (the `sandbox` attribute omits
+`allow-same-origin`, so the remote bytes served on the hub's origin get no access
+to the hub DOM, cookies, storage, or session), and reverse-proxies that path —
+HTTP **and** WebSocket — to the remote's loopback gateway over the SSH/SSM
+forward the hub already holds. Because the pane is same-origin with the hub, the
+parent's own `frame-src 'self'` admits it and no wildcard host or CSP widening is
+needed.
+
+The pieces:
+
+1. **A relocatable dashboard runtime.** The SPA derives every request target from
+   `window.location` (root-relative `/api`, `/assets`, the router basename, and
+   `wss://…/api/ws`). `website/src/lib/dashboardRuntime.ts` reads a runtime base
+   from the capability path so the same unmodified bundle keeps its traffic under
+   the prefix. It resolves to the identity in direct mode, so localhost is
+   byte-for-byte unchanged.
+2. **The capability lease + relay route** (backend). Described below.
+3. **The opaque-frame consumer.** The switcher requests a pane with
+   `POST /api/instances/{id}/pane` (access `same-origin-relay`), renders the
+   returned relay endpoint in an iframe with `allow-same-origin` omitted, and
+   attributes remote→parent messages by an exact `contentWindow` + per-pane
+   `channel` check — the opaque frame's `event.origin` is `"null"`, so it is
+   never trusted. Downward delivery is the mirror image and is **document-bound,
+   not broadcast**: every downward message (host model, readiness ack, cursor
+   replies) rides an authenticated `MessageChannel` port the pane's own document
+   transferred to the parent, never a `postMessage(msg, '*')` a replacement
+   document could receive. A pre-module bootstrap the relay injects into the
+   pane's entry HTML installs a bounded, parent-backed Web Storage adapter before
+   any app module reads storage (an opaque origin's `localStorage` throws on
+   access), and the parent persists each crew's pane storage under its own origin,
+   namespaced per instance. The bootstrap GATES the entry module (served inerted)
+   and — through **one protocol for every document**, the first load and every
+   subsequent navigation or reload — derives its capability prefix from
+   `location.pathname`, hands the parent one port of a fresh `MessageChannel` with
+   the `documentPath` + a per-document nonce, and releases the module only once
+   the parent's authenticated reply over that port delivers the channel + storage
+   bank. The parent binds the request on the exact frame + issued `documentPath`
+   (never the opaque origin); a first-load `window.name` envelope is only a
+   synchronous storage accelerator (cleared on read), never the channel authority.
+   A handshake that never authenticates leaves the module gated (fail closed) so
+   the pane never boots with an empty channel and its storage reload loop — the
+   parent's readiness watchdog surfaces Retry instead.
+
+**Two things the relay requires of the remote.** The remote must advertise the
+hub's pane-relay protocol version (`pane_relay_protocol` on `/api/status`); a
+remote too old fails closed with an actionable **"this Remote Crew is too old for
+same-origin panes; update it, then reconnect"** message (code
+`remote_upgrade_required`) rather than a broken frame. And the forward must be up
+when the pane is issued — the issuer connects the tunnel and mints the capability
+in one call.
+
+Direct-loopback (desktop app, `http://localhost:<port>`) is unchanged and does
+NOT use the relay: it embeds the remote dashboard on the hub-local loopback port
+exactly as before, validated by exact loopback origin.
+
+### The capability relay (backend contract)
+
+`POST /api/instances/{id}/pane` is the owner-only issuer
+(`handlers_instances.api_instances_open_pane`). It returns **one complete
+discriminated endpoint**:
+
+- `direct-loopback` — the browser reaches the forward itself; the response
+  carries the connected `local_port` and the remote `token`, exactly what
+  `connect` hands back (confirmed through the shared token-confirm step).
+- `same-origin-relay` — the response carries only a `documentPath`
+  (`/instance-pane/<capability>/`), a `channel`, `protocol: 1`, and an expiry.
+  **No port and no remote token cross this boundary.**
+
+Before issuing a relay endpoint the hub reads the remote's advertised
+`pane_relay_protocol` from its `/api/status`. A remote that does not advertise
+this hub's protocol (too old, or unreachable) **fails closed** with
+`409 remote_upgrade_required` — the hub never falls back to HTTP mixed content, a
+raw loopback port, or a sandbox-less frame.
+
+The lease (`dashboard/instance_pane_relay.py`) is **memory-only** and stores only
+digests of the capability and channel. It is bound to the instance id, the live
+tunnel/forward **generation**, an expiry, and the channel digest, and is bounded
+per instance and globally. It is revoked on disconnect, rebuild, removal, manager
+close, tunnel replacement, and expiry — enforced fail-closed at serve time by a
+generation check, so a lease is dead the moment its forward moves whether or not
+any explicit cleanup runs.
+
+The self-authenticating route `* /instance-pane/{capability}/{tail}` sits before
+token auth and the SPA shell (its prefix is on `token_auth`'s bypass list; the
+handler is the gate). A missing, malformed, expired, unknown, or stale-generation
+capability all answer one **uniform 404** before the peer, the request body, or
+any error detail is touched. For a live lease the relay forwards HTTP and
+WebSocket **only through the current manager-owned peer**, using the manager's
+credential/session machinery — never an arbitrary host, port, or URL. It:
+
+- strips the browser's cookies, `Authorization`, `Origin`, `Referer`, `Host`, and
+  every forwarding header; the manager adds its own port-scoped session cookie,
+  so no browser identity crosses the tunnel;
+- strips the peer's `Set-Cookie` and `Clear-Site-Data` downstream;
+- preserves the method, exact path and query, range/conditional behavior, status,
+  content type, and streaming (including SSE), within bounded request/response/
+  idle/frame sizes;
+- rewrites a same-peer root redirect under the capability prefix and **fails
+  closed** on a cross-authority or protocol-relative redirect; the WebSocket
+  handshake likewise refuses to follow any peer redirect (a trace hook raises
+  before a second request is sent, since `ws_connect` has no `allow_redirects`);
+- relocates only the entry HTML's root markers (re-rooting the root-absolute
+  `src`/`href` entry markers under the capability prefix, with **no `<base>`
+  element** — a `<base>` would retarget in-document SVG `url(#id)` fragments and
+  `#hash` anchors; relative chunk/asset refs self-locate) — it never rewrites
+  built JavaScript;
+- stamps every response (except script types) with a `sandbox` CSP, `nosniff`,
+  `no-referrer`, and `Access-Control-Allow-Origin: null` (no credentials), so the
+  frame is opaque even if a relay URL is opened as a full tab;
+- keeps the capability out of both owned log sinks: the relay's SEL audit records
+  only a fixed reason (never the capability, channel, token, cookie, full path,
+  query, or body), and a route-aware redactor masks the capability in aiohttp's
+  access log at the server boundary.
 
 ## Next
 

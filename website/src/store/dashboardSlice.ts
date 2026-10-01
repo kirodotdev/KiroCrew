@@ -1,4 +1,5 @@
 import { safeSetItem, safeSetSessionItem } from '../utils/safeStorage'
+import { stampPaneChannel } from '../lib/embeddedParent'
 import { newerTs } from '../lib/slotReadRelay'
 import { jsonEqual } from '../utils/structuralEqual'
 import { createSlice, createAsyncThunk, createSelector, type PayloadAction } from '@reduxjs/toolkit'
@@ -270,7 +271,7 @@ const _relayUnreadToParent = (slotsJson: string): void => {
     const count = (JSON.parse(slotsJson) as string[]).length
     let target = '*'
     try { if (document.referrer) target = new URL(document.referrer).origin } catch { /* keep '*' */ }
-    window.parent.postMessage({ source: 'kirocrew', type: 'mc-unread-slots', count }, target)
+    window.parent.postMessage(stampPaneChannel({ source: 'kirocrew', type: 'mc-unread-slots', count }), target)
   } catch { /* never let the relay break a state update */ }
 }
 const safeSet = (key: string, value: string) => {

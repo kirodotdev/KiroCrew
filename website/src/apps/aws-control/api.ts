@@ -39,6 +39,7 @@ import type {
 } from './types'
 
 import { recordError, findReport, requestPath, type ErrorReport } from '../../utils/errorReport'
+import { relocateRequestUrl } from '../../lib/dashboardRuntime'
 
 const BASE = '/api/apps/aws-control'
 
@@ -83,7 +84,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const url = `${BASE}${path}`
   let res: Response
   try {
-    res = await fetch(url, { credentials: 'same-origin', ...init })
+    // Relocate so the root-absolute `BASE`-derived path stays under the pane's
+    // capability prefix in a relayed pane (identity in direct mode).
+    res = await fetch(relocateRequestUrl(url), { credentials: 'same-origin', ...init })
   } catch (e) {
     // A network-level failure never reaches the status branch below, so it is
     // journaled here — by the message the rejection carries, which is what

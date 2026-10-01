@@ -107,7 +107,7 @@ describe('InstanceTabBar', () => {
 
     await u.click(await openSwitcher(u, /Cloud One/i))
     await waitFor(() => expect(api.connectInstance).toHaveBeenCalledWith('cd-1'))
-    await waitFor(() => expect(store.getState().instances.warm['cd-1']).toEqual({ port: 7778, token: 'tok' }))
+    await waitFor(() => expect(store.getState().instances.warm['cd-1']).toEqual({ kind: 'direct-loopback', port: 7778, token: 'tok' }))
     expect(store.getState().instances.activeId).toBe('cd-1')
   })
 
@@ -123,7 +123,7 @@ describe('InstanceTabBar', () => {
     vi.mocked(api.connectInstance).mockResolvedValue({ instance_id: 'cd-1', state: 'connected', local_port: 7778, token: 'fresh' })
     const u = userEvent.setup()
     const store = createTestStore({
-      instances: { warm: { 'cd-1': { port: 7778, token: 'stale' } }, activeId: null, mru: ['cd-1'], unread: {} },
+      instances: { warm: { 'cd-1': { kind: 'direct-loopback', port: 7778, token: 'stale' } }, activeId: null, mru: ['cd-1'], unread: {} },
     })
     renderWithProviders(<InstanceTabBar />, { store })
 
@@ -131,7 +131,7 @@ describe('InstanceTabBar', () => {
     expect(store.getState().instances.activeId).toBe('cd-1')
     // Reconnect fires despite the lingering warm entry, and re-warms with a fresh token.
     await waitFor(() => expect(api.connectInstance).toHaveBeenCalledWith('cd-1'))
-    await waitFor(() => expect(store.getState().instances.warm['cd-1']).toEqual({ port: 7778, token: 'fresh' }))
+    await waitFor(() => expect(store.getState().instances.warm['cd-1']).toEqual({ kind: 'direct-loopback', port: 7778, token: 'fresh' }))
   })
 
   it('does NOT reconnect a warm + connected tab on click (no needless re-mint)', async () => {
@@ -140,7 +140,7 @@ describe('InstanceTabBar', () => {
     vi.mocked(api.listInstances).mockResolvedValue(listResp([conn()]))
     const u = userEvent.setup()
     const store = createTestStore({
-      instances: { warm: { 'cd-1': { port: 7778, token: 'tok' } }, activeId: null, mru: ['cd-1'], unread: {} },
+      instances: { warm: { 'cd-1': { kind: 'direct-loopback', port: 7778, token: 'tok' } }, activeId: null, mru: ['cd-1'], unread: {} },
     })
     renderWithProviders(<InstanceTabBar />, { store })
 
@@ -156,7 +156,7 @@ describe('InstanceTabBar', () => {
       conn({ status: { instance_id: 'cd-1', state: 'connected', local_port: 7778, remote_port: 7777, token_ttl_remaining: 72000 } }),
     ]))
     const store = createTestStore({
-      instances: { warm: { 'cd-1': { port: 7778, token: 't' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {} },
+      instances: { warm: { 'cd-1': { kind: 'direct-loopback', port: 7778, token: 't' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {} },
     })
     renderWithProviders(<InstanceTabBar />, { store })
     // ttl 20h (72000s), 72000s remaining -> refresh fires at 80% elapsed (20% left),
@@ -226,7 +226,7 @@ describe('InstanceTabBar', () => {
     vi.mocked(api.listInstances).mockResolvedValue(listResp([conn(), other]))
     const store = createTestStore({
       instances: {
-        warm: { 'cd-1': { port: 7778, token: 't' } },
+        warm: { 'cd-1': { kind: 'direct-loopback', port: 7778, token: 't' } },
         activeId: 'cd-1',
         mru: ['cd-1'],
         unread: { 'cd-1': 4, 'cd-2': 3 },
@@ -258,7 +258,7 @@ describe('InstanceTabBar', () => {
     // Nothing pinned by default: the crew lives behind the dropdown.
     vi.mocked(api.listInstances).mockResolvedValue(listResp([conn()]))
     const store = createTestStore({
-      instances: { warm: { 'cd-1': { port: 7778, token: 't' } }, activeId: null, mru: ['cd-1'], unread: {} },
+      instances: { warm: { 'cd-1': { kind: 'direct-loopback', port: 7778, token: 't' } }, activeId: null, mru: ['cd-1'], unread: {} },
     })
     const u = userEvent.setup()
     renderWithProviders(<InstanceTabBar />, { store })
@@ -289,7 +289,7 @@ describe('InstanceTabBar', () => {
     // to survive the click so a second crew can be pinned in the same visit.
     vi.mocked(api.listInstances).mockResolvedValue(listResp([conn()]))
     const store = createTestStore({
-      instances: { warm: { 'cd-1': { port: 7778, token: 't' } }, activeId: null, mru: ['cd-1'], unread: {} },
+      instances: { warm: { 'cd-1': { kind: 'direct-loopback', port: 7778, token: 't' } }, activeId: null, mru: ['cd-1'], unread: {} },
     })
     const u = userEvent.setup()
     renderWithProviders(<InstanceTabBar />, { store })
@@ -376,7 +376,7 @@ describe('InstanceTabBar', () => {
     setCrewPins(['cd-1'])
     vi.mocked(api.listInstances).mockResolvedValue(listResp([conn()]))
     const store = createTestStore({
-      instances: { warm: { 'cd-1': { port: 7778, token: 't' } }, activeId: null, mru: ['cd-1'], unread: {} },
+      instances: { warm: { 'cd-1': { kind: 'direct-loopback', port: 7778, token: 't' } }, activeId: null, mru: ['cd-1'], unread: {} },
     })
     const u = userEvent.setup()
     renderWithProviders(<InstanceTabBar />, { store })
@@ -394,7 +394,7 @@ describe('InstanceTabBar', () => {
     setCrewPins(['__local__', 'cd-1'])
     vi.mocked(api.listInstances).mockResolvedValue(listResp([conn()]))
     const store = createTestStore({
-      instances: { warm: { 'cd-1': { port: 7778, token: 't' } }, activeId: null, mru: ['cd-1'], unread: {} },
+      instances: { warm: { 'cd-1': { kind: 'direct-loopback', port: 7778, token: 't' } }, activeId: null, mru: ['cd-1'], unread: {} },
     })
     renderWithProviders(<InstanceTabBar />, { store })
 
@@ -410,7 +410,7 @@ describe('InstanceTabBar', () => {
     setStableOrder(true)
     vi.mocked(api.listInstances).mockResolvedValue(listResp([conn()]))
     const store = createTestStore({
-      instances: { warm: { 'cd-1': { port: 7778, token: 't' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {} },
+      instances: { warm: { 'cd-1': { kind: 'direct-loopback', port: 7778, token: 't' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {} },
     })
     const { container } = renderWithProviders(<InstanceTabBar />, { store })
 
@@ -431,7 +431,7 @@ describe('InstanceTabBar', () => {
     setStableOrder(true)
     vi.mocked(api.listInstances).mockResolvedValue(listResp([conn()]))
     const store = createTestStore({
-      instances: { warm: { 'cd-1': { port: 7778, token: 't' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {} },
+      instances: { warm: { 'cd-1': { kind: 'direct-loopback', port: 7778, token: 't' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {} },
     })
     const { container } = renderWithProviders(<InstanceTabBar />, { store })
 
@@ -446,7 +446,7 @@ describe('InstanceTabBar', () => {
   it('toggles stable order from the dropdown, persists it, and keeps the menu open', async () => {
     vi.mocked(api.listInstances).mockResolvedValue(listResp([conn()]))
     const store = createTestStore({
-      instances: { warm: { 'cd-1': { port: 7778, token: 't' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {} },
+      instances: { warm: { 'cd-1': { kind: 'direct-loopback', port: 7778, token: 't' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {} },
     })
     const u = userEvent.setup()
     renderWithProviders(<InstanceTabBar />, { store })

@@ -22,6 +22,7 @@
 
 import { sanitizeCssValue } from '../lib/cssSanitize'
 import { parseCssColor, relativeLuminance } from '../lib/iconContrast'
+import { relocateRequestUrl } from '../lib/dashboardRuntime'
 import type { CustomThemeData } from './useTheme'
 
 // Allowlist of allowed CSS custom property names for themes.
@@ -325,8 +326,17 @@ export function buildCustomThemeCss(slug: string, theme: CustomThemeData): strin
 
 // ── Level 1 (branded) asset paths ──
 
-/** The backend asset route for one installed theme pack. */
-export const assetBase = (slug: string) => `/api/theme/${encodeURIComponent(slug)}/assets`
+/** The backend asset route for one installed theme pack.
+ *
+ * Relocated through the dashboard runtime so the root-absolute `/api/theme/…`
+ * path stays under the capability prefix in a relayed pane (identity in direct
+ * mode). This is the single builder every theme asset reference flows through —
+ * the `overrides.css` fetch, the favicon/logo `<img src>`, `@font-face src:`,
+ * and the pack-relative `url()` rewrites below — so relocating here keeps all of
+ * them under the prefix at once, the same builder-level relocation `fileReadUrl`
+ * uses. */
+export const assetBase = (slug: string) =>
+  relocateRequestUrl(`/api/theme/${encodeURIComponent(slug)}/assets`)
 /** Reduce a theme slug to the chars that are safe in a CSS selector and an element id. */
 export const safeSlug = (slug: string) => slug.replace(/[^a-z0-9-]/g, '')
 const _safeFamily = (f: string) => f.replace(/[^A-Za-z0-9 _-]/g, '')

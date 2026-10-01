@@ -165,6 +165,7 @@ function identity(id?: SpecIdentity): Record<string, string> {
   return out
 }
 
+import { relocateRequestUrl } from '../../lib/dashboardRuntime'
 import { i18nT } from '../../i18n/t'
 
 // ── fetch helper ────────────────────────────────────────────────────────────
@@ -187,7 +188,7 @@ export interface ApiError extends Error {
 }
 
 async function req<T>(path: string, opts?: RequestInit): Promise<T> {
-  const r = await fetch(API + path, {
+  const r = await fetch(relocateRequestUrl(API + path), {
     credentials: 'same-origin',
     headers: { 'Content-Type': 'application/json' },
     ...opts,

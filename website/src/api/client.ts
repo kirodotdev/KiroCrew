@@ -26,6 +26,8 @@ import { edgeChallengeMessage, noteEdgeAuthChallenge } from './edgeAuthChallenge
 import { beginArtifactWrite, endArtifactWrite } from '../lib/artifactWrites'
 import { withDeadline } from '../lib/withDeadline'
 import { installApiTransport } from './apiTransport'
+import { relocateRequestUrl, currentDashboardRuntime } from '../lib/dashboardRuntime'
+import { stampPaneChannel } from '../lib/embeddedParent'
 import { isDeadlineError, queryClient, invalidateAcrossQueryClients } from './queryClient'
 import { recordError, attachReport, parseErrorCode, requestPath } from '../utils/errorReport'
 import { i18nT } from '../i18n/t'
@@ -341,7 +343,7 @@ function postAuthExpiredToHub(): boolean {
   if (_embeddedHandoffPosted) return true
   try {
     // nosemgrep: javascript.browser.security.wildcard-postmessage-configuration.wildcard-postmessage-configuration
-    window.parent.postMessage({ type: 'mc-auth-expired' }, '*')
+    window.parent.postMessage(stampPaneChannel({ type: 'mc-auth-expired' }), '*')
   } catch {
     return false // cross-origin parent unreachable — caller falls back to the banner
   }
@@ -430,8 +432,13 @@ const EXCHANGE_UNREACHABLE: PasteExchange = {
 
 async function exchangePastedToken(token: string): Promise<PasteExchange> {
   try {
-    const r = await fetch('/api/auth/me?token=' + encodeURIComponent(token), {
-      credentials: 'include',
+    const r = await fetch(relocateRequestUrl('/api/auth/me?token=' + encodeURIComponent(token)), {
+      // A relayed pane is an opaque origin: it holds no hub cookie to send, and
+      // the relay injects the peer's own credential upstream. Requesting
+      // `credentials: 'include'` there only forces a CORS preflight/response that
+      // demands `Access-Control-Allow-Credentials`, which the opaque relay
+      // deliberately does not set — so omit ambient credentials in relay mode.
+      credentials: currentDashboardRuntime().kind === 'relayed-pane' ? 'omit' : 'include',
     })
     if (!r.ok) return { reached: true, ok: false, tokenAccepted: false, ownerOk: false }
     try {
@@ -993,7 +1000,7 @@ function trackArtifactWrite(url: string, res: Promise<Response>): Promise<Respon
 }
 
 const get = (url: string, sessionKey?: string, signal?: AbortSignal) =>
-  fetch(url, { headers: { ...(sessionKey ? { 'X-Session-Key': sessionKey } : _sk) }, ...(signal ? { signal } : {}) })
+  fetch(relocateRequestUrl(url), { headers: { ...(sessionKey ? { 'X-Session-Key': sessionKey } : _sk) }, ...(signal ? { signal } : {}) })
 const post = (
   url: string,
   body?: object,
@@ -1001,7 +1008,7 @@ const post = (
   extra?: HeadersInit,
   redirect?: RequestRedirect,
 ) =>
-  trackArtifactWrite(url, fetch(url, {
+  trackArtifactWrite(url, fetch(relocateRequestUrl(url), {
     method: 'POST',
     // sessionKey overrides the shared `dashboard:ui` placeholder with the REAL
     // slot. The placeholder satisfies the server's `if sk:` gate but names no
@@ -1019,11 +1026,11 @@ const post = (
     body: body ? JSON.stringify(body) : undefined,
   }))
 const put = (url: string, body: object, sessionKey?: string, extra?: HeadersInit) =>
-  trackArtifactWrite(url, fetch(url, { method: 'PUT', headers: { 'Content-Type': 'application/json', ...(sessionKey ? { 'X-Session-Key': sessionKey } : _sk), ...extra }, body: JSON.stringify(body) }))
+  trackArtifactWrite(url, fetch(relocateRequestUrl(url), { method: 'PUT', headers: { 'Content-Type': 'application/json', ...(sessionKey ? { 'X-Session-Key': sessionKey } : _sk), ...extra }, body: JSON.stringify(body) }))
 const del = (url: string, body?: object, sessionKey?: string, extra?: HeadersInit) =>
-  trackArtifactWrite(url, fetch(url, { method: 'DELETE', headers: { ...(body ? { 'Content-Type': 'application/json' } : {}), ...(sessionKey ? { 'X-Session-Key': sessionKey } : _sk), ...extra }, body: body ? JSON.stringify(body) : undefined }))
+  trackArtifactWrite(url, fetch(relocateRequestUrl(url), { method: 'DELETE', headers: { ...(body ? { 'Content-Type': 'application/json' } : {}), ...(sessionKey ? { 'X-Session-Key': sessionKey } : _sk), ...extra }, body: body ? JSON.stringify(body) : undefined }))
 const patch = (url: string, body: object, sessionKey?: string, signal?: AbortSignal) =>
-  trackArtifactWrite(url, fetch(url, {
+  trackArtifactWrite(url, fetch(relocateRequestUrl(url), {
     method: 'PATCH',
     // Same override as post(): replace the shared `dashboard:ui` placeholder with
     // the REAL slot when the write belongs to a chat session, so the server's

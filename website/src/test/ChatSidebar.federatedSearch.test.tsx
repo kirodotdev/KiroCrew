@@ -121,7 +121,7 @@ function renderSidebar({ warm }: { warm: boolean }) {
   })
   // Warm connection drives the federated-vs-local endpoint choice; set it the
   // way the real connect flow does (setWarm on a live tunnel).
-  if (warm) store.dispatch(setWarm({ id: 'inst-a', conn: { port: 45123, token: 't' } }))
+  if (warm) store.dispatch(setWarm({ id: 'inst-a', conn: { kind: 'direct-loopback', port: 45123, token: 't' } }))
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   render(
     <QueryClientProvider client={qc}>

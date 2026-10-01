@@ -4,18 +4,19 @@
  * and cron folders.
  */
 
+import { relocateRequestUrl } from '../../lib/dashboardRuntime'
 import type { CronJob } from '../../types'
 import type { ClientTransport } from './transport'
 
 export function createCronEndpoints({ post, put, del, j, sessionKeyHeader: _sk }: ClientTransport) {
   const jobs = {
     // Crons
-    crons: (): Promise<{ jobs?: CronJob[] }> => fetch('/api/crons').then(j),
+    crons: (): Promise<{ jobs?: CronJob[] }> => fetch(relocateRequestUrl('/api/crons')).then(j),
     createCron: (body: object) => post('/api/crons', body).then(j),
     deleteCron: (id: string) => del('/api/crons/' + id).then(j),
     batchDeleteCron: (ids: string[]) => del('/api/crons', { ids }).then(j),
     updateCron: (id: string, body: object) =>
-      fetch('/api/crons/' + id, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(j),
+      fetch(relocateRequestUrl('/api/crons/' + id), { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(j),
     runCron: (id: string) => post('/api/crons/' + id + '/run').then(j),
     /** Grant/revoke vault secrets, or act on an agent-requested pending grant.
      * Body: {secret_env: {...}} grants (empty object revokes), or
@@ -32,10 +33,10 @@ export function createCronEndpoints({ post, put, del, j, sessionKeyHeader: _sk }
       if (offset != null) p.set('offset', String(offset))
       if (limit != null) p.set('limit', String(limit))
       const qs = p.toString()
-      return fetch('/api/crons/' + jobId + '/history' + (qs ? '?' + qs : ''), { headers: { ..._sk } }).then(j)
+      return fetch(relocateRequestUrl('/api/crons/' + jobId + '/history' + (qs ? '?' + qs : '')), { headers: { ..._sk } }).then(j)
     },
-    cronRunDetail: (jobId: string, runId: string) => fetch('/api/crons/' + jobId + '/history/' + encodeURIComponent(runId), { headers: { ..._sk } }).then(j),
-    cronScript: (jobId: string) => fetch('/api/crons/' + jobId + '/script', { headers: { ..._sk } }).then(j),
+    cronRunDetail: (jobId: string, runId: string) => fetch(relocateRequestUrl('/api/crons/' + jobId + '/history/' + encodeURIComponent(runId)), { headers: { ..._sk } }).then(j),
+    cronScript: (jobId: string) => fetch(relocateRequestUrl('/api/crons/' + jobId + '/script'), { headers: { ..._sk } }).then(j),
   }
 
   const historyAndFolders = {
@@ -45,14 +46,14 @@ export function createCronEndpoints({ post, put, del, j, sessionKeyHeader: _sk }
       if (opts?.offset != null) p.set('offset', String(opts.offset))
       if (opts?.limit != null) p.set('limit', String(opts.limit))
       if (opts?.jobId) p.set('job_id', opts.jobId)
-      return fetch('/api/crons/history' + (p.toString() ? '?' + p : ''), { headers: { ..._sk } }).then(j)
+      return fetch(relocateRequestUrl('/api/crons/history' + (p.toString() ? '?' + p : '')), { headers: { ..._sk } }).then(j)
     },
 
     // Cron Folders
-    cronFolders: () => fetch('/api/cron-folders').then(j),
+    cronFolders: () => fetch(relocateRequestUrl('/api/cron-folders')).then(j),
     createCronFolder: (name: string) => post('/api/cron-folders', { name }).then(j),
     updateCronFolder: (id: string, body: { name?: string }) =>
-      fetch('/api/cron-folders/' + id, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(j),
+      fetch(relocateRequestUrl('/api/cron-folders/' + id), { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(j),
     deleteCronFolder: (id: string) => del('/api/cron-folders/' + id).then(j),
   }
 

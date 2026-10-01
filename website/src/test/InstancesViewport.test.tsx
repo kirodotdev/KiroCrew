@@ -75,7 +75,7 @@ describe('InstancesViewport', () => {
   it('renders nothing when embedded (a pane never hosts nested panes)', () => {
     vi.mocked(isEmbeddedPane).mockReturnValue(true)
     const store = createTestStore({
-      instances: { warm: { 'cd-1': { port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {} },
+      instances: { warm: { 'cd-1': { kind: 'direct-loopback', port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {} },
     })
     const { container } = renderWithProviders(<InstancesViewport />, { store })
     expect(container.querySelector('iframe')).toBeNull()
@@ -123,7 +123,7 @@ describe('InstancesViewport', () => {
 
   it('keeps warm iframes mounted but hidden while on the Local tab', async () => {
     const store = createTestStore({
-      instances: { warm: { 'cd-1': { port: 7778, token: 'tok' } }, activeId: null, mru: ['cd-1'], unread: {} },
+      instances: { warm: { 'cd-1': { kind: 'direct-loopback', port: 7778, token: 'tok' } }, activeId: null, mru: ['cd-1'], unread: {} },
     })
     renderWithProviders(<InstancesViewport />, { store })
     const frame = await waitFor(() => {
@@ -152,7 +152,7 @@ describe('InstancesViewport', () => {
     // iframes) but every click dies with NotAllowedError (ChatPage's snip
     // flow, WebPreviewPanel's crop-to-chat, MochiSnipHost).
     const store = createTestStore({
-      instances: { warm: { 'cd-1': { port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {} },
+      instances: { warm: { 'cd-1': { kind: 'direct-loopback', port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {} },
     })
     renderWithProviders(<InstancesViewport />, { store })
     const frame = await waitFor(() => {
@@ -183,7 +183,7 @@ describe('InstancesViewport', () => {
 
   it('renders the active instance iframe with the loopback token URL', async () => {
     const store = createTestStore({
-      instances: { warm: { 'cd-1': { port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {} },
+      instances: { warm: { 'cd-1': { kind: 'direct-loopback', port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {} },
     })
     renderWithProviders(<InstancesViewport />, { store })
     const frame = await waitFor(() => {
@@ -346,7 +346,7 @@ describe('InstancesViewport', () => {
       warm_set_cap: 5,
     })
     const store = createTestStore({
-      instances: { warm: { 'cd-1': { port: 7778, token: 'stale' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {} },
+      instances: { warm: { 'cd-1': { kind: 'direct-loopback', port: 7778, token: 'stale' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {} },
     })
     renderWithProviders(<InstancesViewport />, { store })
 
@@ -382,7 +382,7 @@ describe('InstancesViewport', () => {
     await u.click(await screen.findByRole('button', { name: /Retry/i }))
     await waitFor(() => expect(api.connectInstance).toHaveBeenCalledWith('cd-1'))
     await waitFor(() =>
-      expect(store.getState().instances.warm['cd-1']).toEqual({ port: 7777, token: 'tok' }),
+      expect(store.getState().instances.warm['cd-1']).toEqual({ kind: 'direct-loopback', port: 7777, token: 'tok' }),
     )
   })
 
@@ -392,7 +392,7 @@ describe('InstancesViewport', () => {
     // refetch) must keep showing its live iframe, NOT overlay the error panel.
     vi.mocked(api.listInstances).mockResolvedValue({ instances: [], warm_set_cap: 5 })
     const store = createTestStore({
-      instances: { warm: { 'cd-1': { port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {} },
+      instances: { warm: { 'cd-1': { kind: 'direct-loopback', port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {} },
     })
     renderWithProviders(<InstancesViewport />, { store })
     const frame = await waitFor(() => {
@@ -476,7 +476,7 @@ describe('InstancesViewport', () => {
     vi.mocked(api.listInstances).mockResolvedValue({ instances: [], warm_set_cap: 1 })
     const store = createTestStore({
       instances: {
-        warm: { 'cd-1': { port: 7778, token: 'a' }, 'cd-2': { port: 7779, token: 'b' } },
+        warm: { 'cd-1': { kind: 'direct-loopback', port: 7778, token: 'a' }, 'cd-2': { kind: 'direct-loopback', port: 7779, token: 'b' } },
         activeId: 'cd-2',
         mru: ['cd-2', 'cd-1'],
         unread: {},
@@ -518,7 +518,7 @@ describe('InstancesViewport', () => {
     // keep the switcher reachable until the embedded SPA is actually up.
     mockConnectedCd1()
     const store = createTestStore({
-      instances: { warm: { 'cd-1': { port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: {} },
+      instances: { warm: { 'cd-1': { kind: 'direct-loopback', port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: {} },
     })
     renderWithProviders(<InstancesViewport />, { store })
 
@@ -542,7 +542,7 @@ describe('InstancesViewport', () => {
     // Connecting/loading: warm + connected but not yet ready → loading overlay.
     mockConnectedCd1()
     const loadingStore = createTestStore({
-      instances: { warm: { 'cd-1': { port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: {} },
+      instances: { warm: { 'cd-1': { kind: 'direct-loopback', port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: {} },
     })
     const { unmount } = renderWithProviders(<InstancesViewport />, { store: loadingStore })
     expect(await screen.findByText(/Loading pane/i)).toBeInTheDocument()
@@ -586,7 +586,7 @@ describe('InstancesViewport', () => {
     const { setFocusModeEnabled } = await import('../hooks/useFocusMode')
     mockConnectedCd1()
     const store = createTestStore({
-      instances: { warm: { 'cd-1': { port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: { 'cd-1': true } },
+      instances: { warm: { 'cd-1': { kind: 'direct-loopback', port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: { 'cd-1': true } },
     })
     renderWithProviders(<InstancesViewport />, { store })
 
@@ -645,7 +645,7 @@ describe('InstancesViewport', () => {
     __resetFocusMode()
     mockConnectedCd1()
     const store = createTestStore({
-      instances: { warm: { 'cd-1': { port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: { 'cd-1': true } },
+      instances: { warm: { 'cd-1': { kind: 'direct-loopback', port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: { 'cd-1': true } },
     })
     renderWithProviders(<InstancesViewport />, { store })
 
@@ -680,7 +680,7 @@ describe('InstancesViewport', () => {
     setFocusChromeVisible(false)
     mockConnectedCd1()
     const store = createTestStore({
-      instances: { warm: { 'cd-1': { port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: { 'cd-1': true } },
+      instances: { warm: { 'cd-1': { kind: 'direct-loopback', port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: { 'cd-1': true } },
     })
     renderWithProviders(<InstancesViewport />, { store })
 
@@ -743,7 +743,7 @@ describe('InstancesViewport', () => {
       mockConnectedCd1()
       const store = createTestStore({
         instances: {
-          warm: { 'cd-1': { port: 7778, token: 'tok' }, 'cd-2': { port: 7779, token: 'tok2' } },
+          warm: { 'cd-1': { kind: 'direct-loopback', port: 7778, token: 'tok' }, 'cd-2': { kind: 'direct-loopback', port: 7779, token: 'tok2' } },
           activeId: 'cd-1', mru: ['cd-1', 'cd-2'], unread: {}, ready: { 'cd-1': true, 'cd-2': true },
         },
       })
@@ -834,7 +834,7 @@ describe('InstancesViewport', () => {
     mockConnectedCd1()
     const store = createTestStore({
       instances: {
-        warm: { 'cd-1': { port: 7778, token: 'tok' }, 'cd-2': { port: 7779, token: 'tok2' } },
+        warm: { 'cd-1': { kind: 'direct-loopback', port: 7778, token: 'tok' }, 'cd-2': { kind: 'direct-loopback', port: 7779, token: 'tok2' } },
         activeId: 'cd-1', mru: ['cd-1', 'cd-2'], unread: {}, ready: { 'cd-1': true, 'cd-2': true },
       },
     })
@@ -877,7 +877,7 @@ describe('InstancesViewport', () => {
   it('dismisses the loading overlay when the pane posts mc-embedded-ready from its tunnel origin', async () => {
     mockConnectedCd1()
     const store = createTestStore({
-      instances: { warm: { 'cd-1': { port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: {} },
+      instances: { warm: { 'cd-1': { kind: 'direct-loopback', port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: {} },
     })
     renderWithProviders(<InstancesViewport />, { store })
     expect(await screen.findByText(/Loading pane/i)).toBeInTheDocument()
@@ -896,7 +896,7 @@ describe('InstancesViewport', () => {
   it('ignores mc-embedded-ready from an unknown origin (no readiness, overlay stays)', async () => {
     mockConnectedCd1()
     const store = createTestStore({
-      instances: { warm: { 'cd-1': { port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: {} },
+      instances: { warm: { 'cd-1': { kind: 'direct-loopback', port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: {} },
     })
     renderWithProviders(<InstancesViewport />, { store })
     expect(await screen.findByText(/Loading pane/i)).toBeInTheDocument()
@@ -933,7 +933,7 @@ describe('InstancesViewport', () => {
     vi.useFakeTimers()
     try {
       const store = createTestStore({
-        instances: { warm: { 'cd-1': { port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: {} },
+        instances: { warm: { 'cd-1': { kind: 'direct-loopback', port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: {} },
       })
       renderWithProviders(<InstancesViewport />, { store })
 
@@ -991,7 +991,7 @@ describe('InstancesViewport', () => {
     vi.useFakeTimers()
     try {
       const store = createTestStore({
-        instances: { warm: { 'cd-1': { port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: {} },
+        instances: { warm: { 'cd-1': { kind: 'direct-loopback', port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: {} },
       })
       renderWithProviders(<InstancesViewport />, { store })
 
@@ -1028,7 +1028,7 @@ describe('InstancesViewport', () => {
     vi.useFakeTimers()
     try {
       const store = createTestStore({
-        instances: { warm: { 'cd-1': { port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: {} },
+        instances: { warm: { 'cd-1': { kind: 'direct-loopback', port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: {} },
       })
       renderWithProviders(<InstancesViewport />, { store })
 
@@ -1081,7 +1081,7 @@ describe('InstancesViewport', () => {
     vi.useFakeTimers()
     try {
       const store = createTestStore({
-        instances: { warm: { 'cd-1': { port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: {} },
+        instances: { warm: { 'cd-1': { kind: 'direct-loopback', port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: {} },
       })
       renderWithProviders(<InstancesViewport />, { store })
 
@@ -1101,7 +1101,7 @@ describe('InstancesViewport', () => {
       // The same teardown InstancesPanel and the K-cap eviction dispatch, then a
       // fresh warm for the same id.
       await act(async () => { store.dispatch(removeWarm('cd-1')) })
-      await act(async () => { store.dispatch(setWarm({ id: 'cd-1', conn: { port: 7778, token: 'tok2' } })) })
+      await act(async () => { store.dispatch(setWarm({ id: 'cd-1', conn: { kind: 'direct-loopback', port: 7778, token: 'tok2' } })) })
       await act(async () => { store.dispatch(setActiveId('cd-1')) })
 
       // The stale verdict is gone: the new load gets its loading overlay, not the
@@ -1122,7 +1122,7 @@ describe('InstancesViewport', () => {
     // active tab to an id the parent does not know (spoofed/unknown target).
     mockConnectedCd1()
     const store = createTestStore({
-      instances: { warm: { 'cd-1': { port: 7778, token: 'tok' } }, activeId: null, mru: ['cd-1'], unread: {}, ready: {} },
+      instances: { warm: { 'cd-1': { kind: 'direct-loopback', port: 7778, token: 'tok' } }, activeId: null, mru: ['cd-1'], unread: {}, ready: {} },
     })
     renderWithProviders(<InstancesViewport />, { store })
     // Wait until the warm→port map is live so the origin resolves as trusted.
@@ -1146,7 +1146,7 @@ describe('InstancesViewport', () => {
     // null), before the target is ever inspected.
     mockConnectedCd1()
     const store = createTestStore({
-      instances: { warm: { 'cd-1': { port: 7778, token: 'tok' } }, activeId: null, mru: ['cd-1'], unread: {}, ready: {} },
+      instances: { warm: { 'cd-1': { kind: 'direct-loopback', port: 7778, token: 'tok' } }, activeId: null, mru: ['cd-1'], unread: {}, ready: {} },
     })
     renderWithProviders(<InstancesViewport />, { store })
     await waitFor(() => expect(document.querySelector('iframe')).not.toBeNull())
@@ -1168,7 +1168,7 @@ describe('InstancesViewport', () => {
     vi.useFakeTimers()
     try {
       const store = createTestStore({
-        instances: { warm: { 'cd-1': { port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: {} },
+        instances: { warm: { 'cd-1': { kind: 'direct-loopback', port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: {} },
       })
       renderWithProviders(<InstancesViewport />, { store })
       expect(screen.getByText(/Loading pane/i)).toBeInTheDocument()
@@ -1195,7 +1195,7 @@ describe('InstancesViewport', () => {
     vi.mocked(api.connectInstance).mockResolvedValue({ state: 'connected', local_port: 7778, token: 'tok' })
     vi.useFakeTimers()
     const store = createTestStore({
-      instances: { warm: { 'cd-1': { port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: {} },
+      instances: { warm: { 'cd-1': { kind: 'direct-loopback', port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: {} },
     })
     renderWithProviders(<InstancesViewport />, { store })
     await act(async () => {
@@ -1227,7 +1227,7 @@ describe('InstancesViewport', () => {
     vi.useFakeTimers()
     try {
       const store = createTestStore({
-        instances: { warm: { 'cd-1': { port: 7778, token: 'tok-0' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: {} },
+        instances: { warm: { 'cd-1': { kind: 'direct-loopback', port: 7778, token: 'tok-0' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: {} },
       })
       renderWithProviders(<InstancesViewport />, { store })
       expect(screen.getByText(/Loading pane/i)).toBeInTheDocument()
@@ -1236,12 +1236,12 @@ describe('InstancesViewport', () => {
       // time (exactly what the auth-expired path dispatches).
       await act(async () => {
         vi.advanceTimersByTime(10_000)
-        store.dispatch(setWarm({ id: 'cd-1', conn: { port: 7778, token: 'tok-1' } }))
+        store.dispatch(setWarm({ id: 'cd-1', conn: { kind: 'direct-loopback', port: 7778, token: 'tok-1' } }))
       })
       expect(screen.queryByText(/Pane failed to load/i)).toBeNull()
       await act(async () => {
         vi.advanceTimersByTime(4_000)
-        store.dispatch(setWarm({ id: 'cd-1', conn: { port: 7778, token: 'tok-2' } }))
+        store.dispatch(setWarm({ id: 'cd-1', conn: { kind: 'direct-loopback', port: 7778, token: 'tok-2' } }))
       })
       // 14s elapsed: still inside the ORIGINAL deadline, so not yet a failure.
       expect(screen.queryByText(/Pane failed to load/i)).toBeNull()
@@ -1262,7 +1262,7 @@ describe('InstancesViewport', () => {
     vi.useFakeTimers()
     try {
       const store = createTestStore({
-        instances: { warm: { 'cd-1': { port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: {} },
+        instances: { warm: { 'cd-1': { kind: 'direct-loopback', port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: {} },
       })
       renderWithProviders(<InstancesViewport />, { store })
       await act(async () => {
@@ -1292,7 +1292,7 @@ describe('InstancesViewport', () => {
     const info = vi.spyOn(console, 'info').mockImplementation(() => {})
     try {
       const store = createTestStore({
-        instances: { warm: { 'cd-1': { port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: {} },
+        instances: { warm: { 'cd-1': { kind: 'direct-loopback', port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: {} },
       })
       renderWithProviders(<InstancesViewport />, { store })
       expect(await screen.findByText(/Loading pane/i)).toBeInTheDocument()
@@ -1313,7 +1313,7 @@ describe('InstancesViewport', () => {
             origin: 'http://127.0.0.1:7778',
           }))
         })
-        act(() => { store.dispatch(setWarm({ id: 'cd-1', conn: { port: 7778, token: 'tok' } })) })
+        act(() => { store.dispatch(setWarm({ id: 'cd-1', conn: { kind: 'direct-loopback', port: 7778, token: 'tok' } })) })
       }
       await waitFor(() => expect(store.getState().instances.unread['cd-1']).toBe(5))
       expect(mounts()).toBe(1)
@@ -1333,7 +1333,7 @@ describe('InstancesViewport', () => {
     const info = vi.spyOn(console, 'info').mockImplementation(() => {})
     try {
       const store = createTestStore({
-        instances: { warm: { 'cd-1': { port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: {} },
+        instances: { warm: { 'cd-1': { kind: 'direct-loopback', port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: {} },
       })
       renderWithProviders(<InstancesViewport />, { store })
       expect(await screen.findByText(/Loading pane/i)).toBeInTheDocument()
@@ -1387,7 +1387,7 @@ describe('InstancesViewport', () => {
     const info = vi.spyOn(console, 'info').mockImplementation(() => {})
     try {
       const store = createTestStore({
-        instances: { warm: { 'cd-1': { port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: {} },
+        instances: { warm: { 'cd-1': { kind: 'direct-loopback', port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: {} },
       })
       renderWithProviders(<InstancesViewport />, { store })
       expect(await screen.findByText(/Loading pane/i)).toBeInTheDocument()
@@ -1398,7 +1398,7 @@ describe('InstancesViewport', () => {
       // run yet -- the exact window in which an effect-populated origin map
       // still lacks port 7790 and would drop this boot as unattributed.
       act(() => {
-        store.dispatch(setWarm({ id: 'cd-2', conn: { port: 7790, token: 'tok2' } }))
+        store.dispatch(setWarm({ id: 'cd-2', conn: { kind: 'direct-loopback', port: 7790, token: 'tok2' } }))
         window.dispatchEvent(new MessageEvent('message', {
           data: { type: 'mc-embedded-boot', v: 1, stage: 'entry' },
           origin: 'http://127.0.0.1:7790',
@@ -1460,7 +1460,7 @@ describe('InstancesViewport', () => {
     const { store } = renderWithProviders(<InstancesViewport />)
     await waitFor(() => expect(api.connectInstance).toHaveBeenCalledWith('cd-1', { onlyIfConnected: true }))
     // A click (or the fan-out) warms cd-2 before its stagger slot.
-    act(() => { store.dispatch(setWarm({ id: 'cd-2', conn: { port: 7779, token: 'tok' } })) })
+    act(() => { store.dispatch(setWarm({ id: 'cd-2', conn: { kind: 'direct-loopback', port: 7779, token: 'tok' } })) })
     await new Promise(r => setTimeout(r, 1_800))
     expect(api.connectInstance).not.toHaveBeenCalledWith('cd-2', expect.anything())
   })
@@ -1470,7 +1470,7 @@ describe('InstancesViewport', () => {
     vi.mocked(api.connectInstance).mockResolvedValue({ state: 'connected', local_port: 7778, token: 'tok' })
     vi.useFakeTimers()
     const store = createTestStore({
-      instances: { warm: { 'cd-1': { port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: {} },
+      instances: { warm: { 'cd-1': { kind: 'direct-loopback', port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: {} },
     })
     renderWithProviders(<InstancesViewport />, { store })
     await act(async () => {
@@ -1507,7 +1507,7 @@ describe('InstancesViewport', () => {
     })
     vi.mocked(api.connectInstance).mockRejectedValue(new Error('rebuild refused: EPERM'))
     const store = createTestStore({
-      instances: { warm: { 'cd-1': { port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: {} },
+      instances: { warm: { 'cd-1': { kind: 'direct-loopback', port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: {} },
     })
     renderWithProviders(<InstancesViewport />, { store })
     expect(await screen.findByText(/ssh unreachable/i)).toBeInTheDocument()
@@ -1548,7 +1548,7 @@ describe('InstancesViewport', () => {
       const info = vi.spyOn(console, 'info').mockImplementation(() => {})
       try {
         const store = createTestStore({
-          instances: { warm: { 'cd-1': { port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: {} },
+          instances: { warm: { 'cd-1': { kind: 'direct-loopback', port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: {} },
         })
         renderWithProviders(<InstancesViewport />, { store })
         expect(await screen.findByText(/Loading pane/i)).toBeInTheDocument()
@@ -1585,7 +1585,7 @@ describe('InstancesViewport', () => {
       const clear = withBridge(async () => true)
       const store = createTestStore({
         instances: {
-          warm: { 'cd-1': { port: 7778, token: 'tok' } },
+          warm: { 'cd-1': { kind: 'direct-loopback', port: 7778, token: 'tok' } },
           activeId: 'cd-1',
           mru: ['cd-1'],
           unread: {},
@@ -1617,7 +1617,7 @@ describe('InstancesViewport', () => {
       mockConnectedCd1()
       const clear = withBridge(async () => true)
       const store = createTestStore({
-        instances: { warm: { 'cd-1': { port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: {} },
+        instances: { warm: { 'cd-1': { kind: 'direct-loopback', port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: {} },
       })
       renderWithProviders(<InstancesViewport />, { store })
       expect(await screen.findByText(/Loading pane/i)).toBeInTheDocument()
@@ -1630,7 +1630,7 @@ describe('InstancesViewport', () => {
 
       await act(async () => { store.dispatch(removeWarm('cd-1')) })
       await waitFor(() => expect(document.querySelector('iframe')).toBeNull())
-      await act(async () => { store.dispatch(setWarm({ id: 'cd-1', conn: { port: 7778, token: 'tok2' } })) })
+      await act(async () => { store.dispatch(setWarm({ id: 'cd-1', conn: { kind: 'direct-loopback', port: 7778, token: 'tok2' } })) })
       await waitFor(() => expect(document.querySelector('iframe')).not.toBeNull())
       scriptError()
       await waitFor(() => expect(clear).toHaveBeenCalledTimes(2))
@@ -1639,7 +1639,7 @@ describe('InstancesViewport', () => {
     it('still reloads once when the bridge is absent or refuses (browser, non-Electron)', async () => {
       mockConnectedCd1()
       const store = createTestStore({
-        instances: { warm: { 'cd-1': { port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: {} },
+        instances: { warm: { 'cd-1': { kind: 'direct-loopback', port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: {} },
       })
       renderWithProviders(<InstancesViewport />, { store })
       expect(await screen.findByText(/Loading pane/i)).toBeInTheDocument()
@@ -1652,7 +1652,7 @@ describe('InstancesViewport', () => {
       mockConnectedCd1()
       const clear = withBridge(async () => true)
       const store = createTestStore({
-        instances: { warm: { 'cd-1': { port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: {} },
+        instances: { warm: { 'cd-1': { kind: 'direct-loopback', port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: {} },
       })
       renderWithProviders(<InstancesViewport />, { store })
       expect(await screen.findByText(/Loading pane/i)).toBeInTheDocument()
@@ -1670,7 +1670,7 @@ describe('InstancesViewport', () => {
       const clear = withBridge(async () => true)
       vi.useFakeTimers()
       const store = createTestStore({
-        instances: { warm: { 'cd-1': { port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: {} },
+        instances: { warm: { 'cd-1': { kind: 'direct-loopback', port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: {} },
       })
       renderWithProviders(<InstancesViewport />, { store })
       await act(async () => {
@@ -1744,7 +1744,7 @@ describe('InstancesViewport', () => {
         instances: {
           // cd-1 is the announcing pane, warm at 7778 -- that is what makes its
           // origin resolve. cd-2 carries the STALE pair the defect leaves behind.
-          warm: { 'cd-1': { port: 7778, token: 'tok' }, 'cd-2': { port: 50001, token: 'old-tok' } },
+          warm: { 'cd-1': { kind: 'direct-loopback', port: 7778, token: 'tok' }, 'cd-2': { kind: 'direct-loopback', port: 50001, token: 'old-tok' } },
           activeId: 'cd-1',
           mru: ['cd-1'],
           unread: {},

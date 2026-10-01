@@ -1,3 +1,4 @@
+import { relocateRequestUrl } from '../lib/dashboardRuntime'
 import { memo, useState, useMemo, useCallback, useEffect, useRef } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { ChevronLeft, ChevronRight, Download, ExternalLink, FileText, Film, Music, Sparkles } from 'lucide-react'
@@ -77,7 +78,7 @@ export const ImageViewer = memo(function ImageViewer({ filePath }: { filePath: s
   return (
     <div className="flex items-center justify-center h-full overflow-auto p-4 bg-bg-elevated rounded-md border border-border">
       <img
-        src={'/api/file-raw?path=' + encodeURIComponent(filePath)}
+        src={relocateRequestUrl('/api/file-raw?path=' + encodeURIComponent(filePath))}
         alt={filePath.split('/').pop()}
         className="max-w-full max-h-full object-contain"
         draggable={false}
@@ -294,7 +295,7 @@ export const HtmlViewer = memo(function HtmlViewer({ content }: { content: strin
 /* ── PDF viewer (embedded + fallback open externally) ── */
 export const PdfViewer = memo(function PdfViewer({ filePath }: { filePath: string }) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
-  const url = '/api/file-raw?path=' + encodeURIComponent(filePath)
+  const url = relocateRequestUrl('/api/file-raw?path=' + encodeURIComponent(filePath))
   return (
     <div className="h-full border border-border rounded-md overflow-hidden bg-white flex flex-col">
       <iframe src={url} className="flex-1 w-full border-none" title={i18nT('components.fileRenderers.pdf_preview')} />
@@ -1193,7 +1194,7 @@ export const SheetViewer = memo(function SheetViewer({ filePath }: { filePath: s
   useEffect(() => {
     const ctrl = new AbortController()
     setPayload(null); setFailed(false); setActive(0)
-    fetch('/api/file-sheet?path=' + encodeURIComponent(filePath), { signal: ctrl.signal })
+    fetch(relocateRequestUrl('/api/file-sheet?path=' + encodeURIComponent(filePath)), { signal: ctrl.signal })
       .then(async r => {
         if (!r.ok) throw new Error(String(r.status))
         const body: SheetPayload = await r.json()

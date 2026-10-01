@@ -11,6 +11,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { ExternalLink, FolderOpen, Presentation } from 'lucide-react'
 import { EmptyState } from '../../components/ui'
+import { relocateRequestUrl } from '../../lib/dashboardRuntime'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
 import SegmentedControl from '../../components/SegmentedControl'
 import { revealOrOpen, useRevealFailure } from '../../components/FilePathMenu'
@@ -202,7 +203,7 @@ export default function DeckViewer({ deckId }: { deckId: string }) {
         )}
         {detail.pptxUrl && (
           <a
-            href={`/api/apps/pptx-maker/${detail.pptxUrl}`}
+            href={relocateRequestUrl(`/api/apps/pptx-maker/${detail.pptxUrl}`)}
             download={`${detail.name}.pptx`}
             className="inline-flex items-center gap-1 text-[12px] text-accent px-2 py-1 rounded hover:bg-bg-elevated transition-colors"
           >

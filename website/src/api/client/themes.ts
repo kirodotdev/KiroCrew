@@ -4,16 +4,17 @@
  * display config.
  */
 
+import { relocateRequestUrl } from '../../lib/dashboardRuntime'
 import type { ClientTransport } from './transport'
 
 export function createThemesEndpoints({ post, put, del, j }: ClientTransport) {
   const branding = {
-    branding: () => fetch('/api/dashboard/branding').then(j) as Promise<{ bot_name: string; avatar: string; direct_local?: boolean }>,
+    branding: () => fetch(relocateRequestUrl('/api/dashboard/branding')).then(j) as Promise<{ bot_name: string; avatar: string; direct_local?: boolean }>,
   }
 
   const themeList = {
     // Custom Themes
-    themes: () => fetch('/api/themes').then(j),
+    themes: () => fetch(relocateRequestUrl('/api/themes')).then(j),
   }
 
   const themeEditing = {
@@ -22,9 +23,9 @@ export function createThemesEndpoints({ post, put, del, j }: ClientTransport) {
       post('/api/themes/install', { source }).then(j),
     updateTheme: (slug: string, body: object) => put('/api/themes/' + encodeURIComponent(slug), body).then(j),
     deleteTheme: (slug: string) => del('/api/themes/' + encodeURIComponent(slug)).then(j),
-    themeDetail: (slug: string) => fetch('/api/themes/' + encodeURIComponent(slug)).then(j),
+    themeDetail: (slug: string) => fetch(relocateRequestUrl('/api/themes/' + encodeURIComponent(slug))).then(j),
     // Workspace theme config (server-authoritative)
-    themeBoot: () => fetch('/api/theme/boot').then(j),
+    themeBoot: () => fetch(relocateRequestUrl('/api/theme/boot')).then(j),
     updateThemeConfig: (body: {
       mode?: string
       color?: string

@@ -17,6 +17,7 @@ import { createContext, useContext, type ReactNode } from 'react'
 import React from 'react'
 import { noteStaleOwnerResponse } from '../api/staleOwnerSignal'
 import { noteSessionExpiredResponse } from '../api/sessionExpirySignal'
+import { relocateRequestUrl } from '../lib/dashboardRuntime'
 import { useAppIdentity } from './identity'
 
 export interface AppApi {
@@ -125,7 +126,12 @@ function createScopedApi(allowedPaths: string[], appName: string, sessionKey?: s
     } else if (headers.has('X-Session-Key')) {
       throw new Error('[app-sdk] X-Session-Key requires a host session binding')
     }
-    const res = await fetch(safePath, { ...init, headers })
+    // Relocate at this boundary so the scoped request stays under the pane's
+    // capability prefix in a relayed pane (identity in direct mode). `safePath`
+    // is a normalized root-absolute same-dashboard path the guard cannot prove
+    // statically (it is `check()`'s derived return), so it MUST be relocated
+    // here rather than pinned safe.
+    const res = await fetch(relocateRequestUrl(safePath), { ...init, headers })
     noteSessionExpiredResponse(res)
     if (!res.ok) {
       const text = await res.text().catch(() => res.statusText)

@@ -44,6 +44,7 @@ from kiro_crew.dashboard.handlers._shared import (
     read_capped_response,
 )
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+from kiro_crew.dashboard.instance_pane_relay import PANE_RELAY_PROTOCOL
 from kiro_crew.dashboard.session_transfer import (
     SnapshotUnstable,
     TranscriptBusy,
@@ -881,6 +882,15 @@ async def api_instances_remove(request: web.Request) -> web.Response:
                     candidate,
                     type(e).__name__,
                 )
+    # Drop any pane leases for the crews that just went. Memory hygiene only:
+    # the teardown above already bumped each forward's generation, so the relay's
+    # serve-time generation check has already made every one of those leases fail
+    # closed — this just keeps the table from holding dead entries for a crew that
+    # is gone for good.
+    relay = getattr(state, "instance_pane_relay", None)
+    if relay is not None:
+        for gone in [*chained, instance_id]:
+            relay.revoke_instance(gone)
     _audit("remove", "success", request_id=instance_id)
     return web.json_response({"removed": instance_id})
 
@@ -902,6 +912,78 @@ def _connect_failure_code(body: dict, fallback: str) -> str:
         if isinstance(code, str) and code:
             return code
     return fallback
+
+
+async def _confirm_connected_token(
+    mgr, instance_id: str, status, body: dict, op: str
+) -> "tuple[str, web.Response | None]":
+    """Confirm the credential for a CONNECTED tunnel; the shared post-connect step.
+
+    Extracted so ``api_instances_connect`` and ``api_instances_open_pane`` confirm
+    a live tunnel's token identically — the confirmation is security-critical (a
+    stale token, or a forward that moved onto another crew's port mid-confirm) and
+    must not drift between the two owner-only endpoints that hand a token to the
+    browser.
+
+    Returns ``(token, None)`` on success, where *token* is ``""`` for a fargate
+    forward (its ``turn_url`` IS the connection, so there is no dashboard token to
+    validate). Returns ``("", response)`` when the token cannot be stood behind —
+    the caller returns *response* verbatim. Audits its own failures under *op* so
+    each endpoint keeps its own SEL stream label.
+    """
+    if body.get("turn_url"):
+        # A fargate forward. The status carries a turn_url only for that method,
+        # and that method has no dashboard token: the connection IS the forward,
+        # so there is nothing to validate and a re-mint would be refused.
+        return "", None
+    token = mgr.get_token(instance_id)
+    # Validate the stored token before handing it to the browser. connect() is
+    # idempotent and may return a CONNECTED tunnel whose token went stale (a
+    # failed self-heal re-mint, or a remote `kirocrew restart` that invalidates
+    # tokens). A stale token yields a server-rendered 403 on the iframe's first
+    # load, so the SPA never boots to fire `mc-auth-expired` and the reactive
+    # recovery can't help. Probe over the live tunnel (no SSH); deny-by-default.
+    if not token or not await mgr.token_validates(status.local_port, token):
+        token = await mgr.refresh_token(instance_id) or ""
+        if not token:
+            _audit(
+                op,
+                "failure",
+                request_id=instance_id,
+                error="token unconfirmed and re-mint failed",
+            )
+            body["error"] = "token expired and re-mint failed"
+            body["code"] = _connect_failure_code(body, "instance_token_unconfirmed")
+            return "", web.json_response(body, status=502)
+    # The token and the port it is paired with are one answer. `body` froze the
+    # port before the probe and the re-mint, both of which await for seconds, and
+    # `status` is the tunnel's LIVE status object -- a teardown in that window pops
+    # the tunnel without zeroing the port on it, and the allocator hands a
+    # just-freed port to the next connect first. So the frozen port can name a
+    # forward that now belongs to a different crew, and the pane would load that
+    # one while holding this crew's token. Re-read the live object and refuse the
+    # pair rather than answer with one half of it.
+    if status.state.value != "connected" or int(status.local_port or 0) != int(
+        body.get("local_port") or 0
+    ):
+        _audit(
+            op,
+            "failure",
+            request_id=instance_id,
+            error="forward moved while the token was being confirmed",
+        )
+        return "", web.json_response(
+            {
+                "instance_id": body.get("instance_id"),
+                "state": body.get("state"),
+                "local_port": body.get("local_port"),
+                "remote_port": body.get("remote_port"),
+                "error": ("the forward moved while its token was being confirmed; try again"),
+                "code": _connect_failure_code(body, "instance_token_unconfirmed"),
+            },
+            status=502,
+        )
+    return token, None
 
 
 async def api_instances_connect(request: web.Request) -> web.Response:
@@ -976,73 +1058,234 @@ async def api_instances_connect(request: web.Request) -> web.Response:
         body["code"] = "instance_not_connected"
         return web.json_response(body)
     if status.state.value == "connected":
-        if body.get("turn_url"):
-            # A fargate forward. The status carries a turn_url only for that
-            # method, and that method has no dashboard token: the connection IS
-            # the forward, so the token probe below has nothing to validate and
-            # a re-mint would be refused by the manager. Hand back the URL.
-            _audit("connect", "success", request_id=instance_id)
-            return web.json_response(body)
-        token = mgr.get_token(instance_id)
-        # Validate the stored token before handing it to the browser. connect()
-        # is idempotent and may return a CONNECTED tunnel whose token went stale
-        # (a failed self-heal re-mint, or a remote `kirocrew restart` that
-        # invalidates tokens). A stale token yields a server-rendered 403 page on
-        # the iframe's first load, so the SPA never boots to fire `mc-auth-expired`
-        # and the reactive recovery can't help. Probe over the live tunnel (no
-        # SSH); deny-by-default, so anything short of a positive confirmation
-        # forces a fresh mint.
-        if not token or not await mgr.token_validates(status.local_port, token):
-            token = await mgr.refresh_token(instance_id) or ""
-            if not token:
-                # The probe couldn't confirm the token AND the re-mint failed —
-                # the link is genuinely unreachable. Serving the unconfirmed
-                # token would just reproduce the stuck-iframe 403, so surface a
-                # clean error instead of a token we know we can't stand behind.
-                _audit(
-                    "connect",
-                    "failure",
-                    request_id=instance_id,
-                    error="token unconfirmed and re-mint failed",
-                )
-                body["error"] = "token expired and re-mint failed"
-                body["code"] = _connect_failure_code(body, "instance_token_unconfirmed")
-                return web.json_response(body, status=502)
-        # The token and the port it is paired with are one answer. `body` froze the
-        # port before the probe and the re-mint, both of which await for seconds,
-        # and `status` is the tunnel's LIVE status object -- a teardown in that
-        # window pops the tunnel without zeroing the port on it, and the allocator
-        # hands a just-freed port to the next connect first. So the frozen port can
-        # name a forward that now belongs to a different crew, and the pane would
-        # load that one while holding this crew's token. Re-read the live object and
-        # refuse the pair rather than answer with one half of it; a retry gets a
-        # coherent one, which is what this failure code already means.
-        if status.state.value != "connected" or int(status.local_port or 0) != int(
-            body.get("local_port") or 0
-        ):
-            _audit(
-                "connect",
-                "failure",
-                request_id=instance_id,
-                error="forward moved while the token was being confirmed",
-            )
-            return web.json_response(
-                {
-                    "instance_id": body.get("instance_id"),
-                    "state": body.get("state"),
-                    "local_port": body.get("local_port"),
-                    "remote_port": body.get("remote_port"),
-                    "error": ("the forward moved while its token was being confirmed; try again"),
-                    "code": _connect_failure_code(body, "instance_token_unconfirmed"),
-                },
-                status=502,
-            )
-        body["token"] = token  # delivered to owner only
+        token, confirm_err = await _confirm_connected_token(
+            mgr, instance_id, status, body, "connect"
+        )
+        if confirm_err is not None:
+            return confirm_err
+        if not body.get("turn_url"):
+            body["token"] = token  # delivered to owner only
         _audit("connect", "success", request_id=instance_id)
         return web.json_response(body)
     _audit("connect", "failure", request_id=instance_id, error=status.error)
     body["code"] = _connect_failure_code(body, "instance_connect_failed")
     return web.json_response(body, status=502)
+
+
+async def api_instances_open_pane(request: web.Request) -> web.Response:
+    """POST /api/instances/{id}/pane — one complete discriminated PaneEndpoint.
+
+    The owner-authenticated issuer for a Remote Crew pane. The browser asks for a
+    pane in the access mode its own origin dictates (frontend ``paneAccessFor``):
+
+    * ``direct-loopback`` — the parent is on plain-http loopback and the browser
+      can reach the SSH forward directly. Returns the connected forward's port and
+      the remote token, exactly the credential ``connect`` hands back (the token
+      confirmed through the shared :func:`_confirm_connected_token` step).
+    * ``same-origin-relay`` — the parent is on a published HTTPS origin that
+      exposes only the hub. Returns a short-lived, generation-bound capability
+      ``documentPath`` plus a frame ``channel``; **no port and no remote token
+      cross this boundary**. Fails closed with ``remote_upgrade_required`` when
+      the remote build does not advertise this hub's ``pane_relay_protocol``.
+
+    Owner-only, strictly — the same bar as the proxy and capabilities routes:
+    issuing a pane authorizes reaching a peer over the owner's tunnel, so a
+    Slack-minted ``!dashboard`` subject (authenticated, but not the owner) is
+    refused before any tunnel, protocol read, or lease work. Slack-origin,
+    unauthenticated, feature-disabled, disconnected, and unsupported-protocol
+    callers are all denied before a lease is ever created.
+
+    ``?only_if_connected=1`` is the background issue mode (auto-warm / lease
+    renewal): mint a pane for a forward that is ALREADY connected, atomically
+    under the manager lock, and NEVER bring one up. A background issue racing an
+    explicit disconnect therefore cannot reconnect the tunnel; a forward that is
+    not up comes back as a declined 200 (``instance_not_connected``) with no token
+    and no endpoint. Mutually exclusive with ``?rebuild=1``. Selection and Retry
+    (neither flag / ``rebuild``) keep connect-or-create behavior.
+    """
+    denied = _guard(request, "open_pane")
+    if denied is not None:
+        return denied
+    from kiro_crew.dashboard.handlers._shared import _owner_denial_response
+    from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+
+    if not is_owner_dashboard_request(request):
+        _audit("open_pane", "denied", error="non-owner identity rejected")
+        return _owner_denial_response(request, "remote-crew panes are owner-only")
+
+    state: DashboardState = request.app["state"]
+    instance_id = request.match_info["id"]
+    mgr = getattr(state, "instances_manager", None)
+    if mgr is None:
+        _audit("open_pane", "denied", request_id=instance_id, error="manager unavailable")
+        return web.json_response(
+            {"error": "instances manager not running", "code": "instances_manager_unavailable"},
+            status=503,
+        )
+
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    access = payload.get("access") if isinstance(payload, dict) else None
+    if access not in ("direct-loopback", "same-origin-relay"):
+        _audit("open_pane", "denied", request_id=instance_id, error="bad access mode")
+        return web.json_response(
+            {
+                "error": "access must be 'direct-loopback' or 'same-origin-relay'",
+                "code": "bad_request",
+            },
+            status=400,
+        )
+
+    # `?rebuild=1` is the pane's Retry after a load watchdog fired on a document
+    # that DID navigate: a fresh forwarder on a new local port clears a stalled
+    # stream the idempotent connect would hand straight back. Same opt-in as the
+    # connect route; a relay lease binds to whichever generation this produces.
+    rebuild = request.query.get("rebuild") in ("1", "true")
+    # `?only_if_connected=1` is the background issuer (auto-warm / lease renewal):
+    # mint a pane for a forward that is ALREADY up, and NEVER bring one up. The
+    # manager decides under its own lock, so a background issue racing an explicit
+    # disconnect can never re-open the tunnel (or re-persist the intent) the user
+    # just closed — the reconnect-after-disconnect the plain issue path allowed.
+    # Mutually exclusive with rebuild (rebuild's whole job is to raise a fresh
+    # forwarder). This path also returns NO remote token: relay panes carry none,
+    # and a background warm must not surface one.
+    only_if_connected = request.query.get("only_if_connected") in ("1", "true")
+    if rebuild and only_if_connected:
+        _audit(
+            "open_pane",
+            "denied",
+            request_id=instance_id,
+            error="rebuild and only_if_connected are mutually exclusive",
+        )
+        return web.json_response(
+            {
+                "error": "rebuild and only_if_connected are mutually exclusive",
+                "code": "bad_request",
+            },
+            status=400,
+        )
+    try:
+        if rebuild:
+            status = await mgr.connect(instance_id, rebuild=True)
+        elif only_if_connected:
+            status = await mgr.connect(instance_id, only_if_connected=True)
+        else:
+            status = await mgr.connect(instance_id)
+    except KeyError:
+        _audit("open_pane", "denied", request_id=instance_id, error="not found")
+        return web.json_response({"error": "not found", "code": "instance_not_found"}, status=404)
+    if rebuild:
+        _audit("open_pane", "rebuild", request_id=instance_id)
+    body = status.to_dict()
+    if status.state.value != "connected":
+        if only_if_connected:
+            # Declined, not failed: the background issuer asked to warm an
+            # ALREADY-connected forward and never raise one. No connect ran (the
+            # manager enforced that under its lock), so no token and no endpoint
+            # cross this boundary — 200 with a non-connected state, the same shape
+            # the connect route's connected-only path returns. The frontend reads
+            # it as `warm-declined` and leaves any existing pane untouched.
+            _audit("open_pane", "declined", request_id=instance_id, error="not connected")
+            body["code"] = "instance_not_connected"
+            return web.json_response(body)
+        _audit("open_pane", "failure", request_id=instance_id, error=status.error)
+        body["code"] = _connect_failure_code(body, "instance_connect_failed")
+        return web.json_response(body, status=502)
+
+    # A fargate crew forwards SSM to an ECS task that serves a turn API and NO
+    # dashboard (its status carries ``turn_url`` and never a token), so there is
+    # nothing to embed as a pane in EITHER access mode. Refuse it here, before the
+    # access split, rather than emit a direct-loopback endpoint whose ``turn_url``
+    # the pane consumer (:func:`parsePaneEndpoint`) has no variant for: that
+    # producer/consumer mismatch would return a 200 the browser then discards as
+    # unparseable, stranding the pane on "loading" with nothing in the journal.
+    # Refusing produces one actionable code instead. ``turn_url`` in the live
+    # status is the authoritative "this is a turn-only crew" signal.
+    if body.get("turn_url"):
+        _audit(
+            "open_pane",
+            "denied",
+            request_id=instance_id,
+            error="fargate crew has no dashboard pane",
+        )
+        return web.json_response(
+            {
+                "error": "this crew serves a turn API and no dashboard, so it has no pane",
+                "code": "pane_not_supported_for_transport",
+            },
+            status=409,
+        )
+
+    if access == "direct-loopback":
+        token, confirm_err = await _confirm_connected_token(
+            mgr, instance_id, status, body, "open_pane"
+        )
+        if confirm_err is not None:
+            return confirm_err
+        # Direct keeps connect's field shape (snake_case port + token): the
+        # browser reaches the forward itself, exactly as before this endpoint. A
+        # turn-only (fargate) crew was already refused above, so a direct-loopback
+        # pane ALWAYS carries a token — never a turn_url — matching the single
+        # shape the consumer's `parsePaneEndpoint` accepts.
+        endpoint: dict = {
+            "kind": "direct-loopback",
+            "instance_id": instance_id,
+            "local_port": body.get("local_port"),
+            "remote_port": body.get("remote_port"),
+            "token": token,  # delivered to owner only
+        }
+        _audit("open_pane", "success", request_id=instance_id)
+        return web.json_response(endpoint)
+
+    # ── same-origin-relay ────────────────────────────────────────────────────
+    relay = getattr(state, "instance_pane_relay", None)
+    if relay is None:
+        _audit("open_pane", "failure", request_id=instance_id, error="relay unavailable")
+        return web.json_response(
+            {"error": "pane relay unavailable", "code": "instances_manager_unavailable"},
+            status=503,
+        )
+    # Version gate BEFORE any lease: read the peer's advertised pane-relay
+    # protocol. An unknown value (peer too old, or unreachable) is treated exactly
+    # like a mismatch — an unproven version cannot be proven compatible — and
+    # fails closed with an actionable upgrade error. The hub never falls back to
+    # HTTP mixed content, a raw loopback port, or a sandbox-less frame.
+    ok, cap = await mgr.peer_capability(instance_id, "/api/status")
+    protocol = cap.get("pane_relay_protocol") if ok and isinstance(cap, dict) else None
+    if protocol != PANE_RELAY_PROTOCOL:
+        _audit(
+            "open_pane", "denied", request_id=instance_id, error="remote pane protocol unsupported"
+        )
+        return web.json_response(
+            {
+                "error": (
+                    "this Remote Crew is too old for same-origin panes; "
+                    "update it, then reconnect"
+                ),
+                "code": "remote_upgrade_required",
+            },
+            status=409,
+        )
+    grant = relay.issue(instance_id)
+    if grant is None:
+        # The forward went down between the connect confirm and the issue.
+        _audit("open_pane", "failure", request_id=instance_id, error="not connected at issue")
+        return web.json_response(
+            {"error": "instance is not connected", "code": "instance_not_connected"}, status=503
+        )
+    _audit("open_pane", "success", request_id=instance_id)
+    return web.json_response(
+        {
+            "kind": grant.kind,
+            "instance_id": instance_id,
+            "documentPath": grant.document_path,
+            "channel": grant.channel,
+            "protocol": grant.protocol,
+            "leaseExpiresAtEpochMs": grant.lease_expires_at_epoch_ms,
+        }
+    )
 
 
 async def api_instances_refresh_token(request: web.Request) -> web.Response:

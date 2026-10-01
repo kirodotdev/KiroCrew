@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from 'react'
+import { stampPaneChannel } from '../lib/embeddedParent'
 import { isEmbeddedPane } from '../lib/embedded'
 
 /**
@@ -41,7 +42,7 @@ export function setFocusModeEnabled(on: boolean, { echo = true }: { echo?: boole
   if (echo && isEmbeddedPane()) {
     try {
       // nosemgrep: javascript.browser.security.wildcard-postmessage-configuration.wildcard-postmessage-configuration
-      window.parent?.postMessage({ type: 'mc-set-focus-mode', v: 1, on }, '*')
+      window.parent?.postMessage(stampPaneChannel({ type: 'mc-set-focus-mode', v: 1, on }), '*')
     } catch {
       /* no parent / cross-origin restriction — the host's next broadcast reconciles */
     }

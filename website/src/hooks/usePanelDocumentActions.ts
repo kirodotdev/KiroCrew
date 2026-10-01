@@ -1,3 +1,4 @@
+import { relocateRequestUrl } from '../lib/dashboardRuntime'
 import { useCallback } from 'react'
 import type { QueryClient } from '@tanstack/react-query'
 
@@ -143,7 +144,7 @@ export function usePanelDocumentActions({ tabsCtl, slotRef, queryClient, showAct
     // draft we reconcile must be the one that owned this save, not whatever slot
     // is active when the write resolves.
     const requestSlot = slotRef.current ?? ''
-    const res = await fetch('/api/file-write', {
+    const res = await fetch(relocateRequestUrl('/api/file-write'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ path: filePath, content }),

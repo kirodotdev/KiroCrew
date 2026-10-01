@@ -19,6 +19,8 @@ import { NavigationLeaveGuardProvider, NavigationBackGuard } from './components/
 import { RouteHistoryTracker } from './components/NavHistoryArrows'
 import { initRum } from './rum'
 import { isEmbeddedPane } from './lib/embedded'
+import { stampPaneChannel } from './lib/embeddedParent'
+import { initDashboardRuntime, dashboardRouterBasename } from './lib/dashboardRuntime'
 // i18n must initialize before the first render — a component rendering ahead of
 // init would emit its bare translation key instead of text. The `/lazy` entry
 // fetches a non-English catalog on demand; plain `./i18n` has no loader, so
@@ -49,6 +51,13 @@ import './app-sdk/shared-modules'
 
 // Initialize RUM as early as possible
 initRum(__APP_VERSION__)
+
+// Resolve the relocatable dashboard runtime once, before the app renders, so
+// every same-dashboard gateway URL (HTTP, WebSocket, router basename, full-page
+// navigation) shares one base. A direct (root) deployment resolves to '/', so
+// this is a no-op there; under the capability relay it pins the pane's prefix.
+// See lib/dashboardRuntime.
+initDashboardRuntime()
 
 // Seeded from localStorage (written by the inline bootstrap in index.html) so
 // the very first paint is already in the right language; LanguageProvider then
@@ -184,7 +193,7 @@ const appTree = (
               <UIModeProvider>
                 <ThemeExperienceLayer />
                 <NavigationLeaveGuardProvider>
-                  <BrowserRouter>
+                  <BrowserRouter basename={dashboardRouterBasename()}>
                     {/* Inside the router (it navigates) and outside the routes
                         (it must survive every route change). Renders nothing,
                         and stays out of the history stack entirely until a page
@@ -263,7 +272,7 @@ function announceBoot(stage: string): void {
   if (!isEmbeddedPane()) return
   try {
     // nosemgrep: javascript.browser.security.wildcard-postmessage-configuration.wildcard-postmessage-configuration
-    window.parent?.postMessage({ type: 'mc-embedded-boot', v: 1, stage }, '*')
+    window.parent?.postMessage(stampPaneChannel({ type: 'mc-embedded-boot', v: 1, stage }), '*')
   } catch {
     /* no parent reachable — the ready announce carries its own retries */
   }

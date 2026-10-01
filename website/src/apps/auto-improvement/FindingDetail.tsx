@@ -8,6 +8,7 @@
 // only way to see why something was kept or thrown away.
 //
 // All colors come from the app's design tokens via Tailwind utilities.
+import { relocateRequestUrl } from '../../lib/dashboardRuntime'
 import { useQuery } from '@tanstack/react-query'
 import { Check, ExternalLink, Minus, X } from 'lucide-react'
 
@@ -91,7 +92,7 @@ export default function FindingDetail({ fp }: { fp: string }) {
   const { data, isLoading, error } = useQuery({
     queryKey: ['auto-improvement-finding', fp],
     queryFn: async () => {
-      const res = await fetch(`${API}/findings/${encodeURIComponent(fp)}`)
+      const res = await fetch(relocateRequestUrl(`${API}/findings/${encodeURIComponent(fp)}`))
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       return (await res.json()).finding as FindingDetailData
     },

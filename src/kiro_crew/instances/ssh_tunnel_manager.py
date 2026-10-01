@@ -52,7 +52,7 @@ import json
 import logging
 import re
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from dataclasses import replace as dataclass_replace
 from pathlib import Path
@@ -235,6 +235,16 @@ async def _upload_chunks(fh: Any, stall: asyncio.Timeout) -> Any:
 
 _LOOPBACK = "127.0.0.1"
 
+#: Request-header names a ``proxy_request``/``proxy_websocket`` caller may NEVER
+#: forward upstream: the credential is the manager-owned session cookie, the host
+#: is the fixed loopback authority, and the body length is recomputed by aiohttp.
+#: Forwarding any of these from the browser would let its auth material or a
+#: spoofed authority cross the tunnel. The pane relay strips these before it ever
+#: calls in; this floor makes the guarantee independent of any caller.
+_RELAY_FORWARD_HEADER_DENY = frozenset(
+    {"cookie", "authorization", "proxy-authorization", "host", "content-length"}
+)
+
 #: The closed set of peer endpoints :meth:`SshTunnelManager.peer_capability` may
 #: read. Every one is a GET that reports what the peer gateway CAN do — its
 #: version, its agent roster, its model list, its effort levels, its workspaces —
@@ -251,6 +261,10 @@ _PEER_CAPABILITY_PATHS: frozenset[str] = frozenset(
         "/api/models",
         "/api/effort-levels",
         "/api/workspaces",
+        # Read the peer's advertised pane-relay protocol before the hub issues a
+        # same-origin relay endpoint for it. A GET that reports what the peer CAN
+        # do (like the others here), so it belongs in the same closed carrier set.
+        "/api/status",
     }
 )
 # Poll cadence while waiting for the forward to come up.
@@ -611,6 +625,94 @@ class _PeerUnavailable(Exception):
         super().__init__(kind)
         self.kind = kind
         self.message = self._MESSAGES[kind]
+
+
+class _RedirectRefused(Exception):
+    """A peer answered a proxied WebSocket handshake with an HTTP redirect.
+
+    ``ws_connect`` has no ``allow_redirects`` switch and follows redirects by
+    default, so a compromised peer could steer the hub's handshake to a second
+    authority outside the fixed loopback forward. This is raised from an
+    ``on_request_redirect`` trace hook, which aiohttp awaits BEFORE it issues the
+    follow-up request, so the second request never leaves the hub. Kept off
+    ``aiohttp.ClientError``/``OSError`` so it propagates unwrapped out of
+    ``ws_connect`` for :meth:`SshTunnelManager.proxy_websocket` to translate.
+    """
+
+
+def _reject_ws_redirects_trace() -> "aiohttp.TraceConfig":
+    """A ``TraceConfig`` that refuses any redirect before a second request is sent.
+
+    Attached ONLY to the WebSocket proxy session; the HTTP proxy already passes
+    ``allow_redirects=False``. aiohttp fires (and awaits) ``on_request_redirect``
+    for each 30x before it dispatches the redirect request, so raising here stops
+    the follow — no handshake reaches an authority the forward never named.
+    """
+    trace = aiohttp.TraceConfig()
+
+    async def _on_redirect(_session: object, _ctx: object, _params: object) -> None:
+        raise _RedirectRefused()
+
+    trace.on_request_redirect.append(_on_redirect)  # type: ignore[arg-type]
+    return trace
+
+
+class _GenerationFencedConnector(aiohttp.TCPConnector):
+    """A ``TCPConnector`` that holds the manager lock over the loopback dial ALONE.
+
+    The manager's single lock must NOT be held across the peer's response-header
+    wait: aiohttp returns from ``session.request``/``ws_connect`` only after
+    ``resp.start`` has received headers (up to the read-idle budget), so a peer
+    that accepts a connection and then delays its headers would, under a lock
+    spanning the whole call, serialize every other crew's proxied request and
+    block ``disconnect``/``connect``/shutdown for that whole time.
+
+    aiohttp acquires the transport in ``BaseConnector.connect`` and only THEN runs
+    ``req.send``/``resp.start`` (see the installed ``client.py``
+    ``_connect_and_send_request``). Overriding ``connect`` therefore lets the lock
+    span the dial and the generation re-check and nothing after: it is released
+    before the header wait. Re-checking the forward stamp under the lock,
+    immediately before the dial, closes the window between credential selection
+    (which released the lock) and the connect — a rebuild that freed and reused
+    this loopback port raises before a byte reaches the replacement peer.
+
+    ``connect`` is aiohttp-internal, not public API, and this override does not
+    pin an aiohttp package version: it adapts to the ``connect(req, traces,
+    timeout)`` shape of whatever aiohttp is installed. The actual-manager transport
+    tests exercise that installed implementation end to end, and
+    ``test_generation_fenced_connector_refuses_stale_generation_and_releases_lock``
+    isolates the fence-and-release contract, so a seam change fails a test rather
+    than silently passing traffic.
+    """
+
+    def __init__(
+        self,
+        *,
+        stamp_of: "Callable[[str], tuple[int, int]]",
+        instance_id: str,
+        stamp: "tuple[int, int]",
+        lock: "asyncio.Lock",
+    ) -> None:
+        # ``force_close``: never reuse this socket for a different forward. ``limit``
+        # is left at the aiohttp default deliberately — a fresh connector is built
+        # per proxy call, so a low limit buys nothing and a limit of 1 would wedge
+        # the manager the moment a live WebSocket held the only slot while another
+        # connect waited on it under the lock.
+        super().__init__(force_close=True)
+        self._stamp_of = stamp_of
+        self._instance_id = instance_id
+        self._stamp = stamp
+        self._mgr_lock = lock
+
+    async def connect(self, req, traces, timeout):  # type: ignore[override]
+        # Fence the generation re-check + the loopback dial, and NOTHING after.
+        # aiohttp calls this to acquire the transport, then runs ``req.send`` /
+        # ``resp.start`` (the response-header wait) once this returns, so the lock
+        # is released before the peer's headers are awaited.
+        async with self._mgr_lock:
+            if self._stamp_of(self._instance_id) != self._stamp:
+                raise _PeerUnavailable("not_connected")
+            return await super().connect(req, traces=traces, timeout=timeout)
 
 
 class TunnelState(enum.Enum):
@@ -4651,6 +4753,8 @@ class SshTunnelManager:
         params: "dict[str, str] | None" = None,
         data: bytes | None = None,
         content_type: str = "",
+        extra_headers: "Mapping[str, str] | None" = None,
+        expected_forward: "tuple[int, int] | None" = None,
     ):
         """Open *path* on a connected peer's gateway; yield the live response.
 
@@ -4672,6 +4776,19 @@ class SshTunnelManager:
         Failures raise :class:`ProxyRequestError` with a machine-readable
         ``code`` and a suggested ``http_status``, so the route handler can
         translate without string-matching.
+
+        ``expected_forward`` binds this call to ONE ``(port, generation)`` — the
+        pane relay passes the snapshot its capability was issued against. The url
+        and credential are selected from the LIVE forward here, and that selection
+        must equal the generation the caller expects: a mismatch means a disconnect
+        or rebuild slipped in between the caller's own validation and this
+        selection, so the call is refused BEFORE a byte reaches the replacement
+        peer. Connection establishment then runs while the manager lock is held,
+        with the same generation re-checked under that lock, so a rebuild cannot
+        free and reuse this loopback port between the check and the ``connect``.
+        The per-attempt fence pins every retry to that generation, so none drifts
+        onto a forward the lease never named. ``None`` fences on whatever
+        generation is live at selection.
         """
 
         def _unavailable(exc: _PeerUnavailable) -> ProxyRequestError:
@@ -4687,6 +4804,18 @@ class SshTunnelManager:
         # reused by every retry, so the forward a later attempt must still be
         # talking to is the one THIS reading names. See :meth:`_require_peer_forward`.
         stamp = self._peer_forward_stamp(instance_id)
+        # Generation binding (pane relay). The url+cookie were just selected from
+        # the live forward; if that is not the generation the caller's capability
+        # was issued against, refuse now — the selection would otherwise carry an
+        # old capability onto the replacement forward. Reject before any await, so
+        # nothing crosses the tunnel. Pinning the fence to expected_forward holds
+        # every retry to the lease's generation, not merely to this instant's.
+        if expected_forward is not None and stamp != expected_forward:
+            raise ProxyRequestError(
+                "proxy_peer_not_connected",
+                "forward generation moved since the lease was issued",
+                http_status=503,
+            )
         tmo = aiohttp.ClientTimeout(
             total=None,
             sock_connect=_PROXY_CONNECT_TIMEOUT,
@@ -4700,7 +4829,36 @@ class SshTunnelManager:
                 raise _unavailable(e) from None
             if content_type:
                 headers["Content-Type"] = content_type
-            session = aiohttp.ClientSession(timeout=tmo)
+            # Caller-forwarded request headers (e.g. Range, If-None-Match for the
+            # pane relay). Merged UNDER the credential: a caller can never clobber
+            # the manager-owned Cookie, nor smuggle an Authorization/Host that
+            # would defeat "the browser's auth material never crosses the tunnel"
+            # (the pane relay allow-lists these before it gets here; this floor is
+            # defense-in-depth so no future caller can regress the invariant).
+            if extra_headers:
+                for _hk, _hv in extra_headers.items():
+                    if _hk.lower() in _RELAY_FORWARD_HEADER_DENY:
+                        continue
+                    headers.setdefault(_hk, _hv)
+            # Fence the DIAL with the manager lock, never the response. Freeing
+            # and reusing this loopback port for another forward — and the epoch
+            # bump that retires the old capability — happen only inside
+            # ``_teardown_locked`` and ``_rebuild``, both of which take
+            # ``self._lock``; the connector holds that lock across the connect and
+            # a re-check of the forward ``stamp`` (credential selection above
+            # released it, so the generation can move in that gap) and releases it
+            # BEFORE aiohttp awaits the peer's response headers. Holding the lock
+            # through that header wait would serialize every other crew's request
+            # and ``disconnect`` behind one slow peer for the whole idle budget.
+            session = aiohttp.ClientSession(
+                timeout=tmo,
+                connector=_GenerationFencedConnector(
+                    stamp_of=self._peer_forward_stamp,
+                    instance_id=instance_id,
+                    stamp=stamp,
+                    lock=self._lock,
+                ),
+            )
             try:
                 resp = await session.request(
                     method,
@@ -4714,6 +4872,9 @@ class SshTunnelManager:
                     # into its loopback control planes).
                     allow_redirects=False,
                 )
+            except _PeerUnavailable as e:
+                await session.close()
+                raise _unavailable(e) from None
             except Exception as e:  # timeout, connection refused, etc.
                 await session.close()
                 logger.info(
@@ -4743,6 +4904,174 @@ class SshTunnelManager:
                 yield resp
             finally:
                 resp.release()
+                await session.close()
+            return
+
+    # ── pane-relay generation binding ───────────────────────────────────────
+    # The pane relay (dashboard/instance_pane_relay.py) issues a short-lived
+    # capability bound to ONE forward generation. It captures a snapshot at issue
+    # time and re-checks it on every relayed request, so a disconnect, rebuild,
+    # removal, manager close, or tunnel replacement — each of which bumps the
+    # generation — silently retires the capability without any explicit revoke
+    # call having to reach this object. The two methods below are the whole
+    # public surface that binding needs; the credential machinery stays private.
+
+    def peer_forward_snapshot(self, instance_id: str) -> tuple[int, int]:
+        """The live ``(port, generation)`` for *instance_id* — the relay's fence.
+
+        ``(0, generation)`` when not connected, so a snapshot taken while
+        connected never equals one taken while down. Same reading
+        :meth:`proxy_request` fences each attempt on, exposed so the relay can
+        bind a capability to the exact forward it was issued against.
+        """
+        return self._peer_forward_stamp(instance_id)
+
+    def peer_forward_current(self, instance_id: str, snapshot: tuple[int, int]) -> bool:
+        """True iff *snapshot* still names the live, connected forward.
+
+        A capability is dead once its snapshot stops matching: the forward moved
+        (disconnect/rebuild/tunnel replacement), the instance was removed, or the
+        manager closed — every one of which advances the generation this compares.
+        """
+        port, _epoch = snapshot
+        return port > 0 and self._peer_forward_stamp(instance_id) == snapshot
+
+    @contextlib.asynccontextmanager
+    async def proxy_websocket(
+        self,
+        instance_id: str,
+        path: str,
+        *,
+        subprotocols: "tuple[str, ...]" = (),
+        max_msg_size: int = 0,
+        expected_forward: "tuple[int, int] | None" = None,
+    ):
+        """Open a WebSocket to a connected peer's gateway; yield the upstream.
+
+        The WebSocket sibling of :meth:`proxy_request`, for the pane relay. Same
+        credential rules: runs over the already-open forward (**no SSH spawn**),
+        the manager-owned session travels as the port-scoped cookie and never
+        leaves this object, and a handshake refused 401/403 gets exactly one
+        transparent re-mint retry. The target is always the loopback end of the
+        forward; the browser can never name the host, and the ``Origin`` sent
+        upstream is the loopback authority itself (what the peer's WebSocket
+        origin check expects), never the browser's Origin.
+
+        Yields the live ``aiohttp.ClientWebSocketResponse``; it and its session
+        are closed when the context exits. Failures raise
+        :class:`ProxyRequestError`, so the relay translates without
+        string-matching.
+
+        ``expected_forward`` binds the handshake to ONE ``(port, generation)``
+        exactly as :meth:`proxy_request` does: the url+credential are selected
+        from the live forward, and a mismatch with the lease's snapshot is refused
+        before the upgrade so no frame reaches a replacement peer.
+        """
+
+        def _unavailable(exc: _PeerUnavailable) -> ProxyRequestError:
+            if exc.kind == "not_connected":
+                return ProxyRequestError("proxy_peer_not_connected", exc.message, http_status=503)
+            return ProxyRequestError("proxy_no_credential", exc.message, http_status=503)
+
+        try:
+            url, cookie_name = self._peer_target(instance_id, path)
+        except _PeerUnavailable as e:
+            raise _unavailable(e) from None
+        stamp = self._peer_forward_stamp(instance_id)
+        # Generation binding (pane relay): refuse before the upgrade unless the
+        # live forward still matches the generation the lease named. See
+        # :meth:`proxy_request` for the full rationale.
+        if expected_forward is not None and stamp != expected_forward:
+            raise ProxyRequestError(
+                "proxy_peer_not_connected",
+                "forward generation moved since the lease was issued",
+                http_status=503,
+            )
+        # The loopback authority the forward listens on, reused as the upstream
+        # Origin: the peer's WS origin check expects its own loopback origin, and
+        # it must come from the target we resolved, never from the browser.
+        origin = url.split("/", 3)
+        origin_header = "/".join(origin[:3])
+        tmo = aiohttp.ClientTimeout(
+            total=None,
+            sock_connect=_PROXY_CONNECT_TIMEOUT,
+            sock_read=_PROXY_READ_IDLE_TIMEOUT,
+        )
+        reminted = False
+        while True:
+            try:
+                headers = await self._peer_headers_for(instance_id, url, cookie_name, stamp)
+            except _PeerUnavailable as e:
+                raise _unavailable(e) from None
+            headers["Origin"] = origin_header
+            # Fence the DIAL with the manager lock exactly as :meth:`proxy_request`
+            # does — the connector holds ``self._lock`` across the connect and the
+            # generation re-check and releases it before the handshake's response
+            # headers are awaited, so a slow peer cannot serialize the manager.
+            # ``ws_connect`` has NO ``allow_redirects`` switch and follows redirects
+            # by default, so the redirect-refusing trace stops a peer 30x from
+            # steering the handshake to an authority the forward never named.
+            session = aiohttp.ClientSession(
+                timeout=tmo,
+                connector=_GenerationFencedConnector(
+                    stamp_of=self._peer_forward_stamp,
+                    instance_id=instance_id,
+                    stamp=stamp,
+                    lock=self._lock,
+                ),
+                trace_configs=[_reject_ws_redirects_trace()],
+            )
+            try:
+                ws = await session.ws_connect(
+                    url,
+                    headers=headers,
+                    protocols=subprotocols,
+                    max_msg_size=max_msg_size,
+                    autoping=True,
+                )
+            except _PeerUnavailable as e:
+                await session.close()
+                raise _unavailable(e) from None
+            except _RedirectRefused:
+                await session.close()
+                # A peer that answers the upgrade with a redirect is misbehaving;
+                # translate to the same coded error a peer that never answered
+                # gets. The trace already stopped the follow, so no second request
+                # reached the redirect authority.
+                raise ProxyRequestError(
+                    "proxy_peer_unreachable",
+                    "peer attempted to redirect the WebSocket handshake",
+                    http_status=502,
+                ) from None
+            except aiohttp.WSServerHandshakeError as e:
+                await session.close()
+                if (
+                    e.status in (401, 403)
+                    and not reminted
+                    and await self.refresh_token(instance_id)
+                ):
+                    reminted = True
+                    continue
+                raise ProxyRequestError(
+                    "proxy_unauthorized", "peer rejected the credential", http_status=502
+                ) from None
+            except Exception as e:  # timeout, connection refused, etc.
+                await session.close()
+                logger.info(
+                    "proxy_websocket to %s failed before upgrade (%s)",
+                    instance_id,
+                    type(e).__name__,  # never the token
+                )
+                raise ProxyRequestError(
+                    "proxy_peer_unreachable",
+                    f"peer did not answer ({type(e).__name__})",
+                    http_status=502,
+                ) from None
+            try:
+                yield ws
+            finally:
+                with contextlib.suppress(Exception):
+                    await ws.close()
                 await session.close()
             return
 

@@ -4,6 +4,7 @@
  * search, detail, delete, clear).
  */
 
+import { relocateRequestUrl } from '../../lib/dashboardRuntime'
 import type { ClientTransport } from './transport'
 import type { CrewBoardAction, CrewBoardActionResult, WorkBoardResponse } from '../crewBoard'
 
@@ -20,7 +21,7 @@ export function createSessionsEndpoints({ get, post, del, j }: ClientTransport) 
          *  restart, but against a config that may not match the sources. */
         mcp_sync_ok: boolean
       }>,
-    sessionsMemory: () => fetch('/api/sessions/memory').then(j) as Promise<{
+    sessionsMemory: () => fetch(relocateRequestUrl('/api/sessions/memory')).then(j) as Promise<{
       sessions: {
         key: string; title: string; slot_key: string; untitled: boolean
         agent: string; pid: number | null; owns_runtime: boolean; prompts: number
@@ -73,12 +74,12 @@ export function createSessionsEndpoints({ get, post, del, j }: ClientTransport) 
     // have no title and so render their own storage key as one. NOT `taskrunner_`: that
     // namespace also holds real conversations, so the server keeps it listed.
     // Both off by default: every other caller wants the full inventory.
-    sessions: (limit = 30, offset = 0, preview = false, excludeOpen = false, userOnly = false) => fetch('/api/sessions?limit=' + limit + '&offset=' + offset + (preview ? '&preview=1' : '') + (excludeOpen ? '&exclude_open=1' : '') + (userOnly ? '&user_only=1' : '')).then(j),
-    sessionsSearch: (q: string, limit = 50) => fetch('/api/sessions/search?q=' + encodeURIComponent(q) + '&limit=' + limit).then(j),
+    sessions: (limit = 30, offset = 0, preview = false, excludeOpen = false, userOnly = false) => fetch(relocateRequestUrl('/api/sessions?limit=' + limit + '&offset=' + offset + (preview ? '&preview=1' : '') + (excludeOpen ? '&exclude_open=1' : '') + (userOnly ? '&user_only=1' : ''))).then(j),
+    sessionsSearch: (q: string, limit = 50) => fetch(relocateRequestUrl('/api/sessions/search?q=' + encodeURIComponent(q) + '&limit=' + limit)).then(j),
   }
 
   const historyDetail = {
-    sessionDetail: (key: string) => fetch('/api/sessions/' + encodeURIComponent(key)).then(j),
+    sessionDetail: (key: string) => fetch(relocateRequestUrl('/api/sessions/' + encodeURIComponent(key))).then(j),
     deleteSession: (key: string) => del('/api/sessions/' + encodeURIComponent(key)).then(j),
     clearSessions: () => del('/api/sessions').then(j),
   }

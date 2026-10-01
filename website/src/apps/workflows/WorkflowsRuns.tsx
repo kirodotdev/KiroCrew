@@ -15,6 +15,7 @@
  *   GET  /api/workflows/runs/{id}       -> RunDetail                (with events[])
  *   POST /api/workflows/runs/{id}/cancel -> { run_id, cancelled }
  */
+import { relocateRequestUrl } from '../../lib/dashboardRuntime'
 import { useCallback, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
@@ -47,13 +48,13 @@ const CORE_API_BASE = '/api/workflows'
 const POLL_MS = 2000
 
 async function coreGet<T>(path: string): Promise<T> {
-  const r = await fetch(`${CORE_API_BASE}${path}`, { credentials: 'same-origin' })
+  const r = await fetch(relocateRequestUrl(`${CORE_API_BASE}${path}`), { credentials: 'same-origin' })
   if (!r.ok) throw new Error(`GET ${path} → ${r.status}`)
   return r.json() as Promise<T>
 }
 
 async function corePost<T>(path: string): Promise<T> {
-  const r = await fetch(`${CORE_API_BASE}${path}`, {
+  const r = await fetch(relocateRequestUrl(`${CORE_API_BASE}${path}`), {
     method: 'POST',
     credentials: 'same-origin',
   })

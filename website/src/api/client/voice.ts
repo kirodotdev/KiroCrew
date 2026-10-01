@@ -4,6 +4,7 @@
  * synthesis and cancel.
  */
 
+import { relocateRequestUrl } from '../../lib/dashboardRuntime'
 import { createVoiceRequestId } from '../../lib/voicePlayback'
 import { parseErrorCode } from '../../utils/errorReport'
 import { ApiError } from '../apiError'
@@ -12,7 +13,7 @@ import type { ClientTransport } from './transport'
 export function createVoiceEndpoints({ post, put, j }: ClientTransport) {
   const speechToText = {
     // STT
-    sttConfig: () => fetch('/api/config/stt').then(j),
+    sttConfig: () => fetch(relocateRequestUrl('/api/config/stt')).then(j),
     saveSttConfig: (body: {
       enabled?: boolean
       provider?: string
@@ -31,7 +32,7 @@ export function createVoiceEndpoints({ post, put, j }: ClientTransport) {
     // download in flight. Separate from `sttConfig` because it is POLLED while a
     // model is being fetched, and polling the config endpoint would re-read and
     // re-probe configuration several times a second.
-    sttStatus: () => fetch('/api/stt/status').then(j),
+    sttStatus: () => fetch(relocateRequestUrl('/api/stt/status')).then(j),
     // Fetch a model now, so the cost is paid at a moment the user chose rather
     // than in the middle of their first dictation. Returns as soon as the transfer
     // is under way; progress is read from `sttStatus`.
@@ -59,16 +60,16 @@ export function createVoiceEndpoints({ post, put, j }: ClientTransport) {
     sttTranscribe: (blob: Blob, ext = 'webm') => {
       const fd = new FormData()
       fd.append('audio', blob, `recording.${ext}`)
-      return fetch('/api/stt/transcribe', { method: 'POST', body: fd }).then(j)
+      return fetch(relocateRequestUrl('/api/stt/transcribe'), { method: 'POST', body: fd }).then(j)
     },
   }
 
   const voiceSettings = {
     // Voice
-    voiceConfig: () => fetch('/api/voice/config').then(j),
+    voiceConfig: () => fetch(relocateRequestUrl('/api/voice/config')).then(j),
     updateVoiceConfig: (body: object) => put('/api/voice/config', body).then(j),
-    voiceVoices: () => fetch('/api/voice/voices').then(j),
-    voiceSystemVoices: () => fetch('/api/voice/system-voices').then(j),
+    voiceVoices: () => fetch(relocateRequestUrl('/api/voice/voices')).then(j),
+    voiceSystemVoices: () => fetch(relocateRequestUrl('/api/voice/system-voices')).then(j),
   }
 
   const synthesis = {

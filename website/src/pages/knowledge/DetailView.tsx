@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { ChevronLeft, Copy, Download, Archive, X, RefreshCw, AlertCircle, Link2, ArrowUpRight, Tag } from 'lucide-react'
 import { Card, Btn, Badge, ContentSkeleton } from '../../components/ui'
+import { relocateRequestUrl } from '../../lib/dashboardRuntime'
 import Clickable from '../../components/Clickable'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
 import { knowledgeApi } from './api'
@@ -248,7 +249,7 @@ export default function DetailView({ itemId, onBack, onEntityClick }: { itemId: 
 
       <div className="flex gap-2 flex-wrap">
         <Btn onClick={copyContent}><Copy size={12} /> {copied ? i18nT('pages.knowledge.detailView.copied') : i18nT('pages.knowledge.detailView.copy_content')}</Btn>
-        <Btn onClick={() => { const a = document.createElement('a'); a.href = `/api/knowledge/items/${item.id}/export`; a.download = `${item.title}.knowledge`; a.click() }}><Download size={12} /> {i18nT('pages.knowledge.detailView.export')}</Btn>
+        <Btn onClick={() => { const a = document.createElement('a'); a.href = relocateRequestUrl(`/api/knowledge/items/${item.id}/export`); a.download = `${item.title}.knowledge`; a.click() }}><Download size={12} /> {i18nT('pages.knowledge.detailView.export')}</Btn>
         {item.status === 'archived'
           ? <Btn disabled={archiveMutation.isPending} onClick={() => archiveMutation.mutate({ id: item.id, status: 'active' })}><RefreshCw size={12} /> {i18nT('pages.knowledge.detailView.unarchive')}</Btn>
           : <Btn disabled={archiveMutation.isPending} onClick={() => archiveMutation.mutate({ id: item.id, status: 'archived' })}><Archive size={12} /> {i18nT('pages.knowledge.detailView.archive')}</Btn>}

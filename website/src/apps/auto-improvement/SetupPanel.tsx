@@ -14,6 +14,7 @@
 // All colors come from the app's design tokens (accent / warn / muted / border)
 // via Tailwind utilities — never a hardcoded hex — so the panel matches whatever
 // theme the dashboard is on.
+import { relocateRequestUrl } from '../../lib/dashboardRuntime'
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { FolderGit2, GitBranch, Loader2, Play, Square } from 'lucide-react'
@@ -98,7 +99,7 @@ export function activityLine(a: ActivityItem): string {
 }
 
 async function postJson<T>(path: string, body: unknown): Promise<T> {
-  const res = await fetch(`${API}${path}`, {
+  const res = await fetch(relocateRequestUrl(`${API}${path}`), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body ?? {}),
@@ -133,7 +134,7 @@ export default function SetupPanel({ config }: { config?: Record<string, unknown
   // Branch list only makes sense once a clone exists; the query is gated on it.
   const { data: branchResp } = useQuery({
     queryKey: ['auto-improvement-branches', configured],
-    queryFn: () => fetch(`${API}/branches`).then((r) => (r.ok ? r.json() : { branches: [] })),
+    queryFn: () => fetch(relocateRequestUrl(`${API}/branches`)).then((r) => (r.ok ? r.json() : { branches: [] })),
     enabled: configured,
   })
   const branches: string[] = branchResp?.branches ?? []
@@ -153,7 +154,7 @@ export default function SetupPanel({ config }: { config?: Record<string, unknown
   // this cannot be used to retarget the repository.
   const saveConfig = useMutation({
     mutationFn: (patch: Record<string, unknown>) =>
-      fetch(`${API}/config`, {
+      fetch(relocateRequestUrl(`${API}/config`), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(patch),
@@ -165,7 +166,7 @@ export default function SetupPanel({ config }: { config?: Record<string, unknown
 
   const { data: run } = useQuery({
     queryKey: ['auto-improvement-run'],
-    queryFn: () => fetch(`${API}/run`).then((r) => r.json() as Promise<RunStatus>),
+    queryFn: () => fetch(relocateRequestUrl(`${API}/run`)).then((r) => r.json() as Promise<RunStatus>),
     refetchInterval: (q) => (q.state.data?.status === 'running' ? 3000 : 15000),
   })
   const running = run?.status === 'running'

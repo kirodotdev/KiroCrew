@@ -1,5 +1,6 @@
+import { relocateRequestUrl } from '../../lib/dashboardRuntime'
 export async function knowledgeApi<T>(path: string, opts?: RequestInit): Promise<T> {
-  const r = await fetch(`/api/knowledge${path}`, opts)
+  const r = await fetch(relocateRequestUrl(`/api/knowledge${path}`), opts)
   if (!r.ok) {
     let msg = `${r.status} ${r.statusText}`
     try {

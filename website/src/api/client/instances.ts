@@ -4,6 +4,7 @@
  * connected peer's federated session search, capabilities and live slots.
  */
 
+import { relocateRequestUrl } from '../../lib/dashboardRuntime'
 import type { RemoteCrewCapabilities } from '../../hooks/useRemoteCapabilities'
 import { toApiError } from '../apiError'
 import type { ClientTransport } from './transport'
@@ -45,6 +46,33 @@ export interface SsoStatus {
   expires_at: number | null
   reason: string
 }
+
+/**
+ * The owner-only pane issuer's discriminated response
+ * (`POST /api/instances/{id}/pane`). Validate it with `parsePaneEndpoint` from
+ * `lib/paneChannel` before use — a relay endpoint carries no port/token, a
+ * direct endpoint carries no capability.
+ */
+export type PaneEndpointResponse =
+  | {
+      kind: 'direct-loopback'
+      instance_id: string
+      local_port: number
+      remote_port?: number
+      /** Always present. A turn-only (fargate) crew serves no dashboard and is
+       *  refused with `pane_not_supported_for_transport` BEFORE this endpoint is
+       *  produced, so a direct-loopback pane never arrives without a token (nor
+       *  with a `turn_url`) — the one shape `parsePaneEndpoint` accepts. */
+      token: string
+    }
+  | {
+      kind: 'same-origin-relay'
+      instance_id: string
+      documentPath: string
+      channel: string
+      protocol: number
+      leaseExpiresAtEpochMs: number
+    }
 
 export interface InstanceView {
   id: string
@@ -161,6 +189,45 @@ export function createInstancesEndpoints({ get, post, del, patch, j, jInstancesD
           '/connect' +
           (opts?.rebuild ? '?rebuild=1' : opts?.onlyIfConnected ? '?only_if_connected=1' : ''),
       ).then(j) as Promise<InstanceTunnelStatus & { token?: string }>,
+    /**
+     * Open a Remote Crew pane: the owner-only issuer returns ONE discriminated
+     * endpoint for the access mode the parent's own origin dictates (chosen by
+     * the caller via `paneAccessFor`).
+     *
+     *  - `direct-loopback` — a loopback `local_port` + the remote `token`; the
+     *    browser reaches the SSH forward itself, exactly as `connect` handed back
+     *    before this endpoint existed.
+     *  - `same-origin-relay` — a short-lived, generation-bound capability
+     *    `documentPath` + a frame `channel`; NO port and NO remote token cross
+     *    this boundary. The pane rides the hub's own published origin.
+     *
+     * `rebuild` is the pane's Retry after a load watchdog fired on a document
+     * that navigated — the gateway spawns a fresh forwarder (a relay lease binds
+     * to whichever generation it produces). Non-2xx throws `ApiError` with a
+     * `.code` the caller maps to i18n (`remote_upgrade_required`, `bad_request`,
+     * connect failures); `parsePaneEndpoint` validates a 200 body.
+     *
+     * `onlyIfConnected` is the background issue mode (auto-warm / lease renewal):
+     * the gateway mints a pane ONLY for an already-connected forward, atomically
+     * under its manager lock, and never brings one up — so a background issue
+     * racing an explicit disconnect cannot reconnect the tunnel, and no remote
+     * token is surfaced. A forward that is not up comes back as a 200 whose body
+     * is a non-connected status (not a relay/direct endpoint), which
+     * `parsePaneEndpoint` rejects, so the caller leaves any existing pane alone.
+     * Mutually exclusive with `rebuild`.
+     */
+    openInstancePane: (
+      id: string,
+      access: 'direct-loopback' | 'same-origin-relay',
+      opts?: { rebuild?: boolean; onlyIfConnected?: boolean },
+    ) =>
+      post(
+        '/api/instances/' +
+          encodeURIComponent(id) +
+          '/pane' +
+          (opts?.rebuild ? '?rebuild=1' : opts?.onlyIfConnected ? '?only_if_connected=1' : ''),
+        { access },
+      ).then(j) as Promise<PaneEndpointResponse>,
     refreshInstanceToken: (id: string) =>
       post('/api/instances/' + encodeURIComponent(id) + '/refresh-token').then(j) as Promise<
         InstanceTunnelStatus & { token?: string }
@@ -217,7 +284,7 @@ export function createInstancesEndpoints({ get, post, del, patch, j, jInstancesD
      *  confirm step: installing the same file twice is two sessions, which is the
      *  documented behaviour rather than an accident to guard against. */
     importSessionFromFile: async (file: Blob) => {
-      const r = await fetch('/api/chat/slots/import', {
+      const r = await fetch(relocateRequestUrl('/api/chat/slots/import'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/octet-stream', ..._sk },
         body: file,
@@ -245,7 +312,7 @@ export function createInstancesEndpoints({ get, post, del, patch, j, jInstancesD
     // Federated session search across the local gateway + every CONNECTED remote
     // instance (backend rank-interleaves; remote rows carry instance_id/_name).
     // 403 = instances feature disabled — callers fall back to sessionsSearch.
-    instancesSearchSessions: (q: string, limit = 50) => fetch('/api/instances/search-sessions?q=' + encodeURIComponent(q) + '&limit=' + limit).then(j),
+    instancesSearchSessions: (q: string, limit = 50) => fetch(relocateRequestUrl('/api/instances/search-sessions?q=' + encodeURIComponent(q) + '&limit=' + limit)).then(j),
     /** What a connected crew can do: its version, agent roster, model list, effort
      *  levels and workspaces. The per-instance counterpart to `/api/agents`,
      *  `/api/models`, `/api/effort-levels` and `/api/workspaces`, which are all
@@ -258,7 +325,7 @@ export function createInstancesEndpoints({ get, post, del, patch, j, jInstancesD
      *  `unavailable` names the reads that failed, per field, so one unreachable
      *  roster disables exactly its own control instead of blanking the shelf. */
     instancesCapabilities: (instanceId: string) =>
-      fetch('/api/instances/' + encodeURIComponent(instanceId) + '/capabilities').then(j) as Promise<RemoteCrewCapabilities>,
+      fetch(relocateRequestUrl('/api/instances/' + encodeURIComponent(instanceId) + '/capabilities')).then(j) as Promise<RemoteCrewCapabilities>,
 
     // A CONNECTED remote instance's LIVE sessions, read through an owner-only,
     // GET-only hub route. NOT the generic instance proxy, which this first used: the
@@ -275,7 +342,7 @@ export function createInstancesEndpoints({ get, post, del, patch, j, jInstancesD
     // peer's /api/sessions, and the prefix row that would admit them would also admit
     // clear-all, session-restart, a memory read and a token-spending summarize.
     instanceChatSlots: (id: string) =>
-      fetch('/api/instances/' + encodeURIComponent(id) + '/chat-slots').then(j),
+      fetch(relocateRequestUrl('/api/instances/' + encodeURIComponent(id) + '/chat-slots')).then(j),
   }
 
   return { registryAndTransfer, peerReads }

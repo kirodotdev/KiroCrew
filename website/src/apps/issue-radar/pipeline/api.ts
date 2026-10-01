@@ -29,6 +29,7 @@ const ISSUE_RADAR_API = '/api/apps/issue-radar'
 // `repoScopeKey` exists to prevent; re-exported so importers of this module keep
 // working and there is still one declaration.
 export type { RepoRef, SourceProvider } from '../api'
+import { relocateRequestUrl } from '../../../lib/dashboardRuntime'
 import type { RepoRef, SourceProvider } from '../api'
 
 /** Every phase a work item can be in, in lifecycle order — Issue Radar's own list,
@@ -176,7 +177,7 @@ export const autoTriagePipelineApi = {
     let r: Response
     try {
       const q = new URLSearchParams(repoQuery(ref))
-      r = await fetch(`${ISSUE_RADAR_API}/crew/fabric?${q.toString()}`, {
+      r = await fetch(relocateRequestUrl(`${ISSUE_RADAR_API}/crew/fabric?${q.toString()}`), {
         credentials: 'same-origin',
       })
     } catch {
@@ -428,7 +429,7 @@ function asObject(v: unknown): Record<string, unknown> | null {
  * truth.
  */
 async function getObjectOrThrow(path: string): Promise<Record<string, unknown>> {
-  const r = await fetch(path, { credentials: 'same-origin' })
+  const r = await fetch(relocateRequestUrl(path), { credentials: 'same-origin' })
   if (!r.ok) {
     // Carry the backend's `code` on the error, not just the status. The backend is
     // the only authority on rules like "this forge has no pipeline data"; a caller

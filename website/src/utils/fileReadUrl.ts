@@ -1,4 +1,5 @@
 import { i18nT } from '../i18n/t'
+import { relocateRequestUrl } from '../lib/dashboardRuntime'
 import { downloadBlob } from './download'
 
 /** Append resolve=1 for relative paths. The backend resolves such paths
@@ -38,9 +39,16 @@ export function isAbsolutePath(filePath: string): boolean {
   return /^(?:\/|~(?:$|\/)|[A-Za-z]:[\\/]|\\\\)/.test(filePath)
 }
 
-/** Build the /api/file-read URL, appending resolve=1 for relative paths. */
+/** Build the /api/file-read URL, appending resolve=1 for relative paths.
+ *
+ * Relocated through the dashboard runtime so the root-absolute path stays under
+ * the capability prefix in a relayed pane (identity in direct mode). These
+ * builders feed BOTH `fetch(...)` and element `src=`, so relocating at the
+ * builder covers every consumer at once — a root-absolute `src` would otherwise
+ * escape the prefix to the hub root exactly as a `fetch` would. The office/slide
+ * builders below derive from `fileDownloadUrl`, so they inherit the relocation. */
 export function fileReadUrl(filePath: string): string {
-  return withResolve('/api/file-read?path=' + encodeURIComponent(filePath), filePath)
+  return relocateRequestUrl(withResolve('/api/file-read?path=' + encodeURIComponent(filePath), filePath))
 }
 
 /** Build the /api/file-download URL — streams raw bytes for binary downloads.
@@ -49,7 +57,7 @@ export function fileReadUrl(filePath: string): string {
  * decodes content as UTF-8 with errors='replace', which corrupts binary
  * files (.docx, .pdf, images) by replacing non-text bytes with U+FFFD. */
 export function fileDownloadUrl(filePath: string): string {
-  return withResolve('/api/file-download?path=' + encodeURIComponent(filePath), filePath)
+  return relocateRequestUrl(withResolve('/api/file-download?path=' + encodeURIComponent(filePath), filePath))
 }
 
 /** Fetch a file's raw bytes through /api/file-download and hand them to the
@@ -111,7 +119,7 @@ export function downloadFileName(filePath: string): string {
  * Media elements need 206 Partial Content for seeking; file-read and
  * file-download cannot serve that. Only audio/video paths belong here. */
 export function fileStreamUrl(filePath: string): string {
-  return withResolve('/api/file-stream?path=' + encodeURIComponent(filePath), filePath)
+  return relocateRequestUrl(withResolve('/api/file-stream?path=' + encodeURIComponent(filePath), filePath))
 }
 
 /** Build the /api/file-office-preview URL — extracts plaintext from a

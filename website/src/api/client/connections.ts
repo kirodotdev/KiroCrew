@@ -4,6 +4,7 @@
  * operator-registered OAuth clients.
  */
 
+import { relocateRequestUrl } from '../../lib/dashboardRuntime'
 import type { ClientTransport } from './transport'
 
 /**
@@ -96,7 +97,7 @@ export function createConnectionsEndpoints({ post, put, del, j }: ClientTranspor
     connectionsMint: (slug: string) =>
       post('/api/connections/mint', { slug }).then(j) as Promise<{ ok: boolean; slug: string; state: string; token: string }>,
     connectionsMintState: (slug: string) =>
-      fetch(`/api/connections/mint?slug=${encodeURIComponent(slug)}`).then(j) as Promise<ConnectionMintState>,
+      fetch(relocateRequestUrl(`/api/connections/mint?slug=${encodeURIComponent(slug)}`)).then(j) as Promise<ConnectionMintState>,
     // Warm every mintable provider's URL in one activation, so a later Connect
     // serves a URL the warm table already holds instead of paying a cold spawn.
     // Deliberately BODYLESS: what is mintable is a fact about the user's registry
@@ -111,7 +112,7 @@ export function createConnectionsEndpoints({ post, put, del, j }: ClientTranspor
     // Authorization verdict + first-connect time per visible provider. Additive to
     // the mint feed above; never mints.
     connectionsStatus: () =>
-      fetch('/api/connections/status').then(j) as Promise<{ schema_version: number; connections: ConnectionStatus[] }>,
+      fetch(relocateRequestUrl('/api/connections/status')).then(j) as Promise<{ schema_version: number; connections: ConnectionStatus[] }>,
     // Promptless authenticated enumeration through kiro-cli. The runtime owns
     // bearer injection and provider tools/list; this receives only a verdict and count.
     connectionsTest: (slug: string) =>
@@ -138,7 +139,7 @@ export function createConnectionsEndpoints({ post, put, del, j }: ClientTranspor
     // user (it is what the gallery's "needs configuration" card is built from and
     // carries no secret); save and delete are owner-only.
     connectionsOAuthClients: () =>
-      fetch('/api/connections/oauth-clients').then(j) as Promise<{ schema_version: number; clients: ConnectionOAuthClient[] }>,
+      fetch(relocateRequestUrl('/api/connections/oauth-clients')).then(j) as Promise<{ schema_version: number; clients: ConnectionOAuthClient[] }>,
     // Omitted fields are left as they are, so the id can be saved without re-entering
     // a secret the panel never displays; `client_secret_clear` removes the stored one.
     connectionsOAuthClientSave: (slug: string, body: ConnectionOAuthClientSave) =>

@@ -1,3 +1,4 @@
+import { relocateRequestUrl, currentDashboardRuntime } from '../lib/dashboardRuntime'
 /**
  * Process-wide single-flight POST /api/auth/refresh.
  *
@@ -26,13 +27,20 @@ export interface RefreshResult {
 let _inFlight: Promise<RefreshResult> | null = null
 
 export function refreshOnce(): Promise<RefreshResult> {
+  // A relayed pane owns no browser session cookie to rotate (opaque origin; the
+  // capability relay injects the peer credential upstream), so a credentialed
+  // POST /api/auth/refresh there is both pointless and blocked by the opaque
+  // CORS wall. No-op in relay mode so neither recovery path fires it.
+  if (currentDashboardRuntime().kind === 'relayed-pane') {
+    return Promise.resolve({ ok: false, status: 0, body: null })
+  }
   if (_inFlight) return _inFlight
   _inFlight = (async (): Promise<RefreshResult> => {
     let status = 0
     let ok = false
     let body: unknown = null
     try {
-      const resp = await fetch('/api/auth/refresh', { method: 'POST', credentials: 'include' })
+      const resp = await fetch(relocateRequestUrl('/api/auth/refresh'), { method: 'POST', credentials: 'include' })
       status = resp.status
       ok = resp.ok
       try { body = await resp.json() } catch { /* no / invalid JSON body */ }

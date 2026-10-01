@@ -3,11 +3,12 @@
  * and agent question cards (rehydrate, answer, dismiss).
  */
 
+import { relocateRequestUrl } from '../../lib/dashboardRuntime'
 import type { ClientTransport } from './transport'
 
 export function createApprovalsEndpoints({ post, j }: ClientTransport) {
   const requests = {
-    approvals: (): Promise<{ id: string; source?: string; tool?: string; tool_input?: string; tool_purpose?: string; tool_call_id?: string; slot?: string; ts?: number }[]> => fetch('/api/approvals').then(j),
+    approvals: (): Promise<{ id: string; source?: string; tool?: string; tool_input?: string; tool_purpose?: string; tool_call_id?: string; slot?: string; ts?: number }[]> => fetch(relocateRequestUrl('/api/approvals')).then(j),
     resolveApproval: (id: string, action: 'approve' | 'reject' | 'reject_once', target?: { origin: 'coordinator'; slot: string; instance: string }) => post('/api/approvals/' + encodeURIComponent(id) + '/' + action + (target ? '?' + new URLSearchParams(target) : ''), {}).then(j),
     /** Question cards still awaiting an answer, for rehydration after a reload or
      *  websocket reconnect (`question_card` is a one-shot broadcast). A blocking
@@ -15,7 +16,7 @@ export function createApprovalsEndpoints({ post, j }: ClientTransport) {
      *  `native` when it is kiro-cli's mid-turn `AskUserQuestion` card (whose
      *  answer steers into the live turn). */
     pendingQuestions: (): Promise<{ ask_id?: string; card_id?: string; native?: boolean; slot: string; questions: { question: string; header?: string; multiSelect?: boolean; options: { label: string; description?: string }[] }[]; ts?: number }[]> =>
-      fetch('/api/ask-question/pending').then(j),
+      fetch(relocateRequestUrl('/api/ask-question/pending')).then(j),
     /** Resolve a pending agent question that carries an `ask_id` — a server-side
      *  wait opened by `POST /api/ask-question`, not the MCP ask_question tool,
      *  which posts a stateless `card_id` card instead. Pass no answers to

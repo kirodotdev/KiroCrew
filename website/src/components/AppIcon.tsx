@@ -32,6 +32,10 @@ import {
   Shield, Bot, Search, Tag, Users, Zap, Star, Package, Cat,
 } from 'lucide-react'
 import { useTheme } from '../hooks/useTheme'
+// R1-A: a builtin app's `/app-assets/…` SVG is a same-dashboard gateway path, so
+// in a relayed pane it must resolve under the capability prefix. `fetch(url)`
+// (url built from props) hid this from the root-literal relocation guard.
+import { relocateRequestUrl } from '../lib/dashboardRuntime'
 
 const ICON_MAP: Record<string, typeof Shield> = {
   Shield, Bot, Search, Tag, Users, Zap, Star, Package, Cat,
@@ -181,7 +185,7 @@ export default function AppIcon({
     setMarkup(cached)
     if (!isAppAssetSvg(url) || svgCache.has(url)) return
     let cancelled = false
-    fetch(url)
+    fetch(relocateRequestUrl(url))
       .then((r) => (r.ok ? r.text() : Promise.reject(new Error('fetch failed'))))
       .then((text) => {
         if (text.trim().startsWith('<svg')) {

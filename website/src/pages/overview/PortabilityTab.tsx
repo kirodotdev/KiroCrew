@@ -1,3 +1,4 @@
+import { relocateRequestUrl } from '../../lib/dashboardRuntime'
 import { useState, useRef } from 'react'
 import { Download, Upload, FileArchive, AlertCircle, CheckCircle } from 'lucide-react'
 import { Card, CardTitle } from '../../components/ui'
@@ -81,7 +82,7 @@ export default function PortabilityTab() {
     setExportStatus({ type: 'loading', msg: i18nT('pages.overview.portabilityTab.generating_export') })
     setExportWarning('')
     try {
-      const resp = await fetch('/api/portability/export')
+      const resp = await fetch(relocateRequestUrl('/api/portability/export'))
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({ error: resp.statusText }))
         setExportStatus({ type: 'error', msg: err.error || resp.statusText })
@@ -117,7 +118,7 @@ export default function PortabilityTab() {
     const fd = new FormData()
     fd.append('file', file)
     try {
-      const resp = await fetch('/api/portability/preview', { method: 'POST', body: fd })
+      const resp = await fetch(relocateRequestUrl('/api/portability/preview'), { method: 'POST', body: fd })
       const data = await resp.json()
       if (data.ok) {
         setPreview(data.manifest)
@@ -139,7 +140,7 @@ export default function PortabilityTab() {
     const fd = new FormData()
     fd.append('file', file)
     try {
-      const resp = await fetch(`/api/portability/import?mode=${mode}`, { method: 'POST', body: fd })
+      const resp = await fetch(relocateRequestUrl(`/api/portability/import?mode=${mode}`), { method: 'POST', body: fd })
       const data = await resp.json()
       if (data.ok) {
         const items = data.summary?.items || []

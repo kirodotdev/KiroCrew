@@ -5,6 +5,7 @@
  * (steering-viewer.md).
  */
 
+import { relocateRequestUrl } from '../../lib/dashboardRuntime'
 import type { ClientTransport } from './transport'
 
 /** Precondition header for a steering workspace write. Omitted when the caller
@@ -24,9 +25,9 @@ export function createSteeringEndpoints({ post, put, del, j, sessionKeyHeader: _
     // a key created under one project must stay readable, editable and deletable
     // from the same page load.
     steeringFiles: (sessionKey?: string) =>
-      fetch('/api/steering', { headers: sessionKey ? { 'X-Session-Key': sessionKey } : { ..._sk } }).then(j),
+      fetch(relocateRequestUrl('/api/steering'), { headers: sessionKey ? { 'X-Session-Key': sessionKey } : { ..._sk } }).then(j),
     steeringFile: (key: string, sessionKey?: string) =>
-      fetch('/api/steering/' + key.split('/').map(encodeURIComponent).join('/'), {
+      fetch(relocateRequestUrl('/api/steering/' + key.split('/').map(encodeURIComponent).join('/')), {
         headers: sessionKey ? { 'X-Session-Key': sessionKey } : { ..._sk },
       }).then(j),
     // projectKey is the `project_key` the listing returned: a workspace write

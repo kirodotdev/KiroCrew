@@ -5,6 +5,7 @@ import { S } from './styles'
 import type { Phase, Screen } from './types'
 
 import { i18nT } from '../../i18n/t'
+import { relocateRequestUrl } from '../../lib/dashboardRuntime'
 interface Props {
   phase: Phase
   elapsed: number
@@ -30,7 +31,7 @@ export default function WaitingScreen({ phase, elapsed, writing, reduceMotion, s
       <div style={S.waitRow}>
         {screens.map((sc, i) => (
           <div key={'w' + i} style={{ ...S.waitShot, ...shotSize }}>
-            <img src={sc.url} style={S.waitShotImg} alt={sc.label || ''} />
+            <img src={relocateRequestUrl(sc.url)} style={S.waitShotImg} alt={sc.label || ''} />
             {phase === 'analyzing'
               ? <Sweep index={i} reduceMotion={reduceMotion} />
               : null}

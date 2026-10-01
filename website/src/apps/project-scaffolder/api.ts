@@ -17,6 +17,8 @@
 /** Server response `status` values. `empty` is a successful scan of a tree with nothing in it. */
 export const STATUS_EMPTY = 'empty'
 
+import { relocateRequestUrl } from '../../lib/dashboardRuntime'
+
 /** `code` on the 400 that means the preview no longer matches the tree on disk. */
 export const CODE_SELECTION_STALE = 'folder_scaffold_selection_stale'
 /** The scan root was refused — for a create, that means it moved or was replaced since the scan. */
@@ -110,7 +112,7 @@ async function toError(r: Response): Promise<ScaffoldApiError> {
 }
 
 async function postJson<T>(path: string, body: unknown): Promise<T> {
-  const r = await fetch(path, {
+  const r = await fetch(relocateRequestUrl(path), {
     method: 'POST',
     credentials: 'same-origin',
     headers: { 'Content-Type': 'application/json' },

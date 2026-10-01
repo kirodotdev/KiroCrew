@@ -5,6 +5,7 @@
  * The schema is essentially static (changes only on version upgrade), so
  * staleTime is Infinity — fetched once per page load.
  */
+import { relocateRequestUrl } from '../../lib/dashboardRuntime'
 import { useQuery } from '@tanstack/react-query'
 import type { SchemaEntry } from './resolveSettingRef'
 
@@ -20,7 +21,7 @@ interface RawSchemaEntry {
 }
 
 async function fetchConfigSchema(): Promise<Map<string, SchemaEntry>> {
-  const res = await fetch('/api/config/schema')
+  const res = await fetch(relocateRequestUrl('/api/config/schema'))
   if (!res.ok) throw new Error(`Config schema fetch failed: ${res.status}`)
   const json = (await res.json()) as { entries: RawSchemaEntry[] }
   const map = new Map<string, SchemaEntry>()

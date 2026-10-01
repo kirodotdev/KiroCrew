@@ -13,6 +13,8 @@
  * a genuine failure — the message alone cannot be trusted for that, since it is
  * localized prose.
  */
+import { relocateRequestUrl } from '../../lib/dashboardRuntime'
+
 export class ApiError extends Error {
   readonly status: number
   readonly code: string
@@ -42,14 +44,14 @@ async function toError(r: Response): Promise<ApiError> {
 
 /** GET a JSON document. Throws an {@link ApiError} on a non-2xx response. */
 export async function apiGet<T>(path: string): Promise<T> {
-  const r = await fetch(path, { credentials: 'same-origin' })
+  const r = await fetch(relocateRequestUrl(path), { credentials: 'same-origin' })
   if (!r.ok) throw await toError(r)
   return r.json() as Promise<T>
 }
 
 /** POST a JSON body, tolerating an empty response. Throws {@link ApiError} on non-2xx. */
 export async function apiPost<T = unknown>(path: string, body?: unknown): Promise<T> {
-  const r = await fetch(path, {
+  const r = await fetch(relocateRequestUrl(path), {
     method: 'POST',
     credentials: 'same-origin',
     headers: { 'Content-Type': 'application/json' },

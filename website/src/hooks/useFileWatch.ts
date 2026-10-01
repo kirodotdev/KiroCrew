@@ -1,4 +1,5 @@
 import { useEffect, useRef, useCallback, useState } from 'react'
+import { relocateRequestUrl } from '../lib/dashboardRuntime'
 
 export type WatchStatus = 'idle' | 'connecting' | 'open' | 'error'
 
@@ -22,7 +23,7 @@ export function useFileWatch(
     if (!filePath) { setStatus('idle'); return }
 
     setStatus('connecting')
-    const es = new EventSource('/api/file-watch?path=' + encodeURIComponent(filePath))
+    const es = new EventSource(relocateRequestUrl('/api/file-watch?path=' + encodeURIComponent(filePath)))
     esRef.current = es
 
     es.onopen = () => setStatus('open')

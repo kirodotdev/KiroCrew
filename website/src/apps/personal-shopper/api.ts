@@ -1,3 +1,4 @@
+import { relocateRequestUrl } from '../../lib/dashboardRuntime'
 /**
  * Personal Shopper API client — thin wrapper around fetch with same-origin credentials.
  */
@@ -5,7 +6,7 @@
 const BASE = '/api/apps/personal-shopper'
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, { credentials: 'same-origin', ...init })
+  const res = await fetch(relocateRequestUrl(`${BASE}${path}`), { credentials: 'same-origin', ...init })
   if (!res.ok) {
     // Prefer `code` over `error`. The backend's `error` is untranslated English
     // prose meant for logs; `code` is the contract the UI can localize. Falling

@@ -3,6 +3,7 @@
 // — so the base path is /api/apps/issue-radar, matching code-review-sage's
 // convention, NOT the /apps/{name}/api reverse-proxy prefix used by apps like
 // file-explorer that run as a separate child process).
+import { relocateRequestUrl } from '../../lib/dashboardRuntime'
 import { i18nT } from '../../i18n/t'
 
 const API = '/api/apps/issue-radar'
@@ -1264,7 +1265,7 @@ export interface CrewSettingsResponse {
 
 export const issueRadarApi = {
   connect: async (url: string): Promise<ConnectResponse> => {
-    const r = await fetch(`${API}/connect`, {
+    const r = await fetch(relocateRequestUrl(`${API}/connect`), {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
@@ -1279,7 +1280,7 @@ export const issueRadarApi = {
     if (opts?.state) q.set('state', opts.state)
     if (opts?.refresh) q.set('refresh', '1')
     if (opts?.poll) q.set('poll', '1')
-    const r = await fetch(`${API}/issues?${q.toString()}`, { credentials: 'same-origin' })
+    const r = await fetch(relocateRequestUrl(`${API}/issues?${q.toString()}`), { credentials: 'same-origin' })
     if (!r.ok) throw new Error(await parseErrorBody(r))
     return r.json()
   },
@@ -1293,7 +1294,7 @@ export const issueRadarApi = {
   issuesFirstPage: async (ref: RepoRef): Promise<IssuesResponse> => {
     const q = new URLSearchParams(repoQuery(ref))
     q.set('first_page', '1')
-    const r = await fetch(`${API}/issues?${q.toString()}`, { credentials: 'same-origin' })
+    const r = await fetch(relocateRequestUrl(`${API}/issues?${q.toString()}`), { credentials: 'same-origin' })
     if (!r.ok) throw new Error(await parseErrorBody(r))
     return r.json()
   },
@@ -1301,7 +1302,7 @@ export const issueRadarApi = {
   issueDetail: async (ref: RepoRef, number: number, opts?: { refresh?: boolean }): Promise<IssueDetailResponse> => {
     const q = new URLSearchParams({ ...repoQuery(ref), number: String(number) })
     if (opts?.refresh) q.set('refresh', '1')
-    const r = await fetch(`${API}/issue?${q.toString()}`, { credentials: 'same-origin' })
+    const r = await fetch(relocateRequestUrl(`${API}/issue?${q.toString()}`), { credentials: 'same-origin' })
     if (!r.ok) throw new Error(await parseErrorBody(r))
     return r.json()
   },
@@ -1313,7 +1314,7 @@ export const issueRadarApi = {
     if (opts?.state) q.set('state', opts.state)
     if (opts?.refresh) q.set('refresh', '1')
     if (opts?.poll) q.set('poll', '1')
-    const r = await fetch(`${API}/pulls?${q.toString()}`, { credentials: 'same-origin' })
+    const r = await fetch(relocateRequestUrl(`${API}/pulls?${q.toString()}`), { credentials: 'same-origin' })
     if (!r.ok) throw new Error(await parseErrorBody(r))
     return r.json()
   },
@@ -1327,7 +1328,7 @@ export const issueRadarApi = {
   pullsFirstPage: async (ref: RepoRef): Promise<PullsResponse> => {
     const q = new URLSearchParams(repoQuery(ref))
     q.set('first_page', '1')
-    const r = await fetch(`${API}/pulls?${q.toString()}`, { credentials: 'same-origin' })
+    const r = await fetch(relocateRequestUrl(`${API}/pulls?${q.toString()}`), { credentials: 'same-origin' })
     if (!r.ok) throw new Error(await parseErrorBody(r))
     return r.json()
   },
@@ -1348,7 +1349,7 @@ export const issueRadarApi = {
     if (opts.author) q.set('author', opts.author)
     if (opts.assignee) q.set('assignee', opts.assignee)
     if (opts.reviewRequested) q.set('review_requested', opts.reviewRequested)
-    const r = await fetch(`${API}/pulls/search?${q.toString()}`, { credentials: 'same-origin' })
+    const r = await fetch(relocateRequestUrl(`${API}/pulls/search?${q.toString()}`), { credentials: 'same-origin' })
     if (!r.ok) throw new Error(await parseErrorBody(r))
     return r.json()
   },
@@ -1358,7 +1359,7 @@ export const issueRadarApi = {
   pullDetail: async (ref: RepoRef, number: number, opts?: { refresh?: boolean }): Promise<PullDetailResponse> => {
     const q = new URLSearchParams({ ...repoQuery(ref), number: String(number) })
     if (opts?.refresh) q.set('refresh', '1')
-    const r = await fetch(`${API}/pull?${q.toString()}`, { credentials: 'same-origin' })
+    const r = await fetch(relocateRequestUrl(`${API}/pull?${q.toString()}`), { credentials: 'same-origin' })
     if (!r.ok) throw new Error(await parseErrorBody(r))
     return r.json()
   },
@@ -1369,7 +1370,7 @@ export const issueRadarApi = {
   refSummary: async (ref: RepoRef, number: number, opts?: { refresh?: boolean }): Promise<RefSummaryResponse> => {
     const q = new URLSearchParams({ ...repoQuery(ref), number: String(number) })
     if (opts?.refresh) q.set('refresh', '1')
-    const r = await fetch(`${API}/ref?${q.toString()}`, { credentials: 'same-origin' })
+    const r = await fetch(relocateRequestUrl(`${API}/ref?${q.toString()}`), { credentials: 'same-origin' })
     if (!r.ok) throw new Error(await parseErrorBody(r))
     return r.json()
   },
@@ -1380,7 +1381,7 @@ export const issueRadarApi = {
   issueAi: async (ref: RepoRef, number: number, aiLanguage: string, opts?: { refresh?: boolean }): Promise<IssueAiResponse> => {
     const q = new URLSearchParams({ ...repoQuery(ref), ...langHint(aiLanguage), number: String(number) })
     if (opts?.refresh) q.set('refresh', '1')
-    const r = await fetch(`${API}/issue-ai?${q.toString()}`, { credentials: 'same-origin' })
+    const r = await fetch(relocateRequestUrl(`${API}/issue-ai?${q.toString()}`), { credentials: 'same-origin' })
     if (!r.ok) throw new Error(await parseErrorBody(r))
     return r.json()
   },
@@ -1393,7 +1394,7 @@ export const issueRadarApi = {
   pullAi: async (ref: RepoRef, number: number, aiLanguage: string, opts?: { refresh?: boolean }): Promise<PrAiResponse> => {
     const q = new URLSearchParams({ ...repoQuery(ref), ...langHint(aiLanguage), number: String(number) })
     if (opts?.refresh) q.set('refresh', '1')
-    const r = await fetch(`${API}/pull-ai?${q.toString()}`, { credentials: 'same-origin' })
+    const r = await fetch(relocateRequestUrl(`${API}/pull-ai?${q.toString()}`), { credentials: 'same-origin' })
     if (!r.ok) throw new Error(await parseErrorBody(r))
     return r.json()
   },
@@ -1403,7 +1404,7 @@ export const issueRadarApi = {
   applyLabels: async (
     ref: RepoRef, number: number, add: string[], remove: string[],
   ): Promise<ApplyLabelsResponse> => {
-    const r = await fetch(`${API}/labels/apply`, {
+    const r = await fetch(relocateRequestUrl(`${API}/labels/apply`), {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
@@ -1419,7 +1420,7 @@ export const issueRadarApi = {
     ref: RepoRef, number: number,
     state: 'open' | 'closed', stateReason?: 'completed' | 'not_planned',
   ): Promise<IssueStateResponse> => {
-    const r = await fetch(`${API}/issue/state`, {
+    const r = await fetch(relocateRequestUrl(`${API}/issue/state`), {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
@@ -1452,7 +1453,7 @@ export const issueRadarApi = {
   setIssueAssignees: async (
     ref: RepoRef, number: number, assignees: string[], expected: string[],
   ): Promise<IssueAssigneesResponse> => {
-    const r = await fetch(`${API}/issue/assignees`, {
+    const r = await fetch(relocateRequestUrl(`${API}/issue/assignees`), {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
@@ -1487,7 +1488,7 @@ export const issueRadarApi = {
   setPrState: async (
     ref: RepoRef, number: number, state: 'open' | 'closed',
   ): Promise<PrStateResponse> => {
-    const r = await fetch(`${API}/pull/state`, {
+    const r = await fetch(relocateRequestUrl(`${API}/pull/state`), {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
@@ -1504,7 +1505,7 @@ export const issueRadarApi = {
     ref: RepoRef, number: number,
     event: 'approve' | 'request_changes' | 'comment', body?: string, headSha?: string,
   ): Promise<PrReviewResponse> => {
-    const r = await fetch(`${API}/pull/review`, {
+    const r = await fetch(relocateRequestUrl(`${API}/pull/review`), {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
@@ -1526,7 +1527,7 @@ export const issueRadarApi = {
   addPrComment: async (
     ref: RepoRef, number: number, body: string,
   ): Promise<PrCommentResponse> => {
-    const r = await fetch(`${API}/pull/comment`, {
+    const r = await fetch(relocateRequestUrl(`${API}/pull/comment`), {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
@@ -1547,7 +1548,7 @@ export const issueRadarApi = {
     ref: RepoRef, number: number, headSha: string,
     method: 'MERGE' | 'SQUASH' | 'REBASE' = 'SQUASH',
   ): Promise<PrMergeResponse> => {
-    const r = await fetch(`${API}/pull/merge`, {
+    const r = await fetch(relocateRequestUrl(`${API}/pull/merge`), {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
@@ -1569,7 +1570,7 @@ export const issueRadarApi = {
     ref: RepoRef, number: number, enabled: boolean,
     method: 'MERGE' | 'SQUASH' | 'REBASE' = 'SQUASH',
   ): Promise<PrAutoMergeResponse> => {
-    const r = await fetch(`${API}/pull/auto-merge`, {
+    const r = await fetch(relocateRequestUrl(`${API}/pull/auto-merge`), {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
@@ -1585,7 +1586,7 @@ export const issueRadarApi = {
     ref: RepoRef, number: number, sha: string,
   ): Promise<PrRunsResponse> => {
     const q = new URLSearchParams({ ...repoQuery(ref), number: String(number), sha })
-    const r = await fetch(`${API}/pull/runs?${q.toString()}`, { credentials: 'same-origin' })
+    const r = await fetch(relocateRequestUrl(`${API}/pull/runs?${q.toString()}`), { credentials: 'same-origin' })
     if (!r.ok) throw new Error(await parseErrorBody(r))
     return r.json()
   },
@@ -1596,7 +1597,7 @@ export const issueRadarApi = {
     ref: RepoRef, number: number, runId: number,
     action: 'cancel' | 'rerun', failedOnly = false,
   ): Promise<PrRunActionResponse> => {
-    const r = await fetch(`${API}/pull/run`, {
+    const r = await fetch(relocateRequestUrl(`${API}/pull/run`), {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
@@ -1623,7 +1624,7 @@ export const issueRadarApi = {
       headShas?: Record<string, string>
     },
   ): Promise<BulkPrResponse> => {
-    const r = await fetch(`${API}/pulls/bulk`, {
+    const r = await fetch(relocateRequestUrl(`${API}/pulls/bulk`), {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
@@ -1640,7 +1641,7 @@ export const issueRadarApi = {
   labels: async (ref: RepoRef, opts?: { refresh?: boolean }): Promise<LabelsResponse> => {
     const q = new URLSearchParams(repoQuery(ref))
     if (opts?.refresh) q.set('refresh', '1')
-    const r = await fetch(`${API}/labels?${q.toString()}`, { credentials: 'same-origin' })
+    const r = await fetch(relocateRequestUrl(`${API}/labels?${q.toString()}`), { credentials: 'same-origin' })
     if (!r.ok) throw new Error(await parseErrorBody(r))
     return r.json()
   },
@@ -1648,13 +1649,13 @@ export const issueRadarApi = {
   members: async (ref: RepoRef, opts?: { refresh?: boolean }): Promise<MembersResponse> => {
     const q = new URLSearchParams(repoQuery(ref))
     if (opts?.refresh) q.set('refresh', '1')
-    const r = await fetch(`${API}/members?${q.toString()}`, { credentials: 'same-origin' })
+    const r = await fetch(relocateRequestUrl(`${API}/members?${q.toString()}`), { credentials: 'same-origin' })
     if (!r.ok) throw new Error(await parseErrorBody(r))
     return r.json()
   },
 
   repos: async (): Promise<ReposResponse> => {
-    const r = await fetch(`${API}/repos`, { credentials: 'same-origin' })
+    const r = await fetch(relocateRequestUrl(`${API}/repos`), { credentials: 'same-origin' })
     if (!r.ok) throw new Error(await parseErrorBody(r))
     return r.json()
   },
@@ -1668,7 +1669,7 @@ export const issueRadarApi = {
    * meaningless for a GitLab connect flow. */
   recentRepos: async (days: number, scope?: AccountScope): Promise<RecentReposResponse> => {
     const q = new URLSearchParams({ days: String(days), ...accountQuery(scope) })
-    const r = await fetch(`${API}/recent-repos?${q.toString()}`, { credentials: 'same-origin' })
+    const r = await fetch(relocateRequestUrl(`${API}/recent-repos?${q.toString()}`), { credentials: 'same-origin' })
     if (!r.ok) throw new Error(await parseErrorBody(r))
     return r.json()
   },
@@ -1676,14 +1677,14 @@ export const issueRadarApi = {
   /** The current user's login on ONE provider — see `MeResponse.login`. */
   me: async (scope?: AccountScope): Promise<MeResponse> => {
     const q = new URLSearchParams(accountQuery(scope))
-    const r = await fetch(`${API}/me?${q.toString()}`, { credentials: 'same-origin' })
+    const r = await fetch(relocateRequestUrl(`${API}/me?${q.toString()}`), { credentials: 'same-origin' })
     if (!r.ok) throw new Error(await parseErrorBody(r))
     return r.json()
   },
 
   getSettings: async (ref: RepoRef): Promise<SettingsResponse> => {
     const q = new URLSearchParams(repoQuery(ref))
-    const r = await fetch(`${API}/settings?${q.toString()}`, { credentials: 'same-origin' })
+    const r = await fetch(relocateRequestUrl(`${API}/settings?${q.toString()}`), { credentials: 'same-origin' })
     if (!r.ok) throw new Error(await parseErrorBody(r))
     return r.json()
   },
@@ -1693,7 +1694,7 @@ export const issueRadarApi = {
    * that has since moved, which is what stops one tab erasing another's change.
    * A 409 throws `SettingsConflictError` carrying the newer settings. */
   putSettings: async (ref: RepoRef, settings: RepoSettings): Promise<SettingsResponse> => {
-    const r = await fetch(`${API}/settings`, {
+    const r = await fetch(relocateRequestUrl(`${API}/settings`), {
       method: 'PUT',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
@@ -1712,7 +1713,7 @@ export const issueRadarApi = {
 
   disconnect: async (ref: RepoRef): Promise<{ ok: boolean }> => {
     const q = new URLSearchParams(repoQuery(ref))
-    const r = await fetch(`${API}/repos?${q.toString()}`, { method: 'DELETE', credentials: 'same-origin' })
+    const r = await fetch(relocateRequestUrl(`${API}/repos?${q.toString()}`), { method: 'DELETE', credentials: 'same-origin' })
     if (!r.ok) throw new Error(await parseErrorBody(r))
     return r.json()
   },
@@ -1723,7 +1724,7 @@ export const issueRadarApi = {
     ref: RepoRef, number: number, kind: ItemKind = 'issue',
   ): Promise<InvestigationResponse> => {
     const q = new URLSearchParams({ ...repoQuery(ref), number: String(number), kind })
-    const r = await fetch(`${API}/investigation?${q.toString()}`, { credentials: 'same-origin' })
+    const r = await fetch(relocateRequestUrl(`${API}/investigation?${q.toString()}`), { credentials: 'same-origin' })
     if (!r.ok) throw new Error(await parseErrorBody(r))
     return r.json()
   },
@@ -1735,7 +1736,7 @@ export const issueRadarApi = {
   saveInvestigation: async (
     ref: RepoRef, number: number, patch: InvestigationPatch, kind: ItemKind = 'issue',
   ): Promise<InvestigationResponse> => {
-    const r = await fetch(`${API}/investigation`, {
+    const r = await fetch(relocateRequestUrl(`${API}/investigation`), {
       method: 'PUT',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
@@ -1751,7 +1752,7 @@ export const issueRadarApi = {
    * language, so a mismatch reads as "none generated yet". */
   getRecommendations: async (ref: RepoRef, aiLanguage: string): Promise<RecommendationsResponse> => {
     const q = new URLSearchParams({ ...repoQuery(ref), ...langHint(aiLanguage) })
-    const r = await fetch(`${API}/recommendations?${q.toString()}`, { credentials: 'same-origin' })
+    const r = await fetch(relocateRequestUrl(`${API}/recommendations?${q.toString()}`), { credentials: 'same-origin' })
     if (!r.ok) throw new Error(await parseErrorBody(r))
     return r.json()
   },
@@ -1760,7 +1761,7 @@ export const issueRadarApi = {
    * repo's labels + a sample of its open issues. `aiLanguage` is the tag from
    * `resolveAiLanguage()` -- see `langHint`. */
   generateRecommendations: async (ref: RepoRef, aiLanguage: string): Promise<RecommendationsResponse> => {
-    const r = await fetch(`${API}/recommendations`, {
+    const r = await fetch(relocateRequestUrl(`${API}/recommendations`), {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
@@ -1775,7 +1776,7 @@ export const issueRadarApi = {
   createLabel: async (
     ref: RepoRef, label: { name: string; color?: string; description?: string },
   ): Promise<CreateLabelResponse> => {
-    const r = await fetch(`${API}/labels/create`, {
+    const r = await fetch(relocateRequestUrl(`${API}/labels/create`), {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
@@ -1796,7 +1797,7 @@ export const issueRadarApi = {
   ): Promise<TaggingResponse> => {
     const q = new URLSearchParams(repoQuery(ref))
     if (opts?.refresh) q.set('refresh', '1')
-    const r = await fetch(`${API}/tagging?${q.toString()}`, { credentials: 'same-origin' })
+    const r = await fetch(relocateRequestUrl(`${API}/tagging?${q.toString()}`), { credentials: 'same-origin' })
     if (!r.ok) throw new Error(await parseErrorBody(r))
     return r.json()
   },
@@ -1816,7 +1817,7 @@ export const issueRadarApi = {
   generateTagging: async (
     ref: RepoRef, numbers?: number[],
   ): Promise<GenerateTaggingResponse> => {
-    const r = await fetch(`${API}/tagging`, {
+    const r = await fetch(relocateRequestUrl(`${API}/tagging`), {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
@@ -1839,7 +1840,7 @@ export const issueRadarApi = {
     ref: RepoRef,
     role: 'triage_labels' | 'good_first_issue_labels', label: string,
   ): Promise<SettingsResponse> => {
-    const r = await fetch(`${API}/settings/role`, {
+    const r = await fetch(relocateRequestUrl(`${API}/settings/role`), {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
@@ -1855,7 +1856,7 @@ export const issueRadarApi = {
   applyLabelsBulk: async (
     ref: RepoRef, changes: { number: number; add: string[] }[],
   ): Promise<BulkApplyResponse> => {
-    const r = await fetch(`${API}/labels/apply-bulk`, {
+    const r = await fetch(relocateRequestUrl(`${API}/labels/apply-bulk`), {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
@@ -1891,7 +1892,7 @@ export const issueRadarApi = {
    * without all three. */
   crews: async (ref: RepoRef): Promise<CrewsResponse> => {
     const q = new URLSearchParams(repoQuery(ref))
-    const r = await fetch(`${API}/crews?${q.toString()}`, { credentials: 'same-origin' })
+    const r = await fetch(relocateRequestUrl(`${API}/crews?${q.toString()}`), { credentials: 'same-origin' })
     if (!r.ok) throw new Error(await parseErrorBody(r))
     return r.json()
   },
@@ -1899,7 +1900,7 @@ export const issueRadarApi = {
   /** Create a crew. A duplicate name is refused server-side (the name field is
    * free text, so uniqueness cannot live in the suggestion chips). */
   createCrew: async (ref: RepoRef, spec: CrewSpec): Promise<CrewResponse> => {
-    const r = await fetch(`${API}/crews`, {
+    const r = await fetch(relocateRequestUrl(`${API}/crews`), {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
@@ -1913,7 +1914,7 @@ export const issueRadarApi = {
    * include RETIRED crews' — which the crew list does not return. */
   suggestCrewNames: async (ref: RepoRef): Promise<CrewNamesResponse> => {
     const q = new URLSearchParams(repoQuery(ref))
-    const r = await fetch(`${API}/crews/names?${q.toString()}`, { credentials: 'same-origin' })
+    const r = await fetch(relocateRequestUrl(`${API}/crews/names?${q.toString()}`), { credentials: 'same-origin' })
     if (!r.ok) throw new Error(await parseErrorBody(r))
     return r.json()
   },
@@ -1922,7 +1923,7 @@ export const issueRadarApi = {
    * lines, and its slot usage. */
   crew: async (ref: RepoRef, id: string): Promise<CrewDetailResponse> => {
     const q = new URLSearchParams({ ...repoQuery(ref), id })
-    const r = await fetch(`${API}/crew?${q.toString()}`, { credentials: 'same-origin' })
+    const r = await fetch(relocateRequestUrl(`${API}/crew?${q.toString()}`), { credentials: 'same-origin' })
     if (!r.ok) throw new Error(await parseErrorBody(r))
     return r.json()
   },
@@ -1930,7 +1931,7 @@ export const issueRadarApi = {
   /** Merge a patch into one crew. A rename re-checks uniqueness but leaves
    * `avatar_seed` alone, so the crew keeps its face. */
   updateCrew: async (ref: RepoRef, id: string, patch: CrewPatch): Promise<CrewResponse> => {
-    const r = await fetch(`${API}/crew`, {
+    const r = await fetch(relocateRequestUrl(`${API}/crew`), {
       method: 'PUT',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
@@ -1944,7 +1945,7 @@ export const issueRadarApi = {
    * its work log all survive. Deliberately not "delete": reusing the name would
    * make the retired crew's old claim comments read as live claims. */
   retireCrew: async (ref: RepoRef, id: string): Promise<CrewResponse> => {
-    const r = await fetch(`${API}/crew`, {
+    const r = await fetch(relocateRequestUrl(`${API}/crew`), {
       method: 'DELETE',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
@@ -1960,7 +1961,7 @@ export const issueRadarApi = {
   recordCrewWork: async (
     ref: RepoRef, id: string, number: number, patch: WorkItemPatch,
   ): Promise<CrewWorkResponse> => {
-    const r = await fetch(`${API}/crew/work`, {
+    const r = await fetch(relocateRequestUrl(`${API}/crew/work`), {
       method: 'PUT',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
@@ -1982,7 +1983,7 @@ export const issueRadarApi = {
   setCrewPaused: async (
     ref: RepoRef, id: string, paused: boolean, reason?: string,
   ): Promise<CrewResponse> => {
-    const r = await fetch(`${API}/crew/pause`, {
+    const r = await fetch(relocateRequestUrl(`${API}/crew/pause`), {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
@@ -1994,7 +1995,7 @@ export const issueRadarApi = {
 
   getCrewSettings: async (ref: RepoRef): Promise<CrewSettingsResponse> => {
     const q = new URLSearchParams(repoQuery(ref))
-    const r = await fetch(`${API}/crews/settings?${q.toString()}`, { credentials: 'same-origin' })
+    const r = await fetch(relocateRequestUrl(`${API}/crews/settings?${q.toString()}`), { credentials: 'same-origin' })
     if (!r.ok) throw new Error(await parseErrorBody(r))
     return r.json()
   },
@@ -2005,7 +2006,7 @@ export const issueRadarApi = {
   putCrewSettings: async (
     ref: RepoRef, patch: CrewSettingsPatch,
   ): Promise<CrewSettingsResponse> => {
-    const r = await fetch(`${API}/crews/settings`, {
+    const r = await fetch(relocateRequestUrl(`${API}/crews/settings`), {
       method: 'PUT',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
@@ -2026,7 +2027,7 @@ export const issueRadarApi = {
    * designed empty state rather than an error — see GraphView / DepsSection. */
   deps: async (ref: RepoRef): Promise<DepsResponse> => {
     const q = new URLSearchParams(repoQuery(ref))
-    const r = await fetch(`${API}/deps?${q.toString()}`, { credentials: 'same-origin' })
+    const r = await fetch(relocateRequestUrl(`${API}/deps?${q.toString()}`), { credentials: 'same-origin' })
     if (!r.ok) throw new Error(await parseErrorBody(r))
     return r.json()
   },

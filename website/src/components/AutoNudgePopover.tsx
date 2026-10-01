@@ -1,3 +1,4 @@
+import { relocateRequestUrl } from '../lib/dashboardRuntime'
 import { type ReactNode, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Goal, Radar, X } from 'lucide-react'
@@ -216,8 +217,8 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
       const max_cycles = parseCycles(maxCyclesInput)
       const body = JSON.stringify({ slot_key: slotKey, message, idle_secs, max_cycles })
       const resp = loop
-        ? await fetch(`/api/autonudge/${loop.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message, idle_secs, max_cycles, active: true }) })
-        : await fetch('/api/autonudge', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body })
+        ? await fetch(relocateRequestUrl(`/api/autonudge/${loop.id}`), { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message, idle_secs, max_cycles, active: true }) })
+        : await fetch(relocateRequestUrl('/api/autonudge'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body })
       const data = await resp.json()
       if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`)
       onChange(data.loop)
@@ -239,7 +240,7 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
       // would silently ERASE a record that went terminal in between. The server
       // 409s on a mismatch instead, and the popover surfaces that.
       const intent = loop.active ? 'stop' : 'clear'
-      const resp = await fetch(`/api/autonudge/${loop.id}?intent=${intent}`, { method: 'DELETE' })
+      const resp = await fetch(relocateRequestUrl(`/api/autonudge/${loop.id}?intent=${intent}`), { method: 'DELETE' })
       if (!resp.ok) {
         // Parse JSON body for server-supplied error (e.g. 503 when feature disabled).
         // Only on error path: a successful DELETE may return 204 No Content.
@@ -281,7 +282,7 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
     setSaving(true)
     setError('')
     try {
-      const resp = await fetch(`/api/autonudge/${loop.id}/fire`, { method: 'POST' })
+      const resp = await fetch(relocateRequestUrl(`/api/autonudge/${loop.id}/fire`), { method: 'POST' })
       const data = await resp.json().catch(() => ({}))
       if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`)
       // The route returns the loop UNCHANGED: the server-side deadline write was

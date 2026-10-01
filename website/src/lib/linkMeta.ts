@@ -13,6 +13,7 @@
  * the same block dozens of times. The cache plus per-URL inflight dedup makes
  * N renders of one URL cost exactly one request.
  */
+import { relocateRequestUrl } from './dashboardRuntime'
 import { useEffect, useState } from 'react'
 import { safeHttpUrl } from './safeUrl'
 
@@ -110,7 +111,7 @@ function safeIcon(icon: string): string {
  */
 async function requestLinkMeta(url: string): Promise<CacheEntry> {
   // X-Session-Key so the server-side ephemeral gate always runs (see client.ts).
-  const r = await fetch(`/api/link-meta?url=${encodeURIComponent(url)}`, {
+  const r = await fetch(relocateRequestUrl(`/api/link-meta?url=${encodeURIComponent(url)}`), {
     headers: { 'X-Session-Key': 'dashboard:ui' },
   })
   if (!r.ok) return null

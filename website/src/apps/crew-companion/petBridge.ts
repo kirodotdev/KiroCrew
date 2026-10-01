@@ -11,6 +11,7 @@
  * — and none of its logic. Its drag maths, edge-snap thresholds and click-vs-drag
  * disambiguation stay exactly as written.
  */
+import { relocateRequestUrl } from '../../lib/dashboardRuntime'
 import { i18nT } from '../../i18n/t'
 import { OPTIONAL_STATES, REQUIRED_STATES } from '../../lib/appearancePacks/types'
 import type { AnimationFormat, PackMeta, SpriteConfig } from '../../lib/appearancePacks/types'
@@ -236,7 +237,7 @@ function detailUrl(packId: string): string {
 
 async function getJson<T>(url: string): Promise<T | null> {
   try {
-    const r = await fetch(url, { credentials: 'same-origin' })
+    const r = await fetch(relocateRequestUrl(url), { credentials: 'same-origin' })
     if (!r.ok) return null
     return (await r.json()) as T
   } catch {
@@ -253,7 +254,7 @@ async function getJson<T>(url: string): Promise<T | null> {
  */
 async function postForJson<T>(url: string, body: unknown): Promise<T | null> {
   try {
-    const r = await fetch(url, {
+    const r = await fetch(relocateRequestUrl(url), {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
@@ -393,7 +394,7 @@ async function importSlotFile(): Promise<
 
 async function postJson(url: string, body: unknown): Promise<boolean> {
   try {
-    const r = await fetch(url, {
+    const r = await fetch(relocateRequestUrl(url), {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
@@ -437,7 +438,7 @@ function flushSave(): void {
   pendingSave = null
   saveTimer = null
   if (!p) return
-  void fetch(CONFIG_PATH, {
+  void fetch(relocateRequestUrl(CONFIG_PATH), {
     method: 'POST',
     credentials: 'same-origin',
     headers: { 'Content-Type': 'application/json' },
@@ -481,7 +482,7 @@ async function importBundle(): Promise<GalleryResult> {
 export const petBridge: PetBridge = {
   async getWindowPosition() {
     try {
-      const r = await fetch(REMINDERS_PATH, { credentials: 'same-origin' })
+      const r = await fetch(relocateRequestUrl(REMINDERS_PATH), { credentials: 'same-origin' })
       if (!r.ok) return null
       // The snapshot is FLAT — config fields sit at the top level, not nested
       // under `config`. Reading the wrong level fails silently as "never moved",
@@ -993,7 +994,7 @@ export const petBridge: PetBridge = {
       // visible (better than vanishing with nothing actually turned off), and the
       // reconcile loop remains the backstop.
       void (async () => {
-        const ok = await fetch('/api/apps/crew-companion/disable', {
+        const ok = await fetch(relocateRequestUrl('/api/apps/crew-companion/disable'), {
           method: 'POST',
           credentials: 'same-origin',
           headers: { 'Content-Type': 'application/json' },

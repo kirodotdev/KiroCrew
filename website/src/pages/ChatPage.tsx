@@ -1,3 +1,4 @@
+import { relocateRequestUrl } from '../lib/dashboardRuntime'
 import { Fragment, Suspense, lazy, useState, useRef, useCallback, useEffect, useLayoutEffect, useMemo } from 'react'
 import { createPortal } from 'react-dom'
 import { useLocation, useNavigate, useNavigationType, useSearchParams } from 'react-router-dom'
@@ -4353,7 +4354,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
             const payload: unknown = await queryClient.fetchQuery({
               queryKey: ['terminal-sessions'],
               queryFn: async () => {
-                const response = await fetch('/api/terminal/sessions')
+                const response = await fetch(relocateRequestUrl('/api/terminal/sessions'))
                 if (!response.ok) {
                   throw new Error(`Failed to list terminal sessions (${response.status})`)
                 }

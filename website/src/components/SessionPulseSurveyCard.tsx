@@ -1,3 +1,4 @@
+import { relocateRequestUrl } from '../lib/dashboardRuntime'
 import { useState, useEffect, useId } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { motion, AnimatePresence } from 'framer-motion'
@@ -86,7 +87,7 @@ function markLocalCooldown(): boolean {
  * show the survey rather than guessing eligibility. */
 async function checkSurveyEligible(): Promise<boolean> {
   try {
-    const res = await fetch(FEEDBACK_ELIGIBLE_URL)
+    const res = await fetch(relocateRequestUrl(FEEDBACK_ELIGIBLE_URL))
     if (!res.ok) return false
     const body = await res.json().catch(() => null)
     return body?.eligible === true
@@ -233,7 +234,7 @@ export default function SessionPulseSurveyCard({
     setSubmitError(false)
 
     try {
-      const res = await fetch(FEEDBACK_SUBMIT_URL, {
+      const res = await fetch(relocateRequestUrl(FEEDBACK_SUBMIT_URL), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

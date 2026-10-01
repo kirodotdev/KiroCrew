@@ -27,6 +27,7 @@ import kiro_crew
 from kiro_crew import platform_compat
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.paths import config_dir
+from kiro_crew.dashboard.instance_pane_relay import PANE_RELAY_PROTOCOL
 from kiro_crew.dashboard.state import (
     DashboardState,
 )
@@ -223,6 +224,12 @@ async def api_status(request: web.Request) -> web.Response:
             "stats_summary": Stats().summary(),
             "update_progress": state._update_progress,
             "version": kiro_crew.__version__,
+            # The pane-relay wire protocol this build speaks. A published hub
+            # reads this from a remote's /api/status before it will issue a
+            # same-origin relay endpoint for that remote; a build that omits it
+            # (or advertises a different integer) fails the version gate closed
+            # with remote_upgrade_required. See dashboard/instance_pane_relay.py.
+            "pane_relay_protocol": PANE_RELAY_PROTOCOL,
             "platform": sys.platform,
             # The gateway's own live resident set and the per-session tree
             # ceiling the cleanup watchdog recycles at (0 = disabled), so

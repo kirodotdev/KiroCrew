@@ -24,16 +24,47 @@ from setuptools.command.build_py import build_py
 
 
 class E2eTestCommand(Command):
-    """Run the gated E2E smoke suite (``test/test_e2e_smoke.py``).
+    """Run the gated offline E2E suite (THREE files).
 
     Invoked as ``python setup.py test_e2e``. Distinct from the regular test run
     (the Makefile ``test`` target / plain ``pytest``) on purpose:
-      * sets ``KIROCREW_E2E=1`` to lift the ``skipif`` gate in
-        test_e2e_smoke.py (those tests spawn a real gateway subprocess);
-      * runs only that one file, serially, clearing the default
-        ``[tool:pytest]`` addopts (``-n auto`` + ``--cov`` + ``--timeout=120``)
-        -- xdist would spawn one gateway per worker and coverage of a
-        subprocess gateway is meaningless.
+      * sets ``KIROCREW_E2E=1`` to lift the ``skipif`` gate on the
+        subprocess/browser tests (they spawn a real gateway subprocess);
+      * clears the default ``[tool:pytest]`` addopts (``-n auto`` + ``--cov`` +
+        ``--timeout=120``) and runs serially with a longer per-test timeout --
+        xdist would spawn one gateway per worker and coverage of a subprocess
+        gateway is meaningless.
+
+    It runs THREE files -- the single offline pre-release E2E gate:
+      1. ``test/test_e2e_smoke.py`` -- gateway smoke tests over a real
+         subprocess gateway.
+      2. ``test/test_playwright_e2e.py`` -- the dashboard Playwright specs,
+         driven against the same harness gateway (wired to the packaged fake ACP
+         backend via ``KIROCREW_KIRO_BIN``).
+      3. ``test/e2e/test_instance_pane_relay_e2e.py`` -- the same-origin
+         capability pane-relay real-Chromium E2E (incident kc-46d84a). It boots
+         the PRODUCTION-SOURCE parent dashboard (a dedicated Vite build that
+         mounts the unchanged ``InstancesViewport`` + relay authorities) plus a
+         real ``InstancePaneRelay`` over ONE published HTTPS origin, forwarding
+         to a real loopback peer gateway, and drives the incident Playwright spec
+         in Chromium. It runs the spec TWICE, each against a fresh topology
+         (fresh peer + hub + capability), and REQUIRES both internal runs to pass
+         -- the second run proves the pane boots deterministically on a re-mount,
+         not just on a cold first load.
+
+    Browser/toolchain requirements (the two Playwright members): a resolvable
+    Node.js >=18, the Playwright CLI under ``website/node_modules``, a complete
+    non-busy Playwright Chromium (or headless-shell), and -- for the relay E2E --
+    the ``pane-host`` production bundle it builds via ``pane-host.vite.config.ts``
+    and the ``pane-relay.playwright.config.ts`` config. When the toolchain is
+    unresolved these members SELF-SKIP, unless ``KIROCREW_E2E_REQUIRE`` is set,
+    which turns an unresolved browser/toolchain into a hard failure. The relay
+    E2E allocates its heavy temp trees under the runner temp root and cleans them
+    up unless ``KC46_RETAIN_ARTIFACTS`` asks to keep the evidence.
+
+    ``KIROCREW_STRICT_ON_LOOP_PERSIST=1`` is also set, turning the on-loop
+    persistence discipline into a CI-enforced invariant for the real gateway
+    these tests spawn.
     """
 
     description = "Run the E2E suite (smoke + Playwright dashboard specs)"
@@ -64,13 +95,24 @@ class E2eTestCommand(Command):
         # appears regardless of e2e coverage.
         env["KIROCREW_STRICT_ON_LOOP_PERSIST"] = "1"
         cmd = [
-            sys.executable, "-m", "pytest",
+            sys.executable,
+            "-m",
+            "pytest",
             os.path.join("test", "test_e2e_smoke.py"),
             # Folded in: the dashboard Playwright suite boots the same harness
             # gateway (wired to the packaged fake ACP backend via
             # KIROCREW_KIRO_BIN) and shells `playwright test` against it, so
             # `test_e2e` is the single offline pre-release E2E gate.
             os.path.join("test", "test_playwright_e2e.py"),
+            # The same-origin pane-relay real-Chromium E2E (incident kc-46d84a):
+            # boots the production-source parent + real InstancePaneRelay over one
+            # published HTTPS origin and drives the incident spec in Chromium
+            # twice. Part of THIS gate so CI and pre-release runs actually collect
+            # it; it self-skips (or fails, under KIROCREW_E2E_REQUIRE) when the
+            # browser toolchain is unresolved, exactly like the other browser gate
+            # members, and allocates its heavy temp trees under the runner temp
+            # root with cleanup.
+            os.path.join("test", "e2e", "test_instance_pane_relay_e2e.py"),
             # Drop the heavy unit-test addopts (-n auto, --cov, --timeout=120);
             # the e2e suite runs serially with a longer per-test timeout. 1800s
             # gives the Playwright fold headroom: the browser suite runs ~4-5
@@ -78,8 +120,10 @@ class E2eTestCommand(Command):
             # push a retry-heavy run past a 600s cap, which would kill it as a
             # generic pytest timeout and hide the actual failing specs. Smoke
             # tests finish in seconds, so the larger cap costs them nothing.
-            "-o", "addopts=",
-            "-p", "no:cacheprovider",
+            "-o",
+            "addopts=",
+            "-p",
+            "no:cacheprovider",
             "-v",
             "--timeout=1800",
         ]
@@ -104,9 +148,7 @@ class BuildWithFrontend(build_py):
         base = os.path.dirname(os.path.abspath(__file__))
         src_dist = os.path.join(base, "src", "kiro_crew", "static", "dist")
         if os.path.isdir(src_dist):
-            build_dist = os.path.join(
-                self.build_lib, "kiro_crew", "static", "dist"
-            )
+            build_dist = os.path.join(self.build_lib, "kiro_crew", "static", "dist")
             if os.path.isdir(build_dist):
                 shutil.rmtree(build_dist)
             shutil.copytree(src_dist, build_dist)

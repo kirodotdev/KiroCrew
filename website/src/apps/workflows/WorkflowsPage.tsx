@@ -16,6 +16,7 @@
  * Backend contract: see kiro_crew/apps/builtins/workflows/server.py and the run
  * event schema in docs/system-specs/modules/workflows.md.
  */
+import { relocateRequestUrl } from '../../lib/dashboardRuntime'
 import { useCallback, useMemo, useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { Workflow as WorkflowIcon, Play, FileCode, ListTree } from 'lucide-react'
@@ -39,13 +40,13 @@ export type { WfEvent, AgentRow, PhaseGroup }
 const API_BASE = '/apps/workflows/api'
 
 async function apiGet<T>(path: string): Promise<T> {
-  const r = await fetch(`${API_BASE}${path}`, { credentials: 'same-origin' })
+  const r = await fetch(relocateRequestUrl(`${API_BASE}${path}`), { credentials: 'same-origin' })
   if (!r.ok) throw new Error(`GET ${path} → ${r.status}`)
   return r.json() as Promise<T>
 }
 
 async function apiPost<T>(path: string, body: unknown): Promise<T> {
-  const r = await fetch(`${API_BASE}${path}`, {
+  const r = await fetch(relocateRequestUrl(`${API_BASE}${path}`), {
     method: 'POST',
     credentials: 'same-origin',
     headers: { 'Content-Type': 'application/json' },

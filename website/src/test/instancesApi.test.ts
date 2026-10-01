@@ -65,6 +65,23 @@ describe('api instances methods', () => {
     expect(fetchMock.mock.calls[4][0]).toBe('/api/instances/cd-1/disconnect')
   })
 
+  it('openInstancePane builds the connected-only query for the background issue mode', async () => {
+    fetchMock.mockResolvedValue(okJson({ kind: 'same-origin-relay' }))
+    // Default: no query.
+    await api.openInstancePane('cd-1', 'same-origin-relay')
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/instances/cd-1/pane')
+    // onlyIfConnected -> ?only_if_connected=1 (auto-warm / renewal).
+    await api.openInstancePane('cd-1', 'same-origin-relay', { onlyIfConnected: true })
+    expect(fetchMock.mock.calls[1][0]).toBe('/api/instances/cd-1/pane?only_if_connected=1')
+    // rebuild -> ?rebuild=1 (Retry); rebuild wins if both are somehow passed.
+    await api.openInstancePane('cd-1', 'same-origin-relay', { rebuild: true })
+    expect(fetchMock.mock.calls[2][0]).toBe('/api/instances/cd-1/pane?rebuild=1')
+    await api.openInstancePane('cd-1', 'same-origin-relay', { rebuild: true, onlyIfConnected: true })
+    expect(fetchMock.mock.calls[3][0]).toBe('/api/instances/cd-1/pane?rebuild=1')
+    // The POST body always carries the access mode.
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body as string)).toEqual({ access: 'same-origin-relay' })
+  })
+
   it('refreshInstanceToken POSTs /refresh-token and returns the new token', async () => {
     fetchMock.mockResolvedValue(okJson({ state: 'connected', local_port: 7778, token: 'fresh' }))
     const res = await api.refreshInstanceToken('cd-1')

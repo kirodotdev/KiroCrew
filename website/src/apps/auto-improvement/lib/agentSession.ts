@@ -18,6 +18,7 @@
 // the same `api` chat primitives the dashboard's own "New Chat" uses. Established
 // precedent: issue-radar, file-explorer, and auto-research all import the store
 // and api client directly.
+import { relocateRequestUrl } from '../../../lib/dashboardRuntime'
 import { useCallback, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
@@ -122,14 +123,14 @@ export function sessionKey(kind: SubjectKind, id: string | number, repo: string)
 const API = '/api/apps/auto-improvement'
 
 async function loadRecord(key: string): Promise<SessionRecord | null> {
-  const res = await fetch(`${API}/sessions/${encodeURIComponent(key)}`)
+  const res = await fetch(relocateRequestUrl(`${API}/sessions/${encodeURIComponent(key)}`))
   if (!res.ok) return null
   const body = (await res.json()) as { session?: SessionRecord | null }
   return body.session ?? null
 }
 
 async function saveRecord(key: string, patch: Partial<SessionRecord>): Promise<SessionRecord | null> {
-  const res = await fetch(`${API}/sessions/${encodeURIComponent(key)}`, {
+  const res = await fetch(relocateRequestUrl(`${API}/sessions/${encodeURIComponent(key)}`), {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(patch),

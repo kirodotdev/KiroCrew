@@ -14,6 +14,7 @@
  * there is nothing to report. No-op everywhere else.
  */
 import { useEffect, useRef } from 'react'
+import { stampPaneChannel } from '../lib/embeddedParent'
 import { useAppSelector } from '../store'
 import { isEmbeddedPane } from '../lib/embedded'
 import { computeHeaderDragGaps } from '../lib/dragGaps'
@@ -59,7 +60,7 @@ export default function EmbeddedDragRegionReporter() {
         // The host validates our loopback ORIGIN (resolveTunnelOrigin), so the
         // wildcard target is safe and matches the sibling mc-embedded-ready ping.
         // nosemgrep: javascript.browser.security.wildcard-postmessage-configuration.wildcard-postmessage-configuration
-        parent.postMessage({ type: 'mc-drag-gaps', v: 1, gaps }, '*')
+        parent.postMessage(stampPaneChannel({ type: 'mc-drag-gaps', v: 1, gaps }), '*')
       } catch {
         /* parent gone / mid-navigation — the next change reposts */
       }

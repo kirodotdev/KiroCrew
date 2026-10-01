@@ -4,6 +4,7 @@
 import { useMemo, useRef, type MutableRefObject } from 'react'
 import type { AppDispatch } from '../../store'
 import { sseDisconnected } from '../../store/dashboardSlice'
+import { dashboardWebSocket } from '../../lib/dashboardRuntime'
 
 export type LogCallback = ((data: { level: string; msg: string }) => void) | null
 
@@ -69,13 +70,13 @@ export function useSocketConnection(): SocketConnection {
       if (existing && (existing.readyState === WebSocket.OPEN || existing.readyState === WebSocket.CONNECTING)) return null
       if (closingRef.current) return null  // component unmounted, don't reconnect
       // closingRef invariant: reset by the mount effect before connecting
-      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
       // `caps=slot_patch`: this bundle applies one-row `slot_patch` frames, so
       // the gateway sends those instead of the full slot list after a pin,
       // rename, folder move or close. A gateway that predates the frame ignores
       // the parameter and keeps sending full lists, which the router still
-      // applies.
-      const ws = new WebSocket(`${proto}//${location.host}/api/ws?caps=slot_patch`)
+      // applies. The relay-aware base keeps the socket under the dashboard's own
+      // prefix (identical to `${proto}//${host}/api/ws…` in direct mode).
+      const ws = dashboardWebSocket('/api/ws?caps=slot_patch')
       wsRef.current = ws
       return ws
     },

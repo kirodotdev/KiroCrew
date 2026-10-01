@@ -30,6 +30,7 @@ import { api, ApiError, type InstanceView } from '../api/client'
 import { useAppSelector } from '../store'
 import { type WarmConn } from '../store/instancesSlice'
 import { isEmbeddedPane } from '../lib/embedded'
+import { stampPaneChannel } from '../lib/embeddedParent'
 import { tokenTtlTotalSeconds } from '../lib/tokenTtl'
 import { hasDashboardPane } from '../utils/remoteCrew'
 import { useSelectInstance } from '../hooks/useSelectInstance'
@@ -1159,14 +1160,14 @@ function EmbeddedInstanceTabBar({ variant }: { variant: 'strip' | 'inline' }) {
   const host = useAppSelector(s => s.instances.host)
   const onSelect = useCallback((id: string | null) => {
     // nosemgrep: javascript.browser.security.wildcard-postmessage-configuration.wildcard-postmessage-configuration
-    window.parent?.postMessage({ type: 'mc-switch-instance', v: 1, id }, '*')
+    window.parent?.postMessage(stampPaneChannel({ type: 'mc-switch-instance', v: 1, id }), '*')
   }, [])
   // The pins live on the parent (one shared set across every pane); this pane
   // cannot write the parent's store from its own iframe realm, so it relays the
   // toggle up and lets the parent re-broadcast the model back down.
   const onTogglePin = useCallback((id: string) => {
     // nosemgrep: javascript.browser.security.wildcard-postmessage-configuration.wildcard-postmessage-configuration
-    window.parent?.postMessage({ type: 'mc-set-crew-pin', v: 1, id }, '*')
+    window.parent?.postMessage(stampPaneChannel({ type: 'mc-set-crew-pin', v: 1, id }), '*')
   }, [])
   // The stable-order preference also lives on the parent (one shared value across
   // every pane). This pane cannot write the parent's store from its own iframe
@@ -1176,7 +1177,7 @@ function EmbeddedInstanceTabBar({ variant }: { variant: 'strip' | 'inline' }) {
   const hostStableOrder = host?.stableOrder ?? null
   const onToggleStableOrder = useCallback(() => {
     // nosemgrep: javascript.browser.security.wildcard-postmessage-configuration.wildcard-postmessage-configuration
-    window.parent?.postMessage({ type: 'mc-set-stable-order', v: 1, on: !hostStableOrder }, '*')
+    window.parent?.postMessage(stampPaneChannel({ type: 'mc-set-stable-order', v: 1, on: !hostStableOrder }), '*')
   }, [hostStableOrder])
   const entries = useMemo<SwitcherEntry[]>(() => {
     if (!host) return []

@@ -28,6 +28,7 @@ import {
 } from './constants'
 import { labelFor, sortedReminders } from './reminders'
 import { petBridge } from './petBridge'
+import { relocateRequestUrl } from '../../lib/dashboardRuntime'
 import type { Reminder } from './types'
 
 /** How often the list refreshes while the panel is open. */
@@ -61,7 +62,7 @@ function Panel() {
 
   const load = useCallback(async () => {
     try {
-      const r = await fetch(REMINDERS_PATH, { credentials: 'same-origin' })
+      const r = await fetch(relocateRequestUrl(REMINDERS_PATH), { credentials: 'same-origin' })
       if (!r.ok) return
       const d = (await r.json()) as {
         reminders?: Reminder[]
@@ -141,7 +142,7 @@ function Panel() {
   const addReminder = useCallback(
     async (text: string, fireAtIso: string, everyMinutes?: number) => {
       try {
-        const r = await fetch(ADD_PATH, {
+        const r = await fetch(relocateRequestUrl(ADD_PATH), {
           method: 'POST',
           credentials: 'same-origin',
           headers: { 'Content-Type': 'application/json' },
@@ -160,7 +161,7 @@ function Panel() {
   const mutate = useCallback(
     async (path: string, id: string) => {
       try {
-        await fetch(path, {
+        await fetch(relocateRequestUrl(path), {
           method: 'POST',
           credentials: 'same-origin',
           headers: { 'Content-Type': 'application/json' },
@@ -177,7 +178,7 @@ function Panel() {
   /** A completed exercise is counted; one abandoned halfway is not. */
   const finishBreathing = useCallback(async () => {
     try {
-      await fetch(BREATHING_DONE_PATH, { method: 'POST', credentials: 'same-origin' })
+      await fetch(relocateRequestUrl(BREATHING_DONE_PATH), { method: 'POST', credentials: 'same-origin' })
     } catch {
       /* the exercise still happened; only the tally missed it */
     }

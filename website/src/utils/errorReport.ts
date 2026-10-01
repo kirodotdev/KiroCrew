@@ -30,6 +30,7 @@
 
 import { safeSetSessionItem } from './safeStorage'
 import { errMessage } from './thunkError'
+import { dashboardNavigateUrl } from '../lib/dashboardRuntime'
 
 /** Where the error was observed. */
 export type ErrorSource =
@@ -547,7 +548,7 @@ export function sendErrorToChat(prompt: string, opts: { hard?: boolean } = {}): 
       return true
     }
   }
-  try { window.location.assign('/chat') } catch { /* nothing left to try */ }
+  try { window.location.assign(dashboardNavigateUrl('/chat')) } catch { /* nothing left to try */ }
   return true
 }
 

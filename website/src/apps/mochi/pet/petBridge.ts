@@ -182,7 +182,7 @@ if (shell !== undefined) {
     // made the cache a race: the pet reported whichever monitor's window POSTed
     // last, which is why it insisted it was on a screen it was not. Every
     // overlay now posts the same answer, so a last-writer-wins cache is correct.
-    void fetch('/api/apps/mochi/displays', {
+    void fetch(relocateRequestUrl('/api/apps/mochi/displays'), {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
@@ -306,7 +306,7 @@ export const onWalkCancel = (cb: () => void) => addTo(walkCancelListeners, cb)
 
 /** Post-walk reports go to the backend: it owns pet state and the stats file. */
 function report(path: string, body: Record<string, unknown>): void {
-  void fetch(`/api/apps/mochi/${path}`, {
+  void fetch(relocateRequestUrl(`/api/apps/mochi/${path}`), {
     method: 'POST',
     credentials: 'same-origin',
     headers: { 'Content-Type': 'application/json' },
@@ -385,7 +385,7 @@ export interface PetConfig {
 
 export async function getMochiConfig(): Promise<PetConfig | undefined> {
   try {
-    const res = await fetch('/api/apps/mochi/settings', { credentials: 'same-origin' })
+    const res = await fetch(relocateRequestUrl('/api/apps/mochi/settings'), { credentials: 'same-origin' })
     if (!res.ok) return undefined
     return (await res.json()) as PetConfig
   } catch {
@@ -397,7 +397,7 @@ export async function getMochiConfig(): Promise<PetConfig | undefined> {
 
 export async function galleryGetPackDetail(packId: string): Promise<PackManifest | undefined> {
   try {
-    const res = await fetch(`/api/apps/mochi/packs/${encodeURIComponent(packId)}`, {
+    const res = await fetch(relocateRequestUrl(`/api/apps/mochi/packs/${encodeURIComponent(packId)}`), {
       credentials: 'same-origin',
     })
     return res.ok ? await res.json() : undefined
@@ -713,6 +713,7 @@ export {
 } from '../panel/panelBridge'
 // Aliased on import: the pet's exported onColorMapChanged reshapes this raw
 // settings payload into the {packId, colorMap} the renderer expects.
+import { relocateRequestUrl } from '../../../lib/dashboardRuntime'
 import { onColorMapChanged as onColorMapSettings } from '../panel/panelBridge'
 import type { CoreInstance, InstancesView } from '../panel/panelBridge'
 import type { PackManifest } from '../src/shared/appearanceTypes'

@@ -5,6 +5,7 @@
  * typed `api` module (src/mochiApi.ts), imported by the component itself — this
  * entry only mounts it and writes the theme variables.
  */
+import { relocateRequestUrl } from '../../../lib/dashboardRuntime'
 import React from 'react'
 import { createRoot } from 'react-dom/client'
 
@@ -75,7 +76,7 @@ if (el) {
 // companionship clock stops. Quitting the shell stops the beat entirely.
 const PRESENCE_BEAT_MS = 30_000
 const beat = () => {
-  void fetch('/api/apps/mochi/presence', {
+  void fetch(relocateRequestUrl('/api/apps/mochi/presence'), {
     method: 'POST',
     credentials: 'same-origin',
     headers: { 'Content-Type': 'application/json' },

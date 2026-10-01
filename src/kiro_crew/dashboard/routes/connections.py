@@ -111,6 +111,10 @@ def register(app: web.Application) -> None:
     app.router.add_delete("/api/instances/{id}", handlers_instances.api_instances_remove)
     app.router.add_get("/api/instances/{id}/status", handlers_instances.api_instances_status)
     app.router.add_post("/api/instances/{id}/connect", handlers_instances.api_instances_connect)
+    # Owner-only pane issuer: returns one complete discriminated PaneEndpoint
+    # (direct-loopback port+token, or a same-origin relay capability). Registered
+    # here, before the catch-all proxy route, so `{path:.*}` cannot swallow it.
+    app.router.add_post("/api/instances/{id}/pane", handlers_instances.api_instances_open_pane)
     app.router.add_post(
         "/api/instances/{id}/refresh-token", handlers_instances.api_instances_refresh_token
     )

@@ -14,13 +14,18 @@
  * error SHAPE, not that client's request pipeline.
  */
 import { toApiError } from '../api/client'
+import { relocateRequestUrl } from '../lib/dashboardRuntime'
 
 const BASE = '/apps/dev-fleet/api'
 export const GATEWAY_BASE = '/api/apps/dev-fleet'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function request<T = any>(path: string, opts?: RequestInit, base: string = BASE): Promise<T> {
-  const url = base + path
+  // Relocate so the root-absolute `base`-derived path (either namespace) stays
+  // under the pane's capability prefix in a relayed pane (identity in direct
+  // mode). `base` defaults to a root const and is otherwise the root gateway
+  // namespace, so the derived `url` must be relocated rather than pinned safe.
+  const url = relocateRequestUrl(base + path)
   const res = await fetch(url, { credentials: 'same-origin', ...opts })
   if (!res.ok) {
     // Reuse the dashboard's own error shape rather than a second one: some

@@ -27,6 +27,7 @@
  * (snip) path, which produces base64 without ever touching disk.
  */
 
+import { relocateRequestUrl } from '../../../lib/dashboardRuntime'
 import { mdImageDest } from '../../../utils/fileTokens'
 
 /**
@@ -99,7 +100,7 @@ export async function ingestFiles(files: File[]): Promise<IngestResult> {
   for (const file of files) form.append('file', file, file.name)
 
   try {
-    const res = await fetch(UPLOAD_URL, {
+    const res = await fetch(relocateRequestUrl(UPLOAD_URL), {
       method: 'POST',
       credentials: 'same-origin',
       body: form,

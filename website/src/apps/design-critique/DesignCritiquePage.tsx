@@ -10,6 +10,7 @@ import ErrorNotice from '../../components/ErrorNotice'
 import { Spinner } from './Motion'
 import { S } from './styles'
 import { designCritiqueApi, fileUrl } from './api'
+import { relocateRequestUrl } from '../../lib/dashboardRuntime'
 import {
   detectKind, jsonFromMessages, looksLikeReport, lastAssistant, shortLabel, relTime, readableOn, normalizeReport, normalizeScope, resolveScreens,
   loadHistory, saveHistory, beginPendingCritique, dropPendingCritique, loadJobs, saveJob, clearJob, loadSlots, saveSlots, trackSlot, untrackSlot,
@@ -656,7 +657,8 @@ export default function DesignCritiquePage() {
   const screens = (current && current.screens) || []
   const isFlow = screens.length > 1
   const shown = screens[Math.min(screenIdx, Math.max(0, screens.length - 1))] || null
-  const thumbUrl = shown ? shown.url : ''
+  // History persists the logical URL; relocate only at this render sink.
+  const thumbUrl = shown ? relocateRequestUrl(shown.url) : ''
 
   // ── staging ────────────────────────────────────────────────────────────
   const addFiles = (fileList: FileList | File[] | null) => {
@@ -1009,7 +1011,7 @@ export default function DesignCritiquePage() {
                 {critiques.map(e => (
                   <Clickable key={e.id} style={S.menuItem} onClick={() => selectCritique(e)}
                     title={e.pending ? i18nT('apps.designCritique.designCritiquePage.a_critique_is_still_running_click_to_watch_it') : undefined} aria-busy={e.pending || undefined}>
-                    {e.thumbUrl ? <img src={e.thumbUrl} style={S.menuThumb} alt="" /> : null}
+                    {e.thumbUrl ? <img src={relocateRequestUrl(e.thumbUrl)} style={S.menuThumb} alt="" /> : null}
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ ...S.menuRead, ...(e.pending ? S.pendingRead : {}) }}>{e.pending ? i18nT('apps.designCritique.designCritiquePage.running') : (e.read || 'Critique')}</div>
                       <div style={S.menuTime}>{entryMeta(e)}</div>
@@ -1171,7 +1173,7 @@ export default function DesignCritiquePage() {
           ? <div key="list">{critiques.map(e => (
               <Clickable key={e.id} style={S.listItem} onClick={() => selectCritique(e)}
                 title={e.pending ? i18nT('apps.designCritique.designCritiquePage.a_critique_is_still_running_click_to_watch_it') : undefined} aria-busy={e.pending || undefined}>
-                {e.thumbUrl ? <img src={e.thumbUrl} style={S.listThumb} alt="" /> : null}
+                {e.thumbUrl ? <img src={relocateRequestUrl(e.thumbUrl)} style={S.listThumb} alt="" /> : null}
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ ...S.listRead, ...(e.pending ? S.pendingRead : {}) }}>{e.pending ? i18nT('apps.designCritique.designCritiquePage.running') : (e.read || 'Critique')}</div>
                   <div style={S.listTime}>{entryMeta(e)}</div>
@@ -1240,7 +1242,7 @@ export default function DesignCritiquePage() {
           return (
             <button key={'th' + i} style={S.thumb} onClick={() => { setScreenIdx(i); setActive(null) }} title={'Step ' + sc.step + ' · ' + sc.label} aria-current={on ? 'true' : 'false'}>
               <div style={{ ...S.thumbBox, ...(on ? S.thumbBoxOn : {}) }}>
-                <img src={sc.url} style={S.thumbImg} alt="" />
+                <img src={relocateRequestUrl(sc.url)} style={S.thumbImg} alt="" />
                 {worst
                   ? <span style={{ ...S.thumbCount, color: sevOf(worst.severity).color }}><span style={{ width: '6px', height: '6px', borderRadius: '999px', background: sevOf(worst.severity).color, display: 'inline-block' }} />{String(mine.length)}</span>
                   : <span style={{ ...S.thumbCount, color: '#3fae6b' }}><Check size={11} /></span>}

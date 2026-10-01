@@ -21,6 +21,7 @@
  * A no-op at top level: a gateway nobody is embedding has no host to tell.
  */
 import { isEmbeddedPane } from './embedded'
+import { stampPaneChannel } from './embeddedParent'
 
 /** What the pane tells its host about a crew it just connected. */
 export interface ChainedCrewNotice {
@@ -166,7 +167,7 @@ export function announceChainedCrew(notice: ChainedCrewNotice): boolean {
   try {
     // nosemgrep: javascript.browser.security.wildcard-postmessage-configuration.wildcard-postmessage-configuration
     window.parent?.postMessage(
-      {
+      stampPaneChannel({
         type: CHAINED_CREW_MESSAGE,
         v: 1,
         id: notice.id,
@@ -174,7 +175,7 @@ export function announceChainedCrew(notice: ChainedCrewNotice): boolean {
         sshHost: notice.sshHost,
         remotePort: notice.remotePort,
         port: notice.port,
-      },
+      }),
       // The host validates our ORIGIN against the loopback port it forwarded to
       // us, which is the check that matters; we cannot name its origin from here
       // (a cross-origin iframe cannot read `parent.location`), and the payload

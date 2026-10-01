@@ -5,6 +5,7 @@
  * and credential-redaction consents.
  */
 
+import { relocateRequestUrl } from '../../lib/dashboardRuntime'
 import type { ClientTransport } from './transport'
 
 /** A built-in denied-command rule as returned by GET /api/security/denied-commands. */
@@ -416,7 +417,7 @@ export function createSecurityEndpoints({ get, post, put, del, patch, j }: Clien
     // The GET reports what would be billed AND performs the identity probe, so it
     // is the call that surfaces the account before the operator agrees to it.
     awsConsent: (service: string) =>
-      fetch('/api/aws/consent?service=' + encodeURIComponent(service)).then(j) as Promise<AwsConsentStatus>,
+      fetch(relocateRequestUrl('/api/aws/consent?service=' + encodeURIComponent(service))).then(j) as Promise<AwsConsentStatus>,
     grantAwsConsent: (service: string, shown: { profile: string; region: string; account: string }) =>
       post('/api/aws/consent', {
         service,
@@ -445,12 +446,12 @@ export function createSecurityEndpoints({ get, post, put, del, patch, j }: Clien
     // The class travels in the query string, not a body, because that is what the
     // handler reads (`request.query.get("destination_class")`) on the writes.
     fileDeliveryConsent: () =>
-      fetch('/api/file-delivery/consent').then(j) as Promise<FileDeliveryConsentStatus>,
+      fetch(relocateRequestUrl('/api/file-delivery/consent')).then(j) as Promise<FileDeliveryConsentStatus>,
     armFileDeliveryConsent: (destinationClass: string) =>
       post('/api/file-delivery/consent?destination_class=' + encodeURIComponent(destinationClass))
         .then(j) as Promise<ArmedFileDeliveryConsent>,
     fileDeliveryConsentArmStatus: () =>
-      fetch('/api/file-delivery/consent/arm').then(j) as Promise<ArmedFileDeliveryConsent>,
+      fetch(relocateRequestUrl('/api/file-delivery/consent/arm')).then(j) as Promise<ArmedFileDeliveryConsent>,
     revokeFileDeliveryConsent: (destinationClass: string) =>
       del('/api/file-delivery/consent?destination_class=' + encodeURIComponent(destinationClass))
         .then(j) as Promise<{ ok?: boolean; removed?: boolean }>,
@@ -459,7 +460,7 @@ export function createSecurityEndpoints({ get, post, put, del, patch, j }: Clien
     // theirs: the handler applies the owner gate to the read and the write
     // separately, and the write is the ONLY writer of the keystone.
     credentialRedaction: () =>
-      fetch('/api/security/credential-redaction').then(j) as Promise<CredentialRedactionState>,
+      fetch(relocateRequestUrl('/api/security/credential-redaction')).then(j) as Promise<CredentialRedactionState>,
     setCredentialRedaction: (enabled: boolean) =>
       put('/api/security/credential-redaction', { enabled }).then(j) as Promise<CredentialRedactionState>,
   }
