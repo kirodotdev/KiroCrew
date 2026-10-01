@@ -7,6 +7,7 @@ this module stays their import path and their patch surface (see that package).
 from __future__ import annotations
 
 import asyncio
+import dataclasses  # noqa: F401
 import functools
 import importlib.util  # noqa: F401
 import inspect  # noqa: F401
@@ -171,6 +172,7 @@ from kiro_crew.dashboard.messaging_api.run_control import (  # noqa: F401
 from kiro_crew.dashboard.messaging_api.run_views import (  # noqa: F401
     _apply_result_view,
     _awaiting_spawn_approval,
+    _awaiting_tool_approval,
     _redact,
     _spawn_result_view,
     api_spawn_list,
@@ -229,6 +231,7 @@ from kiro_crew.dashboard.token_auth import (  # noqa: F401
     LINK_WINDOW_SECS,
     caller_names_a_missing_slot,
     generate_token,
+    validated_token_origin,
 )
 from kiro_crew.dashboard.ws_event_scope import (  # noqa: F401
     _audit_allow,
@@ -237,6 +240,7 @@ from kiro_crew.dashboard.ws_event_scope import (  # noqa: F401
     persisted_snapshot_denial_reason,
     slot_owner_snapshot,
 )
+from kiro_crew.execution_context import CLI_ORIGIN  # noqa: F401
 from kiro_crew.messaging.display_safety import redact_for_display
 from kiro_crew.messaging.link import SLACK_NAMESPACE, ChannelLink  # noqa: F401
 from kiro_crew.messaging.renderer import (  # noqa: F401
@@ -584,20 +588,19 @@ def _run_belongs_to_caller(caller: str, run_id: str, parent: object) -> bool:
     """Whether *caller* may control run *run_id* whose originating session is *parent*.
 
     Ownership is the ONLY admission: the run's parent session, or the run itself.
-    A caller with no identity owns nothing that a session started -- it is admitted
-    to a run with no parent (one the host operator started from the CLI, which
-    carries the internal secret and no session) and to nothing else. Neither the
-    caller's memory store nor the transport it arrived on widens this.
+    A caller with no identity owns no run. A run no session started (the owner's,
+    from the dashboard or ``kirocrew spawn run``) belongs to the owner principal,
+    which reaches these routes with an owner token and no ``internal_auth``, so it
+    never takes this check. Neither the caller's memory store nor the transport it
+    arrived on widens this.
     """
     if caller == f"subagent:{run_id}":
         return True
-    if parent is None:
-        # No record of this run at all: nothing vouches for who started it, so
-        # nobody owns it. Reading "unknown" as "parentless" would let a caller
-        # with no identity act on any id it can name.
+    if not caller or parent is None:
+        # No identity owns nothing; no record of the run (``parent is None``)
+        # means nothing vouches for who started it, so nobody owns it.
         return False
-    parent_key = parent if isinstance(parent, str) else ""
-    return parent_key == caller
+    return (parent if isinstance(parent, str) else "") == caller
 
 
 def parent_work_supported(state: Any, parent_session: str) -> bool:

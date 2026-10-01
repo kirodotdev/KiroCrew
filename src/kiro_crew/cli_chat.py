@@ -22,7 +22,7 @@ from kiro_crew.config.loader import (
     update_config_locked,
 )
 from kiro_crew.config.paths import data_home
-from kiro_crew.constants import BANNER
+from kiro_crew.constants import BANNER, CLI_SESSION_KEY, DEFAULT_AGENT_NAME
 from kiro_crew.hooks import (
     TOOL_DENY,
     HookManager,
@@ -55,13 +55,13 @@ logger = logging.getLogger(__name__)
 #: provider factory, to the PreToolUse gate, and to the SEL audit log. It is the
 #: value ``sel._infer_source`` and ``validation`` already recognise as the CLI,
 #: so the three must not drift apart.
-_CLI_SESSION_KEY = "cli_chat"
+_CLI_SESSION_KEY = CLI_SESSION_KEY
 
 #: The ACP runtime's canonical identity when no agent is configured.  The
 #: provider normalizes an empty agent to this name; the governance gate must see
 #: the same value so a task-bound ``kirocrew`` profile cannot be skipped merely
 #: because the CLI relied on the provider's default.
-_DEFAULT_KIRO_AGENT = "kirocrew"
+_DEFAULT_KIRO_AGENT = DEFAULT_AGENT_NAME
 
 #: The audit ``source`` ``_CLI_SESSION_KEY`` maps to. Passed explicitly so a
 #: record is attributed to the CLI even if the key ever gains a suffix.

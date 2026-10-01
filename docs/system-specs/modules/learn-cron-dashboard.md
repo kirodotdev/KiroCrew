@@ -269,6 +269,9 @@ record distinguishes stable member identity from execution template and retains
 the selected store independently of later parent-chat or configuration labels.
 An explicit member uses its existing store; an omitted member inherits the
 creating conversation. Unknown member identity is an error, not a Global fallback.
+The captured record never carries the creator's `origin`: a schedule fires on its
+own, so one created inside a `kirocrew spawn run` run is not governed as the CLI
+([subagent.md § CLI](subagent.md#cli-kirocrew-spawn-run-task)).
 
 Dashboard creation reports invalid schedules with `code: "invalid_cron"`; a failed
 write saves no job and sends no success refresh. Store-busy and unreadable-store

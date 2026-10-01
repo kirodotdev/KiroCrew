@@ -1862,8 +1862,10 @@ Two delivery modes for `spawn_steer` (REST `POST /api/spawn/{id}/steer`, body `m
 `spawn_continue` run behind `_spawn_scope_refusal`, and `spawn_list` filters by the
 same predicate (`_run_belongs_to_caller`): the caller must be the run's
 `parent_session_key`, or the run itself. This holds whatever memory store the
-caller resolved to, and a caller with no `X-Session-Key` reaches only a run no
-session started (a CLI run, whose record carries an empty parent). A run with no
+caller resolved to, and an internal caller with no `X-Session-Key` owns no run,
+parentless ones included. A run no session started (from the dashboard's Spawn or
+`kirocrew spawn run`) belongs to the owner principal, which reaches these routes
+with an owner token and no `internal_auth`, so it never takes the check. A run with no
 managed state and no persisted record is owned by nobody and refused; an accepted
 spawn that has not started yet (`queued_run_async`) is owned by its row's session
 key; a
@@ -1873,8 +1875,7 @@ without caller injection: a kiro-cli process that multiplexes sessions
 `X-Session-Key` there unless `mcp_gateway.stub_servers` caller injection is on, so
 from such a process `spawn_steer` against a run it cannot prove it owns is refused
 with 404 `task_scope_denied` and an error text naming the identity gap and the
-`kirocrew doctor` strict-identity diagnosis, and `spawn_list` shows it only
-parentless runs. That is the intended fail-closed posture: a run's task text, id
+`kirocrew doctor` strict-identity diagnosis, and `spawn_list` shows it no run. That is the intended fail-closed posture: a run's task text, id
 and parent key are what a steer needs, so an identity-less caller is shown none of
 another session's. The default install is not that shape: `_resolve_session_key`
 reads the gateway-injected caller context, the MAC-signed per-session token, the
@@ -3093,6 +3094,102 @@ Delegation guidance is injected from `src/kiro_crew/config/prompt.md`; no dedica
 Posts to the dashboard API on the configured `--port`. By default it polls until
 the run finishes and prints the result; `--async` returns immediately with the
 subagent ID. `kirocrew spawn list` lists current runs.
+
+The CLI is the dashboard owner at a terminal, so it authenticates as the owner
+principal (`owner_gateway_client`). It mints a short-lived owner token
+(`ttl=2m`, held in memory, minted again shortly before it expires on either
+clock, and once more after any 403, since a logout or a clock step can end a
+token early) from `/api/token/local?origin=cli` with the local secret, and sends
+it on every spawn call. The gateway admits it as it admits the owner's browser.
+Every request travels the dashboard unix socket only, never TCP, and before a
+byte is written the CLI checks that the socket's peer is the gateway process the
+data home recorded for the port (`run/gateway-<port>.pid` and its start
+identity). The owner path therefore rests on the socket's filesystem protection
+and on that check. The mint route is registered with the API routes both
+servers share, so a headless `--slack-only` gateway serves it, and the socket is
+named for the bound port, so `--port auto` works too.
+
+The mint refuses where the owner bootstrap
+(`member_memory_auth.local_owner_bootstrap_allowed`) cannot verify a host
+process: inside an agent sandbox, under another user or mount namespace, on a
+platform with no peer check, and under a gateway running as PID 1 without an init
+such as tini (`--init`), as the official image runs it. The CLI prints the
+remedy for each refusal `code`. With the sandbox off, or on Windows, there is no
+boundary between an agent and the operator here, as elsewhere in those modes
+([security.md](security.md)). Where the gateway serves no socket (Windows, or a
+bind that failed, for example on a data-home path too long for `sun_path`), the
+CLI says so and points at the dashboard; there `kirocrew spawn list` has no path
+to the gateway. `kirocrew spawn` is therefore POSIX-only for now; an owner
+transport for a gateway with no socket is
+[#16314](https://github.com/kirodotdev/KiroCrew/issues/16314).
+
+**The CLI origin.** `origin=cli` mints the token with a signed `origin: "cli"`
+claim and no one-time-link nonce, so it cannot be opened as a link and a burst
+of CLI calls cannot evict a pending login or channel challenge link.
+`POST /api/spawn` reads the origin from that claim only, for the owner principal
+only (`token_auth.validated_token_origin`); no body field sets it. A CLI-origin
+spawn that names a `parent_session` is refused 400 `invalid_origin`. The origin
+is recorded on the run's `ExecutionContext` (`origin`), so a retry, a
+continuation and a start from the task row keep it. Nothing inherits it:
+`derive_execution` clears it, so a run the CLI run's model spawns is asked for by
+that run's session and faces the prompt under its parent's key, and a schedule it
+creates stores no origin (`cron_service.identity.bind_cron_memory`). A CLI-origin
+run:
+
+- runs with no parent, on Global memory unless it names a target member;
+- is governed as the attended CLI surface (`cli_chat`, surface `cli`, as for
+  `kirocrew computer call`), on every agent name it answers to, at admission and
+  at the run-time re-check alike (`subagent.spawn_governance_key`,
+  `subagent.spawn_policy_agents`, [governance.md](governance.md)), so a
+  `surface:cli` profile's `enabled` and `scopes.agents` bind it; the SEL rows carry
+  `cli_chat`. A continuation that names a parent session is asked for by that
+  session and is governed under its key;
+- faces the ordinary spawn prompt, as any other caller's spawn does: with no
+  dashboard open and no `auto_approve_subagent_spawn` or Trust, it waits for
+  approval or is refused there, and the poll says so. Skipping the prompt for
+  the owner's terminal is not decided
+  ([#16313](https://github.com/kirodotdev/KiroCrew/issues/16313)). The run's
+  tool calls keep their ordinary approval; with `agent.approval_mode:
+  interactive` and no dashboard open, a mid-run tool prompt waits silently, up to
+  2 h, except that the poll prints a hint while `GET /api/spawn/{id}` (and the
+  list) report `awaiting_tool_approval`.
+
+The dashboard's own Spawn button is governed under its empty parent key; the two
+owner paths differ there. An internal-secret caller with no
+session cannot start a parentless run (409 `member_identity_unavailable` from the
+shared identity check, `internal_memory_scope`, as on main) and owns none
+(§ Properties).
+
+The blocking poll reads `GET /api/spawn/{id}` (a queued run answers `queued`).
+A 5xx (the gateway's `taskq_unavailable` says "retry shortly") or a GET whose
+answer was lost (a timeout, a dropped connection, a cut-off answer) is asked
+again up to `_SPAWN_POLL_RETRIES` times in a row, after its `Retry-After`
+(capped at `_SPAWN_POLL_RETRY_AFTER_CAP_SECS`). Anything else ends the poll at
+once: a 4xx, a malformed answer, a token re-mint that is refused or unanswered,
+a connection that never reached the gateway, a socket that went away and a
+listener that is not the recorded gateway. A refusal prints the gateway's own error, a transport failure
+the transport's, and the CLI then says the run may still be going and where to
+look, since losing the poll does not stop it. A finished run's answer carries its
+recorded `outcome`, and only `completed` prints the result and exits 0. A
+gateway older than its CLI sends no `outcome` (and no `stopped`) on a live answer,
+so there the old rule holds: an error exits nonzero, otherwise the result prints. A
+`stopped` run (a Stop from the dashboard, or a cancel while it was queued, which
+records no error) says it was stopped and exits nonzero, so a script chained on
+the command does not go on as if the task had been done. A run an earlier gateway
+process left behind has no recorded ending until the restarted gateway's recovery
+settles it; until then the persistence fallback answers `done: false` with no
+`outcome`, so the CLI keeps polling rather than reporting an ending.
+The poll hints once per prompt (a tool prompt is keyed on the run's `last_tool`),
+and `kirocrew spawn list` marks a run waiting on a tool prompt. Every field of a
+`spawn list` row, the queued rows (`?queued=1`) included, is confined to its line
+(`safe_terminal_line`).
+
+A `POST` that times out, or whose connection drops after the request was written
+(urllib raises those bare, from reading the answer), says the outcome is unknown
+rather than inviting a second spawn. A mint that cannot finish says the request was
+not sent. A mint refused with `loopback_only` (a peer running as another user, such
+as under `sudo`) names that; a 404 or an unknown 403 means a gateway older than
+its CLI.
 
 ### MCP Tool: `spawn_run`
 

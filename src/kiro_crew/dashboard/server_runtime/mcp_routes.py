@@ -120,6 +120,10 @@ def _deferred_work_ledger(handler_name: str) -> Callable:
 
 def _register_mcp_routes(app: web.Application) -> None:
     """Register API routes used by MCP tools (spawn, lessons, crons, etc.)."""
+    # Local owner-token bootstrap (local secret + peer checks in the handler, and
+    # token_auth's bypass). Here rather than with the dashboard's own routes so the
+    # headless API server mints for ``kirocrew spawn`` and ``kirocrew app`` too.
+    app.router.add_get("/api/token/local", handlers.api_token_local)
     app.router.add_post("/api/spawn", handlers.api_spawn)
     app.router.add_post("/api/spawn/lost", handlers.api_spawn_lost)
     app.router.add_post("/api/spawn/mark-collected", handlers.api_spawn_mark_collected)

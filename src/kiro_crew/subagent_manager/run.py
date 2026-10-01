@@ -49,6 +49,7 @@ if TYPE_CHECKING:
         _SYSTEM_PREFIX,
         _TRANSIENT_CONTINUE_MSG,
         _TURN_LIMIT,
+        DEFAULT_AGENT_NAME,
         EVENT_AGENT_SWITCHED,
         EVENT_COMPLETE,
         EVENT_PERMISSION_REQUEST,
@@ -91,7 +92,7 @@ if TYPE_CHECKING:
         _subagent_default_model,
         _timeout_context,
         _validate_agent,
-        _vet_spawn_governance,
+        _vet_spawn_policy,
         acp_error_is_session_not_found,
         acp_error_is_transient,
         advance_fallback_candidate,
@@ -121,6 +122,8 @@ if TYPE_CHECKING:
         reproject_claimed_session,
         run_in_embed_pool,
         sel,
+        spawn_governance_key,
+        spawn_policy_agents,
         teardown_capture,
         time,
         transient_retry_delay,
@@ -2163,13 +2166,18 @@ class RunEventCoordinator(ManagerComponent):
         )
         agent = info.agent or execution.template_id
         kind = _selection_kind(info)
-        if info.crew or execution.member_id or (not info.agent and agent):
-            policy_agent = info.crew or (execution.selection_name if kind == "member" else agent)
-            denial = await asyncio.to_thread(
-                _vet_spawn_governance, info.parent_session_key, policy_agent, app=info.app
-            )
-            if denial:
-                raise RuntimeError(f"spawn refused by governance: {denial}")
+        # The same key and agent names admission checked (``spawn_policy_agents``),
+        # for every run: a scope tightened while the spawn waited for approval or
+        # in the queue binds it, whether it names its agent or inherits one.
+        denial = await asyncio.to_thread(
+            _vet_spawn_policy,
+            spawn_governance_key(info.parent_session_key, execution.origin),
+            spawn_policy_agents(info.agent, info.crew, execution),
+            app=info.app,
+        )
+        if denial:
+            raise RuntimeError(f"spawn refused by governance: {denial}")
+        if info.crew or execution.member_id or not info.agent:
             sel().log_api_access(
                 caller=f"subagent:{info.id}",
                 operation="subagent.agent_inheritance",
@@ -2195,6 +2203,10 @@ class RunEventCoordinator(ManagerComponent):
             ),
         )
         turn_execution = replace(execution, template_id=agent)
+        # The agent the scope checked (``spawn_policy_agents``) is the one that
+        # runs: a run naming none claims the default by name, never the warm
+        # pool's agent or whatever a shared runtime would pick for no agent.
+        agent = agent or DEFAULT_AGENT_NAME
         extra_kwargs: dict[str, Any] = {
             "crew_agent": execution.selection_name if kind == "member" else "",
         }

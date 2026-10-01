@@ -214,6 +214,9 @@ async def api_spawn_status(request: web.Request) -> web.Response:
         if view_meta:
             data["result_meta"] = view_meta
         data["error"] = _redact(info.error) if info.error else ""
+        # The recorded ending, the same field the persistence fallback reports, so
+        # ``kirocrew spawn run`` reads one ending from either answer.
+        data["outcome"] = getattr(info, "outcome", "")
     else:
         data["turns"] = info.turns
         data["last_tool"] = _redact(info.last_tool)
@@ -231,7 +234,23 @@ async def api_spawn_status(request: web.Request) -> web.Response:
         # separate `spawn list` or a log grep.
         if _awaiting_spawn_approval(info):
             data["awaiting_approval"] = True
+        elif _awaiting_tool_approval(info):
+            data["awaiting_tool_approval"] = True
     return web.json_response(data)
+
+
+def _awaiting_tool_approval(info: object) -> bool:
+    """True only while a STARTED run is parked on a tool-approval prompt.
+
+    The other half of :func:`_awaiting_spawn_approval`'s discriminator: the same
+    flag with ``_exec_started`` stamped. Reported so a terminal user polling with
+    ``kirocrew spawn run`` learns the run is waiting on them; same strict reads, for
+    the same lightweight info doubles.
+    """
+    return (
+        getattr(info, "_awaiting_approval", False) is True
+        and getattr(info, "_exec_started", None) is not None
+    )
 
 
 def _awaiting_spawn_approval(info: object) -> bool:
@@ -287,11 +306,11 @@ async def api_spawn_list(request: web.Request) -> web.Response:
     agents = []
     caller = request.headers.get("X-Session-Key", "")
     # An internal caller lists only the runs it may control, by the same
-    # ownership rule the per-run routes apply: its own runs, or -- with no
-    # identity at all -- only runs no session started. Listing is a read, but a
-    # run id, its task text and its parent key are exactly what a later steer
-    # needs, so the list must not hand out what the control route would refuse.
-    # The dashboard owner (no ``internal_auth``) still sees everything.
+    # ownership rule the per-run routes apply: its own runs, and none at all
+    # without an identity. Listing is a read, but a run id, its task text and its
+    # parent key are exactly what a later steer needs, so the list must not hand
+    # out what the control route would refuse. The dashboard owner (an owner
+    # token, no ``internal_auth``) still sees everything.
     internal = request.get("internal_auth") is True
     # The queued half is opt-in (``?queued=1``): only the spawn tools act on it,
     # and the dashboard's pollers would otherwise pay a store read every few
@@ -330,6 +349,8 @@ async def api_spawn_list(request: web.Request) -> web.Response:
             # has no child process and is only ever waiting to be approved.
             if _awaiting_spawn_approval(info):
                 entry["awaiting_approval"] = True
+            elif _awaiting_tool_approval(info):
+                entry["awaiting_tool_approval"] = True
         # Present only when a group was actually withheld, so the default
         # (everything on) payload is unchanged.
         withheld = [

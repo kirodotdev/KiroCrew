@@ -8,7 +8,10 @@ breaker, per-session semaphore, and persistent background session.
 
 Chat sessions are served from the warm pool when eligible (default pool
 agent, default cwd, no resume mapping); otherwise they cold-start on first
-message via `get_or_create()`.
+message via `get_or_create()`. The agent match compares the agent that runs on
+both sides (`_claim_from_pool`): a pool filled for no agent runs `kirocrew`, so a
+request for `kirocrew` by name, as every subagent spawn naming no agent makes,
+claims it.
 
 Successful native ACP resume suppresses replay from both disk and the
 dashboard's live slot window. The runner honors the actual provider client's

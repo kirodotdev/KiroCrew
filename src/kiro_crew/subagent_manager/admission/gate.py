@@ -39,7 +39,7 @@ if TYPE_CHECKING:
         _validate_agent,
         _validate_app_agent_ownership,
         _vet_parent_available_agents,
-        _vet_spawn_governance,
+        _vet_spawn_policy,
         asyncio,
         check_memory_available,
         logger,
@@ -51,6 +51,8 @@ if TYPE_CHECKING:
         redact_credentials,
         redact_exfiltration_urls,
         sel,
+        spawn_governance_key,
+        spawn_policy_agents,
         time,
         validate_cwd,
     )
@@ -268,8 +270,8 @@ class _GateMixin(ManagerComponent):
 
         This dual behavior is intentional for headless callers (e.g.
         Mochi bg agent) that have no UI to respond to approval prompts.
-        The parameter is only accepted via the internal ``POST /api/spawn``
-        endpoint (requires X-Internal-Secret), not from LLM tool calls.
+        The parameter is accepted only on ``POST /api/spawn`` (the internal
+        secret or a dashboard credential), never from LLM tool calls.
 
         Args:
             task (str): The prompt/task description for the subagent.
@@ -543,14 +545,22 @@ class _GateMixin(ManagerComponent):
         # to named agents (capabilities.spawn.scopes.agents).  Resolved against
         # the PARENT surface so a per-app/per-surface profile contains what it
         # can spawn — even if the kiro side would allow it.
-        gov_spawn_err = _vet_spawn_governance(parent_session_key, agent, app=app) if _gate else None
+        # The agent scope is checked on the template the run executes AND the agent
+        # it resolves to, the names ``run.py`` re-checks before it starts, so the
+        # two cannot disagree.
+        governed_as = spawn_governance_key(parent_session_key, execution.origin)
+        gov_spawn_err = (
+            _vet_spawn_policy(governed_as, spawn_policy_agents(agent, crew, execution), app=app)
+            if _gate
+            else None
+        )
         if gov_spawn_err:
             if _persistent_diagnostics:
                 logger.warning("Subagent spawn refused by governance: %s", gov_spawn_err)
             else:
                 logger.warning("Subagent %s refused by governance", agent_id)
             sel().log_tool_invocation(
-                session_key=parent_session_key or "",
+                session_key=governed_as or "",
                 source="subagent",
                 tool_name="spawn_run",
                 outcome="denied",
@@ -565,6 +575,7 @@ class _GateMixin(ManagerComponent):
                     task=_redacted_task,
                     memory_mode=_memory_mode,
                     agent=agent,
+                    app=app,
                     parent_session_key=parent_session_key,
                     done=True,
                     error=f"spawn refused by governance: {gov_spawn_err}",
@@ -1566,41 +1577,32 @@ class _GateMixin(ManagerComponent):
             and self._manager._sessions.get_approval_policy(parent_session_key) == "auto"
         )
 
+        hooks = self._manager._ctx_builder.hooks if self._manager._ctx_builder else None
+        # The reason a run starts without its spawn prompt, decided once; ``""``
+        # starts it unaudited (YOLO), ``None`` leaves it to the prompt below.
+        auto_reason: str | None = None
         if self._manager._is_yolo and self._manager._is_yolo():
-            self._manager._tasks[agent_id] = asyncio.create_task(self._manager._run(info))
-            self._manager._log_spawned(info)
+            auto_reason = ""
         elif approval_mode == "auto":
-            self._manager._tasks[agent_id] = asyncio.create_task(self._manager._run(info))
-            self._manager._log_spawned(info)
-            sel().log_tool_invocation(
-                session_key=info.parent_session_key,
-                source="subagent",
-                tool_name="spawn_run",
-                outcome="auto_approved_spawn",
-                metadata={"subagent_id": agent_id, "reason": "approval_mode_auto"},
-            )
+            auto_reason = "approval_mode_auto"
         elif parent_trusted:
+            auto_reason = "parent_trusted"
+        elif hooks and hooks.auto_approve_subagent_spawn is True:
+            auto_reason = "tool_calls_gated"
+
+        if auto_reason is not None:
             self._manager._tasks[agent_id] = asyncio.create_task(self._manager._run(info))
             self._manager._log_spawned(info)
-            sel().log_tool_invocation(
-                session_key=info.parent_session_key,
-                source="subagent",
-                tool_name="spawn_run",
-                outcome="auto_approved_spawn",
-                metadata={"subagent_id": agent_id, "reason": "parent_trusted"},
-            )
-        elif self._manager._ctx_builder and self._manager._ctx_builder.hooks:
-            if self._manager._ctx_builder.hooks.auto_approve_subagent_spawn is True:
-                self._manager._tasks[agent_id] = asyncio.create_task(self._manager._run(info))
-                self._manager._log_spawned(info)
+            if auto_reason:
                 sel().log_tool_invocation(
-                    session_key=info.parent_session_key,
+                    session_key=governed_as,
                     source="subagent",
                     tool_name="spawn_run",
                     outcome="auto_approved_spawn",
-                    metadata={"subagent_id": agent_id, "reason": "tool_calls_gated"},
+                    metadata={"subagent_id": agent_id, "reason": auto_reason},
                 )
-            elif self._manager._on_spawn_approval:
+        elif hooks:
+            if self._manager._on_spawn_approval:
                 self._manager._tasks[agent_id] = asyncio.create_task(
                     self._manager._spawn_with_approval(info)
                 )

@@ -831,9 +831,12 @@ Phase-aware Slack reaction manager with stall detection, defined in `slack/handl
 
 ### LLM-Initiated Commands
 
-The LLM executes cron and spawn operations via bash using the `kirocrew` CLI:
+The LLM executes cron operations via bash using the `kirocrew` CLI, and spawns with
+the `spawn_run` MCP tool:
 - `kirocrew cron add "name" "message" --every 300` — writes to crons.json, gateway auto-detects via mtime sync
-- `kirocrew spawn run "task"` (subcommands `run`, `list`) — POSTs to dashboard API at localhost:5476, gateway spawns subagent
+- `spawn_run` — the agent's spawn. `kirocrew spawn run` is the owner's terminal
+  command: it authenticates as the dashboard owner over the dashboard unix socket
+  only ([subagent.md § CLI](subagent.md#cli-kirocrew-spawn-run-task)).
 
 ### `handle_interaction(channel, msg_ts, action_id, user_id="", thread_ts="", slack=None, sessions=None) -> str | None`
 Routes Block Kit button clicks to pending tool approvals:

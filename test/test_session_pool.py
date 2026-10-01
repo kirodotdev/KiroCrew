@@ -302,6 +302,21 @@ class TestClaimFromPool:
         result = mgr._claim_from_pool("kirocrew")
         assert result is None
 
+    def test_the_default_agent_by_name_claims_a_pool_filled_for_no_agent(self):
+        """A pool filled for no agent runs ``kirocrew``, so a run that asks for it by
+        name (every spawn naming no agent does) takes it instead of starting cold."""
+        mgr, _ = _make_manager(pool_agent="")
+        provider = _make_provider()
+        mgr._warm_pool.put_nowait((provider, time.monotonic()))
+        result = mgr._claim_from_pool("kirocrew")
+        assert result is not None and result[0] is provider
+
+    def test_the_default_agent_by_name_does_not_claim_another_agents_pool(self):
+        mgr, _ = _make_manager(pool_agent="researcher")
+        mgr._warm_pool.put_nowait((_make_provider(), time.monotonic()))
+        assert mgr._claim_from_pool("kirocrew") is None
+        assert mgr._warm_pool.qsize() == 1
+
     def test_claim_nonempty_agent_rejected_when_pool_agent_empty(self):
         mgr, _ = _make_manager(pool_agent="")
         mgr._warm_pool.put_nowait((_make_provider(), time.monotonic()))

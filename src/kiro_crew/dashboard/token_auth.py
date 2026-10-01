@@ -1078,6 +1078,24 @@ def validate_token_with_app(
     return valid, user_id, reason, app_name
 
 
+def validated_token_origin(request: web.Request) -> str:
+    """The ``origin`` claim of the token this request authenticated with, else "".
+
+    Reads ``request["auth_token"]``, the credential the middleware VALIDATED, never
+    a re-extracted one (see ``_shared``'s link-mint note for why the two can
+    differ). Its signature has been checked, so the claim read here is the minter's
+    word: an absent token, an unreadable payload or a non-string claim is "".
+    """
+    token = request.get("auth_token", "")
+    if not isinstance(token, str) or not token:
+        return ""
+    try:
+        value = json.loads(_b64url_decode(token.split(".", 1)[0])).get("origin", "")
+    except Exception:
+        return ""
+    return value if isinstance(value, str) else ""
+
+
 def claims_an_app_unverified(token: str) -> bool:
     """Whether *token* CLAIMS an ``app`` identity, without verifying its signature.
 

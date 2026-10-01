@@ -865,6 +865,25 @@ class TestStartApiServerResidualPaths:
         assert "spawn exploded" in errors[-1]["error"]
 
     @pytest.mark.asyncio
+    async def test_the_unix_socket_is_named_for_the_bound_port(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """``--port auto`` requests port 0; the socket must carry the port the
+        listener got, the one ``kirocrew spawn`` dials (it has no TCP path)."""
+        unix_site = AsyncMock(return_value=None)
+        monkeypatch.setattr(srv, "_start_unix_site", unix_site)
+        # ``_start_site`` is stubbed, so no listener reports the kernel's port.
+        monkeypatch.setattr(
+            srv, "_resolved_bound_port", lambda _runner, port: port or 43123
+        )
+
+        runner, _state_obj = await _start_api(tmp_path, monkeypatch)
+        try:
+            unix_site.assert_awaited_once_with(runner, 43123)
+        finally:
+            await runner.cleanup()
+
+    @pytest.mark.asyncio
     async def test_a_successful_api_call_is_audited_as_ok(
         self, tmp_path, monkeypatch
     ) -> None:
