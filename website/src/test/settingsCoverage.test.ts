@@ -177,12 +177,11 @@ const WAIVED_BARE_CONTROLS: Record<string, { counts: BareCounts; reason: string 
       'advertise a row that the capabilities.decisions ceiling can withdraw',
   },
   'DecisionsProviderPicker.tsx': {
-    counts: { input: 2 },
+    counts: { input: 1 },
     reason:
-      'the provider radio group and the local-server port field: neither is a config ' +
-      'path (the choice is written through the owner-only provider route as a preset ' +
-      'id and a port), and both sit inside the card the developer.decisions-jev entry ' +
-      'deep-links to',
+      'the provider radio group: not a config path (the choice is written through ' +
+      'the owner-only provider route as a preset id), and it sits inside the card the ' +
+      'developer.decisions-jev entry deep-links to',
   },
   'DisplayPanel.tsx': {
     counts: { SimpleSelect: 1, Input: 1 },

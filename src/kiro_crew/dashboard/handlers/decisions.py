@@ -73,6 +73,7 @@ _CODE_INVALID_JSON = "invalid_json"
 _CODE_INVALID_BODY = "decisions_consent_invalid_body"
 _CODE_CORRUPT = "decisions_consent_corrupt"
 _CODE_ENDPOINT_CHANGED = "decisions_consent_endpoint_changed"
+_CODE_NO_MODEL = "decisions_consent_no_model"
 _CODE_FEEDBACK_INVALID_BODY = "decisions_feedback_invalid_body"
 #: The append did not land -- a full day-file, a read-only home, a directory
 #: someone chmod-ed. 503 rather than 500: the request was valid and the caller may
@@ -425,19 +426,42 @@ def _payload(state: dict, *, denied: bool) -> dict:
     }
 
 
+def _seam_withdrawn() -> bool:
+    """Whether governance withdraws the seam for the provider configured now. Filesystem IO.
+
+    The row follows the provider: ``capabilities.decisions_local`` while a local
+    preset answers, ``capabilities.decisions`` otherwise. Derived from the config,
+    never from the request, so a caller cannot pick the more permissive row.
+    """
+    from kiro_crew.decisions import gate as _gate
+    from kiro_crew.decisions.capability import (
+        is_decisions_denied,
+        is_local_preset,
+        names_local_preset,
+    )
+
+    endpoint, model = _gate.configured_endpoint(), _gate.configured_provider_model(None)
+    # Preparing counts: the switch is offered while the chosen preset downloads.
+    local = is_local_preset(endpoint, model, serving=False)
+    denied = is_decisions_denied(local=local)
+    # Unattested preset shape: both rows govern, as on the send path.
+    if not local and names_local_preset(endpoint, model):
+        denied = is_decisions_denied(local=True) or denied
+    return denied
+
+
 async def api_decisions_consent_get(request: web.Request) -> web.Response:
     """GET /api/decisions/consent -- whether, and for which endpoint, the owner consented."""
     denied = await _deny_non_owner(request, OP_CONSENT_GET)
     if denied is not None:
         return denied
     from kiro_crew.decisions import consent
-    from kiro_crew.decisions.capability import is_decisions_denied
 
     state = await asyncio.to_thread(consent.load_state)
     # Off the loop for the same reason as the keystone read: profile resolution may
     # read from disk. Audited by the probe itself. Named ``withdrawn`` because
     # ``denied`` above is the owner gate's refusal, a different decision.
-    withdrawn = await asyncio.to_thread(is_decisions_denied)
+    withdrawn = await asyncio.to_thread(_seam_withdrawn)
     payload = await asyncio.to_thread(_payload, state, denied=withdrawn)
     # Read audited too: WHO learned whether the owner's messages leave the machine
     # is itself a fact an auditor needs, and it pairs with the denied-read row so
@@ -712,9 +736,7 @@ async def api_decisions_consent_put(request: web.Request) -> web.Response:
     # ONE probe for this request, resolved before the branch so the refusal below
     # and the ``permits`` value in the response cannot disagree. Off the loop:
     # profile resolution may read from disk.
-    from kiro_crew.decisions.capability import is_decisions_denied
-
-    withdrawn = await asyncio.to_thread(is_decisions_denied)
+    withdrawn = await asyncio.to_thread(_seam_withdrawn)
     # What the fleet ceiling is held against is whether this write GRANTS something:
     # consent itself, or an egress scope. Only a grant is gated -- a disabling or
     # revoking PUT stays available so an owner can clear a record written before the pin
@@ -769,6 +791,16 @@ async def api_decisions_consent_put(request: web.Request) -> web.Response:
     # on has to echo the reviewed address -- a scope-only write is not consenting to an
     # address, it is leaving the recorded one exactly as it is.
     if enabled is True:
+        from kiro_crew.decisions.local_models import ENDPOINT_NONE
+
+        # Nothing would be sent with no model chosen, so turning consent on would
+        # record a yes for an address that is not one.
+        if endpoint == ENDPOINT_NONE:
+            await _audit(request, operation=OP_CONSENT_PUT, outcome="denied", error="no_model")
+            return web.json_response(
+                {"error": "choose a decision model first", "code": _CODE_NO_MODEL},
+                status=409,
+            )
         reviewed = consent.normalize_endpoint(body.get("endpoint"))
         if not reviewed:
             await _audit(request, operation=OP_CONSENT_PUT, outcome="denied", error="invalid_body")
@@ -1014,18 +1046,34 @@ def _provider_payload() -> dict:
     from kiro_crew.config.loader import KiroCrewConfig
     from kiro_crew.decisions import gate as _gate
     from kiro_crew.decisions import local_models
+    from kiro_crew.decisions.capability import is_decisions_denied
+    from kiro_crew.decisions.local_runtime import get_runtime
 
     cfg = live.snapshot() or KiroCrewConfig.load()
     provider = getattr(getattr(cfg, "decisions", None), "provider", None)
     endpoint = _gate.configured_endpoint(cfg)
     model = getattr(provider, "model", "")
+    runtime = get_runtime()
+    installed = set(runtime.installed_ids())
+    status = runtime.status()
+    active = local_models.active_id(endpoint, model)
     return {
-        "presets": [local_models.as_payload(m) for m in local_models.LOCAL_MODELS],
-        "active": local_models.active_id(endpoint, model),
+        "presets": [
+            {**local_models.as_payload(m), "installed": m.id in installed}
+            for m in local_models.LOCAL_MODELS
+        ],
+        # The server the gateway runs for the chosen preset: downloading, installing,
+        # starting, running or error. ``idle`` when no local preset is wanted.
+        "runtime": status,
+        "active": active,
         "configured_endpoint": endpoint,
         # The card needs to say when a hand-written address gets no key; the one
         # predicate the oracle uses decides it, so the two surfaces cannot disagree.
         "loopback": local_models.is_loopback_endpoint(endpoint),
+        # Which side of the picker the fleet allows: hosted Jev is governed by
+        # ``capabilities.decisions``, a local preset by ``capabilities.decisions_local``.
+        "hosted_permitted": not is_decisions_denied(),
+        "local_permitted": not is_decisions_denied(local=True),
     }
 
 
@@ -1045,29 +1093,39 @@ async def api_decisions_provider_get(request: web.Request) -> web.Response:
 
 
 def _provider_target(body: object) -> tuple[str, str, int] | None:
-    """``(endpoint, model, timeout_ms)`` for a valid body, else ``None``."""
+    """``(endpoint, model, timeout_ms)`` for a valid body, else ``None``.
+
+    A local preset's port is the gateway's to choose: the one already in use when
+    the preset is running, else the preset's default, else any free port. It is
+    never taken from the body. Filesystem and socket IO.
+    """
     from kiro_crew.config.sections import (
         DECISION_PROVIDER_ENDPOINT_DEFAULT,
         DECISION_PROVIDER_MODEL_DEFAULT,
     )
     from kiro_crew.decisions import local_models
+    from kiro_crew.decisions.local_runtime import free_port, get_runtime
 
-    if not isinstance(body, dict) or set(body) - {"preset", "port"}:
+    if not isinstance(body, dict) or set(body) != {"preset"}:
         return None
     preset = body.get("preset")
     if preset == local_models.PRESET_JEV:
-        if "port" in body:
-            return None
         return DECISION_PROVIDER_ENDPOINT_DEFAULT, DECISION_PROVIDER_MODEL_DEFAULT, 1000
+    if preset == local_models.PRESET_NONE:
+        return local_models.ENDPOINT_NONE, DECISION_PROVIDER_MODEL_DEFAULT, 1000
     model = local_models.get(preset)
     if model is None:
         return None
-    port = body.get("port", model.default_port)
-    try:
-        endpoint = local_models.endpoint_for(port)
-    except ValueError:
-        return None
-    return endpoint, model.model, model.timeout_ms
+    from kiro_crew.decisions.local_runtime import STATE_RUNNING
+
+    status = get_runtime().status()
+    # Only a RUNNING server holds its port for itself. After an error -- a port
+    # another program took, among others -- a retry probes again.
+    if status["preset"] == model.id and status["state"] == STATE_RUNNING and status["port"]:
+        port = int(status["port"])
+    else:
+        port = free_port(model.default_port)
+    return local_models.endpoint_for(port), model.model, model.timeout_ms
 
 
 def _write_provider(endpoint: str, model: str, timeout_ms: int) -> None:
@@ -1098,18 +1156,20 @@ def _carry_consent(endpoint: str) -> bool:
     from kiro_crew.decisions.capability import is_decisions_denied
     from kiro_crew.decisions.local_models import is_loopback_endpoint
 
-    if not is_loopback_endpoint(endpoint) or is_decisions_denied():
+    # Only route-built preset addresses reach here, so the local row governs.
+    if not is_loopback_endpoint(endpoint) or is_decisions_denied(local=True):
         return False
     # One locked check-and-write: a consent revoked while this PUT ran stays revoked.
     return consent.rebind_if_enabled(endpoint)
 
 
 async def api_decisions_provider_put(request: web.Request) -> web.Response:
-    """PUT /api/decisions/provider -- ``{"preset": id, "port"?: int}`` switches the provider.
+    """PUT /api/decisions/provider -- ``{"preset": id}`` switches the provider.
 
-    ``preset`` is ``"jev"`` or a local preset id; ``port`` is accepted only for a
-    local preset and defaults to its own. Anything else is a 400: no field of the
-    body is written verbatim, which is what keeps a URL out of this route.
+    ``preset`` is ``"jev"``, ``"none"`` or a local preset id. Anything else is a 400: no field
+    of the body is written verbatim, which is what keeps a URL out of this route.
+    Choosing a local preset also starts it -- download, install and serve, in the
+    background -- and choosing hosted Jev or ``"none"`` stops it; the GET reports progress.
     """
     denied = await _deny_non_owner(request, OP_PROVIDER_PUT)
     if denied is not None:
@@ -1125,7 +1185,7 @@ async def api_decisions_provider_put(request: web.Request) -> web.Response:
             resources="decisions.provider",
         )
         return web.json_response({"error": "invalid JSON", "code": _CODE_INVALID_JSON}, status=400)
-    target = _provider_target(body)
+    target = await asyncio.to_thread(_provider_target, body)
     if target is None:
         await _audit(
             request,
@@ -1136,12 +1196,39 @@ async def api_decisions_provider_put(request: web.Request) -> web.Response:
         )
         return web.json_response(
             {
-                "error": 'body must be {"preset": "jev"} or {"preset": <local id>, "port"?: int}',
+                "error": 'body must be {"preset": "jev"}, {"preset": "none"} or {"preset": <local id>}',
                 "code": _CODE_PROVIDER_INVALID_BODY,
             },
             status=400,
         )
     endpoint, model, timeout_ms = target
+    from kiro_crew.decisions.capability import is_decisions_denied, names_local_preset
+
+    # A switch to a side the fleet withdrew would leave a provider nothing may use;
+    # refuse it where the owner is looking rather than letting decisions stop quietly.
+    # The endpoint was built here from a preset id, so its shape is the answer.
+    from kiro_crew.decisions.local_models import ENDPOINT_NONE
+
+    target_local = names_local_preset(endpoint, model)
+    # "No model" sends nothing and runs nothing, so no row has anything to withhold:
+    # it is the way out on a fleet that denies both, and it is never refused.
+    if endpoint != ENDPOINT_NONE and await asyncio.to_thread(
+        is_decisions_denied, local=target_local
+    ):
+        await _audit(
+            request,
+            operation=OP_PROVIDER_PUT,
+            outcome="denied",
+            error=_CODE_CAPABILITY_DENIED,
+            resources=f"decisions.provider endpoint={endpoint}",
+        )
+        return web.json_response(
+            {
+                "error": "this decision model is turned off by policy",
+                "code": _CODE_CAPABILITY_DENIED,
+            },
+            status=403,
+        )
     from kiro_crew.dashboard.handlers.agents import _get_config_lock
     from kiro_crew.dashboard.handlers.core import _hot_apply_after_write
 
@@ -1182,10 +1269,126 @@ async def api_decisions_provider_put(request: web.Request) -> web.Response:
                 error=f"consent_carry:{type(exc).__name__}",
                 resources=f"decisions_consent.json endpoint={endpoint}",
             )
+        await asyncio.to_thread(_drive_runtime, endpoint, model)
     await _audit(
         request,
         operation=OP_PROVIDER_PUT,
         outcome="allowed",
         resources=f"decisions.provider endpoint={endpoint} model={model} consent_carried={carried}",
+    )
+    return web.json_response(await asyncio.to_thread(_provider_payload))
+
+
+def _drive_runtime(endpoint: str, model: str) -> None:
+    """Run the preset the provider now names, or stop the one that ran."""
+    from urllib.parse import urlsplit
+
+    from kiro_crew.decisions import local_models
+    from kiro_crew.decisions.local_runtime import get_runtime
+
+    preset = local_models.get(local_models.active_id(endpoint, model))
+    port = urlsplit(endpoint).port
+    if preset is None or port is None:
+        get_runtime().deactivate()
+    else:
+        get_runtime().activate(preset, port)
+
+
+OP_LOCAL_MODEL_STATUS = "decisions_local_model_status"
+
+
+async def api_decisions_local_model_status(request: web.Request) -> web.Response:
+    """GET /api/decisions/local-models/status -- what the runtime is doing, for polling.
+
+    The card polls this every two seconds while a model downloads. It reads one
+    in-memory status and the installed flags, and writes no audit row: the provider
+    GET audits every read and evaluates governance twice, which at that rate would
+    bury the trail an auditor reads in thousands of identical rows.
+    """
+    denied = await _deny_non_owner(request, OP_LOCAL_MODEL_STATUS)
+    if denied is not None:
+        return denied
+    from kiro_crew.decisions.local_runtime import get_runtime
+
+    runtime = get_runtime()
+    # One hop for both: status() takes the runtime's lock, which a worker holds
+    # briefly, and the event loop never waits on a thread's lock.
+    payload = await asyncio.to_thread(
+        lambda: {"runtime": runtime.status(), "installed": runtime.installed_ids()}
+    )
+    return web.json_response(payload)
+
+
+_CODE_LOCAL_MODEL_UNKNOWN = "decisions_local_model_unknown"
+_CODE_LOCAL_MODEL_IN_USE = "decisions_local_model_in_use"
+_CODE_LOCAL_MODEL_DELETE_FAILED = "decisions_local_model_delete_failed"
+OP_LOCAL_MODEL_DELETE = "decisions_local_model_delete"
+
+
+async def api_decisions_local_model_delete(request: web.Request) -> web.Response:
+    """DELETE /api/decisions/local-models/{id} -- remove a downloaded preset.
+
+    Refused for the preset the provider names: deleting the files under a running
+    server would break it, and the owner switches away first.
+    """
+    denied = await _deny_non_owner(request, OP_LOCAL_MODEL_DELETE)
+    if denied is not None:
+        return denied
+    from kiro_crew.decisions import local_models
+    from kiro_crew.decisions.local_runtime import get_runtime
+
+    preset = local_models.get(request.match_info.get("id"))
+    if preset is None:
+        return web.json_response(
+            {"error": "unknown local model", "code": _CODE_LOCAL_MODEL_UNKNOWN}, status=404
+        )
+    # Under the switch lock: a provider PUT activating this preset and this delete
+    # are one or the other, never interleaved, so a fresh download is not removed
+    # from under the runtime that just started on it.
+    async with _PROVIDER_SWITCH_LOCK:
+        payload = await asyncio.to_thread(_provider_payload)
+        in_use = payload["active"] == preset.id or payload["runtime"]["preset"] == preset.id
+        if not in_use:
+            # The runtime refuses while a stopped worker is still finishing a step on
+            # these files; the status above does not report that worker.
+            try:
+                in_use = not await asyncio.to_thread(get_runtime().remove, preset)
+            except OSError as exc:
+                # Class only, for the reason the provider write gives: an OS error
+                # carries a path.
+                await _audit(
+                    request,
+                    operation=OP_LOCAL_MODEL_DELETE,
+                    outcome="error",
+                    error=type(exc).__name__,
+                    resources=f"decisions.local_model {preset.id}",
+                )
+                return web.json_response(
+                    {
+                        "error": "some of this model's files could not be removed",
+                        "code": _CODE_LOCAL_MODEL_DELETE_FAILED,
+                    },
+                    status=500,
+                )
+    if in_use:
+        await _audit(
+            request,
+            operation=OP_LOCAL_MODEL_DELETE,
+            outcome="denied",
+            error=_CODE_LOCAL_MODEL_IN_USE,
+            resources=f"decisions.local_model {preset.id}",
+        )
+        return web.json_response(
+            {
+                "error": "this model is in use; choose another first",
+                "code": _CODE_LOCAL_MODEL_IN_USE,
+            },
+            status=409,
+        )
+    await _audit(
+        request,
+        operation=OP_LOCAL_MODEL_DELETE,
+        outcome="allowed",
+        resources=f"decisions.local_model {preset.id}",
     )
     return web.json_response(await asyncio.to_thread(_provider_payload))

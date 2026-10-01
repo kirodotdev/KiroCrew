@@ -39,6 +39,7 @@ recursive-include src/kiro_crew/agent_panel_templates *.html
 recursive-include src/kiro_crew/dashboard_templates *.html
 recursive-include src/kiro_crew/connections *.json
 recursive-include src/kiro_crew/data *.json
+recursive-include src/kiro_crew/decisions/local_servers *.py *.txt
 recursive-include src/kiro_crew/apps *.json
 # ATTRIBUTION.md / README.md under a builtin app carry the upstream-author credit
 # for apps ported from third-party work; Apache-2.0 attribution must ship.

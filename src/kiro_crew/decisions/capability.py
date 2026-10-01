@@ -47,6 +47,16 @@ logger = logging.getLogger(__name__)
 
 DECISIONS_SCOPE = "capabilities.decisions"
 
+#: The ceiling for a LOCAL PRESET answering instead of hosted Jev. Separate from
+#: :data:`DECISIONS_SCOPE` because the two rows answer different questions: the
+#: hosted row is about message excerpts reaching a paid third party, and a local
+#: preset sends nothing off the machine. A fleet that pins the hosted row off for
+#: that reason can still allow -- or deny -- a local model with this row. Only a
+#: route-built preset address counts as local (``local_models.active_id``); a
+#: hand-written loopback address may be a tunnel to hosted Jev and stays under the
+#: hosted row.
+DECISIONS_LOCAL_SCOPE = "capabilities.decisions_local"
+
 #: Tool name the SEL ``governance_decision`` row carries, so an operator reading
 #: the trail can tell this decision apart from the consent rows beside it.
 AUDIT_TOOL = "dashboard_config_decisions"
@@ -66,8 +76,55 @@ DASHBOARD_SURFACE_KEY = "dashboard:ui"
 _UNEVALUABLE_REASON = "governance unavailable (fail-closed)"
 
 
-def is_decisions_denied(surface_key: str = DASHBOARD_SURFACE_KEY) -> bool:
-    """Return whether the ceiling withdraws the Jev decision seam for *surface_key*.
+def names_local_preset(endpoint: object, model: object) -> bool:
+    """Whether *endpoint*/*model* have the shape the provider route builds for a preset.
+
+    A statement about TEXT, so it is only for the route's own request, whose
+    endpoint it built from a preset id. Anything read back from ``config.json`` --
+    which other writers reach -- goes through :func:`is_local_preset`, because the
+    shape alone does not say what listens on that port.
+    """
+    from kiro_crew.decisions.local_models import PRESET_JEV, active_id
+
+    return active_id(endpoint, model) not in (PRESET_JEV, "custom")
+
+
+def is_local_preset(endpoint: object, model: object, *, serving: bool = True) -> bool:
+    """Whether the gateway's own runtime runs the preset *endpoint*/*model* name, there.
+
+    This is what lets :data:`DECISIONS_LOCAL_SCOPE` govern instead of the hosted row,
+    so it is not inferred from the configured address: a route-built address in
+    ``config.json`` can be written by any config writer and point at whatever listens
+    on that port. Only the runtime that started the server can attest it. *serving*
+    (the send path) needs the server answering on that port; with ``serving=False``
+    (the consent switch, offered while a preset downloads or starts) the runtime only
+    has to be preparing that preset for that port.
+    """
+    from urllib.parse import urlsplit
+
+    from kiro_crew.decisions import local_models
+    from kiro_crew.decisions.local_runtime import STATE_IDLE, STATE_RUNNING, get_runtime
+
+    preset = local_models.get(local_models.active_id(endpoint, model))
+    if preset is None or not isinstance(endpoint, str):
+        return False
+    try:
+        port = urlsplit(endpoint.strip()).port
+    except ValueError:
+        return False
+    status = get_runtime().status()
+    if status["preset"] != preset.id or status["port"] != port:
+        return False
+    return status["state"] == STATE_RUNNING if serving else status["state"] != STATE_IDLE
+
+
+def is_decisions_denied(surface_key: str = DASHBOARD_SURFACE_KEY, *, local: bool = False) -> bool:
+    """Return whether the ceiling withdraws the decision seam for *surface_key*.
+
+    *local* selects the row: :data:`DECISIONS_LOCAL_SCOPE` when a local preset
+    answers, :data:`DECISIONS_SCOPE` otherwise. Callers derive it from the
+    configured provider with :func:`is_local_preset` -- the runtime's attestation --
+    never from request input or the configured address alone.
 
     *surface_key* is what a profile binds on. The two dashboard callers leave it at
     the default, because on an HTTP request the equivalent header is caller-supplied
@@ -95,7 +152,7 @@ def is_decisions_denied(surface_key: str = DASHBOARD_SURFACE_KEY) -> bool:
     """
     try:
         decision = vet_and_audit(
-            DECISIONS_SCOPE,
+            DECISIONS_LOCAL_SCOPE if local else DECISIONS_SCOPE,
             "",
             session_key=surface_key,
             tool_name=AUDIT_TOOL,
@@ -108,12 +165,12 @@ def is_decisions_denied(surface_key: str = DASHBOARD_SURFACE_KEY) -> bool:
         # itself failed — the ceiling is unevaluable, which is the same condition
         # as a degrade. Fail closed, and record the denial the seam could not.
         logger.debug("decisions governance probe failed; denying", exc_info=True)
-        _audit_unevaluable(surface_key)
+        _audit_unevaluable(surface_key, DECISIONS_LOCAL_SCOPE if local else DECISIONS_SCOPE)
         return True
     return not getattr(decision, "permitted", False)
 
 
-def _audit_unevaluable(surface_key: str) -> None:
+def _audit_unevaluable(surface_key: str, scope: str = DECISIONS_SCOPE) -> None:
     """Best-effort SEL record for the path ``vet_and_audit`` never reached. Never raises."""
     try:
         # Local import is DELIBERATE (matches the other SEL sites): the test suite
@@ -123,7 +180,7 @@ def _audit_unevaluable(surface_key: str) -> None:
         sel().log_governance_decision(
             session_key=surface_key,
             tool_name=AUDIT_TOOL,
-            scope=DECISIONS_SCOPE,
+            scope=scope,
             item="",
             outcome="denied",
             reason=_UNEVALUABLE_REASON,

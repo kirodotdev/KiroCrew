@@ -28,7 +28,7 @@ import {
   type DecisionPointRow,
 } from './decisionsPreview'
 import { fmtPercent } from '../../i18n/format'
-import { DECISIONS_PROVIDER_QUERY_KEY } from './decisionsProviderQuery'
+import { DECISIONS_PROVIDER_QUERY_KEY, PRESET_NONE } from './decisionsProviderQuery'
 import { i18nT } from '../../i18n/t'
 
 /**
@@ -474,6 +474,9 @@ export function DecisionsCard() {
   // reorder them can land the delete last and erase the key just saved.
   const apiKeyBusy = !apiKeyKnown || secretMut.isPending || secretDelMut.isPending
   const bucket = view.bucket ?? 100
+  // With no decision model chosen there is nothing to consent to sending to; the
+  // gateway refuses an enabling write, and the switch says so instead of offering one.
+  const noModel = providerQ.data?.active === PRESET_NONE
 
   return (
     <SettingsCard>
@@ -497,7 +500,9 @@ export function DecisionsCard() {
         description={i18nT('pages.developer.featurePreviewsTab.decisions_desc')}
         checked={view.enabled}
         onChange={v => consentMut.mutate(v)}
-        disabled={switchFrozen || consentMut.isPending || scopeMut.isPending}
+        // With no model the switch can still be turned OFF: a consent that stood
+        // before the switch to No model must stay revocable.
+        disabled={switchFrozen || (noModel && !view.enabled) || consentMut.isPending || scopeMut.isPending}
         describedBy={describedBy}
       />
       {/* The egress fact carries body weight, not muted fine print: it is what a
@@ -513,9 +518,11 @@ export function DecisionsCard() {
             false. The local wording names only the first hop ("the server at the
             address below, on this machine") and leaves where that server forwards it
             to the server, which holds for a hand-written tunnel too. */}
-        {providerQ.data?.loopback === true
-          ? i18nT('pages.developer.featurePreviewsTab.decisions_egress_local')
-          : i18nT('pages.developer.featurePreviewsTab.decisions_egress')}
+        {noModel
+          ? i18nT('pages.developer.featurePreviewsTab.decisions_no_model_note')
+          : providerQ.data?.loopback === true
+            ? i18nT('pages.developer.featurePreviewsTab.decisions_egress_local')
+            : i18nT('pages.developer.featurePreviewsTab.decisions_egress')}
       </p>
       {/* The sampling share, stated in BOTH switch states and OUTSIDE the disclosure.
         * The decisions module spec under docs/system-specs/modules pins it there: the
@@ -523,7 +530,7 @@ export function DecisionsCard() {
         * they have to see it before they flip the switch. Behind a closed disclosure it
         * is a fact they do not see -- the same argument that keeps the egress note above
         * out. The SLIDER stays in the shared block; this is the fact, not the control. */}
-      {view.supported && (
+      {view.supported && !noModel && (
         <p className="text-[12px] text-muted">
           {i18nT('pages.developer.featurePreviewsTab.decisions_bucket_hint', {
             percent: fmtPercent(bucket / 100),
@@ -533,7 +540,7 @@ export function DecisionsCard() {
       {/* WHERE the messages go, as a fact beside the switch: consent is given for an
           address, and the gate holds the config to that address afterwards. Mono and
           untranslated — it is a URL a reader may compare against their provider. */}
-      {view.supported && view.configuredEndpoint && (
+      {view.supported && view.configuredEndpoint && !noModel && (
         <p className="text-[12px] text-muted">
           {i18nT('pages.developer.featurePreviewsTab.decisions_sent_to')}{' '}
           <span className="font-mono break-all">{view.configuredEndpoint}</span>
@@ -562,7 +569,7 @@ export function DecisionsCard() {
       )}
       {view.supported && (
         <Suspense fallback={<div className="h-24" aria-hidden />}>
-          <DecisionsProviderPicker frozen={frozen} cardReadFailed={readFailed} />
+          <DecisionsProviderPicker frozen={frozen} cardReadFailed={readFailed} consentOn={view.enabled} />
         </Suspense>
       )}
       {/* The redirected-config state: consent stands for one address, config.json now

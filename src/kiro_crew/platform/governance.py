@@ -1540,6 +1540,18 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
     # Data row only -- CONTRACT_VERSION and the evaluator are untouched (mirrors
     # social_share).
     "capabilities.decisions": ScopeSpec(CAPABILITY, capability_default=True),
+    # The same seam answered by a LOCAL PRESET model on this machine
+    # (``decisions/local_models.py``) instead of hosted Jev. Nothing leaves the
+    # machine and nothing is spent, which is the whole reason the row above exists,
+    # so a fleet that pins ``capabilities.decisions`` off for egress does not also
+    # withdraw a local model; a fleet that does not want local models either pins
+    # THIS row off. Same two chokepoints and the same fail-closed probe
+    # (``decisions/capability.py``), selected by whether the configured provider is
+    # a route-built preset address -- a hand-written loopback address can be a
+    # tunnel to hosted Jev and stays under the row above. Default True: an omitted
+    # row permits, as for every capability.
+    # Data row only -- CONTRACT_VERSION and the evaluator are untouched.
+    "capabilities.decisions_local": ScopeSpec(CAPABILITY, capability_default=True),
 }
 
 

@@ -393,7 +393,7 @@ describe('Decisions (Jev) preview card', () => {
     stubGateway(notFound(), { telemetry: {} })
     renderSection()
     await waitFor(() => {
-      expect(screen.getByText(/leave this machine.*sent over the internet/i)).toBeInTheDocument()
+      expect(screen.getByText(/sent over the internet to Jev/i)).toBeInTheDocument()
     })
   })
 
@@ -406,7 +406,35 @@ describe('Decisions (Jev) preview card', () => {
     await waitFor(() => {
       expect(screen.getByText(/sent over the internet to Jev/i)).toBeInTheDocument()
     })
-    expect(screen.getByText(/falls back to the same rule/i)).toBeInTheDocument()
+    expect(screen.getByText(/the built-in rule decides instead/i)).toBeInTheDocument()
+  })
+
+  it('holds the switch and says why while no decision model is chosen', async () => {
+    stubGateway({ enabled: false })
+    vi.spyOn(api, 'system').mockResolvedValue({ mem_total_gb: 16 } as never)
+    vi.spyOn(api, 'getDecisionsProvider').mockResolvedValue({
+      presets: [], active: 'none', loopback: false, configured_endpoint: 'none',
+    } as never)
+    renderSection()
+    await waitFor(() => {
+      expect(screen.getByText(/No decision model is chosen\. Pick one below/)).toBeInTheDocument()
+    })
+    expect(screen.queryByText(/sent over the internet to Jev/i)).toBeNull()
+    expect(screen.queryByText(/^Sent to/)).toBeNull()
+    expect(decisionsSwitch().getAttribute('aria-disabled')).toBe('true')
+  })
+
+  it('keeps a standing consent revocable after switching to no model', async () => {
+    stubGateway({ enabled: true })
+    vi.spyOn(api, 'system').mockResolvedValue({ mem_total_gb: 16 } as never)
+    vi.spyOn(api, 'getDecisionsProvider').mockResolvedValue({
+      presets: [], active: 'none', loopback: false, configured_endpoint: 'none',
+    } as never)
+    renderSection()
+    await waitFor(() => {
+      expect(screen.getByText(/No decision model is chosen\. Pick one below/)).toBeInTheDocument()
+    })
+    expect(decisionsSwitch().getAttribute('aria-disabled')).not.toBe('true')
   })
 
   it('says the text stays on this machine while a local preset answers', async () => {
@@ -415,8 +443,8 @@ describe('Decisions (Jev) preview card', () => {
     stubGateway({ enabled: true })
     const preset = {
       id: 'laya', name: 'Laya', model: 'english', default_port: 8104, jev_relative_pct: 67,
-      hard_relative_pct: 47, peak_ram_gb: 6, recommended_total_ram_gb: 12, p50_secs: 0.17,
-      p95_secs: 0.51, timeout_ms: 2000, setup_doc: 'https://example.invalid/doc', serve_command: 'laya-serve',
+      hard_relative_pct: 47, peak_ram_gb: 6, recommended_total_ram_gb: 24, p50_secs: 0.17,
+      p95_secs: 0.51, timeout_ms: 2000, download_bytes: 846207419,
     }
     const provider = (active: string, loopback = true) => ({
       presets: [preset], active, loopback,
@@ -734,7 +762,7 @@ describe('Decisions (Jev) preview card', () => {
     // the rest of the card instead of shouting beside a switch that cannot move.
     // Same opacity as the disabled row: a muted colour alone still reads darker
     // than a row at 40%, which is the fade "just missing".
-    expect(screen.getByText(/leave this machine/i).className).toContain('opacity-40')
+    expect(screen.getByText(/sent over the internet to Jev/i).className).toContain('opacity-40')
     // And the notice says WHERE to act, not just that something must be updated.
     expect(screen.getByText(/Settings › Releases/)).toBeInTheDocument()
   })
@@ -1677,15 +1705,18 @@ describe('the recalled-memory scope switch', () => {
     expect(body).toContain('Passwords and keys are replaced')
   })
 
-  it('names recalled-memory snippets in the egress note, above either switch', async () => {
+  it('defers recalled-memory snippets to their own switch in the egress note', async () => {
     // The note is what a reader consents to, and it is drawn whether or not the
-    // scope switches are. Naming only messages and skills would understate it.
+    // scope switches are. It names what the main switch sends and says every other
+    // category, recalled-memory snippets included, waits for a switch of its own.
     stubGateway({ enabled: false })
     renderSection()
     await waitFor(() => {
-      expect(screen.getByText(/leave this machine/i)).toBeInTheDocument()
+      expect(screen.getByText(/sent over the internet to Jev/i)).toBeInTheDocument()
     })
-    expect(screen.getByText(/snippets of the memories recalled/i)).toBeInTheDocument()
+    const note = screen.getByText(/sent over the internet to Jev/i).textContent ?? ''
+    expect(note).toMatch(/your messages and your skills' names and descriptions/)
+    expect(note).toMatch(/Every other kind of data has its own switch below and stays off/)
   })
 })
 
@@ -1827,32 +1858,30 @@ describe('a refused scope write says so', () => {
     expect(row.textContent).not.toContain('Switched on')
   })
 
-  it('counts the note\'s promised categories against the points that declare a scope', async () => {
-    // The note said "Two further categories" while three scopes existed, because the
-    // widest one landed between the two the copy knew about. Asserted as a RELATIONSHIP
-    // against the DATA, not against switches on screen: one point's panel renders at a
-    // time, so counting rendered switches would pin a card shape instead of the
-    // invariant. The number in the sentence and the number of points that declare a
-    // scope have to move together, which holds whatever the card looks like.
+  it('defers every further category to its own switch without naming a count', async () => {
+    // The note once said "Two further categories" while three scopes existed: a
+    // count in the copy goes stale the moment a scope lands. The note now names no
+    // number and no list, and points at the per-scope switches, which are the source
+    // of truth; each scope's switch names its own category.
     stubGateway({ enabled: true })
     renderSection()
     await waitFor(() => {
-      expect(screen.getByText(/leave this machine/i)).toBeInTheDocument()
+      expect(screen.getByText(/sent over the internet to Jev/i)).toBeInTheDocument()
     })
-    const scoped = pointsOf(true).filter(row => row.needs_scope !== null)
-    const COUNT_WORD: Record<number, string> = {
-      1: 'One further category',
-      2: 'Two further categories',
-      3: 'Three further categories',
-      4: 'Four further categories',
+    const note = screen.getByText(/sent over the internet to Jev/i).textContent ?? ''
+    expect(note).toMatch(/own switch below/)
+    expect(note).not.toMatch(/\b(one|two|three|four|five) further/i)
+    // The promise is "each category has its own switch", so every point that declares
+    // a scope is pinned by name, and each one's panel must draw that switch. A scope
+    // added, dropped or left without its switch fails here.
+    const scoped = pointsOf(true)
+      .filter(row => row.needs_scope !== null)
+      .map(row => row.needs_scope)
+      .sort()
+    expect(scoped).toEqual(['compaction', 'memory_text', 'nudge_evidence', 'tool_args'])
+    for (const scope of scoped as ScopeName[]) {
+      expect(await openScope(scope)).toBeInTheDocument()
     }
-    const note = screen.getByText(/leave this machine/i).textContent ?? ''
-    expect(note).toContain(COUNT_WORD[scoped.length])
-    // And one clause per category, so the count is not satisfied by a bare number.
-    expect(note).toContain('the name and arguments of your tool calls')
-    expect(note).toContain('the conversation and tool-call inputs')
-    expect(note).toContain('short snippets of the memories recalled')
-    expect(note).toContain('the recent messages of the sessions a watching loop reads')
   })
 
   it('says WHICH switch could not be saved', async () => {

@@ -83,7 +83,9 @@ def _install_policy(monkeypatch, doc: dict | None) -> None:
 #: filtering to one scope would discard the property that makes them a ratchet — a
 #: third probe added to this read without an audit row must fail here, and it cannot
 #: if the helper drops every row it does not recognise.
-_ENDPOINT_SCOPES = (_SCOPE, "capabilities.decisions")
+# Both decisions rows, every read: the card is drawn while either permits, and each
+# row's evaluation is audited whatever the other answered.
+_ENDPOINT_SCOPES = (_SCOPE, "capabilities.decisions", "capabilities.decisions_local")
 
 
 def _governance_rows(fake: MagicMock) -> list[dict]:

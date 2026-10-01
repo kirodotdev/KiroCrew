@@ -253,6 +253,12 @@ def configured_endpoint(config: Any | None = None) -> str:
     return raw or DECISION_PROVIDER_ENDPOINT_DEFAULT
 
 
+def configured_provider_model(config: Any | None) -> str:
+    """The configured ``provider.model`` as written, for telling a local preset apart."""
+    provider = getattr(_decisions_config(config), "provider", None)
+    return str(getattr(provider, "model", "") or "")
+
+
 #: Endpoints already warned about, so a mismatch is said once, not once per message.
 _unconsented_warned: set[str] = set()
 
@@ -261,8 +267,12 @@ _unconsented_warned: set[str] = set()
 _capability_denied_warned = False
 
 
-def _capability_denied(session_key: str | None) -> bool:
-    """Whether the ``capabilities.decisions`` ceiling withdraws the seam. Filesystem IO.
+def _capability_denied(session_key: str | None, *, local: bool = False) -> bool:
+    """Whether the governance ceiling withdraws the seam. Filesystem IO.
+
+    *local* selects ``capabilities.decisions_local`` over ``capabilities.decisions``:
+    true when the configured provider is a local preset, so a fleet that withdraws
+    hosted Jev for egress still lets a model on this machine answer.
 
     *session_key* is the turn's own identity, which is what a profile binds on, so a
     profile bound to THIS surface is consulted rather than a dashboard one. It is
@@ -279,13 +289,14 @@ def _capability_denied(session_key: str | None) -> bool:
     global _capability_denied_warned
     from kiro_crew.decisions.capability import DASHBOARD_SURFACE_KEY, is_decisions_denied
 
-    if not is_decisions_denied(session_key or DASHBOARD_SURFACE_KEY):
+    if not is_decisions_denied(session_key or DASHBOARD_SURFACE_KEY, local=local):
         return False
     if not _capability_denied_warned:
         _capability_denied_warned = True
         logger.warning(
-            "decisions: the seam is withdrawn by governance "
-            "(capabilities.decisions); nothing is sent even though consent is on"
+            "decisions: the seam is withdrawn by governance (%s); nothing is sent "
+            "even though consent is on",
+            "capabilities.decisions_local" if local else "capabilities.decisions",
         )
     return True
 
@@ -322,10 +333,24 @@ def _consented_for(
     """
     state = _consent.load_state()
     endpoint = configured_endpoint(config)
+    from kiro_crew.decisions.local_models import ENDPOINT_NONE
+
+    # "No decision model" chosen: nothing to send to, whatever the keystone says.
+    if endpoint == ENDPOINT_NONE:
+        return False
     if _consent.permits(endpoint, state):
         if not _scope_consented(point, state):
             return False
-        return not _capability_denied(session_key)
+        from kiro_crew.decisions.capability import is_local_preset, names_local_preset
+
+        model = configured_provider_model(config)
+        local = is_local_preset(endpoint, model)
+        # A preset's address is sent to only while the runtime attests the server on
+        # it. Until then -- the model downloading, starting, or a program that took
+        # the port -- whatever listens there is not known to be ours.
+        if not local and names_local_preset(endpoint, model):
+            return False
+        return not _capability_denied(session_key, local=local)
     if _consent.is_enabled(state) and endpoint not in _unconsented_warned:
         _unconsented_warned.add(endpoint)
         logger.warning(

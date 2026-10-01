@@ -57,6 +57,23 @@ allow-licenses:
 #   npm:   pkg:npm/<name>              scoped: pkg:npm/%40scope/name
 # Add a comment with the real license + evidence for every entry.
 allow-dependencies-licenses:
+  # The local decision models' dependency locks
+  # (src/kiro_crew/decisions/local_servers/*.requirements.txt). These packages are
+  # NOT Kiro Crew dependencies: the gateway installs them, when an owner picks a
+  # local model, into that model's own environment under the data home, and never
+  # imports, links or ships them. Three are flagged for compound expressions whose
+  # every part is permissive:
+  # - torch: BSD-3-Clause, with bundled Apache-2.0 (and LLVM exception), BSD-2-Clause,
+  #   BSL-1.0 and MIT components. https://github.com/pytorch/pytorch/blob/main/LICENSE
+  # - regex: Apache-2.0 AND CNRI-Python (the CPython-derived parts).
+  #   https://github.com/mrabarnett/mrab-regex/blob/hg/LICENSE.txt
+  # - typing-extensions: PSF-2.0; the GPL id comes from the historical license
+  #   notice in its LICENSE file, which grants no GPL terms.
+  #   https://github.com/python/typing_extensions/blob/main/LICENSE
+  - pkg:pypi/torch                 # BSD-3-Clause + permissive bundled parts — local model env only
+  - pkg:pypi/regex                 # Apache-2.0 AND CNRI-Python — local model env only
+  - pkg:pypi/typing-extensions     # PSF-2.0 (GPL id is a mis-detection) — local model env only
+
   # Example — package ships MIT but GitHub reports "unknown":
   # - pkg:pypi/example-lib            # MIT — see https://github.com/org/example-lib/blob/main/LICENSE
   

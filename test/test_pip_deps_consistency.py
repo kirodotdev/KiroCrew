@@ -70,6 +70,10 @@ _EXCLUDED_SUBTREES: tuple[str, ...] = (
     # (e.g. preflight.py imports push_guard.py via sys.path); they are not
     # core startup code and have no bearing on pip install requirements.
     "builtin_skills/",
+    # Local decision model launchers run inside each model's own uv environment,
+    # built from the lock beside them (torch, jevk5, laya, uvicorn); the gateway
+    # never imports them, it executes them in that interpreter.
+    "decisions/local_servers/",
 )
 
 

@@ -101,21 +101,48 @@ export interface DecisionsLocalModel {
   p50_secs: number
   p95_secs: number
   timeout_ms: number
-  setup_doc: string
-  /** Contains a literal `{port}` the card fills in. */
-  serve_command: string
+  /** Bytes of weights the gateway downloads the first time the preset is chosen. */
+  download_bytes: number
+  /** Weights and environment are already on this machine. Absent on an older gateway. */
+  installed?: boolean
+}
+
+/** What the gateway is doing with the local model it runs (`decisions/local_runtime.py`). */
+export type DecisionsRuntimeState = 'idle' | 'downloading' | 'installing' | 'starting' | 'running' | 'error'
+
+export interface DecisionsRuntimeStatus {
+  /** The preset being run, or `""` when none is. */
+  preset: string
+  state: DecisionsRuntimeState
+  port: number
+  bytes_done: number
+  bytes_total: number
+  /** Why it stopped, with the tail of the server log; set while `state` is `error`. */
+  error: string
+}
+
+export interface DecisionsLocalRuntimeData {
+  runtime: DecisionsRuntimeStatus
+  /** Ids of the presets whose weights and environment are on this machine. */
+  installed: string[]
 }
 
 export interface DecisionsProviderData {
   presets: DecisionsLocalModel[]
-  /** `jev`, a preset id, or `custom` for an address set by hand in config.json. */
+  /** `jev`, `none` (no decision model), a preset id, or `custom` for an address set by hand in config.json. */
   active: string
   configured_endpoint: string
   /** The configured address is a literal loopback one, so no Jev key is sent to it. */
   loopback?: boolean
+  /** Fleet policy allows hosted Jev (`capabilities.decisions`). Absent on an older gateway. */
+  hosted_permitted?: boolean
+  /** Fleet policy allows a local preset (`capabilities.decisions_local`). Absent on an older gateway. */
+  local_permitted?: boolean
+  /** The gateway-run local server. Absent on an older gateway. */
+  runtime?: DecisionsRuntimeStatus
 }
 
-export function createDecisionsEndpoints({ get, post, put, j }: ClientTransport) {
+export function createDecisionsEndpoints({ get, post, put, del, j }: ClientTransport) {
   const consentRead = {
     // Decision-seam consent (Settings > Developer > Feature Previews). The switch
     // is a KEYSTONE, not a config path: see decisionsPreview.ts. The PUT returns
@@ -123,6 +150,10 @@ export function createDecisionsEndpoints({ get, post, put, j }: ClientTransport)
     getDecisionsConsent: () => get('/api/decisions/consent').then(j) as Promise<DecisionsConsentData>,
     // Which System One server the seam asks, and the local presets on offer.
     getDecisionsProvider: () => get('/api/decisions/provider').then(j) as Promise<DecisionsProviderData>,
+    // What the gateway is doing with its local model. Polled while a model is being
+    // prepared: unlike the provider read it writes no audit row and asks no governance.
+    getDecisionsLocalRuntime: () =>
+      get('/api/decisions/local-models/status').then(j) as Promise<DecisionsLocalRuntimeData>,
   }
 
   const scopesAndFeedback = {
@@ -150,11 +181,15 @@ export function createDecisionsEndpoints({ get, post, put, j }: ClientTransport)
     // is nullable rather than absent — the server records the retraction.
     sendDecisionsFeedback: (turnId: string, verdict: DecisionVerdictValue, side: DecisionFeedbackSide) =>
       post('/api/decisions/feedback', { turn_id: turnId, verdict, side }).then(j) as Promise<unknown>,
-    // Switch the provider to hosted Jev or a local preset. A preset id and a port,
-    // never a URL: the gateway builds the address itself, which is what keeps the
-    // dashboard from choosing an arbitrary destination for decision state.
-    saveDecisionsProvider: (preset: string, port?: number) =>
-      put('/api/decisions/provider', port === undefined ? { preset } : { preset, port }).then(j) as Promise<DecisionsProviderData>,
+    // Switch the provider to hosted Jev or a local preset. A preset id only, never a
+    // URL or a port: the gateway picks the port and builds the address itself, which
+    // is what keeps the dashboard from choosing an arbitrary destination for decision
+    // state. A local preset is then downloaded, installed and started by the gateway.
+    saveDecisionsProvider: (preset: string) =>
+      put('/api/decisions/provider', { preset }).then(j) as Promise<DecisionsProviderData>,
+    // Delete a downloaded preset that is not in use, to give its disk space back.
+    removeDecisionsLocalModel: (id: string) =>
+      del(`/api/decisions/local-models/${encodeURIComponent(id)}`).then(j) as Promise<DecisionsProviderData>,
   }
 
   return { consentRead, scopesAndFeedback }

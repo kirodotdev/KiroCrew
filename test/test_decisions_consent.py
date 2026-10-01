@@ -615,6 +615,20 @@ class TestHandler:
         assert f"endpoint={CUSTOM}" in audit[0]["resources"]
 
     @pytest.mark.asyncio
+    async def test_enabling_is_refused_while_no_model_is_chosen(self, keystone, audit, configured):
+        from kiro_crew.dashboard.handlers.decisions import api_decisions_consent_put
+        from kiro_crew.decisions.local_models import ENDPOINT_NONE
+
+        configured(ENDPOINT_NONE)
+        resp = await api_decisions_consent_put(
+            _request(body={"enabled": True, "endpoint": ENDPOINT_NONE})
+        )
+        assert resp.status == 409
+        assert json.loads(resp.text)["code"] == "decisions_consent_no_model"
+        assert not keystone.exists()
+        assert audit[-1]["error"] == "no_model"
+
+    @pytest.mark.asyncio
     async def test_enabling_must_echo_the_reviewed_endpoint(self, keystone, audit, configured):
         """The GET-to-PUT window is operator-paced and config is agent-writable: consent
         binds to the address the owner SAW, or it is refused."""
@@ -1021,6 +1035,93 @@ class TestCapabilityCeiling:
         assert {r["scope"] for r in governance_rows} == {"capabilities.decisions"}
         assert {r["session_key"] for r in governance_rows} == {"dashboard:ui"}
 
+    def test_pinning_hosted_jev_off_leaves_a_local_model_permitted(self, ceiling, governance_rows):
+        """A fleet that pins ``capabilities.decisions`` off does so for egress to a
+        paid third party; a local preset sends nothing off the machine, so its own row
+        decides it, and a fleet can pin that one too."""
+        from kiro_crew.decisions.capability import is_decisions_denied
+
+        ceiling(_PIN_DOC)
+        assert is_decisions_denied() is True
+        assert is_decisions_denied(local=True) is False
+        assert [r["scope"] for r in governance_rows] == [
+            "capabilities.decisions",
+            "capabilities.decisions_local",
+        ]
+        ceiling(
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "capabilities": {
+                    "decisions": {"enabled": True},
+                    "decisions_local": {"enabled": False},
+                },
+            }
+        )
+        assert is_decisions_denied(local=True) is True
+        assert is_decisions_denied() is False
+
+    def test_only_a_route_built_preset_has_a_presets_shape(self):
+        """A hand-written loopback address can be a tunnel to hosted Jev, so only the
+        exact address the provider route builds has a preset's shape."""
+        from kiro_crew.config.sections import DECISION_PROVIDER_ENDPOINT_DEFAULT
+        from kiro_crew.decisions.capability import names_local_preset
+
+        assert names_local_preset("http://127.0.0.1:8102/v1/systemone", "plumb-4b") is True
+        assert names_local_preset("http://127.0.0.1:8102/v1/systemone/", "plumb-4b") is False
+        assert names_local_preset("http://127.0.0.1:8102/v1/systemone", "jev-1") is False
+        assert names_local_preset(DECISION_PROVIDER_ENDPOINT_DEFAULT, "plumb-4b") is False
+
+    @staticmethod
+    def _runtime(monkeypatch, **status):
+        from kiro_crew.decisions import local_runtime
+
+        full = {
+            "preset": "",
+            "state": "idle",
+            "port": 0,
+            "bytes_done": 0,
+            "bytes_total": 0,
+            "error": "",
+        }
+        full.update(status)
+        fake = MagicMock()
+        fake.status = lambda: dict(full)
+        monkeypatch.setattr(local_runtime, "get_runtime", lambda: fake)
+
+    def test_a_preset_shaped_address_nothing_runs_is_not_local(self, monkeypatch):
+        """config.json has other writers: a route-built address alone names a port,
+        not what listens there, so it must not move the seam onto the local row."""
+        from kiro_crew.decisions.capability import is_local_preset
+
+        self._runtime(monkeypatch)
+        assert is_local_preset("http://127.0.0.1:8102/v1/systemone", "plumb-4b") is False
+        assert (
+            is_local_preset("http://127.0.0.1:8102/v1/systemone", "plumb-4b", serving=False)
+            is False
+        )
+
+    def test_the_runtime_attests_the_preset_it_runs_on_its_port(self, monkeypatch):
+        from kiro_crew.decisions.capability import is_local_preset
+
+        self._runtime(monkeypatch, preset="plumb-4b", state="running", port=8102)
+        assert is_local_preset("http://127.0.0.1:8102/v1/systemone", "plumb-4b") is True
+        # Another port, another preset, or a hand-written spelling: not what it runs.
+        assert is_local_preset("http://127.0.0.1:8103/v1/systemone", "plumb-4b") is False
+        assert is_local_preset("http://127.0.0.1:8102/v1/systemone", "english") is False
+        assert is_local_preset("http://127.1:8102/v1/systemone", "plumb-4b") is False
+
+    def test_a_preset_being_prepared_is_local_for_consent_only(self, monkeypatch):
+        """While it downloads, nothing of ours listens on the port, so the send path
+        stays on the hosted row; the consent switch may still be offered for it."""
+        from kiro_crew.decisions.capability import is_local_preset
+
+        self._runtime(monkeypatch, preset="laya", state="downloading", port=8104)
+        assert is_local_preset("http://127.0.0.1:8104/v1/systemone", "english") is False
+        assert (
+            is_local_preset("http://127.0.0.1:8104/v1/systemone", "english", serving=False) is True
+        )
+
     def test_the_probe_pins_the_dashboard_surface_and_fails_closed(self, monkeypatch, ceiling):
         """The surface key is what a profile binds on, and it is never a caller
         value -- a request carrying ``slack:x`` must not dodge a dashboard-bound
@@ -1239,7 +1340,21 @@ class TestCapabilityCeiling:
         resp = await api_dashboard_config(make_mocked_request("GET", "/api/dashboard/config"))
         assert json.loads(resp.text)["decisions_enabled"] is True
 
+        # Hosted Jev pinned off still leaves a local model to choose, so the card stays.
         ceiling(_PIN_DOC)
+        resp = await api_dashboard_config(make_mocked_request("GET", "/api/dashboard/config"))
+        assert json.loads(resp.text)["decisions_enabled"] is True
+
+        ceiling(
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "capabilities": {
+                    "decisions": {"enabled": False},
+                    "decisions_local": {"enabled": False},
+                },
+            }
+        )
         resp = await api_dashboard_config(make_mocked_request("GET", "/api/dashboard/config"))
         assert json.loads(resp.text)["decisions_enabled"] is False
 
@@ -1499,7 +1614,7 @@ class TestPointProjection:
             encoding="utf-8",
         )
         monkeypatch.setattr(
-            "kiro_crew.decisions.capability.is_decisions_denied", lambda profile=None: True
+            "kiro_crew.decisions.capability.is_decisions_denied", lambda *_a, **_k: True
         )
         rows = json.loads((await mod.api_decisions_consent_get(_request())).text)["points"]
         assert {r["status"] for r in rows} == {"off"}
@@ -1624,7 +1739,7 @@ class TestScopeOnlyWrite:
             json.dumps({"enabled": True, "endpoint": DEFAULT_ENDPOINT}), encoding="utf-8"
         )
         monkeypatch.setattr(
-            "kiro_crew.decisions.capability.is_decisions_denied", lambda profile=None: True
+            "kiro_crew.decisions.capability.is_decisions_denied", lambda *_a, **_k: True
         )
         resp = await api_decisions_consent_put(_request(body={"tool_args": True}))
         assert resp.status == 403
