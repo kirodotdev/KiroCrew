@@ -104,7 +104,7 @@ class _Harness:
         self.embed_fn_builds = 0
         self.embedder_lookups = 0
         self._patches = [
-            patch.object(cc, "VectorMemoryStore", lambda *a, **k: self.store),
+            patch.object(cc, "declared_store", lambda *a, **k: self.store),
             patch.object(KiroCrewConfig, "load", return_value=KiroCrewConfig()),
             patch.object(cc, "model_file_present", lambda *a, **k: model_present),
             patch.object(cc, "store_embedding_space_is_stale", lambda _s: stale_space),

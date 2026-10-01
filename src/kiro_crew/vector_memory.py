@@ -35,7 +35,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from sqlite3 import Error as StdlibSQLiteError
-from typing import Callable, Literal
+from typing import TYPE_CHECKING, Callable, Literal
 from uuid import uuid4
 
 from kiro_crew import memory_record_metadata as record_meta
@@ -170,6 +170,9 @@ from kiro_crew.vector_memory_runtime.text_scoring import (  # noqa: F401
     _stem_words,
     _tokenize,
 )
+
+if TYPE_CHECKING:
+    from kiro_crew.config.loader import KiroCrewConfig
 
 logger = logging.getLogger(__name__)
 
@@ -689,11 +692,58 @@ def open_member_database(
     path: Path, *, member_id: str, store_id: str, **vector_options
 ) -> "VectorMemoryStore":
     """Open a canonically admitted member store without creating or migrating it."""
+    store = _member_store(path, member_id=member_id, store_id=store_id, **vector_options)
+    store.init()
+    return store
+
+
+def _member_store(
+    path: Path, *, member_id: str, store_id: str, **vector_options
+) -> "VectorMemoryStore":
+    """A member store bound to its canonical identity, not yet opened."""
     store = VectorMemoryStore(path, **vector_options)
     store._member_identity = (member_id, store_id)
     store._memory_store_name = store_id
-    store.init()
     return store
+
+
+def declared_store(
+    path: Path, *, store_id: str, config: KiroCrewConfig, **vector_options
+) -> "VectorMemoryStore":
+    """The store *store_id* declares, bound the way its declaration says, NOT yet opened.
+
+    A declared V2 store is bound to its canonical member identity, so ``init()``
+    admits it through the ``mode=rw`` identity check :func:`open_member_database`
+    takes and never creates or migrates it. Every other declaration gets the V1
+    store, whose ``init()`` refuses a member file. That is the one choice every
+    opener of a NAMED store has to make. A caller making it by hand has to know
+    that a member store must not be opened with a bare ``init()``, which raises
+    "Private memory requires canonical member admission" on every V2 file.
+
+    Returned unopened, so a caller holds the handle before ``init()`` runs and
+    can close it on any path out of the open (a cancellation, the CLI's settlement
+    of a database it created). *config* is the loaded config, read for the
+    declaration and passed on as the store's own ``config=``.
+
+    The global store is V1 whatever its entry says, as it is to
+    :func:`kiro_crew.memory_stores.memory_store_version`, so a hand-edited
+    ``default`` record cannot route the operator's own memory through member
+    admission.
+    """
+    declaration = config.memory_stores.get(store_id)
+    if (
+        memory_stores.named_store_or_empty(store_id)
+        and declaration is not None
+        and declaration.memory_version == 2
+    ):
+        return _member_store(
+            path,
+            member_id=declaration.owner_member_id,
+            store_id=store_id,
+            config=config,
+            **vector_options,
+        )
+    return VectorMemoryStore(path, config=config, **vector_options)
 
 
 class VectorMemoryStore:

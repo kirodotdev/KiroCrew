@@ -886,7 +886,7 @@ class TestMemoryExportMarkdown:
         self, tmp_path: Path, capsys: pytest.CaptureFixture
     ) -> None:
         """The regression guard that matters most: no flag, no shape change."""
-        with patch.object(cli_commands, "VectorMemoryStore", _EmptyVectorStore):
+        with patch.object(cli_commands, "declared_store", _EmptyVectorStore):
             cli_commands._memory_cmd(self._export_args(include_markdown=False))
         expected = json.dumps({"semantic": [], "episodic": [], "events": []}, indent=2, default=str)
         assert capsys.readouterr().out == expected + "\n"
@@ -896,7 +896,7 @@ class TestMemoryExportMarkdown:
     ) -> None:
         ms = _populated_store(tmp_path)
         with (
-            patch.object(cli_commands, "VectorMemoryStore", _EmptyVectorStore),
+            patch.object(cli_commands, "declared_store", _EmptyVectorStore),
             patch.object(cli_commands, "_markdown_memory_store", lambda: ms),
         ):
             cli_commands._memory_cmd(self._export_args(include_markdown=True))
@@ -915,7 +915,7 @@ class TestMemoryExportMarkdown:
     ) -> None:
         ms = _store(tmp_path)
         with (
-            patch.object(cli_commands, "VectorMemoryStore", _EmptyVectorStore),
+            patch.object(cli_commands, "declared_store", _EmptyVectorStore),
             patch.object(cli_commands, "_markdown_memory_store", lambda: ms),
         ):
             cli_commands._memory_cmd(self._export_args(include_markdown=True))
@@ -942,7 +942,7 @@ class TestMemoryImportMarkdownNotice:
             json.dumps({"semantic": [], "episodic": [], "markdown": {"history": []}}),
             encoding="utf-8",
         )
-        with patch.object(cli_commands, "VectorMemoryStore", _EmptyVectorStore):
+        with patch.object(cli_commands, "declared_store", _EmptyVectorStore):
             cli_commands._memory_cmd(self._import_args(str(payload)))
         out = capsys.readouterr().out
         assert "export-only" in out and "NOT imported" in out
@@ -952,7 +952,7 @@ class TestMemoryImportMarkdownNotice:
     ) -> None:
         payload = tmp_path / "export.json"
         payload.write_text(json.dumps({"semantic": [], "episodic": []}), encoding="utf-8")
-        with patch.object(cli_commands, "VectorMemoryStore", _EmptyVectorStore):
+        with patch.object(cli_commands, "declared_store", _EmptyVectorStore):
             cli_commands._memory_cmd(self._import_args(str(payload)))
         assert "export-only" not in capsys.readouterr().out
 
@@ -1071,7 +1071,7 @@ class TestMemoryHistorySearch:
             raise AssertionError("history search must not construct a vector store")
 
         with patch.object(cli_commands, "_markdown_memory_store", lambda: ms):
-            with patch.object(cli_commands, "VectorMemoryStore", _boom):
+            with patch.object(cli_commands, "declared_store", _boom):
                 cli_commands._memory_cmd(_search_args(query="pytest", layer="history"))
         assert "pytest" in capsys.readouterr().out
 
@@ -1091,7 +1091,7 @@ class TestMemoryHistorySearch:
         ms = _populated_store(tmp_path)
         ms.rebuild_index()
         with patch.object(cli_commands, "_markdown_memory_store", lambda: ms):
-            with patch.object(cli_commands, "VectorMemoryStore", _NoEpisodicVectorStore):
+            with patch.object(cli_commands, "declared_store", _NoEpisodicVectorStore):
                 cli_commands._memory_cmd(_search_args(query="pytest", layer="vector"))
         out = capsys.readouterr().out
         assert "No episodic memories found." in out
@@ -1105,7 +1105,7 @@ class TestMemoryHistorySearch:
         ms = _populated_store(tmp_path)
         ms.rebuild_index()
         with patch.object(cli_commands, "_markdown_memory_store", lambda: ms):
-            with patch.object(cli_commands, "VectorMemoryStore", _OneEpisodicVectorStore):
+            with patch.object(cli_commands, "declared_store", _OneEpisodicVectorStore):
                 cli_commands._memory_cmd(_search_args(query="pytest", layer="all"))
         out = capsys.readouterr().out
         assert "Episodic recall" in out
@@ -1118,7 +1118,7 @@ class TestMemoryHistorySearch:
         ms = _populated_store(tmp_path)
         ms.rebuild_index()
         with patch.object(cli_commands, "_markdown_memory_store", lambda: ms):
-            with patch.object(cli_commands, "VectorMemoryStore", _OneEpisodicVectorStore):
+            with patch.object(cli_commands, "declared_store", _OneEpisodicVectorStore):
                 cli_commands._memory_cmd(_search_args(query="pytest", layer="vector"))
         out = capsys.readouterr().out
         assert "shipped the pytest refactor" in out
@@ -1131,7 +1131,7 @@ class TestMemoryHistorySearch:
         ms = _populated_store(tmp_path)
         ms.rebuild_index()
         with patch.object(cli_commands, "_markdown_memory_store", lambda: ms):
-            with patch.object(cli_commands, "VectorMemoryStore", _NoEpisodicVectorStore):
+            with patch.object(cli_commands, "declared_store", _NoEpisodicVectorStore):
                 cli_commands._memory_cmd(_search_args(query="pytest", layer="all"))
         out = capsys.readouterr().out
         assert "No episodic memories found." in out

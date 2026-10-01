@@ -2585,7 +2585,7 @@ class _MemHarness:
     def __init__(self) -> None:
         self.store = MagicMock()
         self._patches = [
-            patch("kiro_crew.cli_commands.VectorMemoryStore", return_value=self.store),
+            patch("kiro_crew.cli_commands.declared_store", return_value=self.store),
             patch.object(KiroCrewConfig, "load", return_value=KiroCrewConfig()),
         ]
 

@@ -915,7 +915,10 @@ hide another.
 **Two surfaces, and the store they read is answered differently.** `kirocrew memory carve`
 takes `--store`, one flag per facet, `--kind`, `--count-by`, `--limit` and `--offset`; it
 dispatches BEFORE `_memory_cmd`'s shared store is opened, for the same reason the backup
-verbs do — that store is hardwired to the default store's path. `GET /api/memory/carve`
+verbs do — that store is hardwired to the default store's path. It opens the named
+store through `declared_store`, the opener the route reaches through
+`ContextBuilder.ensure_store`, so a V2 member store is carved rather than refused.
+`GET /api/memory/carve`
 routes through the shared `?store=` resolver every store-scoped memory route uses (see
 [Which store a dashboard route reads](#which-store-a-dashboard-route-reads-store)):
 with the parameter ABSENT it reads the global store, preserving the dashboard's default
@@ -2751,9 +2754,10 @@ The canonical command and flag inventory is in the [CLI spec](cli.md#member-memo
 - `show [preferences|projects|history]` — read the markdown layer through `MemoryStore` (all three targets when none given); `--format md|json` (json entries carry `path`, `updated_at` mtime in UTC ISO-8601, `content`), `--since YYYY-MM-DD` filters history days. Missing/empty files print as empty rather than erroring
 - `search <query>` — searches BOTH memories and labels each section: the vector store's episodic recall, then keyword hits from the markdown layer's FTS5 index (`MemoryStore.search`, over `preferences.md` / `projects.md` / every `history/*.md`). `--layer vector|history|all` (default `all`); `--layer vector` reproduces the previous vector-only output exactly, and `--layer history` skips constructing the vector store entirely, the same way `show` does. The two indexes answer different questions — "where did I write this word" versus "what does this mean like" — so they are reported separately rather than merged into one ranking. `search_episodic` text-searches whenever `query_embedding` is None and does not auto-embed, so the vector section embeds the query in-process, blocking once on the model load (`_SEARCH_MODEL_LOAD_TIMEOUT_SECS`, 120 s) — a one-shot read cannot lean on the gateway's boot re-embed sweep the way a WRITE can. It degrades to keyword matching, naming the reason on **stderr** (stdout shape is unchanged), when the model is not downloaded (a one-shot CLI never kicks the download), when the store's vectors were produced by a different model, or when the model fails to load; and when the semantic pass returns nothing it retries the keyword leg once before reporting "No episodic memories found.", because the vector legs score only rows with a non-NULL embedding and deferred/imported/re-embed-pending rows are keyword-searchable only until the gateway's sweep reaches them
 - `stats` — counts, embedded coverage, FAISS accelerator status, audit event count, and a **`Reads (this process)`** block from `read_counters()` (rows + statements, then the semantic/episodic population-scan tallies). Labelled per-process because the CLI constructs its own store, so the totals describe only what this invocation read; the gateway's totals are the `reads` object on `GET /api/memory/observability`
-- `export [--store <name>]` — vector-store collections; `--include-markdown` opts in a `markdown` collection (`preferences`/`projects` entries + per-day `history` list from `MemoryStore.markdown_snapshot()`) without changing the default payload shape. `--store` names one store, and as a READ it is admitted only against a database that already exists: a name with no database is refused rather than answered with an empty payload, and nothing is created. `--include-markdown` together with a named store is refused, because that tree is read through a fence this verb does not carry (`hooks.safe_read_file_bytes_nolink` refuses the `memory_stores/` subtree and answers None, which `_guarded_entry` shapes exactly like a missing file), so the payload would report an empty `content` for a `preferences.md` that is on disk and non-empty. The rows still export on their own
+- `export [--store <name>]` — vector-store collections; `--include-markdown` opts in a `markdown` collection (`preferences`/`projects` entries + per-day `history` list from `MemoryStore.markdown_snapshot()`) without changing the default payload shape. `--store` names one store, and as a READ it is admitted only against a database that already exists: a name with no database is refused rather than answered with an empty payload, and nothing is created. `--include-markdown` together with a named store is refused, because that tree is read through a fence this verb does not carry (`hooks.safe_read_file_bytes_nolink` refuses the `memory_stores/` subtree and answers None, which `_guarded_entry` shapes exactly like a missing file), so the payload would report an empty `content` for a `preferences.md` that is on disk and non-empty. The rows still export on their own. A V2 member store is opened through `declared_store`'s member admission, and its rows come out of the canonical relation with their facets
 - `migrate` — one-time markdown → structured migration (preferences.md → semantic, history/*.md → episodic)
 - `import <file> [--store <name>]` — restore from JSON export with full validation. `--store` is the one verb here permitted to CREATE a named store's database, so admission, the destination's version check, the absence check and the removal of a database this run created are one hold of `memory_store_namespace_lock`. When this run creates that file and no row lands, the file is removed and the refusal says the store still has no database; when the run is interrupted, nothing is deleted and the file is named, since rows may have been committed before the abort
+- A refusal raised past admission by whichever opener a verb took (a `ValueError` from member admission or the startup barrier, a SQLite error on a corrupt file) prints one `Error:` line on stderr and exits 1, never a traceback. `_memory_cmd` is that boundary; the refusals a verb prints itself are unchanged
 - `kirocrew security audit` also scans vector memory for injection patterns
 
 ### Keyword search over the markdown layer
@@ -3115,8 +3119,12 @@ parent. A provider session with native context cannot be relabeled as another
 member; create a new session.
 
 `ContextBuilder.ensure_store` prepares the database in a worker thread and caches
-only a validated handle. It calls `open_member_database` for V2 and the existing
-V1 initializer for V1. It configures the embedding callable without reconciling
+only a validated handle. It opens it through `vector_memory.declared_store`, which
+binds a V2 declaration to its canonical member identity (the admission
+`open_member_database` takes) and gives every other declaration the existing V1
+initializer. `kirocrew memory carve --store` and `memory export --store` open a
+named store through the same function; a bare V1 `init()` refuses every member
+database. It configures the embedding callable without reconciling
 V2 storage on a read. Initialization, failed construction, cancellation and
 cache retirement retain their existing handle ownership and locking rules.
 

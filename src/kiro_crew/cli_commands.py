@@ -26,6 +26,7 @@ from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from sqlite3 import Error as StdlibSQLiteError
 from typing import NoReturn
 from zoneinfo import ZoneInfo
 
@@ -37,6 +38,7 @@ from kiro_crew import (
     model_registry,
     platform_compat,
 )
+from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.agent import reset_agent_model
 from kiro_crew.apps.backend import recorded_backend_port
 from kiro_crew.apps.bridges import (
@@ -172,6 +174,7 @@ from kiro_crew.vector_memory import (
     _lesson_display_text,
     _lesson_scope,
     _lesson_scope_unusable,
+    declared_store,
 )
 
 # Workspace dirs are confined to the data home: a workspace is agent-writable
@@ -3601,7 +3604,11 @@ def _memory_carve(args: argparse.Namespace) -> None:
     db_path = _admitted_store_path(name, cfg, may_create=False)
     if db_path is None:
         return
-    store = VectorMemoryStore(db_path=db_path, embedding_dim=cfg.memory.embedding_dim, config=cfg)
+    # Opened the way the store's declaration says: a member store refuses a bare
+    # V1 `init()`, and V2 member stores are the stores facets exist for.
+    store = declared_store(
+        db_path, store_id=name, config=cfg, embedding_dim=cfg.memory.embedding_dim
+    )
     store.init()
     try:
         # Keyed by facet NAME, read off the namespace by that name: an omitted flag
@@ -3720,7 +3727,26 @@ def _settle_created_database(
 
 
 def _memory_cmd(args: argparse.Namespace) -> None:
-    """Manage the memory system (vector store + markdown layer)."""
+    """Manage the memory system (vector store + markdown layer).
+
+    A refusal RAISED out of a verb is one line on stderr with exit 1 rather than a
+    traceback, which keeps the stream and exit code that traceback had. An opener
+    raises `ValueError` past admission (a member database that changed after it was
+    admitted, the startup barrier) and SQLite raises its own error on a corrupt
+    file, so the boundary is here rather than at each open. The refusals a verb
+    prints itself (`_admitted_store_path`, carve's name check) keep their stdout
+    one-liners.
+    """
+    try:
+        _memory_verb(args)
+    except (ValueError, sqlite3.Error, StdlibSQLiteError) as exc:
+        logging.getLogger(__name__).debug("kirocrew memory refused", exc_info=True)
+        print(f"Error: {_TERMINAL_CTRL_RE.sub('', str(exc))}", file=sys.stderr)
+        sys.exit(1)
+
+
+def _memory_verb(args: argparse.Namespace) -> None:
+    """Run one ``kirocrew memory`` verb; :func:`_memory_cmd` owns its refusals."""
     action = getattr(args, "mem_action", None)
     # "show" reads only the markdown layer — don't open (or create) the
     # vector store for it.
@@ -3905,8 +3931,10 @@ def _memory_cmd(args: argparse.Namespace) -> None:
         preexisting_sidecars = (
             set(db_path.parent.glob(db_path.name + "-*")) if import_created_db else set()
         )
-        store = VectorMemoryStore(
-            db_path=db_path, embedding_dim=cfg.memory.embedding_dim, config=cfg
+        # A V2 member store reaches here only as an `export` source (a V2 `import` is
+        # refused above), and it must be opened through member admission.
+        store = declared_store(
+            db_path, store_id=store_name, config=cfg, embedding_dim=cfg.memory.embedding_dim
         )
         try:
             # INSIDE the try, because `init()` is itself a creation step: SQLite makes

@@ -423,7 +423,7 @@ async def _build_store_vectors(name: str) -> "VectorMemoryStore | None":
         reconcile_store_embedding_space,
     )
     from kiro_crew.memory_stores import UnknownMemoryStore, require_memory_store, resolve_store_path
-    from kiro_crew.vector_memory import VectorMemoryStore, open_member_database
+    from kiro_crew.vector_memory import VectorMemoryStore, declared_store
 
     with _stores_lock:
         generation = _store_cache_generation
@@ -446,20 +446,12 @@ async def _build_store_vectors(name: str) -> "VectorMemoryStore | None":
             require_memory_store(name)
             # Tuning comes from `config=cfg`, applied through the same `reconfigure`
             # the live reload calls, so boot and reload cannot drift apart on a
-            # hand-copied list.
-            if declaration.memory_version == 2:
-                store = open_member_database(
-                    resolve_store_path(name),
-                    member_id=declaration.owner_member_id,
-                    store_id=name,
-                    embedding_dim=mem.embedding_dim,
-                    config=cfg,
-                )
-            else:
-                store = VectorMemoryStore(
-                    db_path=resolve_store_path(name), embedding_dim=mem.embedding_dim, config=cfg
-                )
-                store.init()
+            # hand-copied list. `declared_store` picks the member opener for a V2
+            # declaration, the same one `kirocrew memory carve/export --store` use.
+            store = declared_store(
+                resolve_store_path(name), store_id=name, config=cfg, embedding_dim=mem.embedding_dim
+            )
+            store.init()
             if cancelled.is_set():
                 return None
             store.embed_fn_factory = make_sync_embed_fn

@@ -86,7 +86,7 @@ async def test_late_named_store_construction_cannot_republish_after_eviction(env
         assert release.wait(5)
         return store
 
-    monkeypatch.setattr("kiro_crew.vector_memory.open_member_database", initialize)
+    monkeypatch.setattr("kiro_crew.vector_memory.declared_store", initialize)
     monkeypatch.setattr("kiro_crew.embeddings.model_file_present", lambda: False)
     monkeypatch.setattr("kiro_crew.embeddings.reconcile_store_embedding_space", lambda store: 0)
     monkeypatch.setattr(context, "_vector_stores", {})

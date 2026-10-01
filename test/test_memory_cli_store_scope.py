@@ -1134,3 +1134,159 @@ class TestAnInterruptedImportIsReportedNotDeleted:
         assert _semantic_keys(DEFAULT_MEMORY_STORE) == before
         assert "intruder" not in _semantic_keys(DEFAULT_MEMORY_STORE)
         assert not (tmp_path / "out.json").exists()
+
+
+_ALICE = "member-alice"
+_ALICE_KEY = "pref.editor"
+_ALICE_CREW = "finance"
+
+
+@pytest.fixture
+def member_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stores):
+    """A REAL V2 member store holding facet-stamped rows, beside a populated default store.
+
+    Built through ``member_memory_helpers.write_member_home``, like the V2 import
+    refusal above, so the store passes admission and opens as V2. The seed handle is
+    closed before the verb runs: one store per file is an invariant, and the verb
+    opens its own. The default store's row is the bystander that a read answered
+    from the wrong file would show.
+    """
+    from member_memory_helpers import forget_declared_stores, write_member_home
+
+    from kiro_crew import memory_schema
+
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    write_member_home(tmp_path, "alice")
+    forget_declared_stores(monkeypatch)
+    alice = open_member_database(resolve_store_path(_ALICE), member_id="alice", store_id=_ALICE)
+    try:
+        facets = memory_schema.MemoryFacets(crew=_ALICE_CREW)
+        assert alice.set_semantic(_ALICE_KEY, "vim", 1.0, "user_explicit", facets=facets) is None
+        assert alice.write_episodic(_ACME_EPISODE, source="test", facets=facets) is True
+    finally:
+        alice.close()
+    stores(resolve_store_path(DEFAULT_MEMORY_STORE)).set_semantic(
+        _GLOBAL_KEY, "in-the-default-store", 0.9, "test"
+    )
+    stores.close_all()
+    return tmp_path
+
+
+def _carve_ns(store: str | None, **overrides: object) -> argparse.Namespace:
+    from kiro_crew import memory_schema
+
+    fields: dict[str, object] = {facet: None for facet in memory_schema.FACET_NAMES}
+    fields.update(mem_action="carve", store=store, kind=None, count_by=None, limit=50, offset=0)
+    fields.update(overrides)
+    return _ns(**fields)
+
+
+class TestAMemberStoreIsOpenedThroughMemberAdmission:
+    """``carve --store`` and ``export --store`` on a V2 member store.
+
+    A bare ``VectorMemoryStore(...).init()`` refuses every member database
+    ("Private memory requires canonical member admission"), so both verbs open a
+    named store through ``declared_store``, the opener the dashboard reaches through
+    ``ContextBuilder.ensure_store``. V2 member stores are the stores facets exist for.
+    """
+
+    def test_carve_counts_a_member_store(self, member_home, capsys) -> None:
+        cc._memory_cmd(_carve_ns(_ALICE, count_by="crew"))
+        assert f"{_ALICE_CREW}: 2" in capsys.readouterr().out
+
+    def test_carve_lists_a_member_stores_rows_with_their_axes(self, member_home, capsys) -> None:
+        cc._memory_cmd(_carve_ns(_ALICE, crew=_ALICE_CREW))
+        out = capsys.readouterr().out
+        assert _ALICE_KEY in out and _ACME_EPISODE in out
+        assert f"crew={_ALICE_CREW}" in out
+        assert _GLOBAL_KEY not in out
+
+    def test_export_reads_the_member_stores_rows_and_not_the_default_stores(
+        self, member_home, capsys
+    ) -> None:
+        cc._memory_cmd(_ns(mem_action="export", output=None, store=_ALICE))
+        payload = json.loads(capsys.readouterr().out)
+        assert [row["key"] for row in payload["semantic"]] == [_ALICE_KEY]
+        assert [row["text"] for row in payload["episodic"]] == [_ACME_EPISODE]
+        # The canonical relation, so the attribution comes out with the rows.
+        assert {row["crew"] for row in payload["episodic"]} == {_ALICE_CREW}
+
+    def test_the_opener_binds_a_v2_declaration_and_leaves_v1_alone(self, member_home) -> None:
+        """The choice itself, pinned without opening anything."""
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.vector_memory import declared_store
+
+        cfg = KiroCrewConfig.load()
+        member = declared_store(resolve_store_path(_ALICE), store_id=_ALICE, config=cfg)
+        default = declared_store(
+            resolve_store_path(DEFAULT_MEMORY_STORE), store_id=DEFAULT_MEMORY_STORE, config=cfg
+        )
+        assert member._member_identity == ("alice", _ALICE)
+        assert default._member_identity is None
+
+    def test_a_default_entry_marked_v2_still_opens_the_global_store_as_v1(
+        self, member_home, capsys
+    ) -> None:
+        """The global store is never a member store, whatever its entry says.
+
+        ``memory_store_version`` answers 1 for ``default`` without reading the
+        entry, so a hand-edited ``memory_version: 2`` on it must not send the
+        operator's own memory through member admission.
+        """
+        config_path = member_home / "config.json"
+        payload = json.loads(config_path.read_text(encoding="utf-8"))
+        payload["memory_stores"][DEFAULT_MEMORY_STORE] = {
+            "memory_version": 2,
+            "owner_member_id": "alice",
+        }
+        config_path.write_text(json.dumps(payload), encoding="utf-8")
+        loader_mod._invalidate_config_cache()
+
+        cc._memory_cmd(_ns(mem_action="export", output=None, store=None))
+        assert [row["key"] for row in json.loads(capsys.readouterr().out)["semantic"]] == [
+            _GLOBAL_KEY
+        ]
+
+
+class TestARefusalIsOneLineNotATraceback:
+    """Whatever an opener still raises reaches the operator as one line, exit 1.
+
+    Admission settles the ordinary refusals before anything opens, so what remains
+    is what an opener raises past it: a member database that changed between
+    admission and the open, the startup barrier, or a file SQLite cannot read.
+    """
+
+    def test_a_member_admission_refusal_from_the_open_is_reported(
+        self, member_home, monkeypatch, capsys
+    ) -> None:
+        """The refusal a bare V1 ``init()`` raises on a member database."""
+
+        def refuse(self) -> None:
+            raise ValueError("Private memory requires canonical member admission")
+
+        monkeypatch.setattr(VectorMemoryStore, "init", refuse)
+        for args in (
+            _carve_ns(_ALICE, count_by="crew"),
+            _ns(mem_action="export", output=None, store=_ALICE),
+        ):
+            with pytest.raises(SystemExit) as exited:
+                cc._memory_cmd(args)
+            assert exited.value.code == 1, args.mem_action
+            captured = capsys.readouterr()
+            assert captured.err == (
+                "Error: Private memory requires canonical member admission\n"
+            ), args.mem_action
+            assert '"semantic"' not in captured.out
+
+    def test_a_corrupt_database_is_reported_rather_than_raised(self, member_home, capsys) -> None:
+        """A real SQLite error, not a stand-in: the default store's file is not a database."""
+        db_path = resolve_store_path(DEFAULT_MEMORY_STORE)
+        db_path.write_bytes(b"this is not a sqlite database" * 64)
+
+        with pytest.raises(SystemExit) as exited:
+            cc._memory_cmd(_ns(mem_action="list"))
+        assert exited.value.code == 1
+        err = capsys.readouterr().err
+        assert err.startswith("Error: ") and "Traceback" not in err
+        # Reported, never repaired: the bytes the operator would recover from stay put.
+        assert db_path.read_bytes().startswith(b"this is not a sqlite database")
