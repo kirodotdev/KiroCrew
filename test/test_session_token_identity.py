@@ -987,6 +987,9 @@ class TestGrantedOptInResolution:
         "oversized",
         "sensitive_link",
         "deep_json",
+        "vertical_tab_only",
+        "form_feed_only",
+        "padded_vertical_tab",
     ],
 )
 def test_kiro_identity_projection_fails_closed_on_settings_errors(
@@ -1006,6 +1009,11 @@ def test_kiro_identity_projection_fails_closed_on_settings_errors(
         "invalid_shape": "[]",
         "invalid_servers": '{"mcpServers": []}',
         "deep_json": "[" * 2000 + "0" + "]" * 2000,
+        # Not JSON whitespace, so not the empty file that reads as absent: a byte
+        # outside space, tab, CR and LF makes the document malformed.
+        "vertical_tab_only": "\x0b",
+        "form_feed_only": "\x0c",
+        "padded_vertical_tab": " \n\x0b\n ",
     }.get(failure, "{}")
     path.write_text(content, encoding="utf-8")
     monkeypatch.setattr(agent, "_KIRO_MCP_JSON", global_path)

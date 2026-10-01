@@ -276,11 +276,18 @@ def _on_loop_thread() -> bool:
     return True
 
 
+#: The four bytes JSON allows as insignificant whitespace (RFC 8259 section 2).
+#: ``bytes.strip()`` with no argument also strips ``\x0b`` and ``\x0c``, which a
+#: JSON document may not contain, so a file of those is malformed, not empty.
+_JSON_WHITESPACE = b" \t\n\r"
+
+
 def _read_mcp_settings(path: Path) -> dict[str, Any]:
     """Read settings through the credential gate; only absence or emptiness means no restrictions.
 
-    A file that is empty or holds only whitespace reads as ``{}``, like an absent
-    one: it declares nothing, so there is no restriction to fail closed on.
+    A file that is empty or holds only JSON whitespace (space, tab, CR, LF) reads
+    as ``{}``, like an absent one: it declares nothing, so there is no restriction
+    to fail closed on. Any other byte leaves it to the parser, which fails closed.
 
     Off the event loop, a gated read that fails transiently is retried (see
     :data:`_SETTINGS_READ_BACKOFF_SECS`): the first attempt, one immediate
@@ -333,7 +340,7 @@ def _read_mcp_settings(path: Path) -> dict[str, Any]:
         refusal = "MCP settings could not be safely read"
     else:
         raise ValueError(refusal)
-    if not raw.strip():
+    if not raw.strip(_JSON_WHITESPACE):
         # A 0-byte or whitespace-only file declares no server, so it carries no
         # restriction to keep authoritative: it reads as absent, the same "no
         # servers" kiro-cli loads it as. Refusing it would withhold every element
