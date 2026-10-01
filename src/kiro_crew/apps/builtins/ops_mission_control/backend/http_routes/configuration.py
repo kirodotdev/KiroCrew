@@ -123,6 +123,11 @@ async def _handle_put_provider_config(
        form that accidentally posted a token here would otherwise write it into a
        world-readable-over-the-port file; secrets must go to the keystone route.
     """
+    owner_denied = await require_owner_dashboard_request(
+        request, "ops_mission_control.put_provider_config"
+    )
+    if owner_denied is not None:
+        return owner_denied
     provider_id = request.match_info.get("provider_id", "").strip()
     body = await _json_body(request)
     if body is None:
@@ -281,6 +286,11 @@ async def _handle_put_settings(request: web.Request, *, _audit: AuditWriter) -> 
       half-apply?" is the wrong question to keep re-answering; a rejected request must change
       NOTHING. Found in review each time.
     """
+    owner_denied = await require_owner_dashboard_request(
+        request, "ops_mission_control.put_settings"
+    )
+    if owner_denied is not None:
+        return owner_denied
     body = await _json_body(request)
     if body is None:
         return web.json_response(

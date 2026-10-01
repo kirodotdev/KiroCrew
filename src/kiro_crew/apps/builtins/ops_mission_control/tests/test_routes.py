@@ -2458,7 +2458,7 @@ class TestACredentialBearingRemoteIsRefused(unittest.IsolatedAsyncioTestCase):
         from kiro_crew.apps.builtins.ops_mission_control.backend.providers import read_config
 
         token = "ghp_ThisIsTheActualTokenValue"
-        app = web.Application()
+        app = TestAStoreThatRefusesToWriteIsReportedNotCrashed._owner_app()
         routes.register_routes(app)
         with mock.patch.object(routes, "is_app_enabled", return_value=True):
             async with TestClient(TestServer(app)) as client:
@@ -2479,7 +2479,7 @@ class TestACredentialBearingRemoteIsRefused(unittest.IsolatedAsyncioTestCase):
         """The guard must not break the feature it protects."""
         from aiohttp.test_utils import TestClient, TestServer
 
-        app = web.Application()
+        app = TestAStoreThatRefusesToWriteIsReportedNotCrashed._owner_app()
         routes.register_routes(app)
         with mock.patch.object(routes, "is_app_enabled", return_value=True):
             async with TestClient(TestServer(app)) as client:
@@ -3531,7 +3531,7 @@ class TestAStoreThatRefusesToWriteIsReportedNotCrashed(unittest.IsolatedAsyncioT
         """The ceiling is the one value where a silent partial apply is a security state."""
         from kiro_crew.apps.builtins.ops_mission_control.backend import policy_store
 
-        app = web.Application()
+        app = self._owner_app()
         routes.register_routes(app)
         with mock.patch.object(routes, "is_app_enabled", return_value=True):
             with mock.patch.object(policy_store, "set_ceiling", self._refuse):
@@ -3553,7 +3553,7 @@ class TestAStoreThatRefusesToWriteIsReportedNotCrashed(unittest.IsolatedAsyncioT
         so `merge_provider_config` now propagates a failed read and this route needed the
         same coded refusal. Found in review (Opus 4.8, Design Review).
         """
-        app = web.Application()
+        app = self._owner_app()
         routes.register_routes(app)
         with mock.patch.object(routes, "is_app_enabled", return_value=True):
             with mock.patch.object(routes, "merge_provider_config", self._refuse):
@@ -3578,7 +3578,7 @@ class TestAStoreThatRefusesToWriteIsReportedNotCrashed(unittest.IsolatedAsyncioT
         def _corrupt(*_a, **_kw):
             raise corrupt
 
-        app = web.Application()
+        app = self._owner_app()
         routes.register_routes(app)
         with mock.patch.object(routes, "is_app_enabled", return_value=True):
             with mock.patch.object(routes, "merge_provider_config", _corrupt):
@@ -3842,7 +3842,7 @@ class TestAStoreThatRefusesToWriteIsReportedNotCrashed(unittest.IsolatedAsyncioT
         def _corrupt(*_a, **_kw):
             raise corrupt
 
-        app = web.Application()
+        app = self._owner_app()
         routes.register_routes(app)
         with mock.patch.object(routes, "is_app_enabled", return_value=True):
             with mock.patch.object(policy_store, "set_ceiling", _corrupt):
@@ -3924,7 +3924,7 @@ class TestAStoreThatRefusesToWriteIsReportedNotCrashed(unittest.IsolatedAsyncioT
         """
         from kiro_crew.apps.builtins.ops_mission_control.backend import slack_out
 
-        app = web.Application()
+        app = self._owner_app()
         routes.register_routes(app)
         with mock.patch.object(routes, "is_app_enabled", return_value=True):
             with mock.patch.object(slack_out, "set_settings", self._refuse):
@@ -3947,7 +3947,7 @@ class TestAStoreThatRefusesToWriteIsReportedNotCrashed(unittest.IsolatedAsyncioT
         """
         from kiro_crew.apps.builtins.ops_mission_control.backend import policy_store
 
-        app = web.Application()
+        app = self._owner_app()
         routes.register_routes(app)
         with mock.patch.object(routes, "is_app_enabled", return_value=True):
             with mock.patch.object(policy_store, "set_ceiling", self._refuse):
@@ -3962,7 +3962,7 @@ class TestAStoreThatRefusesToWriteIsReportedNotCrashed(unittest.IsolatedAsyncioT
 
     async def test_an_ordinary_settings_write_still_succeeds(self):
         """Negative control: the guard must not break the route it protects."""
-        app = web.Application()
+        app = self._owner_app()
         routes.register_routes(app)
         with mock.patch.object(routes, "is_app_enabled", return_value=True):
             client = await self._client(app)

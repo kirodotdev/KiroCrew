@@ -12,17 +12,27 @@ import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from aiohttp import web
 
-from kiro_crew.apps.builtins.ops_mission_control.backend import routes
+from kiro_crew.apps.builtins.ops_mission_control.backend import policy_store, routes
 
 
 def _request(body=None, match_info=None):
-    """A MagicMock request whose ``.json()`` resolves to ``body``."""
+    """A MagicMock request whose ``.json()`` resolves to ``body``.
+
+    It carries the dashboard owner's claims, the same shape as the composition
+    contract's ``_owner_request``: the settings and provider-config routes are
+    owner-gated, and the gate reads ``request.get("user")`` and ``request["app"]``."""
     request = mock.MagicMock(spec=web.Request)
     request.match_info = match_info or {}
+    request.app = {"state": SimpleNamespace(owner_id="")}
+    claims = {"user": "local-app", "app": ""}
+    request.get = lambda key, default=None: claims.get(key, default)
+    request.__contains__.side_effect = lambda key: key in claims
+    request.__getitem__.side_effect = lambda key: claims[key]
 
     async def _json():
         if body is None:
@@ -30,6 +40,17 @@ def _request(body=None, match_info=None):
         return body
 
     request.json = _json
+    return request
+
+
+def _request_as(user, app, body=None, match_info=None):
+    """``_request`` carrying another caller's claims, with ``owner-user`` as the owner."""
+    request = _request(body, match_info)
+    request.app = {"state": SimpleNamespace(owner_id="owner-user")}
+    claims = {"user": user, "app": app}
+    request.get = lambda key, default=None: claims.get(key, default)
+    request.__contains__.side_effect = lambda key: key in claims
+    request.__getitem__.side_effect = lambda key: claims[key]
     return request
 
 
@@ -1258,3 +1279,78 @@ class TestSettingsAppliesTheCeilingAtomically(_HomeIsolatedAsync):
         self.assertEqual(response.status, 200)
         self.assertEqual(rotation.app_mode(), "act")
         self.assertEqual([rotation.rule_to_dict(r) for r in rotation.load_rules()], [rule])
+
+
+class TestTheCeilingAndConfigWritersAreOwnerOnly(_HomeIsolatedAsync):
+    """``PUT /settings`` and ``PUT /providers/{id}/config`` answer the owner alone.
+
+    ``mode`` and ``autonomy_rules`` are the provider-write ceiling, and the same body
+    moves ``primary_instance``, the rotation identity and the ledger-sync remote. The
+    ``/secret`` siblings refuse every other caller with 403 ``owner_only``; these two
+    match them, the app's own token included. The agent routes are not gated.
+    """
+
+    _NON_OWNER = ("someone-else", "")
+    _OWN_APP = ("app:ops-mission-control", "ops-mission-control")
+
+    def setUp(self):
+        self._enter_isolation()
+        self.addCleanup(self._exit_isolation)
+        self.set_ceiling = self.enterContext(mock.patch.object(policy_store, "set_ceiling"))
+        self.policy_put = self.enterContext(mock.patch.object(policy_store, "put"))
+        self.merge = self.enterContext(
+            mock.patch.object(routes, "merge_provider_config", return_value={"enabled": True})
+        )
+        pagerduty = SimpleNamespace(
+            id="pagerduty", config_fields=("enabled",), secret_fields=("api_token",)
+        )
+        catalog = SimpleNamespace(catalog=lambda: [pagerduty])
+        self.enterContext(mock.patch.object(routes, "get_registry", return_value=catalog))
+
+    async def _settings(self, user, app):
+        return await routes._handle_put_settings(
+            _request_as(user, app, {"mode": "act", "primary_instance": True})
+        )
+
+    async def _config(self, user, app):
+        return await routes._handle_put_provider_config(
+            _request_as(user, app, {"enabled": True}, {"provider_id": "pagerduty"})
+        )
+
+    async def test_a_non_owner_cannot_put_settings(self):
+        response = await self._settings(*self._NON_OWNER)
+        self.assertEqual(response.status, 403)
+        self.assertEqual(_payload(response)["code"], "owner_only")
+        self.set_ceiling.assert_not_called()
+        self.policy_put.assert_not_called()
+
+    async def test_the_apps_own_token_cannot_put_settings(self):
+        response = await self._settings(*self._OWN_APP)
+        self.assertEqual(response.status, 403)
+        self.assertEqual(_payload(response)["code"], "owner_only")
+        self.set_ceiling.assert_not_called()
+        self.policy_put.assert_not_called()
+
+    async def test_a_non_owner_cannot_put_provider_config(self):
+        response = await self._config(*self._NON_OWNER)
+        self.assertEqual(response.status, 403)
+        self.assertEqual(_payload(response)["code"], "owner_only")
+        self.merge.assert_not_called()
+
+    async def test_the_apps_own_token_cannot_put_provider_config(self):
+        response = await self._config(*self._OWN_APP)
+        self.assertEqual(response.status, 403)
+        self.assertEqual(_payload(response)["code"], "owner_only")
+        self.merge.assert_not_called()
+
+    async def test_the_owner_still_puts_settings_and_config(self):
+        settings = await self._settings("owner-user", "")
+        self.assertEqual(settings.status, 200)
+        self.set_ceiling.assert_called_once_with(mode="act", rules=None)
+        config = await self._config("owner-user", "")
+        self.assertEqual(config.status, 200)
+        self.merge.assert_called_once_with("pagerduty", {"enabled": True})
+
+    async def test_an_agent_route_still_answers_a_non_owner(self):
+        response = await routes._handle_ledger_hygiene(_request_as(*self._OWN_APP))
+        self.assertNotEqual(_payload(response).get("code"), "owner_only")

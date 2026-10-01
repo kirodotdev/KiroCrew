@@ -681,7 +681,7 @@ class TestEverySeamControlsItsCallSites(_Home):
             ),
             "claim": lambda: routes._handle_claim(_request({"signal": {"id": "x"}})),
             "put_provider_config": lambda: routes._handle_put_provider_config(
-                _request({"site": "datadoghq.eu"}, match={"provider_id": "datadog"})
+                _owner_request({"site": "datadoghq.eu"}, match={"provider_id": "datadog"})
             ),
             "put_secret": lambda: routes._handle_put_secret(
                 _owner_request(
@@ -725,7 +725,7 @@ class TestEverySeamControlsItsCallSites(_Home):
         cases: dict[str, Callable[[], Any]] = {
             "webhook": lambda: routes._handle_webhook(oversized),
             "secret_on_config_route": lambda: routes._handle_put_provider_config(
-                _request({"api_token": "x"}, match={"provider_id": "pagerduty"})
+                _owner_request({"api_token": "x"}, match={"provider_id": "pagerduty"})
             ),
             "hygiene_not_primary": lambda: routes._handle_ledger_hygiene(_request()),
             "settings_write_refused": lambda: routes._settings_write_or_refuse(
@@ -765,7 +765,7 @@ class TestEverySeamControlsItsCallSites(_Home):
                 "merge_provider_config",
                 refuse,
                 lambda: routes._handle_put_provider_config(
-                    _request({"site": "datadoghq.eu"}, match={"provider_id": "datadog"})
+                    _owner_request({"site": "datadoghq.eu"}, match={"provider_id": "datadog"})
                 ),
             ),
             "verification_unscheduled": (
@@ -802,7 +802,7 @@ class TestEverySeamControlsItsCallSites(_Home):
             "stored_proposal": lambda: routes._execute_stored_proposal(
                 incident, {"action": models.ACTION_COMMENT, "note": "n"}, permit
             ),
-            "settings": lambda: routes._handle_put_settings(_request({"mode": "observe"})),
+            "settings": lambda: routes._handle_put_settings(_owner_request({"mode": "observe"})),
         }
         for label, call in cases.items():
             with self.subTest(site=label):
@@ -873,7 +873,7 @@ class TestEverySeamControlsItsCallSites(_Home):
         await self._reaches(
             "merge_provider_config",
             lambda: routes._handle_put_provider_config(
-                _request({"site": "datadoghq.eu"}, match={"provider_id": "datadog"})
+                _owner_request({"site": "datadoghq.eu"}, match={"provider_id": "datadog"})
             ),
         )
 
@@ -935,7 +935,7 @@ class TestSeamsReachTheHelpersBehindAHandler(_Home):
         audited = self.enterContext(mock.patch.object(routes, "_audit"))
         refuse = PermissionError(13, "Permission denied")
         with mock.patch.object(policy_store, "set_ceiling", side_effect=refuse):
-            response = await routes._handle_put_settings(_request({"mode": "observe"}))
+            response = await routes._handle_put_settings(_owner_request({"mode": "observe"}))
         self.assertEqual(response.status, 503)
         self.assertEqual(
             audited.call_args_list, [mock.call("settings_put", "refused after []", "failure")]
@@ -1215,7 +1215,7 @@ class TestTheLifecycleAndConfigurationEdges(_Home):
             "_handle_post_ledger",
         ):
             with self.subTest(handler=name):
-                request = _request()
+                request = _owner_request()
                 request.json = mock.AsyncMock(side_effect=ValueError("not json"))
                 response = await getattr(routes, name)(request)
                 self.assertEqual(response.status, 400)
@@ -1296,7 +1296,7 @@ class TestTheLifecycleAndConfigurationEdges(_Home):
             "stale_after_secs": 600,
             "needs_human_stale_after_secs": 900,
         }
-        response = await routes._handle_put_settings(_request(body))
+        response = await routes._handle_put_settings(_owner_request(body))
         self.assertEqual(response.status, 200)
         self.assertEqual(sorted(_payload(response)["applied"]), sorted(body))
 
