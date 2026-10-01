@@ -277,7 +277,10 @@ def _on_loop_thread() -> bool:
 
 
 def _read_mcp_settings(path: Path) -> dict[str, Any]:
-    """Read settings through the credential gate; only absence means no restrictions.
+    """Read settings through the credential gate; only absence or emptiness means no restrictions.
+
+    A file that is empty or holds only whitespace reads as ``{}``, like an absent
+    one: it declares nothing, so there is no restriction to fail closed on.
 
     Off the event loop, a gated read that fails transiently is retried (see
     :data:`_SETTINGS_READ_BACKOFF_SECS`): the first attempt, one immediate
@@ -330,6 +333,12 @@ def _read_mcp_settings(path: Path) -> dict[str, Any]:
         refusal = "MCP settings could not be safely read"
     else:
         raise ValueError(refusal)
+    if not raw.strip():
+        # A 0-byte or whitespace-only file declares no server, so it carries no
+        # restriction to keep authoritative: it reads as absent, the same "no
+        # servers" kiro-cli loads it as. Refusing it would withhold every element
+        # and refuse every search agent's session over a file with nothing in it.
+        return {}
     try:
         settings = json.loads(raw.decode("utf-8"))
     except RecursionError as exc:
