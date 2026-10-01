@@ -10,6 +10,8 @@ import type { ComposerControl } from '../composerControl'
 import type { ComposerVoiceInputProps } from '../../chat-core/composer/Composer'
 import type { usePromptHistory } from './draftHistory'
 import type { PromptHistoryItem } from '../composerPromptHistory'
+import type { PasteBlock } from '../../utils/pasteTokens'
+import { applyTextareaListBreak } from './listContinuation'
 
 /* The composer's keyboard and focus: autofocus on a session switch, the
    global `/` shortcut, the textarea's keydown (raw paste, undo, token keys,
@@ -101,9 +103,10 @@ export function useComposerFocus({ autoFocusKey, disabled, isMobile, composerCon
   }, [typedCommandMenus, composerCollapsed, expandComposer, composerControl])
 }
 
-export function useComposerKeyDown({ rawPasteRef, handleUndoKey, handleTokenKey, promptOptimizer, connected, optimizePrompt, sendOnEnter, onChange, optimizingRef, fireComposer, ime, sentMessages, onEditLastRequest, anyPickerOpenRef, promptHistory, valueRef, inputRef }: {
+export function useComposerKeyDown({ rawPasteRef, handleUndoKey, endUndoBurst, handleTokenKey, promptOptimizer, connected, optimizePrompt, sendOnEnter, onChange, optimizingRef, fireComposer, ime, sentMessages, onEditLastRequest, anyPickerOpenRef, promptHistory, valueRef, inputRef, pasteBlocksRef }: {
   rawPasteRef: React.MutableRefObject<boolean>
   handleUndoKey: (e: React.KeyboardEvent<HTMLTextAreaElement>) => boolean
+  endUndoBurst: () => void
   handleTokenKey: (e: React.KeyboardEvent<HTMLTextAreaElement>) => boolean
   promptOptimizer: boolean
   connected: boolean
@@ -119,6 +122,7 @@ export function useComposerKeyDown({ rawPasteRef, handleUndoKey, handleTokenKey,
   promptHistory: ReturnType<typeof usePromptHistory>
   valueRef: React.MutableRefObject<string>
   inputRef: React.RefObject<HTMLTextAreaElement>
+  pasteBlocksRef: React.RefObject<readonly PasteBlock[]>
 }) {
   return useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // Cmd/Ctrl+Shift+V (or Cmd+Option+Shift+V on macOS) → next paste inserts
@@ -155,6 +159,9 @@ export function useComposerKeyDown({ rawPasteRef, handleUndoKey, handleTokenKey,
     if (sendOnEnter === 'enter-ctrl-newline' && e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
       e.preventDefault()
       const ta = e.currentTarget
+      // The new line this key makes still continues a markdown list unless
+      // the IME owns this Enter; that path keeps the existing plain newline.
+      if (!ime.isComposing(e) && applyTextareaListBreak(ta, pasteBlocksRef.current ?? [], endUndoBurst)) return
       const start = ta.selectionStart
       const end = ta.selectionEnd
       const val = ta.value
@@ -214,7 +221,7 @@ export function useComposerKeyDown({ rawPasteRef, handleUndoKey, handleTokenKey,
       e.metaKey || e.ctrlKey || e.altKey || e.shiftKey
     ) return
     promptHistory.recall(e, { sentMessages, current: valueRef.current, onChange, inputRef })
-  }, [rawPasteRef, handleUndoKey, handleTokenKey, promptOptimizer, connected, optimizePrompt, sendOnEnter, onChange, optimizingRef, fireComposer, ime, sentMessages, onEditLastRequest, anyPickerOpenRef, promptHistory, valueRef, inputRef])
+  }, [rawPasteRef, handleUndoKey, endUndoBurst, handleTokenKey, promptOptimizer, connected, optimizePrompt, sendOnEnter, onChange, optimizingRef, fireComposer, ime, sentMessages, onEditLastRequest, anyPickerOpenRef, promptHistory, valueRef, inputRef, pasteBlocksRef])
 }
 
 /** The editor's change handlers. Both mark the edit as the user's (the undo

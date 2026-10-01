@@ -1,4 +1,4 @@
-import { useRef, useEffect, useMemo, useId, memo, lazy, Suspense } from 'react'
+import { useRef, useEffect, useMemo, useCallback, useId, memo, lazy, Suspense } from 'react'
 import { markComposerResize } from '../utils/composerResize'
 import { ArrowUp, Loader2, RotateCw, Sparkles, Target, CheckCircle, Lock, FolderOpen, ClipboardList, PenLine, MoreHorizontal } from 'lucide-react'
 import SketchDialog from './SketchDialog'
@@ -39,6 +39,7 @@ import SessionRefStrip from './SessionRefStrip'
 import { Glass } from './Glass'
 import type { ChatInputProps } from './chat-input/props'
 import { LexicalComposerInput, ComposerLoadBoundary, useComposerEngine } from './chat-input/engine'
+import { useTextareaListContinuation } from './chat-input/listContinuation'
 import { approvalBtnClass, useSpawnApprovals, useToolApproval } from './chat-input/approval'
 import { SpawnApprovalCard } from './chat-input/SpawnApprovalCard'
 import { useComposerPickers } from './chat-input/pickers'
@@ -434,9 +435,15 @@ function ChatInput({
     promptHistory.endBrowsing()
   }, [slotId, closePickers, promptHistory])
 
-  const { handleUndoKey, appendBoundary, removeFileEndingUndoBurst, removeDirEndingUndoBurst } = useUndoHistory({
+  const { handleUndoKey, appendBoundary, endUndoBurst, removeFileEndingUndoBurst, removeDirEndingUndoBurst } = useUndoHistory({
     value, pasteBlocks, autoFocusKey, composerControl, pasteBlocksRef, valueFromUserRef, optimizingRef, onChange, onPasteBlocksChange, onRemoveFile, onRemoveDir, inputRef, ime,
   })
+  const listContinuation = useTextareaListContinuation(pasteBlocksRef, ime, endUndoBurst)
+  const attachListContinuation = listContinuation.ref
+  const setComposerTextareaRef = useCallback((textarea: HTMLTextAreaElement | null) => {
+    setTextareaRef(textarea)
+    attachListContinuation(textarea)
+  }, [setTextareaRef, attachListContinuation])
   const { optimizeError, setOptimizeError, optimizePending, optimizing, optimizePrompt } = usePromptOptimizer({
     slotId, chatStore, valueRef, pasteBlocks, onChange, onOptimizeResult, lexicalComposer, lexicalLoadFailed, composerControl, inputRef,
     valueFromUserRef, optimizingRef, appendUndoBoundary: appendBoundary,
@@ -459,8 +466,8 @@ function ChatInput({
     handleTokenKey, handlePaste, handleTextareaClick, handleSelectSnap, handleCopy, handleCut, handleFileInputChange,
   } = usePasteTokens({ value, onChange, pasteBlocks, onPasteBlocksChange, showFullPastes, onUploadFiles, inputRef, valueRef, valueFromUserRef, recordCaret, ime })
   const handleKeyDown = useComposerKeyDown({
-    rawPasteRef, handleUndoKey, handleTokenKey, promptOptimizer, connected, optimizePrompt, sendOnEnter, onChange, optimizingRef,
-    fireComposer, ime, sentMessages, onEditLastRequest, anyPickerOpenRef, promptHistory, valueRef, inputRef,
+    rawPasteRef, handleUndoKey, endUndoBurst, handleTokenKey, promptOptimizer, connected, optimizePrompt, sendOnEnter, onChange, optimizingRef,
+    fireComposer, ime, sentMessages, onEditLastRequest, anyPickerOpenRef, promptHistory, valueRef, inputRef, pasteBlocksRef,
   })
   const { handleTextareaChange, handleLexicalChange } = useEditorInput({ onChange, valueFromUserRef, openPickersForText, recordCaret, lexicalControlRef, voiceCaretRef })
 
@@ -897,7 +904,7 @@ function ChatInput({
             the paste chip's background drifts off the token text.
             playwright/composer-paste-highlight.spec.ts pins this. */}
         <textarea
-          ref={setTextareaRef}
+          ref={setComposerTextareaRef}
           aria-label={inputAriaLabel ?? i18nT('components.chatInput.message_input')}
           data-composer-input=""
           spellCheck={spellCheck}
@@ -915,7 +922,7 @@ function ChatInput({
           onDragLeave={e => { treeDrop.onDragLeave(e); e.stopPropagation() }}
           onDrop={e => { e.preventDefault(); treeDrop.onDrop(e); e.stopPropagation() }}
           onChange={handleTextareaChange}
-          onKeyDown={handleKeyDown}
+          onKeyDown={e => { listContinuation.onKeyDown(e); handleKeyDown(e) }}
           {...ime.bindComposition<HTMLTextAreaElement>({
             // The paste-hover preview dismisses on blur; the guard's latch reset rides
             // in the binding itself, so these handlers only carry what is local here.

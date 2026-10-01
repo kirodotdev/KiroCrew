@@ -287,5 +287,7 @@ export function useUndoHistory({ value, pasteBlocks, autoFocusKey, composerContr
     }
   }, [composerControl, pasteBlocksRef])
 
-  return { handleUndoKey, appendBoundary, removeFileEndingUndoBurst, removeDirEndingUndoBurst }
+  const endUndoBurst = useCallback(() => { undoLastEditRef.current = 0 }, [])
+
+  return { handleUndoKey, appendBoundary, endUndoBurst, removeFileEndingUndoBurst, removeDirEndingUndoBurst }
 }
