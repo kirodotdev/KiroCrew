@@ -46,6 +46,7 @@ import re
 import select
 import shlex
 import shutil
+import socket
 import stat
 import subprocess
 import sys
@@ -13005,10 +13006,34 @@ def _default_max_memory_mb() -> int:
     return _CGROUP_FALLBACK_MAX_MEMORY_MB
 
 
-# Cached (available, reason) probe result — the environment doesn't change
-# within a process, and the probe shells out, so compute it once.
+# Cached (available, reason) probe result. Half of what it depends on is NOT
+# process-stable: the systemd user manager, its bus and the delegated user slice
+# belong to the user's LOGIN, and logind tears all three down at the last logout
+# on a host without lingering while ``XDG_RUNTIME_DIR`` stays set in our
+# environment. So the cache is keyed on a cheap fingerprint of that session state
+# (:func:`_cgroup_scope_session_fingerprint`) and re-validated on a TTL; see
+# :func:`_probe_cgroup_scope`.
 _CGROUP_SCOPE_PROBE: tuple[bool, str] | None = None
+# The fingerprint and monotonic timestamp the cached probe was computed against.
+_CGROUP_SCOPE_PROBE_SESSION: tuple[object, ...] | None = None
+_CGROUP_SCOPE_PROBE_AT = 0.0
+# Upper bound on how long a cached probe is trusted without recomputing it. The
+# fingerprint catches the normal logout (logind removes the runtime directory);
+# this catches a manager that died and left its socket file behind, which no
+# stat can tell apart from a live one. A recompute is a handful of small file
+# reads and one non-blocking connect(), so once a minute costs nothing.
+_CGROUP_SCOPE_PROBE_TTL_SECONDS = 60.0
+_CGROUP_SCOPE_PROBE_LOCK = threading.Lock()
 _CGROUP_WARNED = False
+# Appended to every "no reachable user manager" reason, so both the one-time
+# warning and the mid-run transition warning name the fix an operator can apply.
+_CGROUP_LINGER_REMEDY = (
+    "the systemd user manager is not running for this user, which logind does "
+    "when the last login session ends on a host without lingering; "
+    "`loginctl enable-linger $USER` keeps it running (it needs sudo on a managed "
+    "host such as a Cloud Desktop), and the ceiling returns on its own once the "
+    "manager is back"
+)
 
 
 def _warn_cgroup_unavailable(reason: str) -> None:
@@ -13031,17 +13056,165 @@ def _warn_cgroup_unavailable(reason: str) -> None:
     )
 
 
+def _user_slice_controllers_path() -> str:
+    """``cgroup.controllers`` of this uid's logind user slice."""
+    return f"/sys/fs/cgroup/user.slice/user-{os.getuid()}.slice/cgroup.controllers"
+
+
+def _user_bus_socket_paths() -> tuple[str, ...]:
+    """Filesystem sockets ``systemd-run --user`` may dial, most specific first.
+
+    ``DBUS_SESSION_BUS_ADDRESS``'s ``unix:path=`` entries, then the two sockets
+    systemd derives from ``XDG_RUNTIME_DIR``: the user manager's private socket
+    (``systemd-run --scope`` tries it first) and the session bus. Abstract and
+    non-unix transports are skipped -- they have no path to stat or dial here.
+    """
+    paths: list[str] = []
+    for entry in os.environ.get("DBUS_SESSION_BUS_ADDRESS", "").split(";"):
+        transport, _, params = entry.partition(":")
+        if transport != "unix":
+            continue
+        for param in params.split(","):
+            key, _, value = param.partition("=")
+            if key == "path" and value:
+                paths.append(value)
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR", "")
+    if runtime_dir:
+        paths.append(os.path.join(runtime_dir, "systemd", "private"))
+        paths.append(os.path.join(runtime_dir, "bus"))
+    return tuple(dict.fromkeys(paths))
+
+
+def _stat_identity(path: str) -> tuple[int, int] | None:
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_dev, st.st_ino)
+
+
+def _cgroup_scope_session_fingerprint() -> tuple[object, ...]:
+    """Cheap per-spawn identity of the login-scoped state the probe depends on.
+
+    Stats only -- no reads, no connects -- so it is safe on the event loop at
+    every spawn. Changes when logind removes or recreates the runtime directory,
+    when the user manager re-creates its sockets (new inode), when the user
+    slice comes or goes, or when the gateway's bus locators change. Off Linux it
+    is constant: nothing there is session-scoped.
+    """
+    if sys.platform != "linux":
+        return ()
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR", "")
+    sockets = _user_bus_socket_paths()
+    return (
+        runtime_dir,
+        _stat_identity(runtime_dir) if runtime_dir else None,
+        sockets,
+        tuple(_stat_identity(path) for path in sockets),
+        _stat_identity(_user_slice_controllers_path()),
+    )
+
+
+def _user_bus_reachable() -> tuple[bool, str]:
+    """True when some :func:`_user_bus_socket_paths` socket accepts a connection.
+
+    A socket FILE is not a bus: a manager that died leaves it behind (refused),
+    and a seccomp or LSM policy can refuse ``connect()`` outright (EPERM) --
+    either way ``systemd-run`` dies with ``Failed to connect to bus`` before it
+    execs the command it wraps. The connect is NON-BLOCKING, so a listener with
+    a full backlog answers EAGAIN instead of stalling the caller; that still
+    proves something is listening and counts as reachable. The connection is
+    closed at once, before any D-Bus authentication, which the bus treats as an
+    ordinary client hang-up.
+    """
+    paths = _user_bus_socket_paths()
+    if not paths:
+        return (False, "no XDG_RUNTIME_DIR (no systemd user session)")
+    failures: list[str] = []
+    for path in paths:
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+                sock.setblocking(False)
+                err = sock.connect_ex(path)
+        except OSError as exc:
+            err = exc.errno or errno.EIO
+        if err in (0, errno.EAGAIN, errno.EINPROGRESS):
+            return (True, "ok")
+        failures.append(f"{path}: {os.strerror(err)}")
+    return (False, f"user bus unreachable ({'; '.join(failures)}): {_CGROUP_LINGER_REMEDY}")
+
+
 def _probe_cgroup_scope() -> tuple[bool, str]:
     """Return (available, reason) for unprivileged cgroup-v2 scope enforcement.
 
     Requires, on Linux: a pure cgroup-v2 mount, the ``pids`` and ``memory``
     controllers delegated to our user slice, a ``systemd-run`` binary, and a
-    user session bus (XDG_RUNTIME_DIR). Any missing piece → not available.
+    REACHABLE user bus. Any missing piece → not available.
+
+    The answer follows the user's login rather than the process: it is
+    recomputed whenever :func:`_cgroup_scope_session_fingerprint` changes and at
+    most every :data:`_CGROUP_SCOPE_PROBE_TTL_SECONDS`. A gateway started inside
+    an SSH session therefore stops prepending ``systemd-run`` once logind has
+    stopped the user manager -- which it would otherwise keep doing, failing
+    every spawn with ``Failed to connect to bus`` -- and takes the same no-scope
+    path a gateway started after the logout takes; and it bounds spawns again
+    when the manager comes back. Either flip is logged (see
+    :func:`_log_cgroup_scope_transition`), so the ceiling is never lost quietly.
     """
-    global _CGROUP_SCOPE_PROBE
-    if _CGROUP_SCOPE_PROBE is None:
-        _CGROUP_SCOPE_PROBE = _compute_cgroup_scope_probe()
-    return _CGROUP_SCOPE_PROBE
+    global _CGROUP_SCOPE_PROBE, _CGROUP_SCOPE_PROBE_SESSION, _CGROUP_SCOPE_PROBE_AT
+    global _CPU_DELEGATED
+    session = _cgroup_scope_session_fingerprint()
+    now = time.monotonic()
+    cached = _CGROUP_SCOPE_PROBE
+    if (
+        cached is not None
+        and session == _CGROUP_SCOPE_PROBE_SESSION
+        and now - _CGROUP_SCOPE_PROBE_AT < _CGROUP_SCOPE_PROBE_TTL_SECONDS
+    ):
+        return cached
+    with _CGROUP_SCOPE_PROBE_LOCK:
+        cached = _CGROUP_SCOPE_PROBE
+        if (
+            cached is not None
+            and session == _CGROUP_SCOPE_PROBE_SESSION
+            and now - _CGROUP_SCOPE_PROBE_AT < _CGROUP_SCOPE_PROBE_TTL_SECONDS
+        ):
+            return cached
+        result = _compute_cgroup_scope_probe()
+        _CGROUP_SCOPE_PROBE = result
+        _CGROUP_SCOPE_PROBE_SESSION = session
+        _CGROUP_SCOPE_PROBE_AT = now
+        # The cpu controller lives in the same user slice; re-read it with the rest.
+        _CPU_DELEGATED = None
+    if cached is not None and cached[0] != result[0]:
+        _log_cgroup_scope_transition(result)
+    return result
+
+
+def _log_cgroup_scope_transition(result: tuple[bool, str]) -> None:
+    """Report a mid-run flip of scope availability, once per flip.
+
+    Losing the ceiling is a SECURITY warning even when the one-time startup
+    warning already fired for an earlier outage: the operator must be able to
+    see from the log WHEN new spawns stopped being bounded. It also marks the
+    one-time warning as spent, so ``cgroup_scope_argv`` does not repeat it.
+    """
+    global _CGROUP_WARNED
+    available, reason = result
+    if available:
+        logger.info(
+            "cgroup v2 scope enforcement is available again; new agent subprocesses "
+            "are bounded by the fork-bomb / memory-DoS ceilings once more."
+        )
+        return
+    _CGROUP_WARNED = True
+    logger.warning(
+        "SECURITY: cgroup v2 scope enforcement became unavailable while the gateway "
+        "was running (%s). New agent subprocesses start WITHOUT the fork-bomb / "
+        "memory-DoS ceilings (RLIMIT_NOFILE still applies) instead of failing with "
+        "'Failed to connect to bus'. See docs/architecture/resource-protection.md.",
+        reason,
+    )
 
 
 def _compute_cgroup_scope_probe() -> tuple[bool, str]:
@@ -13050,9 +13223,14 @@ def _compute_cgroup_scope_probe() -> tuple[bool, str]:
         return (False, "not Linux")
     if shutil.which("systemd-run") is None:
         return (False, "systemd-run not found")
-    # A user session bus is required for `systemd-run --user`.
+    # A user session bus is required for `systemd-run --user`. The variable
+    # alone proves nothing: a login shell sets it from $UID by formula, so it
+    # stays set after logind removed the directory it names.
     if not os.environ.get("XDG_RUNTIME_DIR"):
         return (False, "no XDG_RUNTIME_DIR (no systemd user session)")
+    bus_ok, bus_reason = _user_bus_reachable()
+    if not bus_ok:
+        return (False, bus_reason)
     # Pure cgroup v2 unified hierarchy.
     try:
         with open("/proc/self/cgroup", encoding="utf-8") as fh:
@@ -13064,9 +13242,7 @@ def _compute_cgroup_scope_probe() -> tuple[bool, str]:
     # The pids + memory controllers must be delegated to our user slice, else
     # systemd-run --scope can set the knobs but the kernel won't enforce them.
     try:
-        uid = os.getuid()
-        ctrl_path = f"/sys/fs/cgroup/user.slice/user-{uid}.slice/cgroup.controllers"
-        with open(ctrl_path, encoding="utf-8") as fh:
+        with open(_user_slice_controllers_path(), encoding="utf-8") as fh:
             controllers = set(fh.read().split())
         missing = {"pids", "memory"} - controllers
         if missing:
@@ -13085,16 +13261,15 @@ def _cpu_controller_delegated() -> bool:
     CPUWeight / CPUQuota on a ``systemd-run --user`` scope are only enforced
     when the cpu controller is delegated; emitting them without delegation is
     a silent no-op at best and a warning at worst, so callers gate the CPU
-    properties on this check. Cached alongside the main probe (the environment
-    is process-stable). Failure to read → False (skip CPU properties, keep
-    pids/memory enforcement).
+    properties on this check. Cached alongside the main probe, and dropped
+    whenever :func:`_probe_cgroup_scope` recomputes, because the user slice it
+    reads belongs to the login session. Failure to read → False (skip CPU
+    properties, keep pids/memory enforcement).
     """
     global _CPU_DELEGATED
     if _CPU_DELEGATED is None:
         try:
-            uid = os.getuid()
-            ctrl_path = f"/sys/fs/cgroup/user.slice/user-{uid}.slice/cgroup.controllers"
-            with open(ctrl_path, encoding="utf-8") as fh:
+            with open(_user_slice_controllers_path(), encoding="utf-8") as fh:
                 _CPU_DELEGATED = "cpu" in fh.read().split()
         except OSError:
             _CPU_DELEGATED = False
