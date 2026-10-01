@@ -16,7 +16,7 @@
  *      moves only its bottom edge and the corner stays pinned.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, fireEvent, within } from '@testing-library/react'
+import { render, fireEvent, within, act } from '@testing-library/react'
 import type { ChatSlot } from '../types'
 import SessionFlyout, { FLYOUT_MAX_ROWS, toggleClip, FULL_CLIP } from '../pages/chat/SessionFlyout'
 import { PINNED_SESSION_ORDER_CHANGED_EVENT, PINNED_SESSION_ORDER_KEY } from '../utils/pinnedSessionOrder'
@@ -28,12 +28,13 @@ interface MotionMockProps {
   children?: React.ReactNode
   animate?: { clipPath?: string | string[] }
   transition?: { duration?: number }
+  onAnimationComplete?: () => void
 }
 
 // Render framer-motion elements as plain DOM (jsdom can't run projection).
 vi.mock('framer-motion', async () => {
   const React = await import('react')
-  const FRAMER_PROPS = new Set(['layout', 'layoutId', 'initial', 'animate', 'exit', 'transition', 'variants'])
+  const FRAMER_PROPS = new Set(['layout', 'layoutId', 'initial', 'animate', 'exit', 'transition', 'variants', 'onAnimationComplete'])
   const make = (tag: string) =>
     React.forwardRef((props: MotionMockProps, ref: React.Ref<unknown>) => {
       const clean: Record<string, unknown> = {}
@@ -47,9 +48,22 @@ vi.mock('framer-motion', async () => {
       if (Array.isArray(clip)) {
         clean['data-clip-from'] = clip[0]
         clean['data-clip-to'] = clip[clip.length - 1]
+      } else if (typeof clip === 'string') {
+        // The settled (non-keyframe) resting clip target, e.g. 'none'.
+        clean['data-clip-rest'] = clip
       }
       if (props.transition?.duration != null) clean['data-anim-dur'] = String(props.transition.duration)
-      return React.createElement(tag, { ...clean, ref }, props.children)
+      // Framer fires this once the target is reached; the component uses it to
+      // flip into its clip-free resting state. Expose it on the node so a test
+      // can trigger the post-settle render deterministically (rather than this
+      // mock auto-firing it and perturbing every other assertion).
+      const onDone = props.onAnimationComplete
+      const setRef = (node: (HTMLElement & { __onAnimationComplete?: () => void }) | null) => {
+        if (node) node.__onAnimationComplete = onDone
+        if (typeof ref === 'function') ref(node)
+        else if (ref) (ref as React.MutableRefObject<unknown>).current = node
+      }
+      return React.createElement(tag, { ...clean, ref: setRef }, props.children)
     })
   return {
     motion: new Proxy({}, { get: (_t, tag: string) => make(tag) }),
@@ -388,6 +402,31 @@ describe('SessionFlyout open clip', () => {
       // OverlayDrawer's clip morph is 0.24s. A different number here would make
       // hover-open and click-expand feel like two unrelated animations.
       expect(surface).toHaveAttribute('data-anim-dur', '0.24')
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  it('releases the clip to none once the open morph settles — one clean corner', () => {
+    // The bug: the morph's final keyframe `inset(0px round 12px)` stayed applied
+    // at rest and re-rounded the `rounded-xl` (16px) border box at a 12px radius,
+    // so the border arc and the clip arc diverged into TWO concentric strokes at
+    // the top-left. At rest the clip must be gone so the CSS border is the sole
+    // corner. framer's onAnimationComplete flips the component into its clip-free
+    // state; `data-clip-rest` is the single (non-keyframe) clipPath it then hands
+    // framer, and the keyframe array is gone.
+    const spy = vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(379)
+    try {
+      const { container } = mount({ panelWidth: 260 })
+      const surface = container.querySelector('[role="menu"]') as HTMLElement & { __onAnimationComplete?: () => void }
+      // While morphing, the clip is a keyframe ladder and there is no rest value.
+      expect(surface.getAttribute('data-clip-to')).toBe(FULL_CLIP)
+      expect(surface.getAttribute('data-clip-rest')).toBeNull()
+      // Settle: framer reports the open morph complete.
+      act(() => { surface.__onAnimationComplete?.() })
+      const settled = container.querySelector('[role="menu"]')!
+      expect(settled.getAttribute('data-clip-rest')).toBe('none')
+      expect(settled.getAttribute('data-clip-to')).toBeNull()
     } finally {
       spy.mockRestore()
     }

@@ -207,6 +207,19 @@ const SessionFlyout = forwardRef<HTMLDivElement, Props>(function SessionFlyout({
     ? { from: toggleClip(panelWidth, surfaceH), to: FULL_CLIP }
     : null
 
+  // The open morph is a clip-path window growing out of the toggle, and its
+  // final keyframe (`FULL_CLIP`) stays applied after it lands. That resting
+  // clip is the bug: `inset(0px round 12px)` re-rounds the panel's border box,
+  // whose CSS border is `rounded-xl` (16px), at a DIFFERENT radius. The border
+  // arc and the clip arc do not coincide, so the top-left corner paints two
+  // concentric 1px strokes. The clip is only needed WHILE growing — at rest the
+  // CSS border is the single source of the corner. So once the morph settles we
+  // hand Framer `clipPath: 'none'` as the resting target, releasing the inset.
+  const [clipSettled, setClipSettled] = useState(false)
+  // Re-arm on every fresh open (a new measured height restarts the morph), so a
+  // reopen animates from the toggle again rather than snapping in clip-free.
+  useLayoutEffect(() => { setClipSettled(false) }, [surfaceH])
+
   return (
     <motion.div
       ref={setSurface}
@@ -232,9 +245,17 @@ const SessionFlyout = forwardRef<HTMLDivElement, Props>(function SessionFlyout({
       // once at mount. Frame one is opacity 0, so the pre-measure frame is not
       // visible. Reduced motion keeps the fade and drops the growth.
       initial={{ opacity: 0 }}
+      // While morphing: grow the clip window from the toggle to full. Once
+      // settled: `clipPath: 'none'` so Framer releases the resting inset and the
+      // CSS border alone rounds the corner (single clean stroke, see above). The
+      // non-clip paths (reduced motion, pre-measure) never set a clip to release.
       animate={openClip
-        ? { opacity: [0, 1], clipPath: [openClip.from, openClip.to] }
+        ? (clipSettled
+            ? { opacity: 1, clipPath: 'none' }
+            : { opacity: [0, 1], clipPath: [openClip.from, openClip.to] })
         : { opacity: 1 }}
+      // The clip has finished growing; flip to the clip-free resting state.
+      onAnimationComplete={() => { if (openClip && !clipSettled) setClipSettled(true) }}
       exit={{ opacity: 0, transition: { duration: 0.1 } }}
       transition={reduce
         ? { duration: 0.15 }
