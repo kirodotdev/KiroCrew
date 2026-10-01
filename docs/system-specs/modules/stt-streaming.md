@@ -795,6 +795,13 @@ Five properties, each with a test:
   gate blanks the live dictation panel whenever `voiceError` is set, on the premise
   that an error on that channel means the microphone, so a cleanup failure left
   standing takes the waveform down for the NEXT recording, whose microphone is fine.
+  Clearing at those four moments is not enough on its own: the request can be in flight
+  across any of them (the server allows up to `_POLISH_TIMEOUT_SECS`, and a transport
+  drop or gateway restart rejects it late), so the rejection would re-raise the notice
+  after the clear ran. The `.catch` therefore carries the same owner, epoch and
+  capture-generation snapshot the `.then` does and drops the notice when any has moved
+  on -- the capture generation and not just the epoch, because a new `start()` clears
+  the notice and bumps the capture generation but does not bump the epoch.
 
 - **Not applied to a manually-stopped stream, which is a known gap.** After a manual
   stop the partial route (not the delivery route) is what turns the last hypothesis

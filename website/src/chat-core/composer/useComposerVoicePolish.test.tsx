@@ -300,3 +300,64 @@ describe('transcript polish — the notice belongs to the delivery it describes'
     expect(composerVoiceInputProps(view.result.current).voiceError).toBeNull()
   })
 })
+
+describe('transcript polish — a late rejection does not resurrect the notice', () => {
+  /* The four tests above let the request REJECT before the lifecycle event, so
+   * the clear ran after `setPolishError` had already fired. The actual race is
+   * the other order: the server allows up to `_POLISH_TIMEOUT_SECS`, and a
+   * transport drop or gateway restart can reject AFTER a new capture, a send or
+   * a slot change has already cleared the notice. These three settle the
+   * rejection last, so the only thing that can keep the notice down is the
+   * guard inside `.catch` itself. The new-capture case is why the capture
+   * generation is checked and not just owner/epoch: `startVoice` clears the
+   * notice and bumps `startGenRef` but does NOT bump `composerEpochRef`. */
+
+  it('a rejection that settles after the next capture leaves the fresh waveform alone', async () => {
+    let reject: (e: unknown) => void = () => {}
+    sttPolish.mockImplementation(() => new Promise((_res, rej) => { reject = rej }))
+    const { view, deliver } = mount(true)
+
+    await act(async () => { deliver('hello there', 'slot-a', 'batch') })
+    // In flight, not yet settled: the notice is not up yet.
+    expect(composerVoiceInputProps(view.result.current).voiceError).toBeNull()
+
+    // A new capture starts and clears the composer's error half.
+    await act(async () => { await view.result.current.startVoice() })
+    // Only now does the earlier request fail.
+    await act(async () => { reject(new Error('boom')); await Promise.resolve() })
+
+    // The notice belongs to the finished delivery, not this working mic.
+    expect(composerVoiceInputProps(view.result.current).voiceError).toBeNull()
+  })
+
+  it('a rejection that settles after a send does not re-report the gone draft', async () => {
+    let reject: (e: unknown) => void = () => {}
+    sttPolish.mockImplementation(() => new Promise((_res, rej) => { reject = rej }))
+    const { view, inputRef, deliver } = mount(true)
+
+    await act(async () => { deliver('hello there', 'slot-a', 'batch') })
+    expect(composerVoiceInputProps(view.result.current).voiceError).toBeNull()
+
+    // Sent: the composer is cleared, so the draft the notice described is gone.
+    await act(async () => { view.result.current.disarmForSend() })
+    inputRef.current = ''
+    await act(async () => { reject(new Error('boom')); await Promise.resolve() })
+
+    expect(composerVoiceInputProps(view.result.current).voiceError).toBeNull()
+  })
+
+  it('a rejection that settles after a slot change does not follow the user', async () => {
+    let reject: (e: unknown) => void = () => {}
+    sttPolish.mockImplementation(() => new Promise((_res, rej) => { reject = rej }))
+    const { view, deliver, switchSlot } = mount(true)
+
+    await act(async () => { deliver('hello there', 'slot-a', 'batch') })
+    expect(composerVoiceInputProps(view.result.current).voiceError).toBeNull()
+
+    // The user moved to a slot that never dictated.
+    await act(async () => { switchSlot('slot-b') })
+    await act(async () => { reject(new Error('boom')); await Promise.resolve() })
+
+    expect(composerVoiceInputProps(view.result.current).voiceError).toBeNull()
+  })
+})

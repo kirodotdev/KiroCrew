@@ -340,6 +340,13 @@ export function useComposerVoice(host: ComposerVoiceHost) {
     // to be checked as identity.
     const owner = sessionIdRef.current
     const epoch = composerEpochRef.current
+    // The capture generation too. `startVoice()` clears `polishError` and bumps
+    // `startGenRef` for the NEXT recording but does NOT bump `composerEpochRef`,
+    // so the owner/epoch pair alone cannot tell a reply for the finished capture
+    // from one the new capture would own. A late rejection (the server allows up
+    // to `_POLISH_TIMEOUT_SECS`, and a transport drop or gateway restart rejects
+    // after the clear ran) must not re-blank the waveform of a working mic.
+    const capture = startGenRef.current
     void api.sttPolish(raw)
       .then(res => {
         if (!res?.changed || !res.text || res.text === raw) return
@@ -361,6 +368,14 @@ export function useComposerVoice(host: ComposerVoiceHost) {
       // worked. A dismissible notice is the honest signal, and because the words are
       // already delivered it costs them nothing to ignore.
       .catch(() => {
+        // Same guards the `.then` applies, for the same reason: a rejection that
+        // settles after a new capture, a send, or a slot change describes a
+        // delivery no longer in front of the user. Without this, that late
+        // failure re-shows the notice -- and in the new-capture case blanks the
+        // waveform of a microphone that is working, the exact bug this fix is for.
+        if (sessionIdRef.current !== owner) return
+        if (composerEpochRef.current !== epoch) return
+        if (startGenRef.current !== capture) return
         setPolishError(i18nT('hooks.useVoiceInput.polish_failed'))
       })
   }, [inputRef, setInput, voicePendingCaretRef])
