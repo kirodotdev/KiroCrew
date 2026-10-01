@@ -1127,13 +1127,30 @@ def _ensure_boundary(
     # Already present? VERIFY its content matches our fixed document before reusing
     # it (a permissive boundary seeded at this name must NOT be trusted to cap
     # anything).
-    rc, _out, _err = aws.run_aws(["iam", "get-policy", "--policy-arn", arn], profile, region)
+    rc, _out, read_err = aws.run_aws(["iam", "get-policy", "--policy-arn", arn], profile, region)
     if rc == 0:
         _verify_boundary_content(arn, name, expected, profile, region)
         return arn
 
-    # Not present (or GetPolicy denied — CreatePolicy will surface the real
-    # error) → create it once from the content-fixed document.
+    # A DENIED read is not an absent boundary, and the two need different remedies.
+    # Continuing to create-policy here reports whatever THAT call is denied — the
+    # create verb — so an operator who lacks only the read grant is told to add
+    # `iam:CreatePolicy`, which neither fixes the launch nor is a grant they want.
+    # Name the verb actually missing instead. A boundary that genuinely does not
+    # exist answers NoSuchEntity rather than AccessDenied, so it still falls
+    # through to the create below.
+    if aws.is_access_denied(read_err):
+        read_missing = aws.map_missing_action(read_err) or "iam:GetPolicy"
+        raise aws.AWSError(
+            f"could not read the permissions boundary '{name}': "
+            f"{(read_err or '').strip()[:300]} — grant `{read_missing}` and retry",
+            action="iam:GetPolicy",
+            missing_action=read_missing,
+            returncode=rc,
+            stderr=read_err or "",
+        )
+
+    # Not present → create it once from the content-fixed document.
     create = [
         "iam",
         "create-policy",
