@@ -327,6 +327,26 @@ monkeypatch.setattr("kiro_crew.dashboard.handlers._SHUTDOWN_TIMEOUT_SECS", 0.05)
 monkeypatch.setattr("kiro_crew.dashboard.handlers.sessions._SHUTDOWN_TIMEOUT_SECS", 0.05)
 ```
 
+The opposite mistake is a patch WIDER than the caller under test. A patch on a
+module global is seen by every thread in the process, so a stub with a side effect
+also fires for a background worker that calls the same function. MEASURED: a resume
+test simulated a concurrent winner as a side effect on `members.read_dm_binding`, and
+the member event log's legacy fold calls that function on its `eventlog-io` worker,
+queued by the winner's own row. When the worker reached it before the request
+returned (a loaded runner), the "winner" ran twice and the test read
+`history duplicated: 2 copies`, with two different message ids. The same test was
+green for the wrong reason: its side effect fired at the handler's FIRST binding
+read, so deleting the late re-check it was named for left it passing.
+
+So patch the function the handler awaits in the window you mean, and pin the ORDER
+of the awaits and checks the test relies on (`TestResumeGuards` records a timeline
+and asserts it exactly): a count or a call position stays green when a refactor adds
+a call or drops the one you meant. A side effect that stands in for a concurrent
+request runs on the loop: from the worker thread `asyncio.to_thread` gave the patched
+function, `asyncio.run_coroutine_threadsafe(coro, loop).result(timeout=...)`. Only
+from a worker: on the loop thread that `.result()` blocks the loop it is waiting on,
+so assert the thread first.
+
 Unit tests that exercise a caller's handling of a subprocess result stub its imported
 launch helper. For example, `cloud.aws.run_aws` tests stub `cloud.aws.popen_limited`;
 patching stdlib `Popen` underneath it still runs executable resolution and can fail
@@ -4209,6 +4229,36 @@ exporter running; the CWD restore and `_restore_log_record_factory` restore sile
 production really does `chdir` and really does install a record factory, and a test driving
 that code cannot avoid inheriting it. Restore either way — the damage is to other tests, and
 stopping it propagating is the part that is never optional.
+
+**Work QUEUED by a test is shared state too, and resetting the object it runs against is
+not enough.** MEASURED: a member row's event is fire-and-forget on the single `eventlog-io`
+worker (`eventlog_hooks.submit`), and the member log's path is resolved from
+`KIROCREW_HOME` when the append RUNS, not when it was queued. In three failing Windows
+shard-8 runs, the test just before the red on the same worker was a member resume that
+ends just after appending a row. Its append ran during the next test, opened that
+member's log under the next test's home, and the lock it held there refused that test's
+own first `record_activity`, which answered `False`. Resetting the event-log singleton at
+the boundary does not help: the closure resolves the service and the path as it runs. On
+Linux the overlap is usually too narrow to see, so the leak shows only where fsync is
+slow.
+
+`test/conftest.py`'s `_reset_member_eventlog_singleton` drains that queue at teardown,
+before the home pin is undone, and FAILS the test that filled a queue which will not
+drain — so the cost lands on the test that queued the work rather than on whichever test
+would have inherited it. It binds `drain_for_shutdown` at SETUP, because the tests of the
+shutdown path replace that function with a wedged or recording stand-in and the patch is
+still in force at teardown.
+
+Two things that floor does not reach, both residual rather than fixed: it is in
+`test/conftest.py`, so the in-package app suites under `src/kiro_crew/apps/builtins/*/tests`
+pay nothing for it, and it covers `eventlog-io` only — the dashboard's `notif-io` pool
+(`_notification_io_executor`) resolves the notifications file the same way when its job
+runs. The fix that removes the race rather than draining it is the one in
+[the classes it found](#the-classes-it-found-and-the-one-correct-fix-for-each): resolve
+every path when the work is queued. For the member log that means threading a home
+through `crew_log/store.py`, which derives it at each of the log, lease, segment and
+checkpoint paths; production never moves its home, so only the suite pays. A new
+fire-and-forget writer resolves at queue time AND joins a drain.
 
 ### 5. Absolute time budgets on instrumented runs
 

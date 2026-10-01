@@ -41,7 +41,6 @@ from kiro_crew.members import (
     member_slot_key,
     members_root,
     read_dm_binding,
-    read_dm_binding_for_slot,
     record_activity,
     slug_for_name,
     write_dm_binding,
@@ -1417,19 +1416,40 @@ class TestResumeGuards:
         assert slot.mode == DM_SLOT_MODE
 
     @pytest.mark.asyncio
-    async def test_concurrent_member_resume_does_not_duplicate_history(self, tmp_path):
-        """A resume racing the binding await must yield to the winner's slot.
+    @pytest.mark.parametrize(
+        ("window", "expected"),
+        [
+            # The agent read: the last await before the post-transcript re-check.
+            ("restored_agent", ["check", "binding", "agent", "publish", "dedup"]),
+            # The late binding read: the one await between that re-check and the publish.
+            (
+                "late_binding_read",
+                ["check", "binding", "agent", "check", "binding", "publish", "dedup"],
+            ),
+        ],
+    )
+    async def test_concurrent_member_resume_does_not_duplicate_history(
+        self, tmp_path, monkeypatch, window, expected
+    ):
+        """A resume racing an await before the publish must yield to the winner's slot.
 
-        The late binding read is the one suspension point between the earlier
-        live-slot re-checks and the publish. A concurrent resume that
-        publishes during it must be SEEN: the loser answers with the live
-        slot instead of get_or_create-ing the existing slot and hydrating the
-        disk transcript onto it a second time (duplicated history on the next
-        flush).
+        The handler re-checks for a live slot after each await that precedes the
+        publish. A concurrent resume that publishes inside one of those windows must be
+        SEEN by the re-check right after it: the loser answers with the live slot
+        instead of get_or_create-ing the existing slot and hydrating the disk transcript
+        onto it a second time (duplicated history on the next flush). Each case pins the
+        ORDER of the awaits and re-checks, so the re-check that saw the winner is the
+        one right after the window: deleting either re-check fails its case.
+
+        The winner runs on the loop, where a real resume publishes, from the function
+        the handler awaits in that window. It is never a side effect on
+        ``members.read_dm_binding``: the member event log's legacy fold calls that on
+        its ``eventlog-io`` worker, queued by the winner's own row, so a side effect
+        there can fire a second time from that thread and append a second copy.
         """
-        from unittest.mock import patch as _patch
-
         from chat_test_helpers import _make_app
+
+        import kiro_crew.dashboard.chat_handlers as handlers
 
         state = _make_state(tmp_path)
         write_dm_binding(CREW, member=CREW, slot_key=member_slot_key(CREW))
@@ -1438,38 +1458,58 @@ class TestResumeGuards:
         log.append(key, "user", "hello")
         log.update_metadata(key, {"agent": CREW, "mode": DM_SLOT_MODE})
 
-        real_read = read_dm_binding_for_slot
-        handler_reads = []
+        loop = asyncio.get_running_loop()
+        loop_thread = threading.get_ident()
+        # The handler's awaits and re-checks, in order, with the winner's publish in the
+        # window it landed in. A re-check that answers with the winner's slot is a
+        # "dedup"; one that finds nothing is a "check".
+        timeline: list[str] = []
 
-        def _publish_mid_await(slot_key):
-            # Simulate the concurrent WINNER: it published the slot (and
-            # hydrated the one disk message) while this request was suspended
-            # in the LATE binding read -- the handler's second, after the
-            # earlier ownership re-checks have already passed.
-            handler_reads.append(slot_key)
-            if len(handler_reads) == 2:
-                slot = state.get_or_create_slot(
-                    member_slot_key(CREW), agent=CREW, mode=DM_SLOT_MODE
-                )
-                slot.append("user", "hello", "msg msg-u")
+        async def _publish_winner():
+            slot = state.get_or_create_slot(member_slot_key(CREW), agent=CREW, mode=DM_SLOT_MODE)
+            slot.append("user", "hello", "msg msg-u")
+
+        def _publish_from_worker(where):
+            # Both seams run under asyncio.to_thread. From the loop thread, waiting on
+            # the loop would deadlock instead of failing.
+            assert threading.get_ident() != loop_thread, f"{where} ran on the loop thread"
+            asyncio.run_coroutine_threadsafe(_publish_winner(), loop).result(timeout=10)
+            timeline.append("publish")
+
+        real_agent = handlers._restored_agent_name
+        real_read = handlers.members_mod.read_dm_binding_for_slot
+        real_check = handlers._live_slot_for_resume
+
+        def _agent(*args):
+            timeline.append("agent")
+            if window == "restored_agent":
+                _publish_from_worker(window)
+            return real_agent(*args)
+
+        def _read_binding(slot_key):
+            timeline.append("binding")
+            # The late read is the binding read that follows the agent read.
+            if window == "late_binding_read" and "agent" in timeline and "publish" not in timeline:
+                _publish_from_worker(window)
             return real_read(slot_key)
 
-        # Only the RESUME HANDLER's binding read is the suspension point under test.
-        # The member-level ``read_dm_binding`` is also read by the event-log
-        # writer: the winner's append above queues a member/message event, and
-        # that member log's first open folds the legacy binding on the event-log
-        # worker. A stand-in installed there would replay the winner from that
-        # thread -- a second "hello" from the harness, not from the resume.
-        with _patch(
-            "kiro_crew.dashboard.chat_handlers.members_mod.read_dm_binding_for_slot",
-            side_effect=_publish_mid_await,
-        ):
-            async with TestClient(TestServer(_make_app(state))) as client:
-                resp = await client.post(
-                    f"/api/chat/slots/{member_slot_key(CREW)}/resume", json={"key": key}
-                )
-                assert resp.status == 200
-        assert len(handler_reads) == 2, handler_reads
+        async def _check(*args, **kwargs):
+            outcome = await real_check(*args, **kwargs)
+            timeline.append("dedup" if outcome is not None and outcome.already_live else "check")
+            return outcome
+
+        monkeypatch.setattr(handlers, "_restored_agent_name", _agent)
+        monkeypatch.setattr(handlers.members_mod, "read_dm_binding_for_slot", _read_binding)
+        monkeypatch.setattr(handlers, "_live_slot_for_resume", _check)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                f"/api/chat/slots/{member_slot_key(CREW)}/resume", json={"key": key}
+            )
+            assert resp.status == 200
+        assert timeline == expected, (
+            f"the winner's publish inside {window}, or the re-check that must see it, is "
+            f"not where it belongs: {timeline}"
+        )
         slot = state._slots[member_slot_key(CREW)]
         # The loser did NOT hydrate a second copy of the transcript.
         hellos = [m for m in slot.messages if m.get("content") == "hello"]
@@ -1549,10 +1589,14 @@ class TestResumeGuards:
         hydrate against the replacement metadata and the next flush would
         overwrite the replacement transcript. The identity barrier compares
         the two metadata snapshots and refuses on any drift.
+
+        The replacement lands only inside the LATE binding read, so a re-read
+        moved ahead of that await reads the old metadata and the refusal is
+        lost.
         """
         from chat_test_helpers import _make_app
 
-        import kiro_crew.members as members_real
+        import kiro_crew.dashboard.chat_handlers as handlers
 
         state = _make_state(tmp_path)
         write_dm_binding(CREW, member=CREW, slot_key=member_slot_key(CREW))
@@ -1561,23 +1605,32 @@ class TestResumeGuards:
         log.append(key, "user", "old incarnation message")
         log.update_metadata(key, {"agent": CREW, "mode": DM_SLOT_MODE, "title": "old"})
 
-        real_read = members_real.read_dm_binding
+        real_agent = handlers._restored_agent_name
+        real_read = handlers.members_mod.read_dm_binding_for_slot
+        agent_read: list[bool] = []
 
-        def _racing_read(slug):
-            # The replacement lands DURING the binding await — after the
-            # message read, before the metadata re-read.
-            log.update_metadata(key, {"agent": CREW, "mode": DM_SLOT_MODE, "title": "replaced"})
-            return real_read(slug)
+        def _agent(*args):
+            agent_read.append(True)
+            return real_agent(*args)
 
-        monkeypatch.setattr(
-            "kiro_crew.dashboard.chat_handlers.members_mod.read_dm_binding", _racing_read
-        )
+        def _racing_read(slot_key):
+            # The late read is the binding read that follows the agent read: after
+            # the message read, before the metadata re-read.
+            if agent_read:
+                log.update_metadata(key, {"agent": CREW, "mode": DM_SLOT_MODE, "title": "replaced"})
+            return real_read(slot_key)
+
+        monkeypatch.setattr(handlers, "_restored_agent_name", _agent)
+        monkeypatch.setattr(handlers.members_mod, "read_dm_binding_for_slot", _racing_read)
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.post(
                 f"/api/chat/slots/{member_slot_key(CREW)}/resume", json={"key": key}
             )
             assert resp.status == 409
             assert (await resp.json())["code"] == "member_resume_conflict"
+        assert (
+            log.get_metadata(key).get("title") == "replaced"
+        ), "the late binding read never ran, so nothing raced it"
         # Nothing was hydrated onto the key — reopening reads fresh.
         assert member_slot_key(CREW) not in state._slots
 
@@ -2628,8 +2681,12 @@ class TestMemberActivityRoute:
         assert len(data["entries"]) == handler_mod._ACTIVITY_LIMIT
 
 
+@pytest.mark.xdist_group(name="eventlog_singleton_leak_across_tests")
 class TestEventlogSingletonDoesNotLeakAcrossTests:
     """The process-wide ``get_service()`` singleton must not survive a test.
+
+    Grouped onto ONE worker: the pair is ordered, and under ``--dist loadgroup`` an
+    ungrouped pair is split across workers, where the second test asserts nothing.
 
     ``get_service()`` memoises one service per process and rebuilds it only when
     the crew-log root moves. The root follows ``KIROCREW_HOME``, which the autouse
