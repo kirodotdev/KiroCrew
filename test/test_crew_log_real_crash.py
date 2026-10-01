@@ -34,22 +34,51 @@ SESSION = "crash-child-session"
 MARKER_TIMEOUT = 60.0
 
 
-def _wait_for_marker(marker: Path, expected: str) -> None:
-    """Block until *marker* holds exactly *expected*.
+#: How much of the child's output a failure quotes: enough for a traceback.
+OUTPUT_TAIL = 4000
+
+
+def _output_tail(out_path: Path) -> str:
+    return out_path.read_text(encoding="utf-8", errors="replace")[-OUTPUT_TAIL:]
+
+
+def _wait_for_marker(
+    marker: Path, expected: str, child: "subprocess.Popen[bytes]", out_path: Path
+) -> None:
+    """Block until *marker* holds exactly *expected*, or fail as soon as *child* exits.
 
     The exact value, not a prefix and not mere existence: a partially written
     marker would otherwise let the kill land while the child was still setting up,
     which turns a real defect into an intermittent one.
+
+    A wait for something a child writes also watches the child, and quotes what it
+    said: a crash before the failpoint is reported at once, by its own traceback,
+    rather than as a timeout with the cause unread. The marker is re-read after an
+    exit is seen, so a child that announces and then exits is still a success.
     """
+
+    def _announced() -> bool:
+        try:
+            return marker.read_text(encoding="utf-8") == expected
+        except (FileNotFoundError, UnicodeDecodeError):
+            return False
+
     deadline = time.monotonic() + MARKER_TIMEOUT
     while time.monotonic() < deadline:
-        try:
-            if marker.read_text(encoding="utf-8") == expected:
+        if _announced():
+            return
+        code = child.poll()
+        if code is not None:
+            if _announced():
                 return
-        except (FileNotFoundError, UnicodeDecodeError):
-            pass
+            raise AssertionError(
+                f"child exited with {code} before failpoint {expected!r}; "
+                f"output:\n{_output_tail(out_path)}"
+            )
         time.sleep(0.02)
-    raise AssertionError(f"child never reached failpoint {expected!r}")
+    raise AssertionError(
+        f"child never reached failpoint {expected!r}; output:\n{_output_tail(out_path)}"
+    )
 
 
 def _kill_at(tmp_path: Path, failpoint: str, marker_value: str) -> Path:
@@ -74,19 +103,26 @@ def _kill_at(tmp_path: Path, failpoint: str, marker_value: str) -> Path:
     }
     if sys.platform == "win32":  # pragma: no cover - the suite skips Windows
         env["SYSTEMROOT"] = os.environ.get("SYSTEMROOT", "")
-    child = subprocess.Popen(  # noqa: S603 - fixed argv, no shell
-        [sys.executable, str(CHILD), failpoint, str(marker)],
-        env=env,
-        # Confined to the temp directory: a failpoint added later that writes a
-        # relative path would otherwise land in the checkout, and a test that
-        # dirties the working tree is a test that fails the next gate run for
-        # reasons unrelated to itself.
-        cwd=tmp_path,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
+    # ONE file, not two pipes. Nothing reads a pipe before the kill, so a child that
+    # wrote more than the pipe buffer before its failpoint would block in the write and
+    # never get there. The file is also what the failure message quotes, and both
+    # streams go into it so a child that explains itself on stdout is not lost. The
+    # parent's handle is closed as soon as the child holds its own.
+    out_path = tmp_path / "child.output"
+    with out_path.open("wb") as out:
+        child = subprocess.Popen(  # noqa: S603 - fixed argv, no shell
+            [sys.executable, str(CHILD), failpoint, str(marker)],
+            env=env,
+            # Confined to the temp directory: a failpoint added later that writes a
+            # relative path would otherwise land in the checkout, and a test that
+            # dirties the working tree is a test that fails the next gate run for
+            # reasons unrelated to itself.
+            cwd=tmp_path,
+            stdout=out,
+            stderr=subprocess.STDOUT,
+        )
     try:
-        _wait_for_marker(marker, marker_value)
+        _wait_for_marker(marker, marker_value, child, out_path)
         # SIGKILL, not terminate: no atexit hook, no drain, no chance to tidy up.
         # That is the whole point -- a graceful stop would exercise the shutdown
         # drain instead of a crash.
@@ -200,3 +236,19 @@ def test_a_real_kill_between_chunks_and_their_citing_entry_is_repaired(tmp_path)
     after = [e["type"] for e in _entries(home)]
     assert "message/chunk" not in after, "unreachable chunks survived the repair"
     assert "turn/completed" in after, "the open turn was left open"
+
+
+def test_a_child_that_dies_before_its_failpoint_fails_at_once_with_its_output(tmp_path):
+    """A dead child fails the wait immediately, quoting why it died.
+
+    An unknown failpoint makes the child exit before it writes any marker. The wait
+    reports that exit and the child's own error rather than polling out
+    ``MARKER_TIMEOUT`` and then saying "never reached failpoint" with the cause
+    unread. A wait that only polls the marker spends the full ceiling here and then
+    fails the first assertion below.
+    """
+    with pytest.raises(AssertionError) as excinfo:
+        _kill_at(tmp_path, "no-such-failpoint", "turn-open")
+    message = str(excinfo.value)
+    assert "child exited with 1 before failpoint 'turn-open'" in message
+    assert "unknown failpoint 'no-such-failpoint'" in message, message
