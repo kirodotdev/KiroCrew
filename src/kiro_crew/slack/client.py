@@ -274,9 +274,19 @@ class SlackClientOps(ABC):
         return None
 
     async def fetch_thread_replies(
-        self, channel: str, thread_ts: str, limit: int = 200, warn_on_pagination: bool = True
+        self,
+        channel: str,
+        thread_ts: str,
+        limit: int = 200,
+        warn_on_pagination: bool = True,
+        *,
+        oldest: str | None = None,
+        latest: str | None = None,
     ) -> list[dict]:
-        """Fetch thread replies. Returns list of message dicts with 'user'/'bot_id' and 'text'."""
+        """Fetch thread replies. Returns list of message dicts with 'user'/'bot_id' and 'text'.
+
+        *oldest* / *latest* bound the range by ts, both exclusive.
+        """
         return []
 
     async def conversations_list(self) -> list[dict]:
@@ -917,14 +927,31 @@ class RealSlackClient(SlackClientOps):
         return "\n".join(parts) or text or None
 
     async def fetch_thread_replies(
-        self, channel: str, thread_ts: str, limit: int = 200, warn_on_pagination: bool = True
+        self,
+        channel: str,
+        thread_ts: str,
+        limit: int = 200,
+        warn_on_pagination: bool = True,
+        *,
+        oldest: str | None = None,
+        latest: str | None = None,
     ) -> list[dict]:
-        """Fetch parent message + replies via conversations.replies API."""
+        """Fetch parent message + replies via conversations.replies API.
+
+        *oldest* / *latest* bound the range by ts, both exclusive. Unset, they
+        are left out, so the request is the same unbounded read as before.
+        """
+        bounds: dict[str, Any] = {}
+        if oldest:
+            bounds["oldest"] = oldest
+        if latest:
+            bounds["latest"] = latest
         try:
             resp = await self._web.conversations_replies(
                 channel=channel,
                 ts=thread_ts,
                 limit=limit,
+                **bounds,
             )
             data: dict = resp.data if hasattr(resp, "data") else dict(resp)  # type: ignore[assignment,call-overload]
             messages: list[dict] = data.get("messages", [])

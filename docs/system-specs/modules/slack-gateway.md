@@ -134,6 +134,8 @@ The transport path persists the user's row at receipt, so it builds the prompt
 with `exclude_last_n=1`; otherwise the history fallback replays the reply as the
 thread's history.
 
+**Thread replies since the last turn.** Every turn that arrives as a reply in a thread, on either dispatch path, reads the thread's replies with one `conversations.replies` call (`slack/thread_replies.py`, via `SlackClientOps.fetch_thread_replies` with `oldest`/`latest` bounds) and hands them to the model as `thread_replies_text`, inside a fenced `[SLACK THREAD REPLIES — UNTRUSTED DATA]` block. A session with no turn in the thread yet sees every reply before the one it answers, its own app's included. A later turn sees only replies after the message its last turn answered (remembered in process), or after this app's newest reply in the thread when that is not known, and leaves out this app's own replies. The thread's first message and the current message are never in the block. Of the replies that one 200-message page returns, it keeps the newest 20, 1,500 characters each and 8,000 bytes together, with a count of what was left out of that page. Each reply is redacted, a reply whose text or author name matches an injection pattern is withheld whole and audited, and the block's markers are neutralized. The watermark moves only after a turn whose read succeeded has landed, so a failed read is asked for again next turn. This is context only: which messages the bot answers is decided before it runs.
+
 ## Architecture
 
 Channel startup diagnostics receive setting names and boolean presence checks,
@@ -170,6 +172,7 @@ Slack Socket Mode → events.py (dispatch) → handler.py → SessionManager →
 | `slack/transport_dispatch.py` | The new-path dispatch `events.py` routes to when `messaging.use_transport` is on: `handle_message_transport` builds a `TurnDriver` and `SlackRenderer` over the existing Slack client. It does not go through `SlackTransport.receive` or `authorize` |
 | `slack/sessions_view.py` | Slack half of the recent-sessions list shared by the slash command, the DM keyword and the App Home tab; collection lives in `messaging/sessions_view.py` |
 | `slack/thread_parent.py` | The first message of a thread a new Slack-born session was opened in: fetched once for the fenced prompt block and recorded once as a display-only `notice` transcript row (see "Thread parent for a new Slack-born session") |
+| `slack/thread_replies.py` | Thread replies a turn has not seen yet, bounded, redacted and injection-screened, for the fenced `[SLACK THREAD REPLIES — UNTRUSTED DATA]` prompt block (see "Thread replies since the last turn") |
 
 ## APIs
 

@@ -1643,6 +1643,9 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # and the transcript is shown through the dashboard routes, which are the
         # surfaces that carry the text onward.
         "slack/thread_parent.py",
+        # Capture-side as well: redacts thread replies as they are READ from
+        # Slack, for the model's fenced thread-replies block. No output of its own.
+        "slack/thread_replies.py",
         # Gate-side audit hygiene: the tool gate clips and redacts the tool labels
         # and refusal reason of each permission decision before writing them to
         # the SEL audit log. That is a local audit record, not an output bound for

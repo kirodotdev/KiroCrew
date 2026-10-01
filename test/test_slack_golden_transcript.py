@@ -113,7 +113,7 @@ class RecordingSlackClient(SlackClientOps):
         return None
 
     async def fetch_thread_replies(
-        self, channel, thread_ts, limit=200, warn_on_pagination=True
+        self, channel, thread_ts, limit=200, warn_on_pagination=True, **_bounds
     ) -> list[dict]:
         self._rec("fetch_thread_replies", channel=channel, thread_ts=thread_ts)
         return []
