@@ -1,5 +1,7 @@
 """Tests for the stdlib-only terminal line sanitizer."""
 
+import pytest
+
 from kiro_crew.terminal_safe import normalize_for_scanning, safe_terminal_line
 
 
@@ -295,3 +297,66 @@ def test_normalize_treats_every_default_ignorable_code_point_as_invisible() -> N
     ]
 
     assert not missed, f"default-ignorable code points left in place: {missed[:20]}"
+
+
+#: The three 8-bit C1 introducers that start a sequence a terminal acts on, as the RAW
+#: bytes a file name can hold: CSI, OSC and the single-shift that takes a following byte.
+_C1_BYTES = (b"\x9b", b"\x9d", b"\x8f")
+
+
+@pytest.mark.parametrize("introducer", _C1_BYTES)
+def test_a_surrogate_escaped_c1_byte_does_not_survive(introducer: bytes) -> None:
+    """One byte has two spellings in Python, and both have to lose.
+
+    A value read from the filesystem is decoded with the ``surrogateescape`` error
+    handler, so an undecodable byte arrives as a lone surrogate rather than as the
+    character: ``0x9b`` becomes U+DC9B, not U+009B. The C1 class alone matches only the
+    second spelling, which leaves the first -- the one that came from a file name an
+    attacker chose -- intact.
+    """
+    planted = (introducer + b"2J").decode("utf-8", "surrogateescape")
+    assert any(0xDC80 <= ord(ch) <= 0xDC9F for ch in planted), "not a surrogate escape"
+
+    cleaned = safe_terminal_line(planted)
+
+    assert not [ch for ch in cleaned if 0xD800 <= ord(ch) <= 0xDFFF]
+    # The whole point: re-encoding with the SAME handler the value arrived through must
+    # not reconstitute the introducer, because that is what reaches the terminal.
+    assert introducer not in cleaned.encode("utf-8", "surrogateescape")
+
+
+def test_the_result_is_encodable_by_a_strict_handler() -> None:
+    """The other half of the same defect, and the one that shows up on a UTF-8 desktop.
+
+    ``sys.stdout`` uses ``strict`` unless the locale coerced it, so a lone surrogate makes
+    the ``print`` itself raise ``UnicodeEncodeError`` -- the caller crashes with a
+    traceback exactly where it meant to show a diagnosis.
+    """
+    planted = b"/var/lib/kirocrew/\xffbad.json".decode("utf-8", "surrogateescape")
+
+    # Unguarded, this is the crash; guarded, it encodes.
+    with pytest.raises(UnicodeEncodeError):
+        planted.encode("utf-8")
+    assert safe_terminal_line(planted).encode("utf-8")
+
+
+def test_every_surrogate_escaped_byte_is_removed() -> None:
+    """The property over the whole range, not the members that drive a terminal.
+
+    ``surrogateescape`` maps bytes 0x80-0xFF onto U+DC80-U+DCFF. The upper part cannot
+    drive a terminal, but it is still unencodable by a strict handler, so the honest
+    contract is that none of them survive.
+    """
+    survivors = [
+        f"U+{code:04X}"
+        for code in range(0xDC80, 0xDD00)
+        if [ch for ch in safe_terminal_line("ok" + chr(code) + "ok") if ord(ch) == code]
+    ]
+
+    assert not survivors, f"surrogate escapes left in place: {survivors[:12]}"
+
+
+def test_an_ordinary_path_is_untouched_by_the_surrogate_rule() -> None:
+    """The rule must not reach text that decodes, which is nearly every real path."""
+    for value in ("/var/lib/kirocrew/live_target.json", "C:\\Users\\me\\cloud.json", "é-ok"):
+        assert safe_terminal_line(value) == value

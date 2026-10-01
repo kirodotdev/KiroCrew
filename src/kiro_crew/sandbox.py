@@ -2139,13 +2139,36 @@ _CREW_HARDLINK_REFUSED_LEAVES: frozenset[str] = frozenset(
 #: in the builds that happen not to be optimised.
 
 
+def _symlink_target_display(target: str) -> str:
+    """Where the symlink *target* points, rendered for a refusal sentence.
+
+    ``os.readlink`` hands back whatever the link holds, and every
+    :class:`SandboxCeilingUnsealable` is printed to a terminal verbatim (``kirocrew
+    chat``, ``kirocrew cloud``), so the value passes through ``safe_terminal_line`` here,
+    where it is read, rather than at each refusal that quotes it.
+
+    Two placeholders rather than an empty arrow: a link that cannot be READ renders as
+    ``(unreadable)``, and one whose target is entirely control bytes escapes to the empty
+    string, which would leave ``-> .`` and read as though the refusal had nothing to
+    report. The party that plants the link chooses those bytes, so suppressing the value
+    silently is the one outcome it must not buy; ``(unprintable)`` says the field was
+    withheld and keeps the refusal itself intact.
+    """
+    pointed_at = "(unreadable)"
+    with contextlib.suppress(OSError):
+        pointed_at = os.readlink(target)
+    return safe_terminal_line(pointed_at) or "(unprintable)"
+
+
 def _refuse_if_aliased_protected_leaf(target: str) -> None:
     """Refuse the spawn when a protected leaf is reachable under a second name.
 
-    Same two shapes ``_warn_if_alias_backed`` reports -- a symlink, or a regular
-    file with an extra hardlink -- but for :data:`_CREW_NO_ALIAS_LEAVES` the
-    outcome is a refusal. Warning and continuing is what made this silent: the log
-    said the path was sealed while the writes went somewhere else.
+    Refuses a symlink at the name, and anything there that is not a real directory.
+    Where ``_warn_if_alias_backed`` warns and continues for :data:`_CREW_NO_ALIAS_LEAVES`
+    the outcome is a refusal: warning is what made this silent, because the log said the
+    path was sealed while the writes went somewhere else. No ``st_nlink`` test, and not
+    for lack of one -- every leaf in that set is a DIRECTORY, which cannot carry a second
+    hard link, so the shape is unreachable rather than unchecked.
     """
     if os.path.basename(target.rstrip("/" + os.sep)) not in _CREW_NO_ALIAS_LEAVES:
         return
@@ -2154,11 +2177,9 @@ def _refuse_if_aliased_protected_leaf(target: str) -> None:
     except OSError:
         return
     if stat.S_ISLNK(info.st_mode):
-        pointed_at = "(unreadable)"
-        with contextlib.suppress(OSError):
-            pointed_at = os.readlink(target)
         raise SandboxCeilingUnsealable(
-            f"the protected directory {target} is a SYMLINK -> {pointed_at}. Its "
+            f"the protected directory {safe_terminal_line(target)} is a SYMLINK -> "
+            f"{_symlink_target_display(target)}. Its "
             "disposition attaches to this NAME, so the link would leave the name "
             "replaceable inside the sandbox while reads and writes went to an "
             "unfenced inode. Remove the link and use a real directory."
@@ -2166,8 +2187,8 @@ def _refuse_if_aliased_protected_leaf(target: str) -> None:
     if stat.S_ISDIR(info.st_mode):
         return
     raise SandboxCeilingUnsealable(
-        f"the protected directory {target} is not a directory. It must be a real "
-        "directory under this name for its mask to apply."
+        f"the protected directory {safe_terminal_line(target)} is not a directory. It "
+        "must be a real directory under this name for its mask to apply."
     )
 
 
@@ -2228,12 +2249,9 @@ def _refuse_if_dangling_symlink(target: str) -> None:
     """
     if not os.path.islink(target) or os.path.exists(target):
         return
-    pointed_at = "(unreadable)"
-    with contextlib.suppress(OSError):
-        pointed_at = os.readlink(target)
     raise SandboxCeilingUnsealable(
         f"the governance ceiling {safe_terminal_line(target)} is a DANGLING symlink -> "
-        f"{safe_terminal_line(pointed_at)}. "
+        f"{_symlink_target_display(target)}. "
         "mount(2) cannot seal it and it would leave the path writable inside the "
         "sandbox. Remove or repoint it, or lower sandbox_level to run without the seal "
         "deliberately."
@@ -2261,12 +2279,9 @@ def _refuse_if_symlink_leaf(target: str) -> None:
             f"a symlink: {safe_terminal_line(str(exc))}"
         ) from exc
     if stat.S_ISLNK(info.st_mode):
-        pointed_at = "(unreadable)"
-        with contextlib.suppress(OSError):
-            pointed_at = os.readlink(target)
         raise SandboxCeilingUnsealable(
             f"the masked directory {safe_terminal_line(target)} is a SYMLINK -> "
-            f"{safe_terminal_line(pointed_at)}. The mask would "
+            f"{_symlink_target_display(target)}. The mask would "
             "bind over the link's target, not the name, leaving the leaf replaceable in a "
             "writable parent so a sandboxed process could point the pre-created staging "
             "directory at a tree it controls. Remove or repoint it."
@@ -2291,12 +2306,9 @@ def _require_real_dir_nofollow(target: str) -> None:
             f"create race: {safe_terminal_line(str(exc))}"
         ) from exc
     if stat.S_ISLNK(info.st_mode):
-        pointed_at = "(unreadable)"
-        with contextlib.suppress(OSError):
-            pointed_at = os.readlink(target)
         raise SandboxCeilingUnsealable(
             f"the masked directory {safe_terminal_line(target)} became a SYMLINK -> "
-            f"{safe_terminal_line(pointed_at)} in the create "
+            f"{_symlink_target_display(target)} in the create "
             "race. Refusing rather than binding the mask over the link's target."
         )
     if not stat.S_ISDIR(info.st_mode):
@@ -2362,7 +2374,8 @@ def _require_real_file_nofollow(
             info = os.fstat(fd)
         except OSError as exc:
             raise SandboxCeilingUnsealable(
-                f"cannot stat the strict governance ceiling {target}: {exc}"
+                f"cannot stat the strict governance ceiling {safe_terminal_line(target)}: "
+                f"{safe_terminal_line(str(exc))}"
             ) from exc
     else:
         try:
@@ -2371,27 +2384,29 @@ def _require_real_file_nofollow(
             return
         except OSError as exc:
             raise SandboxCeilingUnsealable(
-                f"cannot stat the strict governance ceiling {target}: {exc}"
+                f"cannot stat the strict governance ceiling {safe_terminal_line(target)}: "
+                f"{safe_terminal_line(str(exc))}"
             ) from exc
         if stat.S_ISLNK(info.st_mode):
-            pointed_at = "(unreadable)"
-            with contextlib.suppress(OSError):
-                pointed_at = os.readlink(target)
             raise SandboxCeilingUnsealable(
-                f"the strict governance ceiling {target} is a SYMLINK -> {pointed_at}. The seal "
+                f"the strict governance ceiling {safe_terminal_line(target)} is a SYMLINK -> "
+                f"{_symlink_target_display(target)}. The seal "
                 "binds the file it resolves to while the link name stays in a writable "
-                f"directory, so a sandboxed process could replace the name and {harm}. {remedy}"
+                "directory, so a sandboxed process could replace the name and "
+                f"{safe_terminal_line(harm)}. {safe_terminal_line(remedy)}"
             )
     if not stat.S_ISREG(info.st_mode):
         raise SandboxCeilingUnsealable(
-            f"cannot seal {target}: it is not a regular file, so the read-only bind would "
-            f"not cover what a reader resolves there. {remedy}"
+            f"cannot seal {safe_terminal_line(target)}: it is not a regular file, so the "
+            "read-only bind would not cover what a reader resolves there. "
+            f"{safe_terminal_line(remedy)}"
         )
     if info.st_nlink > 1:
         raise SandboxCeilingUnsealable(
-            f"the strict governance ceiling {target} has {info.st_nlink} hardlinks. A bind "
-            "mount seals a MOUNT, not an inode, so a write through the other name reaches "
-            f"the very inode this ceiling exposes and can {harm}. {remedy}"
+            f"the strict governance ceiling {safe_terminal_line(target)} has "
+            f"{info.st_nlink} hardlinks. A bind mount seals a MOUNT, not an inode, so a "
+            "write through the other name reaches the very inode this ceiling exposes "
+            f"and can {safe_terminal_line(harm)}. {safe_terminal_line(remedy)}"
         )
 
 
@@ -4190,9 +4205,7 @@ def _refuse_aliased_masked_leaves(
                 *_referent_identity(target, info),
             )
         if stat.S_ISLNK(info.st_mode):
-            pointed_at = "(unreadable)"
-            with contextlib.suppress(OSError):
-                pointed_at = os.readlink(target)
+            pointed_at = _symlink_target_display(target)
             if tolerated:
                 logger.warning(
                     "sandbox: the masked path %s is a SYMLINK -> %s. The mask binds what "
@@ -4205,7 +4218,7 @@ def _refuse_aliased_masked_leaves(
                 continue
             raise SandboxCeilingUnsealable(
                 f"the masked path {safe_terminal_line(target)} is a SYMLINK -> "
-                f"{safe_terminal_line(pointed_at)}. The mask binds whatever the link "
+                f"{pointed_at}. The mask binds whatever the link "
                 "resolves to, so this NAME would stay writable inside the sandbox while "
                 "reads and writes reached an unmasked target. Remove the link and keep a "
                 "real directory or file under this name."

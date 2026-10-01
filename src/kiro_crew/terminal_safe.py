@@ -19,7 +19,28 @@ _TERMINAL_CTRL_RE = re.compile(
     r"|\x1b\[[0-?]*[ -/]*[@-~]"  # CSI with the full ECMA-48 parameter class
     r"|\x1b[ -/]*[@-~]"  # other two-byte ESC sequences
     r"|[\x00-\x08\x0b-\x1f\x7f-\x9f]"  # C0/C1 controls (keep \n and \t)
+    r"|[\ud800-\udfff]"  # lone surrogates -- see below
 )
+
+# The surrogate alternative is not decoration. A value read from the filesystem --
+# ``os.readlink``, ``os.listdir`` -- is decoded with the ``surrogateescape`` error
+# handler, so an undecodable byte arrives as a lone surrogate: byte ``0x9b`` becomes
+# U+DC9B, not U+009B. The C1 class above matches the character and NOT the surrogate, so
+# without this alternative the two spellings of one byte get opposite treatment, and the
+# dangerous one is the one that survives. Both failure modes are reachable from the same
+# value:
+#
+# * a stream opened with ``surrogateescape`` (the default under C/POSIX locale coercion,
+#   so containers, systemd units and CI) encodes U+DC9B back to the raw ``0x9b``, which
+#   is the 8-bit CSI -- an escape sequence this function is supposed to have removed;
+# * a stream with the default ``strict`` handler raises ``UnicodeEncodeError`` on it
+#   instead, so the caller crashes with a traceback where it meant to print a diagnosis.
+#
+# The whole surrogate range goes, not only ``U+DC80``-``U+DC9F``: the rest cannot drive a
+# terminal but still cannot be encoded strictly, and a lone surrogate reaches this
+# function from JSON input as well as from a file name. Stripping makes the result
+# encodable by every handler, which is what "safe to print" has to mean. The cost is that
+# an undecodable byte is dropped rather than shown, and it was never readable text.
 
 #: C0 and C1 controls and DEL, minus the three kept as content.
 _SCAN_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
