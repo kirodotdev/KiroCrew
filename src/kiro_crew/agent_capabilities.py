@@ -1463,8 +1463,19 @@ class CapabilityService:
                 locks.enter_context(agents_spec_lock(root))
                 locks.enter_context(agent_state._locked())
                 plans = self._plans(member, request, document, prepared, reset_parent=reset_parent)
+                # Compared as BYTES, never as ``str``. ``hmac.compare_digest``
+                # rejects a str holding a non-ASCII character by raising
+                # ``TypeError``, and the token arrives in the request body, so a
+                # malformed one would escape the handler's ``CapabilityError``
+                # and ``(OSError, ValueError)`` arms as a 500 instead of the
+                # ``stale_preview`` refusal a wrong ASCII token produces.
+                # ``surrogatepass`` because a lone surrogate must still compare
+                # rather than raise on the way in, and it keeps two distinct
+                # strings distinct. The expected value is a hex digest by
+                # construction, so a token that matched before still matches.
                 if not hmac.compare_digest(
-                    request["preview_token"], self._preview_token(plans, request)
+                    request["preview_token"].encode("utf-8", "surrogatepass"),
+                    self._preview_token(plans, request).encode("utf-8", "surrogatepass"),
                 ):
                     raise CapabilityError("stale_preview")
                 state = agent_state._read(strict=True)

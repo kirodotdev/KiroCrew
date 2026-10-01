@@ -61,7 +61,7 @@ class MockWebSocket {
 function storeOnSlot1() {
   // Deliberately the SINGLETON store, not a fresh createTestStore(). useWebSocket
   // dispatches through useAppDispatch() (the Provider store) but reads the guard's
-  // current state off the imported singleton (`hooks/useWebSocket.ts:5`). In
+  // current state off the imported singleton (the `store` export of `src/store`). In
   // production those are the same object; a separate Provider store would make
   // reads and writes diverge, so the guard would never observe its own write and
   // these tests would pass against the buggy code too.

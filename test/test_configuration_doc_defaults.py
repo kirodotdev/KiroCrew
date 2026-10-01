@@ -22,7 +22,8 @@ example. ``Key Settings`` is the block that claims to be defaults, so it is the 
 held to them.
 
 The assertion is against ``dataclasses.fields`` rather than a transcribed list, so a
-field renamed or re-defaulted in ``config/sections.py`` fails here instead of being
+field renamed or re-defaulted in ``config/sections.py`` or a section owner it re-exports
+(``memory_sections``, ``integration_sections``, ``service_sections``) fails here instead of being
 mirrored into a second copy that can drift on its own. A row naming a key the
 dataclass does not have fails too — that is the same defect one step earlier.
 
@@ -52,7 +53,6 @@ SECTION_CLASS: dict[str, str] = {
     "agent": "AgentConfig",
     "session": "SessionConfig",
     "task_runner": "TaskRunnerConfig",
-    "orchestrator": "OrchestratorConfig",
     "messaging": "MessagingConfig",
     "cron_history": "CronHistoryConfig",
     "memory": "MemoryConfig",

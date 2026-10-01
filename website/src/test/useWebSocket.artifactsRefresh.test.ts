@@ -1,5 +1,6 @@
 /**
- * The artifact library's freshness contract in `useWebSocket.ts` (#10867).
+ * The artifact library's freshness contract in the socket layer
+ * (`hooks/websocket/serverState.ts`) (#10867).
  *
  * The Artifacts page does not poll. Live `artifact_update` frames keep its
  * queries fresh while the socket is up — but a frame pushed while the socket
@@ -108,8 +109,8 @@ describe('useWebSocket artifact library freshness', () => {
     ['dashboard_card', { slot: 'worker' }, ['dashboard-card', 'worker']],
     ['question_card', { slot: 'worker', card_id: 'q', questions: [] }, ['command-center', 'questions']],
     ['question_card_resolved', { slot: 'worker', card_id: 'q' }, ['command-center', 'questions']],
-    ['approval', { slot: 'worker', id: 'a' }, ['command-center', 'approvals']],
-    ['approval_resolved', { id: 'a' }, ['command-center', 'approvals']],
+    ['approval', { slot: 'worker', id: 'a' }, ['global-approvals']],
+    ['approval_resolved', { id: 'a' }, ['global-approvals']],
   ])('reconciles %s without waiting for the inventory timer', (type, data, key) => {
     const spy = vi.spyOn(qc, 'invalidateQueries')
     renderHook(() => useWebSocket(), { wrapper })

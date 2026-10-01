@@ -160,7 +160,9 @@ export function isSelfScroll(
  * The sign is kept: a SHRINK above the fold pulls content up by the same rule.
  */
 export function repriceAboveFoldDelta(input: {
-  /** Row's viewport-relative top, as the observer sees it (post-layout). */
+  /** Row's viewport-relative top BEFORE the change being classified -- the
+   *  position the reader last saw it at, not the post-layout rect (which
+   *  already carries the batch's displacement and any native adjustment). */
   rowTop: number
   prevHeight: number
   newHeight: number

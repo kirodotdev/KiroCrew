@@ -1,11 +1,12 @@
 /**
  * Typed client for `POST /api/file-grep` — the Files rail's CONTENT search.
  *
- * Its own module rather than another method on `api/client.ts`: the rail is the
+ * Its own module rather than another method on the `api` object: the rail is the
  * only caller, the response carries a shape (a hit, and a hit's location inside
- * a document) that other call sites have no use for, and `client.ts` is ~3.5k
- * lines whose module graph pulls in the query client, the artifact-write
- * bookkeeping and the error journal. Same reasoning that split `apiError.ts` out.
+ * a document) that other call sites have no use for, and `api/client.ts`, which
+ * assembles `api`, has a module graph that pulls in the query client, the
+ * artifact-write bookkeeping and the error journal. Same reasoning that split
+ * `apiError.ts` out.
  *
  * The REQUEST still goes through the blessed transport rather than raw `fetch`.
  * That is what carries `X-Session-Key` and, decisively, what runs the
@@ -15,8 +16,8 @@
  * `status` (403 refused root, 404 not a directory, 503 probe capacity) instead
  * of matching message text.
  *
- * Filename search is `api.fileSearch` in `client.ts` and stays there — it feeds
- * the @-mention picker as well as the rail.
+ * Filename search is `api.fileSearch` in `api/client/files.ts` and stays there —
+ * it feeds the @-mention picker as well as the rail.
  */
 import { apiTransport } from './apiTransport'
 

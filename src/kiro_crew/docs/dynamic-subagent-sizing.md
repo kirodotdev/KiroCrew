@@ -145,7 +145,7 @@ deliberate v1 simplification we may revisit.
 |-----|---------|--------|
 | `agent.max_subagents` | `0` | `0` = auto-size (default); `>0` = explicit cap |
 | `agent.subagent_mem_buffer_pct` | `20` | % of memory reserved for the OS and other processes |
-| `agent.subagent_cost_gb` | `0.5` | First-boot memory-cost fallback (GB/agent) until learned |
+| `agent.subagent_cost_gb` | `0.5` | Flat price of each warming start in the admission gate; also the cap-sizing fallback (GB/agent) until a learned cost exists |
 | `agent.subagent_cpu_cost_cores` | `1.0` | **Deprecated, inert.** CPU no longer sizes the cap; kept so an existing config is not rewritten |
 | `agent.subagent_auto_max` | `32` | Absolute ceiling on the computed cap (provider-concurrency stand-in) |
 | `agent.spawn_min_memory_gb` | `4.0` | Per-spawn admission gate (separate runtime guard, refuses a spawn when free memory is low) |
@@ -255,27 +255,17 @@ a term would have nothing to correct. And a term sampled at sweep time against
 monotonic: it would shrink as the crowd drained and could reap at one sweep an
 agent the sweep before had left inside its window.
 When the memory floor is enabled, admission also reserves memory for the next
-start, for claimed starts awaiting registration, and for live dedicated workers.
-A start that has not settled yet -- fewer than two reaper sweeps have measured
-it -- is priced at the learned p90 from `cost_samples.jsonl` for the agent being
-spawned (the named agent, or the template an agent-less spawn inherits -- the
-same key its own samples are recorded under; only that agent's own history counts,
-only from runs that ran as their own process, and only samples younger than 30
-days, since a session-shared run's figure is a per-session share and a price
-learned under a removed workload must be able to expire), never less than
-`subagent_cost_gb`, less whatever RSS it already holds;
-so the reserve prices it at what runs on this host have actually cost rather than
-at the first-boot fallback (the reaper refreshes those figures off the event
-loop, so they can lag a new sample by up to one sweep). A settled worker owes only
-the gap between the larger of `subagent_cost_gb` and its own peak and what it
-holds now, so observed memory is never counted twice and a learned cost above
-what a particular worker needed does not hold memory it will never use. Parents waiting without a slot retain their reservation; confirmed
-shared sessions do not add a dedicated-process cost. This lets short spawn
-intervals fill available capacity without spending the same headroom repeatedly
-while processes warm up. It cannot predict allocations beyond the estimated cost.
-A deferral for low memory states the per-start price it used; if a learned cost
-no longer reflects this host, delete `subagents/cost_samples.jsonl` under the
-data home (or lower `spawn_min_memory_gb`) and it re-learns from the next runs.
+start, for claimed starts awaiting registration, and for dedicated workers the
+reaper has not measured twice yet. Each is priced at `subagent_cost_gb` (what a
+runtime needs to start) less the RSS it already holds; a settled worker owes
+nothing, because its memory is already in the free-memory reading. Parents
+waiting without a slot retain their reservation; confirmed shared sessions do
+not add a dedicated-process cost. So one spawn needs `spawn_min_memory_gb` plus
+about `subagent_cost_gb` free -- 4.5 GB by default.
+
+A start is never priced at a learned p90 or a live worker's peak: those measure
+the whole process subtree, including the test suites and builds a run launched,
+not what a start needs.
 
 ## Notes
 

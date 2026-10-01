@@ -219,6 +219,7 @@ def _wire_peer(
     attests: str = "",
     unverifiable: bool = False,
     live_keys: tuple[str, ...] = (),
+    bound_keys: tuple[str, ...] = (),
 ) -> list[dict]:
     """Fake socketsec + resolver seams; return the captured SEL calls.
 
@@ -228,6 +229,12 @@ def _wire_peer(
     session key the per-session token verifies to -- empty for no usable token,
     which is what a caller that presents none or presents a forged one looks
     like from here.
+
+    ``bound_keys`` is what the LEASE and TENANCY tables place on the peer's
+    ancestry. Empty by default, which is the tables saying nothing about this pid
+    -- no evidence, so every arm behaves as it did before the binding check
+    existed and a test that does not care about it need not think about it. The
+    helper's own contract is pinned separately, because this seam stubs it out.
     """
     calls: list[dict] = []
 
@@ -250,6 +257,7 @@ def _wire_peer(
         ta, "_live_session_keys_on_chain", lambda request, chain: frozenset(live_keys)
     )
     monkeypatch.setattr(ta, "verify_session_token", lambda token: attests if token else "")
+    monkeypatch.setattr(ta, "_bound_session_keys_on_chain", lambda chain: frozenset(bound_keys))
     return calls
 
 
@@ -366,8 +374,10 @@ async def test_unix_peer_admits_a_recorded_co_tenant(monkeypatch: pytest.MonkeyP
     allowed = [c for c in calls if c.get("operation") == "dashboard.peer-identity-co-tenant"]
     assert allowed
     # Naming the roster the decision was made against separates this arm from
-    # the one whose roster the size bound truncated.
-    assert allowed[0]["error"] == "roster complete"
+    # the one whose roster the size bound truncated, and the binding says whether
+    # the ownership tables backed the token or had nothing to say -- silent here,
+    # which is the state every caller outside this gateway's own placements is in.
+    assert allowed[0]["error"] == "roster complete; binding=no evidence"
 
 
 @_posix_only
@@ -555,6 +565,291 @@ async def test_unix_peer_unresolved_tenancy_still_proceeds_without_a_token(
     assert resp.status == 200
     assert "peer_verified" not in store
     assert not [c for c in calls if c.get("outcome") == "denied"]
+
+
+# ---------------------------------------------------------------------------
+# The token must also name a session the process still HOSTS
+# ---------------------------------------------------------------------------
+# A token proves which session the caller is. It does not prove that session is
+# on the process the call arrived from, and it cannot: it is a bearer credential
+# in the runtime's environment, so a same-uid co-tenant reading
+# /proc/<pid>/environ can lift a sibling's token and satisfy the name check with
+# it. The ownership tables are the fact it cannot forge -- they live in the
+# gateway's memory, not in a file the sandbox can write -- so the declared key
+# must also hold a live lease or tenancy on this pid.
+
+
+class _StubRuntime:
+    """A runtime for the table tests: a pid and a liveness answer, nothing else.
+
+    A real object rather than a ``MagicMock`` on purpose -- the tables reject a
+    mock's pid (it coerces to 1 through ``__index__``) and read ``is_alive`` as a
+    truthy mock whatever the process is doing.
+    """
+
+    def __init__(self, pid: int, alive: bool = True) -> None:
+        self.pid = pid
+        self._alive = alive
+
+    def is_alive(self) -> bool:
+        return self._alive
+
+
+@_posix_only
+@pytest.mark.asyncio
+async def test_unix_peer_admits_a_co_tenant_its_tables_still_place_here(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Token names the session AND a table places it on the pid: admitted.
+
+    The ordinary shared-runtime call. Both questions are answered positively, so
+    the record says the binding was confirmed rather than merely unchallenged.
+    """
+    calls = _wire_peer(
+        monkeypatch,
+        resolved="",
+        tenants=_SHARED,
+        tenant_count=2,
+        attests=_SHARED[1],
+        bound_keys=_SHARED,
+    )
+    mw = ta.token_auth_middleware(internal_paths=INTERNAL, internal_secret=SECRET)
+    req, store = _make_request(
+        headers={
+            "X-Internal-Secret": SECRET,
+            "X-Session-Key": _SHARED[1],
+            "X-Session-Token": "tok-for-the-second-tenant",
+        },
+        unix=True,
+    )
+    resp = await mw(req, _ok_handler)
+    assert resp.status == 200
+    assert store.get("peer_verified") is True
+    assert not [c for c in calls if c.get("outcome") == "denied"]
+    allowed = [c for c in calls if c.get("operation") == "dashboard.peer-identity-co-tenant"]
+    assert allowed and allowed[0]["error"] == "roster complete; binding=confirmed"
+
+
+@_posix_only
+@pytest.mark.asyncio
+async def test_unix_peer_denies_a_token_for_a_session_the_pid_no_longer_hosts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A valid token for a session whose claim is gone is refused.
+
+    The stolen-token case, and the only one this arm adds: the actor presents a
+    token that verifies to a sibling key -- which the roster also lists, so every
+    earlier check passes -- while the tables place that sibling nowhere near this
+    process. Its lease was released, or its turn-scoped tenancy ended, so there is
+    positive evidence the declaration does not belong here.
+    """
+    calls = _wire_peer(
+        monkeypatch,
+        resolved="",
+        tenants=_SHARED,
+        tenant_count=2,
+        attests=_SHARED[1],
+        # The table names the OTHER session on the pid and not the declared one:
+        # non-empty, so it is speaking, and the declared key is absent from what
+        # it says.
+        bound_keys=(_SHARED[0],),
+    )
+    mw = ta.token_auth_middleware(internal_paths=INTERNAL, internal_secret=SECRET)
+    req, store = _make_request(
+        headers={
+            "X-Internal-Secret": SECRET,
+            "X-Session-Key": _SHARED[1],
+            "X-Session-Token": "a-token-lifted-from-the-siblings-environment",
+        },
+        unix=True,
+    )
+    resp = await mw(req, _ok_handler)
+    assert resp.status == 403
+    assert json.loads(resp.body)["code"] == "peer_session_unbound"
+    assert "peer_verified" not in store
+    denied = [c for c in calls if c.get("operation") == "dashboard.peer-session-unbound"]
+    assert len(denied) == 1
+    assert denied[0]["outcome"] == "denied" and denied[0]["caller"] == _SHARED[1]
+    # The record carries the pid, the roster judged, and how many sessions WERE
+    # bound there -- enough to tell a released claim from a wrong process.
+    assert "peer_pid=4242" in denied[0]["error"]
+    assert "roster complete" in denied[0]["error"] and "1 bound there" in denied[0]["error"]
+
+
+@_posix_only
+@pytest.mark.asyncio
+async def test_unix_peer_silent_tables_keep_todays_semantics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Tables that cannot answer are no evidence, so nothing new is denied.
+
+    The fail-open boundary, and it has to be this way round: the tables describe
+    runtimes THIS gateway placed sessions on, and a warm-pool runtime before its
+    claim, a pooled MCP backend, a cron script and anything from another install
+    are all absent from them while being entirely legitimate. An empty answer that
+    denied would 403 every one of those. The token check above still holds, so this
+    arm is exactly as strong as it was before the binding existed, never weaker.
+    """
+    calls = _wire_peer(
+        monkeypatch,
+        resolved="",
+        tenants=_SHARED,
+        tenant_count=2,
+        attests=_SHARED[1],
+        bound_keys=(),
+    )
+    mw = ta.token_auth_middleware(internal_paths=INTERNAL, internal_secret=SECRET)
+    req, store = _make_request(
+        headers={
+            "X-Internal-Secret": SECRET,
+            "X-Session-Key": _SHARED[1],
+            "X-Session-Token": "tok",
+        },
+        unix=True,
+    )
+    resp = await mw(req, _ok_handler)
+    assert resp.status == 200
+    assert store.get("peer_verified") is True
+    assert not [c for c in calls if c.get("code") == "peer_session_unbound"]
+    assert not [c for c in calls if c.get("outcome") == "denied"]
+    allowed = [c for c in calls if c.get("operation") == "dashboard.peer-identity-co-tenant"]
+    assert allowed and allowed[0]["error"].endswith("binding=no evidence")
+
+
+def test_bound_session_keys_union_both_tables_and_walk_the_chain() -> None:
+    """The helper's own contract, because the arm tests stub it out.
+
+    Three properties in one place: both tables are read (a sharing sub-agent has
+    only a tenancy, a chat session only a lease), the chain is walked peer-first
+    so the answer comes from the kiro-cli ANCESTOR rather than the MCP stub that
+    connected, and a pid in neither table answers empty.
+    """
+    from kiro_crew import runtime_ownership as ro
+
+    ro._reset_for_tests()
+    try:
+        runtime = _StubRuntime(pid=9100)
+        ro.RUNTIME_OWNERSHIP._entries.append(
+            ro._Entry(runtime=runtime, key="k", leases={"lease-1": "dashboard:chat-1-abc"})
+        )
+        assert ro.RUNTIME_TENANCY.claim(
+            runtime, holder="subagent:x", session_key="subagent:chat-1-abc-child"
+        )
+        # The stub pid is NOT in either table; its ancestor is, and that is the
+        # entry that decides.
+        assert ta._bound_session_keys_on_chain([9999, 9100]) == frozenset(
+            {"dashboard:chat-1-abc", "subagent:chat-1-abc-child"}
+        )
+        assert ta._bound_session_keys_on_chain([4242]) == frozenset()
+    finally:
+        ro._reset_for_tests()
+
+
+@pytest.mark.asyncio
+async def test_a_shared_turn_binds_the_session_its_stubs_declare() -> None:
+    """The wiring: a sharing sub-agent's turn records ITS OWN key, not a label.
+
+    This is what makes the binding check usable for the session type it was
+    written for. A sub-agent holds no lease and the session manager never
+    registers it, so the turn's tenancy is the only entry naming it -- and the
+    name has to be the key its stubs put in ``X-Session-Key``, or the check would
+    refuse the very caller it is meant to admit.
+
+    Measured at three points because the window is the interesting part: the key
+    is bound during the turn and not before or after it.
+    """
+    from kiro_crew import runtime_ownership as ro
+    from kiro_crew.acp.session_provider import AcpSessionProvider
+
+    principal, child = _SHARED
+    ro._reset_for_tests()
+    try:
+        runtime = _StubRuntime(pid=9400)
+        runtime._mcp_gateway_socket = ""  # type: ignore[attr-defined]
+        ro.RUNTIME_OWNERSHIP._entries.append(
+            ro._Entry(runtime=runtime, key="k", leases={"lease-1": principal})
+        )
+
+        handle = SimpleNamespace(session_id="s", stub_session_token="", prompt=None)
+        provider = AcpSessionProvider(handle, runtime, session_key=child)
+        provider._owns_runtime = False
+
+        during: list[frozenset[str]] = []
+
+        async def _fake_stream(message, prompt, incarnation):
+            during.append(ro.session_keys_bound_to_pid(9400))
+            yield "event"
+
+        provider.essential_delivery = SimpleNamespace(stream=_fake_stream)  # type: ignore[assignment]
+        provider.reclaim = lambda: None  # type: ignore[method-assign]
+
+        before = ro.session_keys_bound_to_pid(9400)
+        async for _ in provider.stream("hi"):
+            pass
+        after = ro.session_keys_bound_to_pid(9400)
+
+        assert during == [frozenset({principal, child})]
+        # The principal's lease spans the whole session; the turn's tenancy does
+        # not, which is the scope D10 chose and the reason this is not a lease.
+        assert before == frozenset({principal})
+        assert after == frozenset({principal})
+    finally:
+        ro._reset_for_tests()
+
+
+def test_bound_session_keys_report_no_evidence_when_a_table_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A probe that could not ask must not become a verdict."""
+
+    def _boom(pid: int) -> frozenset[str]:
+        raise RuntimeError("registry unreadable")
+
+    monkeypatch.setattr(ta, "session_keys_bound_to_pid", _boom)
+    assert ta._bound_session_keys_on_chain([4242]) == frozenset()
+
+
+def test_a_tenancy_with_no_session_key_binds_nothing() -> None:
+    """The mint child holds a claim and declares no session, so it binds none.
+
+    Its claim still defends the process -- that is the kill gate's business -- but
+    it must not appear as a session on the pid, or an auth decision would read the
+    OAuth child as a tenant whose key could be declared.
+    """
+    from kiro_crew import runtime_ownership as ro
+
+    ro._reset_for_tests()
+    try:
+        runtime = _StubRuntime(pid=9200)
+        assert ro.RUNTIME_TENANCY.claim(runtime, holder="mint:connect-flow")
+        assert ro.RUNTIME_TENANCY.claims_on_pid(9200) == 1
+        assert ro.RUNTIME_TENANCY.tenant_keys_on_pid(9200) == frozenset()
+        assert ro.session_keys_bound_to_pid(9200) == frozenset()
+    finally:
+        ro._reset_for_tests()
+
+
+def test_a_dead_runtime_binds_no_session() -> None:
+    """Death releases ownership, so a dead process names nobody.
+
+    Same rule the kill gate's counts follow, and it matters here too: a caller
+    declaring a key on a pid whose runtime has exited is not on that process, and
+    the OS is free to hand the number to something else.
+    """
+    from kiro_crew import runtime_ownership as ro
+
+    ro._reset_for_tests()
+    try:
+        runtime = _StubRuntime(pid=9300, alive=False)
+        ro.RUNTIME_OWNERSHIP._entries.append(
+            ro._Entry(runtime=runtime, key="k", leases={"lease-1": "dashboard:chat-1-abc"})
+        )
+        assert ro.RUNTIME_TENANCY.claim(
+            runtime, holder="subagent:x", session_key="subagent:chat-1-abc-child"
+        )
+        assert ro.session_keys_bound_to_pid(9300) == frozenset()
+    finally:
+        ro._reset_for_tests()
 
 
 def _app_with_rows(rows: list[dict] | Exception):

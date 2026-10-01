@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import functools
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -44,6 +46,26 @@ PREPARE_PR_FINDINGS = (
     / "scripts"
     / "pr_findings.py"
 )
+
+
+@functools.lru_cache(maxsize=1)
+def _scope_candidates():
+    """Load `scripts/scope_candidates.py` for its `_VALIDATE_REFUSALS` table.
+
+    Read from the module the fork lane actually runs, so a rename of a dict key
+    is caught rather than mirrored in a second copy of the names here. Registered
+    in `sys.modules` before exec because the script's dataclasses resolve their
+    own annotations through it. `deny_diff.py` sits beside it and is imported by
+    path at load time, so both modules must be reachable -- they are, as siblings
+    under `scripts/`.
+    """
+    path = ROOT / "scripts" / "scope_candidates.py"
+    spec = importlib.util.spec_from_file_location("scope_candidates_for_workflow_tests", path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 #: Variables a Windows child needs even when the test controls the rest of its
@@ -104,6 +126,33 @@ def _bash() -> str | None:
     return shutil.which("bash")
 
 
+@functools.lru_cache(maxsize=None)
+def _bash_has_jq(bash: str) -> bool:
+    """Whether *bash* resolves a ``jq`` -- asked of the bash the step runs under.
+
+    ``pr-body-snapshot.sh`` fails closed without ``jq`` ("::error::jq is not
+    available ..."), so a host without one reddens every evidence-step case
+    unless the harness stands one in (``_jq_stub``); this answer is what decides
+    that. The probe goes through the SAME bash the step will run under, not
+    ``shutil.which`` from this process: Git for Windows' ``bin\\bash.exe``
+    prepends its own ``/usr/bin`` to ``PATH``, so the two can disagree on what
+    ``jq`` means. Cached per bash, since the answer is a host fact that does not
+    change within a run.
+    """
+    try:
+        probe = subprocess.run(
+            [bash, "-c", "command -v jq"],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return probe.returncode == 0
+
+
 def _prompt(name: str) -> str:
     """Read a review-prompt file.
 
@@ -115,6 +164,34 @@ def _prompt(name: str) -> str:
 
 def _workflow(name: str) -> str:
     return (WORKFLOWS / name).read_text(encoding="utf-8")
+
+
+def _reads_header_anchored(workflow: str, header: str) -> bool:
+    """Whether *workflow*'s verdict CAPTURE reads *header* anchored to line start.
+
+    Tool-agnostic on purpose. A lane may read its verdict header with ``grep
+    -iE '^Header:'`` or with an ``awk`` record match ``!found && tolower($0) ~
+    /^header:/``; what the lanes must not lose is the ANCHOR, because an
+    unanchored read turns a model that merely mentions the header in prose into
+    a verdict. A pin naming one program stops finding the capture the day the
+    capture changes tool, and then passes while measuring nothing.
+
+    The match is the verdict CAPTURE expression in either spelling, not a bare
+    anchored header anywhere in the file: these steps also TRIM the summary to
+    the header one or more lines above the capture (``grep -qiE '^Header:'`` and
+    ``awk 'f || tolower($0) ~ /^header:/'``), and a file-wide search for ``^Header:``
+    is satisfied by the trim alone. That would pass even with the capture deleted
+    outright, measuring the trim instead of the verdict read. Both capture
+    spellings carry a mark the trim does not: the grep capture has no ``-q`` and
+    is followed by ``head -n1``; the awk capture opens ``!found &&`` where the
+    trim opens ``f ||``.
+    """
+    escaped = re.escape(header)
+    lowered = re.escape(header.lower())
+    return (
+        re.search(rf"grep -iE '\^{escaped}' \| head", workflow, re.IGNORECASE) is not None
+        or re.search(rf"!found && tolower\(\$0\) ~ /\^{lowered}/", workflow) is not None
+    )
 
 
 def _stub_path(tmp_path: Path) -> str:
@@ -1069,8 +1146,12 @@ class TestFirstPrinciplesReview:
 
         for name in FP_LANES:
             workflow = _workflow(name)
-            # Each lane parses that header and pins the model.
-            assert "grep -iE '^First-Principles-Verdict:'" in workflow
+            # Each lane parses that header and pins the model. Asserted as an
+            # ANCHORED reference to the header rather than as one tool's spelling
+            # of it: what matters is that the lane reads this header at the start
+            # of a line, and a pin naming `grep` stops finding the capture the day
+            # it becomes `awk` -- and then measures nothing while still passing.
+            assert _reads_header_anchored(workflow, "First-Principles-Verdict:"), name
             # Fable 5 with the same Opus overload fallback as the sibling
             # advisory lanes; a bare/`global.` profile id would be rejected.
             assert "--model us.anthropic.claude-fable-5" in workflow
@@ -2483,6 +2564,51 @@ class TestUxReviewReadsTheScreenshotsBlindFirst:
             "}\n"
         )
 
+    # The three jq invocations the evidence step and the gh stub above make,
+    # and nothing else: `jq -Rs .` (JSON-encode stdin as one string) in the gh
+    # stub, `jq -r '.title'` and `jq -r '.body // ""'` in pr-body-snapshot.sh.
+    # Bytes in and out, never text mode: the snapshot files are read back with
+    # `$(cat ...)`, so a "\r\n" from a Windows text-mode stdout would land in
+    # the title and change every digest the consumers compute over it.
+    _JQ_STUB_PY = (
+        "import json, sys\n"
+        "args = sys.argv[1:]\n"
+        "raw = sys.stdin.buffer.read().decode('utf-8')\n"
+        "if args == ['-Rs', '.']:\n"
+        "    out = json.dumps(raw, ensure_ascii=False)\n"
+        "elif args == ['-r', '.title']:\n"
+        "    value = json.loads(raw)['title']\n"
+        "    out = 'null' if value is None else str(value)\n"
+        "elif args == ['-r', '.body // \"\"']:\n"
+        "    value = json.loads(raw).get('body')\n"
+        "    out = '' if value in (None, False) else str(value)\n"
+        "else:\n"
+        "    sys.stderr.write('jq stub: unsupported invocation: %r\\n' % (args,))\n"
+        "    sys.exit(2)\n"
+        "sys.stdout.buffer.write((out + '\\n').encode('utf-8'))\n"
+    )
+
+    def _jq_stub(self, tmp_path: Path, env: dict[str, str]) -> str:
+        """A `jq` for a bash that has none, so the evidence step is exercised
+        rather than skipped where the host lacks the binary.
+
+        `pr-body-snapshot.sh` fails closed without `jq` ("::error::jq is not
+        available ..."), which on a Git Bash without one made every evidence-step
+        case red instead of measuring the script; and a `pytest.skip` here is a
+        loosened ratchet (`a-ratchet-may-only-tighten`). The stand-in is the
+        smallest thing that is honest: it implements the three invocations the
+        step and the gh stub make, byte-exact, and exits 2 on any other filter,
+        so a step that grew a fourth jq call is caught here rather than passed.
+        It is only defined when the bash the step runs under resolves no `jq`
+        (`_bash_has_jq`): where the host has the real binary, the real binary
+        runs, as with `_bash()` preferring the host's Git Bash.
+        """
+        script = tmp_path / "jq_stub.py"
+        script.write_text(self._JQ_STUB_PY, encoding="utf-8", newline="\n")
+        env["JQ_STUB_PYTHON"] = Path(sys.executable).as_posix()
+        env["JQ_STUB_SCRIPT"] = script.as_posix()
+        return 'jq() { "$JQ_STUB_PYTHON" -I "$JQ_STUB_SCRIPT" "$@"; }\n'
+
     def _curl_stub(self, tmp_path: Path, fixtures: dict[str, bytes | str]) -> str:
         """A `curl` that records its argv and serves the fixture the URL names.
 
@@ -2581,9 +2707,14 @@ class TestUxReviewReadsTheScreenshotsBlindFirst:
         # bash -c is a non-interactive shell, so it sources $BASH_ENV before
         # the script: the functions defined there shadow every gh and curl on
         # PATH, wherever the platform's bash put them. gh() serves the body
-        # the step asks the API for; curl() serves the fixtures.
+        # the step asks the API for; curl() serves the fixtures. jq() stands in
+        # for the binary only where this bash resolves none -- the step fails
+        # closed without one, and a host's real jq is the truer instrument.
         stub = tmp_path / "stubs.sh"
-        stub.write_text(self._gh_stub(), encoding="utf-8", newline="\n")
+        stub_text = self._gh_stub()
+        if not _bash_has_jq(bash):
+            stub_text = self._jq_stub(tmp_path, env) + stub_text
+        stub.write_text(stub_text, encoding="utf-8", newline="\n")
         env["BASH_ENV"] = stub.as_posix()
         env["GH_STUB_BODY"] = body
         env["GH_STUB_CALLS"] = (tmp_path / "gh-calls").as_posix()
@@ -10999,7 +11130,7 @@ class TestFirstPrinciplesProblemsFirstContract:
         assert contract.rstrip().endswith("[FIRST-PRINCIPLES-REVIEWED] <head sha>")
         for name in FP_LANES:
             workflow = _workflow(name)
-            assert "grep -iE '^First-Principles-Verdict:'" in workflow
+            assert _reads_header_anchored(workflow, "First-Principles-Verdict:"), name
         # The subtraction-only stance and the SYSTEM RULES block stay.
         assert contract.startswith("SYSTEM RULES (non-negotiable")
         assert "EVERY suggestion you emit must be a SUBTRACTION" in contract
@@ -11141,8 +11272,22 @@ class TestReviewLanesPublishOnlyTheReview:
         # Whatever the step is called, the trim sits right after the
         # execution_file capture and before the header is parsed.
         start = workflow.index("select(.result != null) ] | (last.result")
-        end = workflow.index(f"grep -iE '^{_lane_header(name)}'", start)
-        return workflow[start:end]
+        header = _lane_header(name)
+        # The VERDICT read, in either spelling a lane uses for it, is the end of
+        # the slice. Both spellings are listed because the two fork advisory lanes
+        # read their header with `awk` and the rest with `grep`, and the boundary
+        # is the read itself rather than the program: keying this to `grep` alone
+        # would make the slice run past the capture on a converted lane and the
+        # assertions below would then measure the wrong block. Neither pattern can
+        # match the TRIM a few lines above it -- that one greps with `-q` and its
+        # awk opens `f ||`, where the capture's opens `!found &&`.
+        end_at = re.search(
+            rf"grep -iE '\^{re.escape(header)}'"
+            rf"|!found && tolower\(\$0\) ~ /\^{re.escape(header.lower())}/",
+            workflow[start:],
+        )
+        assert end_at is not None, f"{name}: no verdict read follows the trim"
+        return workflow[start : start + end_at.start()]
 
     def test_every_lane_trims_to_its_own_header(self) -> None:
         for name in ALL_CONCERNS_LANES:
@@ -13610,6 +13755,74 @@ class TestScopeConclusionLadderLivesInOnePlace:
         # and runs no PR tree, so `scripts/scope_candidates.py` there is trusted.
         fork = _step_script(_workflow(self.FORK), "Decide the lane's conclusion")
         assert "scripts/scope_candidates.py conclude" in fork
+
+    def test_the_fork_lane_hands_the_validate_refusal_code_to_the_table(self) -> None:
+        # A `validate` refusal dispatches no leg, so the fold reads `no-report` and
+        # the table's generic sentence for that row names no cause. The code the
+        # refusal writes as a job output is an INPUT to the shared table, so the
+        # cause and its remedy are decided in the one place both lanes read.
+        decide = _step_by_name(self.FORK, "publish", "Decide the lane's conclusion")
+        assert decide["env"]["VALIDATE_RC"] == "${{ needs.validate.outputs.rc }}"
+        run = decide["run"]
+        assert '--refusal "${VALIDATE_RC:-}"' in run
+        # The remedy is a key of its own because a check-run title is capped at 255
+        # characters; the lane selects it by key, never by line number.
+        assert "remedy=\"$(printf '%s\\n' \"$conc\" | sed -n 's/^remedy=//p')\"" in run
+        assert 'echo "remedy=$remedy" >> "$GITHUB_OUTPUT"' in run
+        # Not re-derived in shell: the cause text is authored in the table, so no
+        # value of `$VALIDATE_RC` is ever interpolated into a published verdict.
+        assert "corpus-credential" not in run
+        assert "corpus-uncheckable" not in run
+
+    def test_the_emitted_refusal_codes_are_exactly_the_tables_keys(self) -> None:
+        # The one live coupling nothing else pins: `validate` writes a bare string
+        # (`rc=corpus-credential`), the fork lane hands it to `conclude --refusal`,
+        # and the table names a cause ONLY on an exact key match against
+        # `_VALIDATE_REFUSALS` -- an unrecognized code falls through to the generic
+        # "no leg reported" sentence. So a rename on either side, the emitted string
+        # or the dict key, silently regresses a named refusal to that generic
+        # sentence with no other test failing. Match the two SETS both ways: every
+        # code the workflow emits must be a table key (or it explains nothing), and
+        # every table key must be emitted by some `validate` branch (or it is a dead
+        # entry no run can reach). Read the dict from the module the lane runs, not
+        # a second copy of the names here, which would be one more thing to drift.
+        emitted = set(
+            re.findall(
+                r'echo "rc=(corpus-[a-z-]+)" >> "\$GITHUB_OUTPUT"',
+                _workflow(self.FORK),
+            )
+        )
+        assert emitted, "the validate step emits no rc=corpus-* code any more"
+        keys = set(_scope_candidates()._VALIDATE_REFUSALS)
+        assert emitted == keys, (
+            "the rc=corpus-* codes the fork lane emits and the _VALIDATE_REFUSALS "
+            f"keys have drifted: emitted={sorted(emitted)}, keys={sorted(keys)}. "
+            "A code with no key regresses to the generic sentence; a key with no "
+            "emitter is unreachable."
+        )
+
+    def test_a_floor_override_drops_the_refusal_remedy(self) -> None:
+        # The floor can REPLACE the title with its own reason. A remedy that outlived
+        # it would explain a sentence the check-run does not carry.
+        run = _step_script(_workflow(self.FORK), "Decide the lane's conclusion")
+        after_floor = run.split("floor_ok", 1)[1]
+        assert after_floor.count('remedy=""') >= 2, after_floor.count('remedy=""')
+
+    def test_the_fork_check_run_summary_promises_no_rows_it_has_none_of(self) -> None:
+        # A run where no leg folded any rows has none to point at, in a PR comment or
+        # anywhere else -- and on the refusal path that comment is not posted either.
+        publish = _step_by_name(self.FORK, "publish", "Publish check-run")
+        assert publish["env"]["REMEDY"] == "${{ steps.decide.outputs.remedy }}"
+        run = publish["run"]
+        assert "See the PR comment for the confirmed rows" not in run
+        assert "No leg produced confirmed rows" in run
+        assert '[ -n "${REMEDY:-}" ]' in run
+        # The comment pointer survives only in the arm that HAS a deterministic body
+        # to point at, which is the arm that stamps and publishes one.
+        body_arm = run.split('elif [ -s "$BODY" ]', 1)
+        assert len(body_arm) == 2, "the deterministic-body arm is gone"
+        assert "Full review in the PR comment" in body_arm[1]
+        assert "Full review in the PR comment" not in body_arm[0]
 
 
 _SCOPE_HEAD = "cafe1234cafe1234cafe1234cafe1234cafe1234"
@@ -16561,3 +16774,179 @@ class TestCaptureLanesKeepTheirTriggerSet:
         types = trigger.get("types") or []
         assert "edited" not in types, (name, types)
         assert "synchronize" in types, (name, types)
+
+
+#: The two FORK advisory lanes whose verdict capture runs under ``set -uo pipefail``,
+#: with the header each one reads. The same-repo ``design-review.yml`` and
+#: ``first-principles-review.yml`` are deliberately absent: their post-summary steps
+#: carry no ``set -`` line, so an unmatched ``grep``'s status is masked by the
+#: pipeline's last command and the step cannot die this way. Adding them here would
+#: pin a property they do not have, and would invite a ``pipefail`` to be added to
+#: them later without the capture being converted first.
+_FORK_VERDICT_LANES = (
+    ("fork-design-review.yml", "Design-Verdict:"),
+    ("fork-first-principles-review.yml", "First-Principles-Verdict:"),
+)
+
+
+class TestForkVerdictCaptureNeverAbortsAboveItsOwnFallback:
+    """A fork advisory lane must live to read the fallback written one line below it.
+
+    Both steps end their capture with ``[ -n "$v" ] && verdict="$v"`` and start it
+    with ``verdict="UNKNOWN"``, which is a complete, fail-closed answer for a review
+    that names no verdict. Neither line runs if the capture itself takes the step
+    down: the lane then writes no verdict output at all, and the comment that would
+    have named the cause is never posted.
+
+    Two ordinary model outcomes do exactly that, under the ``bash -e`` a ``run:``
+    block with no ``shell:`` key gets plus the ``set -uo pipefail`` these steps add:
+
+    * a review with NO header -- ``grep`` matches nothing and exits 1, and
+      ``pipefail`` promotes that status to the pipeline's, so the assignment fails;
+    * a review with MANY headers -- ``head -n1`` closes the pipe and its producer
+      dies of SIGPIPE (141). This is the worse arm: a value is already in hand, so
+      an expression that merely suppressed the status would hand the lane a verdict
+      read out of a document the step never finished reading.
+
+    Each step's OWN expression is run, extracted by shape rather than by the program
+    it names, so a pin keyed to one tool cannot keep passing after the capture is
+    rewritten. Both the status and the value are asserted: asserting the value alone
+    passes an expression that returns the right answer and kills the step anyway.
+
+    The two Security Scope lanes read their header with the same single-pass awk,
+    for the same reason. The three sites in these files that ALREADY use a
+    here-string (each with a comment saying a long summary must not manufacture a
+    SIGPIPE status under ``pipefail``) show the rule applies here too: the surviving
+    pipeline is the one place in these steps where it is not met.
+    """
+
+    #: Headers in the many-headers review. Large enough to fill the pipe buffer and
+    #: make ``head -n1``'s exit close it on its producer -- measured to need more
+    #: than a few thousand on Git-for-Windows Bash, where a 64 KiB buffer swallows
+    #: the smaller body whole -- and still a fixture of a couple of megabytes.
+    _MANY_HEADERS = 60_000
+
+    #: Review body kinds. Every one is an ordinary model outcome, not malformed
+    #: input. The last three CARRY a verdict, and they are what pins the conversion
+    #: as behaviour-preserving: an expression that never aborted and also stopped
+    #: reading verdicts would satisfy the status assertion on its own.
+    _REVIEW_KINDS = (
+        "no-header",
+        "header-shaped-prose",
+        "many-headers",
+        "plain",
+        "lowercase",
+        "crlf",
+    )
+
+    #: The fallback line, which is also how the capture is IDENTIFIED: the capture
+    #: is by definition the assignment this line reads, so the variable name comes
+    #: from the fallback rather than from a guess. Both steps ALSO trim their
+    #: summary to the header with a second assignment mentioning the same header,
+    #: and a first-match-wins selector silently measures that one instead.
+    _FALLBACK = '[ -n "$v" ] && verdict="$v"'
+
+    def _capture_line(self, workflow: str, header: str) -> str:
+        """The verdict ASSIGNMENT in *workflow*, named by what the fallback reads.
+
+        Found by SHAPE, never by the program it runs: a selector keyed to ``grep``
+        or to ``awk`` stops finding the capture the day the capture changes tool,
+        and then measures nothing while still passing.
+        """
+        text = _workflow(workflow)
+        assert self._FALLBACK in text, f"{workflow}: {self._FALLBACK!r} is gone"
+        name = self._FALLBACK.split("-n ", 1)[1].split("]", 1)[0].strip().strip('"$')
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                continue
+            if header.lower() not in stripped.lower():
+                continue
+            if stripped.startswith(f'{name}="$('):
+                return stripped
+        raise AssertionError(f"{workflow}: no {header} capture assigned to {name!r}")
+
+    def _body(self, kind: str, header: str) -> tuple[str, str]:
+        """The review text for *kind*, and the value the capture must yield for it."""
+        if kind == "no-header":
+            return "The change refuses nothing new.\n\nNothing to check.\n", ""
+        if kind == "header-shaped-prose":
+            # The whole header, colon and all, but NOT at the start of a record:
+            # the anchor is the only thing that tells it from a real verdict line,
+            # so this case fails the moment a rewrite drops the `^`. (Stripping the
+            # colon instead would be rejected by the colon, not the anchor, and the
+            # case could not catch an unanchored read.)
+            return f"I would write {header} PASS as a header if the contract asked.\n", ""
+        if kind == "plain":
+            return f"{header} CONCERNS\n\nOne thing to watch.\n", "CONCERNS"
+        if kind == "lowercase":
+            # The capture upper-cases, so every later comparison sees one spelling.
+            return f"{header.lower()} block\n", "BLOCK"
+        if kind == "crlf":
+            # A model emitting CRLF must not leave a carriage return inside the
+            # value: that would make each `[ "$verdict" = "BLOCK" ]` test false.
+            return f"{header} BLOCK\r\nrest\r\n", "BLOCK"
+        body = f"{header} PASS\n" + f"{header} BLOCK\n" * self._MANY_HEADERS
+        return body, "PASS"
+
+    @pytest.mark.parametrize(("workflow", "header"), _FORK_VERDICT_LANES)
+    def test_the_step_still_carries_the_fallback_this_pin_is_about(
+        self, workflow: str, header: str
+    ) -> None:
+        """If the fallback goes, the test below is measuring something else."""
+        text = _workflow(workflow)
+        assert 'verdict="UNKNOWN"' in text, (
+            f"{workflow}: no UNKNOWN default, so an aborted capture is no longer "
+            "distinguishable from a lane that simply read no verdict"
+        )
+        assert '[ -n "$v" ] && verdict="$v"' in text, (
+            f"{workflow}: the capture's own fallback is gone; this pin asserts that "
+            "the capture lives long enough to reach it"
+        )
+
+    @pytest.mark.parametrize(("workflow", "header"), _FORK_VERDICT_LANES)
+    @pytest.mark.parametrize("review_kind", _REVIEW_KINDS)
+    def test_every_ordinary_review_reaches_the_fallback_with_the_right_value(
+        self, workflow: str, header: str, review_kind: str, tmp_path: Path
+    ) -> None:
+        bash = _bash()
+        if bash is None:
+            pytest.skip("the capture is Bash; skip where Bash is absent")
+        body, expected = self._body(review_kind, header)
+        review = tmp_path / "review.md"
+        review.write_text(body, encoding="utf-8")
+        line = self._capture_line(workflow, header)
+        name = line.split("=", 1)[0]
+        # The step's own preamble: `pipefail` is what turns an unmatched grep into
+        # the pipeline's status, and `bash -e` below is what the runner supplies for
+        # a `run:` block with no `shell:` key. Running without either is what would
+        # let this pin pass while the lane died.
+        script = "\n".join(
+            [
+                "set -uo pipefail",
+                'summary="$(cat "$IN")"',
+                line,
+                f'printf %s "${name}"',
+            ]
+        )
+        out = subprocess.run(
+            [bash, "-e", "-c", script],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            env={**os.environ, "IN": str(review)},
+            cwd=tmp_path,
+        )
+        assert out.returncode == 0, (
+            f"{workflow}: a {review_kind} review aborted the step "
+            f"(rc={out.returncode}) under the runner's own `bash -e`, above the "
+            f"fallback written for it: {out.stderr.strip()}"
+        )
+        # Clipped: the many-headers body is megabytes, and a failure message that
+        # prints it whole buries the one line saying what went wrong.
+        got = out.stdout if len(out.stdout) <= 120 else out.stdout[:120] + "..."
+        assert out.stdout == expected, (
+            f"{workflow}: a {review_kind} review captured {got!r} "
+            f"({len(out.stdout)} chars), expected {expected!r}"
+        )

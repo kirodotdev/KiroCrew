@@ -82,9 +82,19 @@ pytestmark = pytest.mark.xdist_group(name="tree_scan_test_link_screen_hold_pin")
 SCREENS = frozenset({"first_linked_ancestor", "is_link_or_junction", "is_reparse_point"})
 
 #: By-name resolves in ``os``, ``os.path``, ``pathlib`` and ``shutil``. Both
-#: spellings of each question, because ``pathlib`` renames all of them.
+#: spellings of each question, because ``pathlib`` renames all of them. Plus the
+#: package's own by-name opens in ``platform_compat``: ``open_lock_file`` reaches
+#: ``os.open`` through ``open_create_or_existing``, two hops, so without naming it
+#: here the one-hop growth would drop every screen-then-lock site from the count.
+#: ``open_lock_file_for_sweep`` is the same shape -- it opens the lock by name
+#: (``os.open`` on POSIX, ``CreateFileW`` on Windows) past the one-hop reach -- so
+#: the orphan-lock sweep's screen-then-open site survives the ratchet only while
+#: it too is named here.
 PRIMITIVES = frozenset(
     {
+        "open_create_or_existing",
+        "open_lock_file",
+        "open_lock_file_for_sweep",
         "realpath",
         "readlink",
         "resolve",

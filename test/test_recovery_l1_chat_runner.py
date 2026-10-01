@@ -256,7 +256,6 @@ class TestRunnerBranch:
         for guard in (
             "_prompt_depth == 0",
             "_stop_reason == STOP_REASON_END_TURN",
-            "not _armed_final",
             "not slot._in_stage_execution",
             "not _should_suppress_requeue(slot)",
             "_stop_gen_turn_start",
@@ -885,6 +884,60 @@ class TestStructuralTerminalSlotFlag:
         assert (
             slot._last_turn_structural_terminal_loop_gen == 7
         ), "the verdict was not scoped to the firing loop's config generation"
+
+    @pytest.mark.asyncio
+    async def test_oversized_request_terminal_turn_sets_the_flag(self, tmp_path):
+        """kiro-cli's own "too large to send" refusal must arm the guard too.
+
+        Raised through the REAL classifier rather than a pre-tagged exception, so
+        this pins the whole chain the loop stop depends on: the raw -32603 frame
+        kiro-cli's ACP server emits for an irreducible oversized request (the
+        sentence in ``data``, boilerplate in ``message``) -> ``_raise_acp_error``
+        tags it structural -> the terminal branch records the verdict for the
+        firing loop. Before the classifier knew this sentence the turn ended as a
+        plain terminal error and the loop re-fired the same doomed context every
+        interval until ``max_cycles``.
+        """
+        from kiro_crew.acp.transport_errors import _raise_acp_error
+
+        state, client = _l1_state(tmp_path)
+        client.last_infra_error = None
+        oversized_frame = {
+            "code": -32603,
+            "message": "Internal error",
+            "data": (
+                "This message is too large to send, and it contains no text that can "
+                "be shortened. Remove or reduce the attached content and try again."
+            ),
+        }
+
+        def _raise_oversized(_message, *_a, **_kw):
+            _raise_acp_error(oversized_frame)
+
+        client.stream = MagicMock(side_effect=_raise_oversized)
+        slot = _RecordingSlot("chat-1-oversized")
+        assert slot._last_turn_structural_terminal is False
+        with patch("kiro_crew.dashboard.chat.sel") as mock_sel:
+            mock_sel.return_value = MagicMock()
+            await _run_chat(
+                state,
+                slot,
+                "[auto-nudge cycle 12]\nartifact screenshot: shot.png",
+                _directive_self_wake=True,
+                _directive_loop_id="loop-oversized",
+                _directive_loop_gen=3,
+            )
+            if slot.task:
+                await slot.task
+        assert (
+            slot._last_turn_structural_terminal is True
+        ), "an oversized self-wake turn left no signal for the nudge loop to read"
+        assert slot._last_turn_structural_terminal_loop_id == "loop-oversized"
+        assert slot._last_turn_structural_terminal_loop_gen == 3
+        # The user sees kiro-cli's own sentence, not a retry suggestion.
+        errors = [m["content"] for m in slot.messages if m.get("role") == "error"]
+        assert errors, "the terminal turn appended no error row"
+        assert "too large to send" in errors[-1]
 
     @pytest.mark.asyncio
     async def test_a_human_malformed_turn_does_not_set_the_flag(self, tmp_path):

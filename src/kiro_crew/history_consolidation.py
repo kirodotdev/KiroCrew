@@ -27,6 +27,8 @@ from kiro_crew.history_projection import DISPLAY_ONLY_ROLES
 from kiro_crew.image_refs import strip_image_refs
 from kiro_crew.lesson_validation import (
     LESSON_APPLIES_INSTRUCTION,
+    LESSON_APPLIES_ON_TOPIC,
+    authored_lesson_applies,
     extracted_lesson_applies,
 )
 from kiro_crew.llm_helpers import (
@@ -168,6 +170,31 @@ class _ConsolidationRefusedSentinel:
 
 
 _CONSOLIDATION_REFUSED = _ConsolidationRefusedSentinel()
+
+
+class _LessonDeleteDecision(NamedTuple):
+    """A consolidation lesson-delete decision plus the body it was read from.
+
+    ``checked_value_json`` carries the exact ``value_json`` the tier was read
+    from so an allowed delete can compare-and-delete against it; it is ``None``
+    for a protected decision and for a non-lesson key.
+
+    ``reason`` tells the three protected causes apart so they log and count
+    separately, since they mean different things to an operator:
+
+    * ``"allow"`` -- not protected; the delete proceeds.
+    * ``"tier"`` -- a standing (``always``/unstated) or non-mapping lesson row:
+      a real tier refusal.
+    * ``"absent"`` -- no active row under a ``lesson.*`` key: nothing exists to
+      protect, refused only to keep an unconditional delete out of the
+      delete-plus-re-add window.
+    * ``"unreadable"`` -- the row read raised: a store outage, not a tier
+      decision, and worth a warning.
+    """
+
+    protected: bool
+    checked_value_json: str | None
+    reason: str
 
 
 class AttemptedSpan(NamedTuple):
@@ -1895,6 +1922,76 @@ class HistoryConsolidator:
         """
         return extracted_lesson_applies(item.get("applies"), self._logger)
 
+    def _lesson_delete_decision(
+        self, vector_store: "VectorMemoryStore", del_key: object
+    ) -> "_LessonDeleteDecision":
+        """Whether a consolidation delete of *del_key* must be refused, and the
+        exact stored body the decision was read from.
+
+        A model's guessed contradiction may retire an ``on_topic`` finding but
+        never a standing rule the user taught -- the same invariant the
+        ``/api/lessons`` contradiction sweep enforces before it supersedes a
+        candidate. Only ``lesson.*`` keys carry a tier, so a non-lesson key is
+        never protected here. The stored row is read authoritatively (the tier is
+        write-once, so the persisted value is the author's), and anything that is
+        not the ``on_topic`` tier -- ``always``, an unstated row, an unreadable or
+        missing value -- is protected: the narrowest fail-safe, since demoting a
+        real standing rule is the costlier mistake.
+
+        ``checked_value_json`` is the ``value_json`` the tier was read from, so an
+        allowed delete can COMPARE-AND-DELETE against it: ``_lesson_key`` keys on
+        rule text plus scope alone, so a delete-plus-re-add is the documented way
+        to change a tier and can put a standing rule under the same key between
+        this read and the delete. Passing the checked body as ``expect_value_json``
+        makes the delete a no-op when the row moved, closing that race without a
+        lock this call site cannot hold. It is ``None`` for a protected decision
+        (no delete follows) and for a non-lesson key (which the caller deletes
+        unconditionally, its existing contract).
+        """
+        if not isinstance(del_key, str) or not del_key.startswith("lesson."):
+            return _LessonDeleteDecision(protected=False, checked_value_json=None, reason="allow")
+        try:
+            row = vector_store.get_semantic(del_key)
+        except Exception:
+            # An unreadable row is protected, not silently deletable: a lookup
+            # failure must never widen what a guess is allowed to retire. This is
+            # a store outage, not a tier decision, so it carries its own reason.
+            return _LessonDeleteDecision(
+                protected=True, checked_value_json=None, reason="unreadable"
+            )
+        if not isinstance(row, dict):
+            # No active row under this lesson key. This is NOT a safe no-op: the
+            # allow path deletes unconditionally (no value to compare against),
+            # and the absent state is the intermediate state of the documented
+            # delete-plus-re-add re-tier -- a concurrent learn_add can recreate
+            # the key as a standing rule inside the window between this read and
+            # the delete, which the unconditional delete would then tombstone.
+            # There is nothing legitimate for a guess to delete under an absent
+            # lesson key anyway, so protect: refuse rather than race.
+            return _LessonDeleteDecision(protected=True, checked_value_json=None, reason="absent")
+        raw = row.get("value_json")
+        checked_value_json = raw if isinstance(raw, str) else None
+        decoded: object = raw
+        if isinstance(raw, str):
+            try:
+                decoded = json.loads(raw)
+            except (TypeError, ValueError):
+                # A row whose body will not decode has no readable tier; treat it
+                # as the protected (standing) class rather than guessing it is a
+                # finding.
+                return _LessonDeleteDecision(protected=True, checked_value_json=None, reason="tier")
+        # Only the mapping shape can carry a tier. A legacy string row, or any
+        # value that does not decode to a mapping, has no author-stated tier and
+        # is protected -- the same unstated->standing treatment readers give it.
+        if not isinstance(decoded, dict):
+            return _LessonDeleteDecision(protected=True, checked_value_json=None, reason="tier")
+        protected = authored_lesson_applies(decoded.get("applies")) != LESSON_APPLIES_ON_TOPIC
+        return _LessonDeleteDecision(
+            protected=protected,
+            checked_value_json=None if protected else checked_value_json,
+            reason="tier" if protected else "allow",
+        )
+
     def _save_lessons(
         self,
         raw: object,
@@ -2045,20 +2142,87 @@ class HistoryConsolidator:
             deleted = 0
             skipped = 0
             refused = 0
+            protected = 0
+            absent = 0
+            unreadable = 0
+            stale_skipped = 0
             for item in semantic_items[:_MAX_SEMANTIC_PER_CONSOLIDATION]:
                 if not isinstance(item, dict) or not isinstance(item.get("key"), str):
                     continue
                 # Handle deletion of stale keys
                 if item.get("delete"):
+                    # A model's guess may retire an on_topic finding, never a
+                    # standing rule the user taught. The /api/lessons
+                    # contradiction sweep enforces this; consolidation is the
+                    # sibling model-judged deletion path, so it enforces the same
+                    # invariant here rather than in delete_semantic -- an explicit
+                    # forget must still be able to remove a standing rule, and
+                    # only this call site knows the delete is an inference.
+                    decision = self._lesson_delete_decision(vector_store, item["key"])
+                    if decision.protected:
+                        # Three protected causes mean different things to an
+                        # operator, so they log and count apart rather than as one
+                        # "protected" total that hid a store outage among real
+                        # tier refusals.
+                        if decision.reason == "absent":
+                            absent += 1
+                            self._logger.info(
+                                "Semantic consolidation skipped delete of %r: no "
+                                "active lesson row (refused to avoid an "
+                                "unconditional delete racing a re-add)",
+                                item["key"],
+                            )
+                        elif decision.reason == "unreadable":
+                            unreadable += 1
+                            self._logger.warning(
+                                "Semantic consolidation could not read lesson %r to "
+                                "check its tier; refused the delete (store read "
+                                "failed)",
+                                item["key"],
+                            )
+                        else:
+                            protected += 1
+                            self._logger.info(
+                                "Semantic consolidation refused to retire standing "
+                                "lesson %r: a guess may retire an on_topic finding, "
+                                "never a standing rule",
+                                item["key"],
+                            )
+                        continue
                     with self._publication_hold_checked(key, commit_state) as publication:
                         if private_policy:
                             published = vector_store.propose_semantic_delete(item["key"], source)
                             if published:
                                 refused += 1
                         else:
-                            published = vector_store.delete_semantic(item["key"], source)
+                            # Compare-and-delete against the body the tier was
+                            # read from: _lesson_key keys on rule text plus scope,
+                            # so a concurrent delete-plus-re-add (the documented
+                            # way to change a tier) can put a standing rule under
+                            # this key between the read and here. expect_value_json
+                            # makes the delete a no-op when the row moved, so a
+                            # guess cannot tombstone a replacement it never checked.
+                            # A non-lesson key carries None and deletes as before.
+                            published = vector_store.delete_semantic(
+                                item["key"],
+                                source,
+                                expect_value_json=decision.checked_value_json,
+                            )
                             if published:
                                 deleted += 1
+                            elif decision.checked_value_json is not None:
+                                # The compare-and-delete lost: the row body moved
+                                # between the guard's read and the UPDATE, so
+                                # nothing was tombstoned. Announce it like the
+                                # sibling paths do rather than letting it vanish
+                                # into "0 deleted", which reads as no delete items.
+                                stale_skipped += 1
+                                self._logger.info(
+                                    "Semantic consolidation skipped delete of %r: "
+                                    "the row changed under the key after the tier "
+                                    "check (compare-and-delete no-op)",
+                                    item["key"],
+                                )
                         if published:
                             publication.mark_committed()
                     continue
@@ -2156,14 +2320,28 @@ class HistoryConsolidator:
                         reject_code.value,
                         reason,
                     )
-            if written or deleted or skipped or refused:
+            if (
+                written
+                or deleted
+                or skipped
+                or refused
+                or protected
+                or absent
+                or unreadable
+                or stale_skipped
+            ):
                 self._logger.info(
                     "Semantic consolidation: %d written, %d deleted, %d skipped (no value), "
-                    "%d refused",
+                    "%d refused, %d protected (standing rule), %d absent, %d unreadable, "
+                    "%d stale-skipped (compare-and-delete no-op)",
                     written,
                     deleted,
                     skipped,
                     refused,
+                    protected,
+                    absent,
+                    unreadable,
+                    stale_skipped,
                 )
 
         # Episodic entries

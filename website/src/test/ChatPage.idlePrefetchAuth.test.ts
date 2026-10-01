@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 
 /**
@@ -25,6 +25,10 @@ import { join } from 'node:path'
  * no exported seam.
  */
 const SRC = readFileSync(join(__dirname, '..', 'pages', 'ChatPage.tsx'), 'utf8')
+// ChatPage's owners (pages/chat/page/): the retired latch must not return through one of them.
+const OWNER_SRCS = readdirSync(join(__dirname, '..', 'pages', 'chat', 'page'))
+  .filter(f => /\.tsx?$/.test(f) && !/\.test\./.test(f))
+  .map(f => readFileSync(join(__dirname, '..', 'pages', 'chat', 'page', f), 'utf8'))
 
 describe('real-gesture authorization', () => {
   it('refreshes the gesture stamp from gestures only, not from scroll', () => {
@@ -122,7 +126,7 @@ describe('top sentinel (handleTopReached)', () => {
     // Neither obvious signal can key this. A one-way input latch (one write, no
     // reset) left one touch of a scrollable transcript authorizing the automatic
     // doors for the rest of the mount; it no longer exists anywhere in the file.
-    expect(SRC).not.toMatch(/sawRealInputRef/)
+    for (const src of [SRC, ...OWNER_SRCS]) expect(src).not.toMatch(/sawRealInputRef/)
     // And `!follow` is the design shouldAutoFillOlder's own contract names as
     // falsified — follow is released with no reader input by an anchor restore and
     // at slot entry, where `lastWriteTop` resets to -1 so the idle branch's

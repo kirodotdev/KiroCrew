@@ -81,10 +81,10 @@ describe('appRunStates', () => {
 
     it('REPORTS a job execution auto-paused after repeated failures', () => {
       // The bug this covers: auto-pause sets enabled=False exactly like a user
-      // pause (cron.py record_failure), so reading `enabled` alone dropped the
-      // mark on an app's WORST job -- the one that failed enough times for the
-      // scheduler to give up on it. The wire distinguishes them with
-      // `user_paused`, which execution never sets.
+      // pause (cron_service/model.py record_failure), so reading `enabled`
+      // alone dropped the mark on an app's WORST job -- the one that failed
+      // enough times for the scheduler to give up on it. The wire
+      // distinguishes them with `user_paused`, which execution never sets.
       expect(appRunStates([
         job({ app: 'ledger', enabled: false, user_paused: false, last_status: 'error' }),
       ], NOW)).toEqual({ ledger: 'error' })

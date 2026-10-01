@@ -8,7 +8,7 @@
  * real Redux store, mocked api/dashboardConfig) but ChatPage's message list
  * goes through an additional turn-grouping/virtualization layer upstream of
  * the plain render call (`it.msgs` / `renderMessage(it.idx, it.msg)`, see
- * ChatPage.tsx ~L2531-3045) that the existing ChatPage.*.test.tsx harnesses
+ * ChatPage.tsx's `renderMessage` and pages/chat/page/transcriptRows.ts) that the existing ChatPage.*.test.tsx harnesses
  * all stub out (`react-virtuoso`, `ChatSidebar`, etc.) rather than drive live.
  * Reproducing that grouping pipeline in a test-only harness is disproportionate
  * to this task and risks testing a divergent re-implementation instead of the

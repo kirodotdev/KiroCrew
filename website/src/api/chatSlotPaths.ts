@@ -1,10 +1,10 @@
 /**
  * Request paths for the chat-slot API, owned in ONE place.
  *
- * `client.ts` builds the request from these; a caller that must NAME the request
- * without making it — `switchSlotFailureReport` journaling a REJECTED slot-detail
- * fetch, for which no Response exists — reads the same helper, so a route change
- * cannot leave the journal naming a path that was never requested.
+ * `api/client/chat.ts` builds the request from these; a caller that must NAME
+ * the request without making it — `switchSlotFailureReport` journaling a REJECTED
+ * slot-detail fetch, for which no Response exists — reads the same helper, so a
+ * route change cannot leave the journal naming a path that was never requested.
  *
  * Deliberately not exported from `client.ts`: ~600 test files replace that module
  * wholesale with `vi.mock('../api/client', () => ({ api: {...} }))`, and vitest

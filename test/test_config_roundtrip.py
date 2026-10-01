@@ -1,7 +1,7 @@
 """Tests that KiroCrewConfig.save() preserves all dataclass fields.
 
 Regression test for the bug where to_dict() omitted secretary,
-taskrunner, orchestrator, skills, and tunnel — causing save() to
+taskrunner, skills, and tunnel — causing save() to
 silently drop them from config.json.
 """
 
@@ -52,14 +52,16 @@ def test_save_load_roundtrip_taskrunner(cfg_file):
     assert raw["taskrunner"]["max_parallel_steps"] == 5
 
 
-def test_save_load_roundtrip_orchestrator(cfg_file):
-    """Orchestrator config must survive a save/load cycle."""
-    cfg = KiroCrewConfig()
-    cfg.orchestrator.stage_timeout_seconds = 900
+def test_retired_orchestrator_section_is_dropped_on_save(cfg_file):
+    """A retired orchestrator section loads as nothing and is not re-emitted."""
+    cfg_file.write_text(
+        json.dumps({"orchestrator": {"stage_timeout_seconds": 900}}), encoding="utf-8"
+    )
+    cfg = KiroCrewConfig.load()
     cfg.save()
 
     raw = json.loads(cfg_file.read_text(encoding="utf-8"))
-    assert raw["orchestrator"]["stage_timeout_seconds"] == 900
+    assert "orchestrator" not in raw
 
 
 def test_save_load_roundtrip_skills(cfg_file):

@@ -1,4 +1,4 @@
-/* The crews create sheet must not pre-fill the Agent Template field.
+/* The crews create sheet must not pre-fill the Built from field.
  *
  * It used to open with `kirocrew` already selected, so a crew created without
  * touching that field became an alias for the DEFAULT agent: dispatch flattens a
@@ -42,7 +42,7 @@ async function openCreateSheet() {
   return newCrew
 }
 
-describe('crews create sheet — Agent Template must be explicit', () => {
+describe('crews create sheet — Built from must be explicit', () => {
   beforeEach(() => {
     mockCreate.mockReset()
     mockCreate.mockResolvedValue({ ok: true })
@@ -50,11 +50,11 @@ describe('crews create sheet — Agent Template must be explicit', () => {
 
   it('opens with the template unselected, showing the placeholder', async () => {
     await openCreateSheet()
-    const trigger = await screen.findByRole('combobox', { name: 'Agent Template' })
+    const trigger = await screen.findByRole('combobox', { name: 'Built from' })
     // The placeholder, NOT a pre-selected 'kirocrew'. Asserting the absence of
     // the old default is the actual regression: a trigger that reads 'kirocrew'
     // is the bug, however the placeholder happens to render.
-    expect(trigger).toHaveTextContent('Select an agent template…')
+    expect(trigger).toHaveTextContent('Select a custom agent…')
     expect(trigger).not.toHaveTextContent('kirocrew')
   })
 
@@ -68,7 +68,7 @@ describe('crews create sheet — Agent Template must be explicit', () => {
     fireEvent.click(screen.getByText('Create'))
 
     await waitFor(() =>
-      expect(screen.getByText('Agent Template is required')).toBeInTheDocument(),
+      expect(screen.getByText('Choose a custom agent to build from')).toBeInTheDocument(),
     )
     // The guard's whole point: no request is issued, so the server's own
     // refusal is a backstop rather than the only line of defence.

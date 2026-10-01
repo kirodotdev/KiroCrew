@@ -24,6 +24,7 @@ import { metricColor } from './utils/metricColor'
 import { fetchNotifications, ackNotification, armBootNotificationsFallback } from './store/notificationsSlice'
 import { useWebSocket } from './hooks/useWebSocket'
 import { useDashboardHealthProbe } from './hooks/useDashboardHealthProbe'
+import { useConfigAutolinkRules } from './hooks/useConfigAutolinkRules'
 import { useTheme } from './hooks/useTheme'
 import { useBranding } from './hooks/useBranding'
 import { useRumPageView } from './hooks/useRumPageView'
@@ -124,6 +125,9 @@ import InstancesViewport from './components/InstancesViewport'
 import EmbeddedHostBridge from './components/EmbeddedHostBridge'
 import EmbeddedDragRegionReporter from './components/EmbeddedDragRegionReporter'
 import EmbedTabStrip from './components/EmbedTabStrip'
+// Dev-only layout-editor harness (RFC §7 PR 2). Lazy so it never weighs the main
+// bundle — it is a developer route, not a shipped surface.
+const LayoutEditorHarnessPage = lazy(() => import('./pages/LayoutEditorHarnessPage'))
 import { useUpdateSubscription, type UpdateState } from './hooks/useUpdateSubscription'
 import UpdateModal from './components/UpdateModal'
 
@@ -157,6 +161,7 @@ import ShortcutsModal from './components/ShortcutsModal'
 import QuickSearchSurface from './components/QuickSearchSurface'
 import ReportProblemModal from './components/ReportProblemModal'
 import FeedbackPill from './components/FeedbackPill'
+import { Glass } from './components/Glass'
 import KiroAccountModal, { type KiroAccountUsage } from './components/KiroAccountModal'
 import WindowsTitlebarMenu from './components/WindowsTitlebarMenu'
 import { NavHistoryArrows } from './components/NavHistoryArrows'
@@ -393,6 +398,12 @@ function readMetricsFrame(raw: SysMetricsFrame) {
     },
   }
 }
+
+// Corner radius, in px, of the top bar's Liquid Glass pills (the search
+// trigger, the readout capsule; components/FeedbackPill.tsx carries the same
+// number): `rounded-xl`, which the update pill already wears, so the row reads
+// as one family of boxes.
+const TOPBAR_PILL_RADIUS = 12
 
 // The top-bar search is laid out by CSS, not measured here: `.topbar` in
 // index.css is a three-track grid whose centre track is
@@ -1572,10 +1583,18 @@ function NotificationsBellButton() {
                 the blur to nothing there, so there is no hard boundary.
                 -z-10 + isolate on the sheet keeps it behind the cards without
                 forming a backdrop root (isolation is not a root trigger, so
-                the cards' own backdrop-blur still samples the page). */}
+                the cards' own backdrop-blur still samples the page).
+                Strength: 2% black, 2px blur. The 12% / 4px it wore before the
+                rows became liquid glass (#3029, for text contrast on flat
+                cards) now stacks under every row's own glass tint and
+                `glass-shadow`, and read as a heavy shadow down the sheet's
+                left edge (measured 248 -> 217 on a white page, 12% darker).
+                At 2% the strip still separates the column from the page
+                (248 -> 243) without reading as a shadow; the rows carry the
+                contrast themselves now. */}
             <div
               aria-hidden="true"
-              className="absolute inset-y-0 -left-20 right-0 -z-10 pointer-events-none bg-black/[.12] backdrop-blur-xs [mask-image:linear-gradient(to_right,transparent,black_80px)] [-webkit-mask-image:linear-gradient(to_right,transparent,black_80px)]"
+              className="absolute inset-y-0 -left-20 right-0 -z-10 pointer-events-none bg-black/[.02] backdrop-blur-[2px] [mask-image:linear-gradient(to_right,transparent,black_80px)] [-webkit-mask-image:linear-gradient(to_right,transparent,black_80px)]"
             />
             <div className="flex-1 min-h-0 px-3 py-2 flex flex-col">
               <NotificationFeed
@@ -1659,6 +1678,11 @@ export default function App() {
   // in-window navigation back to this frame instead of escaping to '/'.
   const initialPopoutPath = useRef(window.location.pathname + window.location.search).current
   const dispatch = useAppDispatch()
+  // Register the operator's link rules (dashboard.link_patterns) into the
+  // autolink registry from the shell, so every surface linkifies — not only
+  // after a chat page has rendered. Owns the registry; the chat page reuses
+  // the same ['dashboardConfig'] query for its source hosts.
+  useConfigAutolinkRules()
   // The slice also carries the slot list and the subagent maps, so selecting all of
   // it would re-render the root on dashboard traffic neither of these fields reads.
   const connected = useAppSelector(s => s.dashboard.connected)
@@ -1679,6 +1703,9 @@ export default function App() {
   const canApplyUpdate = useAppSelector(s => s.dashboard.status?.update_can_apply)
   const canArmUpdate = useAppSelector(s => s.dashboard.status?.update_can_arm)
   const updateCommand = useAppSelector(s => s.dashboard.status?.update_command) || ''
+  // A policy-pinned command owns updates here and can update on its own, so
+  // the popup shows the policy note; Settings keeps the switch.
+  const updatesManagedByCommand = useAppSelector(s => s.dashboard.status?.update_managed_by) === 'command'
   const updateTargetVersion = useAppSelector(
     s => s.dashboard.status?.update_latest_version_display
       || s.dashboard.status?.update_latest_version
@@ -1719,7 +1746,7 @@ export default function App() {
     }
   }, [])
   // Sum across every registered built-in surface — Chat (slot-based),
-  // Autopilot (slot-based), Notifications (notifications slice), Secretary
+  // Notifications (notifications slice), Secretary
   // (attention slice), etc. App badges (dynamic, via `mc:app:badge` and the
   // global-approvals query below) are added below since they live outside
   // the Redux store and outside the registry.
@@ -2794,6 +2821,8 @@ export default function App() {
   // changelog is going to show" — the startup-video gate needs the second one.
   const [changelogDecided, setChangelogDecided] = useState(false)
   const [autoUpdate, setAutoUpdate] = useState(true)
+  const [autoUpdateError, setAutoUpdateError] = useState('')
+  const autoUpdateTouched = useRef(false)
   const [fullChangelog, setFullChangelog] = useState('')
   const [showFull, setShowFull] = useState(false)
   const [devMode, setDevMode] = useState(() => localStorage.getItem('mc-dev-mode') === '1')
@@ -3062,6 +3091,21 @@ export default function App() {
     queryFn: () => api.kirocrewConfig(),
   })
   const { data: kirocrewCfg, isSuccess: kirocrewCfgLoaded } = kirocrewCfgQuery
+  // The update modal's toggle starts at a guess (`true`), so each time the modal
+  // opens it reads the saved `auto_update` fresh. A click made while that read
+  // is in flight wins over it, and only a read that succeeded is applied.
+  const refetchKirocrewCfg = kirocrewCfgQuery.refetch
+  useEffect(() => {
+    if (!showChangelog) return
+    let live = true
+    autoUpdateTouched.current = false
+    void refetchKirocrewCfg().then(r => {
+      if (!live || autoUpdateTouched.current) return
+      const saved = (r.data as { auto_update?: unknown } | undefined)?.auto_update
+      if (r.isSuccess && typeof saved === 'boolean') setAutoUpdate(saved)
+    })
+    return () => { live = false }
+  }, [showChangelog, refetchKirocrewCfg])
   const kiroCreditSurface = isKiroBackend(kirocrewCfg)
   // "The config read failed" must survive its own retry: a data-less errored
   // query goes back to `pending` (error cleared) for the whole refetch, and
@@ -3357,7 +3401,7 @@ export default function App() {
       // No qualifying section means this build's release has no notes yet, which
       // is the normal state on a dev build. Say nothing: the modal exists to
       // deliver notes, and one carrying someone else's is worse than none.
-      if (text) { setChanges(text); setShowChangelog(true) }
+      if (text) { setChanges(text); setAutoUpdateError(''); setShowChangelog(true) }
     }).then(() => {
       // Stamp the version ONLY on a response we actually read. The old `finally`
       // stamped it either way, so a single failed fetch retired that version's
@@ -3747,9 +3791,9 @@ export default function App() {
    * `replace` so Back returns to the chat rather than to a second copy of it.
    * That is a property of the drawer that hosts the rail, so it is not an option.
    *
-   * Rows the full nav drawer offers and this rail does not: Library (reachable
-   * from Discover), Developer, Terminal and Connect-your-phone — each toggles a
-   * desktop-shaped surface or is moot on the phone itself.
+   * The only row the full nav drawer offers and this rail does not is
+   * Connect-your-phone, which is moot on the phone itself. Terminal toggles the
+   * docked panel and closes the drawer so the panel is not left behind it.
    *
    * The brand mark on top is a control -- the product's "home": it goes to the
    * chat root (the page every other app's logo returns to) and closes the
@@ -3820,6 +3864,17 @@ export default function App() {
             onClickOverride={discoverNavActive ? onActivate : undefined}
             badge={<NavBadge navId="apps" collapsed appBadges={discoverBadges} />}
           />
+          <NavItem
+            navId="apps-library"
+            path="/apps/library"
+            label={i18nT('nav.library')}
+            icon={<LayoutGrid size={16} />}
+            active={libraryNavActive}
+            collapsed
+            touch
+            replace
+            onClickOverride={libraryNavActive ? onActivate : undefined}
+          />
           {/* Apps list: scrolls in its OWN frame when many apps are installed --
               the brand mark, the Main rows and Discover above it, and
               Capabilities / Settings / Search below it stay pinned, exactly as
@@ -3832,6 +3887,32 @@ export default function App() {
           >
             {sortedAppGroup.map(railRow)}
           </div>
+          {devMode && (
+            <NavItem
+              navId="developer"
+              path="/developer"
+              label={i18nT('app.developer')}
+              icon={<Code size={16} />}
+              active={activePath === '/developer'}
+              collapsed
+              touch
+              replace
+              onClickOverride={activePath === '/developer' ? onActivate : undefined}
+            />
+          )}
+          {terminalEnabled && (
+            <NavItem
+              navId="terminal"
+              path="#"
+              label={i18nT('app.terminal')}
+              icon={<SquareTerminal size={16} />}
+              active={bottomTerminalOpen || terminalPoppedOut}
+              pressed={bottomTerminalOpen || terminalPoppedOut}
+              collapsed
+              touch
+              onClickOverride={() => { onActivate(); if (terminalPoppedOut) focusTerminalPopout(); else toggleBottomTerminal(activeSlotProject) }}
+            />
+          )}
           {railRow(capabilitiesSurface)}
           {/* The account modal (balance, sign-in state): the desktop opens it
               from the readout capsule, which the phone does not render, so the
@@ -4154,10 +4235,17 @@ export default function App() {
             reads it any more. Keep it. */}
         {!isMobile && (
           <div data-topbar-overlay className="flex items-center gap-1.5 min-w-0">
-          <button
+          {/* The trigger IS a Liquid Glass pane (components/Glass.tsx, chip
+              recipe) rendered as the button, the same material as the
+              sidebar's search field and the composer dock: no border and no
+              fill of its own, `glass-hover` for the hover step. */}
+          <Glass
+            as="button"
             type="button"
+            variant="chip"
+            radius={TOPBAR_PILL_RADIUS}
             onClick={commandPalette.openPalette}
-            className="h-7 flex-1 min-w-0 px-3 rounded-md border border-border bg-card text-muted hover:text-text hover:border-border-strong transition-colors flex items-center justify-center gap-2 cursor-pointer shadow-none"
+            className="glass-shadow glass-hover h-7 flex-1 min-w-0 px-3 text-muted hover:text-text transition-colors flex items-center justify-center gap-2 cursor-pointer"
             /* The trigger has to describe the surface it actually opens. While an app
                owns the quick-search slot the gesture opens a launcher -- typing runs
                commands and does not search the corpora this label promises -- so
@@ -4184,7 +4272,7 @@ export default function App() {
                 ? i18nT('app.k_run_a_command')
                 : i18nT('app.k_search_for_anything')}
             </span>
-          </button>
+          </Glass>
           {/* Focus mode. `aria-pressed` rather than a second label, so a screen
               reader gets the state from the control instead of from copy that
               would have to be kept in step with the icon. */}
@@ -4532,9 +4620,20 @@ export default function App() {
               <motion.div
                 layout
                 transition={{ layout: { duration: capsuleLayoutPulse ? 0.25 : 0, ease: 'easeOut' } }}
-                className={`tb-capsule flex items-center gap-2 h-7 px-2.5 rounded-xl transition-colors duration-300 ${offline ? 'bg-danger-subtle' : 'bg-card'}`}
+                className="flex items-center shrink-0"
               >
-                {segments.flatMap((s, i) => (i === 0 ? [s] : [<span key={`sep-${i}`} className="w-px h-3.5 bg-border shrink-0" aria-hidden="true" />, s]))}
+                {/* The capsule IS a Liquid Glass pane (components/Glass.tsx,
+                    chip recipe) hosting the segments directly, so the
+                    `.tb-capsule > …` rungs in index.css still see them as its
+                    children; the motion wrapper outside only animates width.
+                    Offline is a tint step (`glass-danger`), never a fill. */}
+                <Glass
+                  variant="chip"
+                  radius={TOPBAR_PILL_RADIUS}
+                  className={`tb-capsule glass-shadow flex items-center gap-2 h-7 px-2.5 ${offline ? 'glass-danger' : ''}`}
+                >
+                  {segments.flatMap((s, i) => (i === 0 ? [s] : [<span key={`sep-${i}`} className="w-px h-3.5 bg-border shrink-0" aria-hidden="true" />, s]))}
+                </Glass>
               </motion.div>
             )
           })()}
@@ -4693,11 +4792,16 @@ export default function App() {
             ) : (
               <div className="text-sm text-muted py-4 text-center"><CheckCircle className="lucide-inline" /> {i18nT('app.you_re_on_the_latest_version')}</div>
             )}
-            <div className="flex items-center justify-between mt-4 pt-3 border-t border-border">
-              <span className="text-[13px] text-muted">{i18nT('app.auto_update_on_restart')}</span>
-              <Toggle checked={autoUpdate} label={i18nT('app.auto_update_on_restart')}
-                onChange={async next => { setAutoUpdate(next); await api.setAutoUpdate(next) }} />
-            </div>
+            {updatesManagedByCommand ? (
+              <p className="text-[13px] text-muted mt-4 pt-3 border-t border-border">{i18nT('pages.settings.aboutPanel.updates_managed_by_policy')}</p>
+            ) : (
+              <div className="flex items-center justify-between mt-4 pt-3 border-t border-border">
+                <span className="text-[13px] text-muted">{i18nT('app.auto_update_on_restart')}</span>
+                <Toggle checked={autoUpdate} label={i18nT('app.auto_update_on_restart')}
+                  onChange={async next => { autoUpdateTouched.current = true; setAutoUpdate(next); setAutoUpdateError(''); try { await api.setAutoUpdate(next) } catch (e) { autoUpdateTouched.current = false; setAutoUpdate(!next); setAutoUpdateError(String(e instanceof Error ? e.message : e)) } }} />
+              </div>
+            )}
+            {autoUpdateError && <ErrorNotice className="mt-3" askAgent title={i18nT('pages.overview.agentCfgTab.save_failed')} message={autoUpdateError} onHandoff={() => setShowChangelog(false)} />}
             <div className="mt-3 pt-3 border-t border-border">
               <button className="text-[13px] text-muted cursor-pointer hover:text-text transition-colors bg-transparent border-none p-0 font-body" onClick={async () => {
                 if (!showFull) { if (!fullChangelog) { const d = await api.changelog(); setFullChangelog(d.content || '') }; setShowFull(true) } else { setShowFull(false) }
@@ -5226,7 +5330,11 @@ export default function App() {
                       the mark-to-text distance to 6px and cost 4px the budget
                       below never accounts for. Spacing is explicit per child instead. */}
                   <span className="flex items-center shrink-0 text-muted"><GithubIcon size={15} /></span>
-                  <div className="rail-community-links flex items-center gap-[5px] flex-1 min-w-0 ml-1.5 text-[12px]">
+                  {/* `flex-wrap`: in a locale where "Star us" and "Report issue" together
+                      outrun the rail (the pseudolocale does, and so will any long-word
+                      language), the second link drops to its own line with the full
+                      row width instead of truncating to a third of itself. */}
+                  <div className="rail-community-links flex flex-wrap items-center gap-x-[5px] gap-y-0.5 flex-1 min-w-0 ml-1.5 text-[12px]">
                     <a href="https://github.com/kirodotdev/KiroCrew" target="_blank" rel="noopener noreferrer" title={i18nT('app.star_kirocrew_on_github')} aria-label={i18nT('app.star_kirocrew_on_github')} className="shrink-0 rounded text-muted hover:text-text transition-colors">{i18nT('app.star_us')}</a>
                     <span aria-hidden="true" className="shrink-0 opacity-40">·</span>
                     {/* "Report issue" opens the SAME diagnostics flow as Settings ›
@@ -5388,6 +5496,9 @@ export default function App() {
                 Matches bare /settings too (empty splat). */}
             <Route path="/settings/*" element={<SettingsPage />} />
             <Route path="/developer" element={<DeveloperPage />} />
+            {/* Dev-only layout-editor harness (RFC §7 PR 2) — a standalone route
+                to exercise the editor in isolation. Not linked from nav. */}
+            <Route path="/developer/layout-editor" element={<ErrorBoundary><Suspense fallback={null}><LayoutEditorHarnessPage /></Suspense></ErrorBoundary>} />
             <Route path="/artifacts" element={<ArtifactsPage />} />
             <Route path="/artifacts/deploy" element={<Navigate to="/deploy" replace />} />
             <Route path="/artifacts/remote/:provider/:externalId" element={<ErrorBoundary><RemoteArtifactDetailPage /></ErrorBoundary>} />

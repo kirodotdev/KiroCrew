@@ -145,45 +145,6 @@ async def test_final_parent_reply_after_delivery_is_complete(completion_state):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("auto_run", [False, True])
-async def test_plan_handoff_notifies_only_completion_or_manual_approval(
-    completion_state, monkeypatch, tmp_path, auto_run
-):
-    from kiro_crew.dashboard import chat_orchestrator as orchestrator
-
-    state, slot = completion_state
-    slot.mode = "orchestrator"
-    slot._stage_titles = ["First", "Second"]
-    slot._auto_run = auto_run
-    monkeypatch.setattr(orchestrator, "config_dir", lambda: tmp_path)
-
-    async def run_stage(state, slot, message, **kwargs):
-        callback = kwargs.get("_on_consumed")
-        if callable(callback):
-            callback(True)
-        slot.append("assistant", "Stage result", "msg msg-a")
-        await cr._finish_queue_cycle(state, slot)
-
-    monkeypatch.setattr(orchestrator, "_run_chat", run_stage)
-    await asyncio.wait_for(orchestrator._stage_loop(state, slot, auto_run=auto_run), timeout=10)
-    tasks = list(state._background_tasks)
-    if tasks:
-        await asyncio.gather(*tasks)
-    frames = [
-        call.args[1] for call in state.broadcast_ws.call_args_list if call.args[0] == "chat_done"
-    ]
-    assert frames[0]["continuing"] is True
-    if auto_run:
-        assert len(frames) == 3
-        assert frames[1]["continuing"] is True
-        assert frames[-1]["continuing"] is False
-        assert frames[-1]["needs_input"] is False
-    else:
-        assert len(frames) == 2
-        assert frames[-1]["needs_input"] is True
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize("linked", ["", "slack:123.456"])
 async def test_workflow_activity_is_captured_in_completion_frame(completion_state, linked):
     from kiro_crew.workflows.registry import STATUS_FINISHED, RunHandle, RunRegistry

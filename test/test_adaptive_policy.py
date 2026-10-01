@@ -590,6 +590,24 @@ class TestSlowStart:
             )
         assert d.effective_exec_cap == 4
 
+    def test_an_idle_step_beside_a_doubled_gate_step_reports_both_moves(self) -> None:
+        # Slow start doubles the gate step: the note names the real move.
+        pol = AdaptivePolicy(
+            _params(exec_ceiling=9, exec_initial=4, slow_start=True, increase_successes=1)
+        )
+        pol.observe(_sample(0.0))
+        # A lowered then raised ceiling leaves the cap below the fresh-start
+        # value without any pressure, so slow start is still on.
+        pol.update_params(replace(pol.params, exec_ceiling=1))
+        pol.update_params(replace(pol.params, exec_ceiling=9))
+        assert pol.exec_cap == 1 and pol.slow_start
+        busy = SpawnGateStats(capacity=4, in_flight=4, queued=2, successes=5)
+        d = pol.observe(_sample(60.0, spawn_gate=busy))
+        assert d.effective_exec_cap == 2 and d.spawn_gate_capacity == 8
+        assert "spawn gate target 4 -> 8 on backend inits" in d.reason
+        # The idle figure is the clock the rule judged, not one reset by the step.
+        assert "idle and clear for 60s" in d.reason
+
     def test_snapshot_reports_the_regime(self) -> None:
         pol = AdaptivePolicy(self._ss())
         pol.observe(self._busy(0.0, 4, 1))
@@ -670,6 +688,177 @@ class TestPauseAndProbe:
         assert d.action == ACTION_DECREASE and not d.paused
         d = pol.observe(_sample(5.0, loop_lag_ms=20.0))
         assert not d.paused
+
+
+# --- idle recovery ------------------------------------------------------------
+
+
+class TestIdleRecovery:
+    """A cut the exec track can never earn back is retired once the track is idle.
+
+    The earn rules need demand at the cap and completions. An idle track has
+    neither, and neither does load on the runner lane (workflow ``ctx.agent()``
+    calls), so without this rule a cap cut during overlapping workflows stayed
+    at 1 for the life of the process, however long the host sat clear.
+    """
+
+    @staticmethod
+    def _cut_to_the_floor(pol: AdaptivePolicy) -> float:
+        # Two lag cuts 30 s apart: 4 -> 2 -> 1. The last pressure is at t=35.
+        pol.observe(_sample(0.0, loop_lag_ms=400.0, running=4))
+        pol.observe(_sample(35.0, loop_lag_ms=400.0, running=2))
+        assert pol.exec_cap == 1
+        return 35.0
+
+    def test_a_cut_cap_climbs_back_to_the_fresh_start_cap_when_idle_and_clear(self) -> None:
+        pol = AdaptivePolicy(_params(exec_ceiling=9, exec_initial=4))
+        t = self._cut_to_the_floor(pol)
+        caps: list[tuple[float, int]] = []
+        reasons: set[str] = set()
+        for _ in range(120):  # ten minutes of clear, idle samples
+            t += 5.0
+            d = pol.observe(_sample(t))
+            caps.append((t, d.effective_exec_cap))
+            if d.action == ACTION_INCREASE:
+                reasons.add(d.reason)
+        # Nothing moves inside the idle window measured from the last pressure.
+        assert all(cap == 1 for at, cap in caps if at < 35.0 + 60.0)
+        steps = [at for (at, cap), (_, prev) in zip(caps[1:], caps) if cap > prev]
+        # 1 -> 2 -> 3 -> 4, one step per clean window, then it stops: the
+        # fresh-start cap bounds the recovery, never the user's ceiling of 9.
+        assert [cap for _, cap in caps][-1] == 4
+        assert len(steps) == 3
+        assert all(b - a >= 30.0 for a, b in zip(steps, steps[1:]))
+        assert reasons and all("toward the fresh-start cap 4" in r for r in reasons), reasons
+
+    def test_an_unreported_probe_resumes_when_idle_and_clear(self) -> None:
+        """The reported shape: severe pressure paused dispatch, the probe slot went
+        to work the exec track does not count, and the cap sat at 1."""
+        pol = AdaptivePolicy(_params(exec_ceiling=9, exec_initial=4))
+        pol.observe(_sample(0.0, free_mem_mb=1000.0))
+        pol.observe(_sample(5.0, free_mem_mb=1000.0))
+        assert pol.paused
+        d = pol.observe(_sample(10.0))
+        assert d.action == ACTION_PROBE and d.effective_exec_cap == 1
+        t = 10.0
+        actions = []
+        while t < 5.0 + 60.0 - 5.0:
+            t += 5.0
+            actions.append(pol.observe(_sample(t)).action)
+        assert set(actions) == {ACTION_HOLD} and pol.paused
+        d = pol.observe(_sample(65.0))
+        assert d.action == ACTION_RESUME and not d.paused
+        assert d.effective_exec_cap == 2
+        assert "no probe result" in d.reason
+        # Idle is no evidence about backend inits: the gate stays at its floor.
+        assert d.spawn_gate_capacity == 1
+        for _ in range(40):
+            t += 5.0
+            d = pol.observe(_sample(t + 5.0))
+        assert d.effective_exec_cap == 4
+
+    def test_demand_or_any_signal_restarts_the_idle_clock(self) -> None:
+        pol = AdaptivePolicy(_params(exec_ceiling=9, exec_initial=4))
+        t = self._cut_to_the_floor(pol)
+        # 50 s idle, then one sample with a queued run below the cap's reach...
+        pol.observe(_sample(t + 50.0))
+        pol.observe(_sample(t + 55.0, queued=1))
+        # ...so 60 s after the LAST pressure is not enough: the clock restarted.
+        d = pol.observe(_sample(t + 65.0))
+        assert d.effective_exec_cap == 1 and d.action == ACTION_HOLD
+        assert "idle; restoring toward 4" in d.reason
+        d = pol.observe(_sample(t + 115.0))
+        assert d.effective_exec_cap == 2
+        # A single uncorroborated signal cuts nothing but restarts the clock too.
+        pol.observe(_sample(t + 120.0, start_latency_p95_ms=40_000.0))
+        d = pol.observe(_sample(t + 175.0))
+        assert d.effective_exec_cap == 2
+        d = pol.observe(_sample(t + 180.0))
+        assert d.effective_exec_cap == 3
+
+    def test_a_gate_step_does_not_spend_the_idle_exec_step(self) -> None:
+        pol = AdaptivePolicy(_params(exec_ceiling=9, exec_initial=4, increase_successes=1))
+        t = self._cut_to_the_floor(pol)
+        gate_cap = pol.gate_cap
+        # Exec idle, while backend inits keep the gate busy and earning.
+        busy = SpawnGateStats(capacity=gate_cap, in_flight=gate_cap, queued=2, successes=0)
+        pol.observe(_sample(t + 5.0, spawn_gate=busy))
+        d = pol.observe(_sample(t + 60.0, spawn_gate=replace(busy, successes=5)))
+        assert d.action == ACTION_INCREASE
+        assert d.spawn_gate_capacity == gate_cap + 1
+        assert d.effective_exec_cap == 2  # the due idle step landed on the same sample
+        # Both moves are explained by the one decision that made them.
+        assert "toward the fresh-start cap" in d.reason
+        assert f"spawn gate target {gate_cap} -> {gate_cap + 1} on backend inits" in d.reason
+
+    def test_every_gate_step_names_itself_and_only_itself(self) -> None:
+        # Gate-only: the reason carries the gate note and no exec note.
+        pol = AdaptivePolicy(_params(exec_ceiling=4, exec_initial=4, increase_successes=1))
+        pol.observe(_sample(0.0))
+        busy = SpawnGateStats(capacity=4, in_flight=4, queued=2, successes=5)
+        d = pol.observe(_sample(31.0, spawn_gate=busy))
+        assert d.action == ACTION_INCREASE and d.effective_exec_cap == 4
+        assert d.reason == "spawn gate target 4 -> 5 on backend inits"
+        # Earned exec step and gate step together: both notes.
+        pol = AdaptivePolicy(_params(exec_ceiling=9, exec_initial=4, increase_successes=1))
+        pol.observe(_sample(0.0))
+        d = pol.observe(_sample(31.0, running=4, queued=2, completions=5, spawn_gate=busy))
+        assert d.effective_exec_cap == 5 and d.spawn_gate_capacity == 5
+        assert d.reason == "clean window earned +1; spawn gate target 4 -> 5 on backend inits"
+
+    def test_work_below_the_cap_is_not_idle(self) -> None:
+        pol = AdaptivePolicy(_params(exec_ceiling=9, exec_initial=4))
+        pol.observe(_sample(0.0, loop_lag_ms=400.0, running=4))
+        assert pol.exec_cap == 2
+        for i in range(1, 40):
+            d = pol.observe(_sample(i * 5.0, running=1))
+        # One run under a cap of two neither earns (no demand at the cap) nor
+        # idles: the hold says which.
+        assert d.effective_exec_cap == 2
+        assert "no demand at the cap" in d.reason
+
+    def test_a_cap_at_the_fresh_start_value_does_not_drift_when_idle(self) -> None:
+        pol = AdaptivePolicy(_params(exec_ceiling=9, exec_initial=4))
+        for i in range(200):
+            d = pol.observe(_sample(i * 5.0))
+        assert d.effective_exec_cap == 4
+
+    def test_snapshot_names_the_cut_behind_a_low_cap(self) -> None:
+        pol = AdaptivePolicy(_params(exec_ceiling=9, exec_initial=4))
+        assert pol.snapshot()["last_cut"] is None
+        pol.observe(_sample(0.0, loop_lag_ms=400.0, running=4))
+        cut = pol.snapshot()["last_cut"]
+        assert cut["action"] == ACTION_DECREASE and cut["t"] == 0.0
+        assert cut["signals"] == [SIGNAL_LOOP_LAG]
+        assert "corroborated pressure" in cut["reason"]
+        pol.observe(_sample(10.0, free_mem_mb=1000.0))
+        pol.observe(_sample(15.0, free_mem_mb=1000.0))
+        cut = pol.snapshot()["last_cut"]
+        assert cut["action"] == ACTION_PAUSE and cut["t"] == 15.0
+        # An increase does not erase why the cap was lowered.
+        pol.observe(_sample(20.0))
+        assert pol.snapshot()["last_cut"]["t"] == 15.0
+
+    def test_an_idle_resume_never_passes_the_fresh_start_cap(self) -> None:
+        # floor == initial: the probe-completion resume is floor + 1, but idle
+        # evidence buys at most what a restart would start at.
+        pol = AdaptivePolicy(_params(exec_ceiling=9, exec_initial=4, floor=4))
+        pol.observe(_sample(0.0, free_mem_mb=1000.0))
+        pol.observe(_sample(5.0, free_mem_mb=1000.0))
+        assert pol.paused
+        t = 5.0
+        while pol.paused:
+            t += 5.0
+            d = pol.observe(_sample(t))
+        assert d.action == ACTION_RESUME and d.effective_exec_cap == 4
+        for _ in range(40):
+            t += 5.0
+            d = pol.observe(_sample(t))
+        assert d.effective_exec_cap == 4
+
+    def test_the_idle_window_must_be_positive(self) -> None:
+        with pytest.raises(ValueError):
+            _params(idle_recovery_secs=0.0)
 
 
 # --- ceiling + fixed -----------------------------------------------------------

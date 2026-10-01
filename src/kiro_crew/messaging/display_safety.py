@@ -119,6 +119,23 @@ _MD_LINK = re.compile(
     rf"\[([^\[\]\n]*)\]\(({md_link_destination(_MD_LINK_DESTINATION_CHAR_CLASS)}*)\)"
 )
 _SLACK_LINK = re.compile(r"<([^<>|\n]*)\|([^<>\n]*)>")
+# A line-leading heading / subtext marker the client removes at render: an ATX
+# heading (``#``..``######`` + space) or Discord subtext (``-#`` + space), at the
+# start of the string or a line. The marker vanishes on screen, so a credential
+# whose halves sit either side of it -- ``...AKIA`` ending one message, ``# REST``
+# opening the next -- reads whole to the reader while every literal scan sees the
+# ``# `` between them. Anchored to a line start so a ``#`` mid-line (a fragment,
+# a comment) is left untouched.
+_HEADING_MARKER = re.compile(r"(?m)^(?:#{1,6}|-#)[ \t]+")
+# A line-leading Discord blockquote marker the client removes at render: ``> ``
+# (single line) or ``>>> `` (the rest of the message), at the start of the string
+# or a line. Like the heading marker it vanishes on screen, so a credential whose
+# halves sit either side of it -- ``...AKIA`` ending one message, ``> REST`` (or
+# ``>>> REST``) opening the next -- reads whole to the reader while every literal
+# scan sees the ``> `` between them. Anchored to a line start so a ``>`` mid-line
+# (a shell prompt, a quote inside prose) is left untouched; ``>>>`` is matched
+# before ``>`` by the alternation order so the multiline form is fully consumed.
+_BLOCKQUOTE_MARKER = re.compile(r"(?m)^(?:>>>|>)[ \t]+")
 
 #: How many consecutive messages one INTERIOR reading may span in
 #: :func:`severs_a_credential`. A credential framed by a spoiling message on each
@@ -198,6 +215,10 @@ def canonicalize_display(text: str) -> str:
       WhatsApp and iMessage renderers use and collapse to their label;
     * **emphasis / code / spoiler delimiters** vanish -- ``AKIA**REST**`` and
       Discord's ``AKIA||REST||`` likewise;
+    * **line-leading heading / subtext / blockquote markers** (``# ``..``###### ``,
+      Discord's ``-# ``, and Discord's ``> ``/``>>> `` blockquote prefixes) are
+      removed at render, so a key split as ``...AKIA`` ending one message and
+      ``# REST`` / ``> REST`` opening the next is whole on screen;
     * **invisible format characters** were never rendered at all -- see
       :func:`_strip_format_chars`.
 
@@ -215,6 +236,8 @@ def _display_form(text: str, collapse: Callable[[str], str]) -> str:
     out = collapse(text)
     out = _SLACK_LINK.sub(r"\2", out)
     out = _EMPHASIS_RUN.sub("", out)
+    out = _HEADING_MARKER.sub("", out)
+    out = _BLOCKQUOTE_MARKER.sub("", out)
     return _strip_format_chars(out)
 
 

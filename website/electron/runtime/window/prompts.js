@@ -9,6 +9,8 @@
  * Forms take the focused dashboard's own theme variables when its document can
  * report them, and the native dark/light palette otherwise.
  */
+const { defaultedPort } = require("../../gateway-auth-hint");
+
 function createWindowPrompts({
   BaseWindow,
   BrowserWindow,
@@ -135,7 +137,7 @@ function createWindowPrompts({
 
     const currentTitle = focused.getTitle();
     const focusedPort = focused._mcBackendUrl
-      ? new URL(focused._mcBackendUrl).port
+      ? defaultedPort(focused._mcBackendUrl)
       : "";
     const esc = (value) => value
       .replace(/&/g, "&amp;")

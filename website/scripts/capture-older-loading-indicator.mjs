@@ -23,7 +23,7 @@
  *     rawCount = total there, so oldestIndex is 0 and the jump reports the
  *     message as no longer loaded.
  *   - a `surface`/`mode` of 'chat' on the resumed slot. ChatPage's
- *     `filteredSlots` keeps only '' | 'orchestrator' | 'crew', so any other
+ *     `filteredSlots` keeps only the default surface, so any other
  *     value hides the slot, URL-sync cannot adopt it, and the post-mount ?sid
  *     effect switches straight back to whatever slot the URL already named.
  *

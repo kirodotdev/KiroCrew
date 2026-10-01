@@ -82,8 +82,8 @@ def test_the_trigger_overlap_threshold_the_page_quotes_is_the_real_one(doc_text:
     ), f"the page quotes a trigger threshold that is no longer {MIN_TRIGGER_OVERLAP}"
 
 
-def test_empty_triggers_still_refuse_a_delegation_with_that_code(doc_text: str) -> None:
-    """§When not to route names the refusal code a triggerless crewmate returns."""
+def test_empty_triggers_only_skip_routing_not_named_delegation(doc_text: str) -> None:
+    """§When not to route says a triggerless crewmate can still be named."""
     handler = (
         Path(__file__).parent.parent
         / "src"
@@ -92,8 +92,9 @@ def test_empty_triggers_still_refuse_a_delegation_with_that_code(doc_text: str) 
         / "handlers"
         / "messaging.py"
     ).read_text(encoding="utf-8")
-    assert '"code": "crew_delegation_disabled"' in handler
-    assert "crew_delegation_disabled" in doc_text
+    assert "crew_delegation_disabled" not in handler
+    assert "crew_delegation_disabled" not in doc_text
+    assert "delegated to by name" in doc_text
 
 
 def test_the_config_fields_the_page_names_are_still_on_the_crew_record(doc_text: str) -> None:

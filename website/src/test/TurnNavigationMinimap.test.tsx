@@ -468,3 +468,80 @@ describe('TurnNavigationMinimap', () => {
     window.matchMedia = original
   })
 })
+
+/** A top-level assistant table as index.css lets it paint into the row's
+ *  gutters: the real wrapper chain under a mounted row, stopping 40px from
+ *  each pane edge (the pane is 0..1100) — the band the rail keeps. */
+function appendBreakoutTable(row: HTMLElement, top: number, bottom: number): HTMLElement {
+  const assistant = document.createElement('div')
+  assistant.dataset.role = 'assistant'
+  const bubble = document.createElement('div')
+  bubble.className = 'message-bubble'
+  const scope = document.createElement('div')
+  scope.dataset.imageScope = ''
+  const stableRoot = document.createElement('div')
+  const table = document.createElement('div')
+  table.className = 'markdown-table'
+  table.getBoundingClientRect = () => rect(top, bottom, 40, 1020)
+  stableRoot.append(table); scope.append(stableRoot); bubble.append(scope); assistant.append(bubble); row.append(assistant)
+  return table
+}
+
+const settle = async () => { for (let i = 0; i < 4; i++) await new Promise(resolve => setTimeout(resolve, 20)) }
+
+describe('TurnNavigationMinimap stays static while breakout tables pass', () => {
+  // The clearance lives in index.css (chatTableBreakout.test.tsx pins it):
+  // a breakout table never enters the rail's band, so the rail has nothing
+  // to yield to and the pane keeps one scrollbar state and one width.
+  it.each(['left', 'right'] as const)('%s rail: an on-screen table entering and leaving a mounted row changes neither the rail nor the scrollbar', async (side) => {
+    const scroller = buildScroller()
+    const rows = scroller.querySelectorAll<HTMLElement>('[data-display-index]')
+    render(<TurnNavigationMinimap items={ITEMS} scrollerRef={{ current: scroller }} onNavigate={vi.fn()} side={side} />)
+    const button = await screen.findByRole('button')
+    await settle()
+    const scrollbar = scroller.style.scrollbarWidth || ''
+    expect(scrollbar).toBe(side === 'right' ? 'none' : '')
+    // Second row (240..340) is on screen; the table streams in under the rail.
+    const table = appendBreakoutTable(rows[1], 250, 330)
+    await settle()
+    expect(screen.getByRole('button')).toBe(button)
+    expect(scroller.style.scrollbarWidth || '').toBe(scrollbar)
+    table.remove()
+    await settle()
+    expect(screen.getByRole('button')).toBe(button)
+    expect(scroller.style.scrollbarWidth || '').toBe(scrollbar)
+  })
+
+  it('a table in view does not end a scrub, and releasing the pointer keeps the rail', async () => {
+    const scroller = buildScroller()
+    const onNavigate = vi.fn()
+    render(<TurnNavigationMinimap items={ITEMS} scrollerRef={{ current: scroller }} onNavigate={onNavigate} />)
+    const button = await screen.findByRole('button')
+    button.getBoundingClientRect = () => rect(100, 300, 8, 28)
+    await settle()
+    fireEvent.pointerDown(button, { button: 0, pointerId: 1, clientY: 100 })
+    fireEvent.pointerMove(button, { pointerId: 1, clientY: 300 })
+    expect(onNavigate).toHaveBeenLastCalledWith(7, { instant: true })
+    const rows = scroller.querySelectorAll<HTMLElement>('[data-display-index]')
+    appendBreakoutTable(rows[1], 250, 330)
+    await settle()
+    fireEvent.pointerMove(button, { pointerId: 1, clientY: 100 })
+    expect(onNavigate).toHaveBeenLastCalledWith(1, { instant: true })
+    fireEvent.pointerUp(button, { pointerId: 1 })
+    await settle()
+    expect(screen.getByRole('button')).toBe(button)
+  })
+
+  it('keeps keyboard focus on the rail while a table scrolls under it', async () => {
+    const scroller = buildScroller()
+    scroller.tabIndex = -1
+    render(<TurnNavigationMinimap items={ITEMS} scrollerRef={{ current: scroller }} onNavigate={vi.fn()} />)
+    const button = await screen.findByRole('button')
+    await settle()
+    button.focus()
+    const rows = scroller.querySelectorAll<HTMLElement>('[data-display-index]')
+    appendBreakoutTable(rows[1], 250, 330)
+    await settle()
+    expect(document.activeElement).toBe(button)
+  })
+})

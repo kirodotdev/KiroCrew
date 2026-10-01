@@ -83,6 +83,8 @@ The endpoint returns the enriched note on success, including resolved source, fu
 
 Channels register lazily on the first push to each declared channel. App lifecycle routes call `NotificationBus.unregister_app_channels(app_name)` while holding the app lifecycle lock; disabling or uninstalling an app removes its registered `<app>.*` channels, and a later enabled push registers them again. `test_notifications_push.py::TestUnregisterAppChannels` pins boundary-safe removal and preservation of system channels. `RESERVED_APP_NAMES` rejects `system` during manifest validation, and `_resolve_app_channels` rejects it again, preventing app channels from shadowing `system.*`.
 
+System channels are fixed in `notifications.bus.SYSTEM_CHANNELS`, including `system.monitor` (see Per-channel settings). A legacy `DashboardState.notify(kind, ...)` call maps `kind` to `system.<kind>`, falling back to `system.agent`, unless the caller passes `channel=`. `payload_from_legacy` raises `NotificationValidationError` when that override names anything but a system channel, and `NotificationCoordinator.notify` drops such a note with a warning; `test_monitor_notice_channel.py::TestLegacyChannelOverride` pins the override and the rejection.
+
 ## Per-channel settings
 
 `notifications.settings.ChannelSettings` is state-owned, writes atomically, and loads an invalid settings file as empty defaults. `ChannelSettings.apply` runs in `DashboardState._deliver_note` before append and broadcast, so disk and clients receive the same user view while `NotificationBus` remains policy-free.
@@ -90,6 +92,8 @@ Channels register lazily on the first push to each declared channel. App lifecyc
 - A muted non-protected channel remains in history but receives `silenced: true` and passive priority. `test_apply_mute_forces_passive_and_silenced` and `test_muted_channel_excluded_from_badge` pin the visibility and badge invariant.
 - A priority override replaces the effective producer or channel priority.
 - `system.approval` is protected. `ChannelSettings.update` rejects muting or lowering it, and `ChannelSettings.apply` enforces the same floor for hand-edited settings; `test_protected_channel_cannot_be_muted_or_lowered` and `test_apply_ignores_noncritical_override_on_protected_channel` cover both boundaries.
+
+`system.monitor` is a system channel for the gateway's monitoring-loop stop and finish notices. `GatewayOrchestrator._notify_nudge_expired` emits them through `DashboardState.notify(..., channel=MONITOR_CHANNEL)`, and the note keeps the legacy `kind` `agent`. The channel shares the `system.agent` default priority and is not protected. `ChannelSettings._seed_monitor_from_agent` runs at construction: a settings mapping with no `system.monitor` key receives an in-memory copy of its `system.agent` entry, so a boot never writes the file and a fresh install with no stored `system.agent` entry seeds nothing. The next `update()` persists the copy. Every `update()` write keeps a `system.monitor` key, `{}` when the channel has no settings, as the record that the seed ran; a build without this key handling rewrites every dict-valued `channel_settings` entry as-is, so the record survives a downgrade, and removing it re-runs the seed and can re-mute a channel the user unmuted. `all_settings()` omits empty entries, so the channels listing never shows `{}`. `test_notification_settings.py::TestSeedMonitorFromAgent` pins the seed, with `test_unmuted_monitor_survives_downgrade_rewrite` and `test_fresh_install_agent_mute_does_not_seed_monitor` covering the downgrade and fresh-install boundaries; `test_monitor_notice_channel.py` pins channel registration, the legacy `kind` override, notice routing and the settings listing.
 
 Dashboard-user settings routes expose the union of registered channels and stored settings through `api_notification_channels`; `api_notification_channel_settings` accepts mute and priority updates, clears an override for `priority: null`, and broadcasts `notification_channel_settings`.
 
@@ -206,10 +210,12 @@ three sites:
   snapshot and the transcript rehydration, not through this frame, and stays
   silent.
 
-Every chime is suppressed during reconnect catch-up replay, and
+Every synthesized chime (`TURN_DONE_KIND` and all three `APPROVAL_KIND`
+sites) is suppressed during reconnect catch-up replay, and
 `shouldChimeOnTurnDone` also suppresses slot-less turn completions. A real feed
 `notification` frame fires `MC_NOTIFICATION_EVENT` with its own `kind`, except
-when the note is muted-channel (`silenced`) or `passive`.
+when the note is muted-channel (`silenced`) or `passive`; that sound is not
+gated on catch-up, only the frame's live banner is (see Trigger below).
 
 ### Settings and resolution
 
@@ -257,7 +263,8 @@ unsilenced notes in the Redux store and, when the count grows, posts one toast
 carrying the newest note's title and flattened body, tagged with its
 `approval_id` / `job_id` / `task_id` (or `kirocrew-notif`) so a burst about
 one subject replaces rather than stacks. An `approval` frame reaches the OS
-through the feed entry `useWebSocket` dispatches for it; the socket layer
+through the feed entry the socket's approval registry
+(`website/src/hooks/websocket/approvals.ts`) dispatches for it; the socket layer
 constructs no toast of its own. One event, one constructor, one tag: the OS
 collapses only equal tags, so a second constructor with its own tag is two
 banners for one approval.
@@ -275,7 +282,8 @@ best-effort `requestPermission()` on an undecided permission runs regardless
 of focus.
 
 The opt-in "a background chat finished" toast (`hooks/chatCompleteNotify.ts`,
-constructed in `useWebSocket` on `chat_done`) is a separate, default-OFF
+constructed by the socket's turn-completion owner
+`website/src/hooks/websocket/turnCompletion.ts` on `chat_done`) is a separate, default-OFF
 surface with its own `kirocrew-chat-done:<slot>` tag; it shares only the away
 predicate.
 
@@ -317,15 +325,17 @@ server-side.
 ### Trigger
 
 The banner listens to `MC_LIVE_NOTIFICATION_EVENT` (`hooks/notificationEvent.ts`),
-which `useWebSocket` fires for a `notification` frame received on a live
-connection and for the feed note it synthesizes from an `approval` frame (the
+which the socket fires for a `notification` frame received on a live
+connection (the frame's arm in `useWebSocket`'s router) and for the feed note
+the approval registry (`website/src/hooks/websocket/approvals.ts`) synthesizes
+from an `approval` frame (the
 note carries the owning `slot`, so `targetsCurrentView` skips it while that
 chat is on screen and its inline permission card is visible; an approval with
 no slot banners on every surface). It never reads the Redux list: the boot `fetchNotifications`
 snapshot and reconnect refetches fill the store with history, and history is
-never bannered. `useWebSocket` withholds the event during a reconnect catch-up
-(`reconnectingRef`) for both frames, the same window that mutes the turn-done
-chime.
+never bannered. Both paths withhold the event during a reconnect catch-up
+(`reconnectingRef`, held by `website/src/hooks/websocket/connection.ts`), the
+same window that mutes the turn-done chime.
 
 ### Priorities
 
@@ -363,7 +373,10 @@ retires every pending card.
 Newest on top. Beyond the top card, up to `BANNER_DECK_DEPTH` (2) older cards
 peek as a deck of BLANK shells (the card's glass only, no text, icon or time;
 4/8 px offset, .98/.96 scale, the `glass-faded` tint step), so nothing prints through the
-translucent top card. Each shell and the "Show N more" pill on the top card's
+translucent top card. The shells are absolutely positioned over the top card's
+box, so the top card is `position: relative` and its higher `zIndex` paints it
+above them — unpositioned, it sat under the shells, which blurred it and took
+its close click. Each shell and the "Show N more" pill on the top card's
 corner are the same control (`Show N more notifications`) that expands to a
 vertical list of at most `BANNER_EXPANDED_MAX` (4) cards plus a "+N more in your
 inbox" line that goes to `/notifications` (through the navigation leave guard) —
@@ -372,13 +385,26 @@ full width, with its close visible at rest (no hover on touch).
 
 ### Motion
 
-Enter: slide in from the right with a fade (~220 ms). Exit, for auto-hide and
+Enter: slide in from the right with a fade (~220 ms, ease-out; the deck offsets
+move on the same curve). Exit, for auto-hide and
 dismiss alike: the card shrinks about its top-right corner and travels to the
 bell (`computeExitDelta` measures the vector from the card's own rect to
 `bellRef`'s) while fading (~260 ms) — the relocation animates the same element
-into its new home rather than swapping it out. Under `prefers-reduced-motion`
-(`useReducedMotion`) enter and exit are plain fades and the deck/list switch
-does no layout animation. Escape dismisses the topmost card; arrival never moves
+into its new home rather than swapping it out. The presence is
+`mode="popLayout"`: a leaving card is taken out of flow the instant it is
+dismissed or auto-hidden, so the card behind it moves into the vacated slot
+straight away rather than after the exit finishes. That slide is its own
+layout transition, 160 ms on an ease-out-expo curve (`[0.16, 1, 0.3, 1]`), short
+and front-loaded because it is the one motion a user chases with a second
+click: every card's close sits at the same offset from its top-right corner, so
+the next close is under a stationary pointer within a few frames and repeated
+clicks clear the stack. For the whole of its exit a leaving card takes no
+pointer events (`pointerEvents: 'none'` in the exit target, `'auto'` in the
+live one), so a click during the overlap reaches the card sliding in, never
+the one flying out. Under `prefers-reduced-motion`
+(`useReducedMotion`) enter and exit are plain fades (the exit still drops
+pointer events) and neither the slot fill nor the deck/list switch does any
+layout animation. Escape dismisses the topmost card; arrival never moves
 focus.
 
 ### Setting

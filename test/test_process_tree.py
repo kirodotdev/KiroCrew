@@ -693,7 +693,10 @@ class TestEverySessionPathSnapshots:
         assert after.startswith(
             "await self._snapshot_descendants(retry_when_empty=True) except BaseException:"
         ), "the spawn snapshot sits outside the cleanup guard"
-        assert "await self.kill(" in after, "the guard does not tear the runtime down"
+        # The guard waits on one shielded cleanup task, and that task kills.
+        assert "self._failed_start_cleanup()" in after, "the guard does not tear the runtime down"
+        cleanup = inspect.getsource(rt.AcpRuntime._failed_start_cleanup)
+        assert "await self.kill(" in cleanup, "the guard does not tear the runtime down"
 
 
 # ── 6. Session cleanup on cancellation ──

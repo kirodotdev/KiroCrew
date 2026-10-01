@@ -40,6 +40,7 @@ from kiro_crew.agent_spec_format import (
     spec_stem,
 )
 from kiro_crew.config.paths import kiro_agents_dir, project_agents_dir, project_kiro_dir
+from kiro_crew.dashboard.side_readonly_spec import is_readonly_spec_description
 from kiro_crew.executors import discovery_executor
 from kiro_crew.hooks import FileTooLargeError, is_unc_shape, unc_probe_allowed
 from kiro_crew.pinned_fs import open_fenced_for_read
@@ -249,6 +250,35 @@ class AgentInfo:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+def is_internal_agent_spec(info: object) -> bool:
+    """Whether a discovery row is one of Kiro Crew's own generated specs.
+
+    Two kinds are published into the user-level agents directory, the only place
+    kiro-cli can load them from, and neither is a sub-agent:
+
+    * the derived read-only spec a side turn runs under
+      (``dashboard.side_readonly_spec``, ``<agent>--readonly``), identified by
+      the owner marker its ``description`` opens with -- the same marker
+      publication uses to tell its own file from a user's, so a hand-authored
+      agent that merely ends in ``--readonly`` stays spawnable;
+    * a skill-view alias (``kirocrew-skill-view-*``), which discovery already
+      leaves out of the roster; matched here too so a row built some other way
+      cannot put one back.
+
+    A roster that offers either sends the model straight into a spawn that
+    fails: the read-only spec is written per side turn, after the shared
+    kiro-cli listed its agents, so the child never advertises it. Reads fields
+    with ``getattr`` because the rosters' tests and edition seams hand in rows
+    that are not full ``AgentInfo`` objects.
+    """
+    if is_readonly_spec_description(getattr(info, "description", None)):
+        return True
+    return any(
+        isinstance(value, str) and is_native_skill_alias_name(value)
+        for value in (getattr(info, "filename", None), getattr(info, "name", None))
+    )
 
 
 SKILL_URI_PREFIX = "skill://"

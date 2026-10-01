@@ -34,7 +34,7 @@ from kiro_crew.dashboard.chat_tag_grants import (
     store_write_blocked,
 )
 from kiro_crew.dashboard.chat_utils import slot_history_key
-from kiro_crew.dashboard.create_rate_limit import TAG_CREATE, allow_create
+from kiro_crew.dashboard.create_rate_limit import TAG_COLUMN_CREATE, TAG_CREATE, allow_create
 from kiro_crew.dashboard.handlers._shared import _owner_denial_response, read_bounded_json
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 from kiro_crew.dashboard.state import DashboardState, mint_tags_revision
@@ -471,6 +471,12 @@ def _refuse_vocabulary_write(
     -- rather than only where a tool layer chooses to restate it. The
     unattributable-caller refusal (:func:`token_auth.refuse_unattributable_caller`)
     runs first, for the reason its docstring gives.
+
+    The board's column layout (``/api/chat/tag-columns``) is the same kind of
+    shared, ownerless state -- a column an app coined would sit in the person's
+    board with nothing to tell it apart -- so its four write handlers (create,
+    update, delete, reorder) apply this refusal too, and the
+    ``chat_tag_column_*`` MCP tools rely on it.
 
     Returns the refusal response, or ``None`` when the write may proceed.
     """
@@ -1490,9 +1496,41 @@ def _state_lane_owner(
     return None
 
 
+def _tag_column_twin(state: DashboardState, column: dict) -> dict | None:
+    """The existing tag column that shows exactly what *column* would.
+
+    Same name (case-insensitive), tag list, mode and ``include_untagged``: a
+    column that also shows untagged sessions is a different view, so it is not
+    a twin. ``tag_columns.json`` is loaded verbatim, so a persisted ``tag_ids``
+    that is not a list is simply not a match rather than an error.
+    """
+    want_name = str(column.get("name") or "").strip().lower()
+    want_ids = list(column.get("tag_ids") or [])
+    for col in state._tag_boards:
+        if col.get("source", "tags") != "tags":
+            continue
+        if str(col.get("name") or "").strip().lower() != want_name:
+            continue
+        have_ids = col.get("tag_ids")
+        if not isinstance(have_ids, list) or have_ids != want_ids:
+            continue
+        if str(col.get("mode") or "any") != str(column.get("mode") or "any"):
+            continue
+        if bool(col.get("include_untagged")) != bool(column.get("include_untagged")):
+            continue
+        return col
+    return None
+
+
 async def api_chat_tag_column_create(request: web.Request) -> web.Response:
     """POST /api/chat/tag-columns — append a new sidebar column."""
     state: DashboardState = request.app["state"]
+    refused = _refuse_vocabulary_write(state, request, "chat.tag_column_create")
+    if refused is not None:
+        return refused
+    # The create budget is charged further down, only on an actual append, so
+    # an ``ensure`` retry that finds its twin (or an existing lane) costs nothing.
+    rl_source, rl_caller = request_origin(request, what="tag column write", log=logger)
     body, body_err = await read_bounded_json(request)
     if body_err is not None:
         return body_err
@@ -1513,13 +1551,48 @@ async def api_chat_tag_column_create(request: web.Request) -> web.Response:
             if owner is not None:
                 existing = dict(owner)
                 sel().log_api_access(
-                    caller="dashboard",
+                    caller=rl_caller,
                     operation="chat.tag_column_create",
                     outcome="allowed",
-                    source="dashboard",
+                    source=rl_source,
                     resources=f"{existing.get('id')} (existing lane {column['state_key']})",
                 )
                 return web.json_response(existing, status=200)
+        elif body.get("ensure") is True and column["name"]:
+            # Opt-in ENSURE for a named tag column, decided under the lock for
+            # the reason the lane branch above is: a client-side "does it
+            # exist" check reads a list that can be stale, so two agents
+            # retrying the same create would both append. The board UI never
+            # sends ``ensure`` (it adds unnamed columns on purpose), so its
+            # append-always behaviour is unchanged.
+            match = _tag_column_twin(state, column)
+            if match is not None:
+                sel().log_api_access(
+                    caller=rl_caller,
+                    operation="chat.tag_column_create",
+                    outcome="allowed",
+                    source=rl_source,
+                    resources=f"{match.get('id')} (existing column)",
+                )
+                return web.json_response(dict(match), status=200)
+        # The same per-caller create budget as a tag: the board is as shared and
+        # as unbounded as the vocabulary, and the browser is exempt for the same
+        # reason (a person clicking is not the loop this bounds).
+        if rl_source != "dashboard" and not allow_create(TAG_COLUMN_CREATE, rl_caller):
+            sel().log_api_access(
+                caller=rl_caller,
+                operation="chat.tag_column_create",
+                outcome="denied",
+                source=rl_source,
+                error="create rate limited",
+            )
+            return web.json_response(
+                {
+                    "error": "too many board columns created recently; retry shortly",
+                    "code": "create_rate_limited",
+                },
+                status=429,
+            )
         column["id"] = uuid.uuid4().hex[:12]
         state._tag_boards.append(column)
         boards_snap = [dict(c) for c in state._tag_boards]
@@ -1532,10 +1605,10 @@ async def api_chat_tag_column_create(request: web.Request) -> web.Response:
                 {"error": "persist failed", "code": "persist_failed"}, status=500
             )
     sel().log_api_access(
-        caller="dashboard",
+        caller=rl_caller,
         operation="chat.tag_column_create",
         outcome="allowed",
-        source="dashboard",
+        source=rl_source,
         resources=str(column["id"]),
     )
     return web.json_response(column, status=201)
@@ -1544,6 +1617,10 @@ async def api_chat_tag_column_create(request: web.Request) -> web.Response:
 async def api_chat_tag_column_update(request: web.Request) -> web.Response:
     """PATCH /api/chat/tag-columns/{id} — rename / retag / reorder."""
     state: DashboardState = request.app["state"]
+    refused = _refuse_vocabulary_write(state, request, "chat.tag_column_update")
+    if refused is not None:
+        return refused
+    rl_source, rl_caller = request_origin(request, what="tag column write", log=logger)
     cid = request.match_info["id"]
     column = next((c for c in state._tag_boards if c.get("id") == cid), None)
     if not column:
@@ -1569,10 +1646,10 @@ async def api_chat_tag_column_update(request: web.Request) -> web.Response:
             owner = _state_lane_owner(state, merged["state_key"], exclude_id=cid)
             if owner is not None:
                 sel().log_api_access(
-                    caller="dashboard",
+                    caller=rl_caller,
                     operation="chat.tag_column_update",
                     outcome="rejected",
-                    source="dashboard",
+                    source=rl_source,
                     resources=cid,
                     error=f"lane {merged['state_key']} already exists",
                 )
@@ -1592,10 +1669,10 @@ async def api_chat_tag_column_update(request: web.Request) -> web.Response:
                 {"error": "persist failed", "code": "persist_failed"}, status=500
             )
     sel().log_api_access(
-        caller="dashboard",
+        caller=rl_caller,
         operation="chat.tag_column_update",
         outcome="allowed",
-        source="dashboard",
+        source=rl_source,
         resources=cid,
     )
     return web.json_response(column)
@@ -1604,6 +1681,10 @@ async def api_chat_tag_column_update(request: web.Request) -> web.Response:
 async def api_chat_tag_column_delete(request: web.Request) -> web.Response:
     """DELETE /api/chat/tag-columns/{id} — remove a column."""
     state: DashboardState = request.app["state"]
+    refused = _refuse_vocabulary_write(state, request, "chat.tag_column_delete")
+    if refused is not None:
+        return refused
+    rl_source, rl_caller = request_origin(request, what="tag column write", log=logger)
     cid = request.match_info["id"]
     if not any(c.get("id") == cid for c in state._tag_boards):
         return web.json_response({"error": "not found", "code": "not_found"}, status=404)
@@ -1623,10 +1704,10 @@ async def api_chat_tag_column_delete(request: web.Request) -> web.Response:
                 {"error": "persist failed", "code": "persist_failed"}, status=500
             )
     sel().log_api_access(
-        caller="dashboard",
+        caller=rl_caller,
         operation="chat.tag_column_delete",
         outcome="allowed",
-        source="dashboard",
+        source=rl_source,
         resources=cid,
     )
     return web.json_response({"ok": True})
@@ -1635,6 +1716,10 @@ async def api_chat_tag_column_delete(request: web.Request) -> web.Response:
 async def api_chat_tag_columns_reorder(request: web.Request) -> web.Response:
     """PUT /api/chat/tag-columns/order — reorder columns by id list."""
     state: DashboardState = request.app["state"]
+    refused = _refuse_vocabulary_write(state, request, "chat.tag_columns_reorder")
+    if refused is not None:
+        return refused
+    rl_source, rl_caller = request_origin(request, what="tag column write", log=logger)
     body, body_err = await read_bounded_json(request)
     if body_err is not None:
         return body_err
@@ -1644,7 +1729,26 @@ async def api_chat_tag_columns_reorder(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "ids must be an array", "code": "ids_not_array"}, status=400
         )
+    base_ids = body.get("base_ids")
+    if base_ids is not None and not isinstance(base_ids, list):
+        return web.json_response(
+            {"error": "base_ids must be an array", "code": "ids_not_array"}, status=400
+        )
     async with _tags_write_lock(state):
+        if base_ids is not None:
+            # Optional compare-and-set: a caller that composed ``ids`` from a read
+            # names the order it read, so a reorder the person made in between is
+            # refused rather than overwritten by a stale full list. The board UI
+            # sends no ``base_ids`` and keeps its last-write-wins drag behaviour.
+            current = [str(c.get("id")) for c in sorted(state._tag_boards, key=_order_key)]
+            if [str(x) for x in base_ids] != current:
+                return web.json_response(
+                    {
+                        "error": "the column order changed since it was read",
+                        "code": "stale_base",
+                    },
+                    status=409,
+                )
         original_order = [(col.get("id"), col.get("order", 0)) for col in state._tag_boards]
         order_map = {str(cid): i for i, cid in enumerate(ids)}
         # Push columns not present in the reorder payload past the explicit
@@ -1674,10 +1778,10 @@ async def api_chat_tag_columns_reorder(request: web.Request) -> web.Response:
                 {"error": "persist failed", "code": "persist_failed"}, status=500
             )
     sel().log_api_access(
-        caller="dashboard",
+        caller=rl_caller,
         operation="chat.tag_columns_reorder",
         outcome="allowed",
-        source="dashboard",
+        source=rl_source,
         resources=",".join(str(x) for x in ids[:10]),
     )
     return web.json_response({"ok": True})

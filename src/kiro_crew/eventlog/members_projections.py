@@ -91,7 +91,17 @@ def _parse_ts(ts: Any) -> float | None:
 # ---------------------------------------------------------------------------
 class RosterProjection:
     key = types.PROJ_ROSTER
-    state_version = 1
+    #: 2 because `last_active_ts` is MONOTONE (see `apply`), which is bookkeeping
+    #: a savepoint written by a fold WITHOUT that rule can contradict. Such a
+    #: savepoint can hold a recency a preview correction walked backwards, and
+    #: resuming it applies only the events after it -- so the regressed value
+    #: would stand for the life of the store, or until the member next spoke,
+    #: and the Recent order would still be wrong after the upgrade. A bump is
+    #: what discards it (`projection/checkpoint.py`: a `state_version` mismatch
+    #: refuses the payload), after which the member's own log is re-folded from
+    #: the start under the monotone rule. Cheap, and the only lossless answer:
+    #: the events the bad savepoint consumed are the ones that hold the truth.
+    state_version = 2
 
     def init(self) -> dict:
         return {}
@@ -113,9 +123,24 @@ class RosterProjection:
                 return new
             return state
         if etype == types.MEMBER_MESSAGE:
-            ts = data.get("ts")
             new = dict(state)
-            new["last_active_ts"] = ts
+            # MONOTONE, unlike every other field here. "When was this member last
+            # active" is an answer time only ever moves forward, so a fold that
+            # took each event's `ts` last-wins could only ever be wrong when it
+            # moved down -- and one writer moves it down by design.
+            # `reconcile_member_preview` corrects a stale quote by appending a
+            # `member/message` carrying the TRANSCRIPT's epoch, which is the last
+            # thing SAID and is therefore older than any machinery turn since. A
+            # last-wins fold let that correction reset recency to the last
+            # speech, on every roster read, in an append-only log with nothing to
+            # reopen it -- so a crewmate the user had just messaged sank back to
+            # where the quote was from. Taking the greater keeps both writers
+            # honest: the correction still lands its quote, and no writer has to
+            # know what the recency was before it.
+            ts = _parse_ts(data.get("ts"))
+            if ts is not None and ts > 0:
+                held = _parse_ts(state.get("last_active_ts")) or 0.0
+                new["last_active_ts"] = ts if ts > held else state.get("last_active_ts")
             # A machinery row (tool call, patrol turn) bumps recency but carries
             # no preview; the last thing SAID stays on the row.
             if "preview" in data:

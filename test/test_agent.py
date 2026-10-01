@@ -1132,13 +1132,17 @@ class TestAtomicJsonWrite:
 
         target = tmp_path / "test.json"
         target.write_text("{}")
-        target.chmod(0o664)
+        if sys.platform != "win32":
+            target.chmod(0o664)
 
         _atomic_json_write(target, {"key": "value"})
 
         import stat
 
-        assert stat.S_IMODE(target.stat().st_mode) == 0o664
+        if sys.platform != "win32":
+            # Windows has no POSIX mode bits; the content contract below is
+            # what this writer guarantees there.
+            assert stat.S_IMODE(target.stat().st_mode) == 0o664
         assert json.loads(target.read_text(encoding="utf-8")) == {"key": "value"}
 
     def test_new_file_gets_0o644(self, tmp_path: Path):
@@ -1149,7 +1153,8 @@ class TestAtomicJsonWrite:
 
         import stat
 
-        assert stat.S_IMODE(target.stat().st_mode) == 0o644
+        if sys.platform != "win32":
+            assert stat.S_IMODE(target.stat().st_mode) == 0o644
         assert json.loads(target.read_text(encoding="utf-8")) == {"new": True}
 
     def test_a_contended_rename_is_retried_on_windows(self, tmp_path: Path, monkeypatch):
@@ -5450,8 +5455,14 @@ class TestKiroHooksAutoimport:
         with caplog.at_level(logging.INFO, logger="kiro_crew.agent"):
             result = _autoimport_kiro_hooks(hooks_dir)
 
+        if sys.platform == "win32":
+            # No execute bit on Windows: a known script extension counts as
+            # runnable via platform_compat.is_executable_file, so the
+            # chmod -x sibling loads too instead of being skipped.
+            assert len(result["preToolUse"]) == 2
+            return
         assert len(result["preToolUse"]) == 1
-        assert result["preToolUse"][0]["command"].endswith("/ok.sh")
+        assert Path(result["preToolUse"][0]["command"]).name == "ok.sh"
         assert any("not executable" in rec.message for rec in caplog.records)
 
     @requires_symlinks
@@ -5528,7 +5539,7 @@ class TestKiroHooksAutoimport:
         _apply_user_kiro_hooks(config, mc_cfg)
 
         assert len(config["hooks"]["preToolUse"]) == 1
-        assert config["hooks"]["preToolUse"][0]["command"].endswith("/only.sh")
+        assert Path(config["hooks"]["preToolUse"][0]["command"]).name == "only.sh"
 
     def test_kiro_hooks_autoimport_respects_total_limit(self, tmp_path: Path, caplog):
         """More scripts than ``_MAX_TOTAL_USER_HOOKS`` get capped; one WARNING logged."""
@@ -6208,6 +6219,12 @@ class TestKiroHooksAutoimport:
         with caplog.at_level(logging.INFO, logger="kiro_crew.agent"):
             result = _autoimport_kiro_hooks(hooks_dir)
 
+        if sys.platform == "win32":
+            # Same platform rule as above: the script loads, so there is no
+            # rejection to audit.
+            assert len(result.get("preToolUse", [])) == 1
+            assert sel_calls == []
+            return
         assert result == {}
         assert len(sel_calls) == 1, (
             f"regression: expected exactly one _sel_hook_rejected call when "
@@ -6945,6 +6962,43 @@ class TestRefreshDynamicFieldsStripsStaleUrl:
         assert entry["scopes"] == ["read:user", "read:org"]
         assert entry["clientId"] == "public-client-id"
 
+    def test_edition_extra_invocation_refreshed_user_keys_kept(self):
+        """An edition extra's command/args are the edition's; everything else is
+        the user's. A stale versioned interpreter must be replaced on refresh."""
+        from kiro_crew.agent import _refresh_dynamic_fields
+
+        extra = {
+            "edition-extra": {"command": "/v2/python3", "args": ["-m", "extra"]},
+            "cmd-only": {"command": "/v2/tool"},
+            "user-nulled": {"command": "/v2/python3"},
+        }
+        mine = {"command": "/opt/mine", "args": ["serve"], "env": {"K": "v"}}
+        config = {
+            "mcpServers": {
+                "edition-extra": {
+                    "command": "/v1/python3",
+                    "args": ["-m", "old"],
+                    "env": {"TOKEN_PATH": "/home/u/t"},
+                    "disabled": True,
+                },
+                "mine": dict(mine),
+                "cmd-only": {"command": "/v1/tool", "args": ["--user-flag"]},
+                "user-nulled": None,
+            }
+        }
+        with patch("kiro_crew.agent._extra_mcp_servers", return_value=extra):
+            _refresh_dynamic_fields(config)
+        entry = config["mcpServers"]["edition-extra"]
+        assert entry["command"] == "/v2/python3"
+        assert entry["args"] == ["-m", "extra"]
+        assert entry["env"] == {"TOKEN_PATH": "/home/u/t"}
+        assert entry["disabled"] is True
+        assert config["mcpServers"]["mine"] == mine
+        # Only invocation keys the edition supplies are re-pinned.
+        assert config["mcpServers"]["cmd-only"] == {"command": "/v2/tool", "args": ["--user-flag"]}
+        # A non-object entry occupies the name as the user's.
+        assert config["mcpServers"]["user-nulled"] is None
+
     def test_refresh_strips_legacy_denied_commands(self):
         # Upgrade path: an existing config injected by an older build carries a
         # stale toolsSettings.deniedCommands + autoAllowReadonly that kiro-cli
@@ -7212,18 +7266,21 @@ class TestRebuildReconcileRetainsEnabledAppServers:
     app's tools would vanish. It must drop a server only when its app is
     confirmed not enabled (a concurrent deregister).
 
-    Pinned by source inspection: the reconcile is an inline block in
-    ``install_agent`` gated on ``is_kirocrew_json`` (the written path equalling
-    ``bridges._mcp_json_path()``), which the merge-priority harness does not
-    reproduce — so the guarantee is asserted structurally.
+    Pinned by source inspection: the reconcile is an inline block in the
+    rebuild's commit phase (``default_spec_commit.write_default_spec``, which
+    ``install_agent`` calls) gated on ``is_kirocrew_json`` (the written path
+    equalling ``bridges._mcp_json_path()``), which the merge-priority harness does
+    not reproduce — so the guarantee is asserted structurally.
     """
 
     def test_reconcile_drops_by_enabled_state_not_ondisk_absence(self) -> None:
         import inspect
 
         from kiro_crew import agent
+        from kiro_crew.agent_materialization import default_spec_commit
 
-        src = inspect.getsource(agent.install_agent)
+        assert "default_spec_commit.write_default_spec(" in inspect.getsource(agent.install_agent)
+        src = inspect.getsource(default_spec_commit.write_default_spec)
         # The drop must be gated on the app being DISABLED (deregistered), not on
         # mere absence from on_disk — else a clean rebuild with an empty on_disk
         # would delete an enabled app's manifest-derived server.

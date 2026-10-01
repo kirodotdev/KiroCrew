@@ -26,6 +26,7 @@ import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from aiohttp import web
@@ -894,6 +895,9 @@ def _req(payload: object) -> web.Request:
     the malformed-body paths are reached.
     """
     request = make_mocked_request("POST", "/api/apps/issue-radar/pull/state")
+    request.app["state"] = SimpleNamespace(owner_id="")
+    request["user"] = "local-app"
+    request["app"] = ""
 
     async def _json(*_args: object, **_kwargs: object) -> object:
         if isinstance(payload, Exception):

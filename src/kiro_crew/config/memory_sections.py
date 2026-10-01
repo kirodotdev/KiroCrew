@@ -248,6 +248,16 @@ class MemoryConfig:
             "Inject the learned-corrections and user-profile blocks into " "new-session context.",
         ),
     )
+    inject_lessons_per_turn: bool = field(
+        default=False,
+        metadata=_meta(
+            "Lessons Per Message",
+            "On each follow-up message, add up to three stored lessons that match it "
+            "and have not been shown in the session yet. The session-start block "
+            "holds only what fits its budget; this adds the rest as the topic "
+            "reaches them. Requires inject_lessons.",
+        ),
+    )
     inject_activity: bool = field(
         default=True,
         metadata=_meta(

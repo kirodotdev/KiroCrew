@@ -16,6 +16,9 @@
  *                   with a Back button that pops the router's history, and a
  *                   stand-in `/elsewhere` route so a frame can show where one
  *                   Back lands after switching members on /members.
+ *
+ * The `capture:frame` kinds a script can fire after mount are listed at the
+ * listener below; `recency` is the one a recording of the Recent sort needs.
  */
 import { createRoot } from 'react-dom/client'
 import { Provider } from 'react-redux'
@@ -27,6 +30,7 @@ import { initI18n } from '../src/i18n/all'
 import { store } from '../src/store'
 import { sseSlots } from '../src/store/dashboardSlice'
 import { appendSlotMessage, selectSlotMessages, sseChatMessage } from '../src/store/chatSlice'
+import { memberProjectionStore } from '../src/state/memberProjectionStore'
 import '../src/index.css'
 
 /** The two store frames the capture script needs to fire AFTER the page is up
@@ -37,8 +41,28 @@ function busyFrame(slot: string) {
   return sseChatMessage({ slot, role: 'tool', content: '🔧 gh issue list --state open', ts: '2026-08-27T01:00:06Z', meta: { kind: 'shell' } })
 }
 window.addEventListener('capture:frame', (e) => {
-  const d = (e as CustomEvent<{ kind: string; slot: string; text?: string; sendId?: string }>).detail
+  const d = (e as CustomEvent<{
+    kind: string
+    slot: string
+    text?: string
+    sendId?: string
+    slug?: string
+    ts?: number
+    seq?: number
+  }>).detail
   if (d.kind === 'busy') store.dispatch(busyFrame(d.slot))
+  // A pushed `member_projection` roster frame, the way the WebSocket delivers
+  // one: this is how a crewmate's recency advances on the user's own send
+  // without a roster refetch, so a recording of the Recent sort reordering has
+  // to arrive through the same door rather than through a re-fetched roster.
+  if (d.kind === 'recency' && d.slug) {
+    memberProjectionStore.apply(
+      d.slug,
+      'roster',
+      { name: d.slug, slug: d.slug, last_active_ts: d.ts ?? Date.now() / 1000 },
+      d.seq ?? 5,
+    )
+  }
   if (d.kind === 'steer-echo') {
     // The server echoes the sendId it received in the POST's meta; mirror that
     // by reusing the id of the slot's latest optimistic steer bubble, so the

@@ -18,7 +18,9 @@ itself is identical and must not drift between them.
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Mapping
+from types import MappingProxyType
 
 #: EVERY argument name a tool may carry its target file path under. Public because
 #: it is shared with the consent prompt in ``cli_chat``: a prompt that disclosed a
@@ -261,6 +263,70 @@ def is_document_writing_tool(tool_name: str | None, mcp_server_name: str | None)
     return bool(tool_name) and tool_name in DOCUMENT_WRITING_TOOLS
 
 
+#: MCP tool arguments that carry a document BODY, keyed by the trusted
+#: ``(server, tool)`` identity the client cached from ``_meta.kiro``. A body
+#: here is text the tool STORES and never executes, so the tool_input deny scan
+#: in ``llm_helpers._resolve_permission`` reads it with the path tier and the
+#: size ceiling only, never with the command-text rules (the deny list and the
+#: argv floor). Every other argument of a listed tool, and every argument of an
+#: unlisted tool, keeps the full scan. This is the narrow counterpart of
+#: :data:`DOCUMENT_WRITING_TOOLS`, which no MCP tool may join: a server-side
+#: tool can execute whatever it calls ``content``, so a row is admitted only
+#: for a tool of Kiro Crew's own core server whose handler is known to keep
+#: the field as non-executable document text. ``knowledge_add_document``
+#: ingests ``content`` into the knowledge library as the document body.
+#: Additive only.
+MCP_DOCUMENT_BODY_FIELDS: Mapping[tuple[str, str], frozenset[str]] = MappingProxyType(
+    {
+        ("kirocrew-core", "knowledge_add_document"): frozenset({"content"}),
+    }
+)
+
+#: The separator transports put between a server name and a tool name in a
+#: qualified tool id: kiro-cli spells ``<server>___<tool>``, the canonical MCP
+#: prefix form is ``mcp__<server>__<tool>``.
+_MCP_QUALIFIER_SEPARATOR_RE = re.compile(r"_{2,}")
+
+
+def mcp_document_body_keys(tool_name: str | None, mcp_server_name: str | None) -> frozenset[str]:
+    """The :data:`MCP_DOCUMENT_BODY_FIELDS` keys for this call, else empty.
+
+    Both arguments MUST come from the client's trusted identity caches, never
+    the model-authored title; the caller also requires the identity-trusted
+    flag. The SERVER half is the guard: a third-party server that exposes a
+    tool of the same name resolves to a different ``mcp_server_name`` and gets
+    no exemption. A server-qualified *tool_name* resolves only when its
+    qualifier names that same server.
+    """
+    if not tool_name or not mcp_server_name:
+        return frozenset()
+    keys = MCP_DOCUMENT_BODY_FIELDS.get((mcp_server_name, tool_name))
+    if keys is not None:
+        return keys
+    parts = _MCP_QUALIFIER_SEPARATOR_RE.split(tool_name)
+    if len(parts) >= 2 and parts[-2] == mcp_server_name:
+        return MCP_DOCUMENT_BODY_FIELDS.get((mcp_server_name, parts[-1]), frozenset())
+    return frozenset()
+
+
+def split_document_bodies(raw_params: Mapping, body_keys: frozenset[str]) -> tuple[dict, list[str]]:
+    """Split *raw_params* into the non-body arguments and the body strings.
+
+    Only a TOP-LEVEL string under one of *body_keys* is a body; a mapping or a
+    list there, and every other argument, stays in the first half for the full
+    scan.
+    """
+    rest: dict = {}
+    bodies: list[str] = []
+    for key, value in raw_params.items():
+        if key in body_keys and isinstance(value, str):
+            if value:
+                bodies.append(value)
+        else:
+            rest[key] = value
+    return rest, bodies
+
+
 class ScanStrings(list):
     """The strings a non-shell tool's params offer to the deny scan, plus
     whether collection had to stop early.
@@ -274,7 +340,9 @@ class ScanStrings(list):
     truncated: bool = False
 
 
-def command_shaped_strings(raw_params: Mapping | None) -> ScanStrings:
+def command_shaped_strings(
+    raw_params: Mapping | None, body_keys: frozenset[str] = DOCUMENT_BODY_KEYS
+) -> ScanStrings:
     """Every non-empty string in *raw_params* that could be a command or an
     address -- everything EXCEPT a string sitting directly under one of
     :data:`DOCUMENT_BODY_KEYS`.
@@ -291,7 +359,9 @@ def command_shaped_strings(raw_params: Mapping | None) -> ScanStrings:
     Only a STRING directly under a body key is skipped; a mapping or list under
     one is still walked, so a path nested inside a structured ``content`` is
     not hidden by the key above it. Bounded by ``_TARGET_PATH_MAX_NODES``, and
-    the cap fails CLOSED through ``truncated``.
+    the cap fails CLOSED through ``truncated``. *body_keys* defaults to
+    :data:`DOCUMENT_BODY_KEYS`; an empty set skips nothing and collects every
+    string under the same cap.
     """
     found = ScanStrings()
     if not isinstance(raw_params, Mapping):
@@ -309,7 +379,7 @@ def command_shaped_strings(raw_params: Mapping | None) -> ScanStrings:
                 found.append(node)
         elif isinstance(node, Mapping):
             for key, value in reversed(list(node.items())):
-                if isinstance(value, str) and key in DOCUMENT_BODY_KEYS:
+                if isinstance(value, str) and key in body_keys:
                     continue
                 stack.append(value)
         elif isinstance(node, (list, tuple)):

@@ -71,11 +71,13 @@ surface that sits directly on the page and has no `border`, `ring`, or `shadow`
 paints nothing visible there — it "works" in every other theme and ships invisible
 in that one, with no gate failing. The rule for a new component: a `bg-card` box on
 `--bg` gets a `border-border`, a `ring-1 ring-border`, or a `shadow-*`, the way the
-top-bar search field and the settings cards already do. The three surfaces that
-deliberately stay borderless (the user bubble, the two top-bar capsules) are
-handled by kiro-light-scoped hooks in `index.css`, and
+settings cards already do. The one surface that deliberately stays borderless (the
+user bubble) is handled by a kiro-light-scoped hook in `index.css`, and
 `src/test/kiroLightShellHooks.test.ts` pins that list; a new borderless card is a
-fourth hook there, not an unmarked exception. The inverse holds too: a `bg-bg`
+second hook there, not an unmarked exception. A Liquid Glass pane (`components/Glass.tsx`,
+below) is not one: the top bar's search trigger, readout capsule and Request a Feature
+pill are glass, and the material draws its own lit edge on every canvas. The inverse
+holds too: a `bg-bg`
 well nested inside a `bg-card` container is the same pair of values seen from the
 other side, so a code or output block that relies on the well being darker than its
 card gets the same `border-border` — and a `hover:bg-card` on a row that sits on
@@ -89,12 +91,14 @@ side-line / in-pane-divider hairline, and the half-pixel dark sliver outside eac
 lit band (none has a focus form: a pane looks the same whether or not a control
 inside it has focus) that
 the Liquid Glass surfaces (the composer dock and everything in it, the mobile
-Settings search capsule, the session list's and the crew roster's search field)
+Settings search capsule, the session list's and the crew roster's search field,
+the top bar's search trigger, readout capsule and Request a Feature pill)
 lay over their blurred backdrop (the pane draws no ring:
-lit top and bottom, a line down each side). `--glass-tint-accent`, `-warn` and
-`-hover` are derived from `--glass-tint` on `:root` (the picked chip, the
-incognito chip and a hovered pane swap them in via `glass-accent` / `glass-warn`
-/ `glass-hover`), so they follow the polarity too. And
+lit top and bottom, a line down each side). `--glass-tint-accent`, `-warn`,
+`-danger` and `-hover` are derived from `--glass-tint` on `:root` (the picked
+chip, the incognito chip, the offline readout capsule and a hovered pane swap
+them in via `glass-accent` / `glass-warn` / `glass-danger` / `glass-hover`), so
+they follow the polarity too. And
 the `--tile-*` set behind the Settings section icons. They are fixed on purpose —
 the glass must read as a lit pane on any light palette and as smoked glass on any
 dark one, and a section's tile is an identity mark that must look the same in

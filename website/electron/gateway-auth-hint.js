@@ -79,4 +79,21 @@ function defaultedPort(rawUrl) {
   return u.protocol === "https:" ? "443" : "80";
 }
 
-module.exports = { classifyAuthBlock, defaultedPort };
+/**
+ * Whether `rawUrl`'s port is its scheme's default, so parsing yielded no port.
+ *
+ * The companion question to `defaultedPort`, and the one a reader needs to know
+ * whether the port was RESOLVED rather than read. Note that it cannot be asked
+ * of the URL text: `new URL("http://localhost:80").port` is `""` exactly as
+ * `new URL("http://localhost").port` is, so writing the default out makes no
+ * difference. That is why this asks about the parsed value and why the raw
+ * property -- whose emptiness is the whole defect -- stays inside this module.
+ *
+ * @param {string} rawUrl
+ * @returns {boolean} false for an unparseable URL, which has no scheme either
+ */
+function portIsSchemeDefault(rawUrl) {
+  try { return new URL(rawUrl).port === ""; } catch { return false; }
+}
+
+module.exports = { classifyAuthBlock, defaultedPort, portIsSchemeDefault };

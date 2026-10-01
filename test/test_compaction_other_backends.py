@@ -14,10 +14,14 @@ Three findings, one class each:
   climbed 14863 -> 17478 over four turns, a ``/compact`` prompt returned
   ``stopReason: end_turn`` with no status frame, and the next ordinary turn read
   14577 with the model answering from a summary.
-* pi and goose look the same in SOURCE -- pi-acp 0.0.33 and goose 1.50.1 both
-  dispatch ``/compact`` before any model turn and return the turn itself -- but
-  neither could be driven here, so neither joins on the weaker evidence class.
-  They stay unclassified, which still improves on being told they self-manage.
+* goose serves a manual ``/compact`` inside the turn too.  Driven live on goose
+  1.50.1, ``used`` climbed 1529 -> 2453 over three turns, ``/compact`` answered
+  ``Compaction complete`` and ``end_turn`` with no status frame, and the next
+  ordinary turn read 1749.
+* pi looks the same in SOURCE -- pi-acp 0.0.33 dispatches ``/compact`` before any
+  model turn and returns the turn itself -- but it could not be driven here, so it
+  does not join on the weaker evidence class.  It stays unclassified, which still
+  improves on being told it self-manages.
 * KAS is the one correct exclusion, and it is correct for a REASON that is now
   a membership rather than an absence: it summarizes unasked and reports it, so
   Crew's meter falls back on its own.
@@ -113,23 +117,34 @@ class TestTheHarnessThatWasDrivenAndProved:
         assert ACP_BACKEND_OPENCODE in ACP_BACKENDS_INLINE_COMPACTION
         assert capabilities_for(ACP_BACKEND_OPENCODE).compacts_inline is True
 
-    def test_pi_and_goose_wait_for_a_capture(self) -> None:
+    def test_goose_can_serve_a_manual_compact(self) -> None:
+        """goose joins on the bar opencode met: a driven session whose
+        ``usage_update.used`` fell after ``/compact``.  The capture is
+        ``test/fixtures/acp_frames/goose/compact-live.jsonl``."""
+        assert ACP_BACKEND_GOOSE in ACP_BACKENDS_COMPACT
+
+    def test_goose_finishes_inside_the_prompt_turn(self) -> None:
+        """Its ``/compact`` turn ends with ``end_turn`` and no status frame after
+        it, so the turn's terminal is the done signal."""
+        assert ACP_BACKEND_GOOSE in ACP_BACKENDS_INLINE_COMPACTION
+        assert capabilities_for(ACP_BACKEND_GOOSE).compacts_inline is True
+
+    def test_pi_waits_for_a_capture(self) -> None:
         """Absence as a decision, and the decision is about the evidence CLASS.
 
-        Both advertise ``compact`` and both dispatch it before any model turn --
-        pi-acp 0.0.33 in ``prompt()``, goose 1.50.1 through ``execute_command`` --
-        so their SOURCE says inline.  What neither has is a driven capture, which
-        is the bar opencode met: a live session whose ``usage_update.used`` was
-        seen to fall.  Source says what the code would do; a capture says what the
-        harness did, and for a membership whose wrong answer makes
-        ``wait_for_compaction`` report a completion that never happened, the
-        second is the bar.
+        pi advertises ``compact`` and dispatches it before any model turn --
+        pi-acp 0.0.33 in ``prompt()`` -- so its SOURCE says inline.  What it lacks
+        is a driven capture, which is the bar opencode and goose met: a live
+        session whose ``usage_update.used`` was seen to fall.  Source says what the
+        code would do; a capture says what the harness did, and for a membership
+        whose wrong answer makes ``wait_for_compaction`` report a completion that
+        never happened, the second is the bar.
 
-        Their position while they wait is better than the one they held: they take
-        the arm that promises nothing rather than being told their harness manages
+        Its position while it waits is better than the one it held: it takes the
+        arm that promises nothing rather than being told its harness manages
         compaction itself.
         """
-        for backend in (ACP_BACKEND_PI, ACP_BACKEND_GOOSE):
+        for backend in (ACP_BACKEND_PI,):
             assert backend not in ACP_BACKENDS_COMPACT, backend
             assert backend not in ACP_BACKENDS_INLINE_COMPACTION, backend
             assert backend not in _harness_managed_set(), backend
@@ -241,10 +256,10 @@ class TestEveryKnownBackendIsClassified:
 
     #: Known backends deliberately outside all three compaction sets, each with why.
     #:
-    #: * ``pi``, ``goose`` -- their source says they compact inline; no driven capture
-    #:   confirms it, which is the bar ``ACP_BACKENDS_COMPACT`` holds members to. The
-    #:   capture is tracked as deferred follow-up work.
-    UNCLASSIFIED = frozenset({ACP_BACKEND_PI, ACP_BACKEND_GOOSE})
+    #: * ``pi`` -- its source says it compacts inline; no driven capture confirms it,
+    #:   which is the bar ``ACP_BACKENDS_COMPACT`` holds members to. The capture is
+    #:   tracked as deferred follow-up work.
+    UNCLASSIFIED = frozenset({ACP_BACKEND_PI})
 
     def test_every_known_backend_is_classified_or_listed(self) -> None:
         classified = (
@@ -725,7 +740,11 @@ class TestABackendNothingCompactsIsRecycled:
         for restart in (after_failure, uncompactable):
             assert "auto-compacted" not in restart, restart
             assert "restarted" in restart, restart
-            assert "no longer remembers" in restart, restart
+            # What the successor actually does: its first turn carries a recent
+            # excerpt of the transcript, so the notice may not claim total loss
+            # and may not stay silent about the loss either.
+            assert "recent excerpt" in restart, restart
+            assert "no longer remembers" not in restart, restart
 
         assert "cannot compact" in uncompactable
         assert "cannot compact" not in after_failure
@@ -759,7 +778,9 @@ class TestABackendNothingCompactsIsRecycled:
             # cannot answer.
             assert "auto-compacted" not in restart.lower(), restart
             assert "restarted" in restart, restart
-            assert "no longer remembers" in restart, restart
+            # Same rule as the channel leg: name the excerpt, not a total loss.
+            assert "recent excerpt" in restart, restart
+            assert "no longer remembers" not in restart, restart
 
         # The capability claim belongs to exactly one of them.
         assert "cannot compact" in uncompactable
@@ -919,12 +940,12 @@ class TestTheRefusalTextSaysWhatHappens:
         # An id this build cannot name gets the arm that claims nothing.
         assert arm("not-a-backend") == messaging_commands.COMPACT_ARM_UNCLASSIFIED
 
-    def test_pi_and_goose_are_the_unclassified_case_today(self) -> None:
+    def test_pi_is_the_unclassified_case_today(self) -> None:
         """Named rather than implied, because the arm above is only exercised
-        while some known backend is unclassified. When either earns the driven
+        while some known backend is unclassified. When pi earns the driven
         capture ``ACP_BACKENDS_COMPACT`` asks of its members, this test says so, and
         whoever moves it can see what it stands in for."""
-        for backend in (ACP_BACKEND_PI, ACP_BACKEND_GOOSE):
+        for backend in (ACP_BACKEND_PI,):
             assert backend not in ACP_BACKENDS_COMPACT, backend
             assert backend not in _harness_managed_set(), backend
             assert backend not in _recycle_set(), backend

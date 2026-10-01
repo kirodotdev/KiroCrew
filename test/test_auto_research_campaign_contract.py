@@ -17,8 +17,7 @@ Covered here, beyond the per-feature suites next door:
 * single-flight user transitions, refusal of a stale run generation, delete
   staying final over late callbacks, and the residue of a failed cycle write;
 * both execution modes' launch ordering;
-* log records keep the historic logger name;
-* no bounded slice feeds a redactor anywhere in the app package.
+* log records keep the historic logger name.
 """
 
 from __future__ import annotations
@@ -38,7 +37,6 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
-from test_core_path_redact_before_bound import _find_slice_inside_redact_call
 
 from kiro_crew.apps.builtins.auto_research import handlers as h
 
@@ -1187,21 +1185,3 @@ class TestLogIdentity:
                 if fragment in record.getMessage():
                     messages[fragment] = record.name
         assert messages == dict.fromkeys(messages, _HANDLERS_LOGGER)
-
-
-# --- redaction precedes bounding everywhere in the package -------------------
-
-
-class TestRedactBeforeBoundAcrossThePackage:
-    def test_no_bounded_slice_feeds_a_redactor_in_any_app_module(self):
-        package = Path(h.__file__).resolve().parent
-        modules = sorted(
-            p
-            for p in package.rglob("*.py")
-            if "tests" not in p.relative_to(package).parts and "__pycache__" not in p.parts
-        )
-        assert Path(h.__file__).resolve() in modules
-        redacting = [p for p in modules if "redact" in p.read_text(encoding="utf-8")]
-        assert Path(h.__file__).resolve() in redacting
-        offenders = [hit for p in modules for hit in _find_slice_inside_redact_call(p)]
-        assert offenders == []

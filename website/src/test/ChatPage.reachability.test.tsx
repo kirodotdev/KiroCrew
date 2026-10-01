@@ -1,5 +1,6 @@
 /**
- * Guards the native-browser reachability declaration in ChatPage.
+ * Guards the native-browser reachability declaration in ChatPage (made by its
+ * event-bridge owner, pages/chat/page/eventBridges.ts).
  *
  * The Electron command channel can only deliver a `browser_*` op for a session
  * key it is already polling for (see `listPanelIds` in electron/main.js), and it
@@ -29,27 +30,31 @@ import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
 
 const here = dirname(fileURLToPath(import.meta.url))
-const chatPageSrc = readFileSync(resolve(here, '../pages/ChatPage.tsx'), 'utf8')
+const pageSrc = readFileSync(resolve(here, '../pages/ChatPage.tsx'), 'utf8')
+const bridgesSrc = readFileSync(resolve(here, '../pages/chat/page/eventBridges.ts'), 'utf8')
 
 describe('ChatPage – native browser reachability', () => {
   it('derives the tracked keys from the open slot list, not the active slot', () => {
     // The regression shape: `trackSession(activeSlot, ...)`. If that ever comes
     // back, a background chat is unreachable and a fresh chat races the poller.
-    expect(chatPageSrc).not.toMatch(/trackSession\(\s*activeSlot/)
-    expect(chatPageSrc).toMatch(/trackableSlotKeys\s*=\s*useMemo\(/)
-    expect(chatPageSrc).toMatch(/slots\.map\(s => s\.key\)/)
+    // Checked in the page as well as the owner, so it cannot move back unseen.
+    expect(pageSrc).not.toMatch(/trackSession\(\s*activeSlot/)
+    expect(pageSrc, 'the page must run the bridge that declares the keys').toMatch(/useChatEventBridges\(\{/)
+    expect(bridgesSrc).not.toMatch(/trackSession\(\s*activeSlot/)
+    expect(bridgesSrc).toMatch(/trackableSlotKeys\s*=\s*useMemo\(/)
+    expect(bridgesSrc).toMatch(/slots\.map\(s => s\.key\)/)
   })
 
   it('runs the declaration off the slot-key list', () => {
     // A dependency on `activeSlot` would re-run (and previously re-register) on
     // every tab switch while still only ever declaring one key.
-    expect(chatPageSrc).toMatch(/\}, \[trackableSlotKeys\]\)/)
+    expect(bridgesSrc).toMatch(/\}, \[trackableSlotKeys\]\)/)
   })
 
   it('untracks only keys that disappeared, never the whole set per change', () => {
     // A cleanup that untracked everything on each slot-list edit would drop a key
     // mid-turn — the same race, re-introduced through teardown instead of setup.
-    expect(chatPageSrc).toMatch(/trackedSlotsRef/)
-    expect(chatPageSrc).toMatch(/if \(want\.has\(key\)\) continue/)
+    expect(bridgesSrc).toMatch(/trackedSlotsRef/)
+    expect(bridgesSrc).toMatch(/if \(want\.has\(key\)\) continue/)
   })
 })

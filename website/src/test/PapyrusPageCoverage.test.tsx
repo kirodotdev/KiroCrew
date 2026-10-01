@@ -718,10 +718,10 @@ describe('Papyrus co-author refresh', () => {
   async function finishAgentTurn() {
     localStorage.setItem(SLOT_KEY_PREFIX + PROJECT, SLOT)
     const store = createTestStore()
-    store.dispatch(sseSlots([slot({ orchestrating: true })]))
+    store.dispatch(sseSlots([slot({ subagents_running: true })]))
     const handle = openWorkspace(store)
     await workspaceReady()
-    store.dispatch(sseSlots([slot({ orchestrating: false })]))
+    store.dispatch(sseSlots([slot({ subagents_running: false })]))
     return handle
   }
 
@@ -752,12 +752,12 @@ describe('Papyrus co-author refresh', () => {
   it('records a conflict rather than clobbering unsaved typing', async () => {
     localStorage.setItem(SLOT_KEY_PREFIX + PROJECT, SLOT)
     const store = createTestStore()
-    store.dispatch(sseSlots([slot({ orchestrating: true })]))
+    store.dispatch(sseSlots([slot({ subagents_running: true })]))
     openWorkspace(store)
     await workspaceReady()
     makeDirty(`${BODY}\n% mine, unsaved`)
 
-    store.dispatch(sseSlots([slot({ orchestrating: false })]))
+    store.dispatch(sseSlots([slot({ subagents_running: false })]))
 
     expect(await screen.findByText('Co-author changed this file')).toBeInTheDocument()
     // Neither side lost: disk keeps the agent's version, the editor keeps the user's.
@@ -770,11 +770,11 @@ describe('Papyrus co-author refresh', () => {
     // the divergence is only postponed to the next Cmd+S.
     localStorage.setItem(SLOT_KEY_PREFIX + PROJECT, SLOT)
     const store = createTestStore()
-    store.dispatch(sseSlots([slot({ orchestrating: true })]))
+    store.dispatch(sseSlots([slot({ subagents_running: true })]))
     const { user } = openWorkspace(store)
     await workspaceReady()
     makeDirty(`${BODY}\n% mine, unsaved`)
-    store.dispatch(sseSlots([slot({ orchestrating: false })]))
+    store.dispatch(sseSlots([slot({ subagents_running: false })]))
     await screen.findByText('Co-author changed this file')
     api.compile.mockClear()
 
@@ -789,14 +789,14 @@ describe('Papyrus co-author refresh', () => {
     // protected, typing during it was not, and the next save overwrote the agent.
     localStorage.setItem(SLOT_KEY_PREFIX + PROJECT, SLOT)
     const store = createTestStore()
-    store.dispatch(sseSlots([slot({ orchestrating: true })]))
+    store.dispatch(sseSlots([slot({ subagents_running: true })]))
     openWorkspace(store)
     await workspaceReady()
     const reads = api.readFile.mock.calls.length
     const gate = deferred<{ path: string; content: string }>()
     api.readFile.mockReturnValue(gate.promise)
 
-    store.dispatch(sseSlots([slot({ orchestrating: false })]))
+    store.dispatch(sseSlots([slot({ subagents_running: false })]))
     // The buffer is clean here, so the refresh gets past the pre-check and starts
     // the read; the keystroke only arrives while that read is in flight.
     await waitFor(() => expect(api.readFile.mock.calls.length).toBeGreaterThan(reads))
@@ -813,11 +813,11 @@ describe('Papyrus co-author refresh', () => {
     const confirmSpy = vi.spyOn(window, 'confirm')
     localStorage.setItem(SLOT_KEY_PREFIX + PROJECT, SLOT)
     const store = createTestStore()
-    store.dispatch(sseSlots([slot({ orchestrating: true })]))
+    store.dispatch(sseSlots([slot({ subagents_running: true })]))
     const { user } = openWorkspace(store)
     await workspaceReady()
     makeDirty(`${BODY}\n% mine, unsaved`)
-    store.dispatch(sseSlots([slot({ orchestrating: false })]))
+    store.dispatch(sseSlots([slot({ subagents_running: false })]))
     await screen.findByText('Co-author changed this file')
     api.readFile.mockResolvedValue({ path: MAIN, content: `${BODY}\n% the agent version` })
 
@@ -838,11 +838,11 @@ describe('Papyrus co-author refresh', () => {
     const confirmSpy = vi.spyOn(window, 'confirm')
     localStorage.setItem(SLOT_KEY_PREFIX + PROJECT, SLOT)
     const store = createTestStore()
-    store.dispatch(sseSlots([slot({ orchestrating: true })]))
+    store.dispatch(sseSlots([slot({ subagents_running: true })]))
     const { user } = openWorkspace(store)
     await workspaceReady()
     makeDirty(`${BODY}\n% mine, unsaved`)
-    store.dispatch(sseSlots([slot({ orchestrating: false })]))
+    store.dispatch(sseSlots([slot({ subagents_running: false })]))
     await screen.findByText('Co-author changed this file')
     api.readFile.mockClear()
 
@@ -861,11 +861,11 @@ describe('Papyrus co-author refresh', () => {
     // the guard exists to stop.
     localStorage.setItem(SLOT_KEY_PREFIX + PROJECT, SLOT)
     const store = createTestStore()
-    store.dispatch(sseSlots([slot({ orchestrating: true })]))
+    store.dispatch(sseSlots([slot({ subagents_running: true })]))
     const { user } = openWorkspace(store)
     await workspaceReady()
     makeDirty(`${BODY}\n% mine, unsaved`)
-    store.dispatch(sseSlots([slot({ orchestrating: false })]))
+    store.dispatch(sseSlots([slot({ subagents_running: false })]))
     await screen.findByText('Co-author changed this file')
     api.readFile.mockRejectedValue(new Error('still unreachable'))
 
@@ -900,13 +900,13 @@ describe('Papyrus project errors', () => {
     // click the user made.
     localStorage.setItem(SLOT_KEY_PREFIX + PROJECT, SLOT)
     const store = createTestStore()
-    store.dispatch(sseSlots([slot({ orchestrating: true })]))
+    store.dispatch(sseSlots([slot({ subagents_running: true })]))
     openWorkspace(store)
     await workspaceReady()
     makeDirty(`${BODY}\n% mid-paragraph`)
     api.getProject.mockRejectedValue(new Error('gateway restarting'))
 
-    store.dispatch(sseSlots([slot({ orchestrating: false })]))
+    store.dispatch(sseSlots([slot({ subagents_running: false })]))
 
     await waitFor(() => expect(api.getProject.mock.calls.length).toBeGreaterThan(1))
     // The failure IS reported — it just no longer takes the document with it.

@@ -4,7 +4,12 @@ User preferences for each notification channel: mute and priority override.
 Stored in ``~/.kiro/crew/notification_settings.json`` as::
 
     {"channel_settings": {"system.heartbeat": {"muted": true},
+                          "system.monitor": {},
                           "oncall-radar.ticket-update": {"priority": "critical"}}}
+
+Every file this build writes contains a ``system.monitor`` entry, possibly an
+empty one, which records that the one-time seed from ``system.agent`` is done.
+Empty entries stay out of :meth:`ChannelSettings.all_settings`.
 
 Semantics (applied at the delivery sink, keeping the bus pure):
 
@@ -28,7 +33,7 @@ from typing import Any
 
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import config_dir
-from kiro_crew.notifications.bus import PRIORITIES
+from kiro_crew.notifications.bus import MONITOR_CHANNEL, PRIORITIES
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +42,11 @@ logger = logging.getLogger(__name__)
 PROTECTED_CHANNELS = frozenset({"system.approval"})
 
 _SETTINGS_FILENAME = "notification_settings.json"
+# One-time seed: when a stored settings mapping has no ``system.monitor`` key,
+# its ``system.agent`` entry is copied to ``system.monitor`` in memory. Every
+# subsequent write retains a ``system.monitor`` key, including an empty entry
+# for an unmuted channel, so its presence records that the seed is complete.
+_SEED_SOURCE_CHANNEL = "system.agent"
 _lock = threading.Lock()
 
 
@@ -59,6 +69,7 @@ class ChannelSettings:
     def __init__(self) -> None:
         self._settings: dict[str, dict[str, Any]] = {}
         self._load()
+        self._seed_monitor_from_agent()
 
     def _load(self) -> None:
         path = _settings_path()
@@ -78,8 +89,27 @@ class ChannelSettings:
             logger.warning("Failed to load %s; using defaults", path, exc_info=True)
             self._settings = {}
 
+    def _seed_monitor_from_agent(self) -> None:
+        """Copy a stored ``system.agent`` entry to ``system.monitor`` once.
+
+        A stored ``system.monitor`` key, including an empty entry, records that
+        the seed is complete. Otherwise the copy happens only in memory, so a
+        boot never writes the file. Until an update persists the entry, every
+        load derives the same seed from the same file.
+        """
+        if MONITOR_CHANNEL in self._settings:
+            return
+        source = self._settings.get(_SEED_SOURCE_CHANNEL)
+        if source is None:
+            return
+        self._settings = {**self._settings, MONITOR_CHANNEL: dict(source)}
+
+    @staticmethod
+    def _payload(channel_settings: dict[str, dict[str, Any]]) -> str:
+        return json.dumps({"channel_settings": channel_settings}, indent=2)
+
     def all_settings(self) -> dict[str, dict[str, Any]]:
-        """Snapshot of every channel's stored settings.
+        """Snapshot of every channel's non-empty stored settings.
 
         Lock-free: ``update()`` rebinds ``self._settings`` to a fresh dict
         (never mutates in place), so readers see either the old or the new
@@ -88,7 +118,7 @@ class ChannelSettings:
         across the file write.
         """
         settings = self._settings
-        return {ch: dict(entry) for ch, entry in settings.items()}
+        return {ch: dict(entry) for ch, entry in settings.items() if entry}
 
     def get(self, channel: str) -> dict[str, Any]:
         """One channel's stored settings (lock-free; see all_settings)."""
@@ -139,7 +169,10 @@ class ChannelSettings:
                 candidate[channel] = entry
             else:
                 candidate.pop(channel, None)
-            payload = json.dumps({"channel_settings": candidate}, indent=2)
+            # Every write keeps a system.monitor key ({} when unset) as the
+            # record that _seed_monitor_from_agent ran; see that docstring.
+            candidate.setdefault(MONITOR_CHANNEL, {})
+            payload = self._payload(candidate)
             atomic_write(_settings_path(), payload)
             self._settings = candidate
             return dict(entry)

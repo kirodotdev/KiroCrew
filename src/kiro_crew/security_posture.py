@@ -349,6 +349,17 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "redacts at the source rather than at either boundary.",
     ),
     (
+        "Browser install job failure detail",
+        "browser_cli/install_job.py",
+        "The `error_detail` of the gateway's browser install job, returned by "
+        "`GET /api/browser/install` and in every 409 `install_already_running` "
+        "body. Failed-step output is redacted by `install._step` at the source; "
+        "exception and error fallbacks are not. `bounded_detail` re-redacts every "
+        "carrier on the FULL text before the 2000-character cut, using only "
+        "`redact_install_output` (the shared two-pass plus npm patterns), so a "
+        "pre-redaction cut cannot split a credential past its matching anchor.",
+    ),
+    (
         "Browser panel launch failures",
         "browser_cli/launcher.py",
         "The CLI's own words when the Browser panel's address bar could not open a "
@@ -433,13 +444,15 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "`POST /api/chat` uses. Two boundaries in one call: the text is persisted "
         "into the slot's transcript and broadcast to every connected browser as a "
         "`steer_push` / `queue_push` card, so the scan happens here, before either "
-        "boundary.",
+        "boundary, for every origin except the session's own human, whose text is "
+        "shown as typed like an ordinary send's row.",
     ),
     (
         "Session control read",
         "dashboard/session_control.py",
-        "Another session's transcript tail, served by "
-        "`GET /api/session-control/read` to the calling agent. Conversation "
+        "Another session's transcript tail and its cached intent summary, served by "
+        "`GET /api/session-control/read` and `GET /api/session-control/summary` to "
+        "the calling agent. Conversation "
         "content read off a live slot, so it can carry a credential a tool "
         "printed — the same output-boundary reason as the session-storage inventory "
         "below, with the reader being an LLM rather than the browser.",
@@ -1891,6 +1904,7 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "cli_chat.py",
         "acp/_dispatch.py",
         "acp/client.py",
+        "acp/transport_errors.py",
         # Redacts the tool title in the auto-rejected-permission WARNING (a
         # gate-side log line) and defers user-facing display to the routed
         # permission event, whose sinks are already registered.
@@ -1975,10 +1989,8 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "dashboard/chat_fork.py",
         "dashboard/chat_handlers.py",
         "dashboard/chat_nav.py",
-        "dashboard/chat_orchestrator.py",
         "dashboard/chat_persistence.py",
         "dashboard/chat_regenerate.py",
-        "dashboard/chat_rewind.py",
         "dashboard/chat_title.py",
         "dashboard/chat_utils.py",
         "dashboard/chat_voice.py",

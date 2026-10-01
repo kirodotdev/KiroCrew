@@ -1414,6 +1414,23 @@ class TestLoadAgentPrompt:
         assert "[AGENT SYSTEM PROMPT]\nRESOLVED_CONTRACT\n[END AGENT SYSTEM PROMPT]" in msg
         assert "follow it as your authoritative contract" not in msg
 
+    def test_custom_agent_gets_own_prompt_under_claude_code(self, tmp_path, monkeypatch):
+        """Under claude_code a custom agent without a private owner gets its own
+        prompt as its [AGENT SYSTEM PROMPT], not the Kiro Crew persona."""
+        self._managed_contract(tmp_path, monkeypatch)
+        self._write_spec(tmp_path, monkeypatch, "You are a bespoke reviewer.")
+        builder = ContextBuilder(
+            memory=MemoryStore(workspace=tmp_path / "ws"),
+            skills=SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False),
+        )
+        msg, _ = builder.build_message(
+            "hello", is_new_session=True, agent="test", provider_type="claude_code"
+        )
+        assert (
+            "[AGENT SYSTEM PROMPT]\nYou are a bespoke reviewer.\n[END AGENT SYSTEM PROMPT]" in msg
+        )
+        assert "RESOLVED_CONTRACT" not in msg
+
 
 class TestRuntimeDisplayName:
     """Tests for _runtime_display_name() and agent identity injection."""

@@ -62,7 +62,10 @@ scoping (``_st``), the SEL audit and the provider-neutral error aliases -- plus
 ``/connect``, the probe-gated list-poll decision and ``register_routes``. The
 handlers live in the private ``http_routes`` package, one module per
 responsibility, and reach every gate and monkeypatch seam through this module at
-call time, so a patch on ``routes.<name>`` still intercepts them.
+call time, so a patch on ``routes.<name>`` still intercepts them. The config and
+UI-language helpers it imports (``KiroCrewConfig``, ``ui_language_tag``,
+``normalize_ui_language_tag``) are re-exported for callers but are not seams:
+``http_routes.ai`` reads its own bindings of them.
 """
 
 from __future__ import annotations
@@ -82,6 +85,11 @@ from kiro_crew.apps.builtins.issue_radar.backend import (
     watch,
 )
 from kiro_crew.apps.manager import is_app_enabled
+from kiro_crew.config.loader import KiroCrewConfig  # noqa: F401 -- re-exported, not a seam
+from kiro_crew.context import (  # noqa: F401 -- re-exported, not a seam
+    normalize_ui_language_tag,
+    ui_language_tag,
+)
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.sel import sel
 

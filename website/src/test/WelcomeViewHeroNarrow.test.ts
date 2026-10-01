@@ -40,6 +40,6 @@ describe('WelcomeView hero at narrow widths', () => {
     // The mark carries the product identity; only the blank counterweight is
     // dropped. Guards against "fix" by deleting both.
     expect(src).toMatch(/brandMark/)
-    expect(src).toMatch(/size=\{64\}|w-16 h-16/)
+    expect(src).toMatch(/size=\{48\}|w-12 h-12/)
   })
 })

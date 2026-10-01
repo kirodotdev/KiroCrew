@@ -908,6 +908,9 @@ export interface TodoTask {
   text: string
   /** kiro-cli's todo model is a plain boolean — there is no in-progress state. */
   completed: boolean
+  /** True while a person's click holds this row's state and the agent has not
+   * yet confirmed it in its own list. Absent on rows the agent itself set. */
+  person?: boolean
 }
 
 /**
@@ -1124,7 +1127,7 @@ export interface ChatSlot {
   linked_session_key?: string
   /** Prompts held for a later turn on this slot. */
   queue_depth?: number
-  key: string; title?: string; messages: number; running: boolean; stopping?: boolean; pending_approval?: boolean; created?: string; last_ts?: string; last_turn_ts?: string; last_message?: string; agent?: string; model?: string; reasoning_effort?: string; mode?: string; surface?: string; workspace?: string; trust?: boolean; trust_scope?: string; trust_reads?: boolean; folder_id?: string; pinned?: boolean; tags?: string[]; tags_revision?: string; links?: SessionLink[]; slack_linked?: boolean; slack_channel?: string; slack_thread_ts?: string; color_index?: number | null; color_hex?: string | null; memory_mode?: 'persistent' | 'incognito' | 'temporary'; project?: string; forked_from?: string | null; source_links?: { provider: SourceProviderId; number: number; url: string; label?: string; repo?: string; ci?: 'running' | 'passed' | 'failed' | null; state?: 'open' | 'draft' | 'merged' | 'closed'; mergeable?: string; mergeStateStatus?: string; kind?: 'change' | 'issue' }[]; source_links_total?: number
+  key: string; title?: string; messages: number; running: boolean; stopping?: boolean; pending_approval?: boolean; created?: string; last_ts?: string; last_turn_ts?: string; last_message?: string; agent?: string; model?: string; reasoning_effort?: string; mode?: string; surface?: string; workspace?: string; trust?: boolean; trust_scope?: string; trust_reads?: boolean; folder_id?: string; pinned?: boolean; tags?: string[]; tags_revision?: string; links?: SessionLink[]; slack_linked?: boolean; slack_channel?: string; slack_thread_ts?: string; color_index?: number | null; color_hex?: string | null; memory_mode?: 'persistent' | 'incognito' | 'temporary'; project?: string; forked_from?: string | null; source_links?: { provider: SourceProviderId; number: number; url: string; label?: string; repo?: string; ci?: 'running' | 'passed' | 'failed' | null; state?: 'open' | 'draft' | 'merged' | 'closed'; mergeable?: string; mergeStateStatus?: string; kind?: 'change' | 'issue'; identity?: string }[]; source_links_total?: number
   /** Provenance bucket from the backend `SlotOrigin` ("user" | "app" | "cron"
    * | "system"; absent/"" for untagged background slots). The session-pulse
    * survey shows only on a "user" slot, so an imported Slack thread, a
@@ -1157,6 +1160,14 @@ export interface ChatSlot {
   interrupted?: boolean
   // Soft-stop state machine
   stop_state?: 'idle' | 'soft_pending' | 'killing'
+  /** An automatic context compaction holds the session right now. Not a turn,
+   * so `running` stays false while it runs, which is exactly what made it look
+   * like a stall worth pressing Stop on (#14841). The composer shows it and
+   * the Stop button becomes a warning while it is set. */
+  compacting?: boolean
+  /** A cooperative Stop was declined moments ago (compaction); the next press
+   * escalates to the force stop. Read from the same window the backend uses. */
+  stop_declined?: boolean
   /** In-flight `wait` tool sleep, absent when nothing is sleeping. `deadline_ts`
    * is absolute seconds on the BACKEND clock (Date.now() / 1000 territory), so
    * the transcript can count down against it and survive a page reload;
@@ -1468,7 +1479,7 @@ export interface SubagentActivity {
   result?: string
 }
 
-/** Where `clampToolOutput` (store/chatSlice.ts) removed the middle of a tool
+/** Where `clampToolOutput` (wire.ts in store/chat) removed the middle of a tool
  *  payload: the stored string is `head + '\n' + tail`, `at` is the offset of
  *  the tail (right after that newline) and `count` is how many characters were
  *  dropped between the two. Renderers put the localized marker there at view

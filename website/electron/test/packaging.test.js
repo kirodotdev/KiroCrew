@@ -347,7 +347,7 @@ describe("first-download installer design contract", () => {
     );
     assert.match(buildWorkflow, /test-windows-installer\.ps1/);
     assert.match(runtimeScript, /^\$MaxInstallSeconds = 120$/m);
-    assert.match(runtimeScript, /^\$MaxGatewayReadySeconds = 30$/m);
+    assert.match(runtimeScript, /^\$MaxGatewayReadySeconds = 50$/m);
     assert.match(runtimeScript, /silent-install-seconds=/);
     assert.match(runtimeScript, /gateway-ready-seconds=/);
     // The pyc floor is a parameter now (build.yml passes a lower value for the

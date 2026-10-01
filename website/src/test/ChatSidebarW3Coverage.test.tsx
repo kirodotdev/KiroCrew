@@ -103,7 +103,7 @@ vi.mock('../components/FolderConfigModal', async () => {
 })
 
 const cfg = vi.hoisted(() => ({
-  value: { tagColumnsEnabled: false, confirmCloseSession: false, defaultAutopilot: false } as Record<string, unknown>,
+  value: { tagColumnsEnabled: false, confirmCloseSession: false } as Record<string, unknown>,
 }))
 vi.mock('../pages/chat/ChatSettings', () => ({
   loadChatConfig: () => cfg.value,
@@ -250,7 +250,7 @@ beforeEach(() => {
   // earlier test's calls.
   vi.clearAllMocks()
   localStorage.clear()
-  cfg.value = { tagColumnsEnabled: false, confirmCloseSession: false, defaultAutopilot: false }
+  cfg.value = { tagColumnsEnabled: false, confirmCloseSession: false }
   modal.props = null
   modal.submitError = null
   modal.draft = { name: 'Gamma', color: '', projectDir: '', defaultAgent: '', touched: [] }
@@ -277,7 +277,7 @@ afterEach(() => {
 describe('ChatSidebar — list-view folder header', () => {
   it('collapses the folder through the row toggle', async () => {
     renderSidebar()
-    fireEvent.click(screen.getByLabelText('Collapse folder Alpha'))
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse folder Alpha' }))
     await waitFor(() => expect(mocks.updateChatFolder).toHaveBeenCalledWith('f1', { collapsed: true }))
   })
 

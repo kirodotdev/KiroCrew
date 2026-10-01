@@ -134,10 +134,27 @@ def _resolve_nvm_path(binary_name: str) -> str | None:
 
     Sources ~/.nvm/nvm.sh to find the nvm-managed node path, then resolves
     the requested binary relative to that directory.
+
+    POSIX only. nvm (nvm-sh) is a POSIX-shell tool, so on Windows this returns
+    None before touching the filesystem or spawning anything: the bare name
+    ``bash`` there resolves through ``CreateProcess`` to
+    ``C:\\Windows\\System32\\bash.exe`` -- the WSL launcher -- which cannot
+    source a Windows path and stalls the backend start for up to the 10 s
+    timeout (or opens WSL's distribution-install prompt on a host with no
+    distro). nvm-windows puts its ``node``/``npm`` shims on PATH, which the
+    callers already fall through to via ``shutil.which``.
     """
+    if platform_compat.IS_WINDOWS:
+        return None
     nvm_dir = os.environ.get("NVM_DIR", os.path.expanduser("~/.nvm"))
     nvm_sh = os.path.join(nvm_dir, "nvm.sh")
+    # This resolver sources a POSIX shell script (nvm.sh). On Windows the branch
+    # normally never runs — nvm.sh is absent, so it exits at the guard below —
+    # and nothing in the log said whether it was reached or which arm it took.
+    # Each outcome now names itself so a Windows log shows the branch was skipped
+    # rather than leaving its absence to inference.
     if not os.path.isfile(nvm_sh):
+        logger.debug("nvm resolver: no nvm.sh at %r; skipping nvm branch", nvm_sh)
         return None
     try:
         result = subprocess.run(
@@ -150,10 +167,18 @@ def _resolve_nvm_path(binary_name: str) -> str | None:
             nvm_node = result.stdout.strip()
             target = os.path.join(os.path.dirname(nvm_node), binary_name)
             if os.path.isfile(target):
+                logger.debug("nvm resolver: resolved %r to %r", binary_name, target)
                 return target
-    except (OSError, subprocess.TimeoutExpired):
-        pass
-    return None
+            logger.debug("nvm resolver: nvm node at %r has no sibling %r", nvm_node, binary_name)
+            return None
+        logger.debug(
+            "nvm resolver: `nvm which current` returned no path (exit %s)",
+            result.returncode,
+        )
+        return None
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        logger.debug("nvm resolver: shell invocation failed: %s", type(exc).__name__)
+        return None
 
 
 def _find_node_binary() -> str | None:
@@ -853,7 +878,9 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
                 app_name,
             )
             return None
-        cmd = [node_bin, entry_str]
+        # The resolved path: Node's ESM main-module guard compares the realpath-resolved
+        # import.meta.url with argv[1], so a symlinked path makes it silently never fire.
+        cmd = [node_bin, str(entry.resolve())]
         cwd = str(root)
         # Pass PORT as env var — Node.js apps typically read process.env.PORT
         env["NODE_ENV"] = "production"

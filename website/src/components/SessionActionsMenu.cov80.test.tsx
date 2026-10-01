@@ -43,7 +43,6 @@ vi.mock('./LinkedSurfacesSection', () => ({ default: () => <div>zzq-links</div> 
 const actions = vi.hoisted(() => ({
   toggleRead: vi.fn(),
   togglePin: vi.fn(),
-  toggleMode: vi.fn(),
   copyLink: vi.fn(),
   move: vi.fn(),
   reload: vi.fn(),
@@ -102,8 +101,6 @@ describe('SessionActionsMenu', () => {
     expect(actions.toggleRead).toHaveBeenCalledWith('zzq-slot')
     fireEvent.click(btn('Pin'))
     expect(actions.togglePin).toHaveBeenCalledWith('zzq-slot')
-    fireEvent.click(btn('Switch to Autopilot'))
-    expect(actions.toggleMode).toHaveBeenCalledWith('zzq-slot')
     fireEvent.click(btn('Tags…'))
     expect(openTagPopover).toHaveBeenCalledWith('zzq-slot')
     fireEvent.click(btn('Copy link'))
@@ -147,13 +144,14 @@ describe('SessionActionsMenu', () => {
   })
 
   it('labels read/unread and pin/unpin from the live store state', () => {
-    const { unmount } = setup({}, { pinned: true }, true)
+    setup({}, { pinned: true }, true)
     expect(btn('Mark as read')).toBeInTheDocument()
     expect(btn('Unpin')).toBeInTheDocument()
-    unmount()
+  })
 
+  it('offers no chat-mode switch, even for a legacy orchestrator slot', () => {
     setup({}, { mode: 'orchestrator' })
-    expect(btn('Switch to Chat')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Switch to (Chat|Autopilot)/ })).not.toBeInTheDocument()
   })
 
   it('omits Rename and Reveal unless the surface supplies them', () => {

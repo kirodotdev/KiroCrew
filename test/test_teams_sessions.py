@@ -155,6 +155,9 @@ class _Sessions:
     def get_mirror_link(self, key):
         return self.mirror_links.get(key)
 
+    def has_mirror_row(self, key) -> bool:
+        return key in self.mirror_links
+
     def set_mirror_link(
         self, key, link, *, accepts_inbound: bool = False, reason: str = ""
     ) -> None:

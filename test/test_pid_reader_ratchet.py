@@ -137,7 +137,7 @@ _OWNER_MARKER = "pid-owner" + "-ok"
 #: readers silently buys room for ten new ones. A change that removes a site
 #: lowers this number in the same commit. A change that wants a new reader takes
 #: the lease handle instead, or marks the site as the pool's own.
-_BASELINE_SITES = 144
+_BASELINE_SITES = 143
 
 #: Owner-marked sites in ``src``. Pinned for the same reason the total is: marking
 #: an ordinary reader would otherwise move a site out of the total for free.

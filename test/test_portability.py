@@ -1431,6 +1431,54 @@ class TestImportReplace:
         finally:
             os.unlink(str(zip_path))
 
+    def test_a_junction_at_skills_auto_is_not_rmtreed_through(self, patched_config_dir, tmp_path):
+        """Replace mode strips ``skills/auto`` before copying the tree in.
+
+        The strip was a bare ``auto_dir.is_dir()`` guard on a ``shutil.rmtree``.
+        A directory JUNCTION answers ``is_dir()`` True and ``is_symlink()`` False,
+        and ``rmtree`` follows one into its target -- so a junction planted at
+        ``skills/auto`` in the extraction tree aimed the delete OUTSIDE the archive.
+        ``is_link_or_junction`` refuses it: the LINK is unlinked, its target
+        untouched. ``make_dir_link`` plants a real junction on Windows and a
+        directory symlink on POSIX, so the arm the defect lived in is exercised.
+
+        The junction is planted in ``_strip_host_local_store_state``, which runs on
+        the extracted snapshot immediately before the replace branch reaches the
+        ``skills/auto`` strip -- the only in-flight seam, since a zip cannot carry a
+        reparse point.
+        """
+        zip_path = self._make_export(patched_config_dir)
+        victim = tmp_path / "victim"
+        victim.mkdir()
+        (victim / "precious.txt").write_text("not the import's to delete", encoding="utf-8")
+        try:
+            target = tmp_path / "target_mc"
+            target.mkdir()
+
+            real_strip = portability._strip_host_local_store_state
+
+            def _plant_then_strip(snap: Path) -> None:
+                auto_dir = snap / "skills" / "auto"
+                auto_dir.parent.mkdir(parents=True, exist_ok=True)
+                make_dir_link(auto_dir, victim)
+                real_strip(snap)
+
+            with patch("kiro_crew.portability.config_dir", return_value=target):
+                with patch.dict(os.environ, {"KIROCREW_HOME": str(target)}):
+                    with patch.object(
+                        portability, "_strip_host_local_store_state", _plant_then_strip
+                    ):
+                        apply_import_zip(zip_path, mode="replace")
+
+            # The rmtree never followed the junction into ``victim``.
+            assert (victim / "precious.txt").read_text(encoding="utf-8") == (
+                "not the import's to delete"
+            )
+            # And the replace still landed (the import was not aborted by the link).
+            assert (target / "config.json").is_file()
+        finally:
+            os.unlink(str(zip_path))
+
 
 class TestCrewTemplateWarnings:
     """A bundle never carries ``<kiro home>/agents``: both ends name what that leaves out."""
@@ -2587,3 +2635,71 @@ class TestTheCronSanitizerDecodesAsUtf8:
         assert dropped == [portability._UNREADABLE_STORE]
         assert paused == []
         assert json.loads(store.read_text(encoding="utf-8")) == {"jobs": []}
+
+
+def test_oversized_imported_command_is_dropped_without_scanning_it(tmp_path):
+    """The import path refuses an unscannable command instead of allocating for it.
+
+    This is the reach the review named: `apply_import_zip` -> `_sanitize_imported_crons`
+    -> `_vet_shell_command`. That path reads the raw dict `command` with no field-length
+    cap, so the only upstream bound is the 2 GiB uncompressed-archive ceiling, and
+    `_quote_states` would allocate two per-character lists at a measured 16 bytes/char.
+
+    Tested here rather than only at the vet because the vet's own cap is invisible from
+    this side: what a restoring operator observes is whether the job comes back, and the
+    honest outcome for a body nothing can verify is that it does not, reported as
+    rejected rather than silently absent.
+
+    Deliberately far below the real ceiling so the test costs nothing -- the point is the
+    DECISION, and the decision is a length comparison that does not care how far over the
+    input is.
+    """
+    from kiro_crew.mcp_cron import _CRON_MAX_COMMAND_SCAN
+    from kiro_crew.portability import _sanitize_imported_crons
+
+    crons = tmp_path / "crons.json"
+    crons.write_text(
+        json.dumps(
+            {
+                "jobs": [
+                    # The schedule must be the real serialised shape (an object with a
+                    # `kind`). A shape the product never writes is dropped by rule 1
+                    # instead, which makes the assertions below pass for the wrong
+                    # reason -- measured: with `{"every": 60}` BOTH jobs were dropped
+                    # and the benign neighbour never proved anything.
+                    # `message` is required too: rule 1 demands str-typed id/name/message
+                    # AND a schedule object carrying a str `kind`. Omitting any of them
+                    # drops the job for a reason that has nothing to do with the command,
+                    # which is how this fixture twice passed its main assertion vacuously.
+                    {
+                        "id": "a",
+                        "name": "oversized",
+                        "message": "x",
+                        "schedule": {"kind": "cron", "cron_expr": "0 9 * * *"},
+                        "command": "a" * (_CRON_MAX_COMMAND_SCAN + 1),
+                    },
+                    {
+                        "id": "b",
+                        "name": "ordinary",
+                        "message": "x",
+                        "schedule": {"kind": "cron", "cron_expr": "0 9 * * *"},
+                        "command": "df -h",
+                    },
+                ]
+            }
+        )
+    )
+
+    dropped, paused = _sanitize_imported_crons(crons)
+
+    assert "oversized" in dropped, f"an unscannable command must be dropped, got {dropped}"
+    assert "ordinary" not in dropped, "a benign neighbour must survive the same pass"
+    # Rule 3: a surviving `command` job is imported disabled, not live. Worth asserting
+    # alongside the drop so the two outcomes stay distinguishable -- conflating them is
+    # what the function's own docstring warns tells the user the wrong thing.
+    assert "ordinary" in paused, f"a surviving command job must be paused, got {paused}"
+
+    remaining = json.loads(crons.read_text())["jobs"]
+    names = {job.get("name") for job in remaining}
+    assert "oversized" not in names, "the dropped job must be gone from the rewritten store"
+    assert "ordinary" in names, "the restore must keep the job it did not reject"

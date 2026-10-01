@@ -1,13 +1,12 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
-import { useNavigate, useSearchParams } from 'react-router-dom'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { ApiError } from '../api/apiError'
-import { Boxes, FolderOpen, Database, Sparkles, Plus, MessageSquare, Users, Star, LayoutGrid, Rows3, UserPen } from 'lucide-react'
+import { Boxes, FolderOpen, Database, Sparkles, Plus, MessageSquare, Users, LayoutGrid, Rows3, UserPen, ChevronRight } from 'lucide-react'
 import Clickable from '../components/Clickable'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAppDispatch } from '../store'
 import { createSlot } from '../store/chatSlice'
 import { api, type WebhookTokenEntry } from '../api/client'
-import { useProvider } from '../providers'
 import { useAvailableModels } from '../hooks/useAvailableModels'
 import { FOLDER_COLOR_PALETTE } from '../components/folderColorCatalog'
 import { Btn, SendBtn, Input, Badge, SearchInput, PageHeader, EmptyState } from '../components/ui'
@@ -45,7 +44,8 @@ import { crewDisplayName, type KiroCrewAgent } from '../components/AgentSelector
 import { SourceBadge } from '../components/SourceBadge'
 import { errMessage } from '../utils/thunkError'
 import { EFFORT_LEVELS, effortLabel, modelSupportsEffort } from '../lib/effort'
-import { templateSourceBadge, type TemplateProvenance } from '../lib/templateSource'
+import { templateSourceBadge, templateSourceLabel, type TemplateProvenance } from '../lib/templateSource'
+import { DEFAULT_CREWMATE_PATH } from './overview/defaultCrewmateLink'
 
 import { i18nT } from '../i18n/t'
 
@@ -161,6 +161,7 @@ function WorkspaceForm({
   onCreated,
   onClose,
   onDirtyChange,
+  onSaveChain,
 }: {
   workspaceOptions: string[]
   onCreated: (name: string) => void
@@ -168,6 +169,13 @@ function WorkspaceForm({
   /** Whether the form holds unsaved input; the modal reads it to refuse
    *  Escape / backdrop dismissal while it does. */
   onDirtyChange?: (dirty: boolean) => void
+  /** Register the in-flight create POST with the host so its navigation guard
+   *  tracks it to SETTLEMENT, not to this form's lifetime: a boolean cleared on
+   *  unmount would release the guard the instant the modal closes (Cancel)
+   *  while the request still completes and creates the workspace. The host
+   *  decrements only when the promise settles, so the guard holds across a
+   *  cancel/close. */
+  onSaveChain?: (p: Promise<unknown>) => void
 }) {
   const [wsName, setWsName] = useState('')
   const [wsDir, setWsDir] = useState('workspace')
@@ -203,7 +211,13 @@ function WorkspaceForm({
     try {
       const body: Record<string, string> = { name: n, dir: wsDir }
       if (copyFrom) body.copy_from = copyFrom
-      const r: AgentMutationResult = await api.createWorkspace(body)
+      // Hand the create POST to the host BEFORE awaiting it, so its navigation
+      // guard counts the write until it settles even if this form unmounts
+      // (Cancel / backdrop) mid-request. The host swallows the rejection on its
+      // tracking copy; the real outcome is still handled below.
+      const createWrite = api.createWorkspace(body)
+      onSaveChain?.(createWrite)
+      const r: AgentMutationResult = await createWrite
       if (r.error) { setWsError(r.error); setSubmitting(false); return }
       onCreated(r.name || n)
     } catch (e) {
@@ -272,6 +286,7 @@ export function WorkspaceModal({
   onCreated,
   onClose,
   onDirtyChange,
+  onSaveChain,
 }: {
   open: boolean
   workspaceOptions: string[]
@@ -281,6 +296,9 @@ export function WorkspaceModal({
    *  navigation stake (the Crewmates dialog): a route change unmounts this
    *  modal with its host, and the host's guard must count this draft too. */
   onDirtyChange?: (dirty: boolean) => void
+  /** Register the in-flight create POST with the host so a route-leave is
+   *  refused until it SETTLES (tracked past this modal's unmount). */
+  onSaveChain?: (p: Promise<unknown>) => void
 }) {
   // Unsaved input in the form: Escape and a backdrop click are refused while
   // it is set (the same rule `components/Modal` applies as
@@ -316,7 +334,7 @@ export function WorkspaceModal({
         onEscapeKeyDown={e => { if (dirty) e.preventDefault() }}
         onPointerDownOutside={e => { if (dirty) e.preventDefault() }}
       >
-        <WorkspaceForm workspaceOptions={workspaceOptions} onCreated={onCreated} onClose={onClose} onDirtyChange={setDirty} />
+        <WorkspaceForm workspaceOptions={workspaceOptions} onCreated={onCreated} onClose={onClose} onDirtyChange={setDirty} onSaveChain={onSaveChain} />
       </DialogContent>
     </Dialog>
   )
@@ -707,6 +725,58 @@ function BindingFields({
   )
 }
 
+/** The roster's `default` badge: a status stamp, and only that. The path to
+ *  CHANGE the default is the toolbar's "Change default crewmate ›" link
+ *  (`ChangeDefaultLink`), not the badge — a badge that carried the verb ate the
+ *  card's own name on a 290px card ("d…"), and a card header is one line by
+ *  design. */
+function DefaultBadge() {
+  const label = i18nT('pages.kiroCrewAgentsPage.default_2')
+  return (
+    // `Badge` is an inline-flex box, and `text-overflow` never draws an ellipsis
+    // on a flex container -- the text was clipped mid-glyph ("По умолч") on the
+    // 290px card. The truncation lives on an inner inline span, where it works.
+    <Badge variant="ok" className="min-w-0 max-w-[45%] shrink" title={label}>
+      <span className="min-w-0 truncate">{label}</span>
+    </Badge>
+  )
+}
+
+/** The roster's one visible path to where the default crewmate is changed: a
+ *  link in the toolbar, beside the view toggle, to the Default crewmate row on
+ *  Developer → Config (ringed on arrival), with the row's own sentence as its
+ *  title. Says its destination in words at rest — a hover title is read by
+ *  nobody who did not already dare. Rendered only past one crewmate: with a
+ *  single crewmate there is nothing to change to. It is a link, not a picker:
+ *  the roster still opens on the roster. */
+function ChangeDefaultLink() {
+  return (
+    <Link
+      to={DEFAULT_CREWMATE_PATH}
+      title={i18nT('pages.kiroCrewAgentsPage.change_default_hint')}
+      className="inline-flex min-w-0 items-center gap-0.5 rounded text-[12.5px] leading-snug text-accent hover:underline focus-ring"
+    >
+      <span className="min-w-0">{i18nT('pages.kiroCrewAgentsPage.change_default_crewmate')}</span>
+      <ChevronRight size={13} aria-hidden="true" className="shrink-0" />
+    </Link>
+  )
+}
+
+/** The roster's provenance badge, in the same words the Custom agents tab uses
+ *  for a template's origin (`templateSourceLabel`): a crew record's `source` is
+ *  `kirocrew` | `package` | `builtin` (agent_discovery), where `builtin` is a
+ *  plain `~/.kiro/agents/<name>.json` spec — the classifier's `custom` — and
+ *  never an author claim. An unknown token falls back to itself. */
+function CrewSourceBadge({ source }: { source: string }) {
+  const label = templateSourceLabel({ source }) || source
+  return <SourceBadge source={source}>{label}</SourceBadge>
+}
+
+/** Kiro Crew is product-owned; every other source carries useful provenance. */
+function showsCrewSourceBadge(source?: string): source is string {
+  return Boolean(source && source !== 'kirocrew')
+}
+
 /** One crew in the roster. The whole card opens the editor panel. */
 function CrewCard({ agent, isDefault, shared, onOpen }: {
   agent: KiroCrewAgent
@@ -714,7 +784,6 @@ function CrewCard({ agent, isDefault, shared, onOpen }: {
   shared: SharedKind
   onOpen: () => void
 }) {
-  const provider = useProvider()
   const sharedNote = i18nT('pages.kiroCrewAgentsPage.shared_lower')
   const filesShared = shared === 'files' || shared === 'both'
   const memoryShared = shared === 'memory' || shared === 'both'
@@ -743,14 +812,14 @@ function CrewCard({ agent, isDefault, shared, onOpen }: {
               out of alignment across the row. The name truncates and the
               badges hold their size, so the row can never wrap. */}
           <div className="flex items-center gap-2 min-w-0">
-            <span className="truncate font-mono text-[14px] font-semibold text-text-strong">{crewDisplayName(agent)}</span>
+            <span className="min-w-[3rem] flex-1 truncate font-mono text-[14px] font-semibold text-text-strong">{crewDisplayName(agent)}</span>
             {/* The ID stays discoverable when a label covers it — crons, spawn
                 params and the CLI address the ID, never the label. */}
             {crewDisplayName(agent) !== agent.name && (
               <span className="truncate font-mono text-[11px] text-muted max-w-[14rem]" title={i18nT('components.agentSelector.agent_id_tooltip', { name: agent.name })}>{agent.name}</span>
             )}
-            {isDefault && <Badge variant="ok" className="shrink-0">{i18nT('pages.kiroCrewAgentsPage.default_2')}</Badge>}
-            {agent.source && agent.source !== 'kirocrew' && <SourceBadge source={agent.source} />}
+            {isDefault && <DefaultBadge />}
+            {showsCrewSourceBadge(agent.source) && <CrewSourceBadge source={agent.source} />}
           </div>
           {/* Two lines rather than one. A crew description is a sentence about
               what the crew is FOR, and a single truncated line cut nearly all
@@ -770,7 +839,7 @@ function CrewCard({ agent, isDefault, shared, onOpen }: {
         </div>
       </div>
       <div className="grid grid-cols-2 gap-x-3 gap-y-2 border-t border-border pt-3">
-        <Binding icon={<Boxes className="lucide-inline" aria-hidden="true" />} label={provider.labels.agentTemplateField} value={agent.kiro_agent} />
+        <Binding icon={<Boxes className="lucide-inline" aria-hidden="true" />} label={i18nT('pages.kiroCrewAgentsPage.built_from')} value={agent.kiro_agent} />
         <Binding icon={<FolderOpen className="lucide-inline" aria-hidden="true" />} label={i18nT('pages.kiroCrewAgentsPage.workspace_2')} value={agent.workspace} note={filesShared ? sharedNote : undefined} />
         <Binding icon={<Database className="lucide-inline" aria-hidden="true" />} label={i18nT('pages.kiroCrewAgentsPage.memory_store')} value={agent.memory_store} note={memoryShared ? sharedNote : undefined} />
         <Binding
@@ -842,8 +911,8 @@ function CrewRow({ agent, isDefault, shared, onOpen }: {
               {crewDisplayName(agent) !== agent.name && (
                 <span className="truncate font-mono text-[11px] text-muted shrink-0">{agent.name}</span>
               )}
-              {isDefault && <Badge variant="ok" className="shrink-0">{i18nT('pages.kiroCrewAgentsPage.default_2')}</Badge>}
-              {agent.source && agent.source !== 'kirocrew' && <SourceBadge source={agent.source} />}
+              {isDefault && <DefaultBadge />}
+              {showsCrewSourceBadge(agent.source) && <CrewSourceBadge source={agent.source} />}
             </div>
             {/* One line here is the point of this view — the row is wide, so a
                 single line already carries far more of the sentence than the
@@ -875,7 +944,6 @@ function CrewRow({ agent, isDefault, shared, onOpen }: {
 }
 
 export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } = {}) {
-  const provider = useProvider()
   const dispatch = useAppDispatch()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
@@ -1291,13 +1359,6 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     mutationFn: ({ name, data }: { name: string; data: AgentUpdatePayload; epoch: number }) => api.updateKirocrewAgent(name, data),
     onSuccess: (r: AgentMutationResult, vars) => { settleFor(vars.epoch, r.error); refetchAgents() },
     onError: (e: Error, vars) => settleFor(vars.epoch, e.message || i18nT('pages.kiroCrewAgentsPage.failed_to_update_agent')),
-  })
-  /** Promotion is its own write, fired straight from the roster bar — it is not
-   *  part of saving a crew's bindings, so it must not wait for a Save. */
-  const defaultMut = useMutation({
-    mutationFn: (n: string) => api.setDefaultAgent(n),
-    onSuccess: (r: AgentMutationResult) => { if (r.error) { setError(r.error); return }; refetchAgents() },
-    onError: (e: Error) => setError(e.message || i18nT('pages.kiroCrewAgentsPage.failed_to_update_agent')),
   })
   const deleteMut = useMutation({
     mutationFn: ({ name }: { name: string; epoch: number }) => api.deleteKirocrewAgent(name),
@@ -1889,7 +1950,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
   })
   const wakeJobs = useMemo<CronJob[]>(
     () => (wakeQuery.data?.jobs || []).filter(
-      (j: CronJob) => wakesCrew(j, editing, editing === defaultAgent)),
+      (j: CronJob) => wakesCrew(j, editing, editing === defaultAgent, editing)),
     [wakeQuery.data, editing, defaultAgent],
   )
 
@@ -1914,7 +1975,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
   const routingWords = triggers.split(',').map(s => s.trim()).filter(Boolean).length
 
   const sections = useCrewEditorSections({
-    templateLabel: provider.labels.agentTemplateField,
+    templateLabel: i18nT('pages.kiroCrewAgentsPage.built_from'),
     activeSchedules: wakeJobs.filter(j => j.enabled).length,
     totalSchedules: wakeJobs.length,
     routingWords,
@@ -1957,41 +2018,6 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
           askAgent={!sheet}
           testId="crews-editor-options-load-error"
         />
-        {/* New members receive member-scoped V2; existing V1 bindings stay unchanged. */}
-        <div className="mb-3.5 flex items-start gap-2 rounded-lg border border-accent-subtle bg-bg-accent px-3 py-2.5">
-          <Sparkles className="lucide-inline mt-0.5 shrink-0 text-accent" aria-hidden="true" />
-          <span className="text-[12.5px] leading-relaxed text-muted">
-            {i18nT('pages.kiroCrewAgentsPage.bindings_member_memory_notice')}
-          </span>
-        </div>
-
-        {/* Which crew a new chat starts as, hoisted out of the cards. Two jobs:
-            it answers "which one is the default" without hunting for a badge,
-            and it is the one place that CHANGES it — a per-crew toggle could
-            only ever offer promotion (the backend refuses to unset a default
-            without naming a replacement), which read as a broken switch.
-            Pointless with a single crew, so it only appears past that. */}
-        {agents.length > 1 && (
-          <div className="mb-3.5 flex flex-wrap items-center gap-2.5 rounded-lg border border-border bg-bg-accent px-3 py-2.5">
-            <Star className="lucide-inline text-accent" aria-hidden="true" />
-            <span className="text-[13px]">{i18nT('pages.kiroCrewAgentsPage.new_sessions_use')}</span>
-            <SimpleSelect
-              options={agents.map(a => a.name)}
-              value={defaultAgent}
-              onChange={n => { setError(''); defaultMut.mutate(n) }}
-              aria-label={i18nT('pages.kiroCrewAgentsPage.new_sessions_use')}
-              style={{ width: 190 }}
-            />
-            {/* `error` is ONE state shared with the crew sheet: settleFor writes
-                the sheet's create / update / delete failures into it too, and
-                those render in the sheet's own footer without a hand-off because
-                dirtyPanes hold unsaved edits. So this copy shows only while the
-                sheet is closed (closeSheet clears the state on the way out) — the
-                only writer then is the select above, which commits immediately on
-                change, so the hand-off has no draft to destroy. */}
-            <ErrorNotice message={sheet ? null : error} variant="inline" askAgent testId="crews-default-agent-error" />
-          </div>
-        )}
 
         <div className="mb-4 flex flex-wrap items-center gap-2">
           {/* No point offering a filter over an empty roster — it just adds a
@@ -2035,8 +2061,18 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
               ]}
             />
           )}
-          <div className="flex-1" />
-          <SendBtn onClick={openCreate} data-testid="new-crew">
+          {/* Where the default is changed — a link, shown once there is a second
+              crewmate to change to. Sits with the roster's other controls rather
+              than on the default card, whose one-line header has no room for a
+              verb next to the name. */}
+          {/* The link takes the row's slack and wraps its own text, so a long
+              translation (Russian) folds inside the link instead of pushing Add
+              crewmate onto a second line — the primary action stays put per
+              locale. */}
+          <div className="flex min-w-0 flex-1 basis-0 items-center">
+            {agents.length > 1 && <ChangeDefaultLink />}
+          </div>
+          <SendBtn onClick={openCreate} data-testid="new-crew" className="shrink-0">
             <Plus className="lucide-inline" aria-hidden="true" />
             {i18nT('pages.kiroCrewAgentsPage.add_crew_member')}
           </SendBtn>
@@ -2064,7 +2100,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
               <TableHeader>
                 <TableRow className="hover:bg-transparent">
                   <TableHead>{i18nT('pages.kiroCrewAgentsPage.crew_column')}</TableHead>
-                  <TableHead>{provider.labels.agentTemplateField}</TableHead>
+                  <TableHead>{i18nT('pages.kiroCrewAgentsPage.built_from')}</TableHead>
                   {/* `aria-label` keeps the column's accessible name to the
                       label itself. Without it the InfoTip's own name is
                       concatenated into the header, and a screen reader
@@ -2182,7 +2218,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
                     whose effect IS this text, so it previews before Save. */}
                 {creating ? i18nT('pages.kiroCrewAgentsPage.add_crew_member') : (displayName.trim() || editing)}
               </DialogTitle>
-              {!creating && editingAgent?.source && <SourceBadge source={editingAgent.source} />}
+              {!creating && showsCrewSourceBadge(editingAgent?.source) && <CrewSourceBadge source={editingAgent.source} />}
             </div>
             {!creating && (
               <div className="ml-auto flex items-center gap-2" data-testid="crew-editor-actions">
@@ -2246,7 +2282,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
                   </h3>
                   <BindingFields
                     subject={formSubject}
-                    templateLabel={provider.labels.agentTemplateField}
+                    templateLabel={i18nT('pages.kiroCrewAgentsPage.built_from')}
                     kiroAgentOptions={kiroAgentOptions} kiroAgent={kiroAgent} setKiroAgent={setKiroAgent}
                     templateProvenance={templateProvenance}
                     workspaceOptions={workspaceOptions} workspace={workspace} setWorkspace={setWorkspace}
@@ -2293,13 +2329,18 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
                           <CrewAvatar seed={editing} avatar={editAvatar ?? undefined} size={34} />
                         </CrewAvatarButton>
                       }
-                      templateLabel={provider.labels.agentTemplateField}
+                      templateLabel={i18nT('pages.kiroCrewAgentsPage.built_from')}
                       template={kiroAgent}
                       workspace={workspace}
                       memoryStore={memoryStore}
                       modelLabel={editModel === INHERIT_MODEL ? i18nT('pages.kiroCrewAgentsPage.inherited') : editModel}
                       modelInherited={editModel === INHERIT_MODEL}
                       resolvedModel={resolved?.model || ''}
+                      // `editing` for BOTH identities here, which keeps this page's
+                      // attribution exactly as it has always been. This page holds no
+                      // slug for the crew it is editing (the list route does not carry
+                      // `member_id`), so matching on the immutable id is its own change;
+                      // the Crewmates panel, which does have one, passes it.
                       activeSchedules={wakeJobs.filter(j => j.enabled).length}
                       schedulesUnknown={wakeQuery.isError}
                       routingWords={routingWords}
@@ -2361,7 +2402,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
                           onSelect={persistTemplateSwitch}
                           onRebound={setKiroAgent}
                           provenance={templateProvenance}
-                          fieldLabel={provider.labels.agentTemplateField}
+                          fieldLabel={i18nT('pages.kiroCrewAgentsPage.built_from')}
                           onSaveChain={onPaneSaveChain}
                         />
                       </>
@@ -2476,7 +2517,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
                   )}
 
                   {pane === 'schedules' && (
-                    <CrewWakeSection crew={editing} agentTemplate={kiroAgent} isDefaultCrew={editing === defaultAgent} onDraftChange={setSchedDraft} onSavingChange={setSchedSaving} onRequestCancel={requestCancelDraft} />
+                    <CrewWakeSection crew={editing} memberId={editing} agentTemplate={kiroAgent} isDefaultCrew={editing === defaultAgent} onDraftChange={setSchedDraft} onSavingChange={setSchedSaving} onRequestCancel={requestCancelDraft} />
                   )}
 
                   {pane === 'webhook' && <CrewWebhookSection crew={editing} />}
@@ -2523,7 +2564,10 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
                         <div className="flex-1" />
                         {confirmDelete ? (
                           <>
-                            <Btn onClick={() => setConfirmDelete(false)} data-testid="cancel-delete-crew">{i18nT('pages.kiroCrewAgentsPage.cancel')}</Btn>
+                            {/* Not "Cancel": the sheet footer's Cancel is on screen at
+                                the same time, and two Cancels leave the reader asking
+                                which one to press. This one says what pressing it keeps. */}
+                            <Btn onClick={() => setConfirmDelete(false)} data-testid="cancel-delete-crew">{i18nT('pages.kiroCrewAgentsPage.keep_crew')}</Btn>
                             <Btn danger onClick={() => deleteMut.mutate({ name: editing, epoch: sheetEpoch.current })} disabled={sheetBusy} data-testid="confirm-delete-crew">
                               {i18nT('pages.kiroCrewAgentsPage.yes_delete_it')}
                             </Btn>

@@ -73,7 +73,7 @@ class TestTheQuarantineSidecarIsWrittenSafely:
 
             monkeypatch.setattr(_an.asyncio, "sleep", _nosleep)
             # The sidecar became unreadable while the service was live.
-            svc._load_refused = True
+            svc._store.load_refused = True
             await svc._timer(loop)
 
             assert not fired, "a cycle was delivered while no write could be recorded"
@@ -84,7 +84,7 @@ class TestTheQuarantineSidecarIsWrittenSafely:
         finally:
             # The latch is the condition under test, not the teardown: leaving it set
             # makes a teardown persist raise and mask the assertions above.
-            svc._load_refused = False
+            svc._store.load_refused = False
             svc.stop()
 
     @pytest.mark.asyncio
@@ -107,7 +107,7 @@ class TestTheQuarantineSidecarIsWrittenSafely:
         svc = AutoNudgeService(base_dir=tmp_path)
         svc._load()
 
-        assert malformed in svc._unparsed_rows, "the unreadable row was dropped on load"
+        assert malformed in svc._store.unparsed_rows, "the unreadable row was dropped on load"
         assert svc._store_dirty is True, "the quarantined sibling did not arm a rewrite"
         assert (
             malformed in svc._serialize_state()["loops"]
@@ -125,7 +125,7 @@ class TestTheQuarantineSidecarIsWrittenSafely:
         svc = AutoNudgeService(base_dir=tmp_path)
         svc._load()
 
-        assert svc._load_refused is True, "a non-object root did not refuse writes"
+        assert svc._store.load_refused is True, "a non-object root did not refuse writes"
         assert svc._loops == {}, "a non-object root armed something"
 
     @pytest.mark.asyncio
@@ -159,7 +159,7 @@ class TestTheQuarantineSidecarIsWrittenSafely:
         svc = AutoNudgeService(base_dir=tmp_path)
         svc._load()
 
-        ids = [row.get("id") for row in svc._quarantined]
+        ids = [row.get("id") for row in svc._store.quarantined]
         assert (
             self.SECRET in ids
         ), f"an unrelated held row was retired on a coincidental match: {ids!r}"
@@ -196,7 +196,7 @@ class TestTheQuarantineSidecarIsWrittenSafely:
         svc._load()
 
         assert "loop-clean-id" in svc._loops, "the repaired row did not arm from the store"
-        ids = [row.get("id") for row in svc._quarantined]
+        ids = [row.get("id") for row in svc._store.quarantined]
         assert (
             self.SECRET in ids
         ), f"the held copy was deleted -- only the operator may remove it: {ids!r}"
@@ -233,7 +233,7 @@ class TestTheQuarantineSidecarIsWrittenSafely:
         svc._load()
 
         assert "loop-repairable" in svc._loops, "the repaired row did not arm from the store"
-        keys = [row.get("slot_key") for row in svc._quarantined]
+        keys = [row.get("slot_key") for row in svc._store.quarantined]
         assert (
             self.SECRET in keys
         ), f"the held copy was deleted -- only the operator may remove it: {keys!r}"
@@ -262,7 +262,7 @@ class TestTheQuarantineSidecarIsWrittenSafely:
         svc = AutoNudgeService(base_dir=tmp_path)
         try:
             svc._load()
-            held = [row.get("id") for row in svc._quarantined]
+            held = [row.get("id") for row in svc._store.quarantined]
             assert len(held) == 1, (
                 "the row present in BOTH files was quarantined twice, so every failed "
                 f"replacement accumulates another duplicate record: {len(held)} copies"
@@ -280,12 +280,12 @@ class TestTheQuarantineSidecarIsWrittenSafely:
         svc = AutoNudgeService(base_dir=tmp_path)
         try:
             svc._load()
-            assert svc._quarantined, "fixture did not quarantine the credential-shaped row"
+            assert svc._store.quarantined, "fixture did not quarantine the credential-shaped row"
 
             def _boom() -> None:
                 raise OSError("sidecar volume is full")
 
-            svc._write_quarantine_sidecar = _boom  # type: ignore[method-assign]
+            svc._store._write_quarantine_sidecar = _boom  # type: ignore[method-assign]
             with pytest.raises(OSError):
                 svc._write_state(svc._serialize_state())
             assert store.read_text(encoding="utf-8") == before, (
@@ -319,12 +319,12 @@ class TestTheQuarantineSidecarIsWrittenSafely:
         svc = AutoNudgeService(base_dir=tmp_path)
         try:
             svc._load()  # must not raise
-            assert svc._load_refused is True, "a non-object sidecar left writes enabled"
+            assert svc._store.load_refused is True, "a non-object sidecar left writes enabled"
             assert not svc._loops, (
                 "loops armed under a refused store; a delivered cycle cannot record "
                 f"itself, so a restart repeats it. armed={sorted(svc._loops)!r}"
             )
-            assert not svc._quarantined, (
+            assert not svc._store.quarantined, (
                 "rows were held in memory under a refused store, which cannot be "
                 "persisted and so is lost silently on restart"
             )
@@ -371,7 +371,7 @@ class TestTheQuarantineSidecarIsWrittenSafely:
         svc = AutoNudgeService(base_dir=tmp_path)
         try:
             svc._load()
-            assert svc._quarantined, "fixture did not quarantine the credential-shaped row"
+            assert svc._store.quarantined, "fixture did not quarantine the credential-shaped row"
 
             svc._write_state(svc._serialize_state())
 
@@ -417,7 +417,7 @@ class TestTheQuarantineSidecarIsWrittenSafely:
         try:
             svc._load()
             assert (
-                svc._quarantined
+                svc._store.quarantined
             ), "a row with no no-default field was retired on a defaulted boolean"
         finally:
             svc.stop()
@@ -448,9 +448,9 @@ class TestTheQuarantineSidecarIsWrittenSafely:
         svc = AutoNudgeService(base_dir=tmp_path)
         try:
             svc._load()
-            ids = [row.get("id") for row in svc._quarantined]
+            ids = [row.get("id") for row in svc._store.quarantined]
             assert (
-                len(svc._quarantined) == 2
+                len(svc._store.quarantined) == 2
             ), f"an ambiguous match retired a row it could not have repaired: {ids!r}"
         finally:
             svc.stop()
@@ -482,10 +482,10 @@ class TestTheQuarantineSidecarIsWrittenSafely:
         svc = AutoNudgeService(base_dir=tmp_path)
         try:
             svc._load()
-            keys = [row.get("slot_key") for row in svc._quarantined]
+            keys = [row.get("slot_key") for row in svc._store.quarantined]
             assert "chat-live-1" in keys, (
                 "a sparse row was retired as a repair of an unrelated loop sharing its "
-                f"slot_key; still held: {svc._quarantined!r}"
+                f"slot_key; still held: {svc._store.quarantined!r}"
             )
         finally:
             svc.stop()
@@ -513,7 +513,7 @@ class TestTheQuarantineSidecarIsWrittenSafely:
                 _an, "fsync_dir", lambda _p: (_ for _ in ()).throw(OSError("no fsync"))
             )
             monkeypatch.setattr(
-                type(svc),
+                type(svc._store),
                 "_compact_quarantine_sidecar",
                 lambda self: compacted.append(1),
             )
@@ -560,7 +560,7 @@ class TestTheQuarantineSidecarIsWrittenSafely:
         svc = AutoNudgeService(base_dir=tmp_path)
         svc._load()
 
-        keys = [row.get("slot_key") for row in svc._quarantined]
+        keys = [row.get("slot_key") for row in svc._store.quarantined]
         assert (
             self.SECRET in keys
         ), f"an unrelated loop retired the held row on field residue alone: {keys!r}"
@@ -586,7 +586,7 @@ class TestTheQuarantineSidecarIsWrittenSafely:
         svc = AutoNudgeService(base_dir=tmp_path)
         svc._load()
 
-        assert svc._load_refused is True, (
+        assert svc._store.load_refused is True, (
             "a sidecar with no `quarantined` key was read as empty, so the next write "
             "would unlink it"
         )
@@ -622,17 +622,17 @@ class TestTheQuarantineSidecarIsWrittenSafely:
         svc = AutoNudgeService(base_dir=tmp_path)
         try:
             svc._load()
-            assert svc._quarantined, "fixture did not quarantine the credential-shaped row"
+            assert svc._store.quarantined, "fixture did not quarantine the credential-shaped row"
 
             compacted: list[str] = []
-            real_compact = svc._compact_quarantine_sidecar
+            real_compact = svc._store._compact_quarantine_sidecar
 
             def _record_compact():
                 compacted.append("compact")
                 events.append("compact")
                 return real_compact()
 
-            monkeypatch.setattr(svc, "_compact_quarantine_sidecar", _record_compact)
+            monkeypatch.setattr(svc._store, "_compact_quarantine_sidecar", _record_compact)
             svc._write_state(svc._serialize_state())
 
             assert compacted, "compaction never ran, so this run proves nothing"
@@ -685,7 +685,7 @@ class TestIdCollidingHeldRowsStayQuarantined:
         svc = AutoNudgeService(base_dir=tmp_path)
         svc._load()
 
-        held = [row.get("slot_key") for row in svc._quarantined]
+        held = [row.get("slot_key") for row in svc._store.quarantined]
         assert "chat-2-2" in held, "the id-colliding held row was dropped, not quarantined"
 
     @pytest.mark.asyncio
@@ -699,7 +699,7 @@ class TestIdCollidingHeldRowsStayQuarantined:
         def _boom() -> None:
             raise OSError("sidecar compaction failed")
 
-        svc._compact_quarantine_sidecar = _boom  # type: ignore[method-assign]
+        svc._store._compact_quarantine_sidecar = _boom  # type: ignore[method-assign]
 
         # No raise: the main store is already committed, so rolling the caller back
         # would leave live state disagreeing with the file on disk.
@@ -721,19 +721,19 @@ class TestSidecarRecoveryCannotAbortStartup:
     def test_an_unopenable_lock_keeps_writes_refused_and_retains_the_bytes(self, tmp_path):
         svc = AutoNudgeService(base_dir=tmp_path)
         try:
-            svc._quarantine_path.write_text("{ not json", encoding="utf-8")
-            lock = svc._quarantine_path.with_name(svc._quarantine_path.name + ".lock")
+            svc._store.quarantine_path.write_text("{ not json", encoding="utf-8")
+            lock = svc._store.quarantine_path.with_name(svc._store.quarantine_path.name + ".lock")
             lock.mkdir()
             assert lock.is_dir(), "precondition: the lock path must be unopenable"
 
-            svc._refuse_writes_and_preserve_sidecar()
+            svc._store._refuse_writes_and_preserve_sidecar()
 
-            assert svc._load_refused is True, (
+            assert svc._store.load_refused is True, (
                 "the write refusal was lost, so a later persist would compact around rows "
                 "nothing enumerated"
             )
-            assert svc._quarantine_path.exists(), "the unreadable bytes were not retained"
-            assert svc._quarantine_path.read_text(encoding="utf-8") == "{ not json"
+            assert svc._store.quarantine_path.exists(), "the unreadable bytes were not retained"
+            assert svc._store.quarantine_path.read_text(encoding="utf-8") == "{ not json"
             assert not list(
                 tmp_path.glob("*.corrupt-*")
             ), "a move-aside was recorded that cannot have happened"
@@ -755,15 +755,15 @@ class TestTheWriteRefusalIsReachableWithRowsInMemory:
         svc = AutoNudgeService(base_dir=tmp_path)
         try:
             svc._load()
-            assert svc._load_refused is False, "precondition: the store must load cleanly"
+            assert svc._store.load_refused is False, "precondition: the store must load cleanly"
             await svc.add("chat-1-1785", "keep checking the pull request", idle_secs=300)
             assert svc._loops, "precondition: a loop must be armed, or the map is empty anyway"
 
             # Unreadable only AFTER a clean load: the window no load-time setter describes.
-            monkeypatch.setattr(svc, "_quarantine_rows_on_disk", lambda: None)
+            monkeypatch.setattr(svc._store, "_quarantine_rows_on_disk", lambda: None)
             with pytest.raises(AutoNudgeStoreUnvetted):
                 svc._write_state(svc._serialize_state())
-            assert svc._load_refused is True, "the mid-write refusal did not latch"
+            assert svc._store.load_refused is True, "the mid-write refusal did not latch"
             assert (
                 svc._loops
             ), "the map emptied, so this case would not differ from the load-time one"

@@ -579,7 +579,11 @@ export default function SessionAutomationPopover({
               <div><dt className="text-muted">{i18nT('components.sessionAutomationPopover.latest_decision')}</dt><dd translate="no">{monitor.latest.decision || i18nT('components.sessionAutomationPopover.none_yet')}</dd></div>
               <div><dt className="text-muted">{i18nT('components.sessionAutomationPopover.probe_cadence')}</dt><dd>{fmtNumber(monitor.cadenceSecs)}</dd></div>
               <div><dt className="text-muted">{i18nT('components.sessionAutomationPopover.maximum_runtime')}</dt><dd>{fmtNumber(monitor.budgets.maxRuntimeSecs)}</dd></div>
-              <div><dt className="text-muted">{i18nT('components.sessionAutomationPopover.maximum_agent_turns')}</dt><dd>{fmtNumber(monitor.budgets.maxAgentTurns)}</dd></div>
+              {/* 0 is this budget's unlimited sentinel, so the number is not the
+                  reading: "Maximum agent turns: 0" says the opposite of what it
+                  means. Same treatment the token figure gets when usage is
+                  unreported -- a word where no number is the truth. */}
+              <div><dt className="text-muted">{i18nT('components.sessionAutomationPopover.maximum_agent_turns')}</dt><dd>{monitor.budgets.maxAgentTurns === 0 ? i18nT('components.sessionAutomationPopover.unlimited') : fmtNumber(monitor.budgets.maxAgentTurns)}</dd></div>
               <div><dt className="text-muted">{i18nT('components.sessionAutomationPopover.maximum_tokens')}</dt><dd>{fmtNumber(monitor.budgets.maxTokens)}</dd></div>
               <div><dt className="text-muted">{i18nT('components.sessionAutomationPopover.maximum_provider_errors')}</dt><dd>{fmtNumber(monitor.budgets.maxProviderErrors)}</dd></div>
             </dl>
@@ -709,8 +713,16 @@ export default function SessionAutomationPopover({
                   aria-labelledby={`${id}-turns-label`}
                   onChange={event => updateDraft('turns', event.target.value)}
                   aria-invalid={!!errors.turns}
-                  aria-describedby={errors.turns ? `${id}-turns-error` : undefined}
+                  aria-describedby={
+                    errors.turns ? `${id}-turns-error` : `${id}-turns-hint`
+                  }
                 />
+                {/* On a "maximum" field, entering 0 reads as "none allowed".
+                    The hint carries the sentinel's meaning, the way the legacy
+                    cycle cap spells it in its own label. */}
+                <div id={`${id}-turns-hint`} className="text-[11px] text-muted">
+                  {i18nT('components.sessionAutomationPopover.wake_budget_zero_hint')}
+                </div>
                 <FieldError id={`${id}-turns-error`} message={errors.turns} />
               </div>
               <div className={fieldClass}>

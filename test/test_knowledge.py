@@ -3124,8 +3124,9 @@ class TestCosineSimilarityDimensionMismatch:
     mismatched lengths. With a plain ``zip(a, b)`` the dot product silently
     truncates to the shorter length while the norms still use the full vectors,
     producing a meaningless (often falsely high) similarity. The sibling code in
-    ``vector_memory.py`` already guards this exact case (``if n_floats != q_len:
-    continue``); this helper must not score across mismatched dimensions either.
+    ``vector_memory_runtime/episodic_search.py`` (``sqlite_vector_search``) already
+    guards this exact case (``if n_floats != q_len: continue``); this helper must not
+    score across mismatched dimensions either.
     """
 
     def test_mismatched_dims_return_zero_not_false_match(self):

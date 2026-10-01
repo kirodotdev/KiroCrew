@@ -190,13 +190,13 @@ registerBuiltinSurface({
 })
 
 // Knowledge is not a main-rail surface BY DEFAULT: it lives as a tab inside
-// Agent Capabilities (CapabilitiesPage), grouped with Prompts and Steering —
+// Customize (CapabilitiesPage), grouped with Prompts and Steering —
 // the other feed-the-agent assets. The old /knowledge route redirects there
 // (App.tsx), so bookmarks and deep links keep resolving. It is registered
 // below as `pinnable`, so a user who works in it daily can promote it onto the
 // rail; absent that pin the rail is unchanged.
 
-// ── Promotable sub-items (Agent Capabilities panel) ────────────────────────
+// ── Promotable sub-items (Customize panel) ─────────────────────────────────
 // Each of these is a tab inside /capabilities. They are registered as real
 // surfaces so a promoted row gets the rail's ordinary label/icon/active
 // handling, `labelKey` resolution and test coverage — but `pinnable` keeps
@@ -261,9 +261,9 @@ for (const s of CAPABILITY_SUB_ITEMS) {
 }
 
 // ── Bottom ─────────────────────────────────────────────────────────────────
-// Agents + Capabilities merged into one bottom-pinned "Agent Capabilities"
-// destination. The /capabilities secondary panel hosts Crews (bindings),
-// Agent Templates, Connections, Skills, Hooks, and Prompts;
+// Agents + Capabilities merged into one bottom-pinned "Customize"
+// destination. The /capabilities secondary panel hosts Crewmates (bindings),
+// Custom agents, Connections, Skills, Hooks, and Prompts;
 // /agents redirects there (see App.tsx routes).
 //
 // Icon: the Kiro ghost brand mark (not a Lucide glyph) — this row is the
@@ -273,7 +273,7 @@ for (const s of CAPABILITY_SUB_ITEMS) {
 registerBuiltinSurface({
   navId: 'capabilities',
   route: '/capabilities',
-  label: 'Agent Capabilities',
+  label: surfaceMachineValue('Customize'),
   labelKey: 'nav.agent_capabilities',
   icon: <KiroGhostMark size={16} />,
   group: 'Bottom',

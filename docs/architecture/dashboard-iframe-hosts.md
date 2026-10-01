@@ -73,4 +73,4 @@ Tab kinds live in `website/src/hooks/usePanelTabs.ts` (`ViewKind` / `TabKind`), 
 - **Tab switch is safe only for non-category bodies.** Terminal, document, artifact, folder, and App bodies are kept mounted and hidden via `display` in `SidePanel.tsx`, so switching those tabs does not tear down a frame. Category views are unmounted when inactive.
 - **Category views unmount on switch** (`if (!isActive) return null`), so a stateful frame must not be registered as a category view.
 
-Auto-opening a tab is a solved pattern: dispatch `openActivityPanel()` then call `tabsCtlRef.current.openView(<kind>)` — see the web-preview path in `website/src/pages/ChatPage.tsx`.
+Auto-opening a tab is a solved pattern: dispatch `openActivityPanel()` then call `tabsCtlRef.current.openView(<kind>)` — see the web-preview path in `website/src/pages/chat/page/eventBridges.ts` (`useChatEventBridges`).

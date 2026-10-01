@@ -1,11 +1,11 @@
 ---
 title: Jev task executor — closed browser and desktop subtasks without an LLM in the loop
-status: draft
+status: accepted
 author: Ray Xu
 created: 2026-09-28
-last-audited: 2026-09-28
-audited-at: 699083f906
-doc-pr: null
+last-audited: 2026-09-29
+audited-at: df0ea7909c
+doc-pr: 14839
 implementation-prs: []
 tracking-issues: []
 supersedes: []
@@ -20,8 +20,13 @@ superseded-by: []
 - Prior art: [JevOnly](https://github.com/buluoray/JevOnly), a standalone harness
   that drives a browser and a desktop app with Jev as the only model.
 
-Status: draft. Nothing of this design is on main. Code references were read at
-`699083f906`.
+Status: accepted on 2026-09-29, recorded by the maintainer approval of the PR
+that sets this status. The acceptance answers §7 questions 1 and 2 as proposed:
+the executor sits below the tenet 8 line as a trust-boundary component, and the
+browser surface waits on its own driver design section (§3.6), with desktop as
+the phase 1 surface. §7 records both decisions; question 3 stays open and gates
+step 5, and question 4 is deferred with no rollout step. Nothing of this design
+is on main. Code references were read at `699083f906` and re-read at `df0ea7909c`.
 
 ## 1. Problem
 
@@ -90,7 +95,7 @@ call returns `not_permitted` and names the one thing to set up.
 
 Tenet 8 (`TENETS.md`) puts anything that renders or interprets in an app and
 keeps the trust boundary in core. This RFC asks maintainers to place the
-executor below that line, and that request is open question 1. The argument is that the
+executor below that line, which §7 question 1 records as decided. The argument is that the
 executor is itself a trust-boundary component, not a surface:
 
 - **It decides what leaves the machine.** Every step chooses which page lines,
@@ -447,20 +452,26 @@ Each property names where it is enforced. All of them are in core.
 - **Screenshots and OCR for the desktop.** Rejected. Pixels would leave the
   governed layer, and Jev does not read images.
 
-## 7. Open questions
+## 7. Questions, and how they were answered
 
 1. Do maintainers accept the executor below the tenet 8 line, as a
    trust-boundary component? (`no-new-builtin-apps` covers only
    `src/kiro_crew/apps/builtins/**`, which this module does not touch, so no
    exemption is requested.)
+
+   **Decided 2026-09-29 by buluoray: accepted as proposed. The executor is a
+   trust-boundary component in core.**
 2. Do maintainers accept deferring the browser surface to its own driver design
    section (§3.6), with desktop as the phase 1 surface?
-3. What are the per-task defaults, the per-batch state byte cap and the
-   per-session and gateway-wide ceilings, and do they belong on the keystone or
-   in config?
-4. Is a persisted per-step trace wanted at all? If so, it needs its own
-   design for a store that stays unreadable when an operator later turns the
-   sandbox off, which this RFC does not attempt.
+
+   **Decided 2026-09-29 by buluoray: accepted as proposed. Desktop is the phase 1
+   surface; the browser waits on the §3.6 driver design section.**
+3. — open, gates step 5. What are the per-task defaults, the per-batch state
+   byte cap and the per-session and gateway-wide ceilings, and do they belong
+   on the keystone or in config?
+4. — deferred, no rollout step. Is a persisted per-step trace wanted at all? If
+   so, it needs its own design for a store that stays unreadable when an
+   operator later turns the sandbox off, which this RFC does not attempt.
 
 ## 8. Rollout
 

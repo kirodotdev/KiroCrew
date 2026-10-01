@@ -25,7 +25,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, screen, cleanup, fireEvent } from '@testing-library/react'
 import { MemoryRouter, Routes, Route, useLocation, useNavigate } from 'react-router-dom'
 import SidePanelLayout, { useSidePanelLeaveGuard, type SidePanelTab } from '../components/SidePanelLayout'
-import { NavigationLeaveGuardProvider, useMayLeaveForNavigation } from '../components/NavigationLeaveGuard'
+import { NavigationLeaveGuardProvider, useMayLeaveForNavigation, useRegisterNavigationLeaveGuard } from '../components/NavigationLeaveGuard'
 
 vi.mock('../hooks/useIsMobile', () => ({ useIsMobile: () => false }))
 
@@ -169,6 +169,74 @@ describe('in-app navigation leave guard', () => {
     expect(confirmSpy).toHaveBeenCalledTimes(1)
     expect(screen.getByTestId('plain').textContent).toBe('other')
     expect(loc()).toBe('/capabilities?tab=other')
+  })
+
+  describe('two surfaces on one page', () => {
+    /* One page can hold two drafts -- the Crewmates page holds the New crewmate
+     * dialog and the side panel's Schedules create form -- and the channel used to
+     * keep ONE slot, so the second registrant silently replaced the first and only
+     * the last-mounted draft was still protected. */
+    function SecondDraft() {
+      const [text, setText] = React.useState('')
+      useRegisterNavigationLeaveGuard(() => !text || confirm('Discard the second draft?'))
+      return (
+        <input
+          aria-label="second"
+          value={text}
+          onChange={e => setText((e.target as HTMLInputElement).value)}
+        />
+      )
+    }
+    const renderBoth = () => render(
+      <NavigationLeaveGuardProvider>
+        <Dashboard />
+        <SecondDraft />
+      </NavigationLeaveGuardProvider>,
+    )
+    const typeSecond = (value: string) =>
+      fireEvent.change(screen.getByLabelText('second'), { target: { value } })
+
+    it('asks EVERY registered guard, so neither surface\'s draft is left unprotected', () => {
+      const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
+      renderBoth()
+      // The second surface registered last. With one slot this draft was the only one
+      // asked about and the first pane's text went silently.
+      typeDraft('half-written prompt')
+      click('Chat')
+      expect(confirmSpy).toHaveBeenCalledWith('Discard unsaved changes?')
+      expect(draftValue()).toBe('half-written prompt')
+      expect(loc()).toBe('/capabilities')
+    })
+
+    it('stops at the first refusal rather than asking about a second draft too', () => {
+      const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
+      renderBoth()
+      typeDraft('half-written prompt')
+      typeSecond('and a second one')
+      click('Chat')
+      // A user who has already said "stay" must not then be asked about a draft for a
+      // navigation that is no longer going to happen.
+      expect(confirmSpy).toHaveBeenCalledTimes(1)
+      expect(loc()).toBe('/capabilities')
+    })
+
+    // The stake's own two-publisher rule — one surface going clean must not disarm the
+    // other one's still-typed draft — is not pinned here. Its only reader is
+    // `NavigationBackGuard`, which subscribes imperatively against real `window.history`
+    // and is inert under this file's MemoryRouter, and a probe hook that existed solely
+    // for a test to read the boolean is a public API with no production caller. The rule
+    // is stated at `publishStake` instead; what a test can still see is the page arming
+    // the browser prompt off the same flag (`MembersPage.schedules.test.tsx`).
+
+    it('needs BOTH to allow before it leaves', () => {
+      const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+      renderBoth()
+      typeDraft('half-written prompt')
+      typeSecond('and a second one')
+      click('Chat')
+      expect(confirmSpy).toHaveBeenCalledTimes(2)
+      expect(screen.getByTestId('page').textContent).toBe('chat')
+    })
   })
 
   it('degrades to "may leave" with no provider, rather than crashing', () => {

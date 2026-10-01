@@ -405,6 +405,26 @@ class LLMProvider(ABC):
         """
         return ""
 
+    @property
+    def model_pin_refused(self) -> str:
+        """The pinned model the backend refused at session start, or ``""``.
+
+        A refusal on a non-strict model push leaves the session on the backend
+        default without raising, so this is how a caller billing or labelling a
+        turn by the pin learns the pin never ran. Default: ``""``, no refusal.
+        """
+        return ""
+
+    @property
+    def model_pin_partial(self) -> str:
+        """The bare model a ``<model>[<effort>]`` pin landed as, or ``""``.
+
+        Set when the model half of a pair pin applied and the effort half did
+        not: the session runs this bare model, not the pin and not the default.
+        Default: ``""``, no partial application.
+        """
+        return ""
+
     def touch_activity(self) -> None:
         """Refresh the RUNTIME's activity timestamp without I/O. Default no-op.
 

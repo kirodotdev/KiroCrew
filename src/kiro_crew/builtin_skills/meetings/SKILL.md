@@ -104,8 +104,9 @@ feed the agents.
 
 ## Correcting recurring mistranscriptions
 
-When the user complains that a project noun keeps coming through wrong, add a
-dictionary term rather than correcting it in the notes:
+When the user complains that a project noun keeps coming through wrong, ask them
+to add a dictionary term in the Meetings settings (the owner-only route below)
+rather than correcting it in the notes:
 
 ```
 POST /api/apps/meetings/dictionary

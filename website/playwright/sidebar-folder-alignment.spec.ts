@@ -17,19 +17,25 @@ import { test, expect, Page, APIRequestContext } from '@playwright/test'
  * The three guides (see the algebra comment on renderFolderHeader in
  * src/pages/ChatSidebar.tsx, and website/scripts/capture-folder-glyph.mjs
  * under MEASURE=1 for the manual probe this automates):
- *   1. a folder GLYPH sits on the x of the `border-l` connector line that
- *      runs down under it (asserted at depth 1 AND depth 2);
+ *   1. the `border-l` connector line runs down UNDER its folder's GLYPH: the
+ *      line's x lies inside the glyph's 12px span (asserted at depth 1 AND
+ *      depth 2). The glyph is the head of its own subtree, not pinned to the
+ *      line's exact x, which is what lets it outdent (guide 3);
  *   2. a folder NAME and the agent label / title of every session inside it
  *      share ONE left edge (depth 1 AND depth 2). The tool-call subtitle is
  *      not seedable without a live agent turn; it is a sibling of the title
  *      inside the same block container, so its left edge equals the title's
  *      by construction and its class parity is pinned by the jsdom test.
- *   3. a NESTED folder's glyph sits on the content column of the sessions
- *      filed beside it, and — the same identity in the root lane — an
- *      ungrouped session's content column sits on the root folder's glyph.
+ *   3. a folder GLYPH hangs a fixed distance LEFT of the content column of
+ *      the sessions filed beside it (tree-view outdent): 6px for a nested
+ *      folder beside in-folder rows (R_in - P = 9 - 3), 7px for a root folder
+ *      beside ungrouped root-lane rows (R - P = 10 - 3).
+ *   Depth invariance: the algebra has no per-depth term, so each nesting
+ *   level shifts name, content and connector by exactly D + M + B + p = 10px.
  *
- * Guides are asserted as exact-left equality within 0.5px (sub-pixel rounding
- * headroom only — every historical break was ≥1px, most were 2px).
+ * Equalities are asserted within 0.5px (sub-pixel rounding headroom only —
+ * every historical break was ≥1px, most were 2px); the guide-1 "inside the
+ * glyph span" check is a strict range.
  *
  * SERIAL-RUN DEPENDENCY: session-tags-folders.spec.ts wipes ALL folders (and,
  * under KIROCREW_E2E_EPHEMERAL=1, all slots) in its beforeEach. The E2E gate
@@ -39,6 +45,19 @@ import { test, expect, Page, APIRequestContext } from '@playwright/test'
  */
 
 const TOLERANCE = 0.5
+
+// Mirrors of the algebra's constants (renderFolderHeader comment in
+// src/pages/ChatSidebar.tsx; the jsdom test imports FOLDER_BODY_INSET_PX and
+// pins the class tokens these come from). Relative distances only — never
+// absolute page x, which shifts with the viewport and the sidebar's width.
+/** G: the folder collapse glyph's rendered width. */
+const GLYPH_WIDTH_PX = 12
+/** D + M + B + p = 2 + 4 + 1 + 3: what one nesting level costs. */
+const LEVEL_INDENT_PX = 10
+/** R - P = 10 - 3: a root folder's glyph hangs this far left of root-lane content. */
+const ROOT_GLYPH_OUTDENT_PX = 7
+/** R_in - P = 9 - 3: a nested folder's glyph hangs this far left of sibling content. */
+const NESTED_GLYPH_OUTDENT_PX = 6
 
 async function primeBrowser(page: Page) {
   await page.addInitScript(() => {
@@ -150,8 +169,22 @@ function expectAligned(m: Lefts, a: keyof Lefts, b: keyof Lefts, guide: string) 
   expect(Math.abs(m[a] - m[b]), detail).toBeLessThanOrEqual(TOLERANCE)
 }
 
+/** `a` sits exactly `offset` px right of `b` (within TOLERANCE). */
+function expectOffset(m: Lefts, a: keyof Lefts, b: keyof Lefts, offset: number, guide: string) {
+  const detail = `${guide}: ${a}=${m[a]} - ${b}=${m[b]} should be ${offset} (all: ${JSON.stringify(m)})`
+  expect(Math.abs((m[a] - m[b]) - offset), detail).toBeLessThanOrEqual(TOLERANCE)
+}
+
+/** The connector line's x lies inside the glyph's span: glyph.left <= line < glyph.left + G.
+ *  Strict range — no tolerance — a line at the glyph's right edge is already off it. */
+function expectUnderGlyph(m: Lefts, connector: keyof Lefts, glyph: keyof Lefts, guide: string) {
+  const detail = `${guide}: ${connector}=${m[connector]} should be in [${m[glyph]}, ${m[glyph] + GLYPH_WIDTH_PX}) (all: ${JSON.stringify(m)})`
+  expect(m[connector], detail).toBeGreaterThanOrEqual(m[glyph])
+  expect(m[connector], detail).toBeLessThan(m[glyph] + GLYPH_WIDTH_PX)
+}
+
 test.describe('Sidebar folder alignment guides (measured x)', () => {
-  test('glyph/connector, name/content, and nested-peer guides hold at depth 1 and 2', async ({ page, request }) => {
+  test('glyph/connector, name/content, and glyph-outdent guides hold at depth 1 and 2', async ({ page, request }) => {
     await primeBrowser(page)
     // One root folder, one subfolder, a session in each, one ungrouped
     // session in the root lane — the minimal tree that makes every guide
@@ -181,9 +214,10 @@ test.describe('Sidebar folder alignment guides (measured x)', () => {
     expect(m.sName, `depth-2 name should sit right of depth-1 name (all: ${JSON.stringify(m)})`).toBeGreaterThan(m.fName)
     expect(m.fName, `folder name should sit right of its glyph (all: ${JSON.stringify(m)})`).toBeGreaterThan(m.fGlyph)
 
-    // GUIDE 1 — folder glyph sits on its own connector line.
-    expectAligned(m, 'fGlyph', 'fConnector', 'guide 1 depth 1 (glyph on connector)')
-    expectAligned(m, 'sGlyph', 'sConnector', 'guide 1 depth 2 (glyph on connector)')
+    // GUIDE 1 — the connector line runs down under its folder's glyph: the
+    // line's x lies inside the glyph span (P <= D + M < P + G).
+    expectUnderGlyph(m, 'fConnector', 'fGlyph', 'guide 1 depth 1 (connector under glyph)')
+    expectUnderGlyph(m, 'sConnector', 'sGlyph', 'guide 1 depth 2 (connector under glyph)')
 
     // GUIDE 2 — folder name shares one left edge with the agent label and
     // title of the sessions inside it.
@@ -192,14 +226,17 @@ test.describe('Sidebar folder alignment guides (measured x)', () => {
     expectAligned(m, 'sName', 'bAgent', 'guide 2 depth 2 (name on agent label)')
     expectAligned(m, 'bAgent', 'bTitle', 'guide 2 depth 2 (agent label on title)')
 
-    // GUIDE 3 — a nested folder's glyph sits on its sibling sessions'
-    // content column, and the same identity holds in the root lane: an
-    // ungrouped session's content column sits on the root folder's glyph.
-    expectAligned(m, 'sGlyph', 'aAgent', 'guide 3 (nested glyph on sibling content)')
-    expectAligned(m, 'uAgent', 'fGlyph', 'guide 3 root lane (content on root glyph)')
+    // GUIDE 3 — a folder's glyph hangs a fixed distance LEFT of the content
+    // column of the sessions filed beside it: 6px for a nested folder beside
+    // in-folder rows, 7px for the root folder beside ungrouped root-lane rows.
+    expectOffset(m, 'aAgent', 'sGlyph', NESTED_GLYPH_OUTDENT_PX, 'guide 3 (nested glyph hangs left of sibling content)')
+    expectOffset(m, 'uAgent', 'fGlyph', ROOT_GLYPH_OUTDENT_PX, 'guide 3 root lane (root glyph hangs left of ungrouped content)')
 
-    // Depth invariance — the algebra has no per-depth term: the subfolder's
-    // connector must sit exactly where depth 1's content column sits.
-    expectAligned(m, 'sConnector', 'aAgent', 'depth invariance (depth-2 connector on depth-1 content)')
+    // Depth invariance — the algebra has no per-depth term: every level costs
+    // exactly D + M + B + p, for the name, the content column, and the
+    // connector alike.
+    expectOffset(m, 'sName', 'fName', LEVEL_INDENT_PX, 'depth invariance (name)')
+    expectOffset(m, 'bAgent', 'aAgent', LEVEL_INDENT_PX, 'depth invariance (content column)')
+    expectOffset(m, 'sConnector', 'fConnector', LEVEL_INDENT_PX, 'depth invariance (connector)')
   })
 })

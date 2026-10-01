@@ -38,7 +38,7 @@ const slots = [
   slot('s1', 'New chat in caret menu', 'f1', '2026-08-04T20:00:00Z'),
   slot('s2', 'Per-app trust grants', 'f1', '2026-08-04T18:30:00Z'),
   slot('s3', 'Skill pending notification', 'f2', '2026-08-03T12:00:00Z'),
-  slot('s4', 'Windows NSIS target', '', '2026-08-04T21:00:00Z', 'orchestrator'),
+  slot('s4', 'Windows NSIS target', '', '2026-08-04T21:00:00Z'),
   slot('s5', 'GHCR anonymous pull', '', '2026-08-04T14:00:00Z'),
 ]
 

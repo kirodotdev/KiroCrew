@@ -118,7 +118,12 @@ agent kind holding that agent's sessions:
 ```
 
 A conductor that floats at the top level while its workers sit in a folder is
-the failure this step exists to remove. **Running as a crew member is the one
+the failure this step exists to remove. **If you already sit in a folder, stay
+there.** When your `[FOLDER]` line names a folder the person put you in (say
+`Ops`, and not a parent conductor's `kirocrew-conductor` subfolder, covered
+below), that folder IS your goal's folder: skip `chat_folder_file_self` and
+create your workers under `Ops/<agent>`. Never create a second folder with the
+same name as one that exists; the tools refuse it. **Running as a crew member is the one
 exception**: your session is then the member's pinned DM thread on the Crew
 page, one thread across every goal, and it is not filed — the tool refuses
 and says so. Skip this step and create your workers under `<goal>/<agent>`
@@ -274,12 +279,15 @@ python3 <this skill's dir>/scripts/patrol_budget.py renew \
 
 Each cycle:
 
-1. **`work_ledger_read` first, every cycle.** It returns the conductor record,
-   every item with all its fields, each item's derived `orphaned`, `stale` and
-   `acceptance_concrete` flags, the newest events per item, and a ready-to-pipe
+1. **`work_ledger_read` with `compact=true` first, every cycle.** It returns the
+   conductor record and, per item, the status columns plus the derived
+   `orphaned`, `stale` and `acceptance_concrete` flags — no events, acceptance or
    `accept_batch`. This one read replaces the whole transcript-reading cycle, and
-   it is O(record) — which is why this loop's cost does not grow with its own
-   history. An item is never `stale` on the strength of silence alone: its worker
+   it stays small however many items the board holds. The full read (no
+   `compact`) adds every field, the newest events and a ready-to-pipe
+   `accept_batch`; take it, or `item_id=<id>` for one item, only when a `done`
+   item needs its bar (step 3). A full read too large for the tool-result limit
+   comes back trimmed with `truncated: true` and says what it left out. An item is never `stale` on the strength of silence alone: its worker
    also has to be not running, and its last word has to have left the next move
    with the worker, so a `done` item waiting on you is not flagged.
 2. **Act on three statuses, and only three:**
@@ -295,7 +303,7 @@ Each cycle:
    values, and why you must not treat one as the other.
 3. **Verify every `done` with the evaluator — never by reading the child's
    transcript and judging, and never by believing the claim.** Take the
-   `accept_batch` that `work_ledger_read` already built, **keep only the entries
+   `accept_batch` from a full `work_ledger_read` (no `compact`), **keep only the entries
    whose item is currently `status: done`** — each entry carries that status, so
    the filter is a read of the document you already have — and pipe that filtered
    document through a **quoted heredoc**:

@@ -27,11 +27,13 @@ import enum
 import json
 import logging
 import os
+import platform
 import re
 import shutil
 import stat
 import subprocess
 import tempfile
+import threading
 from collections.abc import Callable, Iterator
 from functools import lru_cache
 from pathlib import Path
@@ -114,6 +116,134 @@ def cli_env() -> dict[str, str]:
     return env
 
 
+#: Return code of a step refused or cut short because its :class:`InstallScope`
+#: was terminated. 130 is the shell's "ended by interrupt" code, distinct from the
+#: 124 timeout and 127 missing-executable codes :func:`_run` already reports.
+INTERRUPTED_RC = 130
+_INTERRUPTED_REASON = "interrupted: the gateway stopped this installer"
+#: Return code :func:`_run` reports when the child outlives its timeout. Shared
+#: with :func:`_step` so a timed-out step is not dressed as an ordinary failure.
+TIMEOUT_RC = 124
+
+#: How long a killed child gets to close its pipes before :func:`_run` stops
+#: waiting for its output. The kill has already been sent; this bounds only the
+#: collection of whatever it printed.
+_REAP_TIMEOUT_S = 5.0
+
+
+class InstallScope:
+    """The installer children one install job owns, so the gateway can stop them.
+
+    ``asyncio.to_thread`` cannot cancel its worker, and cancelling the awaiting
+    task leaves the worker's subprocess running. The job's worker therefore runs
+    inside a scope (:func:`run_in_scope`); every :func:`_run` call made on that
+    thread registers its child here, and :meth:`terminate` kills each child's
+    whole process group or tree. After termination the scope refuses to spawn,
+    so the worker's remaining steps end at once instead of starting the next
+    download.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._children: set[subprocess.Popen[str]] = set()
+        self._terminated = False
+
+    @property
+    def terminated(self) -> bool:
+        with self._lock:
+            return self._terminated
+
+    def _adopt(self, proc: subprocess.Popen[str]) -> bool:
+        """Track *proc*; ``False`` when the scope was terminated first."""
+        with self._lock:
+            if self._terminated:
+                return False
+            self._children.add(proc)
+            return True
+
+    def _release(self, proc: subprocess.Popen[str]) -> None:
+        with self._lock:
+            self._children.discard(proc)
+
+    def terminate(self) -> int:
+        """Kill every live child and refuse new ones. Returns how many were signalled.
+
+        Safe from any thread and idempotent. The kill is synchronous and does not
+        wait for exit: the worker thread's own ``communicate`` reaps the child.
+        """
+        with self._lock:
+            self._terminated = True
+            children = list(self._children)
+        for proc in children:
+            _kill_child_tree(proc)
+        return len(children)
+
+
+_scope_local = threading.local()
+
+
+def _current_scope() -> InstallScope | None:
+    scope = getattr(_scope_local, "scope", None)
+    return scope if isinstance(scope, InstallScope) else None
+
+
+def run_in_scope(scope: InstallScope, fn: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:
+    """Call *fn* with every :func:`_run` child on this thread owned by *scope*.
+
+    Meant as the target of ``asyncio.to_thread``: the scope is thread-local, so
+    concurrent status probes on other executor threads are never adopted.
+    """
+    previous = getattr(_scope_local, "scope", None)
+    _scope_local.scope = scope
+    try:
+        return fn(*args, **kwargs)
+    finally:
+        _scope_local.scope = previous
+
+
+def kill_cli_process_tree(pid: int) -> None:
+    """Signal *pid* and every descendant; never raises.
+
+    The one tree kill ``browser_cli`` issues. :mod:`kiro_crew.browser_cli.view`'s
+    reaper ends here on every platform. This installer's timeout and cancel path
+    (:func:`_kill_child_tree`) ends here only on Windows: on POSIX it signals the
+    child's process group directly with
+    :func:`platform_compat.kill_process_group`, which is not one of the
+    primitives the kill-attribution ratchet (``test_kill_chokepoint_ratchet.py``)
+    counts. So the package adds a single site to that ratchet rather than one per
+    caller.
+    """
+    with contextlib.suppress(Exception):
+        platform_compat.kill_process_tree(pid)
+
+
+def _kill_child_tree(proc: subprocess.Popen[str]) -> None:
+    """Kill *proc* and its descendants; never raises.
+
+    The group is signalled only while *proc* is unreaped: its pid (which is also
+    its group id under ``start_new_session``) cannot be reused before
+    ``waitpid``, so the signal cannot land on an unrelated group. The direct
+    ``kill`` afterwards covers a platform where the tree walk failed.
+    """
+    if proc.returncode is None:
+        if platform_compat.IS_POSIX:
+            with contextlib.suppress(OSError, ValueError):
+                platform_compat.kill_process_group(proc.pid, platform_compat.SIGKILL)
+        else:
+            kill_cli_process_tree(proc.pid)
+    with contextlib.suppress(OSError):
+        proc.kill()
+
+
+def _collect_after_kill(proc: subprocess.Popen[str]) -> tuple[str, str]:
+    """Output a killed child printed, bounded by :data:`_REAP_TIMEOUT_S`."""
+    try:
+        out, err = proc.communicate(timeout=_REAP_TIMEOUT_S)
+    except (subprocess.TimeoutExpired, OSError, ValueError):
+        return "", ""
+    return out or "", err or ""
+
+
 def _run(argv: list[str], timeout: float, *, cwd: str | None = None) -> tuple[int, str, str]:
     """Run *argv*, returning ``(returncode, stdout, stderr)``.
 
@@ -122,22 +252,51 @@ def _run(argv: list[str], timeout: float, *, cwd: str | None = None) -> tuple[in
     three exception types at every call site. *cwd* is the child's working
     directory; ``None`` inherits the gateway's, which is right for a PATH probe
     and wrong for the staged-copy smoke run (see :func:`_staged_node_runs`).
+
+    The child gets its own process group, and a timeout kills that whole group
+    rather than only the direct child, so an expired ``npm install`` cannot leave
+    its download running: ``npm`` and the browser installer each start
+    grandchildren. POSIX uses a new session (``setsid`` in the C fork path);
+    Windows uses a new process group that
+    :func:`platform_compat.kill_process_tree` walks. Inside an
+    :class:`InstallScope` the child is also registered for gateway shutdown,
+    and a terminated scope answers :data:`INTERRUPTED_RC` without spawning.
     """
+    scope = _current_scope()
+    if scope is not None and scope.terminated:
+        return INTERRUPTED_RC, "", _INTERRUPTED_REASON
     try:
-        proc = subprocess.run(
+        # npm and playwright-cli write in the host's locale.
+        proc = subprocess.Popen(
             argv,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,  # subprocess-encoding: locale
             env=cli_env(),
             cwd=cwd,
-            check=False,
+            start_new_session=platform_compat.IS_POSIX,
+            creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
         )
-    except subprocess.TimeoutExpired:
-        return 124, "", f"timed out after {timeout:.0f}s: {' '.join(argv)}"
     except OSError as exc:
         return 127, "", f"{exc}"
-    return proc.returncode, proc.stdout or "", proc.stderr or ""
+    if scope is not None and not scope._adopt(proc):
+        _kill_child_tree(proc)
+        _collect_after_kill(proc)
+        return INTERRUPTED_RC, "", _INTERRUPTED_REASON
+    try:
+        try:
+            out, err = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            _kill_child_tree(proc)
+            _collect_after_kill(proc)
+            return TIMEOUT_RC, "", f"timed out after {timeout:.0f}s: {' '.join(argv)}"
+    finally:
+        if scope is not None:
+            scope._release(proc)
+    if scope is not None and scope.terminated:
+        return INTERRUPTED_RC, out or "", _INTERRUPTED_REASON
+    return proc.returncode, out or "", err or ""
 
 
 #: The whole npm prefix and entry point live under one crew-home leaf. The OS
@@ -544,23 +703,72 @@ def _node_runtime_executable(node: str) -> str | None:
     return str(resolved) if resolved is not None else None
 
 
-def _browsers_cache_dir() -> Path | None:
-    """Playwright's browser cache directory for this platform.
+def _playwright_env(name: str) -> str | None:
+    """Read *name* the way playwright-core's ``getFromENV`` does.
 
-    ``None`` on a platform whose cache location this does not know, which reads
-    back as "cannot confirm a browser" rather than as a missing browser.
+    The process environment first, then npm's ``npm_config_<name>`` and
+    ``npm_package_config_<name>`` projections. An installer child inherits the
+    gateway's environment (:func:`cli_env`), so these are the values it sees.
     """
-    override = os.environ.get(_BROWSERS_CACHE_ENV, "").strip()
-    if override:
-        return Path(override)
-    if platform_compat.IS_MACOS:
-        return Path.home() / "Library" / "Caches" / "ms-playwright"
-    if platform_compat.IS_WINDOWS:
-        local = os.environ.get("LOCALAPPDATA", "").strip()
-        return Path(local) / "ms-playwright" if local else None
-    if platform_compat.IS_LINUX:
-        return Path.home() / ".cache" / "ms-playwright"
+    lowered = name.lower()
+    for key in (name, f"npm_config_{lowered}", f"npm_package_config_{lowered}"):
+        value = os.environ.get(key)
+        if value is not None:
+            return value
     return None
+
+
+def _default_cache_root() -> Path | None:
+    """playwright-core's ``computeDefaultCacheDirectory`` for this platform."""
+    if platform_compat.IS_LINUX:
+        xdg = os.environ.get("XDG_CACHE_HOME")
+        return Path(xdg) if xdg else Path.home() / ".cache"
+    if platform_compat.IS_MACOS:
+        return Path.home() / "Library" / "Caches"
+    if platform_compat.IS_WINDOWS:
+        local = os.environ.get("LOCALAPPDATA")
+        return Path(local) if local else Path.home() / "AppData" / "Local"
+    return None
+
+
+def _browsers_cache_dir() -> Path | None:
+    """The browser registry directory the installed CLI downloads into.
+
+    Mirrors ``registryDirectory`` in the playwright-core the CLI pins
+    (``lib/coreBundle.js`` of ``playwright-core@1.64.0-alpha-1789764292000``,
+    served to ``@playwright/cli@0.1.21``; ``lib/server/registry/index.js`` in
+    1.58 has the same logic):
+
+    * ``PLAYWRIGHT_BROWSERS_PATH=0`` means ``<playwright-core>/.local-browsers``,
+      the package-local registry, so it is resolved against the SERVING core
+      package rather than read as a directory named ``0``;
+    * any other non-empty value is the directory itself;
+    * otherwise ``ms-playwright`` under the platform cache root, which honours
+      ``XDG_CACHE_HOME`` on Linux and falls back to ``~/AppData/Local`` on
+      Windows when ``LOCALAPPDATA`` is unset;
+    * a relative result is resolved against ``INIT_CWD`` or the working
+      directory, which for the installer child is the gateway's own.
+
+    ``None`` when the location cannot be determined (an unknown platform, or
+    ``0`` with no attributable core package), which reads back as "unknown",
+    never as a missing browser.
+    """
+    override = _playwright_env(_BROWSERS_CACHE_ENV)
+    result: Path | None
+    if override == "0":
+        manifest = _browsers_manifest_path()
+        result = manifest.parent / ".local-browsers" if manifest is not None else None
+    elif override:
+        result = Path(override)
+    else:
+        root = _default_cache_root()
+        result = root / "ms-playwright" if root is not None else None
+    if result is None:
+        return None
+    if not result.is_absolute():
+        base = _playwright_env("INIT_CWD") or os.getcwd()
+        result = Path(os.path.abspath(Path(base) / result))
+    return result
 
 
 # The engines Playwright downloads, in the order the panel lists them. A fixed
@@ -570,13 +778,36 @@ BROWSER_ENGINES: tuple[str, ...] = ("chromium", "firefox", "webkit")
 _DEFAULT_BROWSER_ENGINE = BROWSER_ENGINES[0]
 
 
-def _cached_browser_names() -> set[str] | None:
-    """Directory names in Playwright's browser cache, or ``None`` if unreadable."""
-    cache = _browsers_cache_dir()
-    if cache is None:
-        return None
+#: Per-engine download state reported by :func:`browser_status`.
+STATUS_DOWNLOADED = "downloaded"
+STATUS_MISSING = "missing"
+STATUS_UNKNOWN = "unknown"
+
+#: The file playwright-core writes into a browser directory once extraction has
+#: finished (``browserDirectoryToMarkerFilePath`` in the registry and in
+#: ``oopDownloadBrowserMain``). The directory exists from the start of the
+#: download, so its presence alone does not mean a browser is there.
+_INSTALLATION_MARKER = "INSTALLATION_COMPLETE"
+
+
+def _cached_browser_names(cache: Path) -> set[str] | None:
+    """Directory names in Playwright's browser cache, or ``None`` if unreadable.
+
+    An absent cache directory is an empty set: nothing was ever downloaded,
+    which is a confirmed absence rather than an unknown.
+    """
     try:
         return {child.name for child in cache.iterdir() if child.is_dir()}
+    except (FileNotFoundError, NotADirectoryError):
+        return set()
+    except OSError:
+        return None
+
+
+def _download_complete(directory: Path) -> bool | None:
+    """Whether *directory* carries the completion marker; ``None`` if unreadable."""
+    try:
+        return (directory / _INSTALLATION_MARKER).is_file()
     except OSError:
         return None
 
@@ -1037,61 +1268,233 @@ def _required_revisions() -> dict[str, str] | None:
     return revisions or None
 
 
+def _revision_overrides() -> dict[str, dict[str, str]]:
+    """Per-engine ``revisionOverrides`` from ``browsers.json`` (host platform -> revision).
+
+    playwright-core downloads an overridden revision into
+    ``<engine>_<hostPlatform>_special-<revision>`` (``readDescriptors``) on the
+    hosts an override names, such as WebKit on older Debian and Ubuntu. Empty
+    when there is no manifest or no override.
+    """
+    path = _browsers_manifest_path()
+    if path is None:
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    browsers = data.get("browsers") if isinstance(data, dict) else None
+    if not isinstance(browsers, list):
+        return {}
+    overrides: dict[str, dict[str, str]] = {}
+    for entry in browsers:
+        if not isinstance(entry, dict) or not isinstance(entry.get("name"), str):
+            continue
+        raw = entry.get("revisionOverrides")
+        if isinstance(raw, dict):
+            kept = {k: v for k, v in raw.items() if isinstance(k, str) and isinstance(v, str)}
+            if kept:
+                overrides[entry["name"]] = kept
+    return overrides
+
+
+def _playwright_arch() -> str | None:
+    """Node's ``os.arch()`` name for this machine, for the architectures Playwright ships."""
+    machine = platform.machine().lower()
+    if machine in ("x86_64", "amd64"):
+        return "x64"
+    if machine in ("aarch64", "arm64"):
+        return "arm64"
+    return None
+
+
+def _playwright_host_platform() -> str:
+    """playwright-core's ``hostPlatform`` key for this host, or ``"<unknown>"``.
+
+    A port of ``calculatePlatform`` in playwright-core's
+    ``lib/server/utils/hostPlatform.js`` (1.58 and the 1.64 build the CLI pins),
+    because the key decides which directory ``revisionOverrides`` sends the
+    installer to: a host the override names gets
+    ``<engine>_<key>_special-<rev>``, every other host the plain directory. One
+    known divergence: on macOS Playwright appends ``-arm64`` when a CPU model
+    names Apple, and this reads the machine type, which differs only for an
+    x64 interpreter under Rosetta.
+    """
+    override = os.environ.get("PLAYWRIGHT_HOST_PLATFORM_OVERRIDE", "")
+    if override:
+        return override
+    if platform_compat.IS_MACOS:
+        try:
+            major = int(platform.release().split(".")[0])
+        except ValueError:
+            return "<unknown>"
+        if major < 18:
+            return "mac10.13"
+        if major == 18:
+            return "mac10.14"
+        if major == 19:
+            return "mac10.15"
+        key = f"mac{min(major - 9, 15)}"
+        return f"{key}-arm64" if _playwright_arch() == "arm64" else key
+    if platform_compat.IS_WINDOWS:
+        return "win64"
+    if not platform_compat.IS_LINUX:
+        return "<unknown>"
+    arch = _playwright_arch()
+    if arch is None:
+        return "<unknown>"
+    suffix = f"-{arch}"
+    try:
+        release = platform.freedesktop_os_release()
+    except OSError:
+        release = {}
+    distro = release.get("ID", "").lower()
+    version = release.get("VERSION_ID", "")
+    try:
+        major_version = int(version.split(".")[0])
+    except ValueError:
+        major_version = 0
+    if distro in ("ubuntu", "pop", "neon", "tuxedo"):
+        if major_version < 20:
+            return f"ubuntu18.04{suffix}"
+        if major_version < 22:
+            return f"ubuntu20.04{suffix}"
+        if major_version < 24:
+            return f"ubuntu22.04{suffix}"
+        if major_version < 26:
+            return f"ubuntu24.04{suffix}"
+        return f"ubuntu{version}{suffix}"
+    if distro == "linuxmint":
+        if major_version <= 20:
+            return f"ubuntu20.04{suffix}"
+        if major_version == 21:
+            return f"ubuntu22.04{suffix}"
+        return f"ubuntu24.04{suffix}"
+    if distro in ("debian", "raspbian"):
+        if version in ("11", "12", "13"):
+            return f"debian{version}{suffix}"
+        if version == "":
+            return f"debian13{suffix}"
+    return f"ubuntu24.04{suffix}"
+
+
 def _cache_dir_name_for(engine: str, revision: str) -> str:
     """The cache directory name that satisfies *engine* at *revision*.
 
-    Playwright names the directory ``<engine>-<revision>`` (``chromium-1232``).
-    One name, not a set: the only caller passes engines from
-    :data:`BROWSER_ENGINES`, none of which contains a hyphen, so an underscore
-    variant of the same name could never match anything.
+    Playwright names the directory ``<engine>-<revision>`` (``chromium-1232``),
+    with hyphens in the engine name turned into underscores. The engines in
+    :data:`BROWSER_ENGINES` contain none, so the name is used as-is.
     """
     return f"{engine}-{revision}"
 
 
-def browsers_present() -> dict[str, bool]:
-    """Which engines have a build for the REVISION the installed CLI needs.
+def _status_of(complete: list[bool | None]) -> str:
+    """Fold the completion readings of candidate directories into one status."""
+    if any(value is True for value in complete):
+        return STATUS_DOWNLOADED
+    if any(value is None for value in complete):
+        return STATUS_UNKNOWN
+    return STATUS_MISSING
 
-    Reported per engine rather than as one boolean so the panel can offer each
-    download separately: a user who wants to check a page in Firefox should not
-    have to discover that "browser installed" only ever meant Chromium.
 
-    A cache dir carries the revision (``chromium-1232``), and playwright-core
-    launches only the exact revision bound to its own version. A prefix match
-    (``name.startswith(engine)``) ignores that revision, so a stale
-    ``chromium-1208`` left over from before a CLI upgrade reads as present while
-    the launch fails ``Browser "chromium" is not installed`` -- and because the
-    gate reads ready, the panel never offers the download that would fix it. So
-    ``browsers.json`` supplies the required revision and the match is exact.
+def browser_status() -> dict[str, str]:
+    """Per-engine download state for the revision the installed CLI needs.
 
-    Degradation: when the required revision cannot be determined (manifest
-    absent/unreadable -- see :func:`_required_revisions`), fall back to the older
-    prefix match rather than reporting a browser broken on missing metadata. A
-    missing manifest is an unknown, not evidence of a stale cache.
+    ``downloaded`` means a directory for the required revision holds
+    playwright-core's completion marker (:data:`_INSTALLATION_MARKER`). It is
+    passive filesystem evidence: nothing is launched, so it is not a claim that
+    the browser starts. ``missing`` means the cache was read and no complete
+    build is there, which includes a directory an interrupted download left
+    behind. ``unknown`` means the answer could not be read -- an unknown cache
+    location or an unreadable cache or marker.
+
+    Revision matching is exact: playwright-core launches only the revision
+    bound to its own version, so a stale ``chromium-1208`` left over from before
+    a CLI upgrade is not the ``chromium-1232`` the upgraded CLI needs. When the
+    required revision cannot be determined (no attributable manifest -- see
+    :func:`_required_revisions`), any complete ``<engine>-*`` or
+    ``<engine>_<host>_special-*`` build counts, the documented presence-only
+    fallback that keeps missing metadata from turning a working browser into a
+    reported-broken one.
     """
-    names = _cached_browser_names()
-    if names is None:
-        return {engine: False for engine in BROWSER_ENGINES}
+    cache = _browsers_cache_dir()
+    names = _cached_browser_names(cache) if cache is not None else None
+    if names is None or cache is None:
+        return {engine: STATUS_UNKNOWN for engine in BROWSER_ENGINES}
     required = _required_revisions()
-    if required is None:
-        # Cannot confirm a revision: preserve the historical presence-only
-        # behaviour rather than failing closed on absent metadata.
-        return {
-            engine: any(name.startswith(engine) for name in names) for engine in BROWSER_ENGINES
-        }
-    result: dict[str, bool] = {}
+    overrides = _revision_overrides() if required is not None else {}
+    host = _playwright_host_platform() if overrides else ""
+    result: dict[str, str] = {}
     for engine in BROWSER_ENGINES:
-        revision = required.get(engine)
+        revision = required.get(engine) if required is not None else None
         if revision is None:
-            # The engine is not in the manifest at all: we cannot say which
-            # revision it needs, so degrade to presence-only for this one engine.
-            result[engine] = any(name.startswith(engine) for name in names)
+            # Presence-only: any complete build of this engine counts, including
+            # the ``<engine>_<host>_special-<rev>`` directory playwright-core's
+            # revisionOverrides writes on some hosts. Without a revision there is
+            # nothing to match it against, so it is as good as the plain one; the
+            # headless shell (``chromium_headless_shell-*``) still does not count.
+            candidates = sorted(
+                n for n in names if n.startswith(f"{engine}-") or _is_special_build_name(n, engine)
+            )
+            result[engine] = _status_of([_download_complete(cache / n) for n in candidates])
             continue
-        wanted = _cache_dir_name_for(engine, revision)
-        result[engine] = wanted in names
+        # Exactly one directory satisfies the engine on this host, the one the
+        # installer writes: the special override directory when the override
+        # names this host's exact platform key, the plain one otherwise.
+        host_revision = overrides.get(engine, {}).get(host)
+        if host_revision is not None:
+            wanted = f"{engine}_{host}_special-{host_revision}"
+        else:
+            wanted = _cache_dir_name_for(engine, revision)
+        status = _status_of([_download_complete(cache / wanted)] if wanted in names else [])
+        if status == STATUS_MISSING and _has_complete_special_build(cache, names, engine):
+            # A special directory exists only because playwright-core's own
+            # `calculatePlatform` chose it, so a complete one this host key did
+            # not predict is evidence that the port in `_playwright_host_platform`
+            # is stale relative to the installed playwright-core (the CLI pins
+            # `@playwright/cli@latest`), not that the cache is empty. Read that as
+            # `unknown` rather than a confident `missing`.
+            status = STATUS_UNKNOWN
+        elif status == STATUS_MISSING and host_revision is not None:
+            # The converse: the port says this host takes the special build, but
+            # the installer wrote (and completed) the plain required-revision
+            # directory instead. Same rule: the port may be wrong about this host,
+            # so the plain build is evidence for `unknown`, not `missing`.
+            plain = _cache_dir_name_for(engine, revision)
+            if plain in names and _download_complete(cache / plain) is True:
+                status = STATUS_UNKNOWN
+        result[engine] = status
     return result
 
 
-def _browser_present() -> bool:
+def _is_special_build_name(name: str, engine: str) -> bool:
+    """Whether *name* is an ``<engine>_<host>_special-<rev>`` cache directory."""
+    return name.startswith(f"{engine}_") and "_special-" in name
+
+
+def _has_complete_special_build(cache: Path, names: set[str], engine: str) -> bool:
+    """Whether some complete ``<engine>_<host>_special-<rev>`` directory is in *cache*."""
+    return any(
+        _is_special_build_name(name, engine) and _download_complete(cache / name) is True
+        for name in names
+    )
+
+
+def browsers_present(status: dict[str, str] | None = None) -> dict[str, bool]:
+    """Which engines are ``downloaded`` per :func:`browser_status`.
+
+    Reported per engine rather than as one boolean so the panel can offer each
+    download separately: a user who wants to check a page in Firefox should not
+    have to discover that "browser installed" only ever meant Chromium. An
+    ``unknown`` engine is ``False`` here; callers that must tell unknown from
+    missing read :func:`browser_status` instead. *status* reuses a reading the
+    caller already took.
+    """
+    reading = status if status is not None else browser_status()
+    return {engine: reading.get(engine) == STATUS_DOWNLOADED for engine in BROWSER_ENGINES}
+
+
+def _browser_present(status: dict[str, str] | None = None) -> bool:
     """Whether a downloaded Chromium build exists in Playwright's cache.
 
     Chromium only, and that narrowness is the point: it is the engine
@@ -1100,7 +1503,7 @@ def _browser_present() -> bool:
     ``browser_ok`` capability gate even though `browsers_present` reports all
     three, because the other two are extras rather than prerequisites.
     """
-    return browsers_present().get("chromium", False)
+    return browsers_present(status).get("chromium", False)
 
 
 _INSTALLER_BASE = "https://raw.githubusercontent.com/kirodotdev/KiroCrew/main"
@@ -1215,16 +1618,20 @@ def detect() -> dict[str, Any]:
     major = _node_major(node_version)
     command = cli_command(path) if path is not None else None
     cli_version = installed_cli_version(command)
+    status = browser_status()
     return {
         "installed": command is not None,
         "cli_path": path if command is not None else None,
         "cli_version": cli_version,
         "node_ok": major is not None and major >= MIN_NODE_MAJOR,
         "node_version": node_version,
-        "browser_ok": _browser_present(),
+        "browser_ok": _browser_present(status),
         # Per-engine, so the panel can offer each download rather than
-        # implying "browser" means only the one attach needs.
-        "browsers": browsers_present(),
+        # implying "browser" means only the one attach needs. ``browsers`` is
+        # the boolean projection older dashboards read; ``browser_status``
+        # keeps "could not read" apart from "not downloaded".
+        "browsers": browsers_present(status),
+        "browser_status": status,
         # What to run when THIS install cannot proceed. Composed here rather than
         # in the dashboard for three reasons: only the gateway knows which OS it
         # runs on, so the operator gets one correct command instead of two to
@@ -1247,8 +1654,11 @@ def available() -> bool:
     return cli_path() is not None
 
 
-# A failing npm run can emit a very large log; the operator needs the head of it,
-# not megabytes in a log line and a dashboard card.
+# A failing npm run can emit a very large log. The step keeps the redacted TAIL
+# of stderr, capped at this many characters: Playwright prints the list of
+# missing OS libraries last, so the tail is what the operator needs, not
+# megabytes in a log line and a dashboard card. The remedy hint is carried
+# separately and appended after the capped text.
 _STDERR_CAP = 2000
 
 
@@ -1336,17 +1746,44 @@ def _step(
     # alternation with no nested quantifiers, so redacting the full
     # stderr is linear in input length — measured at <200 ms on 50 KB of
     # adversarial input, well below the subprocess timeout.
-    detail = "" if ok else redact_install_output((err.strip() or out.strip()))[:_STDERR_CAP]
+    detail = "" if ok else redact_install_output((err.strip() or out.strip()))[-_STDERR_CAP:]
+    # The hint names missing OS libraries. A step the gateway interrupted or that
+    # ran out of time did not fail for that reason, so it carries no hint; the
+    # job layer reads the same return codes to report interrupted / timeout.
+    ordinary_failure = not ok and rc not in (INTERRUPTED_RC, TIMEOUT_RC)
+    step_hint = hint if ordinary_failure else ""
     if not ok:
         logger.warning("playwright-cli install step %s failed (rc=%d): %s", name, rc, detail)
-        if hint:
-            detail = f"{detail}\n\n{hint}" if detail else hint
+        if step_hint:
+            detail = f"{detail}\n\n{step_hint}" if detail else step_hint
     return {
         "name": name,
         "ok": ok,
         "returncode": rc,
         "stderr": detail,
+        "hint": step_hint,
     }
+
+
+#: Stage names reported through ``on_stage``, in the order :func:`install` runs
+#: them. The dashboard's install job publishes ``preparing`` itself before the
+#: worker starts, so the installer never reports it.
+STAGE_INSTALLING_CLI = "installing_cli"
+STAGE_DOWNLOADING_BROWSER = "downloading_browser"
+STAGE_INSTALLING_SKILLS = "installing_skills"
+STAGE_FINISHING = "finishing"
+
+StageCallback = Callable[[str], None]
+
+
+def _emit_stage(on_stage: StageCallback | None, stage: str) -> None:
+    """Report *stage*; a failing callback is logged, never allowed to stop an install."""
+    if on_stage is None:
+        return
+    try:
+        on_stage(stage)
+    except Exception:  # noqa: BLE001 - progress reporting must not fail the install
+        logger.debug("browser install stage callback failed for %s", stage, exc_info=True)
 
 
 def _download_browser(command: list[str], engine: str | None = None) -> list[dict[str, Any]]:
@@ -1362,7 +1799,8 @@ def _download_browser(command: list[str], engine: str | None = None) -> list[dic
     and the download itself needs no privilege at all -- so the flag is dropped
     and the download retried rather than losing the browser over a permission the
     operator may never have. Returns every attempt, so the panel shows what was
-    tried instead of only the last verdict.
+    tried instead of only the last verdict. The engine-aware remedy rides only on
+    the attempt without the flag: it is the one a human has to act on.
 
     Every attempt is judged on its output as well as its exit code: a build whose
     libraries are missing downloads "successfully" and cannot launch.
@@ -1370,9 +1808,9 @@ def _download_browser(command: list[str], engine: str | None = None) -> list[dic
     selected_engine = engine or _DEFAULT_BROWSER_ENGINE
     base = [*command, "install-browser", selected_engine]
     # Keep baseline step names stable for the dashboard; optional engine
-    # downloads name their engine so concurrent outcomes remain distinguishable.
+    # downloads name their engine so outcomes remain distinguishable.
     suffix = f"-{engine}" if engine else ""
-    hint = os_deps.missing_deps_hint()
+    hint = os_deps.missing_deps_hint(selected_engine)
 
     def attempt(step_name: str, argv: list[str], with_hint: bool) -> dict[str, Any]:
         return _step(
@@ -1392,7 +1830,7 @@ def _download_browser(command: list[str], engine: str | None = None) -> list[dic
     return [first, attempt(f"install-browser{suffix}-no-deps", base, True)]
 
 
-def install() -> dict[str, Any]:
+def install(on_stage: StageCallback | None = None) -> dict[str, Any]:
     """Install the CLI, a browser, and the skills reference.
 
     Steps run in order and stop at the first failure, because each one depends
@@ -1400,10 +1838,11 @@ def install() -> dict[str, Any]:
     step installs. The result carries every step attempted so an operator sees
     which one failed rather than only that something did.
 
-    The browser step adapts to the host's package manager; see
-    :func:`_download_browser`.
+    *on_stage* is called with each :data:`STAGE_INSTALLING_CLI` ..
+    :data:`STAGE_FINISHING` transition as it happens, on the calling thread.
     """
     steps: list[dict[str, Any]] = []
+    _emit_stage(on_stage, STAGE_INSTALLING_CLI)
 
     npm = find_node_tool("npm")
     if npm is None:
@@ -1505,10 +1944,12 @@ def install() -> dict[str, Any]:
         )
         return {"ok": False, "steps": steps}
 
+    _emit_stage(on_stage, STAGE_DOWNLOADING_BROWSER)
     steps.extend(_download_browser(command))
     if not steps[-1]["ok"]:
         return {"ok": False, "steps": steps}
 
+    _emit_stage(on_stage, STAGE_INSTALLING_SKILLS)
     steps.append(
         _step(
             "install-skills",
@@ -1516,14 +1957,13 @@ def install() -> dict[str, Any]:
             _SKILLS_INSTALL_TIMEOUT_S,
         )
     )
-    # The LAST step decides, not every step: a recovered ``--with-deps`` refusal
-    # leaves its failed attempt in the list for the operator to see, and that
-    # entry must not veto an install the retry actually completed. Every earlier
-    # gate has already returned on a real failure, so only this step is undecided.
+    _emit_stage(on_stage, STAGE_FINISHING)
+    # The LAST step decides. Every earlier gate has already returned on a real
+    # failure, so only this step is undecided.
     return {"ok": steps[-1]["ok"], "steps": steps}
 
 
-def install_browser(engine: str) -> dict[str, Any]:
+def install_browser(engine: str, on_stage: StageCallback | None = None) -> dict[str, Any]:
     """Download one engine's browser build.
 
     Separate from :func:`install` because the two answer different questions.
@@ -1535,6 +1975,9 @@ def install_browser(engine: str) -> dict[str, Any]:
     *engine* is validated against :data:`BROWSER_ENGINES` before it can reach
     argv. That check is what keeps this spawn benign (fixed argv, no free input)
     rather than an agent-influenced one -- see ``test_spawn_audit``.
+
+    *on_stage* receives :data:`STAGE_DOWNLOADING_BROWSER` before the download
+    and :data:`STAGE_FINISHING` after it, on the calling thread.
     """
     if engine not in BROWSER_ENGINES:
         return {
@@ -1574,5 +2017,7 @@ def install_browser(engine: str) -> dict[str, Any]:
                 }
             ],
         }
+    _emit_stage(on_stage, STAGE_DOWNLOADING_BROWSER)
     steps = _download_browser(command, engine)
+    _emit_stage(on_stage, STAGE_FINISHING)
     return {"ok": steps[-1]["ok"], "steps": steps}

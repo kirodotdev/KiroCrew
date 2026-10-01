@@ -16,6 +16,8 @@ from kiro_crew.config.loader import KiroCrewConfig, config_dir, config_path  # n
 from kiro_crew.dashboard.handlers_system import (  # noqa: F401
     api_compliance_yolo_status,
     api_governance_channels,
+    api_leaked_runtimes,
+    api_leaked_runtimes_reclaim,
     api_sso_ttl,
     api_status,
     api_system,
@@ -381,6 +383,7 @@ from kiro_crew.dashboard.handlers.messaging import (  # noqa: E402, F401
     api_webex_config_save,
     api_wecom_config_get,
     api_wecom_config_save,
+    stop_browser_install,
 )
 
 # ── Rendered slides for the file panel (handlers/office_slides.py) ──
@@ -633,6 +636,7 @@ from kiro_crew.dashboard.handlers.updates import (  # noqa: E402, F401
     api_update_channel,
     api_update_check,
     api_update_disarm,
+    api_update_revalidate,
     api_update_simulate,
     get_update_info,
     install_log_ring_handler,
@@ -1029,6 +1033,8 @@ from kiro_crew.dashboard.handlers.decisions import (  # noqa: E402, F401
     api_decisions_consent_get,
     api_decisions_consent_put,
     api_decisions_feedback,
+    api_decisions_provider_get,
+    api_decisions_provider_put,
 )
 
 # Flagged-file delivery consent — owner-gated, and the ONLY writer of

@@ -91,8 +91,15 @@ export interface TranscriptRendererOptions {
    *  (a pane); the single-chat surface has always fallen through to its
    *  conversational bubble for one and passes that. */
   renderUnparsedFile?: (m: ChatMessage, ctx: MessageRenderContext) => React.ReactNode
-  /** Session hand-offs on the completion cards: open a session chip, and the
-   *  title map + active key the chip resolver needs. */
+  /** Session routing for EVERY row this factory draws: open a session chip, and
+   *  the title map + active key the chip resolver needs. The completion cards
+   *  read it, and so do the two conversational entries below (the crewmate
+   *  bubble, the steer-only user row), so a `/chat?sid=…` link, a bare slot key
+   *  and a short name behave the same in a crewmate DM as on the single-chat
+   *  page. The renderer gates on (`onSessionOpen` AND `sessions`): a host that
+   *  wires neither -- a side chat, an embedded chat -- keeps today's plain
+   *  navigating link, and one that withholds `sessions` while offline gets the
+   *  same, never a live-looking affordance that cannot act. */
   onSessionOpen?: (key: string) => void
   sessions?: ReadonlyMap<string, string>
   activeSession?: string
@@ -476,6 +483,14 @@ export function createTranscriptRenderers(
             const bubble = renderAssistantBubble(m, ctx, crewmateBubbleClass(pos), {
               forceFooter: pos === 'single' || pos === 'end',
               policyBlockTranscript: full && fullIndex >= 0 ? { messages: full, index: fullIndex } : undefined,
+              // A crewmate's reply is prose about the crew's own work, so it
+              // names sessions constantly. Same triple the single-chat page
+              // hands its bubble, and `m.ts` with it so the SHORT form resolves
+              // too -- a host that wires none of it keeps the plain link.
+              onSessionOpen: o.onSessionOpen,
+              sessions: o.sessions,
+              activeSession: o.activeSession,
+              messageTs: m.ts,
             })
             if (bubble === null) return null
             return ctx.row(
@@ -565,7 +580,18 @@ export function createTranscriptRenderers(
                 meta={m.meta}
                 timestamp={formatTs(m.ts)}
                 timestampTitle={fmtMessageTimeFull(m.ts)}
-                renderContent={(c, mt) => renderUserContent({ content: c, meta: mt, onFileOpen: ctx.onFileOpen })}
+                // The session triple mirrors the crewmate bubble above, so a
+                // `/chat?sid=…` the USER pasted resolves exactly as the same
+                // link does in the reply quoting it back.
+                renderContent={(c, mt) => renderUserContent({
+                  content: c,
+                  meta: mt,
+                  onFileOpen: ctx.onFileOpen,
+                  onSessionOpen: o.onSessionOpen,
+                  sessions: o.sessions,
+                  activeSession: o.activeSession,
+                  messageTs: m.ts,
+                })}
                 hideSteerBadge
                 onReplyInThread={replyInThreadFor(m, ctx)}
               />

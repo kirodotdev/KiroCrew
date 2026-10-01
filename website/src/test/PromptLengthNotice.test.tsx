@@ -1,5 +1,14 @@
-import { afterAll, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
 import { act, render, screen } from '@testing-library/react'
+
+const deferred = vi.hoisted(() => ({ lag: false, value: '' }))
+vi.mock('react', async () => {
+  const actual = await vi.importActual<typeof import('react')>('react')
+  return {
+    ...actual,
+    useDeferredValue: <T,>(value: T) => deferred.lag ? deferred.value as T : value,
+  }
+})
 
 import PromptLengthNotice from '../components/PromptLengthNotice'
 import { formatToken, type PasteBlock } from '../utils/pasteTokens'
@@ -13,7 +22,26 @@ afterAll(async () => {
   await i18next.changeLanguage('en')
 })
 
+afterEach(() => {
+  deferred.lag = false
+  deferred.value = ''
+})
+
 describe('PromptLengthNotice', () => {
+  it('measures the live value while confirmation is pending', () => {
+    deferred.lag = true
+    deferred.value = 'a'.repeat(100)
+    const { rerender } = render(
+      <PromptLengthNotice value={'a'.repeat(480)} blocks={[]} contextWindowTokens={WINDOW} />,
+    )
+    expect(screen.queryByTestId('prompt-length-notice')).not.toBeInTheDocument()
+
+    rerender(
+      <PromptLengthNotice value={'a'.repeat(480)} blocks={[]} contextWindowTokens={WINDOW} confirmPending />,
+    )
+    expect(screen.getByTestId('prompt-length-notice')).toHaveAttribute('data-held', 'true')
+  })
+
   it('shows nothing visible and announces nothing under the threshold', () => {
     render(<PromptLengthNotice value={'a'.repeat(300)} blocks={[]} contextWindowTokens={WINDOW} />)
     expect(screen.queryByTestId('prompt-length-notice')).not.toBeInTheDocument()

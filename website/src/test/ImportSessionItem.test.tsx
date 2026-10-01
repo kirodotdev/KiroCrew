@@ -257,6 +257,7 @@ describe('ImportSessionItem', () => {
       ['transfer_body_not_object', /not an exported session/i],
       ['transfer_body_unreadable', /could not be uploaded/i],
       ['transfer_expansion_busy', /too many imports|try again/i],
+      ['transfer_uploads_busy', /too many imports|try again/i],
     ]
     for (const [code, pattern] of cases) {
       mocks.importSessionFromFile.mockReset()

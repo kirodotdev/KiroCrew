@@ -1,6 +1,6 @@
 # goose frame corpus
 
-Five files, all live. Read `../README.md` first for what a fixture is and what the
+Six files, all live. Read `../README.md` first for what a fixture is and what the
 corpus does and does not prove.
 
 | File | Frame classes it carries |
@@ -10,6 +10,7 @@ corpus does and does not prove.
 | `mcp-stdio-mount-live.jsonl` | a stdio MCP mount completing a ROUND TRIP: `tool_call` / `session/request_permission` / `tool_call_update` for `crew-probe__crew_probe_echo` |
 | `mcp-stdio-dropped-live.jsonl` | the same mount with an unstartable command: `session/new` succeeds and drops the element |
 | `session-load-live.jsonl` | `current_mode_update`, the `session/load` result for a live id, and the `session/resume` rejection |
+| `compact-live.jsonl` | three ordinary turns with their `usage_update`, a `/compact` turn (`user_message_chunk`, the `Compaction complete` chunk, its `usage_update`, `end_turn`), and one ordinary turn after it |
 
 **Nothing here is synthesized.** This harness produced all seven required classes on
 its own wire, including the permission request, so there is no class written from a
@@ -34,6 +35,27 @@ the mode it resolved is reported in `modes.currentModeId` on the `session/new`
 response — visible in both files. So the route is established before the first prompt
 is sent rather than applied to a session that already exists, and the read-back needs
 no second child.
+
+## What the compact capture establishes
+
+goose serves a manual `/compact` and finishes it inside the `session/prompt` turn.
+`compact-live.jsonl` was written by `scripts/capture_acp_compaction.py`, and its
+`_meta.note` carries the series:
+
+```
+ordinary turns   used 1529 -> 1991 -> 2453
+/compact turn    used 224, "Compaction complete", stopReason end_turn
+next turn        used 1749
+```
+
+The turn after `/compact` reads below the pre-compact peak, so the context really
+shrank. Nothing arrives after the `/compact` turn's `end_turn`, so that terminal is the
+only done signal. Those two facts are the memberships in `ACP_BACKENDS_COMPACT` and
+`ACP_BACKENDS_INLINE_COMPACTION`.
+
+The drive ran with goose's default extensions off except `developer`, so the tool list
+fit a small local model's window. The claim is about goose's conversation history, which
+the tool list does not change.
 
 ## What the load capture establishes, and why it is the security-relevant one
 
@@ -117,7 +139,7 @@ markers — and refuses to finish if any survives. Re-record through that sweep 
 than editing a committed frame by hand: an edited frame is no longer evidence of what
 the wire carried, and the `_meta` header claims it is.
 
-These five files carry none of those markers, which is a property worth stating because
+These six files carry none of those markers, which is a property worth stating because
 it is not true of the corpus as a whole. A repository gate holding every fixture to it
 is a change to the SHARED corpus with its own revert path, so it lands separately from
 this harness.

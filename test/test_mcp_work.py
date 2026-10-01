@@ -48,14 +48,127 @@ def test_every_tool_has_a_registered_schema():
         assert schema.tool_name == name
 
 
-def test_the_two_no_argument_tools_declare_an_empty_schema():
+def test_the_brief_tool_declares_an_empty_schema():
     """Registered-but-empty, not unregistered: an unregistered schema admits an
     unexpected argument, an empty registered one rejects it."""
-    for name in ("work_brief", "work_ledger_read"):
-        definition = next(t for t in mcp_work._list_tools() if t["name"] == name)
-        assert definition["inputSchema"]["properties"] == {}
-        assert "required" not in definition["inputSchema"]
-        assert MCP_WORK_SCHEMAS[name].fields == []
+    definition = next(t for t in mcp_work._list_tools() if t["name"] == "work_brief")
+    assert definition["inputSchema"]["properties"] == {}
+    assert "required" not in definition["inputSchema"]
+    assert MCP_WORK_SCHEMAS["work_brief"].fields == []
+
+
+def test_work_ledger_read_advertises_the_five_optional_filters():
+    """Every parameter narrows or shapes the read and none is required, so a
+    conductor that passes nothing still gets its whole board — and the advertised
+    schema, the validation schema and the forwarded fields name the same five."""
+    definition = next(t for t in mcp_work._list_tools() if t["name"] == "work_ledger_read")
+    props = definition["inputSchema"]["properties"]
+    assert set(props) == {"events", "item_id", "state", "since", "compact"}
+    assert "required" not in definition["inputSchema"]
+    assert {f.name for f in MCP_WORK_SCHEMAS["work_ledger_read"].fields} == set(props)
+    assert set(mcp_work._READ_FIELDS) == set(props)
+    assert all(not f.required for f in MCP_WORK_SCHEMAS["work_ledger_read"].fields)
+    # The advertised bounds are the validated bounds.
+    events = next(f for f in MCP_WORK_SCHEMAS["work_ledger_read"].fields if f.name == "events")
+    assert (props["events"]["minimum"], props["events"]["maximum"]) == (
+        events.min_val,
+        events.max_val,
+    )
+    state = next(f for f in MCP_WORK_SCHEMAS["work_ledger_read"].fields if f.name == "state")
+    assert set(props["state"]["enum"]) == state.allowed
+
+
+def test_work_ledger_read_description_states_the_shape_a_conductor_relies_on():
+    """What an argument-less read still is, how each argument narrows it, and the
+    truncation marker are what a conductor plans its patrol read around, so the
+    description must say them — and must not claim a changed default."""
+    definition = next(t for t in mcp_work._list_tools() if t["name"] == "work_ledger_read")
+    text = definition["description"]
+    assert "last 20 events" in text
+    assert "NARROWS" in text and "events=<n>" in text
+    assert "compact=true" in text
+    assert "truncated=true" in text
+    assert "closed first, then open oldest-created" in text
+    assert "NEWEST FIRST" not in text and "last 5 events" not in text
+    assert "Takes no arguments" not in text
+    events = definition["inputSchema"]["properties"]["events"]["description"]
+    assert "default and max 20" in events
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        {"events": 21},
+        {"events": -1},
+        {"events": True},
+        {"item_id": "it_zz"},
+        {"item_id": "../etc"},
+        {"state": "closed"},
+        {"since": "x" * 41},
+        {"compact": "yes"},
+        {"status": "done"},
+    ],
+)
+def test_work_ledger_read_refuses_an_out_of_shape_filter(args):
+    """Refused at the schema, before any identity is resolved or wire is touched."""
+    from kiro_crew.validation import ValidationError
+
+    with pytest.raises(ValidationError):
+        mcp_work._validate_args("work_ledger_read", args)
+
+
+def test_work_ledger_read_forwards_only_known_filters_as_query(monkeypatch):
+    """The filters travel as a query string on the same GET; an unknown key that
+    got past validation still never reaches the wire, and a bool is spelled the
+    way the route reads it back."""
+    monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: "chat-x")
+    seen: dict[str, Any] = {}
+
+    def _fake_get(path: str, session_key: str | None = None, **k: Any) -> dict:
+        seen["path"] = path
+        seen["session_key"] = session_key
+        return {"conductor": {}, "items": []}
+
+    monkeypatch.setattr(mcp_work, "_get", _fake_get)
+    mcp_work._call_tool_inner(
+        "work_ledger_read",
+        {
+            "events": 3,
+            "item_id": "it_0000abcd",
+            "state": "open",
+            "since": "2026-01-02T03:04:05+00:00",
+            "compact": True,
+            "verdict": "pass",
+        },
+    )
+    from urllib.parse import parse_qs, urlsplit
+
+    split = urlsplit(seen["path"])
+    assert split.path == mcp_work._READ_PATH
+    assert parse_qs(split.query, keep_blank_values=True) == {
+        "events": ["3"],
+        "item_id": ["it_0000abcd"],
+        "state": ["open"],
+        "since": ["2026-01-02T03:04:05+00:00"],
+        "compact": ["true"],
+    }
+    assert seen["session_key"] == "chat-x"
+
+
+def test_work_ledger_read_with_no_filters_hits_the_bare_path(monkeypatch):
+    """No arguments is still the common call, and it must not grow a trailing ``?``."""
+    monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: "chat-x")
+    seen: dict[str, Any] = {}
+
+    def _fake_get(path: str, session_key: str | None = None, **k: Any) -> dict:
+        seen["path"] = path
+        return {"conductor": {}, "items": []}
+
+    monkeypatch.setattr(mcp_work, "_get", _fake_get)
+    mcp_work._call_tool_inner("work_ledger_read", {})
+    assert seen["path"] == mcp_work._READ_PATH
+    mcp_work._call_tool_inner("work_ledger_read", {"compact": False})
+    assert seen["path"] == f"{mcp_work._READ_PATH}?compact=false"
 
 
 def test_the_worker_report_tool_advertises_no_conductor_field():
@@ -480,3 +593,142 @@ def test_run_mcp_server_serves_this_module_and_advertises_identity(monkeypatch):
     assert seen["list_tools"] is mcp_work._list_tools
     assert seen["call_tool"] is mcp_work._call_tool
     assert seen["advertise_caller_identity"] is True
+
+
+# ── the read budget, measured on what the tool layer delivers ─────────────
+
+
+def _fat_board(n: int = 8, *, chars: int = 13_000) -> dict[str, Any]:
+    """A board of *n* open items whose events make the whole read ~``n * chars``."""
+    items = []
+    for i in range(n):
+        items.append(
+            {
+                "item_id": f"it_{i:08x}",
+                "state": "open",
+                "status": "progress",
+                "title": f"item {i}",
+                "created_at": f"2026-09-{i + 1:02d}T10:00:00+00:00",
+                "acceptance": {"kind": "pr_checks", "pr": 100 + i, "repo": "o/r"},
+                "events": [{"kind": "report", "summary": "x" * (chars // 20)} for _ in range(20)],
+            }
+        )
+    batch = {
+        "items": [
+            {"id": r["item_id"], "accept": r["acceptance"], "status": r["status"]} for r in items
+        ]
+    }
+    return {"conductor": {"goal": "g", "round": 1}, "items": items, "accept_batch": batch}
+
+
+def _delivered(monkeypatch: pytest.MonkeyPatch, board: dict[str, Any]) -> str:
+    """The text the model receives: the real tool call, then the real egress frame."""
+    from kiro_crew.validation import build_tool_response
+
+    monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: "chat-x")
+    monkeypatch.setattr(mcp_work, "_get", lambda *a, **k: json.loads(json.dumps(board)))
+    out = mcp_work._call_tool("work_ledger_read", {})
+    return build_tool_response(out)["content"][0]["text"]
+
+
+def test_a_110kb_board_delivers_the_newest_item_as_valid_json(monkeypatch):
+    """The bug: ~110 KB came back whole, the runtime cut it at 100,000 chars, and the
+    newest item -- serialized last -- was lost inside torn JSON."""
+    from kiro_crew.validation import MAX_RESPONSE_LEN
+
+    board = _fat_board()
+    assert len(json.dumps(board, indent=2)) > 105_000
+    text = _delivered(monkeypatch, board)
+    assert len(text) <= mcp_work._READ_BUDGET_CHARS < MAX_RESPONSE_LEN
+    doc = json.loads(text)
+    assert doc["truncated"] is True
+    ids = [r["item_id"] for r in doc["items"]]
+    assert "it_00000007" in ids
+    assert {e["id"] for e in doc["accept_batch"]["items"]} >= {"it_00000007"}
+
+
+def test_an_under_budget_read_is_untouched(monkeypatch):
+    board = _fat_board(2, chars=1_000)
+    doc = json.loads(_delivered(monkeypatch, board))
+    assert doc == board
+
+
+def test_closed_rows_are_dropped_before_open_ones():
+    board = _fat_board(6, chars=1_000)
+    # The two OLDEST rows stay open; the newer ones close. Age alone would drop the
+    # open ones first.
+    for row in board["items"][2:5]:
+        row["state"] = "accepted"
+    for row in board["items"]:
+        row["title"] = "t" * 6_000
+    doc = json.loads(mcp_work._fit_ledger(board, budget=22_000))
+    assert len(json.dumps(doc, indent=2, ensure_ascii=False)) <= 22_000
+    kept = [r["item_id"] for r in doc["items"]]
+    assert set(doc["omitted_items"]) == {"it_00000002", "it_00000003", "it_00000004"}
+    assert kept == ["it_00000000", "it_00000001", "it_00000005"]
+
+
+def test_open_rows_go_oldest_created_first_and_the_newest_stays():
+    board = _fat_board(4, chars=1_000)
+    for row in board["items"]:
+        row["title"] = "t" * 8_000
+    board["items"].reverse()  # the store's order is not the drop order
+    doc = json.loads(mcp_work._fit_ledger(board, budget=12_000))
+    assert [r["item_id"] for r in doc["items"]] == ["it_00000003"]
+    assert doc["omitted_items"] == ["it_00000000", "it_00000001", "it_00000002"]
+
+
+def test_a_board_at_the_item_ceiling_trims_in_few_renders(monkeypatch):
+    """Dropping rows bisects the count: a 256-row board must not re-render once
+    per dropped row, each render running the whole egress scrub."""
+    board = _fat_board(256, chars=1_000)
+    for i, row in enumerate(board["items"]):
+        row["created_at"] = f"2026-09-01T{i // 60:02d}:{i % 60:02d}:00+00:00"
+    calls = 0
+    real = mcp_work._render
+
+    def _counting(doc: Any) -> str:
+        nonlocal calls
+        calls += 1
+        return real(doc)
+
+    monkeypatch.setattr(mcp_work, "_render", _counting)
+    doc = json.loads(mcp_work._fit_ledger(board, budget=20_000))
+    assert calls <= 16
+    assert doc["items"][-1]["item_id"] == "it_000000ff"
+    assert len(doc["items"]) + len(doc["omitted_items"]) == 256
+
+
+def test_one_oversized_acceptance_does_not_evict_the_other_rows():
+    """Elision runs before any row is dropped, so only the bloated bar pays."""
+    board = _fat_board(8, chars=1_000)
+    huge = {"kind": "pr_checks", "pr": 1, "repo": "o/r", "notes": "n" * 60_000}
+    board["items"][0]["acceptance"] = huge
+    board["accept_batch"]["items"][0]["accept"] = huge
+    doc = json.loads(mcp_work._fit_ledger(board, budget=30_000))
+    assert len(doc["items"]) == 8
+    assert "omitted_items" not in doc
+    assert doc["elided_acceptance_for"] == ["it_00000000"]
+    assert doc["items"][0]["acceptance"]["elided"] is True
+    assert doc["accept_batch"]["items"][0]["accept"]["elided"] is True
+    assert doc["items"][1]["acceptance"] == board["items"][1]["acceptance"]
+
+
+def test_the_measured_size_is_the_delivered_size(monkeypatch):
+    """The fitter measures with the same redact + sanitize the egress applies, so
+    what it counted is what the model gets -- byte for byte, not an estimate."""
+    board = _fat_board()
+    # Content that redaction and NFC normalization both change the length of.
+    board["items"][-1]["title"] = "token=ghp_" + "a" * 36 + " e\u0301"
+    fitted = mcp_work._fit_ledger(json.loads(json.dumps(board)))
+    assert _delivered(monkeypatch, board) == fitted
+    assert len(fitted) <= mcp_work._READ_BUDGET_CHARS
+
+
+def test_a_board_nothing_can_trim_falls_back_to_one_envelope():
+    board = _fat_board(1, chars=0)
+    board["conductor"]["goal"] = "g" * 50_000
+    doc = json.loads(mcp_work._fit_ledger(board, budget=10_000))
+    assert doc["unfittable"] is True
+    assert doc["item_count"] == 1
+    assert doc["omitted_items"] == ["it_00000000"]

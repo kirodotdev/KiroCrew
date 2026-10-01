@@ -227,7 +227,7 @@ def azs_offering_instance_type(instance_type: str, profile: str, region: str) ->
 # us-east-1 there regardless of the launch region, so it is literal here too.
 _BOOTSTRAP_DOWNLOAD_HOSTS = (
     "desktop-release.q.us-east-1.amazonaws.com",  # kiro-cli musl build
-    "nodejs.org",  # Node >= NODE_MAJOR_MIN tarball
+    "nodejs.org",  # Node >= NODE_MIN tarball
 )
 
 

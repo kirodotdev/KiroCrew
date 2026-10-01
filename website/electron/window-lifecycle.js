@@ -21,10 +21,20 @@ const { isLoopbackUrl } = require("./browser-control");
 const { runAnnotateOp } = require("./browser-annotate");
 const { attachContextMenu } = require("./context-menu");
 const {
+  TUNNEL_OPTION_LABEL,
   parseRemoteCrewFields,
   saveRemoteCrewConfig,
+  tunnelOptionHint,
 } = require("./remote-crew-setup");
-const { getRemoteHostConfig, setRemoteHostConfig } = require("./host-config");
+const {
+  getRemoteHostConfig,
+  getRemoteHostConfigForUrl,
+  getRemoteHostDefaultNameForUrl,
+  isSelectablePort,
+  retireLegacyEmptyPortHost,
+  setRemoteHostConfig,
+} = require("./host-config");
+const { defaultedPort, portIsSchemeDefault } = require("./gateway-auth-hint");
 const { openPathHardened } = require("./open-path");
 const { DEFAULT_REMOTE_BIN, DEFAULT_REMOTE_PATH } = require("./remote-token");
 const { identityFamily } = require("./instance-guard");
@@ -85,6 +95,9 @@ function createWindowLifecycle(options) {
     isQuitting = () => false,
     requestQuit,
     connectWindow,
+    // Re-apply the launch port's managed-tunnel choice after a save here, so
+    // ticking or un-ticking it takes effect without a relaunch.
+    syncTunnel = () => {},
     platform = process.platform,
     env = process.env,
   } = options || {};
@@ -221,14 +234,39 @@ function createWindowLifecycle(options) {
   // window must not read the primary's config). Shared by the host-presence
   // heartbeat and the wsl:detect sender gate so the two security decisions
   // cannot drift apart.
+  //
+  // The key comes from `defaultedPort`, not `URL.port`, because the URL API
+  // leaves a scheme's default port empty: on `http://localhost:80` the raw
+  // property is `""`, the lookup asks for `remoteHosts[""]`, misses, and a
+  // tunnelled crew reads as a gateway on this machine -- after which the
+  // heartbeat sends this machine's internal secret over that tunnel.
+  //
+  // The lookup goes through `getRemoteHostConfigForUrl` rather than the port
+  // alone so a crew an older version recorded UNDER that empty key still reads
+  // as remote. Resolving the key without honouring those records would turn a
+  // store that was safe by accident into the exposure above.
+  //
+  // The store is the single source of truth for the remote verdict. On a
+  // scheme-default port (:80/:443) the 'Set Remote Host…' Clear is REFUSED, so
+  // the record cannot be dropped from under a live `ssh -L` tunnel and a later
+  // default-port window still resolves REMOTE from the store. On a selectable
+  // port a Clear that removes the record is the user's own reconfiguration, and
+  // every window reads that same store, so no per-window latch is needed.
   function isGatewayLocalForWindow(win) {
     if (!win || win.isDestroyed() || !win._mcBackendUrl) return false;
     const url = win._mcBackendUrl;
-    return isLoopbackUrl(url) && !getRemoteHostConfig(store, new URL(url).port)?.host;
+    if (!isLoopbackUrl(url)) return false; // non-loopback: reached off-box, never local
+    // The store is the source of truth. A crew record under this URL's resolved
+    // key (including the legacy empty key) marks the window remote; its absence
+    // marks it local. On a scheme-default port the Clear is REFUSED, so the
+    // record cannot be dropped from under a live tunnel; on a selectable port a
+    // Clear that removes the record is the user's own reconfiguration, and a
+    // fresh window reads that same store, so no window-scoped latch is needed.
+    return !getRemoteHostConfigForUrl(store, url)?.host;
   }
 
   function setupWindowContents(win, windowBackendUrl) {
-    const windowPort = new URL(windowBackendUrl).port;
+    const windowPort = defaultedPort(windowBackendUrl);
     let customName = null;
 
     const view = new WebContentsView({
@@ -328,7 +366,11 @@ function createWindowLifecycle(options) {
     win.webContents = view.webContents;
 
     function applyTitle() {
-      const remoteName = getRemoteHostConfig(store, windowPort)?.defaultName;
+      // Resolve the name through the URL so a title an older version pinned under
+      // the empty key on a scheme-default port still renders until the record is
+      // retired onto the resolved key. Reading `getRemoteHostConfig(store,
+      // windowPort)` alone would miss it and the suffix would revert to `[:80]`.
+      const remoteName = getRemoteHostDefaultNameForUrl(store, windowBackendUrl);
       if (!IS_WIN) {
         const suffix = customName || remoteName || `[:${windowPort}]`;
         win.setTitle(`Kiro Crew ${suffix}`);
@@ -835,12 +877,25 @@ function createWindowLifecycle(options) {
   async function promptRemoteHost() {
     const focused = BaseWindow.getFocusedWindow() || mainWindow;
     if (!focused || focused.isDestroyed() || !focused._mcBackendUrl) return;
-    const focusedPort = new URL(focused._mcBackendUrl).port;
-    const config = getRemoteHostConfig(store, focusedPort);
+    // Keyed with `defaultedPort` so the entry this form WRITES lands under the
+    // same key `isGatewayLocalForWindow` READS. A raw `URL.port` is "" on a
+    // scheme-default port, so the two would disagree on :80 and a crew the user
+    // configured here would classify as a gateway on this machine.
+    const focusedPort = defaultedPort(focused._mcBackendUrl);
+    // Read through the resolver so a crew an older version left under the empty
+    // key pre-fills this form: stating it again is what moves the record onto
+    // the resolved key, and the write below retires the old one.
+    const config = getRemoteHostConfigForUrl(store, focused._mcBackendUrl);
     const currentHost = config?.host || "";
     const currentBin = config?.binPath || DEFAULT_REMOTE_BIN;
     const currentRemotePort = config?.remotePort || "";
     const currentRemotePath = config?.remotePath || "";
+    const currentManageTunnel = config?.manageTunnel === true;
+    // The app keeps a tunnel only for the port it launched on, so this form
+    // offers the option there alone; for any other tab it carries the stored
+    // choice over unchanged.
+    const isLaunchPort = String(focusedPort) === String(port);
+    const offerTunnel = isLaunchPort && !IS_WINDOWS;
 
     const css = await getModalCSS();
     const esc = (value) => value
@@ -850,7 +905,7 @@ function createWindowLifecycle(options) {
       .replace(/>/g, "&gt;");
     const promptWin = new BrowserWindow({
       width: 480,
-      height: 400,
+      height: offerTunnel ? 520 : 400,
       resizable: false,
       useContentSize: true,
       parent: focused,
@@ -870,6 +925,8 @@ function createWindowLifecycle(options) {
       <input id="rp" value="${esc(currentRemotePort)}" placeholder="${focusedPort}">
       <label>Remote PATH <span style="font-weight:normal;opacity:0.6">(default: ${DEFAULT_REMOTE_PATH})</span></label>
       <input id="pa" value="${esc(currentRemotePath)}" placeholder="${DEFAULT_REMOTE_PATH}">
+      ${offerTunnel ? `<label style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="mt" style="width:auto"${currentManageTunnel ? " checked" : ""}> ${TUNNEL_OPTION_LABEL}</label>
+      <div class="hint">${esc(tunnelOptionHint(focusedPort))}</div>` : ""}
       <div class="row"><button class="ok" onclick="save()">Save</button>
       <button class="cancel" onclick="window.close()">Cancel</button></div>
       <script>
@@ -879,6 +936,9 @@ function createWindowLifecycle(options) {
             binPath: document.getElementById('b').value.trim(),
             remotePort: document.getElementById('rp').value.trim(),
             remotePath: document.getElementById('pa').value.trim(),
+            // Read from the checkbox where this form offers it; elsewhere the
+            // stored choice rides through unchanged, never silently dropped.
+            manageTunnel: ${offerTunnel ? "document.getElementById('mt').checked" : currentManageTunnel ? "true" : "false"},
           });
           window.close();
         }
@@ -901,10 +961,61 @@ function createWindowLifecycle(options) {
         if (fields) {
           const { host } = fields;
           const parent = focused && !focused.isDestroyed() ? focused : null;
+          // A record an older version left under the empty key is superseded by
+          // what the user states here, but only ONCE that statement is durable.
+          // Retiring first would erase the record on a write that is refused --
+          // and `saveRemoteCrewConfig` refuses an unselectable port outright, so
+          // on an http window whose port resolves to 80 no write can ever
+          // succeed. The crew would then read as a gateway on this machine, with
+          // no way back, which is the exposure this whole change closes.
+          //
+          // Only a URL whose port is its scheme's default could have produced
+          // that record, so a window on any other port leaves it alone.
+          const retireLegacy = () => {
+            if (portIsSchemeDefault(focused._mcBackendUrl)) {
+              retireLegacyEmptyPortHost(store, focusedPort);
+            }
+          };
           if (!host) {
+            // A scheme-default port (:80/:443) can't hold a per-port record the
+            // user can rewrite (saveRemoteCrewConfig refuses to WRITE such a
+            // port), so a crew reached on one is marked remote either by the
+            // empty-key legacy record OR by a legacy record left under the
+            // resolved key "80"/"443" itself. Deleting the resolved-key record
+            // AND retiring the legacy one here would leave a FRESH default-port
+            // window later reading no crew at all, so isGatewayLocalForWindow
+            // classifies the loopback window as a local gateway and the
+            // host-presence heartbeat sends X-Internal-Secret through the
+            // still-open ssh tunnel: the exact exposure this change closes.
+            //
+            // There is no in-app probe that a scheme-default port is positively
+            // local (a :80 write is refused by saveRemoteCrewConfig), so the only
+            // fail-closed answer is to REFUSE the Clear and keep the record
+            // intact -- a future default-port window still resolves REMOTE from
+            // the store itself, not merely from a window-scoped latch. Resolve
+            // through getRemoteHostConfigForUrl (not the empty key alone) so a
+            // host under the resolved "80"/"443" key is also caught. Direct the
+            // user to reopen the crew on a selectable port and clear it there,
+            // where a per-port record can be written and removed.
+            if (
+              portIsSchemeDefault(focused._mcBackendUrl)
+              && getRemoteHostConfigForUrl(store, focused._mcBackendUrl)?.host
+            ) {
+              dialog.showMessageBox(parent, {
+                type: "error",
+                title: "Can't clear remote host from this tab",
+                message:
+                  `This crew was reached on a default port (:${focusedPort}), so the app can't change or clear its remote-host setting from this tab. The setting is kept on purpose so this window is never mistaken for a local gateway while the connection is open. To stop reaching this crew, close this tab (and stop the "ssh -L :${focusedPort}" tunnel if you started one). A crew opened on a selectable port (for example "ssh -L 7777:…") can be cleared from its own tab.`,
+              });
+              return;
+            }
             // Clearing belongs to this surface: the shared writer stores a crew
-            // and refuses an empty host.
+            // and refuses an empty host. A scheme-default port with a host-bearing
+            // legacy record was already intercepted by the refusal above, and on
+            // any other port there is no empty-key record to retire, so no
+            // retirement runs here.
             setRemoteHostConfig(store, focusedPort, {});
+            if (isLaunchPort) syncTunnel();
             const cleared = `Remote host for :${focusedPort} cleared (using local token)`;
             console.log(cleared);
             dialog.showMessageBox(parent, { message: cleared, type: "info" });
@@ -919,6 +1030,8 @@ function createWindowLifecycle(options) {
             });
             return;
           }
+          if (isLaunchPort) syncTunnel();
+          retireLegacy();
           const message = `Remote host for :${focusedPort} set to ${host}`;
           console.log(message);
           dialog.showMessageBox(parent, { message, type: "info" });
@@ -933,7 +1046,7 @@ function createWindowLifecycle(options) {
     const win = BaseWindow.getFocusedWindow() || mainWindow;
     if (!win || win.isDestroyed() || !win._mcBackendUrl) return;
     const targetUrl = win._mcBackendUrl;
-    const targetPort = new URL(targetUrl).port;
+    const targetPort = defaultedPort(targetUrl);
 
     let tokenValue = await mintLocalToken(targetUrl);
     let sshError = null;
@@ -945,14 +1058,46 @@ function createWindowLifecycle(options) {
       win.webContents.loadURL(`${targetUrl}?token=${tokenValue}`);
       return;
     }
-    const config = getRemoteHostConfig(store, targetPort);
+    // Resolver, not the port alone: a crew an older version left under the empty
+    // key is still the crew this tab reaches, and saying none is configured
+    // would send the reader to a form that shows the host they already set.
+    const config = getRemoteHostConfigForUrl(store, targetUrl);
     dialog.showMessageBox(win, {
       type: "warning",
       title: "Token Refresh",
       message: "Could not fetch a fresh token.",
-      detail: config?.host
-        ? `SSH to ${config.host} failed.\n\n${sshError || "Check your connection."}`
-        : "No remote host configured for this tab. Use 'Set Remote Host…' from the Tab menu.",
+      // Three states, not two. `fetchRemoteToken` keys its own lookup by port, so
+      // on a record this resolver reached under the empty key it returns without
+      // running ssh at all -- and reporting that as "SSH failed" describes an
+      // attempt that never happened and sends the reader to check a connection
+      // nothing used.
+      //
+      // On the crew-configured branch the remedy depends on whether the tab's
+      // own port can hold a crew at all. `isSelectablePort` gates on
+      // `Number.isInteger`, and `defaultedPort` returns a STRING, so the port is
+      // coerced with `Number(...)` before the test -- passing the raw string
+      // makes the predicate always false and sends every port down the
+      // unselectable branch.
+      //
+      // On an unselectable port (http :80) `saveRemoteCrewConfig` refuses every
+      // Save, so re-entering the host cannot help. But the remedy must NOT be
+      // Clear: on a live `ssh -L 80:` tunnel the crew record is the only thing
+      // marking this window remote, and clearing it makes `isGatewayLocalForWindow`
+      // read the still-open loopback window as a gateway on THIS machine -- after
+      // which the idle heartbeat puts `X-Internal-Secret` through the tunnel,
+      // which is the exact exposure this change closes. So direct the user to
+      // reopen the crew on a selectable port instead, leaving the record intact.
+      detail: sshError
+        ? `SSH to ${config?.host || "the remote host"} failed.\n\n${sshError}`
+        : config?.host
+          ? isSelectablePort(Number(targetPort))
+            ? `No token could be fetched for ${config.host}, and no SSH attempt was made.`
+              + " Re-enter the host with 'Set Remote Host…' from the Tab menu so it's"
+              + " saved for this tab."
+            : `No token could be fetched for ${config.host}, and this tab's port (${targetPort})`
+              + " can't be used to save one. Reconnect the crew on a different local"
+              + " port (for example \"ssh -L 7777:…\" instead of :" + targetPort + "), then open that tab."
+          : "No remote host configured for this tab. Use 'Set Remote Host…' from the Tab menu.",
     });
   }
 

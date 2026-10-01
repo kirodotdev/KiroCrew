@@ -17,6 +17,7 @@ from __future__ import annotations
 import io
 import json
 import logging
+import os
 import urllib.error
 from unittest.mock import MagicMock, patch
 
@@ -359,6 +360,10 @@ class TestLongCacheFailures:
         ]
         assert audits, "the identity refusal must have its own audit event"
         assert "token=absent" in audits[0]["resources"]
+        # Which process asked, so a short-lived tokenless server can be traced
+        # to its launcher after it has exited.
+        assert f"pid={os.getpid()}" in audits[0]["resources"]
+        assert f"ppid={os.getppid()}" in audits[0]["resources"]
         ops = [c.kwargs.get("operation") for c in fake_sel.log_api_access.call_args_list]
         assert "tool_policy.unreadable" not in ops
         assert mcp_shared._last_failure_time == 0.0

@@ -25,7 +25,7 @@ Four parts, in the order you will need them:
   with launchd instead of systemd.
 - **Python**: 3.12 or newer (`setup.cfg` sets `python_requires = >=3.12`).
 - **Node.js**: needed to build the dashboard bundle. `website/package.json`
-  declares `"node": ">=22"`; `kirocrew doctor` warns below Node 22.
+  declares `"node": ">=22.12.0"`; `kirocrew doctor` fails below Node 22.12.0, and startup logs a warning.
 - **RAM**: there is no single published floor, because the footprint scales with
   concurrent sessions, spawned subagents, and MCP servers. Two figures from the
   code give you the shape of it: `acp/runtime.py` recycles a long-lived
@@ -274,6 +274,13 @@ Host your-host.example.com
 
 Works on macOS, Linux, and Windows (OpenSSH ships with Windows 10+; the config
 file is at `%USERPROFILE%\.ssh\config`).
+
+A hand-rolled tunnel dies whenever the laptop sleeps. The desktop app can hold
+it for you instead: tick **Keep an SSH tunnel to this crew open** in the
+**Add/Edit Remote Crew** form the "no gateway is answering" dialog opens, or in
+**Set Remote Host…** on the app's own launch tab (where you can also turn it off
+later), and the app keeps the forward up and rebuilds it after sleep
+(macOS and Linux; see `website/electron/README.md`).
 
 If your browser reaches the dashboard on a *different* local port than the
 remote one (`ssh -L 8777:localhost:5476`), the browser sends Origin
@@ -652,6 +659,7 @@ browser or handled network-first; no other response is cached:
 
 | Path | Service-worker behavior |
 |---|---|
+| any URL with a `token` query parameter (the `/?token=...` sign-in link) | Declines to intercept, never answers from the cached shell and never caches it, so the gateway's token exchange always runs |
 | `/api`, `/sandbox-doc/`, `/app-windows/`, `/apps/` | Declines to intercept API, one-shot document, standalone app-window, and app-backend responses |
 | `/assets/`, `/vendor/` | Retries network errors and 5xx responses twice with jitter, but never caches the response |
 | `/fonts/`, `/sprites/` | Declines to intercept non-critical static resources |

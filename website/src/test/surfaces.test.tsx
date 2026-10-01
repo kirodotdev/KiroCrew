@@ -7,8 +7,9 @@
  * - badge count derivation for slot-bearing surfaces (read from
  *   `slot.surface ?? slot.mode`) and non-slot surfaces (delegated to a
  *   surface-supplied selector)
- * - cross-surface attribution (orchestrator slots must not leak into the
- *   Chat badge)
+ * - cross-surface attribution (a slot on another slot-bearing surface must
+ *   not leak into the Chat badge, while a legacy Autopilot slot still counts
+ *   as an ordinary chat)
  * - the orphan-key fallback to the chat bucket so `totalAttention` doesn't
  *   transiently drop while `fetchSlots` reconciliation is in flight
  */
@@ -194,7 +195,7 @@ describe('surfaces registry', () => {
   describe('lookup', () => {
     beforeEach(() => {
       registerBuiltinSurface({ navId: 'chat', route: '/chat', label: 'Chat', icon: TEST_ICON, group: 'Main', slotMode: '' })
-      registerBuiltinSurface({ navId: 'orchestrated', route: '/orchestrated', label: 'Autopilot', icon: TEST_ICON, group: 'Apps', slotMode: 'orchestrator' })
+      registerBuiltinSurface({ navId: 'dash', route: '/dash', label: 'Dashboard', icon: TEST_ICON, group: 'Apps', slotMode: 'dashboard' })
       registerBuiltinSurface({ navId: 'settings', route: '/settings', label: 'Settings', icon: TEST_ICON, group: 'Bottom' })
     })
 
@@ -203,8 +204,8 @@ describe('surfaces registry', () => {
       expect(findSurfaceBySlotMode(undefined)?.navId).toBe('chat')
     })
 
-    it('findSurfaceBySlotMode resolves orchestrator to the autopilot surface', () => {
-      expect(findSurfaceBySlotMode('orchestrator')?.navId).toBe('orchestrated')
+    it('findSurfaceBySlotMode resolves a non-default mode to its surface', () => {
+      expect(findSurfaceBySlotMode('dashboard')?.navId).toBe('dash')
     })
 
     it('findSurfaceBySlotMode returns undefined for an unmapped mode', () => {
@@ -221,14 +222,14 @@ describe('surfaces registry', () => {
     it('partitions slots by surface key (preferring slot.surface over slot.mode)', () => {
       const slots = [
         slot('chat-1', '', undefined),
-        slot('orch-1', 'orchestrator', undefined),
+        slot('dash-1', 'dashboard', undefined),
         // Backend-version-skew case: backend sent only `mode` (older payload).
         slot('chat-2', undefined, ''),
         // Future-divergence case: backend explicitly disagrees with `mode`.
-        slot('orch-2', 'orchestrator', 'something-else'),
+        slot('dash-2', 'dashboard', 'something-else'),
       ]
       expect(filterSlotsBySurface(slots, '').map(s => s.key)).toEqual(['chat-1', 'chat-2'])
-      expect(filterSlotsBySurface(slots, 'orchestrator').map(s => s.key)).toEqual(['orch-1', 'orch-2'])
+      expect(filterSlotsBySurface(slots, 'dashboard').map(s => s.key)).toEqual(['dash-1', 'dash-2'])
     })
   })
 
@@ -239,24 +240,24 @@ describe('surfaces registry', () => {
     const slots = [
       slot('chat-1', ''),
       slot('chat-2', ''),
-      slot('orch-1', 'orchestrator'),
-      slot('orch-2', 'orchestrator'),
+      slot('dash-1', 'dashboard'),
+      slot('dash-2', 'dashboard'),
     ]
 
     it('returns only unread keys whose slot is on the requested surface', () => {
-      const unread = ['chat-1', 'orch-1', 'chat-2']
+      const unread = ['chat-1', 'dash-1', 'chat-2']
       expect(filterUnreadKeysBySurface(unread, slots, '')).toEqual(['chat-1', 'chat-2'])
-      expect(filterUnreadKeysBySurface(unread, slots, 'orchestrator')).toEqual(['orch-1'])
+      expect(filterUnreadKeysBySurface(unread, slots, 'dashboard')).toEqual(['dash-1'])
     })
 
     it('regression: cross-mode unreads do NOT leak into the toggle count', () => {
-      // An autopilot slot becoming unread while the user is on /chat must not
-      // inflate the sidebar's "Show only unread sessions (N)" tooltip or
-      // prevent the auto-drain effect from disabling the filter when the
+      // A slot on another surface becoming unread while the user is on /chat
+      // must not inflate the sidebar's "Show only unread sessions (N)" tooltip
+      // or prevent the auto-drain effect from disabling the filter when the
       // same-surface inbox actually drains.
-      const unread = ['orch-1']
+      const unread = ['dash-1']
       expect(filterUnreadKeysBySurface(unread, slots, '')).toEqual([])
-      expect(filterUnreadKeysBySurface(unread, slots, 'orchestrator')).toEqual(['orch-1'])
+      expect(filterUnreadKeysBySurface(unread, slots, 'dashboard')).toEqual(['dash-1'])
     })
 
     it('drops orphan unread keys (slot deleted before reconciliation)', () => {
@@ -271,11 +272,11 @@ describe('surfaces registry', () => {
     it('preserves the order of the input unreadKeys array', () => {
       // Sidebar uses this list directly for the badge ordering; preserving
       // input order means most-recent-unread-first behavior survives the
-      // filter (the parent slice sorts unreadSlots by recency). `orch-3`
-      // here is a cross-surface key (orchestrator slot) that must be
+      // filter (the parent slice sorts unreadSlots by recency). `dash-3`
+      // here is a cross-surface key (dashboard slot) that must be
       // excluded — distinct from the orphan-key case (covered above).
-      const unread = ['chat-2', 'chat-1', 'orch-3', 'chat-1']  // chat-1 twice
-      const slots3 = [...slots, slot('orch-3', 'orchestrator')]
+      const unread = ['chat-2', 'chat-1', 'dash-3', 'chat-1']  // chat-1 twice
+      const slots3 = [...slots, slot('dash-3', 'dashboard')]
       expect(filterUnreadKeysBySurface(unread, slots3, '')).toEqual(['chat-2', 'chat-1', 'chat-1'])
     })
 
@@ -286,39 +287,39 @@ describe('surfaces registry', () => {
     it('honors slot.surface over slot.mode when both are present', () => {
       // Forward-compat with the backend's `surface` field — same rule as
       // filterSlotsBySurface and slotSurfaceKey.
-      const skewSlots = [slot('orch-divergent', 'orchestrator', '')]
-      const unread = ['orch-divergent']
+      const skewSlots = [slot('dash-divergent', 'dashboard', '')]
+      const unread = ['dash-divergent']
       expect(filterUnreadKeysBySurface(unread, skewSlots, '')).toEqual([])
-      expect(filterUnreadKeysBySurface(unread, skewSlots, 'orchestrator')).toEqual(['orch-divergent'])
+      expect(filterUnreadKeysBySurface(unread, skewSlots, 'dashboard')).toEqual(['dash-divergent'])
     })
   })
 
   describe('selectSurfaceBadgeCount — slot-bearing surfaces', () => {
     beforeEach(() => {
       registerBuiltinSurface({ navId: 'chat', route: '/chat', label: 'Chat', icon: TEST_ICON, group: 'Main', slotMode: '' })
-      registerBuiltinSurface({ navId: 'orchestrated', route: '/orchestrated', label: 'Autopilot', icon: TEST_ICON, group: 'Apps', slotMode: 'orchestrator' })
+      registerBuiltinSurface({ navId: 'dash', route: '/dash', label: 'Dashboard', icon: TEST_ICON, group: 'Apps', slotMode: 'dashboard' })
     })
 
-    it('counts all chat-like slots (including orchestrator) in the chat badge', () => {
+    it('counts a legacy Autopilot slot in the chat badge as an ordinary chat', () => {
+      // A slot still persisted under the retired 'orchestrator' mode renders on
+      // the chat page, so its unread belongs to the chat badge.
       const state = buildState(
-        [slot('chat-1', ''), slot('orch-1', 'orchestrator'), slot('chat-2', '')],
-        ['chat-1', 'orch-1', 'chat-2'],
+        [slot('chat-1', ''), slot('legacy-1', 'orchestrator'), slot('chat-2', '')],
+        ['chat-1', 'legacy-1', 'chat-2'],
       )
-      // Unified: orchestrator slots count toward the chat badge
       expect(selectSurfaceBadgeCount('chat')(state)).toBe(3)
     })
 
-    it('orchestrator unread DOES inflate the chat badge (unified view)', () => {
-      const state = buildState([slot('chat-1', ''), slot('orch-1', 'orchestrator')], ['orch-1'])
-      // Unified: orchestrator unread contributes to chat badge
-      expect(selectSurfaceBadgeCount('chat')(state)).toBe(1)
-      expect(selectSurfaceBadgeCount('orchestrated')(state)).toBe(1)
+    it('an unread on another slot-bearing surface does NOT inflate the chat badge', () => {
+      const state = buildState([slot('chat-1', ''), slot('dash-1', 'dashboard')], ['dash-1'])
+      expect(selectSurfaceBadgeCount('chat')(state)).toBe(0)
+      expect(selectSurfaceBadgeCount('dash')(state)).toBe(1)
     })
 
     it('orphan unread key (slot deleted before reconciliation) falls back to chat', () => {
       const state = buildState([], ['orphan-key'])
       expect(selectSurfaceBadgeCount('chat')(state)).toBe(1)
-      expect(selectSurfaceBadgeCount('orchestrated')(state)).toBe(0)
+      expect(selectSurfaceBadgeCount('dash')(state)).toBe(0)
     })
 
     it('returns 0 for an unknown navId', () => {
@@ -360,7 +361,7 @@ describe('surfaces registry', () => {
   describe('selectAllSurfacesAttention', () => {
     it('sums every registered surface so the tab title stays exact', () => {
       registerBuiltinSurface({ navId: 'chat', route: '/chat', label: 'Chat', icon: TEST_ICON, group: 'Main', slotMode: '' })
-      registerBuiltinSurface({ navId: 'orchestrated', route: '/orchestrated', label: 'Autopilot', icon: TEST_ICON, group: 'Apps', slotMode: 'orchestrator' })
+      registerBuiltinSurface({ navId: 'dash', route: '/dash', label: 'Dashboard', icon: TEST_ICON, group: 'Apps', slotMode: 'dashboard' })
       registerBuiltinSurface({
         navId: 'notifications',
         route: '/notifications',
@@ -370,14 +371,11 @@ describe('surfaces registry', () => {
         unreadSelector: () => 3,
       })
       const state = buildState(
-        [slot('chat-1', ''), slot('orch-1', 'orchestrator')],
-        ['chat-1', 'orch-1'],
+        [slot('chat-1', ''), slot('dash-1', 'dashboard')],
+        ['chat-1', 'dash-1'],
       )
-      // Unified chat badge counts both chat + orchestrator slots (2), plus
-      // the orchestrated surface still counts its own (1), plus notifications (3) = 6.
-      // In the real app only the chat surface exists, so no double-counting
-      // occurs — this test registers both to verify the sum logic.
-      expect(selectAllSurfacesAttention(state)).toBe(6)
+      // Chat badge (1) + the dash surface's own slot (1) + notifications (3) = 5.
+      expect(selectAllSurfacesAttention(state)).toBe(5)
     })
   })
 

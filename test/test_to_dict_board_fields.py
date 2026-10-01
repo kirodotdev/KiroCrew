@@ -199,6 +199,73 @@ def test_last_turn_ts_empty_for_empty_slot():
     assert d["last_ts"] == ""
 
 
+# ── last_ts is a durable instant ──
+# The dashboard stores `last_ts` as a slot's unread watermark and later clears
+# it only with a `last_ts` that covers it. A row the save path never persists
+# (the turn-end `done` row and the other transient roles) disappears when a
+# gateway restart rebuilds the slot from disk, so a `last_ts` taken from one
+# moves backwards across the restart and strands the watermark.
+
+
+def test_last_ts_skips_the_turn_end_done_row():
+    s = _slot(
+        {"role": "user", "content": "question", "ts": "2026-09-22T22:08:00.000000+00:00"},
+        {"role": "assistant", "content": "final reply", "ts": "2026-09-22T22:08:03.989142+00:00"},
+        {"role": "done", "content": "", "ts": "2026-09-22T22:08:04.001106+00:00"},
+    )
+    d = s.to_dict()
+    assert d["last_ts"] == "2026-09-22T22:08:03.989142+00:00"
+    assert d["last_turn_ts"] == "2026-09-22T22:08:03.989142+00:00"
+
+
+def test_last_ts_is_unchanged_by_a_rebuild_from_disk():
+    # The same transcript before and after a restart: the live slot still holds
+    # the unsaved rows, the rebuilt one holds only what the save path keeps.
+    from kiro_crew.dashboard.chat_persistence import _build_message_entry
+
+    s = _ChatSlot("test-slot")
+    s.append("user", "question", "msg msg-u")
+    s.append("assistant", "final reply", "msg msg-a")
+    s.append("done", "", "done")
+    live = s.to_dict()["last_ts"]
+
+    rebuilt = _ChatSlot("test-slot")
+    rebuilt.messages = [dict(m) for m in s.messages if _build_message_entry(m) is not None]
+    assert live == rebuilt.to_dict()["last_ts"]
+
+
+def test_last_ts_skips_every_transient_role():
+    from kiro_crew.dashboard.state import _TRANSIENT_ROLES
+
+    for role in sorted(_TRANSIENT_ROLES):
+        s = _slot(
+            {"role": "assistant", "content": "reply", "ts": "t1"},
+            {"role": role, "content": "x", "ts": "t2"},
+        )
+        assert s.to_dict()["last_ts"] == "t1", role
+
+
+def test_last_ts_empty_when_only_transient_rows():
+    s = _slot({"role": "done", "content": "", "ts": "t1"})
+    assert s.to_dict()["last_ts"] == ""
+
+
+def test_the_dashboard_unsaved_role_list_matches_the_save_path():
+    # The dashboard refuses to take an unread watermark from a row the gateway
+    # never saves; its copy of the role set must be this one.
+    import re
+    from pathlib import Path
+
+    from kiro_crew.dashboard.state import _TRANSIENT_ROLES
+
+    source = (
+        Path(__file__).resolve().parents[1] / "website/src/hooks/unreadOnAttention.ts"
+    ).read_text(encoding="utf-8")
+    match = re.search(r"UNSAVED_ROLES[^=]*= new Set\(\[([^\]]*)\]\)", source)
+    assert match, "UNSAVED_ROLES not found in unreadOnAttention.ts"
+    assert set(re.findall(r"'([a-z_]+)'", match.group(1))) == set(_TRANSIENT_ROLES)
+
+
 def test_prompt_preview_truncation():
     long_text = "x" * 300 + "\n[OPTIONS: A | B]"
     s = _slot({"role": "assistant", "content": long_text, "ts": "t1"})

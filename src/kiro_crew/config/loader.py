@@ -156,7 +156,6 @@ from kiro_crew.config.section_builders import (  # noqa: F401
     _build_memory_config,
     _build_messaging_config,
     _build_monitoring_config,
-    _build_orchestrator_config,
     _build_publish_config,
     _build_session_summary_config,
     _build_skills_config,
@@ -296,7 +295,6 @@ from kiro_crew.config.sections import (  # noqa: F401
     MemoryStoreConfig,
     MessagingConfig,
     MonitoringConfig,
-    OrchestratorConfig,
     PublishConfig,
     ResolvedBindings,
     ResourceLimitsConfig,
@@ -2514,6 +2512,11 @@ _SECURITY_BOUNDED_FIELDS: tuple[tuple[str, str, int, int], ...] = (
         CHAT_ENTRY_CACHE_BYTES_MAX,
     ),
     ("session", "pool_size", 0, POOL_SIZE_MAX),
+    # A kill budget belongs in this sweep for the reason the sweep exists: the
+    # value authorizes signals, and a hand-edited config.json never passes the
+    # dashboard's write gate. The floor is 0 because 0 is this field's OFF value, so
+    # a negative clamps toward observe-only rather than toward killing.
+    ("session", "reconcile_max_kills", 0, _sections.RECONCILE_MAX_KILLS_MAX),
 )
 
 
@@ -2847,7 +2850,7 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
         recovery_backoff_max_secs=_safe_float(
             agent_data.get("recovery_backoff_max_secs", 120.0), 120.0, 1.0, 3600.0
         ),
-        # Session-start gate (acp/runtime.py SessionStartGate).
+        # Session-start gate (acp/runtime_start.py SessionStartGate).
         session_start_concurrency=_safe_int(
             agent_data.get("session_start_concurrency", 2), 2, 1, 64
         ),
@@ -2977,6 +2980,15 @@ def _build_session_config(session_data: dict) -> SessionConfig:
         watchdog_rss_max_mb=_safe_int(
             session_data.get("watchdog_rss_max_mb", _sections.DEFAULT_WATCHDOG_RSS_MAX_MB),
             _sections.DEFAULT_WATCHDOG_RSS_MAX_MB,
+        ),
+        # Clamped HERE as well as in the `_SECURITY_BOUNDED_FIELDS` sweep, for the
+        # reason `_safe_int` states: that sweep runs over the raw dict and skips
+        # non-int values, so a numeric STRING passes it and coerces here.
+        reconcile_max_kills=_safe_int(
+            session_data.get("reconcile_max_kills", _sections.DEFAULT_RECONCILE_MAX_KILLS),
+            _sections.DEFAULT_RECONCILE_MAX_KILLS,
+            0,
+            _sections.RECONCILE_MAX_KILLS_MAX,
         ),
     )
 
@@ -3148,7 +3160,8 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
         jira_auth=[
             JiraAuthEntry(
                 host=str(entry.get("host", "")),
-                email=str(entry.get("email", "")),
+                # ``user`` is accepted as an alias; ``email`` wins when both are set.
+                email=str(entry.get("email") or entry.get("user") or ""),
             )
             for entry in (dashboard_data.get("jira_auth") or [])
             if isinstance(entry, dict) and entry.get("host")
@@ -3172,10 +3185,6 @@ class KiroCrewConfig:
     taskrunner: TaskRunnerConfig = field(
         default_factory=TaskRunnerConfig,
         metadata=_meta("Task Runner", "Task runner configuration."),
-    )
-    orchestrator: OrchestratorConfig = field(
-        default_factory=OrchestratorConfig,
-        metadata=_meta("Orchestrator", "Autopilot/orchestrator settings."),
     )
     messaging: MessagingConfig = field(
         default_factory=MessagingConfig,
@@ -3972,7 +3981,6 @@ class KiroCrewConfig:
         session_summary_data = _coerced_section(data, "session_summary", _degraded)
         messaging_data = _coerced_section(data, "messaging", _degraded)
         telemetry_data = _coerced_section(data, "telemetry", _degraded)
-        orchestrator_data = _coerced_section(data, "orchestrator", _degraded)
         watchdog_data = _coerced_section(data, "watchdog", _degraded)
         decisions_data = _coerced_section(data, "decisions", _degraded)
         resource_limits_data = _coerced_section(data, "resource_limits", _degraded)
@@ -4135,12 +4143,10 @@ class KiroCrewConfig:
             taskrunner=_build_taskrunner_config(taskrunner_data),
             cron_history=_build_cron_history_config(cron_history_data),
             messaging=_build_messaging_config(messaging_data),
-            # orchestrator/watchdog are advertised in config-baseline.json,
-            # served by /api/config/schema, and read by real consumers
-            # (acp/session_handle.py, dashboard/chat_orchestrator.py), so load()
-            # passes these kwargs — without them config.json values would be
+            # watchdog is advertised in config-baseline.json, served by
+            # /api/config/schema, and read by acp/session_handle.py, so load()
+            # passes this kwarg — without it config.json values would be
             # silently ignored and the dataclass defaults would always win.
-            orchestrator=_build_orchestrator_config(orchestrator_data),
             watchdog=_build_watchdog_config(watchdog_data),
             resource_limits=ResourceLimitsConfig.from_raw(resource_limits_data),
             telemetry=_build_telemetry_config(telemetry_data),
@@ -4460,7 +4466,6 @@ class KiroCrewConfig:
             "mcp_gateway": asdict(self.mcp_gateway),
             "mcp": asdict(self.mcp),
             "taskrunner": asdict(self.taskrunner),
-            "orchestrator": asdict(self.orchestrator),
             "watchdog": asdict(self.watchdog),
             "resource_limits": asdict(self.resource_limits),
             "messaging": asdict(self.messaging),

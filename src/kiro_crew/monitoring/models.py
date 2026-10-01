@@ -23,7 +23,13 @@ logger = logging.getLogger(__name__)
 
 MONITOR_STATE_VERSION = 1
 DEFAULT_MONITOR_RUNTIME_SECS = 14_400
-DEFAULT_MONITOR_AGENT_TURNS = 8
+#: Wake ceiling a watch nobody configured carries. Zero is the unlimited
+#: sentinel, so the default watch is retired by its runtime, token and
+#: provider-error budgets rather than by a count of wakes. A ceiling on wakes
+#: bounds how many times the subject may need its owner, which is a property of
+#: the subject rather than of what the watch costs, so counting it is not what
+#: keeps a watch affordable -- ``DEFAULT_MONITOR_RUNTIME_SECS`` is.
+DEFAULT_MONITOR_AGENT_TURNS = 0
 DEFAULT_MONITOR_TOKENS = 250_000
 DEFAULT_MONITOR_PROVIDER_ERRORS = 3
 DEFAULT_MONITOR_CADENCE_SECS = 300
@@ -33,7 +39,12 @@ MONITOR_STOP_INVALID_RECORD = "invalid_monitor_record"
 MIN_MONITOR_CADENCE_SECS = 15
 MAX_MONITOR_CADENCE_SECS = 86_400
 MAX_MONITOR_RUNTIME_SECS = MAX_RUNTIME_CEILING_SECS
-MAX_MONITOR_AGENT_TURNS = 8
+#: Ceiling on an EXPLICIT positive wake budget. It binds only a caller who asked
+#: for a finite count; zero, the unlimited sentinel, passes it untouched. The
+#: value is the one the legacy prompt loop already publishes as its ``max_cycles``
+#: bound, so the two cycle caps a caller can reach agree on where "a runaway
+#: backstop" stops being a plausible number.
+MAX_MONITOR_AGENT_TURNS = 1_000
 MAX_MONITOR_TOKENS = 1_000_000
 MAX_MONITOR_PROVIDER_ERRORS = 20
 MAX_MONITOR_WAKE_INSTRUCTIONS_CHARS = 1_000
@@ -337,8 +348,10 @@ def monitor_frontend_contract() -> dict[str, object]:
                 "maximum": MAX_MONITOR_RUNTIME_SECS,
                 "defaultValue": DEFAULT_MONITOR_RUNTIME_SECS,
             },
+            # Zero is admitted as the unlimited sentinel, which is why this one
+            # field has a floor of 0 where its three siblings have 1.
             "maxAgentTurns": {
-                "minimum": 1,
+                "minimum": 0,
                 "maximum": MAX_MONITOR_AGENT_TURNS,
                 "defaultValue": DEFAULT_MONITOR_AGENT_TURNS,
             },
@@ -398,7 +411,10 @@ class MonitorActionCompletion:
 class MonitorBudgets:
     """Hard bounds for a structured monitor.
 
-    Unlike legacy AutoNudge values, zero never means unlimited here.
+    ``max_agent_turns`` is the one field where zero means unlimited, matching the
+    legacy prompt loop's ``max_cycles``. The other three reject it: a watch with
+    no runtime, token or provider-error bound is a watch with no cost ceiling at
+    all, which is what the unlimited wake count relies on to stay affordable.
     """
 
     max_runtime_secs: int = DEFAULT_MONITOR_RUNTIME_SECS
@@ -414,12 +430,18 @@ class MonitorBudgets:
             "max_provider_errors",
         ):
             value = getattr(self, name)
-            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-                raise ValueError(f"{name} must be a positive integer")
+            floor = 0 if name == "max_agent_turns" else 1
+            if isinstance(value, bool) or not isinstance(value, int) or value < floor:
+                requirement = (
+                    "a non-negative integer, where zero means unlimited"
+                    if floor == 0
+                    else "a positive integer"
+                )
+                raise ValueError(f"{name} must be {requirement}")
         if self.max_runtime_secs > MAX_MONITOR_RUNTIME_SECS:
             raise ValueError(f"max_runtime_secs must be at most {MAX_MONITOR_RUNTIME_SECS}")
-        if self.max_agent_turns > DEFAULT_MONITOR_AGENT_TURNS:
-            raise ValueError(f"max_agent_turns must be at most {DEFAULT_MONITOR_AGENT_TURNS}")
+        if self.max_agent_turns > MAX_MONITOR_AGENT_TURNS:
+            raise ValueError(f"max_agent_turns must be at most {MAX_MONITOR_AGENT_TURNS}")
 
 
 class MonitorSeverity(str, Enum):

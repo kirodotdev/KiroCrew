@@ -80,12 +80,21 @@ const xt = vi.hoisted(() => {
     fit = vi.fn()
     constructor() { FakeFitAddon.instances.push(this) }
   }
-  return { FakeTerminal, FakeFitAddon }
+  class FakeWebLinksAddon {
+    static instances: FakeWebLinksAddon[] = []
+    /** The activation handler CliPanel passed, or undefined for the addon default. */
+    handler: ((event: MouseEvent, uri: string) => void) | undefined
+    constructor(handler?: (event: MouseEvent, uri: string) => void) {
+      this.handler = handler
+      FakeWebLinksAddon.instances.push(this)
+    }
+  }
+  return { FakeTerminal, FakeFitAddon, FakeWebLinksAddon }
 })
 
 vi.mock('@xterm/xterm', () => ({ Terminal: xt.FakeTerminal }))
 vi.mock('@xterm/addon-fit', () => ({ FitAddon: xt.FakeFitAddon }))
-vi.mock('@xterm/addon-web-links', () => ({ WebLinksAddon: class {} }))
+vi.mock('@xterm/addon-web-links', () => ({ WebLinksAddon: xt.FakeWebLinksAddon }))
 
 const registry = vi.hoisted(() => ({
   ensureTerminalConnection: vi.fn(),
@@ -312,6 +321,22 @@ describe('CliPanel mount', () => {
       selectionBackground: '#313244',
       ...ansiPaletteFromVars(() => ''),
     })
+  })
+
+  it('opens a clicked terminal link by its own URL, never through a blank window', () => {
+    // The addon's default handler calls window.open() with no URL and then
+    // navigates the blank window. The desktop shell's window-open handler
+    // classifies that about:blank target as unsupported and denies it, so the
+    // click did nothing. Passing the URL lets the shell route it to the OS.
+    const { term } = mount()
+    const links = xt.FakeWebLinksAddon.instances[xt.FakeWebLinksAddon.instances.length - 1]
+    expect(term.addons).toContain(links)
+    expect(links.handler).toBeTypeOf('function')
+    const open = vi.fn(() => null)
+    vi.stubGlobal('open', open)
+    links.handler!(new MouseEvent('click'), 'https://example.com/docs')
+    expect(open).toHaveBeenCalledTimes(1)
+    expect(open).toHaveBeenCalledWith('https://example.com/docs', '_blank', 'noopener,noreferrer')
   })
 
   it('routes a theme variable into its ANSI slot', () => {

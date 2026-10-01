@@ -143,6 +143,37 @@ class TestWaitLoopEarlyEnd:
         assert result.endswith("Resuming: test")
         assert len(_countdown_posts(posts)) == 3
 
+    def test_an_end_by_another_session_names_that_session(self):
+        """session_end_wait: the result tells the woken agent a peer ended it,
+        not the person, so it can go and read that peer's instruction."""
+
+        def replies(n, body):
+            if n == 2:
+                return {
+                    "ok": True,
+                    "end_wait": body["wait_id"],
+                    "end_wait_by": "chat-644-1790695288",
+                }
+            return {"ok": True}
+
+        result, _, _ = _run_wait(replies)
+
+        assert result.startswith(
+            "Wait ended early by session `chat-644-1790695288` (session_end_wait) after"
+        )
+        assert result.endswith("Resuming: test")
+
+    def test_a_requester_on_a_reply_for_another_wait_is_ignored(self):
+        """``end_wait_by`` is read only from a reply whose ``end_wait`` names
+        this sleep, so it cannot describe someone else's."""
+
+        def replies(n, body):
+            return {"ok": True, "end_wait": "other-wait", "end_wait_by": "chat-9"}
+
+        result, _, _ = _run_wait(replies)
+
+        assert result == f"Waited {MIN_WAIT}s. Resuming: test"
+
     def test_end_wait_for_a_different_id_is_ignored(self):
         """K(ii). Only a request naming this sleep ends it; anything else lets
         the wait run to term."""

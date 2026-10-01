@@ -2,7 +2,7 @@
  *
  * A crew's own copy (blueprint semantics: `private_to` set to that crew) is
  * named after the crew it belongs to, so it means nothing in another crew's
- * Agent Template dropdown. `kiroAgentOptions` filters those rows out of the
+ * Built from dropdown. `kiroAgentOptions` filters those rows out of the
  * shared catalog. This pins that the create sheet's dropdown offers the shared
  * templates and hides a private copy — otherwise one crew's fork would leak
  * into every crew's binding list.
@@ -41,11 +41,11 @@ vi.mock('../api/client', () => ({
 async function openTemplateDropdown() {
   renderWithProviders(<KiroCrewAgentsPage />)
   fireEvent.click(await screen.findByTestId('new-crew'))
-  const trigger = await screen.findByRole('combobox', { name: 'Agent Template' })
+  const trigger = await screen.findByRole('combobox', { name: 'Built from' })
   fireEvent.click(trigger)
 }
 
-describe('Agent Template dropdown — private fork copies excluded', () => {
+describe('Built from dropdown — private fork copies excluded', () => {
   beforeEach(() => vi.clearAllMocks())
 
   it('offers the shared templates but not a crew\'s private copy', async () => {

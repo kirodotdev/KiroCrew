@@ -721,11 +721,14 @@ async def test_wait_resume_granted_wakes_on_the_grant_not_on_a_timer(h) -> None:
     waiter = asyncio.ensure_future(hz.mgr._admission.wait_resume_granted(s.id, timeout=5.0))
     await hz.settle()
     assert not waiter.done()
-    loop = asyncio.get_event_loop()
-    t0 = loop.time()
+    event = hz.live(s)._resume_event
     await hz.end(a)
-    assert await asyncio.wait_for(waiter, timeout=0.5) is True
-    assert loop.time() - t0 < 0.1, "released by the grant event, not by the bound"
+    # settle() is only sleep(0) rounds, so a done waiter here was woken by
+    # the grant event: its 5.0 s timer cannot have fired yet.
+    await hz.settle()
+    assert waiter.done(), "woken by the grant event, not the 5 s bound"
+    assert waiter.result() is True
+    assert event.is_set(), "the grant set the armed event"
     assert hz.mgr._admission.resume_granted(s.id) is True
     assert hz.live(s)._resume_event is None, "one event per wait"
 

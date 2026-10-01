@@ -149,3 +149,32 @@ export function pinIsWithheld(pinned: string, shown: string): boolean {
   if (!key || key === 'auto') return false
   return normalizeModelKey(shown) === 'auto'
 }
+
+/** The marker the composer chip puts beside the model it names.
+ *
+ *  `default` only when that model IS the Settings default and the slot takes it
+ *  from there: the session was served it, or a slot with no model of its own
+ *  resolved to it through an agent that pins nothing. `auto` when the session
+ *  was served a different model for a slot that picked Auto or holds a
+ *  withheld pin, i.e. a model chosen for the user. No marker otherwise: a pin,
+ *  an agent's own model, or a default this surface cannot see (`null`).
+ *
+ *  `shown` / `pinShown` are `displayModel` with and without `served_model`.
+ */
+export function modelChipMarker(
+  slotModel: string,
+  shown: string,
+  pinShown: string,
+  settingsDefault: string | null,
+  agentPinned = false,
+): 'default' | 'auto' | null {
+  const key = normalizeModelKey(shown)
+  if (!key || key === 'auto' || settingsDefault === null) return null
+  const slotKey = normalizeModelKey(slotModel)
+  const isDefault = !!settingsDefault && normalizeModelKey(settingsDefault) === key
+  if (key !== normalizeModelKey(pinShown)) {
+    if (isDefault) return 'default'
+    return slotKey ? 'auto' : null
+  }
+  return !slotKey && !agentPinned && isDefault ? 'default' : null
+}

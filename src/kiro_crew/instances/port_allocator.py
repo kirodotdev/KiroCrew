@@ -137,17 +137,40 @@ class PortAllocator:
     def base_port(self) -> int:
         return self._base
 
-    def allocate(self, exclude: Iterable[int] | None = None) -> int:
-        """Return the first free loopback port >= base not in *exclude*.
+    def allocate(self, exclude: Iterable[int] | None = None, *, preferred: int = 0) -> int:
+        """Return a free loopback port not in *exclude*, preferring *preferred*.
 
         *exclude* is a set of ports the caller knows are taken (e.g. local_port
         values already assigned to other instances in the registry) — these are
         skipped even if a momentary probe would find them bindable, so two
         instances are never handed the same port between connect calls.
 
+        *preferred* (0 = none) is a port the caller would like to keep STABLE
+        across calls — the port this instance was last bound to. When it is a
+        valid port (>= base, <= ``_MAX_PORT``), not excluded, and a probe finds
+        it free, it is returned unchanged; otherwise allocation falls through to
+        the first-free search below, exactly as if no preference were given. The
+        preference is honoured, never enforced: a port another instance now holds
+        or that has been reassigned yields to first-free rather than failing.
+
+        Stability matters because the loopback port IS the browser origin of the
+        embedded pane's iframe (``http://<host>:<port>``), and origin-keyed
+        client state — ``localStorage`` UI preferences most of all — is lost when
+        that origin moves. A first-free-only allocator lets a crew land on a
+        different port after a gateway restart whenever another instance took the
+        lower port first, silently resetting those preferences.
+        A ``preferred`` below ``base`` is ignored rather than returned, so it can
+        never hand back a port outside the allocator's own range.
+
         Raises :class:`RuntimeError` if no free port is found up to ``65535``.
         """
         reserved = set(exclude or ())
+        if (
+            self._base <= preferred <= _MAX_PORT
+            and preferred not in reserved
+            and _is_port_free(preferred)
+        ):
+            return preferred
         for port in range(self._base, _MAX_PORT + 1):
             if port in reserved:
                 continue

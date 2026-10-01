@@ -1200,14 +1200,14 @@ class TeamsDispatcher:
         ``dm_scope = "unified"`` this queue also holds other people's messages, and on
         another transport too.
         """
-        reply = await stop_running_turn(
+        await stop_running_turn(
             self.sessions,
             resumed_key or self._session_key(self._identity(inbound)),
             queue=self._queue,
             surface=self._receipt_surface(inbound),
             owner=_entry_owner(inbound),
+            deliver=lambda text: self._reply(inbound, text),
         )
-        await self._reply(inbound, reply)
 
     # ── /yolo (this conversation's auto-approve grant) ─────────────────────
 

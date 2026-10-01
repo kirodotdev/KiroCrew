@@ -27,9 +27,12 @@ installed by the caller should just forward into ``stop_event.set()``.
 This module is the daemon's executable, its only import path and its one patch
 surface. The rules live in private owners under :mod:`kiro_crew.mcp_gateway.daemon`,
 one per responsibility (``docs/system-specs/modules/mcp-gateway-daemon-lifecycle.md``
-maps them), and every name an owner holds is re-exported below. What stays here is
-what repository guards read in this file by path or by source, and the state it
-writes: :func:`run_gatewayd` (bootstrap, task wiring and shutdown, with the
+maps them), and every name an owner defines is re-exported below as the owner's own
+object. Every public name ``gatewayd`` imported from the rest of the package before
+the owners moved out still resolves on it; an owner reads the ones marked ``not a
+seam`` from its own globals, so a patch of one here does not reach the owner. What
+stays here is what repository guards read in this file by path or by source, and the
+state it writes: :func:`run_gatewayd` (bootstrap, task wiring and shutdown, with the
 lifecycle identity it publishes and the shutdown drain's write accounting),
 :func:`_acquire_backend` (the spawn transaction), :func:`main` (the process's one
 ``asyncio.run``) and the ``_ensure_ssl_certs()`` call that must precede every
@@ -57,19 +60,29 @@ from pathlib import Path
 from typing import Any, Iterator, Optional
 
 import kiro_crew  # noqa: F401 - tests read the package root through gatewayd.kiro_crew
+from kiro_crew.code_fingerprint import code_fingerprint  # noqa: F401 - not a seam
 from kiro_crew.code_fingerprint import warm_code_fingerprint
 from kiro_crew.config.loader import (  # noqa: F401 - patched as gatewayd.KiroCrewConfig
     KiroCrewConfig,
 )
 from kiro_crew.config.loader import config_dir as _config_dir
 from kiro_crew.env import mcp_search_path, spec_path_key
+from kiro_crew.executors import configure_default_executor  # noqa: F401 - not a seam
+from kiro_crew.executors import subprocess_executor  # noqa: F401 - not a seam
 from kiro_crew.executors import maintenance_executor
 
 # A name imported from outside the daemon with ``noqa: F401`` is a patch seam: this
-# module does not call it, an owner reads it through ``daemon.facade``.
+# module does not call it, an owner reads it through ``daemon.facade``. One marked
+# ``not a seam`` only keeps a public import resolving here; an owner reads its own.
+from kiro_crew.mcp_caller import CallerContext  # noqa: F401 - not a seam
+from kiro_crew.mcp_caller import new_tenant_nonce  # noqa: F401 - not a seam
 from kiro_crew.mcp_caller import _parent_pid as _ppid_fn  # noqa: F401
+from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS  # noqa: F401 - not a seam
 from kiro_crew.mcp_gateway import socketsec  # noqa: F401
+from kiro_crew.mcp_gateway import tool_surface  # noqa: F401 - not a seam
 from kiro_crew.mcp_gateway import credwatch, hazards, launch_approval, transport
+from kiro_crew.mcp_gateway.admission import SpawnGateClosed  # noqa: F401 - not a seam
+from kiro_crew.mcp_gateway.admission import SpawnGateTimeout  # noqa: F401 - not a seam
 from kiro_crew.mcp_gateway.admission import (
     DEFAULT_CAPACITY,
     DEFAULT_CEILING,
@@ -83,11 +96,12 @@ from kiro_crew.mcp_gateway.admission import (
 )
 from kiro_crew.mcp_gateway.apps import sweep_spool as apps_sweep_spool
 from kiro_crew.mcp_gateway.backend import INTERNAL_STUB_PREFIXES  # noqa: F401
+from kiro_crew.mcp_gateway.backend import BackendGone  # noqa: F401 - not a seam
 from kiro_crew.mcp_gateway.backend import Backend, spawn_backend
 from kiro_crew.mcp_gateway.backend_tmp import sweep_all_backend_tmp  # noqa: F401
 from kiro_crew.mcp_gateway.breaker import CircuitBreaker
 
-# Every name an owner holds is bound here to the object the owner holds.
+# Every name an owner defines is bound here to the object the owner holds.
 from kiro_crew.mcp_gateway.daemon import _FACADE
 from kiro_crew.mcp_gateway.daemon.admission_protocol import (  # noqa: F401
     _CAPACITY_FAILURES,
@@ -251,15 +265,27 @@ from kiro_crew.mcp_gateway.daemon.wire import (  # noqa: F401
     _StubProbe,
     _write_json_line,
 )
+from kiro_crew.mcp_gateway.hashing import hash_command  # noqa: F401 - not a seam
+from kiro_crew.mcp_gateway.hashing import hash_effective_env  # noqa: F401 - not a seam
+from kiro_crew.mcp_gateway.hashing import non_secret_env  # noqa: F401 - not a seam
+from kiro_crew.mcp_gateway.host_budget import HostBudgetExhausted  # noqa: F401 - not a seam
 from kiro_crew.mcp_gateway.host_budget import (
     HostBudget,
     HostBudgetLimits,
     HostCharge,
     resolve_limits,
 )
+from kiro_crew.mcp_gateway.manager import is_credential_env_key  # noqa: F401 - not a seam
+from kiro_crew.mcp_gateway.pool import DRAIN_DEADLINE_SECS  # noqa: F401 - not a seam
+from kiro_crew.mcp_gateway.pool import BackendUnavailable  # noqa: F401 - not a seam
+from kiro_crew.mcp_gateway.pool import PoolAtCapacity  # noqa: F401 - not a seam
 from kiro_crew.mcp_gateway.pool import READ_BUFFER_LIMIT_BYTES, BackendPool, PoolKey
+from kiro_crew.mcp_gateway.prewarm import prewarm_from_payloads  # noqa: F401 - not a seam
 from kiro_crew.mcp_gateway.prewarm import HotKeyStore, default_hot_keys_path
 from kiro_crew.mcp_gateway.resolve_once import resolved_launch  # noqa: F401
+from kiro_crew.mcp_gateway.rewriter import env_sidecar_dir  # noqa: F401 - not a seam
+from kiro_crew.mcp_gateway.rewriter import env_sidecar_name  # noqa: F401 - not a seam
+from kiro_crew.mcp_gateway.rewriter import resolve_overlay_dir  # noqa: F401 - not a seam
 from kiro_crew.mcp_gateway.rewriter import (  # noqa: F401
     forward_declared_env_enabled,
     pool_identity_env_keys,
@@ -270,6 +296,7 @@ from kiro_crew.mcp_gateway.shutdown_budget import DRAIN_SECS, POOL_SHUTDOWN_SECS
 from kiro_crew.mcp_gateway.spill import cleanup_old_spill_files
 from kiro_crew.mcp_gateway.stub import fallback_counts as stub_fallback_counts  # noqa: F401
 from kiro_crew.metrics.provider import get_recorder  # noqa: F401
+from kiro_crew.peer_resolve import resolve_peer_identity  # noqa: F401 - not a seam
 from kiro_crew.platform_compat import _UTF8_PROCESS_ENV, IS_WINDOWS
 from kiro_crew.platform_compat import count_open_fds as _shared_count_open_fds  # noqa: F401
 from kiro_crew.platform_compat import get_process_start_id as _get_process_start_id  # noqa: F401

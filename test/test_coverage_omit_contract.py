@@ -53,11 +53,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = REPO_ROOT / ".github" / "workflows"
 SETUP_CFG = REPO_ROOT / "setup.cfg"
 
-#: Patterns that are legitimately omitted and are not test files at all. Both are pytest
-#: temporary-directory escapes: nothing real is ever measured from one, and a shard that
-#: recorded such a phantom path would otherwise trip ``coverage xml`` with "No source for
-#: code".
-_FIXTURE_ESCAPES = {"*/pytest-of-*/*", "*/kirocrew-wt-example/*"}
+#: Patterns that are legitimately omitted and are not test files at all. The first two are
+#: pytest temporary-directory escapes; ``.mount_*`` is the AppImage in-mount layout that
+#: ``test_agent_home_isolation.py`` fabricates under the system TMPDIR. Nothing real is
+#: ever measured from one, and a shard that recorded such a phantom path would otherwise
+#: trip ``coverage xml`` with "No source for code".
+_FIXTURE_ESCAPES = {"*/pytest-of-*/*", "*/kirocrew-wt-example/*", "*/.mount_*/*"}
 
 #: The predicate a test file must carry to earn an omit: the guard that makes its tests
 #: skip where the capability is absent. Matched as source text so the check needs no

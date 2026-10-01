@@ -47,6 +47,7 @@ from unittest.mock import AsyncMock
 
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
+from dashboard_owner_helpers import NoConfiguredOwner
 
 from kiro_crew import mcp_core
 from kiro_crew.apps.builtins.issue_radar.backend import (
@@ -155,6 +156,10 @@ def _request(
     if headers:
         kwargs["headers"] = headers
     req = make_mocked_request(method, full, **kwargs)  # type: ignore[arg-type]
+    if "state" not in req.app:
+        req.app["state"] = NoConfiguredOwner()
+    req["user"] = "local-app"
+    req["app"] = ""
     if internal_auth:
         req["internal_auth"] = True
     if body is None:

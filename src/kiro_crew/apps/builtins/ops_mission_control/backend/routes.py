@@ -118,19 +118,42 @@ from kiro_crew.apps.builtins.ops_mission_control.backend.http_routes.webhook imp
     _read_capped,
     _webhook_reject_status,
 )
-from kiro_crew.apps.builtins.ops_mission_control.backend.providers import (
+from kiro_crew.apps.builtins.ops_mission_control.backend.models import (  # noqa: F401 -- historical module export
+    CLAIMED_BY_OPERATOR,
+    DEFAULT_VERIFY_AFTER_SECS,
+    EXPIRING_ACTIONS,
+    MODE_ORDER,
+    STATE_FIRING,
+    STATE_OK,
+    STATE_SUPPRESSED,
+    STATUS_NEEDS_HUMAN,
+    VALID_ACTIONS,
+    VERIFIABLE_ACTIONS,
+    VERIFY_NOT_CHECKABLE,
+    VERIFY_PENDING,
+    LedgerEntry,
+    Signal,
+    UnknownFieldError,
+    resolve_silence_secs,
+    utc_now_iso,
+)
+from kiro_crew.apps.builtins.ops_mission_control.backend.providers import (  # noqa: F401 -- historical module export
     merge_provider_config,
+    provider_config,
+    set_top_level,
 )
 from kiro_crew.apps.builtins.ops_mission_control.backend.providers import (  # noqa: F401 -- historical module export
     webhook as webhook_mod,
 )
 from kiro_crew.apps.builtins.ops_mission_control.backend.registry import get_registry
-from kiro_crew.apps.builtins.ops_mission_control.backend.secrets import (
+from kiro_crew.apps.builtins.ops_mission_control.backend.secrets import (  # noqa: F401 -- historical module export
     delete_secret,
+    describe_secrets,
     put_secret,
     redact_tokens,
 )
 from kiro_crew.apps.manager import is_app_enabled
+from kiro_crew.cron import CronStoreUnreadable  # noqa: F401 -- historical module export
 from kiro_crew.platform.context import redact_via_context
 from kiro_crew.sel import sel
 
@@ -213,6 +236,11 @@ def _index_ledger_safely() -> dict[str, int]:
         from kiro_crew.vector_memory import VectorMemoryStore
 
         cfg = KiroCrewConfig.load()
+        # This helper is the automatic writer's service boundary. Keep the gate
+        # ahead of store construction: init creates or migrates memory.db, so a
+        # disabled persistence switch must leave no write-side effect behind.
+        if not cfg.memory.persistence_enabled:
+            return {"scanned": 0, "written": 0, "skipped": 0, "embedded": 0}
         store_obj = VectorMemoryStore(embedding_dim=cfg.memory.embedding_dim, config=cfg)
         store_obj.init()
         return ledger_index.import_pending(store_obj)

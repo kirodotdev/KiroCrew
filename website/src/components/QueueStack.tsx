@@ -3,6 +3,7 @@ import { AnimatePresence, motion, useMotionValue, useSpring } from 'framer-motio
 import { Hourglass, ChevronUp, X, Zap, Pencil, Check, Bot, Loader2, ArrowUp, ArrowDown, AppWindow } from 'lucide-react'
 import type { ChatMessage } from '../types'
 import { useImeGuard } from '../hooks/useImeGuard'
+import { Glass } from './Glass'
 
 import { i18nT } from '../i18n/t'
 import { parseRecoveryMessage } from '../pages/chat/RecoveryCard'
@@ -93,13 +94,15 @@ export function SubagentDeliveryProgress({ count }: { count: number }) {
       style={{ maxWidth: 'var(--mc-content-width, 900px)' }}
       data-testid="subagent-delivery-progress"
     >
-      <div className="mb-1 flex items-center gap-2 rounded-md bg-accent/5 border border-accent/15 px-3 py-1.5 text-[12px] font-mono text-muted">
+      {/* The dock's glass (components/Glass.tsx) on the accent tint step, like
+          the sub-agent bar this line stands in for once the wave has landed. */}
+      <Glass variant="chip" radius={8} className="mb-1 flex items-center gap-2 glass-accent px-3 py-1.5 text-[12px] font-mono text-muted">
         <Bot size={13} className="text-accent/70 shrink-0" />
         <Loader2 size={12} className="animate-spin text-accent/70 shrink-0" />
         <span>
           {i18nT('components.queueStack.sub_agent_result', { count: count })} {i18nT('components.queueStack.ready_processing_after_the_current_turn')}
         </span>
-      </div>
+      </Glass>
     </div>
   )
 }
@@ -112,7 +115,6 @@ const SCALE_STEP = 0.04
 const HIDDEN_EXTRA_SCALE = 0.02
 const OVERLAP = 11 // overlap to fuse with input area below
 
-const DEPTH_BRIGHTNESS = [1, 0.88, 0.76]
 const SPRING = { type: 'spring' as const, stiffness: 400, damping: 30 }
 
 /** Inline editor (textarea + save) swapped in for the message text while editing.
@@ -318,7 +320,6 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onReorder, f
             let scale: number
             let opacity: number
             let zIndex: number
-            let brightness: number
 
             if (expanded) {
               const pos = messages.length - 1 - i
@@ -326,27 +327,20 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onReorder, f
               scale = 1
               opacity = 1
               zIndex = pos + 1
-              brightness = 1
             } else if (i <= MAX_PEEK) {
               const depth = i
               y = (collapsedHeight - CARD_H) - depth * PEEK
               scale = 1 - (depth + 1) * SCALE_STEP
               opacity = 1
               zIndex = (MAX_PEEK + 1) - depth
-              brightness = DEPTH_BRIGHTNESS[depth] ?? DEPTH_BRIGHTNESS[MAX_PEEK]
             } else {
               y = (collapsedHeight - CARD_H) - MAX_PEEK * PEEK
               scale = 1 - (MAX_PEEK + 1) * SCALE_STEP - HIDDEN_EXTRA_SCALE
               opacity = 0
               zIndex = 0
-              brightness = DEPTH_BRIGHTNESS[MAX_PEEK]
             }
 
             const isFrontCollapsed = !expanded && i === 0
-            // Flat, borderless bottom (to seam into the input box) only when we're
-            // actually fusing into the surface below. When fuseBelow is off, keep the
-            // card fully rounded/bordered so it doesn't look cut off above the chips.
-            const fused = isFrontCollapsed && fuseBelow
             const queueId = m.meta?.queueId as string | undefined
             const isEditing = !!queueId && editingId === queueId
             const isPending = !!queueId && !!pendingIds?.has(queueId)
@@ -361,28 +355,38 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onReorder, f
             const displayText = queuedDisplayText(m)
 
             return (
+              // The motion box only places the card (peek offset, scale, layer);
+              // the card itself is the composer dock's glass on the warn tint
+              // step. Two things the old solid card animated are gone with it:
+              // the per-depth `brightness()` filter (a filter on the box would
+              // make it the backdrop root, and the glass inside would have
+              // nothing left to blur) and the square-bottomed "fused" corners
+              // (the primitive has one radius; the front card's bottom -OVERLAP
+              // now sits UNDER the composer's own glass, which is the seam).
               <motion.div
                 key={m.meta?.queueId as string ?? m.ts ?? `q-${i}-${m.content}`}
                 initial={false}
-                animate={{
-                  opacity, y, scale,
-                  filter: `brightness(${brightness})`,
-                  borderTopLeftRadius: 12,
-                  borderTopRightRadius: 12,
-                  borderBottomLeftRadius: fused ? 0 : 12,
-                  borderBottomRightRadius: fused ? 0 : 12,
-                  borderBottomWidth: fused ? 0 : 1,
-                }}
-                exit={{ y: y + 40, zIndex: 50, borderBottomWidth: 1, borderBottomLeftRadius: 12, borderBottomRightRadius: 12, transition: SPRING }}
+                animate={{ opacity, y, scale }}
+                exit={{ y: y + 40, zIndex: 50, transition: SPRING }}
                 transition={SPRING}
-                // Theme colors are raw var(--x) without <alpha-value>, so Tailwind
-                // alpha modifiers (bg-warn/15) silently generate no CSS. Use explicit
-                // color-mix instead — and mix the bg toward the opaque surface color
-                // (not transparent): cards overlap in the collapsed peek stack, so a
-                // translucent bg would let the cards behind bleed through. The
-                // kiro-dark .queue-card override in index.css still takes precedence.
-                className="queue-card absolute top-0 left-0 right-0 bg-[color-mix(in_srgb,var(--warn)_15%,var(--bg-elevated))] border border-[color-mix(in_srgb,var(--warn)_40%,transparent)] px-3 py-2 text-[13px] text-warn"
+                className="absolute top-0 left-0 right-0"
                 style={{ transformOrigin: 'bottom center', height: CARD_H, zIndex }}
+              >
+              {/* `glass-warn`, not a theme-specific color: the warn tint step is
+                  what every pending-decision pane in the dock wears, and the
+                  solid fallbacks in index.css mix the same hue into
+                  `--bg-elevated` where the glass cannot paint. Cards behind
+                  peek out above this one as more glass, as a stack of panes
+                  would. */}
+              {/* `data-testid="queue-card"` is the hook the capture harnesses
+                  (capture-queued-cancel-restore, capture-members-steer-only)
+                  wait on; it replaces the old `queue-card` class, which no
+                  longer has a style to carry. */}
+              <Glass
+                variant="chip"
+                radius={12}
+                data-testid="queue-card"
+                className="h-full glass-warn px-3 py-2 text-[13px] text-warn"
               >
                 <span className="flex items-center gap-1.5 h-full">
                   <span className="shrink-0 text-[10px] font-mono opacity-50 w-4 text-center">{i + 1}</span>
@@ -482,6 +486,7 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onReorder, f
                     </>
                   )}
                 </span>
+              </Glass>
               </motion.div>
             )
           })}

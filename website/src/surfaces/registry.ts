@@ -2,7 +2,7 @@
  * Surface registry — single source of truth for top-level navigation
  * destinations in the dashboard.
  *
- * The left rail contains a mix of static built-in nav items (Chat, Autopilot,
+ * The left rail contains a mix of static built-in nav items (Chat,
  * Notifications, Settings, ...) and dynamic app nav items (loaded from
  * installed apps). Both kinds register here through one shape: a `Surface`
  * describes a nav destination plus how its badge count is derived. `App.tsx`
@@ -12,8 +12,8 @@
  * entry and everything else (route, badge, slot routing) just works.
  *
  * Slot-bearing vs non-slot surfaces:
- * - **Slot-bearing** surfaces (`slotMode` set) — Chat (`''`), Autopilot
- *   (`'orchestrator'`), and any future modes — pull their badge count from
+ * - **Slot-bearing** surfaces (`slotMode` set) — Chat (`''`) and any future
+ *   modes — pull their badge count from
  *   `selectUnreadByMode(slotMode)`. These are also the surfaces ChatPage
  *   filters slots into.
  * - **Non-slot** surfaces (no `slotMode`) — Notifications and third-party
@@ -299,7 +299,7 @@ export function filterSlotsBySurface(slots: readonly ChatSlot[], slotMode: strin
  *
  * Used by `ChatPage` to scope the sidebar's "show only unread" toggle: its
  * tooltip count and auto-drain effect read this list, so without scoping a
- * cross-mode unread (e.g. an autopilot slot becoming unread while you're on
+ * cross-mode unread (e.g. a dashboard slot becoming unread while you're on
  * /chat) would inflate the toggle's count even though the sidebar's visible
  * session list — built from `filterSlotsBySurface` — wouldn't show it.
  *

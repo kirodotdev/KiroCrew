@@ -65,10 +65,12 @@ OWNED_KIRO_AGENT_FILES = (
 #   * ``kirocrew.json``      — the agent behind user-facing chat.
 #   * ``kirocrew-lite.json`` — the cheap background agent (auto-titles,
 #     compaction, heartbeat), reached via ``SessionManager.get_bg_session``.
-# The remaining OWNED_KIRO_AGENT_FILES entries are deliberately excluded: their
-# installers in ``agent.py`` already degrade to ``logger.debug`` on failure
-# because each one only disables its own feature (goal conducting, Knowledge
-# extraction, Research Lab, unattended heartbeat polling).
+# The remaining OWNED_KIRO_AGENT_FILES entries are deliberately excluded because
+# each one only disables its own feature (guest replies, goal conducting,
+# Knowledge extraction, Research Lab, unattended heartbeat polling). Their
+# installer calls in ``agent.py`` degrade to ``logger.debug`` on failure, except
+# ``kirocrew-guest.json``, which ``_install_aim_capabilities`` writes unguarded
+# after the lite fallback.
 REQUIRED_KIRO_AGENT_FILES = (
     AGENT_FILENAME,
     LITE_AGENT_FILENAME,

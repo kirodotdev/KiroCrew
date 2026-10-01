@@ -149,3 +149,29 @@ export type SessionActions = {
   writtenAtEpoch?: number
 }
 export const SessionActionCtx = createContext<SessionActions>({})
+
+/**
+ * Where a SIDEBAR-folder chip sends its activation, plus the folder list that
+ * decides whether a chip is offered at all.
+ *
+ * The sidebar's folder tree, not a filesystem directory: `PathActions.onFolderOpen`
+ * browses a directory on disk, this reveals a row in the chat sidebar. An agent
+ * that files a team into `goal/worker` names that folder in prose by its human
+ * path -- the same `/`-joined spelling `chat_folder_tree` and `session_create`
+ * take, or the ` › ` breadcrumb the header shows -- and the chip turns the name
+ * into the click the sidebar's own rows already answer.
+ *
+ * Same absent-vs-empty rule as `SessionActions.sessions`: `folders` ABSENT means
+ * the host does not know the tree (most MarkdownRenderer call sites), so no chip;
+ * an empty list is a host that knows there are none. Provided ONCE by the page,
+ * not threaded through MarkdownRenderer props: the folder tree is page state,
+ * and every renderer under the chat page -- message bodies, subagent and workflow
+ * cards, system notices -- should offer the same chip without each re-plumbing it.
+ */
+export type SidebarFolderActions = {
+  /** Reveal the folder in the sidebar: expand its ancestors, scroll to it, flash it. */
+  onFolderReveal?: (folderId: string) => void
+  /** The sidebar's folder rows, from the shared `['chat-folders']` query. */
+  folders?: readonly { id: string; name: string; parent_id?: string }[]
+}
+export const SidebarFolderCtx = createContext<SidebarFolderActions>({})

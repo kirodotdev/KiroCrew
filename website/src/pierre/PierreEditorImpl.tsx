@@ -126,12 +126,27 @@ export const PierreEditorImpl = forwardRef<PierreEditorHandle, {
   const fallbackSelectionRef = useRef<{ start: number; end: number; direction: 'forward' | 'backward' | 'none' } | null>(null)
   const propContentsRef = useRef(file.contents)
   const latestContentsRef = useRef(file.contents)
+  const seedContentsRef = useRef(file.contents)
+  const seedKeyRef = useRef(contentCacheKey(file.name, file.contents))
+  const reseedCountRef = useRef(0)
   const remountDraftRef = useRef<string | null>(null)
   const previousPierreActiveRef = useRef(pierreActive)
   const [fallbackDraft, setFallbackDraft] = useState(file.contents)
   const propChanged = propContentsRef.current !== file.contents
-  if (propChanged) {
-    propContentsRef.current = file.contents
+  if (propChanged) propContentsRef.current = file.contents
+  // A prop equal to the buffer this editor last emitted is the caller echoing
+  // its own edit, and leaves the session alone; only a change from outside
+  // (a disk read, Cancel, Refresh) reseeds it.
+  if (propChanged && file.contents !== latestContentsRef.current) {
+    seedContentsRef.current = file.contents
+    // Cancel can put back exactly the text Pierre is showing (the seed, or a
+    // recovery remount's draft); the key must still move so Pierre drops the
+    // edited document and shows the restored one.
+    const nextKey = contentCacheKey(file.name, file.contents)
+    const renderedKey = remountDraftRef.current === null
+      ? seedKeyRef.current
+      : contentCacheKey(file.name, remountDraftRef.current)
+    seedKeyRef.current = nextKey === renderedKey ? `${nextKey}#${++reseedCountRef.current}` : nextKey
     latestContentsRef.current = file.contents
     remountDraftRef.current = null
     if (fallbackDraft !== file.contents) setFallbackDraft(file.contents)
@@ -162,19 +177,28 @@ export const PierreEditorImpl = forwardRef<PierreEditorHandle, {
   // that changed on every keystroke would clear Pierre's dirty render cache
   // mid-edit. Later edits live in `latestContentsRef`, which the next
   // recovery snapshot reads, so nothing typed after a remount is lost.
-  const editorContents = remountDraftRef.current ?? file.contents
-  // The seam owns Pierre's cacheKey contract so no caller has to. Pierre's
-  // `isLineCacheForFile` trusts `cacheKey` alone and never re-reads contents, so
-  // a caller that hands a stable session key (to hold the caret across keystrokes)
-  // would leave a grown buffer reusing a stale N-row highlight array — Return then
-  // indexes past it and throws "Line doesnt exist". Deriving the key from the live
-  // contents here fixes that for every caller at once (CodeEditor, PapyrusEditor,
-  // and any future one). It also does NOT churn the remount: contentCacheKey is
-  // per-contents but the mounted editor generation keys off options identity, not
-  // this cacheKey, so the dirty render cache and caret survive typing.
+  const remountDraft = remountDraftRef.current
+  const editorContents = remountDraft ?? seedContentsRef.current
+  const editorKey = remountDraft === null ? seedKeyRef.current : contentCacheKey(file.name, remountDraft)
+  // The seam owns Pierre's `file` contract so no caller has to. While an edit
+  // session is live, Pierre's own document owns the text, so the `file` handed to
+  // it must not move with the caller's echo of each keystroke:
+  //  - a new `cacheKey` makes the editor rebuild its document and reset its
+  //    selections, so every keystroke drops focus and puts the caret at line 1;
+  //  - new `contents` under an unchanged key re-render against a stale line cache
+  //    (`isLineCacheForFile` trusts the key alone), and Return throws "Line
+  //    doesnt exist".
+  // So the file is the session seed: it changes, with a content-derived key, only
+  // on an external source change or a worker-recovery remount.
   const editorFile = useMemo<FileContents>(
-    () => ({ ...file, contents: editorContents, cacheKey: contentCacheKey(file.name, editorContents) }),
-    [file, editorContents],
+    () => ({
+      name: file.name,
+      contents: editorContents,
+      ...(file.lang === undefined ? {} : { lang: file.lang }),
+      ...(file.header === undefined ? {} : { header: file.header }),
+      cacheKey: editorKey,
+    }),
+    [file.name, file.lang, file.header, editorContents, editorKey],
   )
   const baseFile = useMemo<FileContents | null>(
     () => (diffBase == null

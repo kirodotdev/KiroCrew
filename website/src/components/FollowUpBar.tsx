@@ -35,9 +35,8 @@ interface FollowUpBarProps {
    * (`FOLLOWUP_CHIP_DEBOUNCE_MS`) and the row can advance inside that window:
    * a byte-identical replacement footer re-renders the same chips WITHOUT
    * remounting them, so the pending timer survives and fires against a row the
-   * user never saw. A caller that acts on the click (e.g. the orchestrator
-   * plan dispatch) compares the snapshot with its current key and refuses the
-   * mismatch — see `usePlanActionMutation`.
+   * user never saw. A caller that acts on the click compares the snapshot
+   * with its current key and refuses the mismatch.
    */
   sourceKey?: string | null
   /**

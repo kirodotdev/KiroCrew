@@ -361,9 +361,10 @@ export async function registryQueryFn(): Promise<{
   editorialSections: EditorialBlock[]
 }> {
     const res = await api.listRegistry()
-    // Normalize at the single fetch boundary: registry.py yields minimal
-    // rows when an app.json fetch fails, and external registries are
-    // user-supplied JSON, so display fields may be missing or mistyped.
+    // Normalize at the single fetch boundary: registry_pipeline/manifests.py
+    // yields minimal rows when an app.json fetch fails, and external
+    // registries are user-supplied JSON, so display fields may be missing or
+    // mistyped.
     //
     // `categoryOrder` is published presentation, so it gets the same
     // treatment: a non-array, or a member that is not a string, collapses to

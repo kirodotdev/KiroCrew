@@ -121,8 +121,23 @@ class TestFormatRuntimeRpcError:
 
         assert f"'{agent}.json'" in text  # names the file that is missing
         assert str(tmp_path) in text  # names where it was looked for
-        assert "kirocrew setup --agent-only --clean" in text  # names the repair
+        assert "kirocrew setup --agent-only`" in text  # names the repair
+        assert "--clean" not in text  # which would drop the operator's own config
         assert "-32603" not in text and "Mode" not in text  # no raw protocol noise
+
+    def test_skill_view_alias_does_not_send_the_user_to_setup(self, tmp_path):
+        # A skill-view alias is generated, so setup cannot restore it, and kiro-cli
+        # answers "not found" for one that is on disk but unloaded.
+        name = "kirocrew-skill-view-" + "0123456789abcdef01234567"
+        err = {"code": -32603, "message": "Internal error", "data": f"Mode '{name}' not found"}
+        with patch("kiro_crew.acp.runtime.kiro_agents_dir", return_value=tmp_path):
+            text = _format_runtime_rpc_error(err)
+
+        assert name in text
+        assert "setup" not in text and "not installed" not in text and "found no" not in text
+        assert "KIROCREW_NATIVE_SKILL_PROJECTION=0" in text  # names the mitigation
+        assert "new session" in text  # names the retry
+        assert "-32603" not in text
 
     def test_unknown_shape_keeps_the_raw_dict(self):
         # Never swallow an unrecognized error: the raw dict is the only record of

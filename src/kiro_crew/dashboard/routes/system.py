@@ -48,6 +48,12 @@ def register(app: web.Application) -> None:
     app.router.add_post("/api/update", handlers.api_update_apply)
     app.router.add_post("/api/update/auto", handlers.api_update_auto)
     app.router.add_post("/api/update/channel", handlers.api_update_channel)
+    # A terminal `kirocrew update` on a git checkout pokes this so the running
+    # gateway drops its stale update verdict and re-checks now, instead of the
+    # About badge waiting up to 12h for the next poll. Self-authenticates over
+    # loopback + the local secret (the token-auth middleware lets the POST
+    # through via its method-scoped bypass), like /api/logout.
+    app.router.add_post("/api/update/revalidate", handlers.api_update_revalidate)
     app.router.add_post("/api/update/cancel", handlers.api_update_cancel)
     # In-app wheel update step-up (RFC OQ7): the SPA arms, only the host
     # approves. Arm/status are ordinary authenticated routes; approve
@@ -165,6 +171,10 @@ def register(app: web.Application) -> None:
     # authorization the agent must not be able to grant itself.
     app.router.add_get("/api/decisions/consent", handlers.api_decisions_consent_get)
     app.router.add_put("/api/decisions/consent", handlers.api_decisions_consent_put)
+    # Which System One server the seam asks: hosted Jev or a local preset. Owner-gated
+    # in the handler and the only dashboard writer of `decisions.provider.*`.
+    app.router.add_get("/api/decisions/provider", handlers.api_decisions_provider_get)
+    app.router.add_put("/api/decisions/provider", handlers.api_decisions_provider_put)
     # The decision strip's own pair, owner-gated in the same handler module: a
     # verdict on one turn (a WRITE of the decision log) and the folded report the
     # strip's tooltip reads. Browser-called by the chat surface, like the consent

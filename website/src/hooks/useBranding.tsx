@@ -13,14 +13,15 @@ export function BrandingProvider({ children }: { children: ReactNode }) {
   // (api/queryClient.ts retryPolicy = failureCount < 1), and with
   // staleTime: Infinity nothing refetches later — so a couple of transient
   // startup failures would strand directLocal false until a page reload. We
-  // therefore pin retry: 3 on this query itself, so local file actions reappear
-  // once a retry succeeds (the old one-shot useEffect .catch(() => {}) stayed
-  // false forever).
+  // therefore pin retry: 3 on this query itself, and keep polling while there
+  // is still no data, so a gateway that was down at load recovers the real
+  // branding without a reload. Once data lands the interval switches off.
   const { data } = useQuery({
     queryKey: ['branding'],
     queryFn: () => api.branding(),
     retry: 3,
     staleTime: Infinity,
+    refetchInterval: q => (q.state.data ? false : 30_000),
   })
   const b: Branding = data
     ? { botName: data.bot_name || defaults.botName, avatar: data.avatar || defaults.avatar, directLocal: !!data.direct_local }

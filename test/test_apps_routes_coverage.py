@@ -30,6 +30,7 @@ from aiohttp import web
 from aiohttp.client_exceptions import ClientConnectionResetError
 from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
 from dashboard_owner_helpers import as_owner
+from test_update_provider import _UNALLOCATABLE_PID
 
 import kiro_crew.apps.routes as routes_mod
 from conftest import requires_symlinks
@@ -2374,7 +2375,7 @@ class TestOpenApp:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _setup_env(tmp_path, monkeypatch)
-        async with TestClient(TestServer(_make_app())) as client:
+        async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
             resp = await client.post("/api/apps/ghost/open")
             assert resp.status == 404
 
@@ -2384,7 +2385,7 @@ class TestOpenApp:
     ) -> None:
         _setup_env(tmp_path, monkeypatch)
         _install(tmp_path, openCommand="true")
-        async with TestClient(TestServer(_make_app())) as client:
+        async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
             resp = await client.post(f"/api/apps/{APP}/open")
             assert resp.status == 409
             assert (await resp.json())["code"] == "app_disabled"
@@ -2396,7 +2397,7 @@ class TestOpenApp:
         _setup_env(tmp_path, monkeypatch)
         _install(tmp_path)
         enable_app(APP)
-        async with TestClient(TestServer(_make_app())) as client:
+        async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
             resp = await client.post(f"/api/apps/{APP}/open")
             assert resp.status == 400
             assert "openCommand" in (await resp.json())["error"]
@@ -2413,7 +2414,7 @@ class TestOpenApp:
             "app_execution_denied",
             lambda name, **kwargs: "third-party app execution is not admitted",
         )
-        async with TestClient(TestServer(_make_app())) as client:
+        async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
             resp = await client.post(f"/api/apps/{APP}/open")
             assert resp.status == 403
             body = await resp.json()
@@ -2433,7 +2434,7 @@ class TestOpenApp:
         monkeypatch.setattr(platform_mod, "system", lambda: "Linux")
         monkeypatch.delenv("DISPLAY", raising=False)
         monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
-        async with TestClient(TestServer(_make_app())) as client:
+        async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
             resp = await client.post(f"/api/apps/{APP}/open")
             assert resp.status == 200
             body = await resp.json()
@@ -2463,7 +2464,7 @@ class TestOpenApp:
         monkeypatch.setattr(routes_mod, "wrap_argv", _wrap)
         monkeypatch.setattr(routes_mod, "cgroup_scope_argv", lambda argv: argv)
         monkeypatch.setattr(routes_mod, "create_subprocess_limited", _spawn)
-        async with TestClient(TestServer(_make_app())) as client:
+        async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
             resp = await client.post(f"/api/apps/{APP}/open")
             assert resp.status == 200
             body = await resp.json()
@@ -2490,10 +2491,48 @@ class TestOpenApp:
             raise OSError("no such executable")
 
         monkeypatch.setattr(routes_mod, "create_subprocess_limited", _boom)
-        async with TestClient(TestServer(_make_app())) as client:
+        async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
             resp = await client.post(f"/api/apps/{APP}/open")
             assert resp.status == 500
             assert "failed to launch" in (await resp.json())["error"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("app_identity", "dashboard_user"),
+        [(None, "channel-user"), (APP, "owner")],
+        ids=["non_owner_dashboard_subject", "app_token"],
+    )
+    async def test_non_owner_cannot_open(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        app_identity: str | None,
+        dashboard_user: str,
+    ) -> None:
+        # Opening spawns the manifest's openCommand on the host, so it is an
+        # owner action like enable and disable.
+        _setup_env(tmp_path, monkeypatch)
+        _install(tmp_path, openCommand="open-my-app")
+        enable_app(APP)
+        monkeypatch.setattr(routes_mod, "app_execution_denied", lambda n, **k: None)
+        monkeypatch.setattr(platform_mod, "system", lambda: "Darwin")
+        monkeypatch.setattr(
+            routes_mod, "wrap_argv", lambda argv, mode="standard": (argv, None)
+        )
+        monkeypatch.setattr(routes_mod, "cgroup_scope_argv", lambda argv: argv)
+        spawned: list[tuple[str, ...]] = []
+
+        async def _spawn(*argv: str, **kwargs: Any) -> Any:
+            spawned.append(argv)
+            return SimpleNamespace(pid=_UNALLOCATABLE_PID)
+
+        monkeypatch.setattr(routes_mod, "create_subprocess_limited", _spawn)
+        app = _make_app(app_identity=app_identity, dashboard_user=dashboard_user)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(f"/api/apps/{APP}/open")
+            assert resp.status == 403
+            assert (await resp.json())["code"] == "owner_only"
+        assert spawned == []
 
 
 # ---------------------------------------------------------------------------

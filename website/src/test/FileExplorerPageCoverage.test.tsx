@@ -380,10 +380,9 @@ describe('FileExplorerPage reveal', () => {
   })
 
   it('does not alert locally when the mocked backend resolves with a copy fallback', async () => {
-    // The copy-fallback confirmation is centralized in api.revealPath itself
-    // (client.ts), right next to its copyToClipboard call, so this call site
-    // must not also alert — that would double-notify once the real client
-    // resolves.
+    // The copy fallback is centralized in revealOrOpen (FilePathMenu.tsx),
+    // which calls api.revealPath and then copyToClipboard itself without an
+    // alert, so this call site must not add one once the real client resolves.
     const reveal = spyReveal({ ok: true, copy: '/home/user/notes.txt' })
     const alerted = captureAlert()
     renderPage()

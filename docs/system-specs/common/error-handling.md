@@ -2,9 +2,9 @@
 
 ## Principles
 
-1. Custom exceptions in `acp/client.py` for ACP protocol/prompt errors, in
-   `acp/session_handle.py` for runtime/transport errors, and in `acp/runtime.py`
-   for runtime binding and session-start errors
+1. Custom exceptions in `acp/transport_errors.py` (re-exported by `acp/client.py`)
+   for ACP protocol/prompt errors, in `acp/session_handle.py` for runtime/transport
+   errors, and in `acp/runtime.py` for runtime binding and session-start errors
 2. Error strings at CLI boundaries (never expose tracebacks to users)
 3. Graceful degradation — partial output returned on timeout
 
@@ -14,7 +14,7 @@ Two independent families. `AcpError` covers protocol and prompt-level failures;
 `AcpRuntimeError` covers the process and request transport underneath it.
 
 ```
-AcpError (base, acp/client.py)          — carries `transient`, the retry verdict
+AcpError (base, acp/transport_errors.py) — carries `transient`, the retry verdict
 ├── AcpTimeoutError        — prompt timed out, has partial_output
 ├── AcpPermissionNeeded    — tool approval required
 ├── AcpProcessDied         — kiro-cli exited unexpectedly
@@ -68,6 +68,7 @@ instead of the row simply disappearing.
 | ACP → CLI | Catch `AcpError`, print user-friendly message, `sys.exit(1)` |
 | JSON-RPC read | Non-JSON lines silently skipped (kiro-cli debug output) |
 | Config load | Invalid JSON → log warning, return defaults |
+| Skill index (`list_skills`) | One global SKILL.md that is not UTF-8 or cannot be opened → one warning naming the file, that row dropped, every other row listed. Never a failed listing: the index feeds every chat turn and `GET /api/skills`. Rationale: [memory-skills-hooks](../modules/memory-skills-hooks.md) |
 | Process spawn | Backend-specific executable resolver, including trusted-path checks where required; clear error if missing |
 | asyncio loop callback | A Windows Proactor reset repeated by its `connection_lost` close callback is warning-only; task-level connection resets and other exceptions remain ERRORs with crash breadcrumbs |
 
@@ -83,8 +84,9 @@ that could replace the code.
 
 ## Backend Error Classification
 
-`acp/client.py` rewrites raw JSON-RPC backend errors into actionable user text
-(`_format_acp_error`) and decides retry-eligibility (`_is_transient_raw_error`).
+`acp/transport_errors.py` (re-exported by `acp/client.py`) rewrites raw JSON-RPC
+backend errors into actionable user text (`_format_acp_error`) and decides
+retry-eligibility (`_is_transient_raw_error`).
 Both key off the SAME module-level `_RE_*` patterns so wording and retry verdict
 never drift. Notable terminal (non-retryable) classes:
 
@@ -123,6 +125,25 @@ never drift. Notable terminal (non-retryable) classes:
   (refunding the shared one-shot) when either counter moved, when user input
   queued behind it, or when the slot was rebound to another session — the same
   guard the model-access and refusal replays carry.
+- **Oversized request**: kiro-cli's own refusal, `This message is too large to
+  send, and it contains no text that can be shortened. Remove or reduce the
+  attached content and try again.` It is emitted when the context overflowed
+  and the pending message is irreducible (image blocks have no truncated form),
+  and kiro-cli neither compacts on the way to saying so nor appends the failed
+  message to the native history, so the conversation is byte-identical before
+  and after the failure and the identical payload is refused identically on
+  every retry. Classified TERMINAL and tagged `structural_terminal` like the
+  two rejections above — a size verdict rather than a shape verdict, but
+  equally deterministic, and the tag is what stops a self-prompting loop from
+  re-sending the same attachment every cycle. Matched against the provider
+  `data` field only, where kiro-cli's ACP server places an agent-loop error
+  (`message` is the `-32603` boilerplate). The terminal verdict is stated
+  explicitly in the classifier because the sentence ends in "try again", which
+  a retry-hint pattern must not read as a momentary blip. No curated copy: the
+  provider's sentence already names the remedy, so the unknown-shape path shows
+  it verbatim, and it does not carry `image_format_unsupported` — the
+  conversation-discard recovery above is for a rejected image, not for a
+  request that is merely too big.
 - **Usage limit** and **model not entitled**: allowance spent, or the plan lacks
   the model; also terminal, with guidance to switch model or tier.
 

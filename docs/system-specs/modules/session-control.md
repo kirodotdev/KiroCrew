@@ -21,12 +21,15 @@ unreachable in production because the caller's `X-Internal-Secret` is ignored.
 | `session_create` | `POST /api/session-control/create` | Open a new, empty session in the caller's workspace, optionally filed into a sidebar folder at creation |
 | `session_fork` | `POST /api/session-control/fork` | Open a new session that CARRIES a copy of a source session's transcript — the caller's own by default — the way the dashboard's Fork button does; optionally titled, filed, and cut at a fork point |
 | `session_stop` | `POST /api/session-control/stop` | Stop another session's in-flight turn |
+| `session_end_wait` | `POST /api/session-control/end-wait` | Wake a session the caller CREATED from the `wait` tool early, keeping its turn; any other target is refused `not_creator`, for every caller class |
 | `session_set_model` | `POST /api/session-control/set-model` | Record a pending model pick on an idle session; `apply_pending_model_pick` commits it at the start of the target's next turn after re-running `authorize_target` in the same synchronous step. A busy target is refused with `target_busy` and keeps its model |
 | `session_close` | `POST /api/session-control/close` | Close (archive) another session, as the tab ✕ does — heavier than stop, and recoverable rather than a delete |
+| `session_revive` | `POST /api/session-control/revive` | Bring an archived session back into the live sidebar, as clicking it in the History tab does — the mirror of close, optionally filing it into a folder |
 | `session_send` | `POST /api/session-control/send` | Deliver a message that another session runs as its next turn, or cut it into the turn already running (`steer`) |
 | `session_broadcast` | `POST /api/session-control/broadcast` | Deliver ONE message to several sessions — by default every session the caller created — in a required `queue` or `steer` mode, reporting the outcome per target |
 | `session_status` | `GET /api/session-control/status` | List the sessions the caller stood up and what each is doing, with the roster taken from the crew log's session tree so a session that is gone still appears |
 | `session_read_message` | `GET /api/session-control/read` | Read another session's transcript tail + liveness |
+| `session_summary` | `GET /api/session-control/summary` | Read another session's cached intent summary + liveness, authorized as `session_read_message` is; never generates one |
 
 **Two verbs here write into another session's conversation: `session_send` and
 `session_broadcast`.** Reading returns a transcript tail, stopping cancels a turn
@@ -194,7 +197,13 @@ WRITE TARGET, so a stamp carried back off the metadata line would append the
 entry's own text to a session the editor does not own, with nothing that retracts
 it. A delivery that outlives a restart and is then dropped reports to nobody while
 the delivery itself still survives, which is the price of the stamp living in
-`meta`.
+`meta`. The channel counterpart, `CHANNEL_RECIPIENT_META_KEY`
+(`channel_recipient_meta` / `channel_recipient_of` / `notify_channel_recipient_dropped`,
+stamped by `dashboard/channel_handoff.py` for a message a channel conversation
+queued into a resumed dashboard session), is stripped for the same reason with a
+wider blast radius — it names a conversation on a network surface — and its notice
+re-runs the outbound recipient check with the principal the channel authorized on
+inbound before anything is sent (see [messaging](messaging.md#a-busy-resumed-dashboard-session-takes-the-slots-own-machinery-discord)).
 
 **`steer: true` asks for a third outcome on a busy target.** Instead of waiting
 for the running turn, the message cuts into it (`steer_into_running_turn`, the
@@ -249,7 +258,16 @@ window and replaces it with a narrower one: the steer RPC suspends on
   bound between then and the reply, and the reply is what reaches the channel. So the
   sender records and, on what it can see, stops the turn; whether the reply may be
   published is the publisher's question, answered in the same synchronous moment it
-  publishes.
+  publishes. A channel conversation resumed into the session records the same fence
+  for a mid-turn steer of its own (`dashboard/channel_handoff.py`), without the stop —
+  a human's own message clears no containment gate for a stop to narrow — so the
+  publisher's question has one answer whoever cut into the turn. Its records are
+  keyed by audience and capped at `MAX_PENDING_STEERS` (one per distinct
+  containment snapshot per turn, never one per message; at the cap no fence is
+  evicted and the message takes the slot's queue instead, refused only when that
+  queue is itself full), where a peer delivery's
+  are one random token each, popped by the sender on every outcome but a landed
+  steer and a cancellation.
 
   Two consequences worth stating. An ordinary steer costs the channel audience
   nothing: the comparison is exact rather than precautionary, so a turn nobody
@@ -321,6 +339,33 @@ loses nothing — existence is confirmed read-only under the folder-store lock
 (`read_folders`) before the allocation, and the move path's Model-B un-hide runs
 only after the filing has landed, so a refused create leaves no folder-tree
 mutation behind.
+
+The path walk itself never leaves an empty or duplicate folder behind. When the
+`folder` path still has segments to create, `session_create` first posts the
+same create with `dry_run: true` against the deepest folder that already
+exists. `create_session(dry_run=True)` runs every gate up to the allocation,
+including both slot ceilings, and returns `{"dry_run": true}` without minting a
+slot or spending a rate-limit token. A refusal there is returned before any
+segment exists. The folder endpoint refuses an agent caller (the internal
+transport) a sibling whose trimmed, case-folded name is already taken under the
+same parent, tested under the folder-store lock (`folder_name_exists`, 409).
+When the one colliding sibling belongs to the caller's own principal, the
+endpoint returns it instead (200, `"reused": true` on the response only), so a
+lost race resolves to the winner's folder in the same request. A twin owned by
+anyone else is refused; the walk re-reads the tree once and then refuses rather
+than forking a same-name twin. The browser keeps a person's freedom to name two
+folders alike.
+
+An app or crew-member agent may nest a new folder directly under the folder its
+OWN calling session is filed in (`chat_folders.caller_home_slot`), even when the
+person owns that folder, so a conductor the person filed in `Ops` puts its
+workers in `Ops/<agent>`. The slot must be the caller's: an app's `_app` must
+match, and a member's principal must be the one the chat gate stamped from this
+request's verified key. The slot's `folder_id` is read under the folder-store
+lock. The new folder is owned by the agent. Nowhere else in the person's tree
+opens, and renaming, moving or deleting the person's folders stays refused. A
+member's folder list adds that home folder and its ancestors, the path its own
+`[FOLDER]` line already shows, so the walk resolves `Ops` instead of missing it.
 
 `session_create` also takes an optional `model` — the model the child starts
 on, pinned as the person's own pick in the model dropdown would be (same
@@ -550,8 +595,8 @@ ownership fence both read):
   store is that member's private V2 store — the store a DM slot would be bound
   to. A member agent (e.g. `kirocrew-conductor`) also runs in an ordinary chat
   slot bound to its V2 store, and its whole operating model (`session_create` /
-  `session_send` / `session_read_message` / `session_stop` / `session_close`)
-  runs from there, so refusing it in a chat slot would leave the member
+  `session_send` / `session_read_message` / `session_stop` / `session_close` /
+  `session_revive`) runs from there, so refusing it in a chat slot would leave the member
   chat-only in the surface it exists to drive. The identity here is the STORE,
   not the key: a store counts iff its config record carries a non-empty
   `owner_member` AND `memory_version == 2` AND that owner is still an active
@@ -589,6 +634,8 @@ Two rules give a member caller its shape:
   unchanged.
 
 Ordinary (non-member) callers are untouched: they still require the switch.
+The one exception is `session_end_wait`, whose own creator fence (below, "Ending
+a wait early") binds every caller class, owner sessions included.
 
 #### The strict-internal surface admits a member DM slot, not every scoped caller
 
@@ -628,13 +675,17 @@ member identity and takes the template's selection namespace — `selection_kind
 template as `template_id` — through `ExecutionContext.with_template`, the same
 rewrite the subagent admission gate makes for `spawn_run(agent=…)`. The record
 therefore says whose memory the child runs on and, separately, what was picked to
-run it: a member's child that selected a template is that member's delegate, and
-`ContextBuilder` reads the namespace to withhold the member operating protocol from
-it (see [memory-skills-hooks](memory-skills-hooks.md)). A caller whose member has
-no persisted `member_id` is the one exception: its member is named by the selection
-alone, so the arm keeps that selection and changes only the template with its own
-`replace` — `with_template` would leave the child attributed to no member, which is
-the shape the spawn gate mints for that caller. The child's
+run it: a member's child that selected a template is that member's delegate. The
+member operating protocol and briefing are withheld from every child regardless,
+because no created worker is the member's DM thread — `ContextBuilder` delivers
+that desk only where the caller's `member=` argument names it, and the template
+namespace is the second, independent reason
+(see [memory-skills-hooks](memory-skills-hooks.md)). A caller whose member has
+no persisted `member_id` keeps its identity and rules through a different record
+shape: its member is named by the selection alone, so the arm keeps that selection
+and changes only the template with its own `replace` — `with_template` would leave
+the child attributed to no member, which is the shape the spawn gate mints for that
+caller. The child's
 execution record is published before slot metadata, broadcast or provider startup.
 Publication failure retracts an idle empty child and reports the actual failure.
 
@@ -680,19 +731,16 @@ A private member store is reachable on two authorities and no others:
   This keeps the shipped capability: an owner reopening member conversations and
   dispatching member workers.
 
-The vouched half is held in this process only, so a restart drops it while the durable
-records survive, and the own-store admission is refused until the owner re-selects the
-agent — which binds afresh through the durable path and vouches again. That deferral is
-deliberate rather than an oversight: nothing reachable on the rehydrate path can
-re-establish the authority safely, because every candidate resolves through something the
-session itself can influence. The record is written by the session; `slot.memory_store` is
-rehydrated from that record; the execution the selection path carries is built from it on
-the provider-switch path; and a config lookup there is keyed by that record's own
-`member_id`, so re-reading config agrees with a forged record by construction instead of
-checking it. Refusing is the fail-closed direction, an owner's own dispatch is unaffected,
-and the refusal is pinned by a regression test alongside the re-bind that clears it. The
-authenticated identity that would let a rehydrated session self-heal without an owner
-action is tracked separately as #12528.
+The vouched half is held in this process, and the gateway also writes a copy of each
+vouch to `vouched-executions/` at the data-home root. Every sandbox masks that leaf and
+agent file tools refuse it, so only the gateway writes it; it is NOT under `trust/`,
+which sandboxes keep writable for the audit log. The copy is removed wherever a vouch is
+withdrawn on purpose (a privacy tightening, a selection rollback, an explicit clear) and
+when the transcript is deleted, but not on cap eviction or restart. After a restart, the
+next gate-verified admission re-vouches a member DM key whose slug the durable record
+agrees with, or any other key whose disk copy, durable record, privacy mode and the
+member's configured store all agree. A session that rewrites its record to name a peer's
+store matches neither source and stays refused.
 
 For an operator, the recovery is one owner action and nothing at restart time: a member
 session whose worker dispatch answers `memory_delegation_denied` after a gateway restart
@@ -1326,6 +1374,32 @@ backwards, so they would be skipped permanently while the response read as
 "nothing new". A cursor exactly AT the end is not stale and still returns an empty
 window.
 
+## Ending a wait early
+
+`session_end_wait(target)` is the other half of the poll loop: a caller that has
+already seen the condition its worker is sleeping on can wake that worker instead
+of letting the `wait` run out. `end_wait_target` runs `authorize_target` like the
+other verbs and then applies a creator fence of its own: a target whose
+`_created_by` is not the caller is refused `not_creator` (403) even for an owner
+session, which the shared gate does not fence. Waking a sleep moves another
+session's turn forward on the caller's schedule, and the caller that armed the
+worker's wait is the one that knows when that is safe.
+
+It reuses the End-wait button's mechanism rather than adding one. It reads the
+`wait_id` currently tracked in `_wait_state` at request time (an MCP caller has no
+countdown to name a stale id from), parks it in `_end_wait_request`, and records
+the caller in `_end_wait_by`. The sleeping tool collects it from its next
+keepalive reply, which then carries `end_wait_by`, and returns a normal result
+naming the session that ended it. The turn is not cancelled and nothing is
+discarded.
+
+A target with no tracked sleep, or with `_wait_contested` set (two sleeps share
+one session key, so neither can be aimed at), gets `ok: true, ended: false` with
+an `info` string and nothing is parked. The SEL audit detail records
+`requested`, `not_waiting` or `contested`. Channel agents are blocked from the
+verb, and it is withheld from the conductor and member auto-approve grants; see
+the comment on `_CONDUCTOR_DASHBOARD_GRANTS` in `agent.py`.
+
 ## Stopping is safe to re-send
 
 The Stop button escalates: a second press while the first cancel is still pending
@@ -1423,6 +1497,90 @@ status. This is the same "re-gate adjacent to the mutation, comparing identity n
 presence" discipline `create_session` uses for its slot allocation, and the same
 theme as the queued-drain re-check (#5911). The human ✕ path passes no check — the
 person owns the tab and closes it unconditionally.
+
+## Reviving is the mirror of closing, authorized from the metadata line
+
+`session_revive` is the tool-side equivalent of clicking an archived session in
+the History tab. It reuses the dashboard's own resume core
+(`chat_handlers.resume_slot_from_history`, the request-free half of
+`POST /api/chat/slots/{slot}/resume`), so a controlled revive and a human click
+share one materialisation, one set of member-pin and delete/recreate barriers and
+one set of refusal codes. The revived slot is idle — nothing runs until a
+`session_send` — and the reply carries its live key so every other verb can
+address it. A `folder_id` files it as part of the same call, after the revive
+has landed and only after the folder's existence was confirmed BEFORE anything
+was revived, so a refused filing leaves history untouched.
+
+**There is no live slot to authorize against, so the target-side checks read
+the persisted metadata line instead** — the same fields `authorize_target` reads
+off a live slot (`workspace`, `app`, `linked_session_key` / `channel_origin`,
+`memory_mode`, `created_by`), in the same order, raising the same codes. The
+caller-side checks are literally shared: `authorize_target` and `revive_session`
+both call `refuse_caller_identity` (key-only refusals, before the target is
+resolved, so a refused caller learns nothing) and `refuse_caller_surface` (the
+live-slot refusals, whose store-free half is `_check_caller_slot_fields` so the
+revive's synchronous last-word check can reuse it), and the fence wording comes
+from one `_not_creator_reason`.
+The ownership fence therefore has the same reach on an archived session as on a
+live one: an ownership-fenced caller (crew member, scheduled run, agent-created
+session) may revive only a session whose `created_by` is itself, corroborated
+against the crew-log session-tree lineage through `_slot_tree_parent` (the record
+`create_session` writes from the in-process `_lineage_minted` witness) because the
+metadata line is agent-editable: an unreadable lineage (crew log off, unseeded,
+incomplete) or a different parent refuses `ownership_unverified`, fail-closed. The
+`created_by` the metadata carries is restored onto the revived slot as attribution
+only (`_lineage_minted` stays False) — reviving never transfers ownership to the
+reviver. For the per-caller slot cap the revived slot is charged to the reviver
+through an in-memory `_revived_by` field (the registry's `creator_slot_count`
+charges `_created_by` or `_revived_by`, so create and revive share one
+accounting), tested before the resume and re-tested, with the global cap, the
+mirror, the store-recorded channel link and the four live-target fields, in the
+resume core's pre-publish `containment` hook: the core hands the built slot to
+the hook after hydration and before publish, holding it retracted from the slot
+table and under construction while the hook awaits (a concurrent resume of the
+key meanwhile is answered `resume_in_progress`), with the row broadcast held back
+and the reopen write (clearing `closed`) deferred until the hook has passed, so a
+refusal discards the built slot with nothing durable to undo and a clear that
+cannot land refuses `reopen_failed` instead of publishing a tab that would not
+restore. The existence and `created_at` identity barrier that guards the
+hook-less resume is re-run after the hook's last await, again on the
+verification read after the deferred clear, and a final time synchronously after
+the last await, so a session deleted or delete-and-recreated inside the hook
+window is refused `resume_session_deleted` rather than published over the
+replacement (an unreadable answer on that last read refuses `resume_conflict`
+rather than falling through); the marker rollback compares `created_at` too, so it never archives
+a replacement. Because the deferred clear and its verification read are awaits
+after the hook's store-backed probes, the hook runs a second time after them as
+the last awaiting act, so a channel binding recorded in the store during those
+awaits is still refused. The store-free answers (slot fields, caps) are re-asserted once more in a
+synchronous `final_check` after the core's last await, immediately before the
+publish; a refusal there restores the marker while the construction mark still
+reserves the key, and the restore is confirmed by a re-read (one retry on a
+raise): a marker that cannot be confirmed back answers `reopen_rollback_failed`
+(503) in place of the refusal that triggered it, so the caller hears that the
+durable session may reopen at the next start rather than a refusal that implies
+it was left as found. A revive that finds the session already live (a live match
+before the history scan, one that went live during it, or a human click that won
+the race with the resume) answers through one builder that authorizes the live
+slot as any live target before naming it: a protected slot answers with that
+refusal and reveals neither its existence nor its key, an unprotected one answers
+`target_already_live` with its key. Under a hook the built slot's `_app`,
+`linked_session_key` and `channel_origin` are restored from the fresh metadata
+re-read (the resume core hydrates neither link field itself), so the hook's app
+and link checks read the line as it is, not a constant. The History tab's own
+resume passes neither hook and is unchanged.
+
+Resolution mirrors `_resolve_slot`'s doctrine for archived sessions: a target
+may be a slot key, the `dashboard:<slot>` session key, the `dashboard_<slot>`
+transcript stem, or an exact case-insensitive title, every form is resolved
+before anything is returned, and two different sessions matching across forms
+is `ambiguous_target`. A target that is LIVE is refused with `target_already_live`
+and the message names the live key, because the caller asked for an archived
+session and should learn that this one is not — the resume core would have
+deduplicated the slot anyway, but silently answering "done" would hide that the
+caller's model of the sidebar is stale. Member DM threads
+(`member-*`) are refused outright (`member_thread_target`): they are opened only
+through the roster route that re-checks the member binding.
 
 ## Configuration
 

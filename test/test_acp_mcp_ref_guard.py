@@ -958,7 +958,7 @@ class TestTheRuntimeCallSitesAreWired:
                 }
             return {}
 
-        async def _send_request(method, params):
+        async def _send_request(method, params, **_kw):
             return 999
 
         async def _wait_for_response(_self, req_id, timeout=None):

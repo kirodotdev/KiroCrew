@@ -56,6 +56,19 @@ def _cron_caller_is_named(named_cron_caller):
 
 
 @pytest.fixture(autouse=True)
+def _no_real_ssh_probe(monkeypatch):
+    """Pin the ``lru_cache``d ``ssh -V`` probe behind ``_build_launcher_script``.
+
+    The house fixture every launcher-building module carries (tenth through
+    thirteenth passes): the launcher text these tests read must not vary with
+    the host's ssh, and a real binary spawned from the test process is a host
+    dependency. A sweep measured 20 real ``ssh`` spawns per round
+    from this file alone -- the one launcher builder still without the pin.
+    """
+    monkeypatch.setattr(sandbox, "_ssh_supports_accept_new", lambda: True)
+
+
+@pytest.fixture(autouse=True)
 def cron_home(monkeypatch, tmp_path):
     """Point ``cron_script.config_dir`` at the per-test patched home.
 

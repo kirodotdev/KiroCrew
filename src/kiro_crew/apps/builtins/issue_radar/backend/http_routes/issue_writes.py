@@ -128,7 +128,14 @@ async def _handle_labels_apply(request: web.Request) -> web.Response:
     triage/push access (read-only repos get 403). Added labels MUST already exist
     on the repo — Issue Radar never creates labels (that is repo settings, out of
     scope). Returns the issue's authoritative label set after the change."""
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
     from .. import routes  # circular import: backend.routes imports this module
+
+    # Writes to the forge as the OWNER's gh/glab login: owner only.
+    owner_denied = await require_owner_dashboard_request(request, "issue_radar.labels_apply")
+    if owner_denied is not None:
+        return owner_denied
 
     try:
         body = await request.json()
@@ -233,7 +240,14 @@ async def _handle_issue_state(request: web.Request) -> web.Response:
     A triage decision, gated on triage/push access. ``state`` is "open" or
     "closed"; on close, ``state_reason`` may be "completed" (default) or
     "not_planned". Returns the issue's state after the change."""
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
     from .. import routes  # circular import: backend.routes imports this module
+
+    # Writes to the forge as the OWNER's gh/glab login: owner only.
+    owner_denied = await require_owner_dashboard_request(request, "issue_radar.issue_state")
+    if owner_denied is not None:
+        return owner_denied
 
     try:
         body = await request.json()
@@ -397,7 +411,14 @@ async def _handle_issue_assignees(request: web.Request) -> web.Response:
     project roster for the same reason. The response otherwise carries the set read
     back from the write rather than the request, because a success is not required
     to be an exact echo (GitLab Free keeps only the first assignee)."""
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
     from .. import routes  # circular import: backend.routes imports this module
+
+    # Writes to the forge as the OWNER's gh/glab login: owner only.
+    owner_denied = await require_owner_dashboard_request(request, "issue_radar.issue_assignees")
+    if owner_denied is not None:
+        return owner_denied
 
     try:
         body = await request.json()

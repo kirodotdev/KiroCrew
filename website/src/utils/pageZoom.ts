@@ -10,7 +10,7 @@
  *
  *  Cancelling the gesture events does NOT suppress touch or pointer events, so a
  *  surface that owns its own pinch keeps working — the image viewer scales its own
- *  transform off two pointers (see Lightbox in `MarkdownRenderer.tsx`) and is
+ *  transform off two pointers (see `components/markdown/Lightbox.tsx`) and is
  *  unaffected by anything here.
  *
  *  Scoped to coarse pointers. Desktop Safari raises the same events for a trackpad

@@ -24,14 +24,18 @@
  * gating by ChatMessageList.test.tsx.
  */
 import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { dirname, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { defaultMessageRenderers, resolveRenderer } from '../app-sdk/messageRenderers'
 import type { ChatMessage } from '../types'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const chatPageSrc = readFileSync(resolve(here, '../pages/ChatPage.tsx'), 'utf8')
+// ChatPage's owners (pages/chat/page/), so a page-level banner cannot come back through one of them.
+const ownerSrcs = readdirSync(resolve(here, '../pages/chat/page'))
+  .filter(f => /\.tsx?$/.test(f) && !/\.test\./.test(f))
+  .map(f => readFileSync(join(resolve(here, '../pages/chat/page'), f), 'utf8'))
 
 function rendererBlock(): string {
   const start = chatPageSrc.indexOf('fallback: bubbleRenderer } = useMemo')
@@ -64,8 +68,10 @@ describe('ChatPage – MCP OAuth banner wiring', () => {
     // neither register the role nor call the banner renderer itself.
     expect(rendererBlock()).not.toMatch(/id:\s*'mcp_oauth'/)
     expect(rendererBlock()).not.toMatch(/roles:\s*\[[^\]]*'mcp_oauth'/)
-    expect(chatPageSrc).not.toMatch(/\brenderMcpOAuthMessage\b/)
-    expect(chatPageSrc).not.toMatch(/from\s*['"][^'"]*McpOAuthBanner['"]/)
+    for (const src of [chatPageSrc, ...ownerSrcs]) {
+      expect(src).not.toMatch(/\brenderMcpOAuthMessage\b/)
+      expect(src).not.toMatch(/from\s*['"][^'"]*McpOAuthBanner['"]/)
+    }
   })
 
   it('no page entry claims the role by a broader match either', () => {

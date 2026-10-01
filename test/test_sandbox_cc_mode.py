@@ -805,8 +805,9 @@ class TestKnownHostsPreReadFailsClosed:
 
         This must fail closed because the
         launcher injects ``StrictHostKeyChecking=accept-new`` into
-        ``GIT_SSH_COMMAND`` (built at sandbox.py:1513-1515, applied at
-        sandbox.py:1786-1793) gated only on that variable being unset -- NOT on
+        ``GIT_SSH_COMMAND`` (built and applied by the program
+        ``sandbox_launcher._build_launcher_script`` renders) gated only on that
+        variable being unset -- NOT on
         whether known_hosts was restored. So degrading to an empty ``kh_data``
         leaves the sandbox pointing ``UserKnownHostsFile`` at an absent file
         while auto-accept is still on: every host reads as NEW, and an

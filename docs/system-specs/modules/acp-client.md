@@ -2,7 +2,41 @@
 
 ## Overview
 
-The primary ACP session transport path spans **five** modules: the legacy per-session client (`acp/client.py`, one subprocess per session), the multiplexed runtime (`acp/runtime.py`, one subprocess fanned out to N sessions), the per-session handle (`acp/session_handle.py`, one `sessionId` + queue + prompt/approve/reject loop), a shared dispatch parser (`acp/_dispatch.py`, pure frame-shaping/redaction helpers all paths route through), and the session provider (`acp/session_provider.py`, `AcpSessionProvider` adapting an `AcpSessionHandle` to the `LLMProvider` ABC so runtime-backed sessions are interchangeable with `AcpClient`). All are JSON-RPC 2.0 over stdio for a registry-selected ACP harness, managing subprocess lifecycle, session initialization, prompt streaming, and tool permissions. Protocol constants live in `acp/types.py`; the complete backend and host-capability matrix is in [agent-host-contract.md](agent-host-contract.md#column-meaning).
+The primary ACP session transport path spans **five** entry modules: the legacy per-session client (`acp/client.py`, one subprocess per session), the multiplexed runtime (`acp/runtime.py`, one subprocess fanned out to N sessions), the per-session handle (`acp/session_handle.py`, one `sessionId` + queue + prompt/approve/reject loop), a shared dispatch parser (`acp/_dispatch.py`, pure frame-shaping/redaction helpers all paths route through), and the session provider (`acp/session_provider.py`, `AcpSessionProvider` adapting an `AcpSessionHandle` to the `LLMProvider` ABC so runtime-backed sessions are interchangeable with `AcpClient`). All are JSON-RPC 2.0 over stdio for a registry-selected ACP harness, managing subprocess lifecycle, session initialization, prompt streaming, and tool permissions. Protocol constants live in `acp/types.py`; the complete backend and host-capability matrix is in [agent-host-contract.md](agent-host-contract.md#column-meaning).
+
+Module-level code moved out of the two transports lives in five owner modules:
+four serve both, and `acp/runtime_start.py` serves the runtime alone.
+`acp/client.py` and `acp/runtime.py` keep every moved name readable and patchable
+under its old path: a moved name their own code reads and nothing patches is an
+ordinary import, and every other moved name is forwarded, so a patch through the
+old path lands on the owner, where the owner's own callers read it. The moved
+process-tree and session-start helpers read the modules they probe with
+(`platform_compat`, `sys`, `Path`, `subprocess`, `os`, `time`, `weakref`) and the
+two session-handle names the start collector uses from the facade their code came
+from, imported when the helper runs, so a rebinding on the old module still reaches
+them. A moved exception class keeps `kiro_crew.acp.client` as its `__module__`, so
+error chains and tracebacks still name the path callers import it from.
+
+| Owner | Owns |
+|---|---|
+| `acp/transport_framing.py` | stdio JSON-RPC framing: the oversize-line drain and the no-progress bound on response and notification writes |
+| `acp/transport_errors.py` | the `AcpError` family and the reading of a harness failure: the stderr, auth, throttle and sandbox classifiers, `classify_provider_error`, and the text and retry verdict `_format_acp_error` / `_raise_acp_error` produce |
+| `acp/runtime_models.py` | the advertised model catalog: `DEFAULT_MODEL`, `model_is_unusable`, `resolve_usable_model`, `resolve_pin_spelling`, `pick_served_default`, the model-substitution advisory |
+| `acp/runtime_process_tree.py` | descendant enumeration, child identity capture, the escaped-child sweep and RSS-tree measurement |
+| `acp/runtime_start.py` | cold-start admission, `SessionStartGate` / `StartPermit`, `StartCollector` and the session-start timeouts |
+
+`AcpClient`, `AcpRuntime` and `AcpSessionHandle` stay in their modules, as do
+harness executable resolution, `finish_suspended_spawn` and the model-push ladder
+(`_push_model_via_effort_split`, `_is_config_value_rejection`) in `acp/client.py`.
+
+New module-level code goes to the owner whose row above names its
+responsibility, not to `acp/client.py` or `acp/runtime.py`: stdio framing and
+write bounds to `acp/transport_framing.py`; an `AcpError` subclass, or a
+classifier that reads a harness failure into one, to `acp/transport_errors.py`;
+model-catalog rules to `acp/runtime_models.py`; process-tree inspection to
+`acp/runtime_process_tree.py`; session-start admission to
+`acp/runtime_start.py`. A moved name a test patches through its facade is
+forwarded in `_EXPORTS_BY_OWNER`, which `test_acp_refactor_facade.py` pins.
 
 ## Native skill startup views
 
@@ -149,7 +183,24 @@ in this process holds them and no held lease in any process names them. An
 alias is named by a 24-hex digest of the agent name, the owning Crew data home
 and the view content, so every spawn from that home that derives the same view
 -- any run folder, any session -- publishes the same file, and publication skips
-an existing alias whose bytes already match. Views can still differ per
+an existing alias that already SAYS the same spec with this home's sidecar: the
+two are compared parsed, so a launcher that re-serializes every file in the
+agents directory does not force a rewrite of every alias under the shared lock,
+while every value, env values included, still counts. Each MCP server env value is in that
+digest as a digest of its own, except the values of `volatile_env_keys()`: keys a
+launcher re-stamps with a per-launch nonce (default `AIM_CREDS_AGENT_INJECTION`,
+extended by `KIROCREW_SKILL_VIEW_VOLATILE_ENV`). Leaving those in would name a new
+alias on every spawn, so a changed volatile value reuses the alias and publication
+rewrites it with the full view. Every other value counts: a rotated credential
+names a NEW alias, one kiro-cli has not loaded, so `set_mode` never activates a
+copy still carrying the old credential, and two launch contexts with different
+credentials never share an alias. The env keys and the source spec's path are in
+the digest too, so two agent files differing only in env values never share an
+alias. A launcher nonce under a
+key the set does not know shows up as one view per launch; `kirocrew doctor`
+names each `<server>.<KEY>` whose value differs across one agent's views
+(`census_churning_env_keys`), so the operator can declare it volatile.
+Views can still differ per
 workspace: a SCOPE_PROJECT agent's prompt path and workspace-local inheritance
 shape the view, so those agents get
 one alias per workspace. A run's work directory is reclaimed separately (`session_work_dir`),
@@ -304,11 +355,108 @@ directory, and any other errno (`ENOENT` from a concurrent prune elsewhere,
 `EMFILE`) is reported by name with no such diagnosis. Every other `False`
 from the unlink is a deliberate keep and stays at debug.
 
+`session/set_mode` never activates a copy of an agent older than the one just
+prepared. kiro-cli 2.25.0 and 2.26.0 do not reload their agents directory on the
+rename that publishes an alias (fixed upstream in kiro-team/kiro-cli#5026), so a
+NEW alias published after the process started can answer `Mode '<alias>' not found`
+while the file is on disk. The bracket re-prepares before `set_mode` and always
+sends the FRESH alias: an alias the host loaded earlier, the spawn one included,
+may hold a generation of the spec an edit has since removed a server or an
+auto-approval from, and so may the authored spec kiro-cli cached, which it does
+not reload on a rename either. A `Mode ... not found` naming that alias -- and
+nothing else -- is retried after `_PROJECTED_MODE_RETRY_DELAYS_SECS` (3 s in
+total), each retry preceded by `announce_alias`: a same-bytes in-place rewrite of
+that alias, a data write kiro-cli's watcher DOES reload on (a miss triggers no
+reload by itself). If the host still has not loaded it, the session start FAILS
+with an error naming the agent and saying to restart the gateway; no other copy
+is activated in its place. A re-preparation that could not run (the alias lock is
+busy) fails the start the same way, since nothing proves any alias still matches
+the spec.
+
+Overlapping starts on one runtime are ordered so the newest view always wins. A
+preparation reads the agent specs before it waits on the alias file lock, so
+without ordering a start that read a spec before an edit revoked a grant could
+return last and activate that alias. Preparation and adoption therefore run under
+a per-runtime asyncio lock (`_skill_projection_lock`), so specs are read in
+adoption order, and each adopted projection is stamped with a generation issued
+under that lock; adoption refuses one older than the adopted generation. The lock
+covers only the `to_thread` preparation and the in-memory adoption, never
+`set_mode` itself, so a slow MCP server boot on one start does not hold up the
+others. Instead, a start whose `set_mode` is pending re-checks the generation
+before every attempt (it sends the newest adopted view's alias, never its own
+older one, and fails if that view does not offer the agent) and after the
+answer, after first taking the lock so a preparation still running when the
+answer arrived is adopted before the check: if a newer view gave the agent a
+different alias while the request was in flight, the host may have activated the
+older one, so the session is terminated
+and the start fails with "start it again; if it keeps failing, restart the
+gateway". A newer view that leaves the agent's alias unchanged refuses nothing.
+A preparation whose start is cancelled still runs to completion under the lock
+and its view is adopted before the cancellation propagates. A newer preparation
+that yields no view (or raises) leaves pending starts unable to prove their view
+current, so they fail the same way until a later view is adopted.
+Lock order, outermost first: `_skill_projection_lock` -> the alias file lock ->
+the workspace `cli.json` settings lock -> the projection lease. The file locks
+are taken and released inside one synchronous call on a worker thread, which
+never waits on the asyncio lock, so the two cannot deadlock.
+
+The adopted projection keeps translating, in inbound frames, every alias an
+earlier projection of the process published (`recognise`: alias-shaped names
+mapped to admissible agent names only, spawn aliases first, at most
+`_RECOGNISED_ALIASES_MAX`, with one warning per projection past the bound), and
+the projection the process spawned with is held for its life as
+`_spawn_skill_projection` so those aliases stay out of the prune. In
+`availableModes` a projected agent stays listed when the host advertises any of
+its aliases OR its authored id, once, so an agent never vanishes from later
+session starts because its alias changed. Each outcome logs and counts
+`kirocrew.acp.skill_view.fallback`; any other error propagates as before.
+
+An alias view leaves out `welcomeMessage` and caps `description` at
+`_ALIAS_DESCRIPTION_MAX_CHARS`. kiro-cli copies every loaded spec's name,
+description, source and welcomeMessage into each `session/new` and `session/load`
+reply, and an alias is a second copy of an agent the host already lists. So
+duplicating that text only doubles the reply, and past the ACP readers' 10 MB
+frame limit the reply is dropped: 50 agents carrying 113 KB of release notes each
+reached 11.7 MB. Kiro Crew renders an agent's welcomeMessage from the authored
+spec, never from an alias. A preparation also warns, once per size, naming each
+authored spec whose display text passes `_DISPLAY_TEXT_WARN_BYTES` and the
+directory total past `_DISPLAY_TEXT_TOTAL_WARN_BYTES`. That text still reaches
+every reply from the authored copy, so the fix for it is at its source.
+
 Projected agent JSON contains only fields accepted by Kiro's strict
 schema; lifecycle ownership lives in the non-spec
 `.kirocrew-skill-projection-metadata` directory. Each sidecar records the alias's
-exact byte digest, so a stale or replaced sidecar cannot authorize deletion of a
-different spec. No released build ever wrote lifecycle fields INTO a spec --
+exact byte digest AND the digest of its identity (the view the alias is named by,
+env values out), so a stale or replaced sidecar cannot authorize deletion of a
+different spec, while an alias another program merely re-serialized or
+re-stamped stays owned. A sidecar written before the identity digest existed,
+whose alias bytes moved, is still ownership-checked -- marker, this data home,
+the projected-view shape -- and then removed WITH its alias, without the legacy
+age wait: every build that writes a sidecar also holds a lease while it uses the
+alias; removing the alias alone would strand its sidecar. Two sweeps retire
+what outlived an alias, under the same lock, walk limit, random start and time
+budget as the alias walk, capped at
+`_SIDECAR_SWEEP_MAX_PER_RUN`: this home's sidecars whose alias is gone, and empty
+`<alias>.lock` files older than the legacy age with no alias beside them. This
+module never creates the latter; a launcher that rewrites every spec leaves one
+per spec it locked. The boot drain counts both sweeps as progress. `kirocrew
+doctor` reports the residue and the aliases whose bytes no longer match their
+sidecar -- another program is rewriting the directory -- on a `skill-view
+residue` line, warning past `_SKILL_VIEW_RESIDUE_WARN` or on any rewrite.
+
+Publication is by rename (`atomic_write`), and kiro-cli -- measured on 2.25.0
+and 2.26.0 -- does not reload its agents directory on a rename: its inotify
+watch receives `IN_MOVED_TO` but it reloads only on a data write to a `*.json`
+name, about 0.6 s debounced. A new alias renamed in after the process started
+therefore answers `Mode '<alias>' not found` indefinitely, and an alias renamed
+over a known name keeps serving its OLD content. Every publication is
+therefore followed by `_announce_publication`, which rewrites the alias's own
+bytes in place, unchanged -- a data write the host reloads on, which a racing
+reader cannot see torn -- and only while the file still holds exactly those
+bytes. That is what lets the `set_mode` retry above land on the published alias
+within its budget instead of failing the start.
+
+No released build ever wrote lifecycle fields INTO a spec --
 kiro-cli denies unknown fields, so the projection never could -- and an alias
 without a sidecar is judged by the unrecorded path above instead. The recorded
 source paths are never probed, so untrusted metadata cannot
@@ -471,7 +619,7 @@ launch and host-capability table is in
 need additional detail here:
 
 - `""` (default): `kiro-cli acp --agent <name>` (resolved by `_resolve_kiro_bin`). Per-session kiro settings are layered in via the workspace overlay `<work_dir>/.kiro/settings/cli.json` (written by `AcpProvider`, not the client): reasoning **effort** (`chat.modelDefaults`) and **MCP Tool Search** (`toolSearch.enabled` + activation thresholds from `agent.tool_search_min_pct` / `tool_search_min_tokens`, gated by `agent.tool_search`, default on) — see providers.md.
-- `"claude"` (`ACP_BACKEND_CLAUDE`): `claude-agent-acp` (resolved by `_resolve_claude_acp_bin` → `(list[str] | None, str)` (argv plus the augmented PATH actually searched)). Resolution order: `CLAUDE_AGENT_ACP_BIN` env var, then the **vendored copy** (`_resolve_vendored_claude_acp` — `<node_modules>/@agentclientprotocol/claude-agent-acp/dist/index.js` found under the package's `_vendor/node_modules` from the distribution bundle, the sibling `KiroCrewWebsite/node_modules` in a source checkout, or `KIROCREW_PROJECT_DIR`; needs no global npm install or network — matters on hosts that have no package-registry token at gateway runtime), then `mise which claude-agent-acp` (respects MISE_DATA_DIR and all mise config), then a direct glob under mise's Node installs dir (`_mise_node_installs_dir` — `<mise-data>/installs/node`, root from `env.mise_data_dir` so MISE_DATA_DIR / XDG_DATA_HOME are honoured), then augmented PATH (`env.augmented_path` — mise shims, `~/.npm-packages/bin`, `~/.volta/bin`, `/opt/homebrew/bin`, plus EVERY per-version manager bin dir via `env.node_all_bin_dirs` (mise/asdf/nvm/fnm, all installed versions — a global npm binary can live under any of them), so a non-login launchd/systemd gateway also finds globally-installed binaries). The adapter is vendored into the distribution bundle and the pip build by `setup.py` (`_vendor_acp_into_pkg` → `kiro_crew/_vendor/node_modules`), so every install method ships it without asking the user to `npm i -g`. Vendoring copies the adapter **plus its full transitive dependency closure** (`_acp_dependency_closure` walks `dependencies`/`optionalDependencies` from the resolved website `node_modules`, ~96 flat top-level packages) — npm hoists deps like `@agentclientprotocol/sdk` flat, so copying only the adapter package crashes the ESM loader with `ERR_MODULE_NOT_FOUND`. `_resolve_vendored_claude_acp` accepts a root only when the hoisted dependency marker `@agentclientprotocol/sdk` is present alongside the entry, so an incomplete vendored copy is skipped in favour of a complete one instead of being spawned and crashed. For scripts under mise installs, returns `[node_binary, script_path]` to bypass `#!/usr/bin/env node` shebang resolution which fails in non-interactive daemon contexts. For standalone binaries, returns `[binary_path]`. Pre-spawn the client writes `<work_dir>/.claude/settings.local.json` with `defaultMode: default` so the adapter routes every tool decision back to Kiro Crew via `session/request_permission`. This makes claude-agent-acp participate in the same approve / trust_reads / trust / yolo protocol as kiro-cli — dashboard, subagents, channel agents, cron, and heartbeat all share the path. Kiro Crew still enforces per-tool security via `HooksConfig.auto_deny_tools` (evaluated by `HookManager.on_tool_call` in `hooks.py`) on every `session/request_permission` event. `CLAUDE_CONFIG_DIR` (an isolated config root, distinct from the project-scope `<work_dir>/.claude/settings.local.json` the client writes itself) is **not** set by this core: `_spawn` merges a caller's `extra_env` into the child environment, so an edition can point the adapter's `SettingsManager` and the SDK at a seeded root, but with nothing supplied they read the user's global `~/.claude` — which is a live gate-bypass hazard for inherited `permissions.allow` entries, recorded as a known gap in claude-code-provider.md. The env also carries `CLAUDE_CODE_EXECUTABLE` (claude backend only, set in `_spawn` when unset): the adapter delegates the model turn to `@anthropic-ai/claude-agent-sdk`, which needs a per-platform native Claude binary (~250 MB each) shipped as npm `optionalDependencies` that the website install omits — so the vendored closure does **not** include it and the SDK fails `session/new` with `Claude native binary not found for <platform>`. The SDK does **not** search PATH for `claude` itself (so the host merely having the external agent CLI installed is not enough), and bundling a quarter-GB binary per platform is not viable; instead `_resolve_claude_code_executable` finds an existing `claude` (`CLAUDE_CODE_EXECUTABLE` override → `mise which claude` → augmented PATH incl. `~/.toolbox/bin`, where a managed distribution may ship the external agent CLI) and the adapter forwards it to the SDK as `pathToClaudeCodeExecutable` (no version check). If none is found the var is left unset (with a warning) so the adapter's native-binary error surfaces rather than a guessed bad path; an explicit operator-set value always wins.
+- `"claude"` (`ACP_BACKEND_CLAUDE`): `claude-agent-acp` (resolved by `_resolve_claude_acp_bin` → `(list[str] | None, str)` (argv plus the augmented PATH actually searched)). Resolution order: `CLAUDE_AGENT_ACP_BIN` env var, then the **vendored copy** (`_resolve_vendored_claude_acp` — `<node_modules>/@agentclientprotocol/claude-agent-acp/dist/index.js` found under the package's `_vendor/node_modules` from the distribution bundle, the sibling `KiroCrewWebsite/node_modules` in a source checkout, or `KIROCREW_PROJECT_DIR`; needs no global npm install or network — matters on hosts that have no package-registry token at gateway runtime), then `mise which claude-agent-acp` (respects MISE_DATA_DIR and all mise config), then a direct glob under mise's Node installs dir (`_mise_node_installs_dir` — `<mise-data>/installs/node`, root from `env.mise_data_dir` so MISE_DATA_DIR / XDG_DATA_HOME are honoured), then augmented PATH (`env.augmented_path` — mise shims, `~/.npm-packages/bin`, `~/.volta/bin`, `/opt/homebrew/bin`, plus EVERY per-version manager bin dir via `env.node_all_bin_dirs` (mise/asdf/nvm/fnm, all installed versions — a global npm binary can live under any of them), so a non-login launchd/systemd gateway also finds globally-installed binaries). The adapter is vendored into the distribution bundle and the pip build by `setup.py` (`_vendor_acp_into_pkg` → `kiro_crew/_vendor/node_modules`), so every install method ships it without asking the user to `npm i -g`. Vendoring copies the adapter **plus its full transitive dependency closure** (`_acp_dependency_closure` walks `dependencies`/`optionalDependencies` from the resolved website `node_modules`, ~96 flat top-level packages) — npm hoists deps like `@agentclientprotocol/sdk` flat, so copying only the adapter package crashes the ESM loader with `ERR_MODULE_NOT_FOUND`. `_resolve_vendored_claude_acp` is the claude spelling of the ONE project-local check shared by the three Node adapter resolvers (`_vendored_adapter_entry`; codex-acp and pi-acp call it with their own entry and marker): a copy is accepted only when the adapter's dependency marker `@agentclientprotocol/sdk` is reachable the way Node resolves a bare import from the entry script's **real path** (`os.path.realpath`, then `node_modules` directories walked upward from there -- `_node_module_search_dirs`). An ordinary `npm install` satisfies that at the hoisted root; a `file:` / `npm link` install is a symlink whose dependencies sit under the link target's own `node_modules`, which an earlier root-only check never looked at, so every linked adapter was rejected as incomplete and the ladder fell through -- silently -- to the global copy on PATH (#13869). An entry whose dependency is reachable nowhere is still skipped in favour of the next candidate instead of being spawned and crashed, and the skip is logged once with the entry, the dependency and the real location, so the fall-through is never silent. For scripts under mise installs, returns `[node_binary, script_path]` to bypass `#!/usr/bin/env node` shebang resolution which fails in non-interactive daemon contexts. For standalone binaries, returns `[binary_path]`. Pre-spawn the client writes `<work_dir>/.claude/settings.local.json` with `defaultMode: default` so the adapter routes every tool decision back to Kiro Crew via `session/request_permission`. This makes claude-agent-acp participate in the same approve / trust_reads / trust / yolo protocol as kiro-cli — dashboard, subagents, channel agents, cron, and heartbeat all share the path. Kiro Crew still enforces per-tool security via `HooksConfig.auto_deny_tools` (evaluated by `HookManager.on_tool_call` in `hooks.py`) on every `session/request_permission` event. `CLAUDE_CONFIG_DIR` (an isolated config root, distinct from the project-scope `<work_dir>/.claude/settings.local.json` the client writes itself) is **not** set by this core: `_spawn` merges a caller's `extra_env` into the child environment, so an edition can point the adapter's `SettingsManager` and the SDK at a seeded root, but with nothing supplied they read the user's global `~/.claude` — which is a live gate-bypass hazard for inherited `permissions.allow` entries, recorded as a known gap in claude-code-provider.md. The env also carries `CLAUDE_CODE_EXECUTABLE` (claude backend only, set in `_spawn` when unset): the adapter delegates the model turn to `@anthropic-ai/claude-agent-sdk`, which needs a per-platform native Claude binary (~250 MB each) shipped as npm `optionalDependencies` that the website install omits — so the vendored closure does **not** include it and the SDK fails `session/new` with `Claude native binary not found for <platform>`. The SDK does **not** search PATH for `claude` itself (so the host merely having the external agent CLI installed is not enough), and bundling a quarter-GB binary per platform is not viable; instead `_resolve_claude_code_executable` finds an existing `claude` (`CLAUDE_CODE_EXECUTABLE` override → `mise which claude` → augmented PATH incl. `~/.toolbox/bin`, where a managed distribution may ship the external agent CLI) and the adapter forwards it to the SDK as `pathToClaudeCodeExecutable` (no version check). If none is found the var is left unset (with a warning) so the adapter's native-binary error surfaces rather than a guessed bad path; an explicit operator-set value always wins.
 
 When the Claude adapter is not found, the spawn error reports the augmented PATH
 captured by that resolution attempt. The failed result and its PATH are cached
@@ -741,14 +889,12 @@ Data-driven — no code changes needed:
 
 Note: there IS a top-level `agents/` directory used at runtime for project-level overrides, but the bundled source lives in `src/kiro_crew/config/`.
 
-The normal and orchestrator prompts are alternative, self-contained inputs, not
-layers concatenated together; custom/app agents can supply their own prompts.
-Their compact tool directories retain exact callable syntax, session ownership,
+The shipped prompt is a self-contained input; custom/app agents can supply
+their own prompts. Its compact tool directory retain exact callable syntax, session ownership,
 privacy boundaries, stop conditions and output formats. Shared wording is not
 moved into a common include: source deduplication alone would not reduce the
 selected prompt sent to the model. `test/test_prompt_compact_contract.py` checks
-each file's UTF-8 size budget, template slots, critical operational clauses and
-the orchestrator example against the real plan parser. The size budget is an
+each file's UTF-8 size budget, template slots and critical operational clauses. The size budget is an
 absolute UTF-8 byte ceiling per selectable prompt: a context-cost guard, not a
 token count and not a permanent ban on new rules. A maintainer may raise a
 ceiling in a reviewed change when a rule earns its bytes; the clause tests, not
@@ -794,7 +940,8 @@ The details below describe the Kiro and Claude paths implemented directly here:
     project third-party declarations. Override eligibility reads project and
     global MCP settings through the bounded sensitive-path reader. A refused,
     unreadable or malformed settings file withholds these overrides, preserving
-    native restrictions; only an absent settings file contributes no restrictions.
+    native restrictions; only an absent settings file, or one that is empty or
+    holds only JSON whitespace (space, tab, CR, LF), contributes no restrictions.
     kiro-cli loads
     servers from the agent config (respects `mcpServers` in the agent's config
     file). Non-kirocrew agents (e.g. AIM-installed) load only their own
@@ -954,6 +1101,39 @@ for the probe it has yet to receive. The handle dates the snapshot it stores by
 the answer's own clock (`entitlement_probe_result_at`), not by its call time, so
 its floor never rises above the data it holds and a replayed answer is never
 re-dated out of the spawn-race window it was captured in.
+
+**Direct-spawn revalidation.** `AcpClient` owns one process and one session, so
+it has no runtime probe to borrow. It stamps its own `session/new` capture
+(`_available_models_captured_at`, unconfirmed) and, before an explicit
+`set_model` pick is refused or a startup pin is withheld on kiro,
+`refresh_available_models` asks again: a snapshot a probe confirmed within
+`_ENTITLEMENT_PROBE_TTL_SECS` is returned as is (fresh -- no round-trip); otherwise
+`_probe_advertised_models` asks on a DEDICATED short-lived transport: a throwaway
+`AcpClient` built by `_entitlement_probe_client` from this client's own launch
+inputs (work dir, agent, env, backend, sandbox mode, gateway overlay, session key),
+so `_spawn` starts it exactly as it started this session. On its own process it
+sends `initialize` (the same `_initialize_params` this session's handshake sends)
+and, before `session/new`, re-verifies the derived spec with
+`require_unchanged_derived_spec` -- the same verify→create bracket every other
+spawn path closes between initialize and session creation, so a spec revoked
+during probe init aborts (raising `DerivedSpecStale`, absorbed as an empty answer)
+rather than creating a session that would start that revoked spec's MCP server
+commands. It then sends one minimal `session/new` (the pooled broker stubs, for
+cost only), reads the answer through `advertised_models_from_session`, ends it
+with the harness's teardown verb and shuts the process down, bounded by
+`_INIT_TIMEOUT + _ENTITLEMENT_PROBE_TIMEOUT`. A non-empty answer replaces the
+snapshot, dated by its arrival and marked confirmed; an empty or failed one is no
+evidence and the refusal stands. There is no failure replay: the callers are user
+actions and the picker read, the direct-client form of `force=True`.
+`refresh_available_models` owns single-flight: a caller arriving while a probe is
+in flight awaits that same (shielded) probe, so an overlapping picker read and
+explicit pick start one probe process, never two. Because the probe never touches
+this session's stream, nothing it emits -- session updates, substitution
+advisories, and the MCP OAuth and init frames (keyed by `serverName`, no
+`sessionId`) of whatever servers kiro-cli starts from the spec for it -- can enter
+this session's notification buffer, its `_oauth_emitted_servers` dedupe or its
+event stream; no frame filter, prompt hold or turn guard is needed, and isolation
+does not depend on which servers the probe process happens to start.
 
 Step 5 drains MCP server init notifications (both after `session/load` and
 `session/new` — loading a session triggers MCP re-initialization).
@@ -1283,7 +1463,7 @@ tool watchdog armed; the final result disarms it and re-arms stale recovery.
 While a turn is dispatching, both ACP transports run a watchdog over a turn gone silent after a tool was dispatched — and both **recover** rather than just `return` on a dead turn (`AcpClient` keeps the blanket `_TOOL_STALL_TIMEOUT` window; the session handle is verdict-driven, below):
 
 - **`AcpClient`** (process-per-session, `_TOOL_STALL_TIMEOUT = 600s`): the stall clock is measured against `_tool_last_seen = max(last_data_ts, self._last_activity)`, so tools that keepalive-ping without emitting stdout frames (`wait`, `spawn_sub_agents`) don't trip a false stall (`_last_activity` is refreshed out of band by the stderr drain / keepalive). On a real stall it `_kill_process(force=True)` and raises `AcpProcessDied`, routing through the existing pipe-death recovery (dashboard resets the session + re-queues, bounded by `_acp_pipe_death_retries`; cron/other callers get a clean error instead of a wedged slot). `_kill_process` only touches the subprocess/pipes (never `_turn_lock`), and blast radius is one session — each `AcpClient` owns exactly one process.
-- **`runtime.py` / `AcpSessionHandle`**: watchdogs are **verdict-driven, not timeout-driven** — the prior design used timeouts as death detectors and killed healthy-but-slow work (a silent 30-min redirected build `long-build > build.log 2>&1` at exactly the blanket window; healthy long non-streamed reasoning at 90s, where the destructive `session/cancel` probe was acked by the LIVE turn and surfaced as "Turn cancelled by user"). Once a turn is idle past `watchdog.check_after_secs` (60s), the per-session `LivenessOracle` (`acp/liveness.py`) returns a verdict with evidence: **WORKING** (a live cmdline-matched shell child, a `wait` tool inside its declared duration + slack, moving CPU/IO counters, backend socket bytes flowing) is never acted on at any elapsed time (logged at most once per 10 min — at INFO below the escalation mark, which is the lower of 30 min and a quarter of this turn's deadline, and at WARNING past it so a deferral able to hold the turn to its ceiling is visible at the default `agent.log_level`); **DEAD** (tracked shell child exited without a result frame past a 15s grace; model-wait with flat counters and NO established backend socket — the done-but-lost-frame wedge signature) acts immediately, so recovery lands seconds after actual death instead of at a blanket window; **STUCK_INPUT** (matched subtree flat across samples with a process blocked reading a tty/stdin pipe) acts immediately with a cause the recovery nudge names; **UNKNOWN** is the only timeout-governed class — stale probe at `watchdog.stale_window_secs` (600s; extended to `watchdog.model_silent_probe_secs` = 1800s when the evidence is `established_flat`, i.e. probably a non-streamed server-side think), tool cancel at `watchdog.tool_stall_suspect_secs` (5400s / 90 min — clears every shipped budget a single tool call can legitimately spend silent, such as the task runner's 90-minute test command), hard-capped at `watchdog.tool_stall_hard_cap_secs` (7200s / 2h, UNKNOWN only; also bounds the per-agent overrides). The oracle's evidence is Linux `/proc` where it exists; on macOS (no procfs) it selects an in-process **libproc backend** once per oracle instance (`select_darwin_backend`, injectable for tests): `proc_listchildpids` enumerates the runtime's descendants, `PROC_PIDTBSDINFO` supplies ppid / zombie state / start time, `proc_pidpath` and `sysctl KERN_PROCARGS2` supply the executable and argv for the same cmdline match the `/proc` walk performs, and `PROC_PIDTASKINFO` supplies per-process CPU time summed over the subtree (evidence labelled `darwin cpu-only`, since IO bytes are not readable there). So a shell command is WORKING/DEAD/`shell_child_absent` on macOS by the same rules as Linux, and an active MCP subtree reads WORKING instead of running out the suspect window; evidence only `/proc` carries — the `established_flat` socket tag, the `blocked_read_fd` STUCK_INPUT check, `wchan` — is never invented on macOS: a flat model wait keeps the plain UNKNOWN, and a live tracked shell child whose subtree is flat is UNKNOWN tagged `platform_limited` — bounded by the standard no-progress budget — rather than WORKING, because without stdin-block evidence a stuck child and a quiet one are one state and "alive" must not buy an indefinite deferral (see "Platform evidence matrix" below). Dispatch stamps on darwin are wall-clock (`time.time()`), the clock libproc dates processes on, and a wall clock can step: a backward NTP or VM-resume correction between the dispatch stamp and the runtime's fork dates a live child before its own dispatch. The stamp is therefore paired with a steady one (`steady_now()`, darwin `CLOCK_MONOTONIC`, which counts sleep), and when wall elapsed and steady elapsed disagree by more than the attribution tolerance the oracle declines to attribute by start time at all — every row reads as possibly this tool's, so a matched child stays WORKING and no `shell_child_absent` claim is made. A missing steady stamp gets the same fail-open answer. **Windows has no tree backend yet**: the oracle there reads only the runtime's own CPU time (`proc_cpu_nanos_for_pid` via `GetProcessTimes`, root pid only), so every shell and MCP tool call stays UNKNOWN — tagged `platform_limited` so the degradation is visible in the evidence and the metric bucket — and the 90-minute suspect window is the effective tool timeout on that platform (narrowed to the ordinary silence window when the command was classified prompt-shaped, see "Interactive-command policy" below) — a genuinely hung non-interactive tool holds its slot for that long. The trade is accepted rather than sized around: a Toolhelp-based descendant walk is the follow-up that closes it, the same way the darwin backend did for macOS. Three refinements keep the build-scale tool forbearance from sheltering an **LLM-shaped** stall (a model turn riding inside a tool, e.g. kiro-cli `use_subagent`, whose longest legitimate silent gap is minutes) or an **already-finished** one: (1) the oracle tags an UNKNOWN tool verdict with `established_flat` when the subtree's counters are genuinely flat (a real two-sample delta, not the baseline tick) AND the **runtime process itself** holds an established backend socket — deliberately narrower than the model-wait branch's whole-tree socket scan, so an MCP server blocked on *its own* remote call keeps the full tool windows — and the tool branch then uses `min(model_silent_probe_secs, tool_stall_suspect_secs)` as the effective suspect window; plain flat-subtree evidence keeps the full window, and under the OS sandbox (pid = launcher parent, no sockets on it) the tag never fires, failing toward the long build-safe window. (2) the never-matched SHELL fork is split instead of uniformly forgiven: `no matching shell child` conflated a command that already exited — a sub-second `ls | grep | wc` whose result frame was lost is never observed alive, so the DEAD branch's 15s exit grace can never fire for it — with one running unrecognized, and the two got the same 1h. The oracle now tags the first case `shell_child_absent` when the runtime's descendant tree is OBSERVABLE (a readable `/proc/<pid>/task/<tid>/children`, empty or not) and holds no live descendant attributable to this dispatch, and the tool branch then uses `min(stale_window_secs, tool_stall_suspect_secs)` — the ordinary silence budget — instead of the build-scale one. Attribution compares a descendant's `starttime` against a `CLOCK_BOOTTIME` stamp taken at the tool_call frame and widened by the turn's banked consumer parking (`_parked_total`), because `/proc` dates processes on a clock that counts suspended time while `time.monotonic()` does not, and the stamp is taken when the frame is PROCESSED rather than when the runtime spawned (a frame queued behind an approval is stamped that late). Four states each keep the full window, so every unattributable one fails toward build-scale patience: a descendant young enough to be this dispatch's, one whose cmdline matches while predating the stamp (indistinguishable from a coincidental lookalike), an unreadable child list, and a missing stamp or tick rate (no `os.sysconf` off Linux). The verdict stays UNKNOWN, never DEAD — absence is inferred, so it only shortens the non-lethal cancel. (3) An agent definition can override the windows per agent (`agents.<name>.watchdog_tool_stall_suspect_secs` / `watchdog_tool_stall_hard_cap_secs`, 0 = inherit the global — the same empty-inherits convention as the agent's `model`), applied in the `WatchdogSettings` snapshot at handle construction (`_load_watchdog_settings(crew_agent)` — a direct lookup on the CANONICAL crew name, resolved by the surface that owns the identity: the dashboard passes the slot member explicitly through `get_or_create(crew_agent=...)`, and crew-name-passing surfaces (Slack threads, cron, spawned agents) are covered by the provider factory's crew-namespace membership fallback; the identity is plumbed provider → runtime → handle, and a warm-pool claim rebinds the live handle via `rebind_watchdog()` so it travels with the SESSION, not the pool key — a name that is not a crew key simply inherits the global) so a pure-LLM agent like a PR reviewer can declare minutes-scale windows without touching the global build budget; an override is bounded by the same load-time ceiling clamp as the global windows, so it cannot smuggle a window past the prompt timeout. Every idle window is bounded at load by the resolved prompt timeout (`resolve_prompt_timeout` — the one deadline every caller shares; 14400s default, following a raised `agent.chat_turn_timeout_secs`) minus 10% headroom for the cancel + ack grace, and an over-ceiling on-disk value is clamped with a warning: a window at or past the deadline makes the UNKNOWN class unreachable, because the turn's timeout fires first and the user gets the generic turn-limit card instead of the tool-stall recovery below. A window above the DASHBOARD ceiling (`agent.chat_turn_timeout_secs`) is reported but **not** clamped — the same handle serves callers that pass their own larger prompt timeout, and shrinking their windows would cancel live work. **Every watchdog action is non-lethal:** a stale probe's cancel-ack is reclassified in the turn-complete branch (`_stale_probe` + `stopReason==cancelled` → `STOP_REASON_STALE_RECOVER`; the flag is single-shot — consumed on reclassification and superseded by a genuine `cancel()`, so a user cancel arriving after a probe is never misattributed to auto-recovery) so the dashboard auto-recovers instead of logging a user cancellation — an oracle mistake costs a regeneration, never a session. A tool stall ends the turn with `STOP_REASON_TOOL_STALL` (`"error: tool stall"`, in the `error:` family so branch-less callers degrade to generic handling) carrying the tool title / redacted command / evidence on the terminal `AcpEvent`; chat_runner's dedicated branch queues a **continue-nudge** (`build_tool_stall_recovery_prompt` — check partial results, tail any `> file` redirect target, re-run non-interactively on STUCK_INPUT) instead of the legacy verbatim re-queue of the original user message (which restarted the whole task and re-ran the very command that stalled), charged against a separate `slot._tool_stall_retries` budget (3) so a stall never burns the pipe-death reconnect budget. The runtime is **shared** (multiple sessions multiplexed on one process), so recovery is always `session/cancel` for **this `sessionId` only** (bounded by `asyncio.wait_for(..., 5s)`); siblings keep running. `watchdog.*` config is snapshotted at handle construction (`WatchdogSettings`); the dispatch loop never reads config. The snapshot is **re-bound on a config reload**, so a live handle does not keep boot's windows until its turn ends: `SessionManager._rebind_live_watchdogs(cfg)` fires when a reload touches `watchdog.*`, `agent.chat_turn_timeout_secs`, or any `agents.<name>.watchdog_*` key, walks every registered session's provider (`_watchdog_handle_of` resolves both shapes — `AcpSessionProvider._handle` and `AcpProvider._client._handle`) and calls `handle.rebind_watchdog(crew, _load_watchdog_settings(crew, cfg=cfg))`. It re-runs the loader for the handle's OWN crew identity rather than copying raw seconds across, so the per-agent override overlay and the prompt-timeout ceiling clamp above are re-applied per handle — a raised `agent.chat_turn_timeout_secs` lifts the ceiling that was clamping a window, and a lowered one re-clamps it. The config is the one the watcher already loaded, so the fan-out touches no disk on the loop, and the dispatch loop reads the snapshot every tick, so the new windows govern the next check. A handle that raises is skipped and logged at DEBUG; the rest still rebind.
+- **`runtime.py` / `AcpSessionHandle`**: watchdogs are **verdict-driven, not timeout-driven** — the prior design used timeouts as death detectors and killed healthy-but-slow work (a silent 30-min redirected build `long-build > build.log 2>&1` at exactly the blanket window; healthy long non-streamed reasoning at 90s, where the destructive `session/cancel` probe was acked by the LIVE turn and surfaced as "Turn cancelled by user"). Once a turn is idle past `watchdog.check_after_secs` (60s), the per-session `LivenessOracle` (`acp/liveness.py`) returns a verdict with evidence: **WORKING** (a live cmdline-matched shell child, a kirocrew-core `wait` call inside its declared duration (at most `WAIT_TOOL_MAX_SECS`, the tool's own 1800s maximum) + slack, selected by the provenance-verified adapter identity (`ToolCallState.is_trusted_wait`) and never by the model-authored title, moving CPU/IO counters, backend socket bytes flowing) is never acted on at any elapsed time (logged at most once per 10 min — at INFO below the escalation mark, which is the lower of 30 min and a quarter of this turn's deadline, and at WARNING past it so a deferral able to hold the turn to its ceiling is visible at the default `agent.log_level`); **DEAD** (tracked shell child exited without a result frame past a 15s grace; model-wait with flat counters and NO established backend socket — the done-but-lost-frame wedge signature) acts immediately, so recovery lands seconds after actual death instead of at a blanket window; **STUCK_INPUT** (matched subtree flat across samples with a process blocked reading a tty/stdin pipe) acts immediately with a cause the recovery nudge names; **UNKNOWN** is the only timeout-governed class — stale probe at `watchdog.stale_window_secs` (600s; extended to `watchdog.model_silent_probe_secs` = 1800s when the evidence is `established_flat`, i.e. probably a non-streamed server-side think), tool cancel at `watchdog.tool_stall_suspect_secs` (5400s / 90 min — clears every shipped budget a single tool call can legitimately spend silent, such as the task runner's 90-minute test command), hard-capped at `watchdog.tool_stall_hard_cap_secs` (7200s / 2h, UNKNOWN only; also bounds the per-agent overrides). The oracle's evidence is Linux `/proc` where it exists; on macOS (no procfs) it selects an in-process **libproc backend** once per oracle instance (`select_darwin_backend`, injectable for tests): `proc_listchildpids` enumerates the runtime's descendants, `PROC_PIDTBSDINFO` supplies ppid / zombie state / start time, `proc_pidpath` and `sysctl KERN_PROCARGS2` supply the executable and argv for the same cmdline match the `/proc` walk performs, and `PROC_PIDTASKINFO` supplies per-process CPU time summed over the subtree (evidence labelled `darwin cpu-only`, since IO bytes are not readable there). So a shell command is WORKING/DEAD/`shell_child_absent` on macOS by the same rules as Linux, and an active MCP subtree reads WORKING instead of running out the suspect window; evidence only `/proc` carries — the `established_flat` socket tag, the `blocked_read_fd` STUCK_INPUT check, `wchan` — is never invented on macOS: a flat model wait keeps the plain UNKNOWN, and a live tracked shell child whose subtree is flat is UNKNOWN tagged `platform_limited` — bounded by the standard no-progress budget — rather than WORKING, because without stdin-block evidence a stuck child and a quiet one are one state and "alive" must not buy an indefinite deferral (see "Platform evidence matrix" below). Dispatch stamps on darwin are wall-clock (`time.time()`), the clock libproc dates processes on, and a wall clock can step: a backward NTP or VM-resume correction between the dispatch stamp and the runtime's fork dates a live child before its own dispatch. The stamp is therefore paired with a steady one (`steady_now()`, darwin `CLOCK_MONOTONIC`, which counts sleep), and when wall elapsed and steady elapsed disagree by more than the attribution tolerance the oracle declines to attribute by start time at all — every row reads as possibly this tool's, so a matched child stays WORKING and no `shell_child_absent` claim is made. A missing steady stamp gets the same fail-open answer. **Windows has no tree backend yet**: the oracle there reads only the runtime's own CPU time (`proc_cpu_nanos_for_pid` via `GetProcessTimes`, root pid only), so every shell and MCP tool call stays UNKNOWN — tagged `platform_limited` so the degradation is visible in the evidence and the metric bucket — and the 90-minute suspect window is the effective tool timeout on that platform (narrowed to the ordinary silence window when the command was classified prompt-shaped, see "Interactive-command policy" below) — a genuinely hung non-interactive tool holds its slot for that long. The trade is accepted rather than sized around: a Toolhelp-based descendant walk is the follow-up that closes it, the same way the darwin backend did for macOS. Four refinements keep the build-scale tool forbearance from sheltering an **LLM-shaped** stall (a model turn riding inside a tool, e.g. kiro-cli `use_subagent`, whose longest legitimate silent gap is minutes) or an **already-finished** one: (1) the oracle tags an UNKNOWN tool verdict with `established_flat` when the subtree's counters are genuinely flat (a real two-sample delta, not the baseline tick) AND the **runtime process itself** holds an established backend socket — deliberately narrower than the model-wait branch's whole-tree socket scan, so an MCP server's own remote call is not read as a model wait (refinement (4) handles that shape separately) — and the tool branch then uses `min(model_silent_probe_secs, tool_stall_suspect_secs)` as the effective suspect window; plain flat-subtree evidence keeps the full window, and under the OS sandbox (pid = launcher parent, no sockets on it) the tag never fires, failing toward the long build-safe window. (2) the never-matched SHELL fork is split instead of uniformly forgiven: `no matching shell child` conflated a command that already exited — a sub-second `ls | grep | wc` whose result frame was lost is never observed alive, so the DEAD branch's 15s exit grace can never fire for it — with one running unrecognized, and the two got the same 1h. The oracle now tags the first case `shell_child_absent` when the runtime's descendant tree is OBSERVABLE (a readable `/proc/<pid>/task/<tid>/children`, empty or not) and holds no live descendant attributable to this dispatch, and the tool branch then uses `min(stale_window_secs, tool_stall_suspect_secs)` — the ordinary silence budget — instead of the build-scale one. Attribution compares a descendant's `starttime` against a `CLOCK_BOOTTIME` stamp taken at the tool_call frame and widened by the turn's banked consumer parking (`_parked_total`), because `/proc` dates processes on a clock that counts suspended time while `time.monotonic()` does not, and the stamp is taken when the frame is PROCESSED rather than when the runtime spawned (a frame queued behind an approval is stamped that late). Four states each keep the full window, so every unattributable one fails toward build-scale patience: a descendant young enough to be this dispatch's, one whose cmdline matches while predating the stamp (indistinguishable from a coincidental lookalike), an unreadable child list, and a missing stamp or tick rate (no `os.sysconf` off Linux). The verdict stays UNKNOWN, never DEAD — absence is inferred, so it only shortens the non-lethal cancel. (3) An agent definition can override the windows per agent (`agents.<name>.watchdog_tool_stall_suspect_secs` / `watchdog_tool_stall_hard_cap_secs`, 0 = inherit the global — the same empty-inherits convention as the agent's `model`), applied in the `WatchdogSettings` snapshot at handle construction (`_load_watchdog_settings(crew_agent)` — a direct lookup on the CANONICAL crew name, resolved by the surface that owns the identity: the dashboard passes the slot member explicitly through `get_or_create(crew_agent=...)`, and crew-name-passing surfaces (Slack threads, cron, spawned agents) are covered by the provider factory's crew-namespace membership fallback; the identity is plumbed provider → runtime → handle, and a warm-pool claim rebinds the live handle via `rebind_watchdog()` so it travels with the SESSION, not the pool key — a name that is not a crew key simply inherits the global) so a pure-LLM agent like a PR reviewer can declare minutes-scale windows without touching the global build budget; an override is bounded by the same load-time ceiling clamp as the global windows, so it cannot smuggle a window past the prompt timeout. (4) An opaque MCP tool whose subtree is genuinely flat while a TOOL-side process holds an established TCP connection to a non-loopback peer is tagged `remote_flat` — the shape of a tool blocked on its own remote call, which with no client timeout holds the call until the build-scale window. The tag needs the handle to declare a socket tenancy of exactly one session (`socket_tenancy=AcpSessionHandle._socket_tenancy`, which counts registered sessions, initializing ones and unsettled starts, and declares nothing while `watchdog.remote_flat_probe_secs` is 0, so with the key off the tag, its metric bucket and the window never appear), because the scan reads the whole tree and a co-tenant's or riding subagent's socket must not shorten this session's window. It is a separate declaration from the oracle's `tenancy`, so the model-wait DEAD fast path is unchanged. "Tool side" excludes the runtime pid and, when that pid holds no socket at all (the Linux namespace sandbox's launcher parent), its direct children too, so kiro-cli's own model connection never counts, and a loopback peer (Kiro Crew's gateway, which in-tree MCP servers such as `spawn_sub_agents` block on for their whole run) never counts either; on macOS the socket view is `proc_pidinfo(PROC_PIDLISTFDS)` + `proc_pidfdinfo(PROC_PIDFDSOCKETINFO)` (`darwin_established_tcp_count`, refused on any fill size other than the 792-byte `socket_fdinfo`), and Windows has no socket view so the tag never fires there. The tool branch then uses `min(watchdog.remote_flat_probe_secs, tool_stall_suspect_secs)` when the key is above 0. It is **off by default** (0): the connection is read from the whole tree, so another MCP server's persistent connection (a keepalive, `mcp-remote`) or a shell tool's background tunnel can hold the tag while a quiet tool of a different server runs; tying the holder to the in-flight tool's own server (`_meta.kiro.mcpServerName`) is what would make it safe to enable by default. 900s is the suggested opt-in value. That value is shorter than `model_silent_probe_secs` (1800s) on purpose: that window is sized for a documented shape, kiro-cli's own non-streamed extended-effort think, while a flat tool waiting on a remote peer has no such contract and is most often a call with no client timeout; a deployment whose MCP tools legitimately block longer (a long-poll API, a non-streaming model behind a third-party server) raises the key, and the recovery on expiry is the non-lethal continue-nudge, not a lost turn. The window is measured from the later of the last own frame and the last probe that read the tree as WORKING, so a slow stream that moves bytes between flat samples keeps the full window; the full suspect window still applies as an upper bound. Every idle window is bounded at load by the resolved prompt timeout (`resolve_prompt_timeout` — the one deadline every caller shares; 14400s default, following a raised `agent.chat_turn_timeout_secs`) minus 10% headroom for the cancel + ack grace, and an over-ceiling on-disk value is clamped with a warning: a window at or past the deadline makes the UNKNOWN class unreachable, because the turn's timeout fires first and the user gets the generic turn-limit card instead of the tool-stall recovery below. A window above the DASHBOARD ceiling (`agent.chat_turn_timeout_secs`) is reported but **not** clamped — the same handle serves callers that pass their own larger prompt timeout, and shrinking their windows would cancel live work. **Every watchdog action is non-lethal:** a stale probe's cancel-ack is reclassified in the turn-complete branch (`_stale_probe` + `stopReason==cancelled` → `STOP_REASON_STALE_RECOVER`; the flag is single-shot — consumed on reclassification and superseded by a genuine `cancel()`, so a user cancel arriving after a probe is never misattributed to auto-recovery) so the dashboard auto-recovers instead of logging a user cancellation — an oracle mistake costs a regeneration, never a session. A tool stall ends the turn with `STOP_REASON_TOOL_STALL` (`"error: tool stall"`, in the `error:` family so branch-less callers degrade to generic handling) carrying the tool title / redacted command / evidence on the terminal `AcpEvent`; chat_runner's dedicated branch queues a **continue-nudge** (`build_tool_stall_recovery_prompt` — check partial results, tail any `> file` redirect target, re-run non-interactively on STUCK_INPUT) instead of the legacy verbatim re-queue of the original user message (which restarted the whole task and re-ran the very command that stalled), charged against a separate `slot._tool_stall_retries` budget (3) so a stall never burns the pipe-death reconnect budget. The runtime is **shared** (multiple sessions multiplexed on one process), so recovery is always `session/cancel` for **this `sessionId` only** (bounded by `asyncio.wait_for(..., 5s)`); siblings keep running. `watchdog.*` config is snapshotted at handle construction (`WatchdogSettings`); the dispatch loop never reads config. The snapshot is **re-bound on a config reload**, so a live handle does not keep boot's windows until its turn ends: `SessionManager._rebind_live_watchdogs(cfg)` fires when a reload touches `watchdog.*`, `agent.chat_turn_timeout_secs`, or any `agents.<name>.watchdog_*` key, walks every registered session's provider (`_watchdog_handle_of` resolves both shapes — `AcpSessionProvider._handle` and `AcpProvider._client._handle`) and calls `handle.rebind_watchdog(crew, _load_watchdog_settings(crew, cfg=cfg))`. It re-runs the loader for the handle's OWN crew identity rather than copying raw seconds across, so the per-agent override overlay and the prompt-timeout ceiling clamp above are re-applied per handle — a raised `agent.chat_turn_timeout_secs` lifts the ceiling that was clamping a window, and a lowered one re-clamps it. The config is the one the watcher already loaded, so the fan-out touches no disk on the loop, and the dispatch loop reads the snapshot every tick, so the new windows govern the next check. A handle that raises is skipped and logged at DEBUG; the rest still rebind.
 
 The tool watchdog remains armed while any dispatched tool-call ID is in flight.
 Only a terminal result removes that ID; partial output and interleaved model text
@@ -1321,6 +1501,7 @@ docstring of `acp/liveness.py` carries and `test_acp_liveness*.py` pins
 | subtree movement | CPU jiffies + IO bytes | CPU ns only | root-pid CPU (model-wait probe only) | a moving subtree is `WORKING` on any host: "no output" alone never kills a task whose CPU/IO moves |
 | blocked on stdin (`STUCK_INPUT`) | `wchan` + blocked fd | absent | absent | a live tracked shell child whose subtree is FLAT (real two-sample delta) is `UNKNOWN` tagged `platform_limited`, never `WORKING` — "alive" is never sufficient for indefinite deferral |
 | socket / LLM wait (`established_flat`) | `/proc/net` established → `UNKNOWN` or `DEAD` | absent → plain `UNKNOWN`, never `DEAD` | absent | same |
+| socket / remote call (`remote_flat`) | fd inodes + `/proc/net` established, non-loopback peer, sole tenant → `UNKNOWN` tagged | `PROC_PIDFDSOCKETINFO` established, non-loopback peer, sole tenant → `UNKNOWN` tagged | absent → never tagged | same |
 | business progress | stream events, `kirocrew/status` | same | same | platform-independent; outranks every row above |
 
 Consequences in the dispatch loop: `platform_limited` is an `UNKNOWN`, so
@@ -1355,9 +1536,23 @@ to `cat` on its own); the other four classes are `INTERACTIVE_NARROWING_RISKS`.
 The classifier never rewrites the command. The repo has no environment layer on
 the ACP tool path — the hook gate (`ToolHookResult`) can only allow or deny, and
 the `GIT_PAGER=cat` layer in `dashboard/terminal_commands.py` serves the human
-terminal — so `PAGER=cat` / `-y` / `BatchMode` are PROPOSED via the hint the
+terminal — so `PAGER=cat` / `-y` / the ssh options are PROPOSED via the hint the
 recovery nudge carries, not applied. Applying them at the harness is a
 follow-up seam, not a matcher's job.
+
+The ssh hint does not propose `BatchMode=yes`. Once case is folded, that option
+name contains a permission verb, so a proposed `ssh -o BatchMode=yes … /usr/…` is
+refused by the permission deny rows. The hint proposes `-o
+StrictHostKeyChecking=yes -o NumberOfPasswordPrompts=0 -o
+PasswordAuthentication=no -o KbdInteractiveAuthentication=no` instead, aimed at
+the prompts ssh_config(5) says BatchMode disables: password prompts and host key
+confirmation. The classifier still counts only `BatchMode` as proof that ssh will
+not prompt. A command using the proposed options stays prompt-shaped, because a
+FIDO/sk key PIN or an encrypted key's passphrase may still be asked for under
+them, and the conservative reading keeps the shorter stall window. A
+permission-row refusal whose command spells `BatchMode` carries remediation text
+naming the same options (`deny_guidance.SSH_BATCHMODE_REMEDIATION`). The rows
+themselves are unchanged, so that spelling is still refused.
 
 **Post-stall classification.** When the tool branch acts, the stall is a wait
 for input on exactly two grounds: the oracle's own `STUCK_INPUT` (Linux), or a
@@ -1590,6 +1785,9 @@ kiro can return a `-32603` error that is an *advisory* that it substituted a dif
 
 ## Exceptions
 
+The `AcpError` family is defined in `acp/transport_errors.py` and re-exported by
+`acp/client.py`; each class keeps `kiro_crew.acp.client` as its `__module__`.
+
 `AcpError` (base), `AcpTimeoutError` (has `partial_output`), `AcpPermissionNeeded`, `AcpProcessDied` (and its transient subclass `AcpRegistrationRateLimited`, raised when the death's retained stderr shows a throttled dynamic registration), `AcpAuthRequired`, `AcpPromptBusy`.
 
 - `AcpProcessDied` is raised by every stdin writer on `BrokenPipeError` / `ConnectionResetError`, and additionally by the **response-frame** writers when `stdin.drain()` has not completed within `_RESPONSE_WRITE_BOUND_SECS` (5.0s, sized like chat_runner's `_STEER_NOTICE_BOUND_SECS`): `AcpClient._send_response` / `_send_error` raise it directly, and the shared `AcpRuntime.send_response` / `send_error` (the default kiro backend, one stdin for every multiplexed session) mark the runtime dead and raise `AcpRuntimeDead`, which `AcpSessionProvider` translates to `AcpProcessDied`. `drain()` returns at once while the pipe has room and parks only when the writer is flow-control paused — the pipe behind it is full — which is what a backend that stopped reading looks like, but also what a healthy backend looks like while it consumes another session's multi-MB prompt frame queued ahead of the response on the shared stdin. The bound is therefore a **no-progress** bound (`await_under_no_progress_bound` / `write_response_frame_bounded`): it polls the transport's write-buffer level and only gives up when the level held still for the whole window; a level that moved is activity — a shrink is the reader consuming, a growth is a frame from a writer the lock woke ahead of this caller landing on the pipe — and is measured again from the new level, so a large frame never gets a healthy shared runtime marked dead. A drop only counts when it is at least `_RESPONSE_WRITE_MIN_PROGRESS_BYTES` (4 KiB) per window, and that alone bounds the whole wait by construction: the level is finite and non-negative and every continued window removed at least the floor from it, so a backlog of B bytes is waited on for at most B/floor + 1 windows (plus the same for any sibling frame appended meanwhile). There is deliberately no flat ceiling — the largest frame is unbounded (any number of 5 MiB image blocks), so any fixed figure would either kill a live reader on a valid frame or be arbitrary. An awaitable found complete as a window closes counts as completed. A cancel notification (`cancel_session`, `send_notification`) waits for the lock under the same bound and is appended unlocked if the lock does not come, so the one cooperative signal that can end a wedged turn is never swallowed by the lock. The handle-owned deny sites in `session_handle.py` write their SEL audit before the (now bounded) reject write. Under the proactor loop (`_is_proactor_loop`, keyed to the public `asyncio.ProactorEventLoop`; Windows's subprocess pipes report the whole in-flight overlapped write until it completes, so the level is flat while a live reader consumes a large frame) the wait falls back to the single platform-limited window `_RESPONSE_WRITE_UNOBSERVABLE_BOUND_SECS`, a fixed 900s (~30 MiB at ~40 KiB/s, the one place a fixed figure remains because there is no level to derive from; test-pinned) — the same declared degradation as the Windows watchdog. That measurement is exact only with one writer in flight, so **every stdin write on a transport takes that transport's write lock** (`_stdin_write_lock`, on both `AcpClient` and `AcpRuntime`; request, notification, response and error frames alike), and the response write waits for the lock under the same no-progress bound — waiting for the lock is waiting for the previous frame's drain, and a lock held by a writer whose buffer no longer shrinks is the same stall. Nothing is appended behind a reader judged dead, and a runtime writer that queued for the lock re-checks `_dead` under it before writing, so a frame is never written into a runtime `_mark_dead` has already torn down. It cannot observe delivery of an accepted frame (the protocol gives no ack for a response); it bounds the wait on a paused writer whose reader consumes nothing, the same undeliverable-response condition a closed pipe reports, and routes it into the same session-reset + bounded-requeue recovery instead of pinning the deny path to the turn deadline. The premise that a healthy backend never leaves stdin unread for a whole window is the protocol's own: ACP is JSON-RPC over stdio, and every harness's stdin reader is the loop that delivers the permission response being written — a backend awaiting that response is, by construction, reading stdin; the window fires only when the level held perfectly still (nothing consumed), never on slow consumption. A transport that exposes no buffer size fails closed at the window. The request id in the warning log and the exception text passes through `_loggable_request_id` (`repr`, the shared `redact_text` scrub over the whole text, then the display cap — redact-before-bound; an id over the input cap is replaced by a length-only marker, never truncated, so a severed secret can never reach the redactor), because the id is backend-authored; every `id=`/`req=`/`method=` log line under `acp/` (client, runtime, session handle, dispatch) uses the same helper for every frame-fed slot on the statement (ids, session ids, tool-call ids, methods), and `test_deny_bounded_write.py` scans for any unlisted one. `_send_request` / `send_request` / `_send_and_await` (caller-sized payloads, bounded end to end by the turn deadline or the caller's own `wait_for`) keep a bare `drain()` under the lock; `cancel_session` / `send_notification` take the best-effort path described above (bounded lock wait, unlocked append fallback, bounded drain) for the notification itself; the `cancelled` answers `cancel_session` then writes for open permission requests are response frames and take the response-write bound, and `_cancelled` is set before the write so the cancel-grace kill still ends the turn if even that fails.
@@ -1613,6 +1811,14 @@ native handle at `CreateProcess` return, before fallible CPython transport setup
 An exception without a returned `Process` therefore still retains a created child.
 Cancellation settles both creation and suspended-resume work before returning.
 POSIX spawn/cancellation semantics and resource Job settings are unchanged.
+
+The child-enumeration, identity and escaped-child helpers named below
+(`_get_child_pids`, `_direct_children`, `_get_start_time`, `_read_basename`,
+`_capture_child_records`, `_is_our_child`, `_kill_escaped_children`) and the
+RSS-tree helpers live in `acp/runtime_process_tree.py`. Each facade re-exports
+the names it defined: `acp/client.py` the child-enumeration, identity and
+escaped-child helpers, `acp/runtime.py` the RSS-tree helpers (it also imports
+`_get_child_pids` and `_capture_child_records`).
 
 Subprocess lifecycle:
 
@@ -1696,6 +1902,10 @@ selectability, member-capability checks and host sandbox rules remain independen
 requirements; memory version adds no direct-MCP refusal.
 
 ### Cold-start admission and startup telemetry
+
+The admission coordinator here and the session-start gate and collector below are
+defined in `acp/runtime_start.py`; `AcpRuntime` drives them, and `acp/runtime.py`
+re-exports every name.
 
 Every `AcpRuntime.spawn()` enters one gateway-wide, event-loop-affine admission
 coordinator before subprocess preparation and holds the permit through
@@ -1817,6 +2027,33 @@ session-injected. The `failed:` and `awaiting authorization:` buckets are
 unchanged: an out-of-roster server is still named there, where naming it is the
 point. Pinned by
 `test_session_start_timeout_diagnostics.py::test_a_complete_roster_says_the_stall_is_not_in_those_servers`.
+
+**A start that queued behind another one says so.** kiro-cli (2.26 and earlier)
+answers `session/new`, `session/load` and `session/set_mode` one at a time per
+process. Its ACP handlers await the whole start, or the mode switch's MCP init,
+inside the connection's dispatch loop, and that loop reads nothing else
+meanwhile. A start sent while one of those is unanswered therefore spends its own
+budget waiting for it. The commonest case is a retry sent behind the start that
+just timed out, which its collector still owns.
+
+On a backend in `ACP_BACKENDS_SERIAL_SESSION_STARTS` (kiro-cli, the one measured;
+harness-parity H6), `_send_and_await` records the method and send time of every
+awaited request in `_ONE_AT_A_TIME_METHODS` (`_one_at_a_time_sent`). Any other
+backend records nothing and its timeouts read as before. An id counts only while
+`_pending_requests` still holds it, so an answered or abandoned request drops out
+at the next send and the map cannot outgrow the pending set.
+
+When a session start times out, it carries only the requests ahead of it that
+were STILL unanswered at its deadline (`queued_behind`). On a serializing backend,
+this start had not begun while such a request was outstanding. A request answered
+before the deadline may have cost a few seconds or nothing, so it is not blamed
+for the budget. The same rule covers a request answered while this start was
+still waiting for the stdin write lock. `_session_start_stalled` then puts `queued behind N earlier
+request(s) this agent process had not answered by the deadline (…; oldest sent
+Xs earlier), and it answers those one at a time` ahead of the MCP progress. The
+roster-complete note is withheld in that case, because the budget went to those
+requests, which is not "later in session startup". Pinned by
+`test_session_start_queued_behind.py`.
 
 **One permit is reserved for a start that has not gone out.** A collector holding
 its permit is the intended back-pressure — the backend really is still working on
@@ -1960,6 +2197,10 @@ handshake: it issues `session/load` directly under the original sessionId and
 registers the session queue **after** the load response so replayed transcript
 frames are dropped rather than counted against the current turn.
 
+They share the stdio framing (`acp/transport_framing.py`), the error taxonomy
+(`acp/transport_errors.py`), the model catalog (`acp/runtime_models.py`) and
+process-tree inspection (`acp/runtime_process_tree.py`) the same way.
+
 **The runtime tracks its descendants, not just its root.** `spawn()` registers
 the launcher PID it created, which on a sandboxed host is two forks above the
 process that holds the memory. `_snapshot_descendants()` records the rest into
@@ -1982,6 +2223,24 @@ descendants FROM the root, so a root that exits first leaves its subtree
 reparented to init and unreachable. Teardown prunes by descendant liveness and
 retains survivors for the orphan sweep. See
 [session](session.md) for the file formats and the sweeps that read them.
+
+**A failed start reaps its MCP servers too.** The group kill that ends a failed
+spawn or `initialize` handshake reaches only kiro-cli's own process group, and
+kiro-cli launches every stdio MCP server as the leader of a group of its own. The
+descendant scan above runs only after a successful start, so a runtime that failed
+before it had recorded nothing and its MCP servers outlived it untracked. The
+failed-start arm of `AcpRuntime._spawn_admitted` therefore scans the tree first
+(`_record_tree_before_failed_start_kill`, while the root still links it; POSIX
+only), kills
+the group, then `_kill_failed_start_escapees` SIGKILLs each recorded descendant
+whose identity still matches the scan and prunes the confirmed-dead entries; a
+survivor keeps its entry for the orphan sweep. The whole cleanup (stderr settle,
+scan, kill, reap) runs as one task, `_failed_start_cleanup`, that the guard only
+waits on behind `asyncio.shield`. A cancel of the spawning task, which ordinary
+slot signals deliver to the eager-spawn task, is absorbed until the cleanup
+settles and is then propagated in place of the original failure. Without that, a
+cancel landing inside the scan would drop the only record of the MCP servers.
+Pinned by `test/test_acp_runtime_failed_start_reap.py`.
 
 **A reaped root does not end the teardown.** `kill_process_tree` is
 `killpg(getpgid(pid))`, and `getpgid` raises once the root has exited — read as
@@ -2171,6 +2430,20 @@ escapes the loop's non-JSON guard into its crash handler and kills every
 multiplexed session, the very outcome this replaces. Any oversize frame carrying
 CJK or emoji reaches it whenever the final remainder falls under the reader limit.
 
+A dropped frame can be the reply to an awaited request -- a `session/new` or
+`session/load` reply lists every agent in `~/.kiro/agents` with its description
+and `welcomeMessage`, so an agent package with very large welcomeMessage text
+pushes it over the limit. The drain therefore keeps the line's first
+`_OVERSIZE_HEAD_BYTES` (never parsed as a frame), and when that head is a reply
+envelope (no `"method"`) whose numeric `id` is a pending awaited request, that
+request fails at once with `AcpFrameTooLarge`, naming the frame's size and the
+limit. It is not `transient`, and the `session/new` and `session/load` arms tag it
+`session_start_failed`, so a self-driving caller counts it and backs off as it
+does for a stalled start. Without this the caller timed out much later under an unrelated name (a
+`session/new` timeout reads as slow MCP servers). A frame whose head names no
+pending request keeps the timeout path, and the warning still lists the ids in
+flight.
+
 Because this reader is a standalone task with no deadline, an endlessly
 unterminated stream still needs a terminal state, so the drain carries a budget of
 `_OVERSIZE_DRAIN_MAX_BYTES` (160 MB) and raises `OversizeLineUnrecoverable` past
@@ -2354,3 +2627,18 @@ The Codex spawn environment sets `DISABLE_MCP_CONFIG_FILTERING=true` so the
 adapter honors the session's MCP overrides even when a global configuration
 contains the same server name. This applies to both create and load; it changes
 configuration precedence, not authentication or the sandbox's credential mask.
+
+The Codex spawn environment also sets `CODEX_SQLITE_HOME`, so concurrent
+`codex app-server` processes (Codex Desktop and each Crew runtime) do not share
+one set of SQLite databases and fail new sessions with `database is locked`. The
+harness names the need (`SpawnPlan.private_state_env`) and the runtime points the
+variable at its own per-process scratch directory -- the one `TMPDIR` already
+names, allocated before the sandbox wrap and reclaimed by
+`agent_scratch.sweep_dead_scratch` once the process is dead -- so no new tree,
+lock or slot exists. Only the databases move: config, auth and the thread
+rollouts stay in `CODEX_HOME`, and a thread resumes from its rollout (measured on
+codex 0.159), so `spawn_continue` works across runtimes; a fresh home rebuilds
+its index on first start, an accepted cost. A value the operator set, or one a
+cron or workflow `extra_env` carries, reaches the child as set. Without a scratch
+directory nothing is set and one warning is logged: the child gets codex's shared
+default rather than a refused spawn.

@@ -756,6 +756,10 @@ def _marker_lock(port: int) -> Iterator[bool]:
 def _record_names_another_live_gateway(port: int, pid: int) -> bool:
     """True when *port*'s pid record names a LIVE process that is not *pid*.
 
+    The supervisor an in-app restart through a supervising launcher leaves
+    behind is not "another" gateway: a live ancestor whose image is not a
+    Python interpreter (:func:`platform_compat.is_exec_supervisor_of_this_process`).
+
     The proof is the start identity, not the pid number: a pid alone cannot be
     told apart from the same number recycled onto an unrelated process after a
     crash left the sidecar behind. So the recorded token must still match what
@@ -774,6 +778,12 @@ def _record_names_another_live_gateway(port: int, pid: int) -> bool:
         return False
     recorded_pid, recorded_token = record
     if recorded_pid == pid or not recorded_token:
+        return False
+    if pid == os.getpid() and platform_compat.is_exec_supervisor_of_this_process(recorded_pid):
+        # An in-app restart through a supervising launcher leaves the previous
+        # image alive as this gateway's ancestor, token unchanged, now running
+        # the launcher. It does not serve the port; this process does. A live
+        # gateway ancestor still runs Python and keeps its record.
         return False
     return pid_start_token(recorded_pid) == recorded_token
 

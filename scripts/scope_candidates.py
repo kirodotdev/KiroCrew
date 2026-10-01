@@ -697,6 +697,53 @@ _TOKEN_CHECKRUN_CONCLUSION: "dict[str, str]" = {
 #: down to one of these before calling, so the table sees one shape from both.
 _FOLD_CHOICES = ("clean", "regression", "redacted", "unscrubbable", "error", "no-report")
 
+#: The ``validate`` refusals that already NAME their own cause, each mapped to a
+#: short reason for the check-run TITLE and the full remedy for its SUMMARY. A
+#: refusal here means no leg was ever dispatched, so the fold reads ``no-report``
+#: and the generic "no leg reported" sentence is what an author gets -- true, and
+#: indistinguishable from a broken lane or a regression in their own diff. The
+#: cause travels to this table instead of living only in a job annotation.
+#:
+#: The refusal itself is NOT relaxed by naming it: the corpus travels to the
+#: adjudication legs as a public artifact and must stay byte-faithful for the
+#: classifier, so a credential shape in it can be neither published nor rewritten.
+#:
+#: Both halves are authored HERE and selected by an exact key match, so no caller
+#: string is ever interpolated into a published verdict, and an unrecognized code
+#: falls through to the generic sentence rather than reaching a reader unchecked.
+#: Each names credential SHAPES, never a value.
+_VALIDATE_REFUSALS: "dict[str, tuple[str, str]]" = {
+    "corpus-credential": (
+        "no leg ran: a candidate operation carries a credential shape, so the "
+        "byte-faithful corpus could not travel to the legs",
+        "A candidate operation carries a credential shape (an access-key id, an ARN, an "
+        "account id or a credential-bearing URL). The corpus travels to the adjudication "
+        "legs as a public artifact and must stay byte-faithful for the classifier, so it "
+        "can be neither published nor rewritten -- a placeholder where a command used to "
+        "be classifies as allowed, which is a false green. Re-run this lane so the "
+        "reviewer proposes the operation without the embedded credential.",
+    ),
+    "corpus-uncheckable": (
+        "no leg ran: the normalized corpus could not be checked for credential shapes, "
+        "so it was not uploaded",
+        "The credential-shape probe on the normalized corpus did not complete, so the "
+        "corpus was not uploaded to the adjudication legs unchecked. Re-run this lane; a "
+        "second refusal means the redactor itself is failing on this corpus and the run "
+        "needs a maintainer.",
+    ),
+}
+
+
+def validate_refusal_remedy(refusal: "str | None") -> str:
+    """The full author-facing remedy for a named ``validate`` refusal, or ``""``.
+
+    Read by the lane's check-run step for its SUMMARY. Kept separate from the
+    title half because a check-run title is capped at 255 characters, so the
+    remedy cannot ride in the ``why`` line the title is built from.
+    """
+    entry = _VALIDATE_REFUSALS.get(str(refusal or "").strip())
+    return entry[1] if entry else ""
+
 
 def _truthy(value: "str | None") -> bool:
     """A lenient boolean for shell-supplied flags.
@@ -729,6 +776,7 @@ def conclude_lane(
     model: str,
     gap_script: bool,
     gap_model: bool,
+    refusal: "str | None" = None,
 ) -> "tuple[str, str]":
     """Fold the lane signals into one ``(conclusion, why)`` -- the shared table.
 
@@ -739,6 +787,12 @@ def conclude_lane(
     pass it (it names the caller and reserves the seam), and because the contract
     is that any future lane difference is a ROW here selected by ``lane`` -- never
     a branch back in a YAML ``run:`` body.
+
+    ``refusal`` is the ``validate`` return code, which for some values NAMES why
+    no leg ran. It selects a more specific ``why`` and never a different
+    conclusion: an unmeasured run fails closed either way, and a lane that
+    published a softer verdict because it could explain itself would be a hole.
+    It is keyed by exact match, so an unrecognized code reads as no refusal.
     """
     if lane not in ("fork", "same-repo"):
         raise CandidateError(f"unknown lane {lane!r} -- expected 'fork' or 'same-repo'")
@@ -780,6 +834,14 @@ def conclude_lane(
     #    same-repo already held and the fork did not. Every other no-report is an
     #    unmeasured run.
     if fold == "no-report":
+        # FIRST, ahead of the two `nothing_new` rows below. A refusal and the exit-3
+        # short circuit cannot both happen -- `validate` refuses only on the rc=0
+        # path -- so this reorders nothing that the lane can reach. Were they ever
+        # to arrive together, the refusal is the half that must win: the green
+        # `nothing-new` reading would publish a pass for a corpus no leg ever saw.
+        named = _VALIDATE_REFUSALS.get(str(refusal or "").strip())
+        if named:
+            return _UNSETTLED_CONCLUSION, named[0]
         if nothing_new and marker_present:
             return "nothing-new", "every candidate is already a committed golden path"
         if nothing_new:
@@ -989,6 +1051,7 @@ def _cmd_conclude(args: argparse.Namespace) -> int:
         model=_normalize_model(args.model),
         gap_script=_truthy(args.gap_script),
         gap_model=_truthy(args.gap_model),
+        refusal=args.refusal,
     )
     # Printed as GitHub ``key=value`` lines so the caller can redirect stdout
     # straight into ``$GITHUB_OUTPUT``. Both the vocabulary and the why are
@@ -1005,6 +1068,14 @@ def _cmd_conclude(args: argparse.Namespace) -> int:
     # would floor the head again with no other edit in sight. The comparison lives
     # next to the constant instead.
     print(f"settled={'no' if conclusion == _UNSETTLED_CONCLUSION else 'yes'}")
+    # The remedy for a NAMED refusal, and only then: a check-run title is capped at
+    # 255 characters, so the actionable half rides in the summary instead and the
+    # caller reads it from here. Emitted conditionally so the three-line shape every
+    # other run prints is unchanged, and both lanes select keys with `sed` rather
+    # than reading a fixed number of lines, so an extra key is inert for them.
+    remedy = validate_refusal_remedy(args.refusal)
+    if remedy:
+        print(f"remedy={remedy}")
     return 0
 
 
@@ -1102,6 +1173,14 @@ def main(argv: list[str] | None = None) -> int:
         dest="nothing_new",
         default="false",
         help="true when validate short-circuited (exit 3): every candidate is already a committed golden path",
+    )
+    c.add_argument(
+        "--refusal",
+        default="",
+        help=(
+            "the validate return code; the codes that name their own cause select that "
+            "cause as the why and print a remedy= line, and any other value is ignored"
+        ),
     )
     c.add_argument(
         "--gap-script",

@@ -84,6 +84,41 @@ def sessions_include_ended(text: str) -> bool:
     return any(w in SESSIONS_INCLUDE_ENDED_ARGS for w in words)
 
 
+#: Slack rejects a ``chat.postMessage`` payload carrying more than 50 blocks, and
+#: the message layout costs 3 blocks per row less the trailing divider -- measured
+#: against :func:`_build_sessions_blocks`, not assumed: 17 rows render exactly 50
+#: blocks and 18 render 53. So however high ``slack.sessions_limit`` is set, the
+#: DM keyword and the slash command cannot ask for more rows than this.
+_SLACK_MESSAGE_BLOCK_LIMIT = 50
+_SLACK_BLOCKS_PER_SESSION_ROW = 3
+MAX_MESSAGE_SESSION_ROWS = (_SLACK_MESSAGE_BLOCK_LIMIT + 1) // _SLACK_BLOCKS_PER_SESSION_ROW
+
+
+def _message_surface_limit(configured: int) -> int:
+    """Clamp a configured list length to what one Slack message can render.
+
+    Only the UPPER bound lives here, because only the message surfaces have this
+    ceiling: the Home Tab posts through ``views.publish``, whose budget is
+    different, and a chat channel has no Block Kit at all. The lower bound stays
+    in the neutral collector, which every surface passes through.
+
+    A payload over the block limit is rejected WHOLE, so without this an operator
+    who sets ``slack.sessions_limit: 18`` gets no list at all -- which reads as
+    the feature being broken rather than as one number being too high. Clamping
+    renders the newest :data:`MAX_MESSAGE_SESSION_ROWS` instead, which is the
+    answer they were asking for, just truncated.
+
+    A non-integer value falls through to the collector's own guard rather than
+    raising here: this runs inside each surface's try, where an exception becomes
+    "Sessions unavailable" plus an error audit.
+    """
+    try:
+        value = int(configured)
+    except (TypeError, ValueError):
+        return _SESSIONS_DEFAULT_LIMIT
+    return min(value, MAX_MESSAGE_SESSION_ROWS)
+
+
 def _sessions_dir() -> Path:
     """Sessions directory, resolved against the live data home."""
     return _SESSIONS_DIR if _SESSIONS_DIR is not None else data_home() / "sessions"

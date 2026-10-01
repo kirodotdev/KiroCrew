@@ -433,7 +433,7 @@ describe('App routing', () => {
   })
 
   // CapabilitiesPage is a lazy route chunk, so it lands after a Suspense tick.
-  it('redirects /agents to the Agent Capabilities panel', async () => {
+  it('redirects /agents to the Customize panel', async () => {
     renderWithProviders(<App />, { route: '/agents' })
     expect(await screen.findByTestId('capabilities-page')).toBeInTheDocument()
   })
@@ -511,7 +511,7 @@ describe('App routing', () => {
   it('renders nav items', () => {
     renderWithProviders(<App />, { route: '/chat' })
     expect(screen.getByText('Sessions')).toBeInTheDocument()
-    expect(screen.getByText('Agent Capabilities')).toBeInTheDocument()
+    expect(screen.getByText('Customize')).toBeInTheDocument()
     expect(screen.getByText('Settings')).toBeInTheDocument()
     // PR1 App Store split: the single 'Explore' entry is gone — the sidebar
     // now carries TWO App Store rows, Discover (/apps) and Library
@@ -1021,11 +1021,15 @@ describe('App routing', () => {
     }
   })
 
-  it('opens Search Everywhere from the theme-aware shadowless header trigger', () => {
+  it('opens Search Everywhere from the glass header trigger', () => {
     renderWithProviders(<App />, { route: '/chat' })
     const trigger = screen.getByRole('button', { name: 'Search sessions, files, and commands' })
-    expect(trigger).toHaveClass('rounded-md', 'border-border', 'bg-card', 'shadow-none')
-    expect(trigger).not.toHaveClass('rounded-full')
+    // The trigger IS the Liquid Glass pane (components/Glass.tsx, rendered as
+    // the button): the material carries the edge, so the control has no border,
+    // fill or utility radius of its own -- only the hover tint step and the
+    // neutral rest shadow every pane wears.
+    expect(trigger).toHaveClass('liquid-glass', 'glass-hover', 'glass-shadow')
+    expect(trigger).not.toHaveClass('border-border', 'bg-card', 'rounded-md', 'rounded-full')
     fireEvent.click(trigger)
     expect(screen.getByRole('dialog', { name: 'Search everywhere' })).toBeInTheDocument()
   })
@@ -1196,7 +1200,9 @@ describe('App routing', () => {
     const PILL_WIDEST_LABELED = 201.7 // de downloading_percent "Wird heruntergeladen 100 %"
     const GROUP_GAP = 6
     const SHIFT_LABELED = Math.ceil(PILL_WIDEST_LABELED + GROUP_GAP)
-    const TERMINAL = '.tb-capsule > *:not(:first-child)'
+    // The capsule is a Liquid Glass host whose effect layers precede the
+    // segments, so the rung skips `[data-liquid-glass-layer]` on both sides.
+    const TERMINAL = '.tb-capsule > :not([data-liquid-glass-layer]) ~ :not([data-liquid-glass-layer])'
     // ≥640px (label visible): every rung, terminal included, shifts by the
     // labeled footprint, inside the media gate.
     for (const sel of ['.tb-drop-metrics', '.tb-drop-usage', '.tb-drop-feedback', TERMINAL]) {

@@ -41,6 +41,11 @@ pytestmark = pytest.mark.usefixtures("healthy_host_memory")
 # ``_isolate_subagents_dir`` fixture in ``conftest.py``.
 
 
+@pytest.fixture(autouse=True)
+def _close_subagent_managers(close_subagent_managers):
+    """Every manager built here is closed at teardown; the body is in ``conftest``."""
+
+
 # ── 1. Coalescer ─────────────────────────────────────────────────────
 
 
@@ -1155,7 +1160,6 @@ class TestWaveDigest:
         slot.mode = "chat"
         slot.running = False
         slot.task = None
-        slot._orch_tracker = None
         slot._subagent_deliveries_inflight = 0
         orch.dashboard_state.get_slot = MagicMock(return_value=slot)
         mgr, on_done = self._capture_on_done(orch)
@@ -1218,7 +1222,6 @@ class TestWaveDigest:
         slot.mode = "chat"
         slot.running = False
         slot.task = None
-        slot._orch_tracker = None
         slot._subagent_deliveries_inflight = 0
         orch.dashboard_state.get_slot = MagicMock(return_value=slot)
         mgr, on_done = self._capture_on_done(orch)
@@ -1269,7 +1272,6 @@ class TestWaveDigest:
         slot.mode = "chat"
         slot.running = False
         slot.task = None
-        slot._orch_tracker = None
         slot._subagent_deliveries_inflight = 0
         orch.dashboard_state.get_slot = MagicMock(return_value=slot)
         mgr, on_done = self._capture_on_done(orch)
@@ -1309,7 +1311,6 @@ class TestWaveDigest:
         slot.mode = "chat"
         slot.running = False
         slot.task = None
-        slot._orch_tracker = None
         slot._subagent_deliveries_inflight = 0
         orch.dashboard_state.get_slot = MagicMock(return_value=slot)
         mgr, on_done = self._capture_on_done(orch)
@@ -1356,7 +1357,6 @@ class TestWaveDigest:
         slot.mode = "chat"
         slot.running = False
         slot.task = None
-        slot._orch_tracker = None
         slot._subagent_deliveries_inflight = 0
         orch.dashboard_state.get_slot = MagicMock(return_value=slot)
         mgr, on_done = self._capture_on_done(orch)
@@ -1408,7 +1408,6 @@ class TestWaveDigest:
         slot.mode = "chat"
         slot.running = False
         slot.task = None
-        slot._orch_tracker = None
         slot._subagent_deliveries_inflight = 0
         orch.dashboard_state.get_slot = MagicMock(return_value=slot)
         mgr, on_done = self._capture_on_done(orch)
@@ -1456,7 +1455,6 @@ class TestWaveDigest:
         slot.mode = "chat"
         slot.running = False
         slot.task = None
-        slot._orch_tracker = None
         slot._subagent_deliveries_inflight = 0
         orch.dashboard_state.get_slot = MagicMock(return_value=slot)
         mgr, on_done = self._capture_on_done(orch)
@@ -1513,7 +1511,6 @@ class TestWaveDigest:
         slot.mode = "chat"
         slot.running = False
         slot.task = None
-        slot._orch_tracker = None
         slot._subagent_deliveries_inflight = 0
         orch.dashboard_state.get_slot = MagicMock(return_value=slot)
         mgr, on_done = self._capture_on_done(orch)
@@ -1559,7 +1556,6 @@ class TestWaveDigest:
         slot.mode = "chat"
         slot.running = False
         slot.task = None
-        slot._orch_tracker = None
         slot._subagent_deliveries_inflight = 0
         orch.dashboard_state.get_slot = MagicMock(return_value=slot)
         mgr, on_done = self._capture_on_done(orch)
@@ -1694,7 +1690,6 @@ class TestWaveDigest:
         slot.mode = "chat"
         slot.running = False
         slot.task = None
-        slot._orch_tracker = None
         slot._subagent_deliveries_inflight = 0
         orch.dashboard_state.get_slot = MagicMock(return_value=slot)
         mgr, on_done = self._capture_on_done(orch)
@@ -1798,7 +1793,6 @@ class TestWaveDigest:
         # than dispatched. `task = None` keeps the shield-await a no-op.
         slot.running = True
         slot.task = None
-        slot._orch_tracker = None
         slot._subagent_deliveries_inflight = 0
         slot._subagents_inline_collected = set()
         queued: list[dict] = []
@@ -1876,7 +1870,6 @@ class TestWaveDigest:
         slot.mode = "chat"
         slot.running = False
         slot.task = None
-        slot._orch_tracker = None
         slot._subagent_deliveries_inflight = 0
         # Real attribute, not a MagicMock truthy stub: the stub below flips it
         # exactly as _run_chat does on a signed-out CLI.
@@ -1945,7 +1938,6 @@ class TestWaveDigest:
         slot.mode = "chat"
         slot.running = False
         slot.task = None
-        slot._orch_tracker = None
         slot._subagent_deliveries_inflight = 0
         orch.dashboard_state.get_slot = MagicMock(return_value=slot)
         mgr, on_done = self._capture_on_done(orch)
@@ -1981,58 +1973,6 @@ class TestWaveDigest:
         ], "the debt stays parked for a recovery replay to claim"
 
     @pytest.mark.asyncio
-    async def test_guard_msgs_from_all_members_fold_into_digest(self):
-        """Orchestration escalations from HELD mid-wave members must survive
-        into the digest (Arbiter item 3) — not just the last member's."""
-        orch = _make_orchestrator()
-        orch.sessions = _mock_sessions()
-        orch.ctx_builder = MagicMock()
-        orch.ctx_builder.hooks = MagicMock()
-        orch.dashboard_state = _mock_dashboard_state()
-        slot = MagicMock()
-        slot.mode = "orchestrator"
-        # Pre-seeded tracker: every failure trips the escalation ceiling.
-        tracker = MagicMock()
-        tracker.stopped = False
-        tracker.record_failure = MagicMock(return_value=True)
-        tracker.failure_count = MagicMock(return_value=2)
-        tracker.record_success = MagicMock()
-        tracker.record_round = MagicMock(return_value=False)
-        slot._orch_tracker = tracker
-        slot.running = False
-        slot.task = None
-        slot._subagent_deliveries_inflight = 0
-        orch.dashboard_state.get_slot = MagicMock(return_value=slot)
-        mgr, on_done = self._capture_on_done(orch)
-        mgr.running_agents_for = MagicMock(return_value=["still-running"])
-        total = 12
-        injected: list[str] = []
-
-        async def _fake_run_chat(_state, _slot, text, *, _directive_user_origin, **_kw):
-            assert _directive_user_origin is False
-            injected.append(text)
-
-        with (
-            patch("kiro_crew.slack.gateway._run_chat", side_effect=_fake_run_chat),
-            patch("kiro_crew.subagent_persistence.mark_delivered"),
-        ):
-            for i in range(total):
-                mgr.batch_members_pending = MagicMock(return_value=i != total - 1)
-                # Mid-wave failure (held member) trips the ceiling; the LAST
-                # member succeeds, so its own guard_msg is empty.
-                await on_done(self._member(i, total, error="boom" if i == 2 else ""))
-                await asyncio.sleep(0)
-            await _settle(lambda: len(injected) >= 2, what="both digest chunks injected")
-        assert len(injected) == 2  # chunked: 10 + 2
-        combined = "\n".join(injected)
-        # The held member's escalation instruction reached the parent, in the
-        # chunk that contains that member…
-        assert "You MUST ask the user for guidance" in injected[0]
-        # …exactly once across the whole wave (deduped within the chunk, and
-        # chunk buffers reset between flushes — no bleed into later chunks).
-        assert combined.count("You MUST ask the user for guidance") == 1
-
-    @pytest.mark.asyncio
     async def test_small_wave_delivers_single_chunk_digest(self):
         """Small multi-task waves (2-10 agents) get ONE consolidated chunk
         digest on wave close — chunking is uniform for every multi-task
@@ -2049,7 +1989,6 @@ class TestWaveDigest:
         slot.mode = "chat"
         slot.running = False
         slot.task = None
-        slot._orch_tracker = None
         slot._subagent_deliveries_inflight = 0
         orch.dashboard_state.get_slot = MagicMock(return_value=slot)
         mgr, on_done = self._capture_on_done(orch)
@@ -2089,7 +2028,6 @@ class TestWaveDigest:
         slot.mode = "chat"
         slot.running = False
         slot.task = None
-        slot._orch_tracker = None
         slot._subagent_deliveries_inflight = 0
         orch.dashboard_state.get_slot = MagicMock(return_value=slot)
         mgr, on_done = self._capture_on_done(orch)
@@ -2296,7 +2234,6 @@ class TestDigestHoldDeadline:
         slot.mode = "chat"
         slot.running = False
         slot.task = None
-        slot._orch_tracker = None
         slot._subagent_deliveries_inflight = 0
         slot._subagents_inline_collected = set()
         orch.dashboard_state.get_slot = MagicMock(return_value=slot)
@@ -2373,7 +2310,6 @@ class TestDigestHoldDeadline:
         slot.mode = "chat"
         slot.running = False
         slot.task = None
-        slot._orch_tracker = None
         slot._subagent_deliveries_inflight = 0
         slot._subagents_inline_collected = set()
         orch.dashboard_state.get_slot = MagicMock(return_value=slot)

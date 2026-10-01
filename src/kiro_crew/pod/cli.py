@@ -231,11 +231,10 @@ def _wait_healthy(
         serving = code in (200, 401, 403)
         # Contiguous, so a gateway that served, dropped and came back is timed from
         # the comeback rather than credited with the gap.
-        serving_since = (
-            (serving_since if serving and serving_since is not None else observed)
-            if serving
-            else None
-        )
+        if not serving:
+            serving_since = None
+        elif serving_since is None:
+            serving_since = observed
         live = rt.published_credential(cfg, name, port)
         if serving and live and live != superseded:
             return code

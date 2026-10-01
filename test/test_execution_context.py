@@ -784,3 +784,55 @@ def test_an_execution_with_an_oversized_retained_field_is_not_vouched(members):
     execution.bind_session_execution(within, alice, vouch=True)
     assert execution.read_vouched_session_execution(within).member_id == alice.member_id
     assert len(alice.template_id) <= MAX_SHORT_STRING
+
+
+def test_a_deeply_nested_durable_vouch_reads_as_not_recorded(members):
+    # The reader is total: a file too deep for `json.loads` (RecursionError) must
+    # read as "not recorded", the refusing answer, not raise out of the admission.
+    from kiro_crew._durable_vouch import durable_vouch_path, read_durable_vouch
+
+    key = "dashboard:deep-vouch"
+    path = durable_vouch_path(key)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("[" * 200_000 + "]" * 200_000, encoding="utf-8")
+    assert read_durable_vouch(key) is None
+
+
+def test_a_conditional_forget_racing_a_newer_vouch_keeps_the_newer_record(members, monkeypatch):
+    # `forget_durable_vouch(only_if=...)` compares then unlinks. Bind writes from
+    # worker threads while the withdrawal runs on the loop, so a write can land
+    # between the two: unlocked, the unlink then deletes the NEWER vouch and a
+    # restart loses valid authority. Make that interleaving deterministic: the
+    # compare's read starts the writer and gives it time to finish, which it must
+    # NOT be able to do until the forget has released the lock.
+    import threading
+
+    from kiro_crew import _durable_vouch
+
+    key = "dashboard:racing-vouch"
+    old_record = {"member_id": "alice", "generation": 1}
+    new_record = {"member_id": "alice", "generation": 2}
+    _durable_vouch.record_durable_vouch(key, old_record)
+    assert _durable_vouch.read_durable_vouch(key) == old_record
+
+    real_read = _durable_vouch.read_durable_vouch
+    writer = threading.Thread(
+        target=_durable_vouch.record_durable_vouch, args=(key, new_record), daemon=True
+    )
+    started = []
+
+    def racing_read(session_key):
+        result = real_read(session_key)
+        if not started:
+            started.append(True)
+            writer.start()
+            # Long enough for an unblocked write to land before the unlink; with
+            # the lock held the writer cannot, so this join simply times out.
+            writer.join(timeout=1.0)
+        return result
+
+    monkeypatch.setattr(_durable_vouch, "read_durable_vouch", racing_read)
+    _durable_vouch.forget_durable_vouch(key, only_if=old_record)
+    writer.join(timeout=5.0)
+    assert not writer.is_alive()
+    assert real_read(key) == new_record

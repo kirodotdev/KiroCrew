@@ -411,6 +411,11 @@ class GatewayManager:
     def _owned_by_a_live_other(self, pong: dict) -> bool:
         """True when the pong names an owner that is alive and is not this process.
 
+        The supervisor an in-app restart through a supervising launcher leaves
+        behind counts as this process: a live ancestor whose image is not a
+        Python interpreter (``platform_compat.is_exec_supervisor_of_this_process``).
+        A live gateway ancestor still runs Python and stays a rival.
+
         ``owner_pid`` 0 or absent means an operator-run or pre-owner daemon: no
         one else's, so adoptable on the other gates. A dead owner is an orphan
         (its sweeper will take it down shortly) and is adoptable on the other
@@ -421,6 +426,11 @@ class GatewayManager:
         if isinstance(owner, bool) or not isinstance(owner, int) or owner <= 0:
             return False
         if owner == os.getpid():
+            return False
+        if platform_compat.is_exec_supervisor_of_this_process(owner):
+            # The supervisor an in-app restart through a supervising launcher
+            # left behind: this gateway's own previous image, now running the
+            # launcher. The code and orphan gates still apply to its daemon.
             return False
         return platform_compat.pid_exists(owner)
 

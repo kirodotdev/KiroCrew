@@ -64,6 +64,7 @@ from kiro_crew.artifacts import (
     slug_is_well_formed,
     webapp_metadata_from_dict,
 )
+from kiro_crew.constants import md_link_destination
 from kiro_crew.dashboard.chat_folders import generate_emoji_for_name
 from kiro_crew.dashboard.handlers._shared import _is_restricted_session
 from kiro_crew.dashboard.state import _normalize_slot_key
@@ -576,7 +577,9 @@ _SNIPPET_MAX_LEN = 160
 _SEARCH_QUERY_MAX_CHARS = 256
 _STRIP_TAGS_RE = re.compile(r"<[^>]+>")
 # Lightweight markdown → prose cleanup for previews (not a full parser).
-_MD_LINK_RE = re.compile(r"!?\[([^\]]*)\]\([^)]*\)")  # [text](url) / ![alt](url) -> text
+# [text](url) / ![alt](url) -> text; a balanced ``(...)`` pair stays inside the url,
+# and a label stops at the next ``[`` so a run of ``[`` cannot rescan the text.
+_MD_LINK_RE = re.compile(rf"!?\[([^\[\]]*)\]\({md_link_destination('[^()]')}*\)")
 _MD_HEADING_RE = re.compile(r"(?m)^\s{0,3}#{1,6}\s*")  # # headings
 _MD_BLOCKQUOTE_RE = re.compile(r"(?m)^\s*>\s?")  # > quotes
 _MD_LIST_RE = re.compile(r"(?m)^\s*(?:[-*+]|\d+\.)\s+")  # -, *, 1. list markers

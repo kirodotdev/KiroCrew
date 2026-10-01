@@ -588,6 +588,14 @@ class TestNvmResolution:
         assert bmod._resolve_nvm_path("node") is None
 
     def _nvm_dir(self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
+        """An ``NVM_DIR`` with ``nvm.sh`` present, on the POSIX branch.
+
+        The resolver is POSIX-only: on Windows it returns None before the
+        ``nvm.sh`` probe (``test_apps_backend_nvm_windows.py`` covers that
+        arm). These tests exercise the shell lookup, so they pin the platform
+        flag rather than letting the Windows runner skip the code under test.
+        """
+        monkeypatch.setattr(bmod.platform_compat, "IS_WINDOWS", False)
         nvm = tmp_path / "nvm"
         nvm.mkdir()
         (nvm / "nvm.sh").write_text("# nvm\n")
@@ -634,6 +642,46 @@ class TestNvmResolution:
         self._nvm_dir(tmp_path, monkeypatch)
         _record_runs(monkeypatch, exc=OSError("no bash"))
         assert bmod._resolve_nvm_path("node") is None
+
+    # Branch-outcome logging: each exit of the POSIX/nvm branch
+    # names itself, so a Windows log shows whether the branch ran or was skipped.
+    def test_skipped_branch_is_logged(
+        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # Pin the platform flag off: the resolver is POSIX-only and returns
+        # before this probe on Windows, so the branch under test runs on the
+        # Windows runner only once the guard is neutralised (sibling tests get
+        # this from ``_nvm_dir``; this one points NVM_DIR at an absent dir).
+        monkeypatch.setattr(bmod.platform_compat, "IS_WINDOWS", False)
+        monkeypatch.setenv("NVM_DIR", str(tmp_path / "absent"))
+        with caplog.at_level("DEBUG", logger=bmod.logger.name):
+            assert bmod._resolve_nvm_path("node") is None
+        assert any("skipping nvm branch" in r.getMessage() for r in caplog.records)
+
+    def test_resolved_branch_is_logged(
+        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        self._nvm_dir(tmp_path, monkeypatch)
+        bin_dir = tmp_path / "versions" / "bin"
+        bin_dir.mkdir(parents=True)
+        (bin_dir / "node").write_text("")
+        (bin_dir / "npm").write_text("")
+        _record_runs(
+            monkeypatch,
+            result=SimpleNamespace(returncode=0, stdout=f"{bin_dir / 'node'}\n"),
+        )
+        with caplog.at_level("DEBUG", logger=bmod.logger.name):
+            assert bmod._resolve_nvm_path("npm") == str(bin_dir / "npm")
+        assert any("resolved 'npm'" in r.getMessage() for r in caplog.records)
+
+    def test_probe_failure_branch_is_logged(
+        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        self._nvm_dir(tmp_path, monkeypatch)
+        _record_runs(monkeypatch, exc=OSError("no bash"))
+        with caplog.at_level("DEBUG", logger=bmod.logger.name):
+            assert bmod._resolve_nvm_path("node") is None
+        assert any("shell invocation failed" in r.getMessage() for r in caplog.records)
 
     def test_node_and_npm_prefer_nvm_over_path(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(bmod, "_resolve_nvm_path", lambda name: f"/nvm/{name}")

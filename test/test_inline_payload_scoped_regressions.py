@@ -539,6 +539,30 @@ class TestTheFoldIsClosedOverConstantExpressions:
         assert _rule_of(f'python -c "{payload}"') is None
 
 
+class TestANulInThePayloadDoesNotCrashTheGate:
+    r"""A ``\0`` escape reaches the lexer as a real NUL byte.
+
+    CPython 3.12's tokenizer raises ``SystemError`` for a NUL on a line after an
+    indented block. That escaped the lexer and crashed the whole gate, which the
+    runtime then showed as the user aborting the call.
+    """
+
+    def test_the_lexer_reads_past_a_nul_after_an_indented_block(self):
+        tokens = [item.string for item, _, _ in inline_payload._lex("if a:\n    b\nc = d\0\n")]
+        assert "d" in tokens
+
+    def test_a_harmless_program_with_a_nul_escape_is_allowed(self):
+        body = "def f(raw):\n    return raw\nparts = f(x).split(b'\\0')\nprint(parts)\n"
+        assert _rule_of(f'python3 -c "{body}"') is None
+
+    def test_a_mint_after_the_nul_is_still_refused(self):
+        body = (
+            "def f(raw):\n    return raw\nparts = f(x).split(b'\\0')\n"
+            "import runpy; runpy.run_module('kiro_crew')\n"
+        )
+        assert _rule_of(f'python3 -c "{body}"') == _MINT
+
+
 def ast_parse_fails(source: str) -> bool:
     try:
         ast.parse(source)

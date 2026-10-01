@@ -673,13 +673,51 @@ describe('ChatInput', () => {
   })
 
   describe('prompt history', () => {
-    const sent = ['first', 'second', 'third']
+    const sent = [{ text: 'first' }, { text: 'second' }, { text: 'third' }]
+
+    it('keeps the recalled prompt when older history loads in front mid-browse', () => {
+      const onChange = vi.fn()
+      const { rerender } = renderWithProviders(<ChatInput {...defaultProps} onChange={onChange} sentMessages={sent} value="" />)
+      const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+      fireEvent.keyDown(ta, { key: 'ArrowUp' })
+      rerender(<ChatInput {...defaultProps} onChange={onChange} sentMessages={sent} value="third" />)
+      ta.setSelectionRange(0, 0)
+      fireEvent.keyDown(ta, { key: 'ArrowUp' })
+      expect(onChange).toHaveBeenLastCalledWith('second')
+      const grown = [{ text: 'older-a' }, { text: 'older-b' }, ...sent]
+      rerender(<ChatInput {...defaultProps} onChange={onChange} sentMessages={grown} value="second" />)
+      ta.setSelectionRange(0, 0)
+      fireEvent.keyDown(ta, { key: 'ArrowUp' })
+      expect(onChange).toHaveBeenLastCalledWith('first')
+    })
 
     it('ArrowUp on empty input recalls newest message', () => {
       const onChange = vi.fn()
       renderWithProviders(<ChatInput {...defaultProps} onChange={onChange} sentMessages={sent} />)
       fireEvent.keyDown(screen.getByLabelText('Message input'), { key: 'ArrowUp' })
       expect(onChange).toHaveBeenLastCalledWith('third')
+    })
+
+    it('Ctrl+Up on empty input fires the edit-last request instead of recalling (#11402)', () => {
+      const onChange = vi.fn()
+      const onEditLastRequest = vi.fn()
+      renderWithProviders(
+        <ChatInput {...defaultProps} onChange={onChange} sentMessages={sent} onEditLastRequest={onEditLastRequest} />,
+      )
+      fireEvent.keyDown(screen.getByLabelText('Message input'), { key: 'ArrowUp', ctrlKey: true })
+      expect(onEditLastRequest).toHaveBeenCalledTimes(1)
+      expect(onChange).not.toHaveBeenCalled()
+    })
+
+    it('Ctrl+Up with composer content is unclaimed (no edit request, no recall)', () => {
+      const onChange = vi.fn()
+      const onEditLastRequest = vi.fn()
+      renderWithProviders(
+        <ChatInput {...defaultProps} value="draft text" onChange={onChange} sentMessages={sent} onEditLastRequest={onEditLastRequest} />,
+      )
+      fireEvent.keyDown(screen.getByLabelText('Message input'), { key: 'ArrowUp', ctrlKey: true })
+      expect(onEditLastRequest).not.toHaveBeenCalled()
+      expect(onChange).not.toHaveBeenCalled()
     })
 
     it('repeated ArrowUp walks from newest to oldest', () => {
@@ -811,7 +849,7 @@ describe('ChatInput', () => {
 
     it('ArrowDown in history mode is ignored when caret is not at end', () => {
       const onChange = vi.fn()
-      const multiLine = ['first', 'line1\nline2', 'third']
+      const multiLine = [{ text: 'first' }, { text: 'line1\nline2' }, { text: 'third' }]
       const { rerender } = renderWithProviders(<ChatInput {...defaultProps} onChange={onChange} sentMessages={multiLine} value="" />)
       const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
       fireEvent.keyDown(ta, { key: 'ArrowUp' })
@@ -956,6 +994,22 @@ describe('ChatInput', () => {
       expect(chip).toHaveTextContent('High')
       expect(chip).toHaveAccessibleName(/ · Reasoning effort: High$/)
       expect(chip).toHaveAttribute('title', chip.getAttribute('aria-label'))
+    })
+
+    it('marks a model picked for the user as auto, never as default', () => {
+      renderWithProviders(
+        <ChatInput {...defaultProps}
+          providerId="acp"
+          modelName="claude-sonnet-5"
+          modelIsAutoChosen
+          onModelClick={vi.fn()}
+        />
+      )
+      const chip = screen.getByTestId('composer-model-chip')
+      expect(chip).toHaveTextContent('claude-sonnet-5·auto')
+      expect(chip).not.toHaveTextContent('default')
+      expect(chip).toHaveAccessibleName('Model: claude-sonnet-5 · auto')
+      expect(chip).toHaveAttribute('title', 'Model: claude-sonnet-5 · auto')
     })
 
     it('invokes onModelClick with click rect', () => {

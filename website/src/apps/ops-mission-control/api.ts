@@ -1180,10 +1180,10 @@ export const opsApi = {
   /**
    * Hand-claim a signal off the Signals tab.
    *
-   * Returns the same claim envelope `dispatch` does (routes.py `_handle_claim` spreads
-   * `ClaimedIncident.to_dict()`), so `exact_match_ids` IS available here — and this is the
-   * only read path that carries it, since the Board's payloads do not. See `dispatch` for
-   * why it must not be re-derived from the incident.
+   * Returns the same claim envelope `dispatch` does (http_routes/lifecycle.py `_handle_claim`
+   * spreads `ClaimedIncident.to_dict()`), so `exact_match_ids` IS available here — and this
+   * is the only read path that carries it, since the Board's payloads do not. See `dispatch`
+   * for why it must not be re-derived from the incident.
    */
   claim: (signal: Signal) =>
     req<{

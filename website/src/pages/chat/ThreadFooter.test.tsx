@@ -40,10 +40,19 @@ describe('ThreadFooter', () => {
     const onOpen = vi.fn()
     const { rerender } = render(<ThreadFooter summary={SUMMARY} crewmateName="Radar" onOpen={onOpen} />)
     const footer = screen.getByRole('button', { name: 'Open thread' })
+    // The side is declared as `align-self` plus the matching negative margin,
+    // which is what pulls the button's own `px-1.5` back off the bubble's text
+    // edge. Both halves per side: a branch that kept one and lost the other
+    // would line the footer up 6px inside the bubble it belongs to.
     expect(footer.className).toContain('self-start')
+    expect(footer.className).toContain('-ml-1.5')
+    expect(footer.className).not.toContain('-mr-1.5')
     fireEvent.click(footer)
     expect(onOpen).toHaveBeenCalledTimes(1)
     rerender(<ThreadFooter summary={SUMMARY} crewmateName="Radar" onOpen={onOpen} align="end" />)
-    expect(screen.getByTestId('thread-footer').className).toContain('self-end')
+    const flipped = screen.getByTestId('thread-footer')
+    expect(flipped.className).toContain('self-end')
+    expect(flipped.className).toContain('-mr-1.5')
+    expect(flipped.className).not.toContain('-ml-1.5')
   })
 })

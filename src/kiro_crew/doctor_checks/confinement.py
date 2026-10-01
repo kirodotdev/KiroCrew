@@ -11,10 +11,8 @@ import shlex
 import sys
 from pathlib import Path
 
-from kiro_crew import cli_doctor, platform_compat, sandbox
+from kiro_crew import cli_doctor
 from kiro_crew.doctor_checks import render
-from kiro_crew.service import apparmor
-from kiro_crew.service import linux as service_linux
 
 
 def _process_apparmor_confinement() -> str:
@@ -47,7 +45,7 @@ def _process_userns_vantage_confined() -> bool | None:
     plus seccomp filtering identifies Kiro Crew's own agent-shell shape;
     container user-namespace mappings keep the host-level verdict.
     """
-    if not platform_compat.IS_LINUX:
+    if not cli_doctor.platform_compat.IS_LINUX:
         return None
     try:
         uid_map_text = _read_linux_proc_self("uid_map")
@@ -108,11 +106,11 @@ def _service_profile_applies(profile_path: Path, profile_name: str) -> bool:
     the profile against the new path — the same staleness
     ``kirocrew sandbox status`` already reports for the launcher profile.
     """
-    attached = apparmor.installed_attachment(profile_path, profile_name)
+    attached = cli_doctor.apparmor.installed_attachment(profile_path, profile_name)
     if attached is None:
         return False
     try:
-        current = str(Path(service_linux.kirocrew_bin()).resolve(strict=True))
+        current = str(Path(cli_doctor.service_linux.kirocrew_bin()).resolve(strict=True))
     except OSError:
         return False
     if attached != current:
@@ -129,7 +127,7 @@ def _service_profile_applies(profile_path: Path, profile_name: str) -> bool:
         # errors="replace" for the same reason as installed_attachment(): a
         # unit with undecodable bytes must not crash the verdict —
         # UnicodeDecodeError is a ValueError, outside the OSError guard.
-        unit_text = service_linux.UNIT_PATH.read_text(encoding="utf-8", errors="replace")
+        unit_text = cli_doctor.service_linux.UNIT_PATH.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return True
     for line in unit_text.splitlines():
@@ -156,11 +154,11 @@ def _doctor_sandbox_apparmor(reason: str, issues: list[str]) -> None:
       to verify — NOT a claim that the sandbox works, and NOT counted as an
       issue.
     """
-    if not apparmor.PROFILE_PATH.is_file():
+    if not cli_doctor.apparmor.PROFILE_PATH.is_file():
         print(f"  backend:     ❌ none — {reason}")
         render._print_wrapped(
             f"This host restricts unprivileged user namespaces and the "
-            f"{apparmor.PROFILE_NAME} AppArmor profile is not installed, so no context "
+            f"{cli_doctor.apparmor.PROFILE_NAME} AppArmor profile is not installed, so no context "
             f"on this host can build the sandbox. Run `kirocrew service install` to "
             f"install the profile and confine the gateway service with it."
         )
@@ -168,22 +166,24 @@ def _doctor_sandbox_apparmor(reason: str, issues: list[str]) -> None:
         return
 
     confinement = _process_apparmor_confinement()
-    if confinement and confinement.split(" ")[0] == apparmor.PROFILE_NAME:
+    if confinement and confinement.split(" ")[0] == cli_doctor.apparmor.PROFILE_NAME:
         # The one context that SHOULD be able to build the sandbox refused to:
         # this is a genuine fault, not a vantage-point artifact.
         print(f"  backend:     ❌ broken — {reason}")
         render._print_wrapped(
-            f"This process already runs confined by {apparmor.PROFILE_NAME}, which "
+            f"This process already runs confined by {cli_doctor.apparmor.PROFILE_NAME}, which "
             f"should grant user namespaces, yet the probe still failed. Re-run "
             f"`kirocrew service install` to re-render and reload the profile."
         )
         issues.append("sandbox: probe failed under the AppArmor profile")
         return
 
-    if not _service_profile_applies(apparmor.PROFILE_PATH, apparmor.PROFILE_NAME):
+    if not _service_profile_applies(
+        cli_doctor.apparmor.PROFILE_PATH, cli_doctor.apparmor.PROFILE_NAME
+    ):
         print(f"  backend:     ❌ none — {reason}")
         render._print_wrapped(
-            f"The {apparmor.PROFILE_NAME} AppArmor profile is installed, but it is not "
+            f"The {cli_doctor.apparmor.PROFILE_NAME} AppArmor profile is installed, but it is not "
             f"attached to the kirocrew launcher script this host currently resolves — "
             f"or the systemd unit still carries the retired `AppArmorProfile=` "
             f"directive, which silently overrides a path attachment (#3463). Either "
@@ -197,7 +197,7 @@ def _doctor_sandbox_apparmor(reason: str, issues: list[str]) -> None:
     # success claim either.
     print("  backend:     ⏭  cannot be verified from this shell")
     render._print_wrapped(
-        f"The {apparmor.PROFILE_NAME} AppArmor profile is installed and attached to "
+        f"The {cli_doctor.apparmor.PROFILE_NAME} AppArmor profile is installed and attached to "
         f"the kirocrew launcher script this host resolves, but this process was not "
         f"invoked through that exact path (or this shell is otherwise unconfined) — "
         f"so this probe cannot confirm the service's confinement from here no matter "
@@ -215,9 +215,9 @@ def _doctor_sandbox_apparmor(reason: str, issues: list[str]) -> None:
     # install path containing spaces or shell metacharacters must arrive as one
     # argument, not execute.
     try:
-        launcher = str(Path(service_linux.kirocrew_bin()).resolve(strict=True))
+        launcher = str(Path(cli_doctor.service_linux.kirocrew_bin()).resolve(strict=True))
     except OSError:
-        launcher = service_linux.kirocrew_bin()
+        launcher = cli_doctor.service_linux.kirocrew_bin()
     print(f"{render._INDENT}  {shlex.quote(launcher)} doctor")
     render._print_wrapped(
         "and read its Sandbox section: launched through the attached path, the "
@@ -254,14 +254,16 @@ def _doctor_kiro_internal_sandbox() -> None:
     if sys.platform != "darwin":
         return
     try:
-        delegated = sandbox.kiro_internal_sandbox_enabled()
+        delegated = cli_doctor.sandbox.kiro_internal_sandbox_enabled()
     except Exception:  # noqa: BLE001 — doctor must survive an unreadable setting
         return
     if not delegated:
         return
-    settings_path, key = sandbox.kiro_internal_sandbox_switch()
+    settings_path, key = cli_doctor.sandbox.kiro_internal_sandbox_switch()
     try:
-        own_tier = sandbox.effective_sandbox_mode(sandbox.configured_sandbox_mode())
+        own_tier = cli_doctor.sandbox.effective_sandbox_mode(
+            cli_doctor.sandbox.configured_sandbox_mode()
+        )
     except Exception:  # noqa: BLE001 — an unreadable tier must not shape the advice
         own_tier = None
     if own_tier is not None and own_tier != "off":
@@ -333,17 +335,17 @@ def _doctor_sandbox_backend(issues: list[str]) -> None:
         # read followed by a classifying call) would let a transient failure
         # heal between the two reads and report a now-working backend as
         # broken.
-        kind = sandbox.unavailable_kind()
+        kind = cli_doctor.sandbox.unavailable_kind()
     except Exception as exc:  # noqa: BLE001 — doctor must survive a broken probe
         print(f"  backend:     ⚠️  could not probe ({exc})")
         return
     if not kind:
         # The probe just succeeded, so this read serves the cached positive
         # result rather than probing again.
-        print(f"  backend:     ✅ {sandbox.detect_backend()}")
+        print(f"  backend:     ✅ {cli_doctor.sandbox.detect_backend()}")
         return
 
-    reason = sandbox.unavailable_reason() or "no probe detail recorded"
+    reason = cli_doctor.sandbox.unavailable_reason() or "no probe detail recorded"
     if kind == "transient":
         print("  backend:     ⚠️  probe failed transiently — not cached; the next spawn re-probes")
         print(f"{render._INDENT}({reason})")
@@ -356,11 +358,14 @@ def _doctor_sandbox_backend(issues: list[str]) -> None:
         )
         return
 
-    remedy = sandbox.unavailable_remedy()
-    if remedy == sandbox.REMEDY_APPARMOR_USERNS:
+    remedy = cli_doctor.sandbox.unavailable_remedy()
+    if remedy == cli_doctor.sandbox.REMEDY_APPARMOR_USERNS:
         _doctor_sandbox_apparmor(reason, issues)
         return
-    if remedy == sandbox.REMEDY_USERNS_DENIED and _process_userns_vantage_confined() is True:
+    if (
+        remedy == cli_doctor.sandbox.REMEDY_USERNS_DENIED
+        and _process_userns_vantage_confined() is True
+    ):
         print("  backend:     ⏭  cannot be verified from this shell")
         render._print_wrapped(
             "This shell is already confined inside a child user namespace with "
@@ -373,7 +378,7 @@ def _doctor_sandbox_backend(issues: list[str]) -> None:
         # without CONFIG_USER_NS, ...) — genuinely broken, with the mechanism's
         # own guidance when the probe identified one.
         print(f"  backend:     ❌ none — {reason}")
-        guidance = sandbox.remedy_guidance(remedy)
+        guidance = cli_doctor.sandbox.remedy_guidance(remedy)
         if guidance:
             render._print_wrapped(guidance)
         issues.append("sandbox backend")
@@ -392,8 +397,8 @@ def _doctor_sandbox_backend(issues: list[str]) -> None:
     # unconfined" would promise. Each permitting branch therefore names the floor
     # as the thing that overrides it.
     print("  backend:     ⏭  no OS-level sandbox backend on this platform")
-    permitted_by = sandbox.unsandboxed_exec_permitted_by()
-    if permitted_by == sandbox.UNSANDBOXED_BY_PLATFORM:
+    permitted_by = cli_doctor.sandbox.unsandboxed_exec_permitted_by()
+    if permitted_by == cli_doctor.sandbox.UNSANDBOXED_BY_PLATFORM:
         print("  exec:        ⚠️  configured to run agent subprocesses UNCONFINED")
         render._print_wrapped(
             "This is the default for a platform with no backend to install: "
@@ -404,7 +409,7 @@ def _doctor_sandbox_backend(issues: list[str]) -> None:
             "sandbox.min_level floor overrides this and makes such spawns fail "
             "closed, so a managed host refuses them despite this line."
         )
-    elif permitted_by == sandbox.UNSANDBOXED_BY_OPERATOR:
+    elif permitted_by == cli_doctor.sandbox.UNSANDBOXED_BY_OPERATOR:
         print("  exec:        ⚠️  unconfined by declaration — sandbox_allow_unsandboxed_exec=true")
         render._print_wrapped(
             "The operator declared this opt-in, so agent subprocesses run "
@@ -466,7 +471,7 @@ def _doctor_live_target_pointer(issues: list[str]) -> None:
     if not sys.platform.startswith("linux"):
         return
     try:
-        unfit = sandbox.live_target_pointer_unfitness()
+        unfit = cli_doctor.sandbox.live_target_pointer_unfitness()
     except Exception as exc:  # noqa: BLE001 — doctor must survive a broken probe
         print("\nLive Target Pointer")
         print(f"  pointer:     ⚠️  could not check ({render._safe_display(exc)})")
@@ -489,7 +494,9 @@ def _doctor_live_target_pointer(issues: list[str]) -> None:
     # moment the host confines a spawn -- but not counted as an issue, since nothing is
     # broken yet and doctor's exit code answers "is this install healthy NOW".
     try:
-        confined = sandbox.credential_mask_applies(sandbox.configured_sandbox_mode())
+        confined = cli_doctor.sandbox.credential_mask_applies(
+            cli_doctor.sandbox.configured_sandbox_mode()
+        )
     except Exception:  # noqa: BLE001 — an unreadable mode must not hide the pointer
         confined = True
     print("\nLive Target Pointer")
@@ -539,7 +546,7 @@ def _doctor_masked_credential_aliases(issues: list[str]) -> None:
     if not (sys.platform.startswith("linux") or sys.platform == "darwin"):
         return
     try:
-        aliased = sandbox.masked_credential_leaf_aliases()
+        aliased = cli_doctor.sandbox.masked_credential_leaf_aliases()
     except Exception as exc:  # noqa: BLE001 — doctor must survive a broken probe
         print("\nMasked Credential Leaves")
         print(f"  aliases:     ⚠️  could not check ({render._safe_display(exc)})")
@@ -550,7 +557,9 @@ def _doctor_masked_credential_aliases(issues: list[str]) -> None:
     # the reason the pointer's section states: it counts BOTH unwrapped outcomes, so a host
     # that hands the command over unwrapped is not told it is about to lose every spawn.
     try:
-        confined = sandbox.credential_mask_applies(sandbox.configured_sandbox_mode())
+        confined = cli_doctor.sandbox.credential_mask_applies(
+            cli_doctor.sandbox.configured_sandbox_mode()
+        )
     except Exception:  # noqa: BLE001 — an unreadable mode must not hide the leaf
         confined = True
     print("\nMasked Credential Leaves")
@@ -587,9 +596,9 @@ def _doctor_masked_credential_aliases(issues: list[str]) -> None:
         # detail opens with "cannot mask", which is what a spawn raises with and the direct
         # contradiction of the "masked for each spawn" line above it.
         if accounted:
-            render._print_wrapped(sandbox._masked_leaf_alias_search_hint(path))
+            render._print_wrapped(cli_doctor.sandbox._masked_leaf_alias_search_hint(path))
         else:
-            render._print_wrapped(sandbox._masked_leaf_multilink_detail(path, links))
+            render._print_wrapped(cli_doctor.sandbox._masked_leaf_multilink_detail(path, links))
     if refusing:
         render._print_wrapped(
             "Until this is fixed every agent spawn on this host fails closed, and the "

@@ -38,7 +38,6 @@ vi.mock('../hooks/useSessionActions', () => ({
   useSessionActions: () => ({
     toggleRead: vi.fn(),
     togglePin: vi.fn(),
-    toggleMode: vi.fn(),
     copyLink: vi.fn(),
     move: vi.fn(),
     reload: vi.fn(),

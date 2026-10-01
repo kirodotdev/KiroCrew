@@ -47,9 +47,17 @@ class TestPolicyDocument:
         Allow silently flipped to Deny (which would break the launcher rather than
         secure it) fails here. The Sid names the lane rather than a document set
         because the statement denies by exemption rather than by enumeration.
+
+        Two more Denies cut the secret-bearing reads back out of ec2:Describe*:
+        DenyForeignUserData (user data of instances Kiro Crew does not manage)
+        and DenySecretReads (launch-template and Spot user data, VPN keys).
         """
         denies = {st["Sid"] for st in iam.policy_document()["Statement"] if st["Effect"] == "Deny"}
-        assert denies == {"DenyStartSessionOutsideTheLane"}, denies
+        assert denies == {
+            "DenyStartSessionOutsideTheLane",
+            "DenyForeignUserData",
+            "DenySecretReads",
+        }, denies
 
     def test_covers_core_launch_actions(self):
         actions = {a for st in iam.policy_document()["Statement"] for a in st["Action"]}
@@ -62,9 +70,9 @@ class TestPolicyDocument:
             "ssm:StartSession",
             "ssm:GetParameter",
             "sts:GetCallerIdentity",
-            "ec2:DescribeInstanceTypeOfferings",
-            # discover_network verifies subnet egress via route tables
-            "ec2:DescribeRouteTables",
+            # discover_network, instance-type checks and CloudFormation's EC2
+            # handlers all read through the one Describe wildcard.
+            "ec2:Describe*",
             # DNS preflight: detect a private hosted zone that shadows a host the
             # bootstrap downloads from (NXDOMAIN with no public fallthrough).
             "route53:ListHostedZonesByVPC",
@@ -80,14 +88,52 @@ class TestPolicyDocument:
         ):
             assert needed in actions, f"missing {needed}"
 
-    def test_passrole_scoped_to_role_prefix_and_ec2(self):
+    def test_passrole_scoped_to_role_path_and_ec2(self):
         st = next(s for s in iam.policy_document()["Statement"] if s["Sid"] == "IamPassRoleToEc2")
-        assert iam.ROLE_NAME_PREFIX in st["Resource"]
-        cond = st["Condition"]["StringEquals"]
-        assert cond["iam:PassedToService"] == "ec2.amazonaws.com"
-        # Tag-gated so a pre-existing (unbounded) same-named role can't be passed:
-        # only a role WE created (tagged at CreateRole) matches.
-        assert cond[f"aws:ResourceTag/{iam.MANAGED_TAG_KEY}"] == "true"
+        assert st["Resource"] == "arn:aws:iam::*:role/kirocrew-ec2/kirocrew-ec2-*"
+        assert st["Resource"] == iam.INSTANCE_ROLE_ARN
+        assert st["Condition"]["StringEquals"]["iam:PassedToService"] == "ec2.amazonaws.com"
+
+    def test_passrole_has_no_resource_tag_or_associated_arn_condition(self):
+        # aws:ResourceTag is not reliable for iam:PassRole, and either key as a
+        # condition denies CloudFormation's RunInstances at the Instance resource.
+        st = next(s for s in iam.policy_document()["Statement"] if s["Sid"] == "IamPassRoleToEc2")
+        keys = {k for block in st["Condition"].values() for k in block}
+        assert not any(k.startswith("aws:ResourceTag/") for k in keys)
+        assert "iam:AssociatedResourceArn" not in keys
+
+    def test_root_path_role_can_be_neither_created_nor_passed(self):
+        # The path replaces the PassRole tag gate: a pre-existing root-path
+        # kirocrew-ec2-* role must match no CreateRole, PassRole, PutRolePolicy
+        # or TagRole resource.
+        for st in iam.policy_document()["Statement"]:
+            actions = set(st["Action"])
+            if actions & {"iam:CreateRole", "iam:PassRole", "iam:PutRolePolicy", "iam:TagRole"}:
+                resources = st["Resource"] if isinstance(st["Resource"], list) else [st["Resource"]]
+                assert resources == [iam.INSTANCE_ROLE_ARN], st["Sid"]
+                assert iam.LEGACY_ROLE_ARN not in resources, st["Sid"]
+
+    def test_template_puts_instance_role_under_role_path(self):
+        import pathlib
+
+        import kiro_crew.cloud as cloud_pkg
+
+        text = (
+            pathlib.Path(cloud_pkg.__file__).parent / "templates" / "kirocrew-ec2.yaml"
+        ).read_text(encoding="utf-8")
+        role = text.split("  InstanceRole:\n", 1)[1].split("\n  InstanceProfile:", 1)[0]
+        assert f"      Path: {iam.ROLE_PATH}\n" in role
+
+    def test_revoke_security_group_egress_is_granted_tag_scoped(self):
+        # CloudFormation revokes a new security group's implicit allow-all egress
+        # before it applies the template's declared egress.
+        st = next(
+            s
+            for s in iam.policy_document()["Statement"]
+            if "ec2:RevokeSecurityGroupEgress" in s["Action"]
+        )
+        assert st["Sid"] == "Ec2ManagedResourceMutateTagged"
+        assert st["Condition"]["StringEquals"][f"aws:ResourceTag/{iam.MANAGED_TAG_KEY}"] == "true"
 
     def test_put_role_policy_is_tag_scoped(self):
         # PutRolePolicy must be gated on aws:ResourceTag/kirocrew:managed=true (in
@@ -109,24 +155,24 @@ class TestPolicyDocument:
         # PutRolePolicy's request context — it would deny the call).
         assert "iam:PermissionsBoundary" not in str(st["Condition"])
 
-    def test_put_role_policy_and_passrole_not_tag_scoped_regression(self):
-        # Guard: both PutRolePolicy and PassRole on a kirocrew-ec2-* role ARN must
-        # carry the managed-tag condition — a regression that drops it re-opens
-        # the pre-existing-unbounded-role escalation. PutRolePolicy now lives in
-        # the merged IamPutRolePolicyAndTagRoleOnManaged statement.
-        for sid in ("IamPutRolePolicyAndTagRoleOnManaged", "IamPassRoleToEc2"):
-            st = next(s for s in iam.policy_document()["Statement"] if s["Sid"] == sid)
-            se = st.get("Condition", {}).get("StringEquals", {})
-            assert (
-                se.get(f"aws:ResourceTag/{iam.MANAGED_TAG_KEY}") == "true"
-            ), f"{sid} lost its aws:ResourceTag/kirocrew:managed gate"
+    def test_put_role_policy_not_tag_scoped_regression(self):
+        # Guard: PutRolePolicy on a kirocrew-ec2-* role ARN must carry the
+        # managed-tag condition — a regression that drops it re-opens the
+        # pre-existing-unbounded-role escalation. PutRolePolicy lives in the
+        # merged IamPutRolePolicyAndTagRoleOnManaged statement.
+        sid = "IamPutRolePolicyAndTagRoleOnManaged"
+        st = next(s for s in iam.policy_document()["Statement"] if s["Sid"] == sid)
+        se = st.get("Condition", {}).get("StringEquals", {})
+        assert (
+            se.get(f"aws:ResourceTag/{iam.MANAGED_TAG_KEY}") == "true"
+        ), f"{sid} lost its aws:ResourceTag/kirocrew:managed gate"
 
     def test_tag_role_gated_on_existing_managed_tag(self):
         # iam:TagRole must be gated on aws:ResourceTag/kirocrew:managed=true —
         # NOT unconditioned, and NOT in IamRoleForInstance. If it were
         # unconditioned, a leaked launcher credential could tag a pre-existing
         # UNBOUNDED kirocrew-ec2-* role kirocrew:managed=true and thereby satisfy
-        # the PutRolePolicy/PassRole tag gate, defeating it. The aws:ResourceTag
+        # the PutRolePolicy tag gate, defeating it. The aws:ResourceTag
         # gate means the launcher can only tag a role that is ALREADY managed —
         # which, at CreateRole, AWS evaluates against the tags being applied (so
         # the boundary-gated create still works), but a standalone re-tag of an
@@ -351,6 +397,7 @@ class TestPolicyDocument:
         assert set(st["Action"]) == {
             "ec2:AuthorizeSecurityGroupEgress",
             "ec2:AuthorizeSecurityGroupIngress",
+            "ec2:RevokeSecurityGroupEgress",
             "ec2:RevokeSecurityGroupIngress",
             "ec2:DeleteSecurityGroup",
             "ec2:DeleteTags",
@@ -525,7 +572,7 @@ class TestPolicyDocument:
         assert set(st["Action"]) == {"iam:AttachRolePolicy", "iam:DetachRolePolicy"}
         pinned = st["Condition"]["ArnEquals"]["iam:PolicyARN"]
         assert pinned == "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
-        assert iam.ROLE_NAME_PREFIX in st["Resource"]
+        assert st["Resource"] == [iam.INSTANCE_ROLE_ARN, iam.LEGACY_ROLE_ARN]
         # unconstrained Attach/Detach must NOT remain in the broad role statement
         role_st = self._stmt("IamRoleForInstance")
         assert "iam:AttachRolePolicy" not in role_st["Action"]
@@ -622,11 +669,19 @@ class TestPolicyDocument:
                         tuples.add((effect, action, form, resource, cond))
             return tuples
 
-        old_tuples = flatten(old)
-        new_tuples = flatten(new)
-        assert new_tuples == old_tuples, {
-            "only_in_old": sorted(old_tuples - new_tuples),
-            "only_in_new": sorted(new_tuples - old_tuples),
+        # Every tuple of the current policy is compared: the snapshot with the
+        # named delta applied must equal the current policy exactly, so any
+        # change outside the delta (including a further widening of a delta
+        # tuple) fails.
+        assert EXPECTED_PERMISSION_DELTA_REMOVED <= flatten(old)
+        assert not EXPECTED_PERMISSION_DELTA_ADDED & flatten(old)
+        expected = (
+            flatten(old) - EXPECTED_PERMISSION_DELTA_REMOVED
+        ) | EXPECTED_PERMISSION_DELTA_ADDED
+        actual = flatten(new)
+        assert actual == expected, {
+            "missing": sorted(expected - actual),
+            "unexpected": sorted(actual - expected),
         }
         # The old policy really was over the hard cap (the reason for this PR),
         # so the fixture is the genuine pre-shrink state, not a copy of the new one.
@@ -634,6 +689,102 @@ class TestPolicyDocument:
 
     def test_policy_json_roundtrips(self):
         assert json.loads(iam.policy_json()) == iam.policy_document()
+
+
+_TAG_COND = json.dumps({"StringEquals": {"aws:ResourceTag/kirocrew:managed": "true"}})
+_BOUNDARY_COND = json.dumps(
+    {"ArnLike": {"iam:PermissionsBoundary": "arn:aws:iam::*:policy/kirocrew-ec2-boundary"}}
+)
+_SSM_CORE_COND = json.dumps(
+    {"ArnEquals": {"iam:PolicyARN": "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"}}
+)
+_ROOT_ROLE = "arn:aws:iam::*:role/kirocrew-ec2-*"
+_EC2_DESCRIBES_REPLACED = (
+    "ec2:DescribeInstances",
+    "ec2:DescribeInstanceStatus",
+    "ec2:DescribeImages",
+    "ec2:DescribeVpcs",
+    "ec2:DescribeSubnets",
+    "ec2:DescribeRouteTables",
+    "ec2:DescribeSecurityGroups",
+    "ec2:DescribeKeyPairs",
+    "ec2:DescribeAvailabilityZones",
+    "ec2:DescribeInstanceTypeOfferings",
+)
+_PATH_ROLE = "arn:aws:iam::*:role/kirocrew-ec2/kirocrew-ec2-*"
+_ROLE_MGMT_VERBS = (
+    "iam:DeleteRole",
+    "iam:GetRole",
+    "iam:ListAttachedRolePolicies",
+    "iam:ListRolePolicies",
+    "iam:GetRolePolicy",
+    "iam:DeleteRolePolicy",
+    "iam:CreateInstanceProfile",
+    "iam:DeleteInstanceProfile",
+    "iam:GetInstanceProfile",
+    "iam:AddRoleToInstanceProfile",
+    "iam:RemoveRoleFromInstanceProfile",
+)
+
+# The deliberate permission changes since the pre-shrink snapshot. Every other
+# tuple must be identical between the snapshot and the current policy.
+#  * Revoke the implicit allow-all egress on a managed security group.
+#  * CreateRole / PutRolePolicy / TagRole / PassRole move from the root-path
+#    name prefix to ROLE_PATH; PassRole loses its aws:ResourceTag and
+#    iam:AssociatedResourceArn conditions.
+#  * The explicit ec2 Describe list becomes ec2:Describe*, and the Instance
+#    handler's two SSM association reads are added, all on "*".
+#  * Role management and the SSM-core attach/detach gain ROLE_PATH beside the
+#    root-path prefix, which stays so pre-path stacks can still be destroyed.
+EXPECTED_PERMISSION_DELTA_REMOVED = {
+    *(("Allow", a, "Resource", "*", "null") for a in _EC2_DESCRIBES_REPLACED),
+    ("Allow", "iam:CreateRole", "Resource", _ROOT_ROLE, _BOUNDARY_COND),
+    ("Allow", "iam:PutRolePolicy", "Resource", _ROOT_ROLE, _TAG_COND),
+    ("Allow", "iam:TagRole", "Resource", _ROOT_ROLE, _TAG_COND),
+    (
+        "Allow",
+        "iam:PassRole",
+        "Resource",
+        _ROOT_ROLE,
+        json.dumps(
+            {
+                "ArnLike": {"iam:AssociatedResourceArn": "arn:aws:ec2:*:*:instance/*"},
+                "StringEquals": {
+                    "aws:ResourceTag/kirocrew:managed": "true",
+                    "iam:PassedToService": "ec2.amazonaws.com",
+                },
+            }
+        ),
+    ),
+}
+EXPECTED_PERMISSION_DELTA_ADDED = {
+    ("Allow", "ec2:RevokeSecurityGroupEgress", "Resource", "*", _TAG_COND),
+    ("Allow", "ec2:Describe*", "Resource", "*", "null"),
+    ("Allow", "ssm:DescribeAssociation", "Resource", "*", "null"),
+    ("Allow", "ssm:ListAssociations", "Resource", "*", "null"),
+    (
+        "Deny",
+        "ec2:DescribeInstanceAttribute",
+        "Resource",
+        "*",
+        json.dumps({"StringNotEquals": {"aws:ResourceTag/kirocrew:managed": "true"}}),
+    ),
+    ("Deny", "ec2:DescribeLaunchTemplateVersions", "Resource", "*", "null"),
+    ("Deny", "ec2:DescribeSpot*Requests", "Resource", "*", "null"),
+    ("Deny", "ec2:DescribeVpnConnections", "Resource", "*", "null"),
+    ("Allow", "iam:CreateRole", "Resource", _PATH_ROLE, _BOUNDARY_COND),
+    ("Allow", "iam:PutRolePolicy", "Resource", _PATH_ROLE, _TAG_COND),
+    ("Allow", "iam:TagRole", "Resource", _PATH_ROLE, _TAG_COND),
+    (
+        "Allow",
+        "iam:PassRole",
+        "Resource",
+        _PATH_ROLE,
+        json.dumps({"StringEquals": {"iam:PassedToService": "ec2.amazonaws.com"}}),
+    ),
+    ("Allow", "iam:AttachRolePolicy", "Resource", _PATH_ROLE, _SSM_CORE_COND),
+    ("Allow", "iam:DetachRolePolicy", "Resource", _PATH_ROLE, _SSM_CORE_COND),
+} | {("Allow", verb, "Resource", _PATH_ROLE, "null") for verb in _ROLE_MGMT_VERBS}
 
 
 class TestReachabilityCheck:

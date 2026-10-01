@@ -48,7 +48,7 @@ The reason this is not simply "let the worker call `session_send`" is in the cod
 
 This section describes what `kirocrew-conductor` cost BEFORE the ledger, and it is now a historical account: the swap in §Rollout note — swap done made the ledger flow what `kirocrew-conductor` runs, so the four costs below are what it no longer pays. `kirocrew-ledger-conductor` is a deprecated alias of it for one release.
 
-The conductor agent spec is built by `_install_conductor_agent` in [`src/kiro_crew/agent.py`](../../src/kiro_crew/agent.py). Its operating loop is [`goal-conductor/SKILL.md`](../../src/kiro_crew/builtin_skills/goal-conductor/SKILL.md): dispatch with `session_create` plus `session_send`, then patrol on an AutoNudge loop armed by `monitor_start`, and each cycle read `session_ledger_read`, run `accept_eval.py` over every open item, and call `session_read_message` against a stored cursor.
+The conductor agent spec is built by `_install_conductor_agent` in [`src/kiro_crew/agent_materialization/conductor_agents.py`](../../src/kiro_crew/agent_materialization/conductor_agents.py). Its operating loop is [`goal-conductor/SKILL.md`](../../src/kiro_crew/builtin_skills/goal-conductor/SKILL.md): dispatch with `session_create` plus `session_send`, then patrol on an AutoNudge loop armed by `monitor_start`, and each cycle read `session_ledger_read`, run `accept_eval.py` over every open item, and call `session_read_message` against a stored cursor.
 
 Four costs follow from that shape.
 
@@ -667,7 +667,7 @@ The seed is sent **after** the bind, which inverts the current skill's "seed bef
 
 ### Wake gate and liveness
 
-`monitor_start` gates on exactly one subject kind today. `infer` in [`src/kiro_crew/probes/targets.py`](../../src/kiro_crew/probes/targets.py) scans the loop message for a single GitHub pull-request URL and returns a `Target`; `build` in [`src/kiro_crew/probes/__init__.py`](../../src/kiro_crew/probes/__init__.py) maps the kind to a probe; `_monitor_tick_is_quiet` in [`src/kiro_crew/autonudge.py`](../../src/kiro_crew/autonudge.py) runs it and re-arms without firing on a positive quiet verdict. The kernel in [`src/kiro_crew/irq.py`](../../src/kiro_crew/irq.py) needs no change: its state, dedupe, coalescing and failure backstop are already kind-agnostic.
+`monitor_start` gates on exactly one subject kind today. `infer` in [`src/kiro_crew/probes/targets.py`](../../src/kiro_crew/probes/targets.py) scans the loop message for a single GitHub pull-request URL and returns a `Target`; `build` in [`src/kiro_crew/probes/__init__.py`](../../src/kiro_crew/probes/__init__.py) maps the kind to a probe; `_monitor_tick_is_quiet` in [`src/kiro_crew/autonudge_service/gate.py`](../../src/kiro_crew/autonudge_service/gate.py) runs it and re-arms without firing on a positive quiet verdict. The kernel in [`src/kiro_crew/irq.py`](../../src/kiro_crew/irq.py) needs no change: its state, dedupe, coalescing and failure backstop are already kind-agnostic.
 
 A work-ledger gate adds a `work-ledger` kind and a probe, and needs one thing the pull-request gate does not: the subject is the calling session's own identity, which no regex over the message can find. So `monitor_start` gains an explicit `watch: "work-ledger"` field rather than inferring the gate from session state. Implicit selection would be more convenient and would make a quiet loop unexplainable — a conductor could not tell whether it was gated on its ledger or not, and neither could a maintainer reading the loop.
 
@@ -1172,9 +1172,10 @@ doctor scans every config surface that persists an agent name -- cron jobs
 crew bindings (`agents.<name>.kiro_agent`), the config's own selectors
 (`agent.default_agent`, `session.pool_agent`, per-channel `agent` overrides), and
 open chat slots -- and reports any that names a deprecated spec, naming the
-replacement. The check is data-driven off `DEPRECATED_AGENT_SPECS` in `agent.py`,
-defined beside the alias installer so a future rename adds a row instead of a new
-check, and a row is deleted together with its alias. The notice is a
+replacement. The check is data-driven off `DEPRECATED_AGENT_SPECS` in
+`agent_materialization/conductor_agents.py`, defined beside the alias installer so a
+future rename adds a row instead of a new check, and a row is deleted together with
+its alias. The notice is a
 **precondition for deleting the alias**, not for the swap: while the alias
 exists, an unmigrated config keeps working.
 

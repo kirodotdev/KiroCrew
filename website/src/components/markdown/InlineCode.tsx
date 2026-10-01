@@ -8,9 +8,9 @@ import { InstantTip, useInstantTip } from '../InstantTip'
 import ErrorNotice from '../ErrorNotice'
 import FilePathMenu, { useRevealFailure } from '../FilePathMenu'
 import { i18nT } from '../../i18n/t'
-import { InsideLinkCtx, PathActionCtx, PathProbeCtx, SessionActionCtx } from './contexts'
+import { InsideLinkCtx, PathActionCtx, PathProbeCtx, SessionActionCtx, SidebarFolderCtx } from './contexts'
 import { activatePath, basenameOf, usePathResolution } from './pathReferences'
-import { resolveSessionChip } from './linkTargets'
+import { folderSegmentsOf, resolveFolderChip, resolveSessionChip } from './linkTargets'
 import { CopyFailedNotice, useCopiedFlash, useTitleCuedCopy } from './copyFeedback'
 import { ELEMENT_OVERRIDES, isElementWithProps } from './elements'
 
@@ -130,6 +130,13 @@ const CHIP_GLYPH_GEOMETRY = 'inline align-middle mr-1'
 function ChipGlyphReserve({ path }: { path: string }) {
   const Glyph = fileIcon(path)
   return <Glyph size={CHIP_GLYPH_SIZE} aria-hidden="true" className={`${CHIP_GLYPH_GEOMETRY} opacity-0`} />
+}
+
+/** The same stand-in for a FOLDER-shaped span (`goal/worker`) whose roster answer
+ *  has not arrived; see the reserve note in `InlineCode`. The folder chip's glyph
+ *  is always `Folder`, so this needs no path. */
+function FolderGlyphReserve() {
+  return <Folder size={CHIP_GLYPH_SIZE} aria-hidden="true" className={`${CHIP_GLYPH_GEOMETRY} opacity-0`} />
 }
 
 /**
@@ -352,6 +359,88 @@ function SessionChip({ sessionKey, sessionTitle, label, safeProps, onOpen, child
 }
 
 /**
+ * Click-to-reveal inline chip for a confirmed SIDEBAR folder path.
+ *
+ * The folder twin of `SessionChip`: a sidebar row a click can jump to, so it
+ * wears the same actionable dress -- `<code>`, `CHIP_ACTIONABLE`, a leading
+ * glyph, Ctrl/Cmd+click reserved for copying. The glyph is the sidebar's own
+ * folder icon, so the chip reads as "that thing in the sidebar" rather than as a
+ * directory on disk (the path chip's `Folder` glyph is monochrome too, but that
+ * chip only exists for a path the backend stat-confirmed, which a sidebar folder
+ * path never is -- the two cannot claim one span).
+ *
+ * The click REVEALS rather than navigates: the reader stays in this conversation
+ * and the sidebar expands, scrolls to and flashes the folder, which is what
+ * "where did you put my team" asks for. Opening a session would need a session
+ * to pick; a folder holds many.
+ */
+function FolderChip({ folderId, folderPath, label, safeProps, onReveal, children }: {
+  folderId: string
+  /** The `/`-joined human path, what Ctrl/Cmd+click copies. */
+  folderPath: string
+  /** The span's visible text -- the author's spelling of the path. */
+  label: string
+  safeProps: Record<string, unknown>
+  onReveal: (folderId: string) => void
+  children: React.ReactNode
+}) {
+  const { copied, press, failureBubble } = useTitleCuedCopy(folderPath, i18nT('components.markdownRenderer.the_copy_failed_ctrl_cmd_click_copies_the_folder_path_label', { label }))
+  const act = (e: React.MouseEvent<HTMLElement> | React.KeyboardEvent<HTMLElement>) => {
+    e.preventDefault()
+    e.stopPropagation()
+    if (e.ctrlKey || e.metaKey) { press(e.currentTarget); return }
+    onReveal(folderId)
+  }
+  return (
+    <>
+    <code
+      className={CHIP_ACTIONABLE}
+      // eslint-disable-next-line jsx-a11y/no-noninteractive-element-to-interactive-role -- <code> is intentionally interactive (click-to-reveal), same pattern as SessionChip
+      role="button"
+      tabIndex={0}
+      onClick={act}
+      onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') act(e) }}
+      {...safeProps}
+      data-folder-id={folderId}
+      data-chip-action="navigate"
+      // The name states the action and keeps the visible text, same rule as the
+      // session chip: two folders can share a leaf name, and the path is what
+      // tells a screen-reader user which one this is.
+      aria-label={i18nT('components.markdownRenderer.show_folder_chip_name', { label })}
+      title={copied
+        ? i18nT('components.markdownRenderer.copied')
+        : `${i18nT('components.markdownRenderer.click_to_show_this_folder_in_the_sidebar')}\n${i18nT('components.markdownRenderer.ctrl_click_to_copy')}`}
+    >
+      <Folder size={CHIP_GLYPH_SIZE} aria-hidden="true" className={`${CHIP_GLYPH_GEOMETRY} opacity-70`} />
+      {segmentedLabel(label, children)}
+      {copied && <Check size={12} aria-hidden="true" className="inline align-middle ml-0.5 opacity-70 pointer-events-none text-ok" />}
+    </code>
+    {failureBubble}
+    </>
+  )
+}
+
+/**
+ * The chip's text with a break opportunity after each separator and none inside
+ * a segment. A folder path is long and the transcript column narrow, so the
+ * span wraps often; the container's `overflow-wrap: anywhere` would break it at
+ * whatever column runs out (`monitor-turn-budg / et`), which reads as a broken
+ * word. Each segment is an unbreakable run and a `<wbr>` follows each separator,
+ * so a wrapped chip reads `monitor-turn-budget/` then `worker`. Only a plain
+ * string label is reshaped: a span whose children are richer nodes keeps them,
+ * since `codeTextOf` already vouched that their text is the label.
+ */
+function segmentedLabel(label: string, children: React.ReactNode): React.ReactNode {
+  if (typeof children !== 'string') return children
+  const parts = label.split(/(\s*›\s*|\/)/)
+  return parts.map((part, i) => (
+    i % 2 === 1
+      ? <React.Fragment key={i}>{part}<wbr /></React.Fragment>
+      : <span key={i} className="whitespace-nowrap">{part}</span>
+  ))
+}
+
+/**
  * Inline `code` span, upgraded to a click-to-open chip only once the backend has
  * confirmed the text names something that exists.
  *
@@ -380,6 +469,7 @@ export function InlineCode({ children, ...props }: { children?: React.ReactNode 
   const probeEnabled = useContext(PathProbeCtx)
   const actions = useContext(PathActionCtx)
   const sessionActions = useContext(SessionActionCtx)
+  const folderActions = useContext(SidebarFolderCtx)
   const insideLink = useContext(InsideLinkCtx)
   const gatewayPlatform = useGatewayPlatform()
   const { directLocal } = useBranding()
@@ -402,7 +492,7 @@ export function InlineCode({ children, ...props }: { children?: React.ReactNode 
   const safeProps = Object.fromEntries(
     Object.entries(props).filter(([k]) => {
       const name = k.toLowerCase()
-      return !name.startsWith('data-path') && !name.startsWith('data-session') && name !== 'data-chip-action'
+      return !name.startsWith('data-path') && !name.startsWith('data-session') && !name.startsWith('data-folder') && name !== 'data-chip-action'
     }),
   )
 
@@ -415,7 +505,22 @@ export function InlineCode({ children, ...props }: { children?: React.ReactNode 
     // A session chip needs none: `isPathCandidate` demands a separator, a drive
     // or an extension, and a session key carries none of the three, so the two
     // chips cannot claim the same span.
-    const reserve = pathResolution.shaped ? <ChipGlyphReserve path={pathResolution.splitPath} /> : null
+    //
+    // A FOLDER-shaped span (`goal/worker`, `goal › worker`) is reserved too, for
+    // the same async reason with a different answer in flight: the folder roster
+    // arrives from the `['chat-folders']` query, cold on first paint and
+    // invalidated when a folder is created, so a chip can appear after the
+    // paragraph is laid out. The reserve holds the glyph's width until then, and
+    // the chip draws its own glyph at the same size and margin (`CHIP_GLYPH_SIZE`,
+    // `CHIP_GLYPH_GEOMETRY`), so the answer restyles the span, it does not
+    // reflow the row. Keyed to the SHAPE, not to the roster answering, for the
+    // same reason as the path reserve above -- but only where a roster and a
+    // handler are WIRED (`SidebarFolderCtx`): a host that offers no folder chip
+    // (every renderer outside the chat page) has no answer in flight to hold
+    // space for, and its `a/b` spans keep their exact width.
+    const folderChipPossible = !!(folderActions.onFolderReveal && folderActions.folders)
+    const folderReserve = folderChipPossible && folderSegmentsOf(raw) !== null ? <FolderGlyphReserve /> : null
+    const reserve = pathResolution.shaped ? <ChipGlyphReserve path={pathResolution.splitPath} /> : folderReserve
     // Inside an anchor the link owns the click, so stay the inert span this was
     // before #4433 rather than cancelling the navigation to copy. Nothing is
     // lost: the browser's own "Copy link address" still reaches the URL. It IS
@@ -438,6 +543,28 @@ export function InlineCode({ children, ...props }: { children?: React.ReactNode 
           safeProps={safeProps}
           onOpen={sessionActions.onSessionOpen!}
         >{children}</SessionChip>
+      )
+    }
+    // A sidebar folder named by its full human path. After the session chip (a
+    // session is the more specific target) and before the autolink rule (in-app
+    // navigation over an external link, same order the session chip takes).
+    // Most folder paths (`goal/worker`) are not path candidates -- no root, no
+    // relative prefix, no extension -- so no probe runs and the chip is there on
+    // first render. One that IS a candidate (`reports/weekly.md`) is not offered
+    // while its stat probe is in flight, and becomes a folder chip only once the
+    // probe said it is NOT on disk: a folder that shares its spelling with a real
+    // directory keeps the confirmed path chip, and a click during the wait
+    // cannot reveal a folder the probe is about to overrule.
+    const folder = pathResolution.probePending ? null : resolveFolderChip(raw, folderActions)
+    if (folder) {
+      return (
+        <FolderChip
+          folderId={folder.id}
+          folderPath={folder.path}
+          label={raw}
+          safeProps={safeProps}
+          onReveal={folderActions.onFolderReveal!}
+        >{children}</FolderChip>
       )
     }
     // A span whose WHOLE text matches an operator-configured autolink rule is

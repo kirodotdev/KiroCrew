@@ -19,7 +19,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { createTestStore } from './helpers'
 import { ThemeProvider } from '../hooks/useTheme'
 import type { RootState } from '../store'
-import type { ChatTag, TagColumn, ChatFolder } from '../types'
+import type { ChatTag, TagColumn, ChatFolder, ChatSlot } from '../types'
 
 // Render framer-motion elements as plain DOM because jsdom cannot run projection.
 vi.mock('framer-motion', async () => {
@@ -91,10 +91,10 @@ const columns: TagColumn[] = [
   { id: COL_B, name: 'Review', tag_ids: [REVIEW], mode: 'any', order: 1 },
 ]
 
-function renderSidebar(folderData: ChatFolder[]) {
+function renderSidebar(folderData: ChatFolder[], slots: ChatSlot[] = []) {
   const store = createTestStore({
     dashboard: {
-      status: {}, connected: false, slots: [], approvalMode: 'normal',
+      status: {}, connected: false, slots, approvalMode: 'normal',
       channelTrusted: false, refreshTrigger: 0, unreadSlots: [], updateProgress: null,
       subagentRunning: {}, subagentDetails: {}, subagentText: {},
       sessionDefaultColor: null, sessionColorsMode: 'tint', sessionColorsPalette: 'horizon', sessionColorsIntensity: 'clear',
@@ -111,7 +111,7 @@ function renderSidebar(folderData: ChatFolder[]) {
         <ThemeProvider>
           <MemoryRouter>
             <ChatSidebar
-              slots={[]} activeSlot={null} unreadSlots={[]}
+              slots={slots} activeSlot={null} unreadSlots={[]}
               history={[]} historyHasMore={false} defaultAgent="" installedAgents={[]}
             />
           </MemoryRouter>
@@ -165,6 +165,23 @@ describe('board view: per-column folder collapse', () => {
     const second = renderSidebar(folderData)
     expect(folderHeader(second.container, COL_A).getAttribute('aria-expanded')).toBe('false')
     expect(folderHeader(second.container, COL_B).getAttribute('aria-expanded')).toBe('true')
+  })
+
+  it('renders a rail only for a board folder with content', () => {
+    const emptyFolder = 'folder-empty'
+    const folderData: ChatFolder[] = [
+      { id: FOLDER_ID, name: 'CDF', order: 0, collapsed: false },
+      { id: emptyFolder, name: 'Empty', order: 1, collapsed: false },
+    ]
+    const slots = [{
+      key: 'foldered-slot', title: 'Foldered', running: false, messages: 1,
+      folder_id: FOLDER_ID, tags: [BLOCKED], created: '', last_ts: '',
+    } as ChatSlot]
+
+    const { queryByTestId } = renderSidebar(folderData, slots)
+
+    expect(queryByTestId(`folder-rail-${COL_A}-${FOLDER_ID}`)).toBeTruthy()
+    expect(queryByTestId(`folder-rail-${COL_A}-${emptyFolder}`)).toBeNull()
   })
 
   it('a column without an override follows the server default', () => {

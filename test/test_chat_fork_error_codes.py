@@ -10,7 +10,7 @@ remaining seventeen had to follow it.
 The prose is kept and keeps its meaning — demoted to advisory, not removed — so
 a client that only reads ``error`` is unaffected. This is backend-only because
 all three frontend callers of ``forkChatSlot`` (``useSessionActions.ts``,
-``SessionGridView.tsx``, ``chatSlice.ts``) branch on ``ok``/``key`` and none
+``SessionGridView.tsx``, ``store/chat/lifecycle.ts``) branch on ``ok``/``key`` and none
 declares an ``onError`` or reads ``res.error`` at all.
 
 **The one refusal that must NOT become distinguishable.** ``api_chat_slot_fork``

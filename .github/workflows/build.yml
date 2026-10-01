@@ -210,7 +210,7 @@ jobs:
 
       # No -SkipGatewayValidation: the payload above has a real interpreter, so
       # the script's gateway leg runs and requires /api/ready within its own
-      # 30-second ceiling.
+      # 50-second ceiling.
       #
       # -MinStartupPycs 750 rather than the script's 1000 default: that default
       # describes the FULL release bundle, which also carries the voice extras

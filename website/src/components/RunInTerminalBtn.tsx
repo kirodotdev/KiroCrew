@@ -1,8 +1,10 @@
-import { useState, useCallback, useRef, useEffect } from 'react'
-import { SquareTerminal, Check, AlertCircle } from 'lucide-react'
+import { useState, useCallback, useRef, useEffect, useContext } from 'react'
+import { useQuery, QueryClientContext } from '@tanstack/react-query'
+import { SquareTerminal, Check, ClipboardCheck, AlertCircle } from 'lucide-react'
 import { checkSensitiveCommand } from '../utils/sensitiveCommand'
 import { RUN_IN_TERMINAL_RESULT_FALLBACK_MS } from '../utils/fenceShell'
 import RunInTerminalConfirm from './RunInTerminalConfirm'
+import { api } from '../api/client'
 
 import { i18nT } from '../i18n/t'
 export const SHELL_LANGS = new Set(['bash', 'sh', 'shell', 'zsh', 'console', 'terminal', 'fish'])
@@ -35,7 +37,37 @@ function stripPromptChars(code: string): string {
  * opened, which happens after this dialog is confirmed.
  */
 export default function RunInTerminalBtn({ code, lang }: { code: string; lang?: string }) {
-  const [status, setStatus] = useState<'idle' | 'sent' | 'error'>('idle')
+  // Read the reuse-current setting only when a QueryClient is in scope. Every
+  // real mount sits under the app-level provider, but this button is embedded
+  // in code blocks that many tests render in isolation without one, and a bare
+  // useQuery throws there. Reading the context directly (undefined, not a throw,
+  // when absent) lets the button default to the Run path off-provider instead
+  // of requiring every embedder to supply a client.
+  const hasClient = useContext(QueryClientContext) != null
+  return hasClient
+    ? <RunInTerminalBtnWithConfig code={code} lang={lang} />
+    : <RunInTerminalBtnInner code={code} lang={lang} willCopy={false} />
+}
+
+/** Subscribes to the reuse-current setting; only mounted under a QueryClient. */
+function RunInTerminalBtnWithConfig({ code, lang }: { code: string; lang?: string }) {
+  // The reuse-current path COPIES the command instead of running it, so the
+  // confirm dialog must say Copy, not Run. Only a literal `true` counts — the
+  // same "one literal decides it" rule ChatPage's handler uses; a pending or
+  // errored read reads as off here (the dialog defaults to Run), and ChatPage
+  // owns the actual copy-vs-run decision and its read-failure notice at event
+  // time. Shares the ['kirocrewConfig'] query key so no extra fetch is made.
+  const { data: terminalCfg } = useQuery<{ dashboard?: { terminal?: { reuse_current?: boolean } } }>({
+    queryKey: ['kirocrewConfig'],
+    queryFn: () => api.kirocrewConfig(),
+    staleTime: 30_000,
+  })
+  const willCopy = terminalCfg?.dashboard?.terminal?.reuse_current === true
+  return <RunInTerminalBtnInner code={code} lang={lang} willCopy={willCopy} />
+}
+
+function RunInTerminalBtnInner({ code, lang, willCopy }: { code: string; lang?: string; willCopy: boolean }) {
+  const [status, setStatus] = useState<'idle' | 'sent' | 'copied' | 'error'>('idle')
   const [pending, setPending] = useState<{ command: string; warnReason: string } | null>(null)
   const flashTimerRef = useRef<ReturnType<typeof setTimeout>>()
   const resultTimerRef = useRef<ReturnType<typeof setTimeout>>()
@@ -47,10 +79,10 @@ export default function RunInTerminalBtn({ code, lang }: { code: string; lang?: 
     resultUnsubRef.current?.()
   }, [])
 
-  const flash = useCallback((s: 'sent' | 'error') => {
+  const flash = useCallback((s: 'sent' | 'copied' | 'error') => {
     clearTimeout(flashTimerRef.current)
     setStatus(s)
-    flashTimerRef.current = setTimeout(() => setStatus('idle'), s === 'sent' ? 1200 : 2000)
+    flashTimerRef.current = setTimeout(() => setStatus('idle'), s === 'error' ? 2000 : 1200)
   }, [])
 
   const execute = useCallback((cleaned: string) => {
@@ -58,7 +90,8 @@ export default function RunInTerminalBtn({ code, lang }: { code: string; lang?: 
     const onResult = (e: Event) => {
       if ((e as CustomEvent).detail?.reqId !== reqId) return
       resultUnsubRef.current?.()
-      flash((e as CustomEvent).detail.ok ? 'sent' : 'error')
+      const detail = (e as CustomEvent).detail
+      flash(detail.ok ? (detail.copied ? 'copied' : 'sent') : 'error')
     }
     // Single unsub clears both the listener and the fallback timer.
     resultUnsubRef.current?.()
@@ -89,6 +122,13 @@ export default function RunInTerminalBtn({ code, lang }: { code: string; lang?: 
   const cancelRun = useCallback(() => setPending(null), [])
 
   const trigger = (() => {
+    if (status === 'copied') {
+      return (
+        <span className="p-1 rounded text-accent" title={i18nT('components.runInTerminalBtn.copied_paste_into_terminal')} aria-label={i18nT('components.runInTerminalBtn.copied_paste_into_terminal')}>
+          <ClipboardCheck size={13} />
+        </span>
+      )
+    }
     if (status === 'sent') {
       return (
         <span className="p-1 rounded text-accent" title={i18nT('components.runInTerminalBtn.sent_to_terminal')} aria-label={i18nT('components.runInTerminalBtn.sent_to_terminal')}>
@@ -122,6 +162,7 @@ export default function RunInTerminalBtn({ code, lang }: { code: string; lang?: 
         open={!!pending}
         command={pending?.command ?? ''}
         warnReason={pending?.warnReason || undefined}
+        willCopy={willCopy}
         onConfirm={confirmRun}
         onCancel={cancelRun}
       />

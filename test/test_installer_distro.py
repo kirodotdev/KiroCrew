@@ -13,9 +13,12 @@ so the suite skips on native Windows.
 from __future__ import annotations
 
 import os
+import re
 import shutil
+import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -495,7 +498,13 @@ def test_cli_restores_the_previous_venv_when_the_wheel_install_fails(
     # The venv-creation step after the move-aside must be guarded too:
     # under `set -eu` an unguarded `"$PY" -m venv` failure (disk full at
     # ensurepip time) would exit past the restore and orphan the backup.
-    assert 'if ! "$PY" -m venv "$VENV"; then' in text, (
+    # The creation runs through the `_run_step` progress wrapper, which
+    # returns the command's own exit status, so the `if !` guard still sees
+    # the failure.
+    venv_guard = re.search(
+        r'if ! _run_step "[^"]*" "[^"]*" "\$PY" -m venv "\$VENV"; then', text
+    )
+    assert venv_guard is not None, (
         "cli.sh runs venv creation unguarded after the move-aside -- a "
         "creation failure under set -eu skips the restore and destroys the "
         "working install"
@@ -503,7 +512,7 @@ def test_cli_restores_the_previous_venv_when_the_wheel_install_fails(
     # A tree already at the backup path (recycled PID) may be the only
     # WORKING install left by an interrupted earlier run, so it is never
     # deleted -- the move-aside picks the next free sibling instead.
-    assert 'rm -rf "$_VENV_BACKUP"' not in text.split('if ! "$PY" -m venv')[0], (
+    assert 'rm -rf "$_VENV_BACKUP"' not in text[: venv_guard.start()], (
         "cli.sh deletes whatever sits at the backup path before the "
         "move-aside -- an interrupted earlier run parks the working venv "
         "exactly there, so a recycled PID would destroy it"
@@ -926,3 +935,323 @@ def test_cli_marker_read_never_opens_a_fifo(tmp_path: Path) -> None:
 
     combined = result.stdout + result.stderr
     assert "Reusing the recorded managed-python choice" not in combined
+
+
+# ── Progress output ──────────────────────────────────────────────────────────
+# The slow steps (wheel download, pip, venv creation) run through `_run_step`,
+# which must keep a non-interactive log readable (one line per step plus a
+# heartbeat, never a spinner), capture the command's output to the log the
+# failure reporter reads, and return the command's own exit status so the
+# `if !` guards around it still see a failure.
+
+
+def _progress_helpers() -> str:
+    """The helper block of cli.sh, extracted so it can be sourced alone."""
+    text = CLI_SH.read_text()
+    start = text.index("# ── Progress output")
+    end = text.index("# Dependencies come from prebuilt wheels only.")
+    return text[start:end]
+
+
+def test_run_step_off_a_terminal_prints_done_line_and_passes_exit_status(
+    tmp_path: Path,
+) -> None:
+    helpers = tmp_path / "helpers.sh"
+    helpers.write_text(_progress_helpers())
+    log = tmp_path / "step.log"
+    script = (
+        f'set -eu; TMP="{tmp_path}"; . "{helpers}"; '
+        f'echo "tty=$_tty curl=$CURL_PROGRESS"; '
+        f"_run_step \"{log}\" \"Installing things\" sh -c 'echo Collecting aiohttp; echo oops >&2; exit 3' "
+        f'|| echo "rc=$?"'
+    )
+    # Bytes, not text=True: universal newlines would fold a leaked \r into \n
+    # and the "no spinner off a terminal" assertion below could never fail.
+    result = subprocess.run(
+        ["sh", "-c", script],
+        capture_output=True,
+        cwd=tmp_path,
+        env={**os.environ, "TERM": "xterm"},
+    )
+    assert result.returncode == 0, result.stderr
+    assert b"\r" not in result.stdout, "spinner redraws leaked into a non-terminal run"
+    stdout = result.stdout.decode()
+    stderr = result.stderr.decode()
+    # stdout is a pipe here, so the terminal path must be off regardless of TERM.
+    assert "tty=0 curl=-s" in stdout
+    assert "rc=3" in stdout, "the wrapper did not return the command's exit status"
+    assert "Installing things ... FAILED after" in stderr
+    # Both streams of the wrapped command land in the log the failure report reads.
+    assert log.read_text() == "Collecting aiohttp\noops\n"
+
+
+def test_run_step_reports_success_with_elapsed_time(tmp_path: Path) -> None:
+    helpers = tmp_path / "helpers.sh"
+    helpers.write_text(_progress_helpers())
+    script = (
+        f'set -eu; TMP="{tmp_path}"; . "{helpers}"; '
+        f'_run_step "{tmp_path}/ok.log" "Creating virtual environment" true'
+    )
+    result = subprocess.run(
+        ["sh", "-c", script],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        cwd=tmp_path,
+    )
+    assert result.returncode == 0, result.stderr
+    assert re.search(r"Creating virtual environment \.\.\. done \(\d+s\)", result.stdout)
+
+
+def test_run_step_interrupt_terminates_the_child_and_fails_the_step(
+    tmp_path: Path,
+) -> None:
+    """Ctrl-C during a step must stop the command, not just the spinner.
+
+    The command runs asynchronously, and POSIX starts an async child of a
+    non-interactive shell with SIGINT ignored, so the shell's INT trap is the
+    only thing that can reach it. The step must end with the child's signal
+    status (so the caller's `if !` restore path runs, the same status a
+    foreground pip returns for the keypress), the child must be gone, and
+    the caller's own traps must be back in place afterwards.
+    """
+    helpers = tmp_path / "helpers.sh"
+    helpers.write_text(_progress_helpers())
+    grandchild_pid = tmp_path / "grandchild.pid"
+    script = (
+        f'set -eu; TMP="{tmp_path}"; trap \'echo "outer trap"\' INT; . "{helpers}"; '
+        # The child ignores INT itself (as pip would, inherited), so only the
+        # helper's TERM can end it, and it forks a grandchild the way
+        # `python -m venv` forks ensurepip. 30 s is the test's failure mode.
+        f'_run_step "{tmp_path}/slow.log" "Installing" '
+        f"sh -c 'trap \"\" INT; sleep 30 & echo $! > \"{grandchild_pid}\"; wait' "
+        f'|| echo "rc=$?"; '
+        f'if kill -0 "$_rs_pid" 2>/dev/null; then echo child-alive; else echo child-dead; fi; '
+        f"trap"
+    )
+    # Its own session, so a timed-out run can be reaped as a group in
+    # `finally` instead of leaving the sleeps behind.
+    proc = subprocess.Popen(
+        ["sh", "-c", script],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        cwd=tmp_path,
+        start_new_session=True,
+    )
+    try:
+        time.sleep(1.0)  # let the step start; the child is 30 s of sleep
+        proc.send_signal(signal.SIGINT)
+        try:
+            out, _ = proc.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            raise AssertionError("SIGINT did not end the step; the child kept running")
+        # Measured before the cleanup below, which would otherwise take the
+        # grandchild down itself and hide a survivor.
+        gc_pid = int(grandchild_pid.read_text().strip())
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and _pid_alive(gc_pid):
+            time.sleep(0.1)
+        grandchild_survived = _pid_alive(gc_pid)
+    finally:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        proc.wait(timeout=10)
+    assert proc.returncode == 0, out
+    assert "Installing ... interrupted (SIGINT)" in out
+    assert "rc=143" in out, out
+    assert "child-dead" in out, out
+    # The whole process group went, not just the direct child: the sleep the
+    # child forked must be gone too, or a surviving ensurepip would keep
+    # writing into the tree the caller then restores over.
+    assert not grandchild_survived, "the step's grandchild survived the interrupt"
+    assert "outer trap" in out and "INT" in out.split("child-dead", 1)[1], (
+        "the caller's INT trap was not restored after the step"
+    )
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    # Zombies answer kill -0; read the state so a dead-but-unreaped sleep
+    # does not count as a survivor.
+    try:
+        state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
+    except (OSError, IndexError):
+        return True
+    return state != "Z"
+
+
+def test_tolerate_swallows_a_failure_but_not_an_interrupt(tmp_path: Path) -> None:
+    helpers = tmp_path / "helpers.sh"
+    helpers.write_text(_progress_helpers())
+    script = (
+        f'set -eu; TMP="{tmp_path}"; . "{helpers}"; '
+        f'_rs_optional=1; _run_step "{tmp_path}/opt.log" "Updating pip" false || _tolerate $?; '
+        f'echo "after-failure"; _tolerate 143; echo "after-interrupt"'
+    )
+    result = subprocess.run(
+        ["sh", "-c", script],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        cwd=tmp_path,
+    )
+    assert result.returncode == 143, result.stderr
+    assert "after-failure" in result.stdout
+    assert "after-interrupt" not in result.stdout
+    # A tolerated step never says FAILED on an install that goes on to succeed.
+    assert "FAILED" not in result.stderr
+    assert "Updating pip ... skipped (exit 1" in result.stderr
+
+
+def test_tolerate_restores_the_moved_aside_venv_on_an_interrupt(tmp_path: Path) -> None:
+    """Ctrl-C during the tolerated pip upgrade must not strand the old install.
+
+    By then the working venv has been moved to the backup path and the new
+    one has no kirocrew yet; every other exit after the move-aside restores
+    it, and this one has to as well.
+    """
+    helpers = tmp_path / "helpers.sh"
+    venv = tmp_path / "venv"
+    backup = tmp_path / "venv.pre-rebuild.1"
+    venv.mkdir()
+    (venv / "new").write_text("half-built\n")
+    backup.mkdir()
+    (backup / "bin").mkdir()
+    (backup / "bin" / "kirocrew").write_text("old launcher\n")
+    restore = CLI_SH.read_text()
+    start = restore.index("_restore_tree() {")
+    end = restore.index("\n}\n", start) + 3
+    helpers.write_text(_progress_helpers() + restore[start:end])
+    script = (
+        f'set -eu; TMP="{tmp_path}"; . "{helpers}"; '
+        f'VENV="{venv}"; _VENV_BACKUP="{backup}"; '
+        f'_tolerate 130; echo "after-interrupt"'
+    )
+    result = subprocess.run(
+        ["sh", "-c", script],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        cwd=tmp_path,
+    )
+    assert result.returncode == 130, result.stderr
+    assert "after-interrupt" not in result.stdout
+    assert "previous install was restored" in result.stderr
+    assert (venv / "bin" / "kirocrew").read_text() == "old launcher\n"
+    assert not (venv / "new").exists()
+    assert not backup.exists()
+
+
+def test_cli_downloads_use_the_progress_flag_and_pip_is_wrapped() -> None:
+    text = CLI_SH.read_text()
+    # Wheel and uv downloads: silent in a log (the flag resolves to -s), a
+    # progress bar on a terminal. Never both -s and --progress-bar at once.
+    assert re.search(r'curl -f \$CURL_PROGRESS -S --proto \'=https\' "\$WHEEL_URL"', text)
+    assert re.search(r"curl -f \$CURL_PROGRESS -S -L --proto '=https'", text)
+    assert 'CURL_PROGRESS="-s"' in text and 'CURL_PROGRESS="--progress-bar"' in text
+    # Every pip/pipx install goes through the wrapper and keeps writing the
+    # log _report_pip_failure reads.
+    assert re.search(
+        r'_run_step "\$TMP/pip-install\.log" "[^"]*" \\\n\s+pipx install --force', text
+    )
+    assert re.search(
+        r'_run_step "\$TMP/pip-install\.log" "[^"]*" \\\n\s+"\$VENV/bin/pip" install --progress-bar off',
+        text,
+    )
+    assert "pip\" install --quiet $PIP_BINARY_ONLY" not in text, (
+        "the wheel install went back to --quiet; the progress line and the "
+        "failure report both need pip's Collecting/Downloading lines"
+    )
+
+
+def test_run_step_is_portable_to_dash() -> None:
+    """The one-line install runs under /bin/sh, which is dash on Debian.
+
+    dash prints nothing for `trap` inside a command substitution, so the
+    caller's traps have to be saved through a file, and its `kill` accepts a
+    process group only as `kill -s SIG -- -PGID`. Job control cannot be
+    enabled off a tty there, so the group comes from setsid(1) when present.
+    """
+    helpers = _progress_helpers()
+    code = "\n".join(
+        line for line in helpers.splitlines() if not line.lstrip().startswith("#")
+    )
+    assert "$(trap)" not in code
+    assert re.search(r'trap > "\$_rs_traps"', code)
+    assert re.search(r'\. "\$_rs_traps"', code)
+    assert 'kill -s TERM -- "-$_rs_pid"' in code
+    assert not re.search(r"kill -TERM -- ", code)
+    assert re.search(r"command -v setsid .*\n\s+setsid \"\$@\"", code)
+
+
+def test_run_step_redrawn_line_fits_the_terminal_width(tmp_path: Path) -> None:
+    """Every `\\r`-redrawn frame must be shorter than the terminal.
+
+    A frame that wraps is not overwritten by the next `\\r`: it leaves a new
+    row per redraw and the "one live line" turns into a wall of spinner
+    lines. `tput cols` is what the helper measures, so drive it with a fake
+    tput and a pty-free stand-in for the terminal test (`_tty=1` forced).
+    """
+    helpers = tmp_path / "helpers.sh"
+    helpers.write_text(_progress_helpers())
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    (fake_bin / "tput").write_text("#!/bin/sh\necho 72\n")
+    (fake_bin / "tput").chmod(0o755)
+    long_line = "Downloading " + "x" * 200 + ".whl (310 kB)"
+    script = (
+        f'set -eu; TMP="{tmp_path}"; . "{helpers}"; _tty=1; '
+        f'_run_step "{tmp_path}/wide.log" "Installing kirocrew 1.2.3 and its dependencies" '
+        f"sh -c 'echo \"{long_line}\"; sleep 1'"
+    )
+    # Bytes, not text=True: universal newlines would fold the \r redraws into \n.
+    result = subprocess.run(
+        ["sh", "-c", script],
+        capture_output=True,
+        cwd=tmp_path,
+        env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}", "TERM": "xterm"},
+    )
+    assert result.returncode == 0, result.stderr
+    frames = re.findall(r"\r\x1b\[K([^\r\n]*)(?=\r)", result.stdout.decode())
+    assert frames, "no redrawn frames on the forced-terminal path"
+    tails = [f for f in frames if "Downloading" in f]
+    assert tails, "the command's last line never made it onto the progress line"
+    assert max(len(f) for f in frames) < 72, max(frames, key=len)
+
+
+def test_run_step_prefix_is_cut_on_a_terminal_narrower_than_the_message(
+    tmp_path: Path,
+) -> None:
+    """On a 40-column terminal even the spinner + message + elapsed prefix is
+    wider than the row; it must be truncated, not left to wrap."""
+    helpers = tmp_path / "helpers.sh"
+    helpers.write_text(_progress_helpers())
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    (fake_bin / "tput").write_text("#!/bin/sh\necho 40\n")
+    (fake_bin / "tput").chmod(0o755)
+    script = (
+        f'set -eu; TMP="{tmp_path}"; . "{helpers}"; _tty=1; '
+        f'_run_step "{tmp_path}/narrow.log" "Installing kirocrew 1.2.3 and its dependencies with pipx" '
+        f"sh -c 'echo Collecting-something-long-enough-to-matter; sleep 1'"
+    )
+    result = subprocess.run(
+        ["sh", "-c", script],
+        capture_output=True,
+        cwd=tmp_path,
+        env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}", "TERM": "xterm"},
+    )
+    assert result.returncode == 0, result.stderr
+    frames = re.findall(r"\r\x1b\[K([^\r\n]*)(?=\r)", result.stdout.decode())
+    assert frames, "no redrawn frames on the forced-terminal path"
+    assert max(len(f) for f in frames) < 40, max(frames, key=len)
+    assert all(f.startswith(("|", "/", "-", "\\")) for f in frames), frames

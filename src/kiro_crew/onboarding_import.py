@@ -39,10 +39,19 @@ from types import ModuleType
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew import platform_compat  # noqa: F401 - facade surface
+from kiro_crew.atomic_write import atomic_write  # noqa: F401 - facade surface
+from kiro_crew.config.loader import ConfigReadError  # noqa: F401 - facade surface
+from kiro_crew.config.loader import update_config_locked  # noqa: F401 - facade surface
 from kiro_crew.config.paths import config_dir
 from kiro_crew.embeddings import make_sync_embed_fn
+from kiro_crew.frontmatter import ONBOARDING_IMPORT  # noqa: F401 - facade surface
+from kiro_crew.frontmatter import parse_block_scalar_header  # noqa: F401 - facade surface
+from kiro_crew.frontmatter import split_frontmatter  # noqa: F401 - facade surface
+from kiro_crew.hooks import FileTooLargeError  # noqa: F401 - facade surface
+from kiro_crew.hooks import safe_read_file_bytes_nolink  # noqa: F401 - facade surface
 from kiro_crew.learn import _MAX_LESSONS_TOTAL, Lesson, LessonStore
 from kiro_crew.lesson_validation import contains_volatile_lesson_fact
+from kiro_crew.mcp_utils import mcp_server_alias  # noqa: F401 - facade surface
 from kiro_crew.onboarding_apply import CONFLICT_STRATEGIES  # noqa: F401 - facade surface
 from kiro_crew.onboarding_apply import STRATEGY_OVERWRITE  # noqa: F401 - facade surface
 from kiro_crew.onboarding_apply import STRATEGY_RENAME  # noqa: F401 - facade surface
@@ -78,6 +87,11 @@ from kiro_crew.onboarding_sources import _Source  # noqa: F401 - facade surface
 from kiro_crew.onboarding_sources import predecessor_mcp_names  # noqa: F401 - facade surface
 from kiro_crew.onboarding_sources import stale_mcp_binaries  # noqa: F401 - facade surface
 from kiro_crew.onboarding_sources import _scan_source, _source_context, _source_roots, _sources
+from kiro_crew.platform.context import current_context  # noqa: F401 - facade surface
+from kiro_crew.platform.context import safe_context_call  # noqa: F401 - facade surface
+from kiro_crew.security import contains_injection  # noqa: F401 - facade surface
+from kiro_crew.security import is_sensitive_path  # noqa: F401 - facade surface
+from kiro_crew.security import redact_with_findings  # noqa: F401 - facade surface
 from kiro_crew.vector_memory import VectorMemoryStore
 
 logger = logging.getLogger(__name__)
@@ -713,17 +727,23 @@ def _owner(name: str) -> ModuleType:
     return _submodule(_EXPORTS[name])
 
 
-def __getattr__(name: str) -> Any:
-    """Read a mirrored name from the module that holds it (:pep:`562`).
+# Hidden from type checkers: mypy types every unknown attribute of a module that
+# defines ``__getattr__`` as ``Any``, so a mistyped or removed name read through
+# this facade would type-check. mypy sees the mirrored names through the
+# ``TYPE_CHECKING`` imports at the end of this module instead.
+if not TYPE_CHECKING:
 
-    Every mirrored name reaches here, because this module binds none of them, so
-    the value is read from its owner on each access. A name outside the table
-    raises ``AttributeError``, the answer ``hasattr`` and ``getattr(..., default)``
-    expect for a name that does not exist.
-    """
-    if name not in _EXPORTS:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    return getattr(_owner(name), name)
+    def __getattr__(name: str) -> Any:
+        """Read a mirrored name from the module that holds it (:pep:`562`).
+
+        Every mirrored name reaches here, because this module binds none of them, so
+        the value is read from its owner on each access. A name outside the table
+        raises ``AttributeError``, the answer ``hasattr`` and ``getattr(..., default)``
+        expect for a name that does not exist.
+        """
+        if name not in _EXPORTS:
+            raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+        return getattr(_owner(name), name)
 
 
 def __dir__() -> list[str]:

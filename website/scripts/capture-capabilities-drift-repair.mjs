@@ -9,7 +9,7 @@
  * enabled with no edit), the refusal after Review + Save when the drift sits in a
  * setting the page cannot show (names the file and the turned-off button, beside
  * that button), and the chat error row that is this path's entry point (the
- * `capabilities_changed` prose with its Open Capabilities button). Each frame
+ * `capabilities_changed` prose with its Open Customize button). Each frame
  * asserts the copy it photographs, so a stale string cannot pass as evidence.
  */
 import { chromium } from 'playwright'
@@ -65,13 +65,13 @@ for (const theme of ['light', 'dark']) {
     await card.waitFor({ timeout: 10000 })
     if ((await card.getAttribute('data-capabilities-changed')) !== 'true') throw new Error('errorcard scene: the row did not take the capabilities_changed branch')
     const prose = await card.innerText()
-    for (const needle of ["This crew member's agent file changed outside the Capabilities page, so new chats cannot start.", 'Open Capabilities, review the change and save it, then start a new chat.']) {
+    for (const needle of ["This crewmate's custom agent file changed outside Customize, so new chats cannot start.", 'Open Customize, review and save the change, then start a new chat.']) {
       if (!prose.includes(needle)) throw new Error(`errorcard prose does not say ${needle}: ${prose}`)
     }
     if (prose.includes('materialization_changed')) throw new Error(`errorcard shows the wire code instead of the catalog copy: ${prose}`)
-    const open = card.getByRole('button', { name: 'Open Capabilities', exact: true })
-    if (!(await open.count())) throw new Error('errorcard scene: no Open Capabilities button')
-    if (await open.isDisabled()) throw new Error('errorcard scene: Open Capabilities is disabled')
+    const open = card.getByRole('button', { name: 'Open Customize', exact: true })
+    if (!(await open.count())) throw new Error('errorcard scene: no Open Customize button')
+    if (await open.isDisabled()) throw new Error('errorcard scene: Open Customize is disabled')
     if (await card.getByRole('button', { name: 'Resume' }).count()) throw new Error('errorcard scene: Resume offered beside a fix that is not a retry')
     await page.locator('[data-capture-root]').screenshot({ path: `${OUT}/03-errorcard-${theme}.png` })
     if (errors.length) throw new Error(`page errors: ${errors.join(' | ')}`)

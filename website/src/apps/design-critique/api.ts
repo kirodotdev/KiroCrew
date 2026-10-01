@@ -59,7 +59,7 @@ async function pollJob<T>(base: string, jobId: string): Promise<T> {
 export const designCritiqueApi = {
   // Open a throwaway worker slot. memory_mode 'temporary' keeps it out of memory
   // snapshots; mode 'design-critique' keeps it OUT of the chat sidebar (the chat
-  // list only renders '' and 'orchestrator').
+  // list only renders the default surface).
   openSlot: () =>
     postJson<{ key: string }>('/api/chat/slots', {
       name: 'dc-' + Date.now(), agent: AGENT, memory_mode: 'temporary', mode: 'design-critique',

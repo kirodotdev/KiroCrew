@@ -687,7 +687,7 @@ _KERNEL_PSEUDO_FILE_READERS = {
     ("platform_compat.py", "/proc/meminfo"),
     ("platform_compat.py", "/proc/locks"),
     ("platform_compat.py", "/proc/<pid>/status"),
-    ("acp/runtime.py", "/proc/<pid>/status"),
+    ("acp/runtime_process_tree.py", "/proc/<pid>/status"),
 }
 # Fenced from agent file tools by security._CREW_SECRET_LEAVES, so it is outside
 # this issue's "agent-writable" premise. It is the tamper-evident audit chain, so

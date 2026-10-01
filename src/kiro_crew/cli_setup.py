@@ -36,7 +36,7 @@ from kiro_crew.config.loader import (
     unsandboxed_exec_platform_default,
     update_config_locked,
 )
-from kiro_crew.constants import MIN_NODE_MAJOR
+from kiro_crew.constants import MIN_NODE_VERSION, format_node_version
 from kiro_crew.dashboard.urls import _resolve_hostname_bounded
 from kiro_crew.sandbox import unavailable_kind
 from kiro_crew.secrets.migrate import _env_lock_path
@@ -150,7 +150,7 @@ def _ensure_prerequisites() -> bool:
     if not shutil.which("node"):
         _header()
         print(
-            f"  ⚠️  node not found on PATH — install Node.js >= {MIN_NODE_MAJOR} from https://nodejs.org\n"
+            f"  ⚠️  node not found on PATH — install Node.js >= v{format_node_version(MIN_NODE_VERSION)} from https://nodejs.org\n"
         )
 
     # kiro-cli is the agent backend. Note its absence so the user can install it.

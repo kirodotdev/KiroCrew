@@ -3,9 +3,9 @@
  *
  * Shared by ArtifactDetailPage (the agent-facing count and the "address the N
  * open comments" prompt) and ArtifactPanel (the submit batch). Mirrors the
- * backend's `filter_comments_for_forward` in `artifacts.py`; the client keeps
- * its own copy because the count has to update the moment a thread is resolved
- * optimistically, before the comments query refetches.
+ * backend's `filter_comments_for_forward` in `artifact_store/comments.py`; the
+ * client keeps its own copy because the count has to update the moment a
+ * thread is resolved optimistically, before the comments query refetches.
  *
  * Thread-root granularity: a reply inherits its root's status, so resolving a
  * thread drops the whole thread rather than leaving replies whose parent is

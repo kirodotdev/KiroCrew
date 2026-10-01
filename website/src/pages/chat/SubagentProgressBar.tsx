@@ -6,6 +6,7 @@ import { openActivityToTab, selectSubagent, sseSubagentDone, isAwaitingSpawnAppr
 import { api } from '../../api/client'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
 import ErrorNotice from '../../components/ErrorNotice'
+import { Glass } from '../../components/Glass'
 import type { SubagentActivity } from '../../types'
 
 import { i18nT } from '../../i18n/t'
@@ -261,7 +262,16 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
     // Without this the chip sits at auto z-index and a fullscreen overlay (e.g.
     // an activate-time transition wipe) covers it for the overlay's lifetime.
     <div className="px-4 mx-auto w-full relative z-[46]" style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
-      <div className="mb-1 rounded-md bg-accent/10 border border-accent/20 animate-slide-up overflow-hidden">
+      {/* The same glass as every other pane in the composer dock
+          (components/Glass.tsx), on the accent tint step: the old
+          `bg-accent/10` wash had no blur and no body, so the transcript
+          scrolling under it showed through as if the bar were a hole. */}
+      <Glass variant="chip" radius={8} className="mb-1 glass-accent animate-slide-up">
+        {/* The clip lives one level in, not on the pane: the pane's hairlines sit
+            half a pixel OUTSIDE its top and bottom edges, and `overflow: hidden`
+            on the pane itself would cut them (see QuestionCard). The inner box
+            inherits the radius so the row hover fills still stop at the arc. */}
+        <div className="overflow-hidden rounded-[inherit]">
         {/* Chrome type, so no `font-mono`: the wave chip is prose and labels,
             and Tailwind's `font-mono` pins `var(--mono)` — a token the Font
             Family setting never writes, so a hardcoded one here overrode the
@@ -334,6 +344,14 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
             />
           </div>
         )}
+        {/* The rows body holds only running/tool/pending agents (`visibleList`)
+            plus an overflow row that is itself gated on there being hidden rows.
+            When the chip is mounted solely on a QUEUED count — the header's
+            `hasActive` term with running === 0 — `visibleList` is empty, so this
+            body has nothing to render and expanding it revealed only its own
+            `px-3 pb-2` padding as blank whitespace. Gate the whole body on
+            having a row: the header (counts + Stop all) still stands on its own. */}
+        {visibleList.length > 0 && (
         <div className={`px-3 pb-2 space-y-0.5${collapsed ? ' hidden' : ''}`}>
           {visibleList.map((a, i) => {
             const isLast = i === visibleList.length - 1 && hiddenCount === 0
@@ -449,7 +467,9 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
             </button>
           )}
         </div>
-      </div>
+        )}
+        </div>
+      </Glass>
     </div>
   )
 })

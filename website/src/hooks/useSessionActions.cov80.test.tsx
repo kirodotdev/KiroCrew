@@ -4,9 +4,7 @@
  * Each action reads its prior state from the store at CALL time and rolls back
  * on failure, so the tests drive the real global store (the hook reads
  * `store.getState()` directly) and assert both the optimistic write and the
- * rollback. The guarded mode rollback — which must NOT clobber a superseding
- * toggle — is covered explicitly, since that is the branch a naive rollback
- * gets wrong.
+ * rollback.
  */
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { act, renderHook, waitFor } from '@testing-library/react'
@@ -17,7 +15,6 @@ import type { ReactNode } from 'react'
 const apiMock = vi.hoisted(() => ({
   forkChatSlot: vi.fn(),
   setSlotPin: vi.fn(),
-  setSlotMode: vi.fn(),
   chatSlots: vi.fn(),
 }))
 vi.mock('../api/client', () => ({ api: apiMock }))
@@ -73,7 +70,6 @@ beforeEach(() => {
   localStorage.clear()
   apiMock.forkChatSlot.mockReset().mockResolvedValue({ ok: true, key: 'zzq-forked' })
   apiMock.setSlotPin.mockReset().mockResolvedValue({ ok: true })
-  apiMock.setSlotMode.mockReset().mockResolvedValue({ ok: true })
   apiMock.chatSlots.mockReset().mockImplementation(async () => store.getState().dashboard.slots)
   copySessionLink.mockClear()
   moveSlotToFolder.mockClear()
@@ -691,63 +687,6 @@ describe('togglePin', () => {
     await waitFor(() => expect(slot()?.pinned).toBe(true))
     expect(JSON.parse(localStorage.getItem(PINNED_SESSION_ORDER_KEY)!)).toEqual(['before', KEY, other])
   })
-describe('toggleMode', () => {
-  it('switches to orchestrator once confirmed', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
-    slots({ mode: '' })
-    const { result } = harness()
-    act(() => result.current.toggleMode(KEY))
-    expect(slot()?.mode).toBe('orchestrator')
-    await waitFor(() => expect(apiMock.setSlotMode).toHaveBeenCalledWith(KEY, 'orchestrator'))
-  })
-
-  it('switches back to normal chat once confirmed', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
-    slots({ mode: 'orchestrator' })
-    const { result } = harness()
-    act(() => result.current.toggleMode(KEY))
-    await waitFor(() => expect(apiMock.setSlotMode).toHaveBeenCalledWith(KEY, ''))
-  })
-
-  it('changes nothing when the confirm is declined', () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(false)
-    slots({ mode: '' })
-    const { result } = harness()
-    act(() => result.current.toggleMode(KEY))
-    expect(apiMock.setSlotMode).not.toHaveBeenCalled()
-    expect(slot()?.mode).toBe('')
-  })
-
-  it('rolls the mode back when the write fails', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
-    apiMock.setSlotMode.mockRejectedValue(new Error('zzq offline'))
-    slots({ mode: '' })
-    const { result } = harness()
-    act(() => result.current.toggleMode(KEY))
-    expect(slot()?.mode).toBe('orchestrator')
-    await waitFor(() => expect(slot()?.mode).toBe(''))
-  })
-
-  it('does not clobber a superseding toggle when the write fails', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
-    let release: (() => void) | undefined
-    apiMock.setSlotMode.mockImplementation(
-      () => new Promise((_res, rej) => { release = () => rej(new Error('zzq offline')) }),
-    )
-    slots({ mode: '' })
-    const { result } = harness()
-    act(() => result.current.toggleMode(KEY))
-    await waitFor(() => expect(release).toBeTypeOf('function'))
-    // A second toggle lands while the first write is still in flight.
-    act(() => result.current.toggleMode(KEY))
-    expect(slot()?.mode).toBe('')
-    act(() => release?.())
-    await waitFor(() => expect(apiMock.setSlotMode).toHaveBeenCalledTimes(2))
-    // The stale rollback must not restore '' over the newer value.
-    expect(slot()?.mode).toBe('')
-  })
-})
-
 describe('copyLink', () => {
   it('copies the link with the slot title and the caller mode', () => {
     slots({ title: 'zzq title' })

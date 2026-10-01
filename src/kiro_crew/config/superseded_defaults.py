@@ -1084,7 +1084,8 @@ def render_doctor_section(issues: list[str]) -> None:
     still hold?", and hiding an affirmed value would make the answer wrong.
 
     ``config_path`` is imported lazily because ``config.loader`` imports this
-    module for the load-path warning, so a module-level import would be a cycle.
+    module, directly and through ``config.migration`` (which owns the load-path
+    warning), so a module-level import would be a cycle.
     """
     from kiro_crew.config.loader import config_path  # circular import
 

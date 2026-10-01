@@ -31,6 +31,8 @@ from kiro_crew.history import (
     TranscriptBusy,
     TranscriptWithheld,
     is_incognito_transcript,
+    transcript_lock_stems,
+    transcript_withholds_derivation,
 )
 from kiro_crew.llm_helpers import _extract_json_of_type, run_bg_oneliner
 from kiro_crew.session_summary import (
@@ -43,6 +45,7 @@ from kiro_crew.session_summary import (
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from kiro_crew.dashboard.state import DashboardState, _ChatSlot
+    from kiro_crew.history import ConversationLog
 
 logger = logging.getLogger(__name__)
 
@@ -479,3 +482,34 @@ async def _generate_locked(
     # cache entry for, so the panel would silently never refresh.
     state.push_session_summary(slot.key)
     return True
+
+
+async def read_cached_intent_summary(log: "ConversationLog", slot: Any) -> tuple[dict | None, bool]:
+    """Read *slot*'s ``.intents`` sidecar only if its transcript may be derived from.
+
+    The one read every summary reader uses (the panel's GET and POST routes and
+    the ``session_summary`` MCP tool): the sidecar is itself derived from
+    the transcript, so it is served under the same two gates as the transcript
+    -- the live slot's mode, and the on-disk line validated while holding the
+    same physical lock as metadata writers. A ``.intents`` file can outlive the
+    persistent life that wrote it (the key is recreated restricted; the sidecar
+    stays, by design, for a later persistent holder), and
+    ``read_intent_summary`` reports its signature mismatch as ``stale`` rather
+    than dropping it, so a bare read would hand a restricted session its
+    predecessor's summary. Unreadable fails closed; a lock timeout is the same
+    empty result.
+    """
+    if is_incognito_transcript(getattr(slot, "memory_mode", "")):
+        return None, False
+    history_key = slot_history_key(slot)
+
+    def _read() -> tuple[dict | None, bool]:
+        with log.derivation_hold(transcript_lock_stems(history_key)):
+            if transcript_withholds_derivation(log, history_key):
+                return None, False
+            return log.read_intent_summary(history_key)
+
+    try:
+        return await asyncio.to_thread(_read)
+    except TranscriptBusy:
+        return None, False

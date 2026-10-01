@@ -679,16 +679,21 @@ class TestAutoApprovedNeverReachesTheChannel:
             on_spawn_approval=approval,
             is_yolo=lambda: False,
         )
-        info = mgr.spawn("do a thing", parent_session_key="telegram:k:direct:7")
-        assert info is not None
-        for _ in range(50):
+        try:
+            info = mgr.spawn("do a thing", parent_session_key="telegram:k:direct:7")
+            assert info is not None
+            for _ in range(50):
+                await asyncio.sleep(0)
+            # The parent_trusted rung admitted the spawn — the approval callback (and
+            # thus the channel prompt behind it) was never consulted.
+            approval.assert_not_awaited()
+        finally:
+            for t in list(mgr._tasks.values()):
+                t.cancel()
             await asyncio.sleep(0)
-        # The parent_trusted rung admitted the spawn — the approval callback (and
-        # thus the channel prompt behind it) was never consulted.
-        approval.assert_not_awaited()
-        for t in list(mgr._tasks.values()):
-            t.cancel()
-        await asyncio.sleep(0)
+            # Construction opened the durable task queue (``tasks.db`` + ``-wal`` +
+            # ``-shm``); cancelling the run tasks does not release it.
+            mgr.close()
 
 
 # ── (e) the destination is re-authorized at the instant of delivery ─────────

@@ -41,7 +41,7 @@ vi.mock('../hooks/useKeyboardShortcuts', async (importOriginal) => {
 
 vi.mock('../components/ProjectPicker', () => ({ default: () => null }))
 vi.mock('../pages/chat/ChatSettings', () => ({
-  loadChatConfig: () => ({ tagColumnsEnabled: false, confirmCloseSession: false, defaultAutopilot: false }),
+  loadChatConfig: () => ({ tagColumnsEnabled: false, confirmCloseSession: false }),
   saveChatConfig: vi.fn(),
 }))
 

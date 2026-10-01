@@ -60,6 +60,8 @@ def register(app: web.Application) -> None:
     app.router.add_get(
         "/api/system/session-storage/empty", handlers.api_session_storage_empty_status
     )
+    app.router.add_get("/api/system/leaked-runtimes", handlers.api_leaked_runtimes)
+    app.router.add_post("/api/system/leaked-runtimes/reclaim", handlers.api_leaked_runtimes_reclaim)
     app.router.add_get("/api/stream", handlers.api_stream)
     app.router.add_get("/api/sso-ttl", handlers.api_sso_ttl)
     app.router.add_get("/api/dashboard/branding", handlers.api_branding)

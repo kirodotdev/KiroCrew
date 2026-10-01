@@ -26,6 +26,7 @@ import logging
 
 from aiohttp import web
 
+from kiro_crew.dashboard.chat_delivery import queued_text_for_display
 from kiro_crew.dashboard.chat_persistence import (
     _save_slot_to_history,
     register_guarded_history_write,
@@ -39,7 +40,6 @@ from kiro_crew.dashboard.chat_utils import (
 from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
 from kiro_crew.dashboard.remote_relay import remote_bound_refusal
 from kiro_crew.dashboard.state import DashboardState
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 from kiro_crew.session_map import _kiro_sessions_dir
 
@@ -295,9 +295,20 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
         discarded_queue_ids = {item["id"] for item in discarded_queue}
 
         # Build the user row through the slot's normal append path without
-        # publishing it to the live slot before persistence succeeds.
-        redacted_content, _ = redact_exfiltration_urls(content)
-        redacted_content, _ = redact_credentials(redacted_content)
+        # publishing it to the live slot before persistence succeeds. This row
+        # is ALSO the turn's input (``_run_chat`` below runs the same value), so
+        # the session's own human's edit is delivered AS TYPED -- the rule an
+        # ordinary send follows -- and redacting it would strip a link the human
+        # kept in the message from the model. An app-driven rewind
+        # (``request_app`` set) is not the reader's own words, so it stays
+        # display-redacted, matching ``queue_entry_is_user_origin``'s boundary.
+        # ``not request_app`` is the whole owner test here, not a narrowing of
+        # that discriminator: this HTTP endpoint carries only the dashboard
+        # composer or an app, so a channel or producer ``kind`` stamp (the other
+        # two legs ``queue_entry_is_user_origin`` checks on the drain) cannot
+        # reach it -- the sole question left is whether an app drives the edit.
+        _user_origin = not bool(request_app)
+        redacted_content = queued_text_for_display(content, user_origin=_user_origin)
         prospective_slot.append("user", redacted_content, "msg msg-u")
         msgs_snapshot = list(prospective_slot.messages)
         # The frozen-prefix boundary this snapshot must be written against. An

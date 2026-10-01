@@ -70,7 +70,10 @@ async def _repo_owner_name() -> str | None:
     )
     if rc != 0:
         return None
-    url = stdout.strip()
+    # Cut before the pattern, not after: this anchors on ``$``, so a retained
+    # ``?access_token=...`` keeps ``.git`` from stripping AND rides into the
+    # ``owner/repo`` this hands to ``gh --repo`` in child argv.
+    url = runtime.remote_url_locator(stdout)
     m = re.search(r"[:/]([^/]+/[^/]+?)(?:\.git)?$", url)
     return m.group(1) if m else None
 
@@ -390,8 +393,13 @@ def _issue_url(base: str | None, n: int) -> str | None:
 
 def _parse_html_repo_base(remote_url: str) -> str | None:
     """Derive the repo's browser (html) base URL from a git remote URL,
-    normalising scp-style and scheme URLs to https. None when unparseable."""
-    url = (remote_url or "").strip()
+    normalising scp-style and scheme URLs to https. None when unparseable.
+
+    The query is cut first: this result is rendered into an issue-link ``href``,
+    and both patterns below anchor on ``$``, so a remote carrying
+    ``?access_token=...`` would put that token in the link.
+    """
+    url = runtime.remote_url_locator(remote_url)
     if not url:
         return None
     # scp-like: [user@]host:owner/repo(.git)  — (?!/) rejects a scheme "://".

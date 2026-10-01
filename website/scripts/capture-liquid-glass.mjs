@@ -21,6 +21,8 @@ import { screenshotWithCaret } from './lib/screenshot-with-caret.mjs'
 
 
 const OUT = process.argv[2] || '../temp-screenshots/liquid-glass'
+/** Liquid Glass is opt-in; the harness turns it on the way a user would. */
+const GLASS_ON = { 'mc-liquid-glass': 'on' }
 const SLOT = 'chat-glass'
 const PROJECT = '/home/user/workspace/notes'
 
@@ -168,7 +170,11 @@ async function main() {
       if (path === '/api/tips/next') { await json(route, { tip: TIP, glow: false }); return true }
       return extra(path, route)
     }
-    await stubDashboardApi(page, { slots: variant === 'incognito' ? incognitoWelcomeSlots : variant === 'welcome' ? welcomeSlots : slots, theme, extra: variant === 'tip' ? tipsExtra : extra })
+    // Glass is opt-in (Settings -> Display -> View -> Translucent panels): every glass scene
+    // seeds the switch ON inside the stub's own init script; the `reduce` scenes
+    // leave it off, which is the shipped default -- solid cards.
+    const solid = variant === 'reduce' || variant === 'reduce-long'
+    await stubDashboardApi(page, { slots: variant === 'incognito' ? incognitoWelcomeSlots : variant === 'welcome' ? welcomeSlots : slots, theme, extra: variant === 'tip' ? tipsExtra : extra, localStorageEntries: solid ? null : GLASS_ON })
     // Registered AFTER the stub's swallow route so it wins: the socket opens
     // against nothing and we push the scene's frame(s) into it once the page is up.
     const frames = [].concat(wsFrames[variant] ?? [])
@@ -177,10 +183,6 @@ async function main() {
     // The collapsed composer is a persisted per-browser choice (ChatInput's
     // COMPOSER_COLLAPSED_LS_KEY); seed it so the dock comes up as the bar.
     if (variant === 'collapsed') await page.addInitScript(() => { localStorage.setItem('mc-composer-collapsed', '1') })
-    // The user's own switch (Settings -> Display -> Reduce glass transparency):
-    // the index.html bootstrap reads this key and sets data-reduce-transparency
-    // before hydration, so the first paint is already solid.
-    if (variant === 'reduce' || variant === 'reduce-long') await page.addInitScript(() => { localStorage.setItem('mc-reduce-transparency', 'on') })
     await page.goto(base + '/', { waitUntil: 'domcontentloaded' })
     // The tip gate is 10s; a multi-frame scene needs its last frame landed and painted.
     await page.waitForTimeout(variant === 'tip' ? 12500 : 2500 + Math.max(0, frames.length - 1) * 900 + 500)
@@ -345,7 +347,7 @@ async function main() {
         const chips = Array.from(document.querySelectorAll('[data-testid="composer-dock-root"] .liquid-glass')).map(el => getComputedStyle(el).backgroundColor)
         return { html, dockBg: getComputedStyle(dock).backgroundColor, layers, chips }
       })
-      if (st.html !== 'on') throw new Error(`chat/${theme}/reduce: data-reduce-transparency not applied (${st.html})`)
+      if (st.html !== 'on') throw new Error(`chat/${theme}/${variant}: data-reduce-transparency not applied by default (${st.html}); glass must be opt-in`)
       if (st.layers.some(d => d !== 'none')) throw new Error(`chat/${theme}/reduce: a glass layer still paints (${st.layers.join(',')})`)
       if (st.dockBg === 'rgba(0, 0, 0, 0)') throw new Error(`chat/${theme}/reduce: dock has no solid fill`)
       if (st.chips.some(c => c === 'rgba(0, 0, 0, 0)')) throw new Error(`chat/${theme}/reduce: a pane is still transparent (${st.chips.join(' | ')})`)
@@ -443,7 +445,7 @@ async function main() {
     })
     const page = await context.newPage()
     logPageProblems(page)
-    await stubDashboardApi(page, { slots, theme, extra })
+    await stubDashboardApi(page, { slots, theme, extra, localStorageEntries: GLASS_ON })
     await page.goto(base + '/settings', { waitUntil: 'domcontentloaded' })
     await page.waitForTimeout(2500)
     const dialogs = await page.getByRole('dialog').count()
@@ -490,10 +492,11 @@ async function main() {
     const context = await browser.newContext({ viewport: { width: 1400, height: 900 }, deviceScaleFactor: 2 })
     const page = await context.newPage()
     logPageProblems(page)
+    // The switch scene starts from the shipped default -- glass OFF -- and turns it on.
     await stubDashboardApi(page, { slots, theme, extra })
-    // The Reduce glass transparency switch lives on the Theme rail item; the
-    // sub-less path resolves to View, where that row never mounts.
-    await page.goto(base + '/settings/display/theme', { waitUntil: 'domcontentloaded' })
+    // The Translucent panels switch lives on the View rail item (the sub-less
+    // path resolves there too; name it anyway).
+    await page.goto(base + '/settings/display/view', { waitUntil: 'domcontentloaded' })
     await page.waitForTimeout(2500)
     const dialogs = await page.getByRole('dialog').count()
     if (dialogs) throw new Error(`settings-desktop/${theme}: ${dialogs} unexpected dialog(s) open`)
@@ -520,31 +523,42 @@ async function main() {
       clip: { x: Math.max(0, sbox.x - 24), y: Math.max(0, sbox.y - 24), width: sbox.width + 48, height: sbox.height + 48 },
     })
     console.log('wrote', `${OUT}/settings-desktop-${theme}-search-focused-crop.png`)
-    // The switch itself (Settings -> Display -> Theme card): photograph the row
-    // off, flip it, assert the root attribute and the stored key follow, and
-    // photograph it on. The switch is the only way a user reaches the solid
-    // rendering without an OS setting, so the row must be findable and work.
-    const row = page.locator('[data-setting-label="Reduce glass transparency"]').first()
-    if (!(await row.count())) throw new Error(`settings-desktop/${theme}: "Reduce glass transparency" row missing`)
+    // The switch itself (Settings -> Display -> View): glass is opt-in,
+    // so photograph the row OFF (the shipped default: solid attribute on, no
+    // stored key), flip it, assert the root attribute and the stored key
+    // follow, and photograph it on. The switch is the only way a user reaches
+    // the glass at all, so the row must be findable and work.
+    const row = page.locator('[data-setting-label="Translucent panels"]').first()
+    if (!(await row.count())) throw new Error(`settings-desktop/${theme}: "Translucent panels" row missing`)
     await row.scrollIntoViewIfNeeded()
     await page.waitForTimeout(300)
-    const readSwitch = () => page.evaluate(() => ({ html: document.documentElement.dataset.reduceTransparency ?? '', stored: localStorage.getItem('mc-reduce-transparency') }))
+    const readSwitch = () => page.evaluate(() => ({ html: document.documentElement.dataset.reduceTransparency ?? '', stored: localStorage.getItem('mc-liquid-glass') }))
     const off = await readSwitch()
-    if (off.html === 'on' || off.stored === 'on') throw new Error(`settings-desktop/${theme}: switch already on before the click (${JSON.stringify(off)})`)
+    if (off.html !== 'on' || off.stored !== null) throw new Error(`settings-desktop/${theme}: glass is not off by default (${JSON.stringify(off)}); it must be opt-in`)
+    // The preview under the row is the real primitive: solid while the switch
+    // is off (its layers hidden, a solid fill), live glass once it is on.
+    const preview = page.getByTestId('translucent-panels-preview')
+    if (!(await preview.count())) throw new Error(`settings-desktop/${theme}: translucent-panels preview missing`)
+    const previewPane = preview.locator('.liquid-glass.glass-shadow').first()
+    const readPreview = () => previewPane.evaluate(el => ({ bg: getComputedStyle(el).backgroundColor, layers: Array.from(el.querySelectorAll(':scope > [data-liquid-glass-layer]')).map(l => getComputedStyle(l).display) }))
+    const pOff = await readPreview()
+    if (pOff.bg === 'rgba(0, 0, 0, 0)' || pOff.layers.some(d => d !== 'none')) throw new Error(`settings-desktop/${theme}: preview is not solid while the switch is off (${JSON.stringify(pOff)})`)
     const card = row.locator('xpath=ancestor::*[@data-settings-card][1]')
     const target = (await card.count()) ? card : row
     const rbox = await target.boundingBox()
     const clip = { x: Math.max(0, rbox.x - 16), y: Math.max(0, rbox.y - 16), width: rbox.width + 32, height: rbox.height + 32 }
-    await page.screenshot({ path: `${OUT}/settings-desktop-${theme}-reduce-toggle-off-crop.png`, clip })
-    console.log('wrote', `${OUT}/settings-desktop-${theme}-reduce-toggle-off-crop.png`)
+    await page.screenshot({ path: `${OUT}/settings-desktop-${theme}-translucent-toggle-off-crop.png`, clip })
+    console.log('wrote', `${OUT}/settings-desktop-${theme}-translucent-toggle-off-crop.png`)
     await row.getByRole('switch').first().click()
     await page.waitForTimeout(300)
     const on = await readSwitch()
-    if (on.html !== 'on') throw new Error(`settings-desktop/${theme}: switch did not set data-reduce-transparency (${on.html})`)
-    if (on.stored !== 'on') throw new Error(`settings-desktop/${theme}: switch did not persist mc-reduce-transparency (${on.stored})`)
-    await page.screenshot({ path: `${OUT}/settings-desktop-${theme}-reduce-toggle-on-crop.png`, clip })
-    console.log(`settings-desktop/${theme}: reduce-transparency switch off -> on (root attribute + stored key follow)`)
-    console.log('wrote', `${OUT}/settings-desktop-${theme}-reduce-toggle-on-crop.png`)
+    if (on.html !== 'off') throw new Error(`settings-desktop/${theme}: switch did not lift data-reduce-transparency (${on.html})`)
+    if (on.stored !== 'on') throw new Error(`settings-desktop/${theme}: switch did not persist mc-liquid-glass (${on.stored})`)
+    await assertGlass(page, previewPane, `settings-desktop/${theme}/preview`)
+    console.log(`settings-desktop/${theme}: preview solid (${pOff.bg}) -> glass with the switch`)
+    await page.screenshot({ path: `${OUT}/settings-desktop-${theme}-translucent-toggle-on-crop.png`, clip })
+    console.log(`settings-desktop/${theme}: translucent-panels switch off -> on (root attribute lifted + stored key follow)`)
+    console.log('wrote', `${OUT}/settings-desktop-${theme}-translucent-toggle-on-crop.png`)
     await context.close()
   }
 
@@ -559,7 +573,7 @@ async function main() {
     const context = await browser.newContext({ viewport: { width: 1500, height: 950 }, deviceScaleFactor: 1, recordVideo: { dir: videoDir, size: { width: 1500, height: 950 } } })
     const page = await context.newPage()
     logPageProblems(page)
-    await stubDashboardApi(page, { slots, theme, extra })
+    await stubDashboardApi(page, { slots, theme, extra, localStorageEntries: GLASS_ON })
     let sock = null
     await page.routeWebSocket(/\/api\/ws/, ws => { sock = ws })
     await page.addInitScript(slot => { localStorage.setItem('mc-active-slot', slot) }, SLOT)

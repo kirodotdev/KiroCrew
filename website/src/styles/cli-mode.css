@@ -116,6 +116,42 @@
   line-height: 1.55;
 }
 
+/* The reply-thread footer ("N replies · Last reply 2m ago") is a SIBLING of
+   the user-message root inside that `items-end` wrapper, and ThreadFooter
+   carries its own `align-self: flex-end` (Tailwind `self-end`) because in the
+   normal theme the user's bubble sits on the right. `align-self` on the item
+   beats the `align-items: flex-start` written on the wrapper above, so
+   without this rule the footer stays pinned to the far right of a bubble CLI
+   mode has already moved to the left — the row reads as belonging to no
+   message. ThreadFooter cannot simply drop `align-self`: the assistant-side
+   footer sits in a column with the default `align-items: stretch`, which its
+   `self-start` is what escapes, and declaring `items-start` on that column
+   instead would shrink-wrap the assistant bubble (a plain block). So the side
+   is re-stated here, where CLI mode already owns the wrapper's alignment.
+
+   Scoped through the same `:has([data-role="user"])` wrapper and to a DIRECT
+   child, so the assistant footer (already `flex-start`) and any footer
+   outside a chat pane are untouched. `margin-left: 8px` is the bubble's own
+   bar + padding (4px + 10px) minus the button's `px-1.5` (6px), so the faces
+   share a left edge with the message text and the hover row's timestamp. */
+[data-ui="cli"] [style*="--mc-content-width"] .items-end:has([data-role="user"]) > [data-testid="thread-footer"] {
+  align-self: flex-start !important;
+  margin-left: 8px !important;
+  margin-right: 0 !important;
+}
+
+/* The assistant footer is already on the left, but it misses the indent for the
+   same structural reason: CLI mode indents the bubble by putting the bar and
+   padding on the message ROOT, and the footer is that root's SIBLING, so it
+   keeps sitting on the column edge — 16px (6px double bar + 10px padding) left
+   of the reply it belongs to. `margin-left: 10px` plus the button's own `px-1.5`
+   puts its faces on that same edge. Measured, not derived: see
+   `scripts/capture-thread-footer-cli-align.mjs`, which asserts the offset for
+   both sides. */
+[data-ui="cli"] [style*="--mc-content-width"] :has(> [data-role="assistant"]) > [data-testid="thread-footer"] {
+  margin-left: 10px !important;
+}
+
 
 /* ── Assistant message: double-border for non-color cue ─────────────────── */
 
@@ -195,8 +231,14 @@
   user-select: none;
 }
 
-[data-ui="cli"] [style*="--mc-content-width"] textarea[data-composer-input] {
+/* One rule for the textarea and its paste-chip mirror (PasteHighlightLayer):
+   they must share the same text box, or each chip background sits 8px left
+   of its token text. */
+[data-ui="cli"] [style*="--mc-content-width"] :is(textarea[data-composer-input], [data-composer-typo][aria-hidden]) {
   padding-left: 24px !important;
+}
+
+[data-ui="cli"] [style*="--mc-content-width"] textarea[data-composer-input] {
   caret-color: var(--accent);
   /* font-family + font-size inherit from body; useZoom auto-resolves
      --font-body to mono in CLI mode by default. */

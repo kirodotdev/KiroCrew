@@ -21,7 +21,7 @@ consumer                                      projection it reads
 ``agent_sdk.tool_gate`` own-leaf exclusion    :data:`AGENT_AUTH_DECLARATIONS`
 ``agent_sdk.backends`` logout-recycle set     :func:`backends_retired_by_host_logout`
 ``acp`` auth-required message                 :func:`signed_out_message`
-``cli_doctor`` sign-in row                    :func:`declaration_for`
+``doctor_checks.agents`` sign-in row          :func:`declaration_for`
 ``GET /api/acp-backends`` auth object         :func:`declaration_for`
 ============================================  ================================
 

@@ -71,10 +71,11 @@ def _all_fields_recursive(
         result.append((path, f))
         tp = f.type
         if isinstance(tp, str):
-            # Evaluate in the DEFINING module's namespace (standard
-            # get_type_hints semantics): the section dataclasses live in
-            # sections.py, and the loader facade's re-export list is frozen, so
-            # a post-split type is resolvable only where it is defined.
+            # Evaluate in the sections facade's namespace: every section
+            # dataclass is defined in sections.py or in a section owner it
+            # re-exports (memory_sections, integration_sections, service_sections),
+            # so each annotation resolves there, while the loader facade's
+            # frozen re-export list does not carry every section type.
             import kiro_crew.config.sections as _mod
 
             try:
@@ -510,6 +511,16 @@ class TestDeclaredDictProperties:
         assert entry is not None, "nested declared sub-key did not flatten"
         assert entry.type == "boolean"
         assert entry.default_value is True
+
+    def test_reuse_current_is_first_class_entry(self) -> None:
+        # The Settings "Reuse the current terminal" toggle references it by
+        # configKey; it must flatten into SCHEMA_REGISTRY and default OFF so the
+        # fresh-shell behavior is unchanged for anyone who never set it.
+        index = {e.path: e for e in SCHEMA_REGISTRY}
+        entry = index.get("dashboard.terminal.reuse_current")
+        assert entry is not None, "nested declared sub-key did not flatten"
+        assert entry.type == "boolean"
+        assert entry.default_value is False
 
     def test_completion_dict_stays_open_for_undeclared_keys(self) -> None:
         # `completion.commands` (the subcommand-probe allowlist) is documented

@@ -1,0 +1,178 @@
+{
+  "_source": "https://schema.cloudformation.us-east-1.amazonaws.com/CloudformationSchema.zip",
+  "_zip_sha256": "de2a6c9477272e0f7b9f650739440c0992fff8ccc6426da9f6611dbee15c3198",
+  "_fetched": "2026-09-30",
+  "types": {
+    "AWS::IAM::Role": {
+      "create": [
+        "iam:CreateRole",
+        "iam:PutRolePolicy",
+        "iam:AttachRolePolicy",
+        "iam:GetRolePolicy",
+        "iam:TagRole",
+        "iam:UntagRole",
+        "iam:GetRole"
+      ],
+      "update": [
+        "iam:UpdateRole",
+        "iam:UpdateRoleDescription",
+        "iam:UpdateAssumeRolePolicy",
+        "iam:DetachRolePolicy",
+        "iam:AttachRolePolicy",
+        "iam:DeleteRolePermissionsBoundary",
+        "iam:PutRolePermissionsBoundary",
+        "iam:DeleteRolePolicy",
+        "iam:PutRolePolicy",
+        "iam:TagRole",
+        "iam:UntagRole"
+      ],
+      "delete": [
+        "iam:DeleteRole",
+        "iam:DetachRolePolicy",
+        "iam:DeleteRolePolicy",
+        "iam:GetRole",
+        "iam:ListAttachedRolePolicies",
+        "iam:ListRolePolicies",
+        "iam:TagRole",
+        "iam:UntagRole"
+      ]
+    },
+    "AWS::IAM::InstanceProfile": {
+      "create": [
+        "iam:CreateInstanceProfile",
+        "iam:PassRole",
+        "iam:AddRoleToInstanceProfile",
+        "iam:GetInstanceProfile"
+      ],
+      "update": [
+        "iam:PassRole",
+        "iam:RemoveRoleFromInstanceProfile",
+        "iam:AddRoleToInstanceProfile",
+        "iam:GetInstanceProfile"
+      ],
+      "delete": [
+        "iam:GetInstanceProfile",
+        "iam:RemoveRoleFromInstanceProfile",
+        "iam:DeleteInstanceProfile"
+      ]
+    },
+    "AWS::EC2::SecurityGroup": {
+      "create": [
+        "ec2:CreateSecurityGroup",
+        "ec2:DescribeSecurityGroups",
+        "ec2:RevokeSecurityGroupEgress",
+        "ec2:AuthorizeSecurityGroupEgress",
+        "ec2:AuthorizeSecurityGroupIngress",
+        "ec2:CreateTags"
+      ],
+      "update": [
+        "ec2:RevokeSecurityGroupEgress",
+        "ec2:RevokeSecurityGroupIngress",
+        "ec2:DescribeSecurityGroups",
+        "ec2:AuthorizeSecurityGroupEgress",
+        "ec2:AuthorizeSecurityGroupIngress",
+        "ec2:UpdateSecurityGroupRuleDescriptionsIngress",
+        "ec2:UpdateSecurityGroupRuleDescriptionsEgress",
+        "ec2:CreateTags",
+        "ec2:DeleteTags"
+      ],
+      "delete": [
+        "ec2:DescribeSecurityGroups",
+        "ec2:DeleteSecurityGroup",
+        "ec2:DescribeInstances"
+      ]
+    },
+    "AWS::EC2::SecurityGroupIngress": {
+      "create": [
+        "ec2:DescribeSecurityGroupRules",
+        "ec2:AuthorizeSecurityGroupIngress"
+      ],
+      "update": [
+        "ec2:UpdateSecurityGroupRuleDescriptionsIngress"
+      ],
+      "delete": [
+        "ec2:DescribeSecurityGroupRules",
+        "ec2:RevokeSecurityGroupIngress"
+      ]
+    },
+    "AWS::EC2::Instance": {
+      "create": [
+        "iam:PassRole",
+        "ec2:ModifyPrivateDnsNameOptions",
+        "ec2:DescribeNetworkInterfaces",
+        "ec2:DescribeVolumes",
+        "ec2:RunInstances",
+        "ec2:AssociateIamInstanceProfile",
+        "ec2:DescribeIamInstanceProfileAssociations",
+        "ec2:DescribeInstances",
+        "ec2:DescribeSubnets",
+        "ec2:DescribeKeyPairs",
+        "ec2:DescribeSecurityGroups",
+        "ec2:DescribeVpcs",
+        "ec2:DescribeInstanceAttribute",
+        "ec2:DescribeInstanceCreditSpecifications",
+        "ec2:DescribeLaunchTemplates",
+        "ec2:DescribeLaunchTemplateVersions",
+        "ec2:DetachVolume",
+        "ec2:DisassociateIamInstanceProfile",
+        "ec2:ModifyInstanceAttribute",
+        "ec2:ModifyInstanceCreditSpecification",
+        "ec2:ModifyInstancePlacement",
+        "ec2:MonitorInstances",
+        "ec2:AttachVolume",
+        "ec2:CreateTags",
+        "ec2:ReplaceIamInstanceProfileAssociation",
+        "ec2:StartInstances",
+        "ssm:CreateAssociation",
+        "ssm:DescribeAssociation",
+        "ssm:ListAssociations"
+      ],
+      "update": [
+        "ec2:ModifyPrivateDnsNameOptions",
+        "ec2:DescribeNetworkInterfaces",
+        "ec2:AssociateIamInstanceProfile",
+        "ec2:DescribeIamInstanceProfileAssociations",
+        "ec2:DescribeInstances",
+        "ec2:DescribeSubnets",
+        "ec2:DescribeKeyPairs",
+        "ec2:DescribeSecurityGroups",
+        "ec2:DescribeVpcs",
+        "ec2:DescribeInstanceAttribute",
+        "ec2:DescribeInstanceCreditSpecifications",
+        "ec2:DescribeLaunchTemplates",
+        "ec2:DetachVolume",
+        "ec2:DisassociateIamInstanceProfile",
+        "ec2:ModifyInstanceAttribute",
+        "ec2:ModifyInstanceCreditSpecification",
+        "ec2:ModifyInstanceMaintenanceOptions",
+        "ec2:ModifyInstanceMetadataOptions",
+        "ec2:ModifyInstancePlacement",
+        "ec2:MonitorInstances",
+        "ec2:AttachVolume",
+        "ec2:CreateTags",
+        "ec2:DeleteTags",
+        "ec2:ReplaceIamInstanceProfileAssociation",
+        "ec2:StartInstances",
+        "ec2:StopInstances",
+        "ec2:UnmonitorInstances",
+        "ssm:CreateAssociation",
+        "ssm:DeleteAssociation",
+        "ssm:DescribeAssociation",
+        "ssm:ListAssociations"
+      ],
+      "delete": [
+        "ec2:DescribeInstances",
+        "ec2:TerminateInstances",
+        "ec2:DescribeNetworkInterfaces",
+        "ec2:DescribeVolumes",
+        "ec2:DescribeInstanceAttribute",
+        "ec2:DescribeInstanceCreditSpecifications",
+        "ec2:DescribeLaunchTemplates",
+        "ssm:DescribeAssociation",
+        "ssm:ListAssociations"
+      ]
+    },
+    "AWS::CloudFormation::WaitCondition": {},
+    "AWS::CloudFormation::WaitConditionHandle": {}
+  }
+}

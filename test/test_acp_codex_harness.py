@@ -1366,7 +1366,7 @@ class _ControlPlane:
                 return self._new_response
             return {}
 
-        async def _send_request(method, params):
+        async def _send_request(method, params, **_kw):
             self.methods.append(method)
             self.params.append(params)
             return 999

@@ -203,9 +203,15 @@ class TestDisplayFormRedaction:
         assert "[REDACTED" in landed
 
     @pytest.mark.asyncio
-    async def test_omitting_the_heading_screen_reopens_the_plaintext_fallback(
+    async def test_the_canonical_scan_screens_the_heading_join_without_the_telegram_pass(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        # With the Telegram-specific heading pass removed, the always-on canonical
+        # display-form scan still screens this join: it collapses a line-leading
+        # ``# `` marker (``_HEADING_MARKER``) too, so ``SecretAccessKey`` above and
+        # ``# : <value>`` below read as one credential on screen and are redacted
+        # before delivery. The screen is defence-in-depth, not the one Telegram
+        # pass alone.
         from kiro_crew.messaging import display_safety
 
         heading = display_safety.TELEGRAM_FALLBACK_HEADING
@@ -233,7 +239,8 @@ class TestDisplayFormRedaction:
         await renderer.on_done()
 
         landed = "".join(text for text, _ in client.sent)
-        assert secret in landed
+        assert secret not in landed
+        assert "[REDACTED" in landed
 
     @pytest.mark.asyncio
     async def test_the_rich_table_path_redacts_too(self) -> None:

@@ -24,7 +24,7 @@ const NOW = new Date(2026, 7, 28, 15, 0, 0).getTime() // local Aug 28 2026 15:00
 
 function slot(key: string, title: string, tsMs: number, extra: Partial<ChatSlot> = {}): ChatSlot {
   // No `surface`: the default (empty) surface is the ordinary chat surface per
-  // isChatPageSurface — '', 'orchestrator' and 'crew' are the chat-page set.
+  // isChatPageSurface.
   return {
     key, title, messages: 1, running: false,
     last_ts: new Date(tsMs).toISOString(), ...extra,

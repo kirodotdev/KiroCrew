@@ -106,23 +106,29 @@ export default function UsageTab() {
 
       <Card>
         <CardTitle><BarChart3 className="lucide-inline" /> {i18nT('pages.overview.usageTab.session_activity_30_days')}</CardTitle>
-        {s.refusedTranscripts > 0 && (
-          <ErrorNotice
-            variant="inline"
-            askAgent
-            className="mb-4"
-            message={i18nT('pages.overview.usageTab.refused_transcripts_warning', { count: s.refusedTranscripts })}
-          />
+        {data.refreshing ? (
+          <div data-testid="usage-session-refreshing" className="skeleton h-32 rounded" />
+        ) : (
+          <>
+            {s.refusedTranscripts > 0 && (
+              <ErrorNotice
+                variant="inline"
+                askAgent
+                className="mb-4"
+                message={i18nT('pages.overview.usageTab.refused_transcripts_warning', { count: s.refusedTranscripts })}
+              />
+            )}
+            <div className="grid grid-cols-3 gap-4 max-[600px]:grid-cols-1 mb-4">
+              <PeriodCard label={i18nT('pages.overview.usageTab.today')} p={s.today} />
+              <PeriodCard label={i18nT('pages.overview.usageTab.this_week')} p={s.thisWeek} />
+              <PeriodCard label={i18nT('pages.overview.usageTab.this_month')} p={s.thisMonth} />
+            </div>
+            <div className="grid grid-cols-2 gap-x-6 gap-y-2 max-[600px]:grid-cols-1">
+              <Row label={i18nT('pages.overview.usageTab.total_sessions_30d')} value={s.total} />
+              <Row label={i18nT('pages.overview.usageTab.avg_messages_session')} value={s.avgMsgsPerSession} />
+            </div>
+          </>
         )}
-        <div className="grid grid-cols-3 gap-4 max-[600px]:grid-cols-1 mb-4">
-          <PeriodCard label={i18nT('pages.overview.usageTab.today')} p={s.today} />
-          <PeriodCard label={i18nT('pages.overview.usageTab.this_week')} p={s.thisWeek} />
-          <PeriodCard label={i18nT('pages.overview.usageTab.this_month')} p={s.thisMonth} />
-        </div>
-        <div className="grid grid-cols-2 gap-x-6 gap-y-2 max-[600px]:grid-cols-1">
-          <Row label={i18nT('pages.overview.usageTab.total_sessions_30d')} value={s.total} />
-          <Row label={i18nT('pages.overview.usageTab.avg_messages_session')} value={s.avgMsgsPerSession} />
-        </div>
       </Card>
 
       {s.dailyHistory.length > 0 && (

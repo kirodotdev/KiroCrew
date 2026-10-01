@@ -24,14 +24,12 @@ import React, {
   useCallback,
   useEffect,
   useImperativeHandle,
-  useLayoutEffect,
   useMemo,
   useRef,
-  useState,
 } from 'react'
 import { useVirtualChat } from '../../hooks/virtualizer/useVirtualChat'
 import EarlierMessagesBar from '../../pages/chat/EarlierMessagesBar'
-import TranscriptScrollShell from '../../pages/chat/TranscriptScrollShell'
+import TranscriptScrollShell, { useTranscriptWidth } from '../../pages/chat/TranscriptScrollShell'
 import type { DisplayItem } from '../../pages/chat/types'
 import { anchorAltIdFor, stableAnchorIdFor, uniqueRowKeys, virtualKeyFor } from './rowKeys'
 import { useStableMessageKey } from './useStableMessageKey'
@@ -124,42 +122,6 @@ export interface VirtualTranscriptProps {
 /** Virtualizer tuning shared with the main chat page. */
 const ESTIMATED_ROW_HEIGHT = 100
 const OVERSCAN = 6
-/** Widest bucket: the 900px column plus its row padding, so every wider
- *  scroller shares one height scope. */
-const WIDTH_BUCKET_MAX = 944
-const WIDTH_BUCKET_STEP = 16
-const WIDTH_SETTLE_MS = 200
-
-function bucketWidth(px: number): number {
-  return Math.min(Math.round(px / WIDTH_BUCKET_STEP) * WIDTH_BUCKET_STEP, WIDTH_BUCKET_MAX)
-}
-
-/** Row heights depend on the column width, so the height cache is scoped by a
- *  width bucket: a pane dragged narrower re-measures instead of trusting
- *  heights recorded at the old width. Debounced — a resize drag must not thrash
- *  the height index. */
-function useScrollerWidthBucket(scrollerRef: React.RefObject<HTMLDivElement | null>): number {
-  const [bucket, setBucket] = useState(() =>
-    bucketWidth(typeof window !== 'undefined' ? window.innerWidth : WIDTH_BUCKET_MAX))
-  useLayoutEffect(() => {
-    const el = scrollerRef.current
-    if (!el) return
-    const measure = () => setBucket(bucketWidth(el.clientWidth))
-    measure()
-    if (typeof ResizeObserver === 'undefined') return
-    let timer: ReturnType<typeof setTimeout> | undefined
-    const observer = new ResizeObserver(() => {
-      clearTimeout(timer)
-      timer = setTimeout(measure, WIDTH_SETTLE_MS)
-    })
-    observer.observe(el)
-    return () => {
-      observer.disconnect()
-      clearTimeout(timer)
-    }
-  }, [scrollerRef])
-  return bucket
-}
 
 const VirtualTranscript = forwardRef<VirtualTranscriptHandle, VirtualTranscriptProps>(
   function VirtualTranscript({
@@ -185,7 +147,7 @@ const VirtualTranscript = forwardRef<VirtualTranscriptHandle, VirtualTranscriptP
     const ownScrollerRef = useRef<HTMLDivElement | null>(null)
     const scrollerRef = externalScrollerRef ?? ownScrollerRef
     const msgKey = useStableMessageKey()
-    const widthBucket = useScrollerWidthBucket(scrollerRef)
+    const { widthBucket, canMeasure, bindScroller } = useTranscriptWidth()
 
     // Keys are computed list-wide (collision tie-break), then served per row.
     const rowKeys = useMemo(() => uniqueRowKeys(items, msgKey), [items, msgKey])
@@ -202,13 +164,22 @@ const VirtualTranscript = forwardRef<VirtualTranscriptHandle, VirtualTranscriptP
       [msgKey],
     )
 
+    // Only the shipped host prefixes encode a raw slot after one colon.
+    // Put that slot first for storageGc, retaining the host as a height-only
+    // partition. The namespace separates a known host (pane:slot) from an
+    // opaque caller with the reversed ID (slot:pane); removing it aliases
+    // their height caches. Other caller IDs stay opaque; sessionId owns anchors.
+    const hostedSession = /^(pane|side|embed):([^:]+)$/.exec(sessionId)
     const virt = useVirtualChat<DisplayItem>({
       items: items as DisplayItem[],
       getKey,
       getStableId,
       getAltId,
       sessionId,
-      heightScopeKey: `${sessionId}@w${widthBucket}`,
+      heightScopeKey: hostedSession
+        ? `${hostedSession[2]}:tables1:${hostedSession[1]}:w${widthBucket}`
+        : `${sessionId}:tables1:w${widthBucket}`,
+      canMeasure,
       estimatedHeight: ESTIMATED_ROW_HEIGHT,
       overscan: OVERSCAN,
       eagerFirstMeasure: true,
@@ -261,6 +232,7 @@ const VirtualTranscript = forwardRef<VirtualTranscriptHandle, VirtualTranscriptP
     return (
       <TranscriptScrollShell
         scrollerRef={scrollerRef}
+        onScrollerElement={bindScroller}
         onScroll={handleScroll}
         virt={virt}
         loadingOlder={earlier?.loading ?? false}

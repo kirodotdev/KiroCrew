@@ -49,6 +49,8 @@ import copy
 import hashlib
 import json
 import logging
+import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -131,6 +133,84 @@ def readonly_agent_name(base_name: str, source_id: str | None = None) -> str:
         return f"{base_name}{READONLY_SUFFIX}"
     tag = hashlib.sha256(source_id.encode("utf-8")).hexdigest()[:8]
     return f"{base_name}{READONLY_SUFFIX}-{tag}"
+
+
+#: The two shapes :func:`readonly_agent_name` produces: ``<base>--readonly`` and
+#: ``<base>--readonly-<8 hex>``. Always applied with ``fullmatch``.
+_DERIVED_NAME_RE = re.compile(r"(?P<base>.+)--readonly(?:-[0-9a-f]{8})?")
+
+
+def readonly_base_name(name: str) -> str | None:
+    """The base agent *name* was derived from, or ``None`` when it has neither derived shape.
+
+    The inverse of :func:`readonly_agent_name` on the NAME alone: it reads no
+    file, so it cannot tell a generated spec from a user's own agent that
+    happens to be called ``<x>--readonly``. Use it only to WORD a message; a
+    decision about what a spec is goes through :func:`is_owned_readonly_spec`,
+    which reads the owner marker.
+    """
+    match = _DERIVED_NAME_RE.fullmatch(name) if isinstance(name, str) else None
+    return match.group("base") if match else None
+
+
+def unavailable_mode_explanation(agent: str) -> tuple[str, str]:
+    """``(cause, remedy)`` for kiro-cli not advertising *agent* as a mode.
+
+    Completes the "Agent mode ... is not available" refusal the ACP layer raises,
+    which puts the cause before its "Refusing to run the backend default mode"
+    sentence and the remedy after it. For an ordinary agent the file is likely
+    missing and ``kirocrew setup --agent-only`` writes the managed ones. For a
+    spec THIS module published both halves of that are wrong: setup never writes
+    it (a side turn does, see :func:`publish_readonly_spec`), and it is usually
+    PRESENT -- kiro-cli lists its agents once, at process start, so a process
+    started before the side turn published it cannot select it, and the remedy
+    says a new session fixes that. The spec is not a sub-agent either, which is
+    the other way a caller reaches this message, so the remedy also names the
+    base agent -- or says to omit ``agent``, since the host default is reached
+    that way rather than by name.
+
+    Which answer applies is decided by the owner marker on the file at the
+    derived path, not by the name: a user's own agent that is merely called
+    ``<x>--readonly`` keeps the ordinary answer. Blocking I/O (one bounded read
+    through the hardened spec reader): the ACP callers run it off the loop.
+    """
+    base = readonly_base_name(agent)
+    if base is None or not _is_published_readonly_spec(agent):
+        return (
+            f"its ~/.kiro/agents/{agent}.json is likely missing.",
+            "Run `kirocrew setup --agent-only` to materialize the agent config.",
+        )
+    return (
+        f"{agent!r} is the read-only spec Kiro Crew derives from {base!r} for side "
+        "replies: a side turn writes it, `kirocrew setup` does not, and kiro-cli lists "
+        "only the agents present when its process started.",
+        "A new session starts a kiro-cli that lists it. It is not a sub-agent: to spawn "
+        f"its source agent, name {base!r}, or omit 'agent' when that is the default agent.",
+    )
+
+
+def _is_published_readonly_spec(name: str) -> bool:
+    """Whether ``~/.kiro/agents/<name>.json`` is a regular file carrying the owner marker.
+
+    ``False`` on any read failure: the caller then gives the ordinary answer,
+    which is what it gave before this module existed.
+    """
+    # Function-local for two reasons. ``agent_discovery`` imports this module at
+    # module scope (``is_internal_agent_spec`` reads the owner marker), so a
+    # module-scope import back would be circular. ``kiro_crew.agent`` is heavy,
+    # and this runs only on an already-failing mode refusal.
+    from kiro_crew.agent import kiro_agents_dir_path
+    from kiro_crew.agent_discovery import _read_agent_spec
+
+    target = kiro_agents_dir_path() / f"{name}.json"
+    try:
+        if os.path.islink(target) or not os.path.isfile(target):
+            return False
+        data = _read_agent_spec(target, operation="agent_mode_refusal", source="unknown")
+    except Exception:  # noqa: BLE001 -- wording only; the refusal is raised regardless
+        logger.debug("could not read %s to word a mode refusal", target, exc_info=True)
+        return False
+    return is_owned_readonly_spec(data)
 
 
 def spec_digest(spec: dict[str, Any]) -> str:
@@ -230,7 +310,16 @@ def is_owned_readonly_spec(data: Any) -> bool:
     """True when *data* is a spec this module wrote (owner marker present)."""
     if not isinstance(data, dict):
         return False
-    description = data.get("description")
+    return is_readonly_spec_description(data.get("description"))
+
+
+def is_readonly_spec_description(description: object) -> bool:
+    """True when *description* carries this module's owner marker.
+
+    The test :func:`is_owned_readonly_spec` applies to a raw spec, exposed on the
+    field alone so a caller holding a discovery row (``AgentInfo.description``)
+    rather than the parsed file asks the same question.
+    """
     return isinstance(description, str) and description.startswith(OWNER_MARKER)
 
 

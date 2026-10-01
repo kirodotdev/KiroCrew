@@ -74,7 +74,11 @@ from kiro_crew.dashboard.server import (
     _MIXED_INTERNAL_API_PATHS,
     _STRICT_INTERNAL_API_PATHS,
 )
-from kiro_crew.dashboard.token_auth import _BYPASS_EXACT, internal_path_matches
+from kiro_crew.dashboard.token_auth import (
+    _BYPASS_EXACT,
+    _BYPASS_EXACT_METHODS,
+    internal_path_matches,
+)
 
 # One xdist worker for the whole module: every test here derives from ONE module-cached
 # scan of src/ (rglob + ast.parse, ~30s). Under `--dist loadgroup` an unmarked module is
@@ -419,6 +423,38 @@ def _called_helper_name(func: ast.expr, wrappers: dict[str, int]) -> str | None:
     return None
 
 
+#: HTTP method each transport helper carries in its own name.
+_HELPER_METHODS = {
+    "_post": "POST",
+    "_get": "GET",
+    "_put": "PUT",
+    "_patch": "PATCH",
+    "_delete": "DELETE",
+}
+
+
+def _call_method(call: ast.Call, called: str) -> str:
+    """The HTTP method a transport/``Request`` call uses.
+
+    Needed only to validate a path granted by the method-scoped bypass map:
+    that map grants a route for one method (POST for the self-authenticating
+    loopback/webhook routes), and a call on the same path under another method
+    is still refused by the middleware. A transport helper names its verb; a raw
+    ``urllib.request.Request`` carries it in ``method=`` (a literal), else defaults
+    to GET; a path-forwarding wrapper's verb belongs to its caller, so it is
+    reported unknown. Unknown never asserts a match — the caller fails closed.
+    """
+    if called in _HELPER_METHODS:
+        return _HELPER_METHODS[called]
+    if called == "Request":
+        for kw in call.keywords:
+            if kw.arg == "method" and isinstance(kw.value, ast.Constant):
+                if isinstance(kw.value.value, str):
+                    return kw.value.value.upper()
+        return "GET"
+    return "?"
+
+
 def _scan() -> tuple[dict[str, set[str]], set[str]]:
     """Walk every source, returning (path -> call sites, unresolved site keys).
 
@@ -461,8 +497,9 @@ def _scan() -> tuple[dict[str, set[str]], set[str]]:
                                 norm = _normalise(cand)
                                 at = norm.find("/api/")
                                 if at >= 0:
+                                    method = _call_method(child, called)
                                     paths.setdefault(norm[at:], set()).add(
-                                        f"{src.name}:{child.lineno}"
+                                        f"{src.name}:{child.lineno}:{method}"
                                     )
                                     found = True
                         if not found:
@@ -496,9 +533,24 @@ def _is_allowlisted(path: str) -> bool:
     return internal_path_matches(path, allow)
 
 
-def _is_reachable(path: str) -> bool:
-    """Allowlisted, or auth-exempt outright via ``token_auth._BYPASS_EXACT``."""
-    return _is_allowlisted(path) or path in _BYPASS_EXACT
+def _is_reachable(path: str, methods: frozenset[str]) -> bool:
+    """Allowlisted, path-only-exempt, or method-exempt for the methods used.
+
+    Mirrors the middleware, which admits a tokenless call whose path is in the
+    path-only ``_BYPASS_EXACT`` (any method) OR in the method-scoped
+    ``_BYPASS_EXACT_METHODS`` for the specific method being called. A wrong-method
+    call to a POST-only bypass is NOT reachable — the middleware still rejects it —
+    so the method scope is enforced here rather than treating any presence in the
+    map as a grant. ``methods`` is the set of HTTP verbs the scan saw at this
+    path's call sites; ``"?"`` (a verb the scan could not read) never satisfies a
+    method-scoped grant, so such a call fails closed.
+    """
+    if _is_allowlisted(path) or path in _BYPASS_EXACT:
+        return True
+    allowed = _BYPASS_EXACT_METHODS.get(path)
+    if allowed is None:
+        return False
+    return bool(methods) and methods <= allowed
 
 
 def _is_prefix_path(path: str) -> bool:
@@ -513,13 +565,18 @@ def _is_prefix_path(path: str) -> bool:
     return at > 0 and path[at - 1] != "/"
 
 
-def _is_granted(path: str) -> bool:
+def _is_granted(path: str, methods: frozenset[str]) -> bool:
     """Reachability for a concrete path; family-granted for a prefix path."""
     if not _is_prefix_path(path):
-        return _is_reachable(path)
+        return _is_reachable(path, methods)
     head = path[: path.find(_UNKNOWN)]
     allow = _STRICT_INTERNAL_API_PATHS | _MIXED_INTERNAL_API_PATHS
-    return _is_reachable(head) or any(entry.startswith(head) for entry in allow)
+    return _is_reachable(head, methods) or any(entry.startswith(head) for entry in allow)
+
+
+def _methods_for(sites: set[str]) -> frozenset[str]:
+    """The HTTP verbs recorded across a path's call sites (site tail ``:METHOD``)."""
+    return frozenset(s.rsplit(":", 1)[1] for s in sites)
 
 
 class TestMcpCallSiteAuthCoverage:
@@ -556,7 +613,7 @@ class TestMcpCallSiteAuthCoverage:
         gaps = {
             path: sorted(sites)
             for path, sites in _call_sites().items()
-            if not _is_granted(path) and path not in _KNOWN_UNREACHABLE
+            if not _is_granted(path, _methods_for(sites)) and path not in _KNOWN_UNREACHABLE
         }
         assert not gaps, (
             "MCP call site(s) reach a path that is in no internal allowlist, so "
@@ -565,7 +622,9 @@ class TestMcpCallSiteAuthCoverage:
 
     def test_known_unreachable_ratchet_has_no_stale_entries(self):
         """The known-gap ratchet may only shrink, so a fixed path is de-listed."""
-        unreachable = {p for p in _call_sites() if not _is_granted(p)}
+        unreachable = {
+            p for p, sites in _call_sites().items() if not _is_granted(p, _methods_for(sites))
+        }
         stale = sorted(_KNOWN_UNREACHABLE - unreachable)
         assert not stale, (
             f"_KNOWN_UNREACHABLE lists path(s) that are now reachable: {stale}. "
@@ -683,6 +742,24 @@ class TestMcpCallSiteAuthCoverage:
         assert not _is_allowlisted(
             entry + "-sibling"
         ), "a shared string prefix is not a shared path prefix -- the / matters"
+
+    def test_method_scoped_bypass_is_granted_only_for_its_methods(self):
+        """A ``_BYPASS_EXACT_METHODS`` path is reachable for its verb, not others.
+
+        The middleware grants a method-scoped bypass one verb; a call on the same
+        path under another verb still 403s. The reachability check must enforce
+        that, so relaxing it to any-method (which would let an unreachable call
+        read green) is what this pins.
+        """
+        if not _BYPASS_EXACT_METHODS:
+            pytest.skip("no method-scoped bypass entries to check")
+        path, allowed = next(iter(_BYPASS_EXACT_METHODS.items()))
+        good = next(iter(allowed))
+        assert _is_reachable(path, frozenset({good})), "the granted method must be reachable"
+        bogus = frozenset({"GET", "PUT", "PATCH", "DELETE"}) - allowed
+        assert not _is_reachable(path, bogus), "a non-granted method must not be reachable"
+        assert not _is_reachable(path, frozenset({"?"})), "an unreadable verb must fail closed"
+        assert not _is_reachable(path, frozenset()), "no observed method must fail closed"
 
     def test_no_secret_caller_is_unscanned(self):
         """Any module reaching the dashboard must be in ``_SOURCES``.

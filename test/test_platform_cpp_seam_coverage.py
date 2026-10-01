@@ -686,7 +686,7 @@ class TestReservedSlotWarning:
         # The warning must be actionable: it names the offending adapter AND the
         # wired alternative, so the reader knows what to do instead.
         assert "_MyPackageManager" in caplog.text
-        assert "cli_doctor" in caplog.text
+        assert "doctor_checks/features.py" in caplog.text
 
     def test_non_empty_feature_apps_warns(self, caplog) -> None:
         """``feature_apps`` is a tuple, not an adapter — its default is ``()``."""

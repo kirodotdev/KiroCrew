@@ -592,7 +592,7 @@ def _locked(lock_path: Path) -> Iterator[None]:
     behind every other crew's.
     """
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
+    fd = platform_compat.open_create_or_existing(lock_path, os.O_RDWR, 0o600)
     try:
         deadline = time.monotonic() + _LOCK_TIMEOUT_SECS
         while not try_acquire_lock(fd, exclusive=True):

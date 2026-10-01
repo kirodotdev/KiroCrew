@@ -1209,7 +1209,8 @@ describe('ChatPage search scope disclosure', () => {
 
   it('qualifies the scope while the paging cursor does not describe the active slot', async () => {
     // switchSlot.pending nulls the cursor key while leaving slotHasMore describing
-    // the outgoing slot, so false here is not this slot's answer (chatSlice:3575).
+    // the outgoing slot, so false here is not this slot's answer
+    // (slotSwitch.ts in store/chat).
     const { store } = renderChatPage([msg('assistant', 'hello there', { ts: 'a1' })], {
       chat: { slotMessages: {} },
     })

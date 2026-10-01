@@ -520,7 +520,9 @@ class TestSetupWorkspaceDir:
 
             _setup_workspace_dir()
         prompt = mock_input.call_args[0][0]
-        assert "/custom/workspace" in prompt
+        # Path() normalizes separators, so the POSIX literal only matches on
+        # POSIX; compare against the normalized form on every platform.
+        assert str(Path("/custom/workspace")) in prompt
 
     def test_shows_configured_label_when_saved(self, tmp_path, monkeypatch, capsys):
         ws_file = tmp_path / "workspace_dir"
@@ -2263,6 +2265,61 @@ class TestComposedEditionGatewayModule:
         assert _args_look_like_kirocrew(self.COMPOSED_ARGV) is False
 
 
+class TestDesktopGatewayIdentityParity:
+    """The desktop launcher classifies a port holder from the SAME command line
+    ``kirocrew stop`` does, but in a process with no view of the Python
+    environment, so ``website/electron/gateway-stop.js`` carries its own copy
+    of the two identity constants. This pins the copies together: widening the
+    Python side without the JavaScript side is exactly how the desktop app came
+    to refuse a composed edition's own gateway as a foreign port holder.
+    """
+
+    GATEWAY_STOP = Path(__file__).parent.parent / "website" / "electron" / "gateway-stop.js"
+
+    def _js_constant(self, name: str) -> str:
+        import re
+
+        source = self.GATEWAY_STOP.read_text(encoding="utf-8")
+        match = re.search(rf"^const {name} = (.+?);$", source, re.MULTILINE)
+        assert match, f"{name} not found in {self.GATEWAY_STOP}"
+        return match.group(1)
+
+    def test_server_subcommands_are_the_same_set(self):
+        import re
+
+        from kiro_crew.port_resolution import _KIROCREW_SERVER_SUBCOMMANDS
+
+        expr = self._js_constant("KIROCREW_SERVER_SUBCOMMANDS")
+        js_set = set(re.findall(r'"([^"]+)"', expr))
+        assert js_set == set(_KIROCREW_SERVER_SUBCOMMANDS)
+
+    def test_module_pattern_accepts_every_conventional_entry_point_root(self):
+        """The JS regex must accept the core module and the root
+        ``_gateway_module_roots()`` derives from a conventionally named
+        ``kirocrew.plugins`` entry point, and refuse a dotted submodule. The
+        regex uses only syntax Python's ``re`` shares with JavaScript."""
+        import re
+
+        expr = self._js_constant("KIROCREW_MODULE_RE")
+        assert expr.startswith("/") and expr.endswith("/"), expr
+        pattern = re.compile(expr[1:-1])
+        for entry_point in (
+            "kiro_crew.cli:main",
+            "kirocrew_companion.compose:build_context",
+            "kirocrew_acme2.compose:build",
+        ):
+            root = entry_point.split(":", 1)[0].split(".", 1)[0]
+            assert pattern.fullmatch(root), root
+        for rejected in (
+            "kiro_crew.dashboard",
+            "kirocrew",
+            "kirocrew_",
+            "kirocrew-x",
+            "Kirocrew_X",
+        ):
+            assert pattern.fullmatch(rejected) is None, rejected
+
+
 class TestStop:
     """Tests for _stop CLI function."""
 
@@ -3730,7 +3787,9 @@ class TestRestart:
             flags = kw["creationflags"]
             assert flags & subprocess.DETACHED_PROCESS
             assert flags & subprocess.CREATE_NEW_PROCESS_GROUP
-            assert "start_new_session" not in kw
+            # Passed explicitly as False (mypy-safe explicit flags, not **dict
+            # unpack); Windows ignores it, the creationflags do the detaching.
+            assert kw.get("start_new_session") is False
         else:
             assert kw["start_new_session"] is True
         # Must not inherit stdin from the parent — otherwise reading from
@@ -7224,13 +7283,15 @@ class TestInstallPidfdChildWatcher:
         # the PidfdChildWatcher ctor explode so reaching them fails the test.
         called = []
         monkeypatch.setattr(asyncio, "set_child_watcher", lambda w: called.append(w))
-        monkeypatch.setattr(asyncio, "SafeChildWatcher", lambda: "fake-safe-watcher")
+        # raising=False: these watcher classes are Unix-only and do not exist
+        # on Windows, where the test still simulates the macOS install path.
+        monkeypatch.setattr(asyncio, "SafeChildWatcher", lambda: "fake-safe-watcher", raising=False)
 
         def _boom(*_a) -> object:
             raise AssertionError("Linux pidfd path must not be reached on macOS")
 
         monkeypatch.setattr("kiro_crew.cli.os.pidfd_open", _boom, raising=False)
-        monkeypatch.setattr(asyncio, "PidfdChildWatcher", _boom)
+        monkeypatch.setattr(asyncio, "PidfdChildWatcher", _boom, raising=False)
         _install_child_watcher()
         assert called == ["fake-safe-watcher"], "macOS must install SafeChildWatcher"
 
@@ -7265,7 +7326,9 @@ class TestInstallPidfdChildWatcher:
         monkeypatch.setattr("kiro_crew.cli.os.close", lambda fd: closed.append(fd))
         called_with = []
         monkeypatch.setattr(asyncio, "set_child_watcher", lambda w: called_with.append(w))
-        monkeypatch.setattr(asyncio, "PidfdChildWatcher", lambda: "fake-pidfd-watcher")
+        monkeypatch.setattr(
+            asyncio, "PidfdChildWatcher", lambda: "fake-pidfd-watcher", raising=False
+        )
         _install_child_watcher()
         assert opened, "pidfd_open must be probed before installing"
         assert closed == [4242], "the probe fd must be closed"
@@ -7291,12 +7354,12 @@ class TestInstallPidfdChildWatcher:
         monkeypatch.setattr("kiro_crew.cli.os.pidfd_open", _no_pidfd, raising=False)
         installed = []
         monkeypatch.setattr(asyncio, "set_child_watcher", lambda w: installed.append(w))
-        monkeypatch.setattr(asyncio, "SafeChildWatcher", lambda: "fake-safe-watcher")
+        monkeypatch.setattr(asyncio, "SafeChildWatcher", lambda: "fake-safe-watcher", raising=False)
 
         def _ctor_must_not_run() -> object:
             raise AssertionError("PidfdChildWatcher must not be constructed when pidfd_open fails")
 
-        monkeypatch.setattr(asyncio, "PidfdChildWatcher", _ctor_must_not_run)
+        monkeypatch.setattr(asyncio, "PidfdChildWatcher", _ctor_must_not_run, raising=False)
         _install_child_watcher()  # must not raise
         assert installed == ["fake-safe-watcher"], (
             "a < 5.3 kernel must fall back to SafeChildWatcher, not the "
@@ -7320,14 +7383,14 @@ class TestInstallPidfdChildWatcher:
         monkeypatch.delattr("kiro_crew.cli.os.pidfd_open", raising=False)
         installed = []
         monkeypatch.setattr(asyncio, "set_child_watcher", lambda w: installed.append(w))
-        monkeypatch.setattr(asyncio, "SafeChildWatcher", lambda: "fake-safe-watcher")
+        monkeypatch.setattr(asyncio, "SafeChildWatcher", lambda: "fake-safe-watcher", raising=False)
 
         def _ctor_must_not_run() -> object:
             raise AssertionError(
                 "PidfdChildWatcher must not be constructed when os.pidfd_open is missing"
             )
 
-        monkeypatch.setattr(asyncio, "PidfdChildWatcher", _ctor_must_not_run)
+        monkeypatch.setattr(asyncio, "PidfdChildWatcher", _ctor_must_not_run, raising=False)
         _install_child_watcher()  # must not raise
         assert installed == ["fake-safe-watcher"], (
             "a Python build without os.pidfd_open must fall back to "

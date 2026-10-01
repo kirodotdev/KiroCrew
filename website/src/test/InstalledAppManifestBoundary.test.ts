@@ -3,10 +3,10 @@
  *
  * Two claims, each the reason a `!` assertion was deleted rather than moved:
  *
- *  1. `/api/apps` payloads are normalized in `client.ts`, so every consumer —
- *     the Apps page, the left rail, the command palette, the migration check —
- *     receives a manifest with its lists present. Normalizing in one queryFn
- *     would leave the other three reading raw records.
+ *  1. `/api/apps` payloads are normalized in `api/client/apps.ts`, so every
+ *     consumer — the Apps page, the left rail, the command palette, the
+ *     migration check — receives a manifest with its lists present. Normalizing
+ *     in one queryFn would leave the other three reading raw records.
  *  2. `appNavTarget` derives its page ONCE, so "is this app navigable" and
  *     "here is its page" cannot disagree. That divergence — a guard in one
  *     expression, a `manifest!.ui!.pages![0]` in another — is what produced

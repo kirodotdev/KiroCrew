@@ -157,11 +157,24 @@ def resolve_aws_bin() -> str:
 
 
 def aws_spawn_env(aws_bin: str) -> dict[str, str]:
-    """This process's env with :data:`_AWS_BIN_DIRS` APPENDED to ``PATH``.
+    """The ``env=`` for an ``aws`` child: :func:`tool_spawn_env` of its head.
 
     ``aws_bin`` is the argv head the caller is about to spawn — the return value of
-    :func:`resolve_aws_bin` for that same spawn. It is required, not optional: see
-    the fail-closed rule below, which cannot be enforced without it.
+    :func:`resolve_aws_bin` for that same spawn. Kept as the name every ``aws``
+    spawn site already imports; the widening and its fail-closed rule live in
+    :func:`tool_spawn_env`, shared with the ssh children that run a user's
+    ``ProxyCommand``, so the two cannot drift.
+    """
+    return tool_spawn_env(aws_bin)
+
+
+def tool_spawn_env(argv_head: str) -> dict[str, str]:
+    """This process's env with :data:`_AWS_BIN_DIRS` APPENDED to ``PATH``.
+
+    ``argv_head`` is the argv head the caller is about to spawn, already resolved
+    by the caller (:func:`resolve_aws_bin` for ``aws``,
+    ``instances.token_mint.resolve_ssh_bin`` for ``ssh``). It is required, not
+    optional: see the fail-closed rule below, which cannot be enforced without it.
 
     Resolving our own argv head absolutely is not sufficient for ``aws ssm
     start-session``: the CLI locates ``session-manager-plugin`` itself, by name,
@@ -170,6 +183,14 @@ def aws_spawn_env(aws_bin: str) -> dict[str, str]:
     correctly-resolved ``aws`` — the resolver cannot reach that lookup, only the
     child's environment can. Passing this as ``env=`` is therefore the
     other half of the same fix, not a duplicate of it.
+
+    ``ssh`` has the identical gap one level further out. A tunnel, token mint or
+    probe to a host whose ``~/.ssh/config`` routes through a ``ProxyCommand``
+    runs that command under the ssh child's ``PATH``, and the proxies in real use
+    (an SSM connect helper, ``aws ssm start-session``) look ``session-manager-plugin``
+    or ``aws`` up by name — so under a GUI-launched gateway ``ssh`` exited 255
+    with "session-manager-plugin is not installed" while the plugin sat in
+    ``/usr/local/bin``. Those children get this same env, under this same rule.
 
     APPENDED, never prepended: the inherited ``PATH`` keeps first claim on every
     name, so this can only make an otherwise-unresolvable lookup succeed and can
@@ -180,7 +201,7 @@ def aws_spawn_env(aws_bin: str) -> dict[str, str]:
     for finding an MCP launcher, too wide and wrongly-ordered ahead of ``/usr/bin``
     for a child holding AWS credentials and a live tunnel to the user's box.
 
-    **A non-absolute ``aws_bin`` returns the env UNWIDENED.** This is the one case
+    **A non-absolute ``argv_head`` returns the env UNWIDENED.** This is the one case
     where "can only make an unresolvable lookup succeed" is not a safety argument
     but the hazard itself: :func:`resolve_aws_tool_bin` falls back to the bare name
     precisely when it found a candidate in these dirs and
@@ -191,6 +212,10 @@ def aws_spawn_env(aws_bin: str) -> dict[str, str]:
     So the widening is offered only to a head that was already resolved
     absolutely, where ``execvp`` performs no ``PATH`` search at all and the dirs
     can affect nothing but the CLI's own onward lookups.
+    ``ssh`` meets the rule the same way from the other side: its resolver
+    searches only the inherited ``PATH`` (the trust class the bare ``"ssh"`` argv
+    already had), so a bare head means no ``ssh`` there, and widening would hand
+    execvp an ``ssh`` found only in these dirs that nothing vetted.
 
     Dirs already on ``PATH`` are not repeated, so a terminal-launched gateway
     (whose ``PATH`` carries them) gets a byte-identical env and the fix is inert
@@ -201,7 +226,7 @@ def aws_spawn_env(aws_bin: str) -> dict[str, str]:
     gateway event loop, where a PATH scan would not be.
     """
     env = dict(os.environ)
-    if not os.path.isabs(aws_bin):
+    if not os.path.isabs(argv_head):
         # Unresolved head: the bare name IS the provenance refusal. Leave PATH
         # alone so it keeps failing execvp, as it did before this env existed.
         return env

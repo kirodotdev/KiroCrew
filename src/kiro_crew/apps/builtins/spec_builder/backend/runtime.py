@@ -13,6 +13,7 @@ import logging
 from typing import Any, Awaitable, Callable
 
 from kiro_crew.dashboard.chat_persistence import rehydrate_slot_from_history_async
+from kiro_crew.session_lifecycle import compaction_in_flight
 
 from .parsers import _SLOT_KEY_RE, _redact, _redact_and_truncate, _usable_name
 from .repository import APP_NAME, _audit, _load_settings, _safe_dir, _slot_key
@@ -363,17 +364,26 @@ async def _halt_active_turn(state: Any, name: str, *, only_slot: Any = _UNPINNED
     # this app's Stop button, losing that turn's response.
     if getattr(slot, "_app", None) != APP_NAME:
         return False
+    # circular import (see module header): dashboard.server imports us.
+    from kiro_crew.dashboard.chat_utils import _history_key_for
+
+    session_key = _history_key_for(slot.key)
     # Before BOTH stops below. The cooperative stop_turn also ends the turn, so
     # clearing after it would race _run_chat's end-of-turn block into starting
     # the next queued prompt -- Pause would return ok while the agent carried on.
     _discard_queued_work(slot)
-    try:
-        # circular import (see module header): dashboard.server imports us.
-        from kiro_crew.dashboard.chat_utils import _history_key_for
-
-        await state.sessions.stop_turn(_history_key_for(slot.key), force=False)
-    except Exception:
-        logger.debug("cooperative stop failed for %s", name, exc_info=True)
+    # An automatic compaction holds the session: the cooperative stop_turn would
+    # be declined, so it is skipped (probed here, and its own ``compacting``
+    # answer covers the race the probe cannot close). The WORKER task is still
+    # cancelled below either way: it is this app's own run loop, not the
+    # compaction turn, and the compaction task parked on the session's permit
+    # is untouched by its cancellation -- so Pause halts what it promises to
+    # halt whether or not the session is compacting, and the discard stands.
+    if not compaction_in_flight(state.sessions, session_key):
+        try:
+            await state.sessions.stop_turn(session_key, force=False)
+        except Exception:
+            logger.debug("cooperative stop failed for %s", name, exc_info=True)
     task = getattr(slot, "task", None)
     if task is not None and not task.done():
         task.cancel()

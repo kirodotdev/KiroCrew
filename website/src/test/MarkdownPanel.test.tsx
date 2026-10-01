@@ -183,11 +183,11 @@ describe('MarkdownPanel OverflowMenu', () => {
     expect(screen.queryByText('Open in File Explorer')).not.toBeInTheDocument()
   })
 
-  // The copy-fallback confirmation is centralized in api.revealPath itself
-  // (client.ts), right next to its copyToClipboard call, so every call site —
-  // including this panel — is covered without a local alert. Asserting no
-  // local alert here guards against double-notifying once the panel resolves
-  // through the (mocked) real client.
+  // The copy fallback is centralized in revealOrOpen (FilePathMenu.tsx),
+  // which calls api.revealPath and then copyToClipboard itself without an
+  // alert, so every call site — including this panel — is covered without a
+  // local alert. Asserting no local alert here keeps the panel from adding
+  // one once it resolves through the (mocked) real client.
   it('does not alert locally when the mocked backend resolves with a copy fallback', async () => {
     vi.mocked(api).revealPath = vi.fn().mockResolvedValue({ ok: true, copy: '/tmp/hello.txt' })
     openMenu()

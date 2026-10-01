@@ -110,6 +110,10 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'VoicePanel.tsx': 'voice',
   'DisplayPanel.tsx': 'display',
   'BrowserPanel.tsx': 'browser',
+  // The Browser tab's managed-browser and existing-browser sections, mounted by
+  // BrowserPanel. Mapped with it so a control either one gains stays indexed.
+  'ManagedBrowsersSection.tsx': 'browser',
+  'ConnectBrowserSection.tsx': 'browser',
   'ComputerUsePanel.tsx': 'computer-use',
   'InstancesPanel.tsx': 'instances',
   'SecurityPanel.tsx': 'security',

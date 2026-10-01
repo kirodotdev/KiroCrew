@@ -56,6 +56,62 @@ class _OwnerReq(SimpleNamespace):
         return self._claims[key]
 
 
+def _export_gz(document) -> bytes:
+    """The compressed export of *document*, staged, read and removed."""
+    from kiro_crew.dashboard.session_export import _stage_export
+
+    path = _stage_export(document)
+    try:
+        return path.read_bytes()
+    finally:
+        path.unlink()
+
+
+def _serialise(bundle):
+    """The production serialiser, writing under the per-test egress dir."""
+    from kiro_crew.dashboard import session_transfer as st
+
+    return st.write_bundle_file(bundle, compress=False)
+
+
+def _send(mgr, *args, **kwargs):
+    """``send_session_bundle`` with the production serialiser."""
+    kwargs.setdefault("serialise", _serialise)
+    return mgr.send_session_bundle(*args, **kwargs)
+
+
+class _PostedBody:
+    """Adapts a fake that answers from the parsed bundle to the streamed upload:
+    the body is read off the upload generator on enter, the way aiohttp sends
+    it, then handed to *respond* as the bundle the peer received."""
+
+    def __init__(self, respond, data):
+        self._respond, self._data = respond, data
+
+    async def __aenter__(self):
+        body = json.loads(b"".join([c async for c in self._data]))
+        self._resp = self._respond(body)
+        return await self._resp.__aenter__()
+
+    async def __aexit__(self, *a):
+        return await self._resp.__aexit__(*a)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_import_tmp(tmp_path_factory, monkeypatch):
+    """Point the arrival temp dir at a per-test, auto-cleaned directory.
+
+    Arriving bodies stream to disk before they are parsed; without this they would
+    land under the real crew home. ``tmp_path_factory`` is pytest-managed, so
+    nothing leaks (conftest's tmp-residue watchdog would otherwise flag it)."""
+    from kiro_crew.dashboard import session_transfer as st
+
+    d = tmp_path_factory.mktemp("kc-import")
+    monkeypatch.setattr(st, "_import_tmp_dir", lambda: d)
+    out = tmp_path_factory.mktemp("kc-export")
+    monkeypatch.setattr(st, "_egress_tmp_dir", lambda: out)
+
+
 # ── bundle construction ──────────────────────────────────────────────────
 
 
@@ -237,7 +293,7 @@ async def test_send_handler_sends_each_turn_exactly_once(monkeypatch):
     captured: dict = {}
 
     class _Mgr:
-        async def send_session_bundle(self, _id, bundle):
+        async def send_session_bundle(self, _id, bundle, **_kw):
             captured["bundle"] = bundle
             return True, {"key": "remote-1"}
 
@@ -281,7 +337,7 @@ async def test_send_handler_revalidates_the_line_before_the_tunnel_post(monkeypa
             yield
 
     class _Mgr:
-        async def send_session_bundle(self, _id, _bundle):
+        async def send_session_bundle(self, _id, _bundle, **_kw):
             raise AssertionError("the tunnel POST ran after publication was refused")
 
     slot = _slot([{"role": "user", "content": "private", "ts": ""}])
@@ -326,7 +382,7 @@ async def test_send_refuses_if_assembled_chain_loses_a_member(tmp_path, monkeypa
     slot.key = "chat-transfer-root"
 
     class _Mgr:
-        async def send_session_bundle(self, _id, _bundle):
+        async def send_session_bundle(self, _id, _bundle, **_kw):
             raise AssertionError("the tunnel POST ran after the chain changed")
 
     state = SimpleNamespace(
@@ -531,7 +587,7 @@ async def test_send_bundle_remints_once_when_the_peer_rejects_the_credential():
 
     sent: list[str] = []
 
-    class _Resp:
+    class _Resp(_JsonReply):
         def __init__(self, status):
             self.status = status
 
@@ -551,7 +607,10 @@ async def test_send_bundle_remints_once_when_the_peer_rejects_the_credential():
         async def __aexit__(self, *a):
             return False
 
-        def post(self, _url, json=None, headers=None):
+        def post(self, _url, data=None, headers=None):
+            return _PostedBody(lambda body: self._respond(_url, body, headers), data)
+
+        def _respond(self, _url, json=None, headers=None):
             # First call carries the stale credential and is rejected; the retry
             # must carry the freshly minted one.
             cookie = headers["Cookie"]
@@ -563,7 +622,7 @@ async def test_send_bundle_remints_once_when_the_peer_rejects_the_credential():
     original = mod.aiohttp.ClientSession
     mod.aiohttp.ClientSession = lambda *a, **k: _Session()  # type: ignore[assignment]
     try:
-        ok, payload = await mgr.send_session_bundle("peer", {"bundle_version": 1})
+        ok, payload = await _send(mgr, "peer", {"bundle_version": 1})
     finally:
         mod.aiohttp.ClientSession = original  # type: ignore[assignment]
 
@@ -926,7 +985,7 @@ async def test_send_refuses_an_app_that_does_not_own_the_slot(monkeypatch):
     sent: list = []
 
     class _Mgr:
-        async def send_session_bundle(self, _id, bundle):
+        async def send_session_bundle(self, _id, bundle, **_kw):
             sent.append(bundle)
             return True, {"key": "remote-1"}
 
@@ -1178,27 +1237,24 @@ def test_validate_refuses_an_unknown_version_rather_than_guessing():
     assert err.status == 400
 
 
-def test_validate_caps_message_count():
-    many = [{"role": "user", "content": "x", "ts": ""} for _ in range(5_001)]
-    _, err = _validate_bundle(_valid(messages=many))
-    assert err is not None
-    assert json.loads(err.body)["code"] == "transfer_too_many_messages"
+def test_validate_imposes_no_size_ceiling():
+    """Validation is STRUCTURAL only — no message count, per-message, or total cap.
 
-
-def test_validate_caps_single_message_length():
-    big = [{"role": "user", "content": "x" * 1_000_001, "ts": ""}]
-    _, err = _validate_bundle(_valid(messages=big))
-    assert err is not None
-    assert json.loads(err.body)["code"] == "transfer_message_too_long"
-
-
-def test_validate_caps_total_bundle_size():
-    # 25 messages x 900k chars each trips the 20M total without tripping the
-    # per-message cap.
-    msgs = [{"role": "user", "content": "x" * 900_000, "ts": ""} for _ in range(25)]
-    _, err = _validate_bundle(_valid(messages=msgs))
-    assert err is not None
-    assert json.loads(err.body)["code"] == "transfer_bundle_too_large"
+    A transfer is never blocked by size (the owner's decision); memory safety comes
+    from streaming the body to disk on arrival, not from refusing large sessions.
+    A bundle past each ceiling a validator could plausibly enforce (5,000 messages,
+    1 MB/message, 20 MB total) validates cleanly. Each ceiling is crossed by the
+    cheapest input that crosses it, so the fixture stays ~25 MB rather than the
+    gigabytes a naive "every message oversized" fixture would allocate.
+    """
+    filler = "x" * 4_200
+    huge = [{"role": "user", "content": filler, "ts": ""} for _ in range(6_000)]
+    huge.append({"role": "assistant", "content": "y" * 1_100_000, "ts": ""})
+    assert sum(len(m["content"]) for m in huge) > 20_000_000
+    bundle, err = _validate_bundle(_valid(messages=huge))
+    assert err is None
+    assert len(bundle["messages"]) == 6_001
+    assert len(bundle["messages"][-1]["content"]) == 1_100_000
 
 
 def test_validate_truncates_an_overlong_title_instead_of_failing():
@@ -1233,7 +1289,7 @@ async def test_send_bundle_refuses_when_peer_not_connected():
     # reading, so a manager assembled without `__init__` must name it.
     mgr._tunnel_epoch = {}
     mgr.status = lambda _id: None  # type: ignore[method-assign]
-    ok, payload = await mgr.send_session_bundle("peer", {"bundle_version": 1})
+    ok, payload = await _send(mgr, "peer", {"bundle_version": 1})
 
     assert ok is False
     assert payload["code"] == "transfer_peer_not_connected"
@@ -1258,7 +1314,7 @@ async def test_send_bundle_refuses_when_no_credential_is_held():
     mgr.status = lambda _id: TunnelStatus(  # type: ignore[method-assign]
         instance_id="peer", state=TunnelState.CONNECTED, local_port=7778
     )
-    ok, payload = await mgr.send_session_bundle("peer", {"bundle_version": 1})
+    ok, payload = await _send(mgr, "peer", {"bundle_version": 1})
 
     assert ok is False
     assert payload["code"] == "transfer_no_credential"
@@ -1297,11 +1353,14 @@ async def test_send_bundle_reports_an_unreachable_peer_without_leaking_the_bundl
         async def __aexit__(self, *a):
             return False
 
-        def post(self, _url, json=None, headers=None):
+        def post(self, _url, data=None, headers=None):
+            return _PostedBody(lambda body: self._respond(_url, body, headers), data)
+
+        def _respond(self, _url, json=None, headers=None):
             raise ConnectionRefusedError(111, "connection refused")
 
     monkeypatch.setattr(mod.aiohttp, "ClientSession", lambda *a, **k: _RefusingSession())
-    ok, payload = await mgr.send_session_bundle("peer", {"bundle_version": 1})
+    ok, payload = await _send(mgr, "peer", {"bundle_version": 1})
 
     assert ok is False
     assert payload["code"] == "transfer_unreachable"
@@ -1315,7 +1374,7 @@ def _peer_answering(status: int, *, body: object = None):
     """
     posts = {"n": 0}
 
-    class _Resp:
+    class _Resp(_JsonReply):
         def __init__(self) -> None:
             self.status = status
 
@@ -1337,7 +1396,10 @@ def _peer_answering(status: int, *, body: object = None):
         async def __aexit__(self, *a):
             return False
 
-        def post(self, _url, json=None, headers=None):
+        def post(self, _url, data=None, headers=None):
+            return _PostedBody(lambda body: self._respond(_url, body, headers), data)
+
+        def _respond(self, _url, json=None, headers=None):
             posts["n"] += 1
             return _Resp()
 
@@ -1381,7 +1443,7 @@ async def test_send_bundle_names_an_older_peer_when_the_importer_is_missing(stat
     original = mod.aiohttp.ClientSession
     mod.aiohttp.ClientSession = lambda *a, **k: session_cls()  # type: ignore[assignment]
     try:
-        ok, payload = await mgr.send_session_bundle("peer", {"bundle_version": 2})
+        ok, payload = await _send(mgr, "peer", {"bundle_version": 2})
     finally:
         mod.aiohttp.ClientSession = original  # type: ignore[assignment]
 
@@ -1542,7 +1604,7 @@ async def test_import_redacts_off_the_loop_before_construction(monkeypatch):
 
     Redaction is regex-heavy and the content is peer-supplied. Construction is
     synchronous, so the redaction cost runs AHEAD of construction and off the
-    event loop: import calls ``_redact_history_rows`` via ``asyncio.to_thread``
+    event loop: import calls ``_build_redacted_rows`` via ``asyncio.to_thread``
     before any slot exists, so the regex work runs on a worker thread and the loop
     is free to service other turns. This pins that the redaction pass is
     dispatched to a thread rather than run inline on the loop.
@@ -1553,8 +1615,8 @@ async def test_import_redacts_off_the_loop_before_construction(monkeypatch):
     real_to_thread = asyncio.to_thread
 
     async def _tracking_to_thread(fn, *a, **k):
-        if getattr(fn, "__name__", "") == "_redact_history_rows":
-            offloaded.append(fn)
+        if getattr(fn, "__name__", "") in {"_build_redacted_rows", "_validate_bundle"}:
+            offloaded.append(fn.__name__)
         return await real_to_thread(fn, *a, **k)
 
     monkeypatch.setattr(st.asyncio, "to_thread", _tracking_to_thread)
@@ -1562,42 +1624,247 @@ async def test_import_redacts_off_the_loop_before_construction(monkeypatch):
     big = [{"role": "assistant", "content": "x" * 500, "ts": ""} for _ in range(20)]
     await _run_import(st, monkeypatch, _valid(messages=big))
 
-    assert offloaded, "import redaction did not run off the event loop before construction"
+    assert sorted(offloaded) == [
+        "_build_redacted_rows",
+        "_validate_bundle",
+    ], "validation or redaction ran on the event loop"
 
 
 @pytest.mark.asyncio
-async def test_import_persists_every_row_of_a_bundle_over_the_resume_window(monkeypatch):
-    """A bundle larger than resume's 500-row window must persist EVERY row.
+@pytest.mark.parametrize("n", [750, 15_000])
+async def test_import_persists_every_row_of_a_bundle_over_the_window(monkeypatch, tmp_path, n):
+    """Every imported row reaches the transcript exactly once, in order.
 
-    The shared materialiser windows resume's rows to the newest 500 because the
-    earlier ones already sit on disk. Import's rows exist only in memory and are
-    all persisted by its own save, so nothing is "older on disk": it passes
-    ``window_limit=None`` and must hydrate every row with ``_disk_older_count``
-    at 0. Applying resume's cap here would silently drop everything past the last
-    500 and claim a frozen prefix of rows that were never written -- a
-    silent-data-loss regression on the exact "lossy copy" the transfer feature's
-    resume_mode plumbing exists to surface. Bundles carry up to _MAX_MESSAGES
-    (5000) rows in-contract, so >500 is an ordinary input, not an edge.
+    Only the newest ``_IMPORT_WINDOW`` rows are hydrated into the slot; the rest
+    are written to disk as the frozen prefix the save then carries verbatim. 15k
+    is past the slot's in-memory cap (``_MAX_SLOT_MESSAGES``): hydrating every
+    row trimmed the oldest ones out of the window before the save, and nothing
+    else held them, so they were lost.
     """
+    from kiro_crew.dashboard import chat_persistence as cp
+    from kiro_crew.dashboard import session_transfer as st
+    from kiro_crew.history import ConversationLog
+
+    log = ConversationLog(base_dir=tmp_path / "sessions")
+
+    async def _real_save(state, slot, **_k):
+        assert await asyncio.to_thread(cp._save_slot_to_history, state, slot, force=True)
+
+    state = _stub_state(st, monkeypatch, save=_real_save)
+    state.conversation_log = log
+    big = [{"role": "assistant", "content": f"row-{i}", "ts": ""} for i in range(n)]
+    slot = await _run_import(st, monkeypatch, _valid(messages=big), state=state, return_slot=True)
+
+    assert len(slot.messages) == min(n, st._IMPORT_WINDOW)
+    assert slot.messages[-1]["content"] == f"row-{n - 1}"
+    assert slot._disk_older_count == n - len(slot.messages)
+    lines = log._path(cp.slot_history_key(slot)).read_text(encoding="utf-8").splitlines()
+    rows = [json.loads(line) for line in lines[1:]]
+    assert [r["content"] for r in rows] == [f"row-{i}" for i in range(n)]
+    mids = [r["meta"]["mid"] for r in rows]
+    assert len(set(mids)) == n, "a row reached the transcript twice or without its own id"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_save_removes_the_import_prefix(monkeypatch, tmp_path):
+    """The prefix is written just before the save; a save that fails must not
+    leave it behind as a stray transcript of an import that was refused."""
+    from kiro_crew.dashboard import chat_persistence as cp
+    from kiro_crew.dashboard import session_transfer as st
+    from kiro_crew.history import ConversationLog
+
+    log = ConversationLog(base_dir=tmp_path / "sessions")
+    seen: list = []
+
+    async def _failing_save(state, slot, **_k):
+        path = log._path(cp.slot_history_key(slot))
+        assert path.exists(), "the prefix was not on disk before the save"
+        seen.append(path)
+        raise OSError("disk went away")
+
+    state = _stub_state(st, monkeypatch, save=_failing_save)
+    state.conversation_log = log
+    big = [{"role": "assistant", "content": f"row-{i}", "ts": ""} for i in range(900)]
+    resp = await _run_import(st, monkeypatch, _valid(messages=big), state=state)
+
+    assert resp.status >= 500
+    assert seen and not seen[0].exists()
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_import_never_publishes_its_prefix(monkeypatch, tmp_path):
+    """The prefix writer's thread outlives a cancelled import. Its rename must
+    not land after the rollback, or History keeps a session missing its newest
+    rows."""
+    import threading
+
+    from kiro_crew.dashboard import session_transfer as st
+    from kiro_crew.history import ConversationLog
+
+    log = ConversationLog(base_dir=tmp_path / "sessions")
+    writing, release, done = threading.Event(), threading.Event(), threading.Event()
+    real_entry, real_write = st._build_message_entry_uncached, st._write_import_prefix
+
+    def _slow_entry(row, **kw):
+        writing.set()
+        release.wait(10)
+        return real_entry(row, **kw)
+
+    def _tracked_write(*a, **kw):
+        try:
+            return real_write(*a, **kw)
+        finally:
+            done.set()
+
+    monkeypatch.setattr(st, "_build_message_entry_uncached", _slow_entry)
+    monkeypatch.setattr(st, "_write_import_prefix", _tracked_write)
+    state = _stub_state(st, monkeypatch)
+    state.conversation_log = log
+    big = [{"role": "assistant", "content": f"row-{i}", "ts": ""} for i in range(900)]
+    task = asyncio.create_task(st.api_chat_slot_import(_make_request(state, _valid(messages=big))))
+    assert await asyncio.to_thread(writing.wait, 10), "the prefix write never started"
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    # The abandoned worker runs on to its rename point after the rollback.
+    release.set()
+    assert await asyncio.to_thread(done.wait, 10), "the prefix writer never finished"
+    sessions_dir = tmp_path / "sessions"
+    files = [p for p in sessions_dir.rglob("*") if p.is_file()] if sessions_dir.exists() else []
+    assert files == [], f"a cancelled import left {files}"
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_after_the_prefix_landed_removes_it(monkeypatch, tmp_path):
+    """Cancelled during the save, after the prefix was renamed into place. The
+    save's worker cannot be stopped and reads the prefix back as it writes, so
+    nothing is removed while it runs; once it finishes, the transcript it
+    published is removed, never left as an orphan or a truncated copy."""
+    from kiro_crew.dashboard import chat_persistence as cp
+    from kiro_crew.dashboard import session_transfer as st
+    from kiro_crew.history import ConversationLog
+
+    log = ConversationLog(base_dir=tmp_path / "sessions")
+    saving, release = asyncio.Event(), asyncio.Event()
+    seen: list = []
+
+    async def _slow_save(state, slot, **_k):
+        path = log._path(cp.slot_history_key(slot))
+        assert path.exists(), "the prefix was not on disk before the save"
+        seen.append(path)
+        saving.set()
+        await release.wait()
+        # The worker's own write: it rewrites the transcript from the prefix
+        # it just read, so the prefix must still be there.
+        assert path.exists(), "the prefix was removed under the running save"
+        path.write_text(path.read_text(encoding="utf-8") + "{}\n", encoding="utf-8")
+        return True
+
+    state = _stub_state(st, monkeypatch, save=_slow_save)
+    state.conversation_log = log
+    big = [{"role": "assistant", "content": f"row-{i}", "ts": ""} for i in range(900)]
+    task = asyncio.create_task(st.api_chat_slot_import(_make_request(state, _valid(messages=big))))
+    await asyncio.wait_for(saving.wait(), 10)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert seen[0].exists(), "the transcript was removed while its save still ran"
+
+    release.set()
+    for _ in range(50):
+        await asyncio.sleep(0.01)
+        if not seen[0].exists():
+            break
+    assert not seen[0].exists(), "the finished save left a rolled-back transcript"
+
+
+def test_the_import_prefix_is_streamed_not_joined(tmp_path):
+    """Writing the prefix holds one serialised row at a time, never the whole
+    prefix: a joined copy of every row is extra memory the admission never
+    reserved, on exactly the large imports it admits."""
+    import tracemalloc
+
     from kiro_crew.dashboard import session_transfer as st
 
-    n = 750  # comfortably past the 500 window, well under _MAX_MESSAGES
-    big = [{"role": "assistant", "content": f"row-{i}", "ts": ""} for i in range(n)]
-    slot = await _run_import(st, monkeypatch, _valid(messages=big), return_slot=True)
+    n, width = 4000, 2000
+    rows = [
+        {
+            "role": "assistant",
+            "content": f"{i:06d}" + "x" * width,
+            "ts": "t",
+            "meta": {"mid": f"m{i}"},
+        }
+        for i in range(n)
+    ]
+    path = tmp_path / "s" / "slot.jsonl"
+    tracemalloc.start()
+    try:
+        st._write_import_prefix(path, "2026-01-01T00:00:00Z", rows)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
 
-    # Every row is hydrated onto the slot -- none dropped by a resume-shaped cap.
-    assert len(slot.messages) == n, (
-        f"import kept only {len(slot.messages)} of {n} rows; a bundle over the "
-        "resume window was silently truncated"
-    )
-    assert slot.messages[0]["content"] == "row-0", "the oldest rows were dropped"
-    assert slot.messages[-1]["content"] == f"row-{n - 1}"
-    # No phantom frozen prefix: nothing is older-on-disk for an in-memory import.
-    assert slot._disk_older_count == 0, (
-        f"_disk_older_count={slot._disk_older_count}; import claims a frozen prefix "
-        "of on-disk rows that were never written, poisoning the save accounting"
-    )
-    assert slot._disk_older_durable_count == 0
+    serialised = path.stat().st_size
+    assert serialised > n * width
+    assert (
+        peak < serialised // 4
+    ), f"prefix write peaked at {peak} bytes for a {serialised}-byte file"
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert json.loads(lines[0])["_type"] == "metadata"
+    assert [json.loads(line)["meta"]["mid"] for line in lines[1:]] == [f"m{i}" for i in range(n)]
+    assert [p.name for p in path.parent.iterdir()] == [
+        "slot.jsonl"
+    ], "a staged file was left behind"
+
+
+def test_the_prefix_rename_runs_outside_the_publication_lock(monkeypatch, tmp_path):
+    """The cancellation arm takes the publication lock on the event loop, so the
+    worker never holds it across the rename (whose Windows retry sleeps). A
+    cancellation that lands while the rename runs still removes the file."""
+    from kiro_crew.dashboard import session_transfer as st
+
+    publication = st._PrefixPublication()
+    real_replace = st.replace_with_retry
+    held: list[bool] = []
+
+    def _replace(src, dst):
+        held.append(publication.lock.locked())
+        # The rollback runs while the rename is in flight and sees nothing
+        # published yet, so it leaves the file to the worker.
+        assert publication.mark_abandoned() is False
+        real_replace(src, dst)
+
+    monkeypatch.setattr(st, "replace_with_retry", _replace)
+    rows = [{"role": "user", "content": "x", "ts": "t", "meta": {"mid": "m0"}}]
+    path = tmp_path / "s" / "slot.jsonl"
+    st._write_import_prefix(path, "2026-01-01T00:00:00Z", rows, publication)
+
+    assert held == [False], "the rename ran under the publication lock"
+    assert list(path.parent.iterdir()) == [], "an abandoned prefix survived its rename"
+
+
+def test_a_failed_prefix_write_leaves_no_file(monkeypatch, tmp_path):
+    """A write that fails part-way leaves neither the target nor its staged copy."""
+    from kiro_crew.dashboard import session_transfer as st
+
+    calls = {"n": 0}
+    real = st._build_message_entry_uncached
+
+    def _boom(row, **kw):
+        calls["n"] += 1
+        if calls["n"] == 3:
+            raise OSError("disk went away")
+        return real(row, **kw)
+
+    monkeypatch.setattr(st, "_build_message_entry_uncached", _boom)
+    rows = [
+        {"role": "user", "content": str(i), "ts": "t", "meta": {"mid": f"m{i}"}} for i in range(5)
+    ]
+    path = tmp_path / "s" / "slot.jsonl"
+    with pytest.raises(OSError):
+        st._write_import_prefix(path, "2026-01-01T00:00:00Z", rows)
+    assert list(path.parent.iterdir()) == []
 
 
 @pytest.mark.asyncio
@@ -1708,7 +1975,7 @@ def test_layer_b_bundle_carries_the_context_when_the_session_has_one(monkeypatch
     assert got is not None
     assert got["sid"] == sid
     assert got["envelope"]["session_id"] == sid
-    assert "Prompt" in got["events"]
+    assert "Prompt" in got["events"].path.read_text(encoding="utf-8")
 
 
 def test_layer_b_is_absent_when_the_session_has_no_kiro_context(monkeypatch, tmp_path):
@@ -1748,6 +2015,29 @@ def test_events_jsonl_loadable_accepts_valid_and_rejects_truncated():
     # Empty and blank-only are structurally fine.
     assert st._events_jsonl_is_loadable("") is True
     assert st._events_jsonl_is_loadable("\n\n") is True
+    # A last record with no trailing newline is still checked.
+    assert st._events_jsonl_is_loadable('{"a": 1}\ntruncated {') is False
+    assert st._events_jsonl_is_loadable('{"a": 1}\n{"b": 2}') is True
+
+
+def test_events_jsonl_validation_holds_one_record_at_a_time():
+    """Records inside the Layer B string are invisible to the parse-memory
+    admission, so validating them must not materialise every record at once."""
+    import tracemalloc
+
+    from kiro_crew.dashboard import session_transfer as st
+
+    records = 200_000
+    blob = "{}\n" * records
+    tracemalloc.start()
+    try:
+        assert st._events_jsonl_is_loadable(blob) is True
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    # A per-record list costs about 50 bytes a record (10 MB here); one live
+    # record at a time stays far below the blob's own 600 KB.
+    assert peak < len(blob), peak
 
 
 @pytest.mark.asyncio
@@ -1830,13 +2120,15 @@ def test_layer_b_leaves_the_conversation_byte_exact_on_egress(monkeypatch, tmp_p
     sid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
     events = json.dumps({"kind": "AssistantMessage", "data": {"text": "ok"}}) + "\n"
     (tmp_path / f"{sid}.json").write_text(json.dumps(_THINKING_ENVELOPE), encoding="utf-8")
-    (tmp_path / f"{sid}.jsonl").write_text(events, encoding="utf-8")
+    # Bytes, not text: a text write turns "\n" into "\r\n" on Windows, and the
+    # snapshot is byte-exact.
+    (tmp_path / f"{sid}.jsonl").write_bytes(events.encode())
     monkeypatch.setattr(st, "kiro_sessions_dir", lambda: tmp_path)
 
     got = st._read_layer_b(sid)
 
     assert got is not None
-    assert got["events"] == events, "the events blob was rewritten"
+    assert got["events"].path.read_bytes() == events.encode(), "the events blob was rewritten"
     assert got["envelope"] == _THINKING_ENVELOPE, "the envelope was rewritten"
 
 
@@ -2189,30 +2481,18 @@ def test_validate_accepts_a_v2_bundle_with_layer_b():
     assert bundle["layer_b"]["events"] == '{"k":1}\n'
 
 
-#: Stands in for the over-limit Layer B, which the test body materializes from
-#: the production constant. A 40 MB string literal here would be built while the
-#: module is IMPORTED, so every xdist worker pays ~38 MiB during collection and
-#: holds it for the whole session -- the mark keeps its argvalues alive on the
-#: function object. Deriving the length from ``_MAX_LAYER_B_CHARS`` also keeps
-#: the test honest if that limit ever moves.
-_OVERSIZE_LAYER_B = "oversize-layer-b"
-
-
 @pytest.mark.parametrize(
     "layer_b,code",
     [
         ("not a dict", "transfer_layer_b_not_object"),
         ({"envelope": "nope", "events": ""}, "transfer_layer_b_bad_envelope"),
         ({"envelope": {}, "events": 5}, "transfer_layer_b_bad_events"),
-        (_OVERSIZE_LAYER_B, "transfer_layer_b_too_large"),
     ],
 )
 def test_validate_rejects_a_malformed_layer_b(layer_b, code):
-    """Layer B is untrusted peer input and is bounded BEFORE anything is written."""
-    from kiro_crew.dashboard import session_transfer as st
-
-    if layer_b is _OVERSIZE_LAYER_B:
-        layer_b = {"envelope": {}, "events": "x" * (st._MAX_LAYER_B_CHARS + 1)}
+    """Layer B is untrusted peer input and is checked for SHAPE before anything is
+    written. It is not size-capped: the whole body was bounded by the
+    stream-to-disk (and the operator's optional ceiling) before this validator."""
     _, err = _validate_bundle(_valid(layer_b=layer_b))
 
     assert err is not None
@@ -2359,7 +2639,7 @@ async def test_send_bundle_downgrades_to_v1_when_the_peer_refuses_v2():
 
     seen: list[dict] = []
 
-    class _Resp:
+    class _Resp(_JsonReply):
         def __init__(self, status, payload):
             self.status = status
             self._payload = payload
@@ -2380,7 +2660,10 @@ async def test_send_bundle_downgrades_to_v1_when_the_peer_refuses_v2():
         async def __aexit__(self, *a):
             return False
 
-        def post(self, _url, json=None, headers=None):
+        def post(self, _url, data=None, headers=None):
+            return _PostedBody(lambda body: self._respond(_url, body, headers), data)
+
+        def _respond(self, _url, json=None, headers=None):
             seen.append(dict(json))
             if json.get("bundle_version") == 2:
                 return _Resp(400, {"code": "transfer_version_unsupported"})
@@ -2391,7 +2674,8 @@ async def test_send_bundle_downgrades_to_v1_when_the_peer_refuses_v2():
     original = mod.aiohttp.ClientSession
     mod.aiohttp.ClientSession = lambda *a, **k: _Session()  # type: ignore[assignment]
     try:
-        ok, payload = await mgr.send_session_bundle(
+        ok, payload = await _send(
+            mgr,
             "peer",
             {"bundle_version": 2, "messages": [], "layer_b": {"envelope": {}, "events": "e"}},
         )
@@ -2427,7 +2711,7 @@ async def test_send_bundle_downgrades_only_once():
     )
     posts = {"n": 0}
 
-    class _Resp:
+    class _Resp(_JsonReply):
         status = 400
 
         async def json(self):
@@ -2446,7 +2730,10 @@ async def test_send_bundle_downgrades_only_once():
         async def __aexit__(self, *a):
             return False
 
-        def post(self, _url, json=None, headers=None):
+        def post(self, _url, data=None, headers=None):
+            return _PostedBody(lambda body: self._respond(_url, body, headers), data)
+
+        def _respond(self, _url, json=None, headers=None):
             posts["n"] += 1
             return _Resp()
 
@@ -2455,8 +2742,8 @@ async def test_send_bundle_downgrades_only_once():
     original = mod.aiohttp.ClientSession
     mod.aiohttp.ClientSession = lambda *a, **k: _Session()  # type: ignore[assignment]
     try:
-        ok, payload = await mgr.send_session_bundle(
-            "peer", {"bundle_version": 2, "layer_b": {"envelope": {}, "events": "e"}}
+        ok, payload = await _send(
+            mgr, "peer", {"bundle_version": 2, "layer_b": {"envelope": {}, "events": "e"}}
         )
     finally:
         mod.aiohttp.ClientSession = original  # type: ignore[assignment]
@@ -2464,6 +2751,132 @@ async def test_send_bundle_downgrades_only_once():
     assert ok is False
     assert payload["code"] == "transfer_version_unsupported"
     assert posts["n"] == 2, "one downgrade retry, then stop"
+
+
+def _size_refusing_peer(refusal_code: str):
+    """A manager whose peer refuses any bundle carrying Layer B with *refusal_code*,
+    the way an importer that still enforces the size ceilings does. Returns the
+    manager, the list of posted bundles, and the fake ``ClientSession`` factory."""
+    from kiro_crew.instances.ssh_tunnel_manager import (
+        SshTunnelManager,
+        TunnelState,
+        TunnelStatus,
+    )
+
+    mgr = SshTunnelManager.__new__(SshTunnelManager)
+    mgr._tunnel_epoch = {}
+    mgr._tokens = {"peer": "tok"}
+    mgr._peer_sessions = {}
+    mgr._exchange_link = _identity_exchange  # type: ignore[method-assign]
+    mgr.status = lambda _id: TunnelStatus(  # type: ignore[method-assign]
+        instance_id="peer", state=TunnelState.CONNECTED, local_port=7778
+    )
+    seen: list[dict] = []
+
+    class _Resp(_JsonReply):
+        def __init__(self, status, payload):
+            self.status = status
+            self._payload = payload
+
+        async def json(self):
+            return self._payload
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    class _Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        def post(self, _url, data=None, headers=None):
+            return _PostedBody(lambda body: self._respond(_url, body, headers), data)
+
+        def _respond(self, _url, json=None, headers=None):
+            seen.append(dict(json))
+            if "layer_b" in json:
+                return _Resp(400, {"code": refusal_code})
+            return _Resp(200, {"key": "remote-1", "resume_mode": "prefix"})
+
+    return mgr, seen, lambda *a, **k: _Session()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("code", ["transfer_layer_b_too_large", "transfer_bundle_too_large"])
+async def test_send_bundle_drops_layer_b_when_an_older_peer_refuses_the_size(code):
+    """This side sends Layer B whatever its size, but a peer on an older release
+    enforces a ceiling and refuses the whole bundle. That peer accepts the
+    session transcript-only, so resend it that way rather than fail it."""
+    import kiro_crew.instances.ssh_tunnel_manager as mod
+
+    mgr, seen, session_factory = _size_refusing_peer(code)
+    original = mod.aiohttp.ClientSession
+    mod.aiohttp.ClientSession = session_factory  # type: ignore[assignment]
+    try:
+        ok, payload = await _send(
+            mgr,
+            "peer",
+            {"bundle_version": 2, "messages": [], "layer_b": {"envelope": {}, "events": "e"}},
+        )
+    finally:
+        mod.aiohttp.ClientSession = original  # type: ignore[assignment]
+
+    assert ok is True, payload
+    assert payload["resume_mode"] == "prefix"
+    assert len(seen) == 2
+    # Same version, no Layer B: a v2 importer takes a context-free v2 bundle.
+    assert seen[1]["bundle_version"] == 2 and "layer_b" not in seen[1]
+
+
+@pytest.mark.asyncio
+async def test_send_bundle_surfaces_a_size_refusal_without_layer_b():
+    """A bundle that has no Layer B to drop is refused as it was: the fallback
+    retries once, only when there is something to take out."""
+    import kiro_crew.instances.ssh_tunnel_manager as mod
+
+    mgr, seen, _ = _size_refusing_peer("transfer_bundle_too_large")
+
+    class _Resp(_JsonReply):
+        status = 400
+
+        async def json(self):
+            return {"code": "transfer_bundle_too_large"}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    class _Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        def post(self, _url, data=None, headers=None):
+            return _PostedBody(lambda body: self._respond(_url, body, headers), data)
+
+        def _respond(self, _url, json=None, headers=None):
+            seen.append(dict(json))
+            return _Resp()
+
+    original = mod.aiohttp.ClientSession
+    mod.aiohttp.ClientSession = lambda *a, **k: _Session()  # type: ignore[assignment]
+    try:
+        ok, payload = await _send(mgr, "peer", {"bundle_version": 2, "messages": []})
+    finally:
+        mod.aiohttp.ClientSession = original  # type: ignore[assignment]
+
+    assert ok is False
+    assert payload["code"] == "transfer_bundle_too_large"
+    assert len(seen) == 1
 
 
 @pytest.mark.asyncio
@@ -2627,7 +3040,7 @@ async def test_send_bundle_downgrades_a_v2_bundle_that_has_no_layer_b():
     )
     seen: list[dict] = []
 
-    class _Resp:
+    class _Resp(_JsonReply):
         def __init__(self, status, payload):
             self.status = status
             self._payload = payload
@@ -2648,7 +3061,10 @@ async def test_send_bundle_downgrades_a_v2_bundle_that_has_no_layer_b():
         async def __aexit__(self, *a):
             return False
 
-        def post(self, _url, json=None, headers=None):
+        def post(self, _url, data=None, headers=None):
+            return _PostedBody(lambda body: self._respond(_url, body, headers), data)
+
+        def _respond(self, _url, json=None, headers=None):
             seen.append(dict(json))
             if json.get("bundle_version") == 2:
                 return _Resp(400, {"code": "transfer_version_unsupported"})
@@ -2660,8 +3076,8 @@ async def test_send_bundle_downgrades_a_v2_bundle_that_has_no_layer_b():
     mod.aiohttp.ClientSession = lambda *a, **k: _Session()  # type: ignore[assignment]
     try:
         # No "layer_b" key at all — the context-free case.
-        ok, payload = await mgr.send_session_bundle(
-            "peer", {"bundle_version": 2, "messages": [{"role": "user", "content": "hi"}]}
+        ok, payload = await _send(
+            mgr, "peer", {"bundle_version": 2, "messages": [{"role": "user", "content": "hi"}]}
         )
     finally:
         mod.aiohttp.ClientSession = original  # type: ignore[assignment]
@@ -2694,6 +3110,23 @@ def _make_request(state, body, *, raw: str | None = None, gz: bytes | None = Non
     async def _read():
         return payload
 
+    class _FakeContent:
+        """A minimal ``StreamReader`` stand-in exposing ``iter_chunked``.
+
+        The handler streams ``request.content`` to disk rather than calling
+        ``request.read()`` (that is the whole point of the no-size-ceiling change),
+        so the stub has to serve the bytes the way the real StreamReader does. It
+        hands them out in small chunks so the chunk-sniff and the streaming loop
+        are actually exercised.
+        """
+
+        def __init__(self, data: bytes) -> None:
+            self._data = data
+
+        async def iter_chunked(self, n: int):
+            for i in range(0, len(self._data), n):
+                yield self._data[i : i + n]
+
     return SimpleNamespace(
         app={"state": state},
         get=lambda _k, default="": default,
@@ -2701,6 +3134,7 @@ def _make_request(state, body, *, raw: str | None = None, gz: bytes | None = Non
         # ``X-Session-Key`` off them when the auth middleware published no app
         # claim. Empty is the dashboard owner, which is what these tests are.
         headers={},
+        content=_FakeContent(payload),
         read=_read,
     )
 
@@ -2841,50 +3275,26 @@ def _async_value(value):
 # ── Layer B resource + permission bounds ─────────────────────────────────
 
 
-def test_layer_b_cap_is_checked_before_the_file_is_read(monkeypatch, tmp_path):
-    """The cap must bound the ALLOCATION, not merely the result.
+def test_layer_b_is_read_in_full_without_a_size_cap(monkeypatch, tmp_path):
+    """Export carries the FULL Layer B — there is no size cap on the read.
 
-    A post-read ``len()`` check also returns ``None`` for an oversized log, so
-    "returns None" proves nothing on its own -- by then the multi-gigabyte blob
-    is already resident and the gateway has already OOMed. The only observable
-    difference is that the bytes are never read, which is what this pins.
+    The old degradation ("Layer B too large -> transcript-only") is gone: a large
+    context window is copied, not silently dropped, so a resumable session stays
+    resumable however big its context is.
     """
-    from pathlib import Path as _Path
-
     from kiro_crew.dashboard import session_transfer as st
 
-    sid = "oversized"
+    sid = "big"
     (tmp_path / f"{sid}.json").write_text(json.dumps({"session_id": sid}), encoding="utf-8")
-    (tmp_path / f"{sid}.jsonl").write_text("x" * 500, encoding="utf-8")
+    big_events = "".join('{"kind":"Prompt"}\n' for _ in range(50_000))
+    (tmp_path / f"{sid}.jsonl").write_text(big_events, encoding="utf-8")
     monkeypatch.setattr(st, "kiro_sessions_dir", lambda: tmp_path)
-    monkeypatch.setattr(st, "_MAX_LAYER_B_CHARS", 100)
 
-    reads: list[str] = []
-    real_read_text = _Path.read_text
-
-    def _spy(self, *a, **k):
-        reads.append(self.name)
-        return real_read_text(self, *a, **k)
-
-    monkeypatch.setattr(_Path, "read_text", _spy)
-
-    assert st._read_layer_b(sid) is None
-    assert f"{sid}.jsonl" not in reads, "the oversized log was read despite the cap"
-
-
-def test_layer_b_cap_also_covers_the_envelope_read(monkeypatch, tmp_path):
-    """``.json`` is read on the same path and was unbounded too."""
-    from kiro_crew.dashboard import session_transfer as st
-
-    sid = "big-envelope"
-    (tmp_path / f"{sid}.json").write_text(
-        json.dumps({"session_id": sid, "pad": "x" * 500}), encoding="utf-8"
-    )
-    (tmp_path / f"{sid}.jsonl").write_text('{"kind":"Prompt"}\n', encoding="utf-8")
-    monkeypatch.setattr(st, "kiro_sessions_dir", lambda: tmp_path)
-    monkeypatch.setattr(st, "_MAX_LAYER_B_CHARS", 100)
-
-    assert st._read_layer_b(sid) is None
+    layer_b = st._read_layer_b(sid)
+    assert layer_b is not None
+    # A snapshot of the log, not the log's text: it streams on egress.
+    assert isinstance(layer_b["events"], st.LayerBEvents)
+    assert layer_b["events"].path.read_text(encoding="utf-8") == big_events
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits; Windows uses ACLs")
@@ -3451,14 +3861,14 @@ async def test_slot_cap_is_rechecked_after_the_pre_creation_awaits(monkeypatch):
 
     state = _stub_state(st, monkeypatch)
 
-    async def _resolve_then_fill(*_a, **_k):
-        # A concurrent import lands while this one is awaiting.
+    def _resolve_then_fill(_hint):
+        # A concurrent import lands while this one is awaiting agent resolution
+        # (the awaited step between the two cap checks). Runs in a worker thread
+        # via the real ``asyncio.to_thread``; filling a plain dict is GIL-safe.
         state._slots.update({f"s{i}": object() for i in range(500)})
         return ""
 
-    monkeypatch.setattr(st, "asyncio", asyncio)
-    monkeypatch.setattr(st, "_resolve_agent", lambda hint: "")
-    monkeypatch.setattr(asyncio, "to_thread", _resolve_then_fill)
+    monkeypatch.setattr(st, "_resolve_agent", _resolve_then_fill)
 
     resp = await st.api_chat_slot_import(_make_request(state, _valid(agent="some-agent")))
 
@@ -3483,9 +3893,8 @@ async def test_import_accepts_the_exact_bytes_the_export_endpoint_writes(monkeyp
     importer read ``request.json()`` and rejected those bytes as malformed JSON.
     """
     from kiro_crew.dashboard import session_transfer as st
-    from kiro_crew.dashboard.session_export import gzip_bundle
 
-    resp = await _run_import(st, monkeypatch, None, gz=gzip_bundle(_valid()))
+    resp = await _run_import(st, monkeypatch, None, gz=_export_gz(_valid()))
 
     assert resp.status == 200, resp.body
     assert json.loads(resp.body)["messages"] == 1
@@ -3510,9 +3919,8 @@ async def test_import_sniffs_the_magic_and_not_the_content_type(monkeypatch):
     stub request carries NO content type at all, so a handler that branched on
     the header could not reach the gzip path this asserts."""
     from kiro_crew.dashboard import session_transfer as st
-    from kiro_crew.dashboard.session_export import gzip_bundle
 
-    request = _make_request(_stub_state(st, monkeypatch), None, gz=gzip_bundle(_valid()))
+    request = _make_request(_stub_state(st, monkeypatch), None, gz=_export_gz(_valid()))
     assert not hasattr(request, "content_type")
 
     resp = await st.api_chat_slot_import(request)
@@ -3529,9 +3937,8 @@ async def test_import_refuses_a_corrupt_gzip_with_its_own_code(monkeypatch):
     document it never wrote by hand.
     """
     from kiro_crew.dashboard import session_transfer as st
-    from kiro_crew.dashboard.session_export import gzip_bundle
 
-    truncated = gzip_bundle(_valid())[: len(gzip_bundle(_valid())) // 2]
+    truncated = _export_gz(_valid())[: len(_export_gz(_valid())) // 2]
     resp = await _run_import(st, monkeypatch, None, gz=truncated)
 
     assert resp.status == 400
@@ -3550,81 +3957,62 @@ async def test_import_still_refuses_plain_garbage_as_bad_json(monkeypatch):
     assert json.loads(resp.body)["code"] == "transfer_invalid_json"
 
 
-def test_gunzip_refuses_a_bomb_while_it_is_still_small(monkeypatch):
-    """The cap bounds the ALLOCATION, not the result.
-
-    A ``gzip.decompress`` followed by a ``len()`` check ALSO refuses an oversized
-    body — after allocating every byte of it, which on a compression bomb is the
-    whole attack. So "it was refused" proves nothing on its own. What is asserted
-    here is the quantity actually held when the refusal fires: at most one chunk
-    past the cap. Replace the incremental loop with decompress-then-measure and
-    this reddens, because the reported size becomes the full expansion.
-    """
-    import gzip
-
-    from kiro_crew.dashboard import session_transfer as st
-
-    monkeypatch.setattr(st, "_MAX_DECOMPRESSED_BYTES", 4096)
-    monkeypatch.setattr(st, "_CHUNK_BYTES", 1024)
-    bomb = gzip.compress(b"\0" * (8 * 1024 * 1024))
-    assert len(bomb) < 64 * 1024, "the point of the fixture is that it is tiny"
-
-    with pytest.raises(st._BundleTooLarge) as caught:
-        st._gunzip_bounded(bomb)
-
-    held = caught.value.args[0]
-    assert held <= 4096 + 1024, f"held {held} bytes before refusing"
-
-
 @pytest.mark.asyncio
-async def test_import_refuses_an_oversized_compressed_body(monkeypatch):
-    """End to end: the bound is wired to a coded refusal, not only to a helper."""
-    import gzip
-
-    from kiro_crew.dashboard import session_transfer as st
-
-    monkeypatch.setattr(st, "_MAX_DECOMPRESSED_BYTES", 4096)
-    resp = await _run_import(st, monkeypatch, None, gz=gzip.compress(b"\0" * (1024 * 1024)))
-
-    assert resp.status == 400
-    assert json.loads(resp.body)["code"] == "transfer_bundle_too_large"
-
-
-def test_the_decompression_cap_never_makes_gzip_stricter_than_plain_json():
-    """The property that makes the cap safe, not the arithmetic behind it.
-
-    ``client_max_size`` (60 MiB) bounds EVERY body, compressed or not, so the
-    plain path can never deliver more than that much JSON. As long as the
-    decompressed ceiling is above it, the gzip path accepts strictly more than the
-    plain path ever could -- which is what makes "a bundle this refuses" a bundle
-    that was already unimportable by the only route that existed before.
-
-    Pinned rather than argued, because the arithmetic reads as though the cap
-    tracks the validator's CHARACTER ceilings, and a character ceiling is not a
-    byte ceiling: ``ensure_ascii`` renders one non-ASCII char as six bytes. The
-    number moving with those ceilings is a convenience; this comparison is the
-    guarantee.
+async def test_import_has_no_size_ceiling(monkeypatch):
+    """A bundle far past 20 MB of content / 40 MB of Layer B / a ~68 MiB
+    decompressed body imports successfully — the owner's decision that a transfer
+    is never blocked by size.
     """
     from kiro_crew.dashboard import session_transfer as st
 
-    assert st._MAX_DECOMPRESSED_BYTES > st._GATEWAY_CLIENT_MAX_SIZE
-    # And the magnitude still comes from the validator, so the two move together.
-    assert st._MAX_DECOMPRESSED_BYTES == (
-        st._MAX_TOTAL_CHARS + st._MAX_LAYER_B_CHARS + st._JSON_ENVELOPE_SLACK
+    huge = _valid(
+        messages=[{"role": "user", "content": "x" * 4_000_000, "ts": ""} for _ in range(8)]
     )
+    gz = _export_gz(huge)
+    resp = await _run_import(st, monkeypatch, None, gz=gz)
+
+    assert resp.status == 200, resp.body
+    assert json.loads(resp.body)["ok"] is True
 
 
-def test_the_stated_gateway_body_limit_matches_the_gateway():
-    """The restated constant has to be the real one, or the test above proves
-    nothing. Read out of the server module rather than trusted."""
-    from pathlib import Path
+def test_import_never_reads_the_whole_body_into_memory():
+    """Source guard: the arrival path streams and must not buffer the whole body.
 
-    import kiro_crew.dashboard.server as server_mod
-    from kiro_crew.dashboard import session_transfer as st
+    ``request.read()`` / ``.post()`` / ``.json()`` each materialise the entire body
+    in memory AND are the calls aiohttp enforces ``client_max_size`` in — using any
+    of them would both cap the size and defeat the streaming. Assert the handler and
+    its body reader never call them (comments stripped, so a comment mentioning one
+    does not mask a real call).
+    """
+    import ast
+    from pathlib import Path as _Path
 
-    source = Path(server_mod.__file__).read_text(encoding="utf-8")
-    assert "client_max_size=60 * 1024 * 1024" in source
-    assert st._GATEWAY_CLIENT_MAX_SIZE == 60 * 1024 * 1024
+    import kiro_crew.dashboard.session_transfer as st
+
+    tree = ast.parse(_Path(st.__file__).read_text(encoding="utf-8"))
+    targets = {
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef)
+        and node.name in {"_read_bundle_body", "_stream_request_to_file", "_install_arrived_bundle"}
+    }
+    banned = {"read", "post", "json"}
+    offenders = []
+    for fn in targets:
+        for node in ast.walk(fn):
+            # request.<banned>(...) — an attribute call on a name/attr chain whose
+            # attribute is one of the buffering reads.
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr in banned
+                and isinstance(node.func.value, (ast.Name, ast.Attribute))
+            ):
+                base = node.func.value
+                base_name = base.id if isinstance(base, ast.Name) else getattr(base, "attr", "")
+                if base_name == "request":
+                    offenders.append(f"{fn.name}: request.{node.func.attr}()")
+    assert not offenders, offenders
 
 
 # ── install from a FILE: the round trip ──────────────────────────────────
@@ -3640,7 +4028,6 @@ async def test_concurrent_expansions_are_bounded_and_the_excess_is_refused(monke
     many are inside it at once.
     """
     from kiro_crew.dashboard import session_transfer as st
-    from kiro_crew.dashboard.session_export import gzip_bundle
 
     monkeypatch.setattr(st, "_expansion_lock", None)
     monkeypatch.setattr(st, "_expansion_slots", None)
@@ -3650,7 +4037,7 @@ async def test_concurrent_expansions_are_bounded_and_the_excess_is_refused(monke
     release = asyncio.Event()
 
     async def _slow_to_thread(fn, *args):
-        if fn is st._gunzip_bounded:
+        if fn is st._gunzip_file:
             inside["now"] += 1
             inside["peak"] = max(inside["peak"], inside["now"])
             await release.wait()
@@ -3659,14 +4046,21 @@ async def test_concurrent_expansions_are_bounded_and_the_excess_is_refused(monke
         return fn(*args)
 
     monkeypatch.setattr(st.asyncio, "to_thread", _slow_to_thread)
-    gz = gzip_bundle(_valid())
+    gz = _export_gz(_valid())
 
     # More than the queue allows, all in flight together.
     running = [
         asyncio.create_task(_run_import(st, monkeypatch, None, gz=gz))
         for _ in range(st._MAX_CONCURRENT_EXPANSIONS + st._MAX_QUEUED_EXPANSIONS + 2)
     ]
-    await asyncio.sleep(0.05)
+    # Wait for the gate rather than a fixed sleep: every request streams its body
+    # to disk before it reaches admission, which takes longer than any fixed tick
+    # on a slow runner. The gunzip is held shut, so an admitted or queued import
+    # cannot finish yet; any task done before the release is one the gate refused.
+    deadline = asyncio.get_running_loop().time() + 10
+    while not any(t.done() for t in running):
+        assert asyncio.get_running_loop().time() < deadline, "no import ever reached the gate"
+        await asyncio.sleep(0.01)
     refused = [t for t in running if t.done()]
     release.set()
     results = await asyncio.gather(*running)
@@ -3690,9 +4084,7 @@ async def test_the_expansion_permit_outlives_the_decompression(monkeypatch):
     immediately and they all pile into redaction together, which is precisely the
     sum the bound exists to prevent.
     """
-    from kiro_crew.dashboard import chat_handlers as ch
     from kiro_crew.dashboard import session_transfer as st
-    from kiro_crew.dashboard.session_export import gzip_bundle
 
     monkeypatch.setattr(st, "_expansion_lock", None)
     monkeypatch.setattr(st, "_expansion_slots", None)
@@ -3702,7 +4094,7 @@ async def test_the_expansion_permit_outlives_the_decompression(monkeypatch):
     release = asyncio.Event()
 
     async def _park_in_redaction(fn, *args):
-        if fn is ch._redact_history_rows:
+        if fn is st._build_redacted_rows:
             resident["now"] += 1
             resident["peak"] = max(resident["peak"], resident["now"])
             await release.wait()
@@ -3710,13 +4102,19 @@ async def test_the_expansion_permit_outlives_the_decompression(monkeypatch):
         return fn(*args)
 
     monkeypatch.setattr(st.asyncio, "to_thread", _park_in_redaction)
-    gz = gzip_bundle(_valid())
+    gz = _export_gz(_valid())
 
     running = [
         asyncio.create_task(_run_import(st, monkeypatch, None, gz=gz))
         for _ in range(st._MAX_CONCURRENT_EXPANSIONS + st._MAX_QUEUED_EXPANSIONS + 2)
     ]
-    await asyncio.sleep(0.05)
+    # Wait for the first caller to park, then give the rest time to pile in
+    # behind it: a fixed sleep measures the harness's speed, not the permit.
+    for _ in range(200):
+        if resident["peak"]:
+            break
+        await asyncio.sleep(0.01)
+    await asyncio.sleep(0.1)
     peak_while_parked = resident["peak"]
     release.set()
     await asyncio.gather(*running)
@@ -3739,16 +4137,15 @@ async def test_the_transcript_only_mark_reads_layer_b_skipped_not_absence(monkey
     * Layer B present — full fidelity, not marked.
     """
     from kiro_crew.dashboard import session_transfer as st
-    from kiro_crew.dashboard.session_export import gzip_bundle
 
-    never_had = await _run_import(st, monkeypatch, None, gz=gzip_bundle(_valid()), return_slot=True)
+    never_had = await _run_import(st, monkeypatch, None, gz=_export_gz(_valid()), return_slot=True)
     assert "transcript only" not in never_had.title
 
     withheld = await _run_import(
         st,
         monkeypatch,
         None,
-        gz=gzip_bundle(_valid(layer_b_skipped=True)),
+        gz=_export_gz(_valid(layer_b_skipped=True)),
         return_slot=True,
     )
     assert "transcript only" in withheld.title
@@ -3853,17 +4250,18 @@ async def test_an_exported_file_installs_with_no_step_in_between(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_a_body_past_the_server_limit_is_told_it_is_too_large(tmp_path):
-    """A body the server refuses by SIZE gets the size answer, not the generic one.
+async def test_a_body_past_the_server_client_max_size_still_imports(tmp_path):
+    """A body larger than the Application's ``client_max_size`` imports successfully.
 
-    ``request.read()`` raises ``HTTPRequestEntityTooLarge`` once the body passes
-    the Application's ``client_max_size``, which is the one read failure whose
-    cause the server KNOWS. Catching it with everything else would answer
-    ``transfer_body_unreadable`` — copy that hedges between "too large" and "the
-    connection dropped" — and send a person whose file is simply too big looking
-    for a network fault. The limit is set small here so the assertion is about
-    the branch and not about moving 60 MiB.
+    The import path streams ``request.content`` to disk instead of calling
+    ``request.read()``, so aiohttp's ``client_max_size`` — which it enforces only in
+    the buffering reads — does not gate it, exactly as the streaming multipart upload
+    path bypasses the same limit. A valid bundle several times the (deliberately
+    tiny) server limit installs successfully rather than being told it is too large,
+    over BOTH transports.
     """
+    import gzip
+
     from aiohttp.test_utils import TestClient, TestServer
     from chat_test_helpers import _make_state
 
@@ -3873,17 +4271,32 @@ async def test_a_body_past_the_server_limit_is_told_it_is_too_large(tmp_path):
     app["state"] = _make_state(tmp_path)
     app.router.add_post("/api/chat/slots/import", api_chat_slot_import)
 
+    # A valid bundle whose serialised size is far past the 1024-byte server limit.
+    # High-entropy content so the gzip form is also over the limit (a run of one
+    # character would compress to well under 1 KiB and prove nothing about gzip).
+    big = _valid(
+        origin="seedbox",
+        messages=[{"role": "user", "content": os.urandom(40_000).hex(), "ts": ""}],
+    )
+    plain = json.dumps(big).encode()
+    assert len(plain) > 1024
+
     async with TestClient(TestServer(app)) as client:
-        oversized = await client.post(
+        # Plain JSON (the tunnel's shape), past the limit.
+        r_plain = await client.post(
+            "/api/chat/slots/import", data=plain, headers={"Content-Type": "application/json"}
+        )
+        assert r_plain.status == 200, await r_plain.text()
+
+        # Gzip (the exported-file shape); the compressed form is also > 1024.
+        gz = gzip.compress(plain)
+        assert len(gz) > 1024
+        r_gz = await client.post(
             "/api/chat/slots/import",
-            data=b"x" * 4096,
+            data=gz,
             headers={"Content-Type": "application/octet-stream"},
         )
-        assert oversized.status == 400, await oversized.text()
-        payload = await oversized.json()
-
-    assert payload["code"] == "transfer_bundle_too_large", payload
-    assert "size limit" in payload["error"], payload
+        assert r_gz.status == 200, await r_gz.text()
 
 
 # ── arrival provenance filing ────────────────────────────────────────────
@@ -3947,9 +4360,7 @@ async def test_a_gzipped_arrival_is_filed_exactly_like_the_plain_one(monkeypatch
     assert plain.status == 200, plain.body
     first = state._imported_slot.folder_id
 
-    from kiro_crew.dashboard.session_export import gzip_bundle
-
-    gz = gzip_bundle(_valid(origin="mac"))
+    gz = _export_gz(_valid(origin="mac"))
     second_resp = await st.api_chat_slot_import(_make_request(state, None, gz=gz))
     assert second_resp.status == 200, second_resp.body
     second = state._imported_slot.folder_id
@@ -4818,7 +5229,7 @@ async def test_send_handler_refuses_a_slot_whose_line_is_restricted(monkeypatch)
     sent: list = []
 
     class _Mgr:
-        async def send_session_bundle(self, _id, bundle):
+        async def send_session_bundle(self, _id, bundle, **_kw):
             sent.append(bundle)
             return True, {"key": "remote-1"}
 
@@ -4873,7 +5284,7 @@ async def test_send_handler_maps_a_busy_transcript_to_the_retryable_503(monkeypa
     sent: list = []
 
     class _Mgr:
-        async def send_session_bundle(self, _id, bundle):
+        async def send_session_bundle(self, _id, bundle, **_kw):
             sent.append(bundle)
             return True, {"key": "remote-1"}
 
@@ -4896,3 +5307,1307 @@ async def test_send_handler_maps_a_busy_transcript_to_the_retryable_503(monkeypa
     assert resp.status == 503, resp.body
     assert json.loads(resp.body)["code"] == "transfer_snapshot_unstable"
     assert sent == []
+
+
+@pytest.mark.asyncio
+async def test_send_handler_rechecks_the_privacy_line_before_the_request(monkeypatch):
+    """A line that tightens after the pre-send check, while the body serialises,
+    is caught by the recheck the send runs just before the request."""
+    from kiro_crew.dashboard import handlers_instances as hi
+    from kiro_crew.dashboard import session_transfer as st
+
+    monkeypatch.setattr(
+        hi.KiroCrewConfig,
+        "load",
+        staticmethod(lambda: SimpleNamespace(instances=SimpleNamespace(enabled=True))),
+    )
+
+    class _Log(_PersistentLine):
+        def read_messages_chained(self, _key):
+            return list(MSGS)
+
+    log = _Log()
+    slot = _slot(MSGS)
+    slot.key = "slot-1"
+
+    async def _save(_state, s, best_effort=True):
+        return True
+
+    monkeypatch.setattr(st, "save_slot_off_loop", _save)
+    sent: list = []
+
+    class _Mgr:
+        async def send_session_bundle(self, _id, bundle, *, serialise, recheck=None):
+            # The line tightens while the body serialises.
+            log.metadata = {"memory_mode": "incognito"}
+            refusal = await asyncio.to_thread(recheck) if recheck else None
+            if refusal is not None:
+                return False, refusal
+            sent.append(bundle)
+            return True, {"key": "remote-1"}
+
+    state = SimpleNamespace(
+        _slots={"slot-1": slot},
+        conversation_log=log,
+        instances_manager=_Mgr(),
+        instances_registry=SimpleNamespace(get=lambda _i: SimpleNamespace(id="peer")),
+        owner_id="owner",
+    )
+    request = _OwnerReq(
+        app={"state": state},
+        match_info={"id": "peer"},
+        headers={},
+        json=_async_value({"slot": "slot-1"}),
+    )
+
+    resp = await hi.api_instances_send_session(request)
+
+    assert resp.status == 400, resp.body
+    assert json.loads(resp.body)["code"] == "transfer_slot_not_persistent"
+    assert sent == [], "the bundle was sent after its privacy line tightened"
+
+
+class _ChunkedContent:
+    """``request.content`` stand-in that yields the given chunks verbatim."""
+
+    def __init__(self, chunks: list[bytes]) -> None:
+        self._chunks = chunks
+
+    async def iter_chunked(self, _n: int):
+        for c in self._chunks:
+            yield c
+
+
+class _JsonReply:
+    """Mixin for a fake peer response: serves its ``json()`` as the chunked body
+    the sender reads under its cap, and a ``json()`` that raises as a body that
+    is not JSON."""
+
+    @property
+    def content(self):
+        resp = self
+
+        class _Body:
+            async def iter_chunked(self, _n: int):
+                try:
+                    value = await resp.json()
+                except Exception:
+                    yield b"not json"
+                    return
+                yield json.dumps(value).encode()
+
+        return _Body()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "chunks",
+    [[b"\x1f", b"\x8b\x08\x00rest"], [b"\x1f", b"\x8b", b"\x08\x00rest"]],
+    ids=["one-byte-first-chunk", "one-byte-chunks"],
+)
+async def test_gzip_is_sniffed_across_a_one_byte_first_chunk(tmp_path, chunks):
+    """The gzip magic is two bytes; a network chunk can be one. Deciding from a
+    one-byte prefix would read every such gzip body as plain JSON."""
+    from kiro_crew.dashboard import session_transfer as st
+
+    dst = tmp_path / "body"
+    is_gzip, total = await st._stream_request_to_file(
+        SimpleNamespace(content=_ChunkedContent(chunks)), dst
+    )
+
+    assert is_gzip is True
+    assert dst.read_bytes() == b"".join(chunks)
+    assert total == len(b"".join(chunks))
+
+
+@pytest.mark.asyncio
+async def test_a_body_shorter_than_the_magic_is_kept_whole(tmp_path):
+    from kiro_crew.dashboard import session_transfer as st
+
+    dst = tmp_path / "body"
+    is_gzip, total = await st._stream_request_to_file(
+        SimpleNamespace(content=_ChunkedContent([b"{"])), dst
+    )
+
+    assert is_gzip is False
+    assert dst.read_bytes() == b"{" and total == 1
+
+
+@pytest.mark.asyncio
+async def test_the_temp_file_is_opened_and_closed_off_the_event_loop(tmp_path, monkeypatch):
+    """A close flushes, so it is as able to stall the loop as a write is."""
+    import threading
+
+    from kiro_crew.dashboard import session_transfer as st
+
+    loop_thread = threading.get_ident()
+    seen: dict[str, int] = {}
+    real_open = open
+
+    class _Tracked:
+        def __init__(self, f):
+            self._f = f
+
+        def write(self, b):
+            seen["write"] = threading.get_ident()
+            return self._f.write(b)
+
+        def close(self):
+            seen["close"] = threading.get_ident()
+            return self._f.close()
+
+    def _open(path, mode="r", *a, **k):
+        seen["open"] = threading.get_ident()
+        return _Tracked(real_open(path, mode, *a, **k))
+
+    monkeypatch.setattr(st, "open", _open, raising=False)
+    await st._stream_request_to_file(
+        SimpleNamespace(content=_ChunkedContent([b'{"a":', b"1}"])), tmp_path / "body"
+    )
+
+    assert set(seen) == {"open", "write", "close"}
+    assert all(t != loop_thread for t in seen.values()), seen
+
+
+def _fake_memory(st, monkeypatch, *, total_mib, available, cgroup=(None, None)):
+    """Point the host readings at fixed values; *available* is an iterator of MiB.
+    *cgroup* is the (limit, headroom) in bytes the gateway's own cgroup reads;
+    pinned so the runner's real cgroup never decides a test."""
+    monkeypatch.setattr(st, "_cgroup_memory_bounds", lambda: cgroup)
+    monkeypatch.setattr(st.platform_compat, "host_total_mib", lambda: total_mib)
+    monkeypatch.setattr(st.platform_compat, "host_available_mib", lambda: next(available))
+    monkeypatch.setattr(st, "_MEMORY_POLL_SECS", 0.001)
+    monkeypatch.setattr(st, "_MEMORY_HEADROOM_BYTES", 0)
+    monkeypatch.setattr(st, "_memory_reserved", 0)
+
+
+_MIB = 1024 * 1024
+
+
+@pytest.mark.asyncio
+async def test_a_large_import_waits_for_memory_instead_of_being_refused(monkeypatch):
+    from kiro_crew.dashboard import session_transfer as st
+
+    readings = iter([10, 10, 10_000])  # short, short, then freed
+    _fake_memory(st, monkeypatch, total_mib=100_000, available=readings)
+
+    async with st._memory_admission(100 * _MIB):  # needs 300 MiB
+        assert st._memory_reserved == 300 * _MIB
+    assert st._memory_reserved == 0
+    assert next(readings, None) is None, "it looked again until memory was free"
+
+
+@pytest.mark.asyncio
+async def test_a_wait_past_the_budget_is_refused_as_retryable(monkeypatch):
+    from kiro_crew.dashboard import session_transfer as st
+
+    _fake_memory(st, monkeypatch, total_mib=100_000, available=iter(lambda: 1, None))
+    monkeypatch.setattr(st, "SESSION_IMPORT_MEMORY_WAIT_SECS", 0.01)
+
+    with pytest.raises(st._MemoryWaitTimedOut):
+        async with st._memory_admission(100 * _MIB):
+            pass
+    assert st._memory_reserved == 0
+
+
+@pytest.mark.asyncio
+async def test_a_document_larger_than_the_host_is_refused_without_waiting(monkeypatch):
+    from kiro_crew.dashboard import session_transfer as st
+
+    # One reading only: a second, which a wait would take, fails the test.
+    _fake_memory(st, monkeypatch, total_mib=100, available=iter([100]))
+
+    with pytest.raises(st._NeverFits):
+        async with st._memory_admission(100 * _MIB):  # needs 300 MiB of 100
+            pass
+
+
+@pytest.mark.asyncio
+async def test_a_second_import_waits_for_the_first_ones_reservation(monkeypatch):
+    """Both see the same free memory; the reservation is what stops them both
+    parsing at once."""
+    from kiro_crew.dashboard import session_transfer as st
+
+    _fake_memory(st, monkeypatch, total_mib=100_000, available=iter(lambda: 400, None))
+    monkeypatch.setattr(st, "SESSION_IMPORT_MEMORY_WAIT_SECS", 5.0)
+    order: list[str] = []
+    first_in = asyncio.Event()
+    release_first = asyncio.Event()
+
+    async def first():
+        async with st._memory_admission(100 * _MIB):  # 300 of 400
+            order.append("first-in")
+            first_in.set()
+            await release_first.wait()
+        order.append("first-out")
+
+    async def second():
+        await first_in.wait()
+        async with st._memory_admission(100 * _MIB):
+            order.append("second-in")
+
+    t1 = asyncio.create_task(first())
+    t2 = asyncio.create_task(second())
+    await first_in.wait()
+    await asyncio.sleep(0.05)
+    assert order == ["first-in"], "the second must not be admitted beside the first"
+    release_first.set()
+    await asyncio.gather(t1, t2)
+    assert order == ["first-in", "first-out", "second-in"]
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_host_is_not_gated(monkeypatch):
+    from kiro_crew.dashboard import session_transfer as st
+
+    _fake_memory(st, monkeypatch, total_mib=0, available=iter(lambda: 0, None))
+
+    async with st._memory_admission(10_000 * _MIB):
+        pass
+
+
+@pytest.mark.asyncio
+async def test_the_import_route_answers_a_session_the_host_cannot_hold(monkeypatch):
+    from kiro_crew.dashboard import session_transfer as st
+
+    _fake_memory(st, monkeypatch, total_mib=0, available=iter(lambda: 1, None))
+    monkeypatch.setattr(st.platform_compat, "host_total_mib", lambda: 1)
+    monkeypatch.setattr(st, "_PARSE_MEMORY_FACTOR", 1_000_000)
+    resp = await _run_import(st, monkeypatch, _valid())
+
+    assert resp.status == 413
+    assert json.loads(resp.body)["code"] == "transfer_bundle_too_large"
+
+
+def _events_file(tmp_path, text: str):
+    p = tmp_path / "events.jsonl"
+    p.write_bytes(text.encode("utf-8", "surrogatepass"))
+    return p
+
+
+def test_the_streaming_writer_matches_json_dumps_byte_for_byte(tmp_path):
+    """Every importer parses what ``json.dumps`` wrote, so the streamed body has
+    to be exactly that: CJK, a character outside the BMP, a lone surrogate, and a
+    log long enough to cross many chunk boundaries."""
+    import io
+
+    from kiro_crew.dashboard import session_transfer as st
+
+    events = '{"a":"é 😀"}\r\n' + "x中😀" * 200_000 + "\n"
+    bundle = {
+        "bundle_version": 2,
+        "title": "t",
+        "messages": [{"role": "user", "content": "hi \ud800 😀", "ts": ""}] * 3,
+        "layer_b": {
+            "envelope": {"k": [1, 2]},
+            "events": st.LayerBEvents(_events_file(tmp_path, events)),
+        },
+        "source": {"exported_at": "x"},
+    }
+    out = io.BytesIO()
+    st.write_bundle_json(bundle, out.write)
+
+    expected = {**bundle, "layer_b": {"envelope": {"k": [1, 2]}, "events": events}}
+    assert out.getvalue() == json.dumps(expected, separators=(",", ":")).encode()
+
+
+def test_the_layer_b_snapshot_is_the_log_byte_for_byte(tmp_path, monkeypatch):
+    from kiro_crew.dashboard import session_transfer as st
+
+    src = _events_file(tmp_path, '{"k":1}\r\n\n{"k":"中"}\n')
+    snap = st._snapshot_events_file(src)
+
+    assert snap is not None and snap.read_bytes() == src.read_bytes()
+
+
+def test_an_unparseable_log_leaves_no_snapshot_behind(tmp_path):
+    from kiro_crew.dashboard import session_transfer as st
+
+    src = _events_file(tmp_path, '{"k":1}\n{"k":\n')
+
+    assert st._snapshot_events_file(src) is None
+    assert list(st._egress_tmp_dir().iterdir()) == []
+
+
+def test_a_failed_assembly_releases_the_snapshot(tmp_path, monkeypatch):
+    from kiro_crew.dashboard import session_transfer as st
+
+    sid = "s1"
+    (tmp_path / f"{sid}.json").write_text(json.dumps({"session_id": sid}), encoding="utf-8")
+    (tmp_path / f"{sid}.jsonl").write_text('{"k":1}\n', encoding="utf-8")
+    monkeypatch.setattr(st, "kiro_sessions_dir", lambda: tmp_path)
+    monkeypatch.setattr(st, "_read_chained_history", lambda *_a: ([], ("k",)))
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("assembly failed")
+
+    monkeypatch.setattr(st, "_assemble_bundle", _boom)
+
+    with pytest.raises(RuntimeError):
+        st._read_and_assemble(SimpleNamespace(), "k", [], "t", "", "", sid)
+    assert list(st._egress_tmp_dir().iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_send_bundle_uploads_the_serialised_file_and_removes_it(tmp_path):
+    """With a serialiser the peer receives the file's bytes, never ``json=``;
+    each attempt's file is gone afterwards, the retry's included."""
+    import kiro_crew.instances.ssh_tunnel_manager as mod
+    from kiro_crew.dashboard import session_transfer as st
+
+    mgr, _seen, _ = _size_refusing_peer("transfer_layer_b_too_large")
+    posted: list[bytes] = []
+    written: list = []
+
+    class _Resp(_JsonReply):
+        def __init__(self, status, payload):
+            self.status = status
+            self._payload = payload
+
+        async def json(self):
+            return self._payload
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    class _Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        def post(self, _url, data=None, json=None, headers=None):
+            assert json is None, "a serialised bundle must not be re-encoded in memory"
+            assert headers["Content-Type"] == "application/json"
+
+            class _Upload:
+                async def __aenter__(self_inner):
+                    body = b"".join([c async for c in data])
+                    posted.append(body)
+                    if b'"layer_b"' in body:
+                        return _Resp(400, {"code": "transfer_layer_b_too_large"})
+                    return _Resp(200, {"key": "remote-1", "resume_mode": "prefix"})
+
+                async def __aexit__(self_inner, *a):
+                    return False
+
+            return _Upload()
+
+    def _serialise(b):
+        p = st.write_bundle_file(b, compress=False)
+        written.append(p)
+        return p
+
+    bundle = {
+        "bundle_version": 2,
+        "messages": [{"role": "user", "content": "hi", "ts": ""}],
+        "layer_b": {"envelope": {}, "events": st.LayerBEvents(_events_file(tmp_path, '{"k":1}\n'))},
+    }
+    original = mod.aiohttp.ClientSession
+    mod.aiohttp.ClientSession = lambda *a, **k: _Session()  # type: ignore[assignment]
+    try:
+        ok, payload = await _send(mgr, "peer", bundle, serialise=_serialise)
+    finally:
+        mod.aiohttp.ClientSession = original  # type: ignore[assignment]
+
+    assert ok is True, payload
+    assert json.loads(posted[0])["layer_b"]["events"] == '{"k":1}\n'
+    assert "layer_b" not in json.loads(posted[1])
+    assert len(written) == 2 and not any(p.exists() for p in written)
+
+
+def _low_disk(st, monkeypatch, free: int = 0):
+    """Report *free* bytes on every volume, and check on every chunk."""
+    monkeypatch.setattr(st.shutil, "disk_usage", lambda _p: SimpleNamespace(free=free))
+    monkeypatch.setattr(st, "_DISK_CHECK_EVERY_CHUNKS", 1)
+
+
+def test_decompression_stops_before_the_volume_fills(tmp_path, monkeypatch):
+    """With no size ceiling, a small gzip can expand to anything; the write stops
+    once the volume is down to its headroom."""
+    import gzip as _gzip
+
+    from kiro_crew.dashboard import session_transfer as st
+
+    src = tmp_path / "body.gz"
+    src.write_bytes(_gzip.compress(b"x" * (4 * st._CHUNK_BYTES)))
+    _low_disk(st, monkeypatch)
+
+    with pytest.raises(st._DiskFull):
+        st._gunzip_file(src, tmp_path / "out.json")
+
+
+@pytest.mark.asyncio
+async def test_a_plain_body_stops_before_the_volume_fills(tmp_path, monkeypatch):
+    from kiro_crew.dashboard import session_transfer as st
+
+    _low_disk(st, monkeypatch)
+    chunks = [b"{" + b" " * 1000] * 4
+
+    with pytest.raises(st._DiskFull):
+        await st._stream_request_to_file(
+            SimpleNamespace(content=_ChunkedContent(chunks)), tmp_path / "body"
+        )
+
+
+@pytest.mark.asyncio
+async def test_the_import_route_answers_507_when_the_volume_is_full(monkeypatch):
+    from kiro_crew.dashboard import session_transfer as st
+
+    _low_disk(st, monkeypatch)
+    resp = await _run_import(st, monkeypatch, _valid())
+
+    assert resp.status == 507
+    assert json.loads(resp.body)["code"] == "transfer_disk_full"
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_volume_is_not_gated(tmp_path, monkeypatch):
+    from kiro_crew.dashboard import session_transfer as st
+
+    def _raise(_p):
+        raise OSError("no statvfs")
+
+    monkeypatch.setattr(st.shutil, "disk_usage", _raise)
+    monkeypatch.setattr(st, "_DISK_CHECK_EVERY_CHUNKS", 1)
+
+    is_gzip, total = await st._stream_request_to_file(
+        SimpleNamespace(content=_ChunkedContent([b"{}", b"  "])), tmp_path / "body"
+    )
+    assert (is_gzip, total) == (False, 4)
+
+
+@pytest.mark.asyncio
+async def test_an_upload_the_peer_stops_reading_times_out(tmp_path, monkeypatch):
+    """No total timeout, but no progress for ``_TRANSFER_TIMEOUT`` ends it."""
+    import kiro_crew.instances.ssh_tunnel_manager as mod
+
+    monkeypatch.setattr(mod, "_TRANSFER_TIMEOUT", 0.05)
+    body = tmp_path / "body.json"
+    body.write_bytes(b"x" * (3 * mod._UPLOAD_CHUNK_BYTES))
+
+    async def _stalled_peer():
+        stall = asyncio.timeout(None)
+        async with stall:
+            with body.open("rb") as fh:
+                async for _chunk in mod._upload_chunks(fh, stall):
+                    await asyncio.sleep(1)  # the peer never reads the next chunk
+
+    with pytest.raises(TimeoutError):
+        await _stalled_peer()
+
+
+@pytest.mark.asyncio
+async def test_a_finished_upload_leaves_the_reply_wait_to_the_read_timeout(tmp_path, monkeypatch):
+    import kiro_crew.instances.ssh_tunnel_manager as mod
+
+    monkeypatch.setattr(mod, "_TRANSFER_TIMEOUT", 0.05)
+    body = tmp_path / "body.json"
+    body.write_bytes(b"{}")
+
+    stall = asyncio.timeout(None)
+    async with stall:
+        with body.open("rb") as fh:
+            got = [c async for c in mod._upload_chunks(fh, stall)]
+        await asyncio.sleep(0.2)  # a slow reply after the whole body went up
+
+    assert got == [b"{}"]
+
+
+@pytest.mark.asyncio
+async def test_a_session_too_big_for_the_host_names_the_budget(monkeypatch):
+    from kiro_crew.dashboard import session_transfer as st
+
+    monkeypatch.setattr(st.platform_compat, "host_total_mib", lambda: 2048)
+    monkeypatch.setattr(st, "_MEMORY_HEADROOM_BYTES", 1024 * _MIB)
+    monkeypatch.setattr(st, "_PARSE_MEMORY_FACTOR", 1_000_000_000)
+    resp = await _run_import(st, monkeypatch, _valid())
+
+    assert resp.status == 413
+    assert "can spare 1.0 GiB" in json.loads(resp.body)["error"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("refusal", ["busy", "withheld"])
+async def test_a_publication_refusal_releases_the_layer_b_snapshot(monkeypatch, refusal):
+    """The refusal returns before the send, so the snapshot the bundle carries
+    must be removed there too, or every refused attempt leaves one on disk."""
+    from kiro_crew.dashboard import handlers_instances as hi
+    from kiro_crew.dashboard import session_transfer as st
+    from kiro_crew.history import TranscriptBusy, TranscriptWithheld
+
+    monkeypatch.setattr(
+        hi.KiroCrewConfig,
+        "load",
+        staticmethod(lambda: SimpleNamespace(instances=SimpleNamespace(enabled=True))),
+    )
+    snap = st._egress_tmp_dir() / "snap.jsonl"
+    snap.write_bytes(b'{"k":1}\n')
+
+    async def _build(*_a, **_k):
+        return st.TransferBundle(
+            {"messages": [], "layer_b": {"envelope": {}, "events": st.LayerBEvents(snap)}},
+            publication_keys=("k",),
+        )
+
+    monkeypatch.setattr(hi, "build_transfer_bundle_async", _build)
+
+    class _RefusesAtCommit(_FakeLog):
+        @contextlib.contextmanager
+        def publication_hold(self, _key, *, expected_keys=None):
+            raise (TranscriptBusy("busy") if refusal == "busy" else TranscriptWithheld("tightened"))
+            yield
+
+    class _Mgr:
+        async def send_session_bundle(self, _id, _bundle, **_kw):
+            raise AssertionError("the tunnel POST ran after publication was refused")
+
+    slot = _slot([{"role": "user", "content": "hi", "ts": ""}])
+    state = SimpleNamespace(
+        _slots={"slot-1": slot},
+        conversation_log=_RefusesAtCommit(slot.messages),
+        instances_manager=_Mgr(),
+        instances_registry=SimpleNamespace(get=lambda _i: SimpleNamespace(id="peer")),
+        owner_id="owner",
+    )
+    request = _OwnerReq(
+        app={"state": state},
+        match_info={"id": "peer"},
+        headers={},
+        json=_async_value({"slot": "slot-1"}),
+    )
+
+    resp = await hi.api_instances_send_session(request)
+
+    assert resp.status in (400, 503)
+    assert not snap.exists(), "the refused send left its Layer B snapshot behind"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fail_on", [1, 2], ids=["raw-body-temp", "decompressed-temp"])
+async def test_a_temp_file_the_volume_cannot_create_is_a_coded_507(monkeypatch, fail_on):
+    import gzip as _gzip
+
+    from kiro_crew.dashboard import session_transfer as st
+
+    real = st._new_import_temp
+    calls = {"n": 0}
+
+    def _new_temp(suffix):
+        calls["n"] += 1
+        if calls["n"] == fail_on:
+            raise OSError(28, "No space left on device")
+        return real(suffix)
+
+    monkeypatch.setattr(st, "_new_import_temp", _new_temp)
+    body = _gzip.compress(json.dumps(_valid()).encode())
+    resp = await _run_import(st, monkeypatch, None, gz=body)
+
+    assert resp.status == 507
+    assert json.loads(resp.body)["code"] == "transfer_disk_full"
+
+
+@pytest.mark.parametrize(
+    "aligned", [True, False], ids=["member-ends-on-a-read", "member-ends-mid-read"]
+)
+def test_a_second_gzip_member_is_refused_wherever_the_first_ends(tmp_path, monkeypatch, aligned):
+    """A concatenated gzip is refused rather than decoded to its first member,
+    including when the first member ends exactly on a read boundary, where
+    ``unused_data`` is empty and the rest of the file has simply not been read."""
+    import gzip as _gzip
+    import zlib as _zlib
+
+    from kiro_crew.dashboard import session_transfer as st
+
+    first = _gzip.compress(b'{"a":1}')
+    monkeypatch.setattr(st, "_CHUNK_BYTES", len(first) if aligned else len(first) + 3)
+    src = tmp_path / "two-members.gz"
+    src.write_bytes(first + _gzip.compress(b'{"b":2}'))
+
+    with pytest.raises(_zlib.error):
+        st._gunzip_file(src, tmp_path / "out.json")
+
+
+def _marks_outside_strings(doc: str) -> int:
+    """Reference count of structural marks outside JSON strings, one character
+    at a time."""
+    count, in_string, escaped = 0, False, False
+    for ch in doc:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+        elif ch == '"':
+            in_string = True
+        elif ch in "{[,:":
+            count += 1
+    return count
+
+
+def test_the_document_measure_counts_messages_across_chunk_boundaries(tmp_path, monkeypatch):
+    """Every message is counted exactly once, including one whose key straddles
+    a read boundary, and the count never has to hold the document."""
+    from kiro_crew.dashboard import session_transfer as st
+
+    doc = json.dumps(_valid(messages=[{"role": "user", "content": "x", "ts": ""}] * 50))
+    p = tmp_path / "doc.json"
+    p.write_bytes(doc.encode())
+    marks = _marks_outside_strings(doc)
+    for chunk in (1, 2, 5, 6, 7, 64, 1 << 20):
+        monkeypatch.setattr(st, "_CHUNK_BYTES", chunk)
+        assert st._measure_document(p) == (len(doc.encode()), 50, marks, 3), chunk
+
+
+def test_the_value_count_skips_marks_inside_strings(tmp_path, monkeypatch):
+    """Code-dense text and an embedded log carry ``{ [ , :`` in their content;
+    those build no values and must not reserve for them, at any chunk size."""
+    from kiro_crew.dashboard import session_transfer as st
+
+    content = 'def f(a, b): return {"k": [a, b]}  \\ ' + '{"ev":"x","n":[1,2]}\n' * 20
+    doc = json.dumps({"messages": [{"role": "user", "content": content}] * 5, "tail": "\\"})
+    p = tmp_path / "doc.json"
+    p.write_bytes(doc.encode())
+    expected = _marks_outside_strings(doc)
+    assert expected < sum(doc.count(c) for c in "{[,:") // 10
+    for chunk in (1, 2, 3, 5, 17, 64, 1 << 20):
+        monkeypatch.setattr(st, "_CHUNK_BYTES", chunk)
+        assert st._measure_document(p)[2] == expected, chunk
+
+
+def test_the_measure_splits_escape_runs_at_any_chunk_boundary(tmp_path, monkeypatch):
+    """Odd and even backslash runs straddling a chunk boundary keep their quotes
+    paired, so the value count matches the unchunked count."""
+    from kiro_crew.dashboard import session_transfer as st
+
+    doc = json.dumps(
+        {"messages": [{"content": "a" + "\\" * n + '"' + "{,:"} for n in range(9)], "k": [1, 2]}
+    )
+    p = tmp_path / "doc.json"
+    p.write_bytes(doc.encode())
+    expected = _marks_outside_strings(doc)
+    for chunk in (1, 2, 3, 4, 7, 1 << 20):
+        monkeypatch.setattr(st, "_CHUNK_BYTES", chunk)
+        assert st._measure_document(p)[2] == expected, chunk
+
+
+def test_a_long_backslash_run_is_measured_in_bounded_memory(tmp_path, monkeypatch):
+    """A body that is one long run of backslashes never parses as JSON, but the
+    measure runs before the memory admission, so it must not accumulate it."""
+    import tracemalloc
+
+    from kiro_crew.dashboard import session_transfer as st
+
+    chunk = 4096
+    monkeypatch.setattr(st, "_CHUNK_BYTES", chunk)
+    p = tmp_path / "doc.json"
+    p.write_bytes(b"\\" * (chunk * 256))
+    tracemalloc.start()
+    try:
+        st._measure_document(p)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    # A few chunk-sized buffers, far below the 1 MiB run.
+    assert peak < chunk * 32, peak
+
+
+@pytest.mark.parametrize(
+    "text, ensure_ascii, factor",
+    [
+        ("plain ascii", True, 3),
+        ("中文", False, 6),
+        ("中文", True, 5),
+        ("\U0001f600", False, 12),
+        ("\U0001f600", True, 9),
+    ],
+)
+def test_the_parse_factor_follows_the_widest_character(
+    tmp_path, monkeypatch, text, ensure_ascii, factor
+):
+    """One wide character makes CPython store the whole decoded text, and the
+    string holding it, at that width; the reservation has to follow."""
+    from kiro_crew.dashboard import session_transfer as st
+
+    doc = json.dumps(
+        {"messages": [{"role": "user", "content": "x" * 100 + text}]}, ensure_ascii=ensure_ascii
+    )
+    p = tmp_path / "doc.json"
+    p.write_bytes(doc.encode())
+    for chunk in (1, 3, 1 << 20):
+        monkeypatch.setattr(st, "_CHUNK_BYTES", chunk)
+        assert st._measure_document(p)[3] == factor, chunk
+
+
+@pytest.mark.asyncio
+async def test_many_short_messages_are_reserved_for_by_count_not_only_by_size(monkeypatch):
+    """Their objects outweigh their text, so the reservation grows with the count."""
+    from kiro_crew.dashboard import session_transfer as st
+
+    _fake_memory(st, monkeypatch, total_mib=100_000, available=iter(lambda: 100_000, None))
+
+    async with st._memory_admission(1 * _MIB, 1000):
+        assert st._memory_reserved == 3 * _MIB + 1000 * st._PER_MESSAGE_BYTES
+
+
+@pytest.mark.asyncio
+async def test_the_import_route_counts_messages_into_the_reservation(monkeypatch):
+    """A document small by size but heavy by count is refused on a host that
+    the size-only estimate would have admitted."""
+    from kiro_crew.dashboard import session_transfer as st
+
+    body = _valid(messages=[{"role": "user", "content": "x", "ts": ""}] * 2000)
+    size = len(json.dumps(body).encode())
+    # A host whose whole budget is 1.5x the size-only estimate.
+    budget_mib = max(1, (size * st._PARSE_MEMORY_FACTOR * 3 // 2) // _MIB)
+    _fake_memory(st, monkeypatch, total_mib=budget_mib, available=iter(lambda: budget_mib, None))
+    monkeypatch.setattr(st, "_PER_MESSAGE_BYTES", 1 * _MIB)
+    resp = await _run_import(st, monkeypatch, body)
+
+    assert resp.status == 413
+
+
+@pytest.mark.asyncio
+async def test_a_forward_replaced_during_serialisation_gets_nothing(tmp_path):
+    """Serialising a large session is the longest await before the request, so a
+    tunnel replaced inside it must not receive the body or the credential."""
+    import kiro_crew.instances.ssh_tunnel_manager as mod
+
+    mgr, seen, session_factory = _size_refusing_peer("unused")
+
+    def _serialise_then_replace(bundle):
+        path = _serialise(bundle)
+        mgr._tunnel_epoch["peer"] = mgr._tunnel_epoch.get("peer", 0) + 1
+        return path
+
+    original = mod.aiohttp.ClientSession
+    mod.aiohttp.ClientSession = session_factory  # type: ignore[assignment]
+    try:
+        ok, payload = await mgr.send_session_bundle(
+            "peer", {"bundle_version": 2, "messages": []}, serialise=_serialise_then_replace
+        )
+    finally:
+        mod.aiohttp.ClientSession = original  # type: ignore[assignment]
+
+    assert ok is False
+    assert payload["code"] == "transfer_peer_not_connected"
+    assert seen == [], "the request went out to a replaced forward"
+
+
+@pytest.mark.asyncio
+async def test_a_source_withheld_during_serialisation_gets_nothing(tmp_path):
+    """The caller's recheck runs after serialising, before the request: a privacy
+    line tightened while a large session serialised must stop the send."""
+    import kiro_crew.instances.ssh_tunnel_manager as mod
+
+    mgr, seen, session_factory = _size_refusing_peer("unused")
+    order: list[str] = []
+
+    def _serialise_logged(bundle):
+        order.append("serialise")
+        return _serialise(bundle)
+
+    def _recheck():
+        order.append("recheck")
+        return {"error": "withheld", "code": "transfer_slot_not_persistent"}
+
+    original = mod.aiohttp.ClientSession
+    mod.aiohttp.ClientSession = session_factory  # type: ignore[assignment]
+    try:
+        ok, payload = await mgr.send_session_bundle(
+            "peer",
+            {"bundle_version": 2, "messages": []},
+            serialise=_serialise_logged,
+            recheck=_recheck,
+        )
+    finally:
+        mod.aiohttp.ClientSession = original  # type: ignore[assignment]
+
+    assert ok is False
+    assert payload["code"] == "transfer_slot_not_persistent"
+    assert order == ["serialise", "recheck"]
+    assert seen == [], "the request went out after the source was withheld"
+
+
+def test_a_log_that_cannot_be_opened_leaves_no_descriptor(tmp_path, monkeypatch):
+    from kiro_crew.dashboard import session_transfer as st
+
+    opened: list[int] = []
+    real_mkstemp = st.tempfile.mkstemp
+
+    def _mkstemp(*a, **k):
+        fd, name = real_mkstemp(*a, **k)
+        opened.append(fd)
+        return fd, name
+
+    monkeypatch.setattr(st.tempfile, "mkstemp", _mkstemp)
+
+    assert st._snapshot_events_file(tmp_path / "gone.jsonl") is None
+    with pytest.raises(OSError):
+        os.fstat(opened[0])
+    assert list(st._egress_tmp_dir().iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_a_body_smaller_than_the_check_interval_is_still_checked(tmp_path, monkeypatch):
+    """The headroom holds for every body, not only those past the first interval."""
+    import gzip as _gzip
+
+    from kiro_crew.dashboard import session_transfer as st
+
+    monkeypatch.setattr(st.shutil, "disk_usage", lambda _p: SimpleNamespace(free=0))
+    assert st._DISK_CHECK_EVERY_CHUNKS > 1
+
+    with pytest.raises(st._DiskFull):
+        await st._stream_request_to_file(
+            SimpleNamespace(content=_ChunkedContent([b"{}  "])), tmp_path / "body"
+        )
+    src = tmp_path / "small.gz"
+    src.write_bytes(_gzip.compress(b'{"a":1}'))
+    with pytest.raises(st._DiskFull):
+        st._gunzip_file(src, tmp_path / "out.json")
+
+
+@pytest.mark.asyncio
+async def test_a_container_heavy_document_is_reserved_for_by_its_values(monkeypatch):
+    """An array of empty objects carries no messages and costs about 24 times its
+    text; the value count is what reserves for it."""
+    from kiro_crew.dashboard import session_transfer as st
+
+    _fake_memory(st, monkeypatch, total_mib=100_000, available=iter(lambda: 100_000, None))
+
+    async with st._memory_admission(1 * _MIB, 0, 1000):
+        assert st._memory_reserved == 3 * _MIB + 1000 * st._PER_VALUE_BYTES
+
+
+@pytest.mark.asyncio
+async def test_the_import_route_reserves_for_a_messageless_container_flood(monkeypatch):
+    """A document with no ``role`` key at all but many empty objects is refused on
+    a host that a text-and-message estimate would have admitted."""
+    from kiro_crew.dashboard import session_transfer as st
+
+    body = _valid(messages=[{"role": "user", "content": "x", "ts": ""}])
+    body["filler"] = [{}] * 20000
+    size = len(json.dumps(body).encode())
+    budget_mib = max(1, (size * st._PARSE_MEMORY_FACTOR * 3 // 2) // _MIB)
+    _fake_memory(st, monkeypatch, total_mib=budget_mib, available=iter(lambda: budget_mib, None))
+    monkeypatch.setattr(st, "_PER_VALUE_BYTES", 1 * _MIB)
+    resp = await _run_import(st, monkeypatch, body)
+
+    assert resp.status == 413
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("emoji, status", [("", 200), ("\U0001f600", 413)])
+async def test_one_emoji_raises_the_imports_reservation(monkeypatch, emoji, status):
+    """A single character past the BMP widens the whole parse, so a host that
+    fits the ASCII estimate with room to spare must refuse the same document
+    carrying one emoji rather than admit it and run out of memory."""
+    from kiro_crew.dashboard import session_transfer as st
+
+    body = _valid(messages=[{"role": "user", "content": "x" * (2 * _MIB) + emoji, "ts": ""}])
+    size = len(json.dumps(body).encode())
+    budget_mib = (size * st._PARSE_MEMORY_FACTOR * 3 // 2) // _MIB
+    _fake_memory(st, monkeypatch, total_mib=budget_mib, available=iter(lambda: budget_mib, None))
+    resp = await _run_import(st, monkeypatch, body)
+
+    assert resp.status == status, resp.body
+
+
+class _StalledContent:
+    """``request.content`` stand-in that sends *sent* chunks and then goes quiet."""
+
+    def __init__(self, sent: int = 1) -> None:
+        self._sent = sent
+
+    async def iter_chunked(self, _n: int):
+        for _ in range(self._sent):
+            yield b'{"bundle_version": 2'
+        await asyncio.Event().wait()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sent", [0, 1, 3])
+async def test_a_sender_that_goes_quiet_is_cut_off(tmp_path, monkeypatch, sent):
+    """No total deadline, but a no-progress one: a stalled upload cannot hold
+    its connection and temp file forever, whether it went quiet before its first
+    chunk or after some."""
+    from kiro_crew.dashboard import session_transfer as st
+
+    monkeypatch.setattr(st, "DEFAULT_SESSION_TRANSFER_TIMEOUT_SECS", 0.05)
+    task = asyncio.create_task(
+        st._stream_request_to_file(SimpleNamespace(content=_StalledContent(sent)), tmp_path / "b")
+    )
+    done, _ = await asyncio.wait({task}, timeout=5)
+    if not done:
+        task.cancel()
+    assert done, "the stalled read was never cut off"
+    assert isinstance(task.exception(), TimeoutError)
+
+
+@pytest.mark.asyncio
+async def test_an_upload_in_flight_holds_no_arrival_permit(tmp_path, monkeypatch):
+    """Slow senders must not fill the permits every other import waits on; the
+    permit is taken only once the body is on disk."""
+    from kiro_crew.dashboard import session_transfer as st
+
+    monkeypatch.setattr(st, "_expansion_lock", None)
+    monkeypatch.setattr(st, "_expansion_slots", None)
+    monkeypatch.setattr(st, "_expansion_waiting", 0)
+    request = SimpleNamespace(content=_StalledContent())
+    async with contextlib.AsyncExitStack() as keep:
+        task = asyncio.create_task(st._read_bundle_body(request, keep))
+        await asyncio.sleep(0.05)
+        try:
+            assert not task.done()
+            assert st._expansion_waiting == 0
+            slots = st._expansion_slots
+            assert slots is None or slots._value == st._MAX_CONCURRENT_EXPANSIONS
+        finally:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+
+@pytest.mark.asyncio
+async def test_uploads_past_the_cap_are_refused_before_a_file_is_opened(monkeypatch):
+    """Each in-flight upload holds a staging descriptor before the arrival permit,
+    so the number streaming at once is capped and the slot is released after."""
+    from kiro_crew.dashboard import session_transfer as st
+
+    monkeypatch.setattr(st, "_MAX_CONCURRENT_UPLOADS", 2)
+    monkeypatch.setattr(st, "_uploads_in_flight", 0)
+    opened: list[str] = []
+    real_new = st._new_import_temp
+
+    def _counting_new(suffix):
+        opened.append(suffix)
+        return real_new(suffix)
+
+    monkeypatch.setattr(st, "_new_import_temp", _counting_new)
+    async with contextlib.AsyncExitStack() as keep:
+        stalled = [
+            asyncio.create_task(
+                st._read_bundle_body(SimpleNamespace(content=_StalledContent()), keep)
+            )
+            for _ in range(2)
+        ]
+        await asyncio.sleep(0.05)
+        try:
+            assert st._uploads_in_flight == 2
+            body, resp = await st._read_bundle_body(
+                SimpleNamespace(content=_StalledContent()), keep
+            )
+            assert body is None and resp.status == 429
+            assert json.loads(resp.body)["code"] == "transfer_uploads_busy"
+            assert opened == [".body", ".body"]
+        finally:
+            for t in stalled:
+                t.cancel()
+            for t in stalled:
+                with contextlib.suppress(asyncio.CancelledError):
+                    await t
+    assert st._uploads_in_flight == 0
+
+
+@pytest.mark.asyncio
+async def test_a_cleanup_failure_after_a_committed_send_keeps_the_success(monkeypatch):
+    """The peer committed the import; failing to remove the staged body must not
+    turn that into an error whose retry would duplicate the session."""
+    import kiro_crew.instances.ssh_tunnel_manager as mod
+
+    mgr, seen, session_factory = _size_refusing_peer("unused")
+
+    def _unlink(self, missing_ok=False):
+        raise OSError(116, "Stale file handle")
+
+    monkeypatch.setattr(mod.aiohttp, "ClientSession", session_factory)
+    monkeypatch.setattr(mod.Path, "unlink", _unlink)
+    ok, _payload = await mgr.send_session_bundle(
+        "peer", {"bundle_version": 2, "messages": []}, serialise=_serialise
+    )
+
+    assert ok is True
+    assert len(seen) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_cgroup_limit_below_the_host_refuses_what_the_pod_cannot_hold(monkeypatch):
+    """A gateway under a 4 GiB unit limit on a far larger host: the unit's limit,
+    not the host's RAM, decides whether the document can ever fit."""
+    from kiro_crew.dashboard import session_transfer as st
+
+    _fake_memory(
+        st,
+        monkeypatch,
+        total_mib=100_000,
+        available=iter(lambda: 100_000, None),
+        cgroup=(4096 * _MIB, 4096 * _MIB),
+    )
+
+    with pytest.raises(st._NeverFits):
+        async with st._memory_admission(2048 * _MIB):  # needs 6 GiB
+            pass
+
+
+@pytest.mark.asyncio
+async def test_a_full_cgroup_waits_rather_than_failing_open(monkeypatch):
+    """No headroom left under the cgroup reads as zero available, which waits;
+    it is not the unreadable-host reading that lets everything through."""
+    from kiro_crew.dashboard import session_transfer as st
+
+    headroom = iter([0, 0, 4096 * _MIB])
+    _fake_memory(st, monkeypatch, total_mib=100_000, available=iter(lambda: 100_000, None))
+    monkeypatch.setattr(st, "_cgroup_memory_bounds", lambda: (8192 * _MIB, next(headroom)))
+
+    async with st._memory_admission(1 * _MIB):
+        assert next(headroom, None) is None, "admitted before the cgroup had room"
+
+
+def test_the_cgroup_limit_is_the_tightest_on_the_process_ancestry(tmp_path, monkeypatch):
+    """The walk reads every level from the process's cgroup up to the mount and
+    keeps the smallest finite limit; ``max`` at a level does not constrain."""
+    from kiro_crew import subagent
+    from kiro_crew.dashboard import session_transfer as st
+
+    mount = tmp_path / "cg"
+    leaf = mount / "system.slice" / "gateway.service"
+    leaf.mkdir(parents=True)
+    (mount / "memory.max").write_bytes(b"max\n")
+    (mount / "system.slice" / "memory.max").write_bytes(b"%d\n" % (8 << 30))
+    (leaf / "memory.max").write_bytes(b"%d\n" % (4 << 30))
+    monkeypatch.setattr(st.platform_compat, "IS_LINUX", True)
+    monkeypatch.setattr(subagent, "_cgroup_memory_roots", lambda: [(leaf, mount, True)])
+    monkeypatch.setattr(subagent, "_container_cgroup_available_gb", lambda: 1.5)
+
+    assert st._cgroup_memory_bounds() == (4 << 30, int(1.5 * 1024**3))
+
+
+@pytest.mark.asyncio
+async def test_a_peer_reply_is_read_under_a_cap_and_never_buffered_past_it(monkeypatch):
+    """A peer that keeps sending is cut off at the cap: the reader stops pulling
+    and the reply reads as ``{}``, so the gateway never buffers it without end."""
+    import kiro_crew.instances.ssh_tunnel_manager as mod
+
+    monkeypatch.setattr(mod, "_TRANSFER_REPLY_MAX_BYTES", 1000)
+    pulled = {"n": 0}
+
+    class _Endless:
+        async def iter_chunked(self, _n: int):
+            while True:
+                pulled["n"] += 1
+                if pulled["n"] > 1000:
+                    raise AssertionError("kept reading past the cap")
+                yield b" " * 100
+
+    assert await mod._read_transfer_reply(SimpleNamespace(content=_Endless())) == {}
+    assert pulled["n"] == 11
+
+    ok_body = SimpleNamespace(content=_ChunkedContent([b'{"key":', b'"remote-1"}']))
+    assert await mod._read_transfer_reply(ok_body) == {"key": "remote-1"}
+
+
+def test_staging_sweep_removes_only_files_older_than_this_process(monkeypatch, tmp_path):
+    """Crash orphans are reclaimed; a live transfer's file, a symlink target and a
+    subdirectory are never touched."""
+    from kiro_crew.dashboard import session_transfer as st
+
+    started = 1_000_000.0
+    monkeypatch.setattr(st, "_PROCESS_STARTED_AT", started)
+    monkeypatch.setattr(st, "_swept_staging_dirs", set())
+    d = tmp_path / "staging"
+    d.mkdir()
+    orphan = d / "orphan.json"
+    orphan.write_bytes(b"x")
+    os.utime(orphan, (started - 60, started - 60))
+    live = d / "live.json"
+    live.write_bytes(b"x")
+    os.utime(live, (started + 60, started + 60))
+    outside = tmp_path / "outside.json"
+    outside.write_bytes(b"keep")
+    os.utime(outside, (started - 60, started - 60))
+    sub = d / "sub"
+    sub.mkdir()
+    link = d / "link.json"
+    try:
+        link.symlink_to(outside)
+    except (OSError, NotImplementedError):
+        link = None
+
+    st._sweep_orphaned_staging(d)
+
+    assert not orphan.exists()
+    assert live.exists()
+    assert sub.is_dir()
+    assert outside.read_bytes() == b"keep"
+    if link is not None:
+        assert link.is_symlink()
+
+    # Once per directory per process: a later orphan waits for the next process.
+    late = d / "late.json"
+    late.write_bytes(b"x")
+    os.utime(late, (started - 60, started - 60))
+    st._sweep_orphaned_staging(d)
+    assert late.exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="needs a POSIX directory symlink")
+def test_a_symlinked_staging_dir_is_never_swept(monkeypatch, tmp_path):
+    """A link planted where the staging directory should be must not turn the
+    sweep onto the files it points at."""
+    from kiro_crew.dashboard import session_transfer as st
+
+    started = 1_000_000.0
+    monkeypatch.setattr(st, "_PROCESS_STARTED_AT", started)
+    monkeypatch.setattr(st, "_swept_staging_dirs", set())
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    precious = victim / "precious.txt"
+    precious.write_bytes(b"keep")
+    os.utime(precious, (started - 60, started - 60))
+    staging = tmp_path / "staging"
+    staging.symlink_to(victim, target_is_directory=True)
+
+    st._sweep_orphaned_staging(staging)
+
+    assert precious.read_bytes() == b"keep"
+
+
+@pytest.mark.parametrize(
+    "helper,leaf", [("_import_tmp_dir", "session-import"), ("_egress_tmp_dir", "session-export")]
+)
+def test_staging_helpers_sweep_orphans_on_first_use(monkeypatch, tmp_path, helper, leaf):
+    import importlib.util
+
+    from kiro_crew.dashboard import session_transfer as patched
+
+    # The autouse isolation fixture replaces both helpers on the imported module,
+    # so load a private copy whose helpers are the real ones.
+    spec = importlib.util.spec_from_file_location("_st_unpatched", patched.__file__)
+    assert spec is not None and spec.loader is not None
+    st = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(st)
+
+    started = 1_000_000.0
+    monkeypatch.setattr(st, "_PROCESS_STARTED_AT", started)
+    monkeypatch.setattr(st, "_swept_staging_dirs", set())
+    monkeypatch.setattr(st, "data_home", lambda: tmp_path)
+    d = tmp_path / "tmp" / leaf
+    d.mkdir(parents=True)
+    orphan = d / "orphan.json"
+    orphan.write_bytes(b"x")
+    os.utime(orphan, (started - 60, started - 60))
+
+    assert getattr(st, helper)() == d
+    assert not orphan.exists()
+
+
+def _adversarial_documents():
+    """Shapes that stress each term of the parse-memory reservation."""
+    n = 60_000
+    big = 1 << 21
+    return {
+        "empty-objects": "[" + ",".join(["{}"] * n) + "]",
+        "empty-arrays": "[" + ",".join(["[]"] * n) + "]",
+        "small-numbers": "[" + ",".join(["1"] * n) + "]",
+        "short-messages": json.dumps(
+            {"messages": [{"role": "user", "content": "x"} for _ in range(n // 4)]}
+        ),
+        "raw-cjk": json.dumps(
+            {"messages": [{"role": "user", "content": "中" * big}]}, ensure_ascii=False
+        ),
+        "raw-emoji": json.dumps(
+            {"messages": [{"role": "user", "content": "x" * big + "\U0001f600"}]},
+            ensure_ascii=False,
+        ),
+        "escaped-emoji": json.dumps(
+            {"messages": [{"role": "user", "content": "x" * big + "\U0001f600"}]}
+        ),
+        "escape-heavy": json.dumps(
+            {"messages": [{"role": "user", "content": '\\"\n\t' * (big // 4)}]}
+        ),
+        "code-in-strings": json.dumps(
+            {"messages": [{"role": "user", "content": '{"a": [1, 2], "b": {}}, ' * (big // 24)}]}
+        ),
+    }
+
+
+@pytest.mark.parametrize("shape", sorted(_adversarial_documents()))
+def test_the_reservation_covers_the_measured_parse_peak(tmp_path, shape):
+    """The admission reserves from :func:`_measure_document`; the parse it then
+    admits must peak under that reservation on every shape, so drift in CPython's
+    object sizes or in the estimate fails here rather than in a gateway."""
+    import tracemalloc
+
+    from kiro_crew.dashboard import session_transfer as st
+
+    p = tmp_path / "doc.json"
+    p.write_text(_adversarial_documents()[shape], encoding="utf-8")
+    size, messages, values, factor = st._measure_document(p)
+    reserved = size * factor + values * st._PER_VALUE_BYTES + messages * st._PER_MESSAGE_BYTES
+    tracemalloc.start()
+    try:
+        doc = st._load_json_file(p)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    del doc
+    assert peak <= reserved, (shape, peak, reserved, peak / size)
+
+
+@pytest.mark.asyncio
+async def test_concurrent_uploads_share_one_disk_headroom(tmp_path, monkeypatch):
+    """Arrivals stream outside every permit, so each write counts against the free
+    space the others are already cleared to use; the headroom holds however many
+    arrive at once."""
+    from kiro_crew.dashboard import session_transfer as st
+
+    chunk = st._CHUNK_BYTES
+    # Room for exactly two in-flight chunks above the headroom.
+    free = st._DISK_HEADROOM_BYTES + 2 * chunk
+    monkeypatch.setattr(st.shutil, "disk_usage", lambda _p: SimpleNamespace(free=free))
+    monkeypatch.setattr(st, "_disk_inflight", 0)
+    target = tmp_path / "body"
+
+    await st._reserve_disk(target, chunk)
+    await st._reserve_disk(target, chunk)
+    with pytest.raises(st._DiskFull):
+        await st._reserve_disk(target, chunk)
+    st._release_disk(chunk)
+    await st._reserve_disk(target, chunk)
+    assert st._disk_inflight == 2 * chunk
+
+
+@pytest.mark.asyncio
+async def test_a_reserved_write_releases_when_the_write_finishes(tmp_path, monkeypatch):
+    """The release rides the write's own completion, so abandoning the await
+    cannot drop the reservation while the worker is still writing."""
+    import threading
+
+    from kiro_crew.dashboard import session_transfer as st
+
+    monkeypatch.setattr(st, "_disk_inflight", 0)
+    monkeypatch.setattr(st.shutil, "disk_usage", lambda _p: SimpleNamespace(free=1 << 62))
+    gate = threading.Event()
+
+    class _SlowFile:
+        def write(self, data):
+            gate.wait(5)
+            return len(data)
+
+    write = await st._write_reserved(_SlowFile(), b"x" * 10, tmp_path / "body")
+    waiter = asyncio.ensure_future(asyncio.shield(write))
+    await asyncio.sleep(0)
+    waiter.cancel()
+    await asyncio.sleep(0.05)
+    assert st._disk_inflight == 10, "released while the write was still running"
+    gate.set()
+    await write
+    await asyncio.sleep(0)
+    assert st._disk_inflight == 0

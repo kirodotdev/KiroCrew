@@ -38,12 +38,12 @@ describe('ChatSidebar Folder Grouping', () => {
     mockConfirm.mockReturnValue(true)
     // Hermetic focus baseline. api/client.ts shows a session-expired banner on an
     // unhandled auth 403 and its token input grabs focus on a rAF (client.ts
-    // ~L137). That module state latches across tests in the same file, so a
-    // later rename/create test's rAF flush lets the banner steal focus from the
-    // just-opened input → blur → commit → unmount, a jsdom-only focus-theft the
-    // real browser never hits. Stub the auth endpoints so the banner never
-    // shows, reset the module's latch + remove any stray banner, and clear any
-    // bled-in focus before each test.
+    // `showSessionExpiredBanner`). That module state latches across tests in
+    // the same file, so a later rename/create test's rAF flush lets the banner
+    // steal focus from the just-opened input → blur → commit → unmount, a
+    // jsdom-only focus-theft the real browser never hits. Stub the auth
+    // endpoints so the banner never shows, reset the module's latch + remove
+    // any stray banner, and clear any bled-in focus before each test.
     server.use(
       http.post('/api/auth/refresh', () => HttpResponse.json({ ok: true })),
       http.get('/api/auth/me', () => HttpResponse.json({ ok: true })),

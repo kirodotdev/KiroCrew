@@ -55,7 +55,7 @@ re-implementing tables, cards, and state views in every app.
 1. WHEN a pending tool call has a matching tool-view schema THEN the kit SHALL render a rich preview inside `ApprovalCard` / `ToolInputPreview` in place of the raw `<pre>` dump as the default view.
 2. WHERE a tool-view schema does not match THE approval surface SHALL fall back to the current `ToolInputPreview` `<pre>` behavior.
 3. WHEN the operator approves or rejects THEN the decision SHALL flow through the existing `onApprove(decision, pattern?)` callback and the kit SHALL NOT introduce a new approval API path.
-4. WHEN an approval decision is submitted from a chat slot THEN it SHALL resolve via the existing slot-scoped `api.approveChatSlot(slot, action, extra)` path in `ChatInput.tsx`.
+4. WHEN an approval decision is submitted from a chat slot THEN it SHALL resolve via the existing slot-scoped `api.approveChatSlot(slot, action, extra)` path in `chat-input/approval.ts`.
 5. IF the approval controls are rendered THEN they SHALL be keyboard operable (operators batch-approve).
 6. WHERE a rich preview is shown for a pending tool call THE exact, unmodified raw tool input SHALL remain available to the operator one interaction away (e.g. an expandable "show raw input" control). A rich renderer is lossy by design (`extra` passthrough fields, truncated series, fields the view does not plot) and tool input is attacker-influenceable; the operator MUST be able to inspect the verbatim args before approving so a consequential argument is never hidden by the summary.
 

@@ -9,12 +9,12 @@ import { SESSION_LANES, inferLane, type LaneSlotFields } from '../pages/chat/ses
 describe('inferLane exhaustiveness and exclusivity', () => {
   const FIELDS: (keyof LaneSlotFields)[] = [
     'pending_approval', 'needs_input', 'has_options', 'interrupted',
-    'running', 'orchestrating', 'subagents_running',
+    'running', 'subagents_running',
   ]
 
   it('assigns every combination of state flags to exactly one known lane', () => {
     const keys = SESSION_LANES.map(l => l.key)
-    // 2^7 flag combinations × sub-agent-approval present/absent.
+    // 2^6 flag combinations × sub-agent-approval present/absent.
     for (let mask = 0; mask < 1 << FIELDS.length; mask++) {
       for (const subagentAwaiting of [0, 2]) {
         const slot: LaneSlotFields = {}
@@ -81,8 +81,9 @@ describe('inferLane working signals', () => {
     expect(inferLane({ running: true })).toBe('working')
   })
 
-  it('counts autopilot stage execution', () => {
-    expect(inferLane({ orchestrating: true })).toBe('working')
+  it('ignores a legacy orchestrating flag on the payload', () => {
+    const legacy: LaneSlotFields & { orchestrating?: boolean } = { orchestrating: true }
+    expect(inferLane(legacy)).toBe('idle')
   })
 
   it('counts sub-agents running under an idle parent', () => {
@@ -111,7 +112,6 @@ describe('inferLane working signals', () => {
   })
 
   it.each([
-    ['orchestration', { orchestrating: true }, {}],
     ['queued work', { queue_depth: 1 }, {}],
     ['dynamic workflow', {}, { workflowActive: true }],
     ['detailed subagents', {}, { detailedSubagentsRunning: true }],

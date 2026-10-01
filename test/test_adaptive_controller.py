@@ -957,6 +957,41 @@ class TestVisibilityAndConfig:
         )
         assert not any("Growth" in line for line in quiet)
 
+    @pytest.mark.asyncio
+    async def test_an_idle_controller_restores_the_cap_and_names_the_cut(self) -> None:
+        """End to end: a lag cut, then an idle gateway. The cap returns to the
+        fresh-start value, and until it does the report names the last cut."""
+        from kiro_crew import resource_status as rs
+
+        mgr = FakeManager(user_max=9)
+        ctl, clock = _controller(mgr, cfg=_cfg(adaptive_slow_start=False))
+        # Loop lag alone cuts: 4 -> 2, then 2 -> 1 past the cooldown.
+        await ctl.tick(loop_lag_ms=400.0)
+        clock.advance(35.0)
+        await ctl.tick(loop_lag_ms=400.0)
+        assert mgr.effective == 1
+        clock.advance(10.0)
+        await ctl.tick()
+        state = ctl.state()
+        assert state["last_cut"]["age_secs"] == 10.0
+        joined = "\n".join(rs.adaptive_summary_lines(state))
+        assert "Execution cap: 1/9" in joined
+        assert "Last pressure cut: decrease 10s ago (corroborated pressure: loop_lag)" in joined
+        for _ in range(60):
+            clock.advance(5.0)
+            await ctl.tick()
+        assert mgr.effective == 4
+        assert ctl.state()["effective_exec_cap"] == 4
+        # Below the ceiling still, so the cause stays on the report.
+        assert any(
+            line.startswith("  Last pressure cut:")
+            for line in rs.adaptive_summary_lines(ctl.state())
+        )
+        at_ceiling = rs.adaptive_summary_lines(
+            {**ctl.state(), "effective_exec_cap": 9, "exec_ceiling": 9}
+        )
+        assert not any("Last pressure cut" in line for line in at_ceiling)
+
     def test_summary_lists_recent_cap_changes(self) -> None:
         from kiro_crew import resource_status as rs
 

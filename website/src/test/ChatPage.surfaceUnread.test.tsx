@@ -3,8 +3,8 @@
  *
  * ChatPage must pass a surface-scoped unread list to
  * `<ChatSidebar unreadSlots={...}>`, not the full `state.dashboard.unreadSlots`.
- * If the raw list were passed, an orchestrator-mode slot that became unread
- * while the user was on /chat would inflate the sidebar's "show only unread"
+ * If the raw list were passed, a slot on another surface (e.g. `dashboard`)
+ * that became unread while the user was on /chat would inflate the sidebar's "show only unread"
  * toggle count (and prevent its auto-drain effect from disabling the filter when
  * the same-surface inbox actually drained). This test asserts the prop
  * ChatSidebar receives is already scoped to the page's surface — i.e. the wiring
@@ -104,7 +104,7 @@ globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.res
 
 import ChatPage from '../pages/ChatPage'
 
-const renderChatPage = (mode: '' | 'orchestrator', slots: Array<{ key: string; mode: string }>, unread: string[]) => {
+const renderChatPage = (slots: Array<{ key: string; mode: string }>, unread: string[]) => {
   const fullSlots = slots.map(s => ({ key: s.key, title: s.key, messages: 1, running: false, mode: s.mode, created: '', last_ts: '' }))
   // Make `api.chatSlots()` return the same fixture we preloaded so the
   // useEffect-triggered `fetchSlots.fulfilled` reducer doesn't reconcile
@@ -129,15 +129,13 @@ const renderChatPage = (mode: '' | 'orchestrator', slots: Array<{ key: string; m
     } as never,
   })
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  const route = mode === 'orchestrator' ? '/orchestrated' : '/chat'
   render(
     <QueryClientProvider client={qc}>
       <Provider store={store}>
         <ThemeProvider>
-          <MemoryRouter initialEntries={[route]}>
+          <MemoryRouter initialEntries={['/chat']}>
             <Routes>
               <Route path="/chat/:slug?" element={<ChatPage mode="" />} />
-              <Route path="/orchestrated/:slug?" element={<ChatPage mode="orchestrator" />} />
             </Routes>
           </MemoryRouter>
         </ThemeProvider>
@@ -147,28 +145,25 @@ const renderChatPage = (mode: '' | 'orchestrator', slots: Array<{ key: string; m
 }
 
 describe('ChatPage – ChatSidebar unreadSlots wiring', () => {
-  it('passes all chat-like unread keys in the unified view', () => {
-    // In the unified sidebar, both default and orchestrator slots appear
-    // together, so the unread list includes both.
+  it('keeps a legacy Autopilot slot in the chat surface, unread included', () => {
+    // A slot still persisted under the retired 'orchestrator' mode renders as an
+    // ordinary chat, so it and its unread key stay in the sidebar.
     sidebarHistory.length = 0
     renderChatPage(
-      '',
-      [{ key: 'chat-1', mode: '' }, { key: 'orch-1', mode: 'orchestrator' }],
-      ['chat-1', 'orch-1'],
+      [{ key: 'chat-1', mode: '' }, { key: 'legacy-1', mode: 'orchestrator' }],
+      ['chat-1', 'legacy-1'],
     )
     expect(sidebarHistory[0]?.slotsCount).toBe(2)
-    expect(sidebarHistory[0]?.unreadSlots).toEqual(['chat-1', 'orch-1'])
+    expect(sidebarHistory[0]?.unreadSlots).toEqual(['chat-1', 'legacy-1'])
   })
 
-  it('unified view also works when mounted with orchestrator mode prop', () => {
-    // Even with mode="orchestrator", the unified filtering shows both slots.
+  it('drops the unread key of a slot on another surface', () => {
     sidebarHistory.length = 0
     renderChatPage(
-      'orchestrator',
-      [{ key: 'chat-1', mode: '' }, { key: 'orch-1', mode: 'orchestrator' }],
-      ['chat-1', 'orch-1'],
+      [{ key: 'chat-1', mode: '' }, { key: 'dash-1', mode: 'dashboard' }],
+      ['chat-1', 'dash-1'],
     )
-    expect(sidebarHistory[0]?.slotsCount).toBe(2)
-    expect(sidebarHistory[0]?.unreadSlots).toEqual(['chat-1', 'orch-1'])
+    expect(sidebarHistory[0]?.slotsCount).toBe(1)
+    expect(sidebarHistory[0]?.unreadSlots).toEqual(['chat-1'])
   })
 })

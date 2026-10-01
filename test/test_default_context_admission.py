@@ -7,6 +7,7 @@ owns its memory, catalog, prompt and configuration; all data stays under tmp_pat
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -28,8 +29,24 @@ pytestmark = [
 ]
 
 
+class _FrozenClock(datetime):
+    """A ``datetime`` whose ``now()`` does not advance.
+
+    The prompt carries a minute-resolution ``[CURRENT DATE]`` line, so two builds
+    that straddle a minute boundary differ in that line alone -- and across
+    midnight the weekday name changes length, so an exact-fit cap taken from the
+    first build does not fit the second. Tests here compare builds byte for
+    byte and size caps from them, so every build reads one instant.
+    """
+
+    @classmethod
+    def now(cls, tz=None):  # type: ignore[override]
+        return datetime(2026, 1, 1, 12, 0).replace(tzinfo=tz)
+
+
 @pytest.fixture
 def rig(tmp_path, monkeypatch):
+    monkeypatch.setattr(ctx, "datetime", _FrozenClock)
     cfg = KiroCrewConfig()
     monkeypatch.setattr(ctx.KiroCrewConfig, "load", lambda: cfg)
     monkeypatch.setattr(ctx, "agent_skill_globs", lambda agent: [])

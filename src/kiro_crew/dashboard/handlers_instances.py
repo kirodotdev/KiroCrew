@@ -24,7 +24,8 @@ import json
 import logging
 import math
 import re
-from collections.abc import Collection
+from collections.abc import Mapping
+from types import MappingProxyType
 from typing import TYPE_CHECKING, NamedTuple
 from urllib.parse import unquote
 
@@ -50,6 +51,8 @@ from kiro_crew.dashboard.session_transfer import (
     TranscriptWithheld,
     build_transfer_bundle_async,
     local_instance_label,
+    release_bundle_files,
+    write_bundle_file,
 )
 from kiro_crew.dashboard.state import MAX_LIVE_SLOTS
 from kiro_crew.history import SEARCH_MIN_CHARS
@@ -1476,7 +1479,14 @@ async def api_instances_send_session(request: web.Request) -> web.Response:
         # released immediately after this off-loop revalidation. The remaining
         # race window is the transmit itself; holding across the await would
         # stall the event loop behind a cross-process transcript lock.
-        await asyncio.to_thread(_revalidate_for_publication)
+        #
+        # A refusal here returns before the send, whose ``finally`` is the other
+        # place the bundle's Layer B snapshot is removed, so it is removed here.
+        try:
+            await asyncio.to_thread(_revalidate_for_publication)
+        except BaseException:
+            release_bundle_files(bundle)
+            raise
     except TranscriptBusy:
         # The seam could not take the transcript lock in time; nothing was sent
         # and the source is untouched, so this is the retryable answer.
@@ -1515,13 +1525,45 @@ async def api_instances_send_session(request: web.Request) -> web.Response:
             },
             status=503,
         )
-    ok, payload = await mgr.send_session_bundle(instance_id, bundle)
+
+    def _recheck_before_post() -> dict | None:
+        # Serialising a large session takes long enough for the privacy line to
+        # tighten after the check above, so it is re-checked just before the
+        # request leaves. Blocking; the send runs it off the loop.
+        try:
+            _revalidate_for_publication()
+        except TranscriptWithheld:
+            return {
+                "error": "cannot transfer a non-persistent session",
+                "code": "transfer_slot_not_persistent",
+            }
+        except TranscriptBusy:
+            return {
+                "error": "the session could not be copied consistently right now; please retry",
+                "code": "transfer_snapshot_unstable",
+            }
+        return None
+
+    try:
+        ok, payload = await mgr.send_session_bundle(
+            instance_id,
+            bundle,
+            # Plain JSON, which every importer release reads, streamed from disk.
+            serialise=lambda b: write_bundle_file(b, compress=False),
+            recheck=_recheck_before_post,
+        )
+    finally:
+        release_bundle_files(bundle)
     if not ok:
         _audit(
             "send_session",
             "failure",
             request_id=instance_id,
             error=str(payload.get("code", "unknown")),
+        )
+        code = payload.get("code", "transfer_peer_refused")
+        status = {"transfer_slot_not_persistent": 400, "transfer_snapshot_unstable": 503}.get(
+            code, 502
         )
         # Re-emit the peer's reason explicitly rather than forwarding *payload*
         # verbatim: the code must be statically visible in the response body
@@ -1532,7 +1574,7 @@ async def api_instances_send_session(request: web.Request) -> web.Response:
                 "error": payload.get("error", "the transfer failed"),
                 "code": payload.get("code", "transfer_peer_refused"),
             },
-            status=502,
+            status=status,
         )
     _audit("send_session", "success", request_id=instance_id)
     return web.json_response(
@@ -1918,27 +1960,33 @@ _PEER_SLOT_STR_FIELDS: dict[str, int] = {
 #: for any reader, not only the one frontend that happens to re-check.
 _PEER_SLOT_BOOL_FIELDS = ("running", "pending_approval")
 
-#: The two keys of a peer row's ``parent`` citation (``{slot, key}``, the shape
-#: ``lineage_parents`` puts on every local row), each clamped like ``key``. Both
-#: halves have a reader in the sidebar and they answer different questions:
-#: ``key`` is what the conductor lane NESTS on (resolved against rows of the same
-#: origin only, so the citation stays a bare key in the peer's own key space and
-#: the hub never rewrites it), while ``slot`` is the child's own record of who
-#: opened it -- the "opened by" glyph on a row placed under nothing
-#: (``orphanCitation``, ``citesParent``) and the baseline the lane diffs to tell a
-#: re-parented row from a new one (``citedCreatorRef``). ``lineage_parents``
-#: leaves ``key`` null when the creator is gone and keeps ``slot``, so a
-#: citation with only ``slot`` is the orphan case, not a malformed one. Dropped
-#: from the wire, every session a peer's conductor opened rendered at the top
-#: level of this dashboard as a stray -- the tree existed on the peer and was
-#: stripped one hop from the reader.
+#: The two keys ALLOWLISTED from a peer row's ``parent`` citation (``{slot, key}``,
+#: the shape ``lineage_parents`` puts on every local row), each clamped like
+#: ``key``. The wire carries a third, ``hub_key``, which is never read from the
+#: peer: ``_clean_peer_parent`` stamps it, and only when the cited creator is a
+#: peer slot this hub drives. The three answer different questions in the
+#: sidebar. ``key`` is a bare key in the PEER's key space and is what the
+#: conductor lane nests a peer-to-peer citation on, resolved against rows of the
+#: same origin only. ``hub_key`` is a key in the HUB's key space -- the local slot
+#: driving the creator -- and is what the lane nests on instead when present,
+#: resolved against local rows only (``citedCreatorOf``). ``slot`` is the child's
+#: own record of who opened it -- the "opened by" glyph on a row placed under
+#: nothing (``orphanCitation``, ``citesParent``) and the baseline the lane diffs
+#: to tell a re-parented row from a new one (``citedCreatorRef``).
+#: ``lineage_parents`` leaves ``key`` null when the creator is gone and keeps
+#: ``slot``, so a citation with only ``slot`` is the orphan case, not a malformed
+#: one. Dropped from the wire, every session a peer's conductor opened rendered
+#: at the top level of this dashboard as a stray -- the tree existed on the peer
+#: and was stripped one hop from the reader.
 _PEER_SLOT_PARENT_FIELDS: dict[str, int] = {
     "slot": _PEER_FIELD_MAX_CHARS,
     "key": _PEER_FIELD_MAX_CHARS,
 }
 
 
-def _clean_peer_parent(value: object, driven: Collection[str] = ()) -> dict[str, str] | None:
+def _clean_peer_parent(
+    value: object, driven: Mapping[str, str] = MappingProxyType({})
+) -> dict[str, str] | None:
     """Shape a peer row's ``parent`` citation, or ``None`` when it carries none.
 
     A citation is a dict with a string ``key`` or a string ``slot``; one that has
@@ -1946,14 +1994,19 @@ def _clean_peer_parent(value: object, driven: Collection[str] = ()) -> dict[str,
     rather than forwarded as an empty object. Anything else -- ``None``, a string,
     a list -- is not a citation.
 
-    *driven* is the set of peer slot keys this hub itself drives (see
-    ``read_peer_slots``). A citation naming one of them is dropped whole: that
-    creator's row was filtered out of this listing precisely so its peer slot key
-    never crosses to the browser, and the citation would carry the same key by
-    another route. The child still ships -- it is a real session -- as a root
-    with no citation, which is also the truth of what this listing can show for
-    it: its creator is on screen as the LOCAL row that drives it, not as a peer
-    row the lane could hang it from.
+    *driven* maps each peer slot key this hub itself drives to the LOCAL slot key
+    that drives it (see ``read_peer_slots``). A citation naming a driven key
+    must not carry that key to the
+    browser: the creator's row was filtered out of this listing precisely so its
+    peer slot key never crosses, and the citation would carry the same key by
+    another route. The citation is REWRITTEN rather than dropped: the creator is
+    on screen as the local row that drives it, so the child ships citing that
+    local row through ``hub_key`` (the one field that names a key in the HUB's
+    key space; ``key`` stays the peer's), and ``slot`` -- the half the lane reads
+    for its "opened by" glyph -- names the same local key. The conductor lane
+    then hangs the worker from the local row the user is actually chatting in.
+    Without a local key to redirect to, the citation is dropped whole and the
+    child ships as a root with no citation.
     """
     if not isinstance(value, dict):
         return None
@@ -1961,14 +2014,19 @@ def _clean_peer_parent(value: object, driven: Collection[str] = ()) -> dict[str,
     for field, limit in _PEER_SLOT_PARENT_FIELDS.items():
         raw = value.get(field)
         if isinstance(raw, str) and raw in driven:
-            return None
+            local_key = driven[raw]
+            if not local_key:
+                return None
+            return {"slot": local_key, "hub_key": local_key}
         shaped = _cap_str(raw, limit)
         if shaped:
             out[field] = shaped
     return out or None
 
 
-def _clean_peer_slot(row: object, driven: Collection[str] = ()) -> dict[str, object] | None:
+def _clean_peer_slot(
+    row: object, driven: Mapping[str, str] = MappingProxyType({})
+) -> dict[str, object] | None:
     """Re-shape one untrusted peer slot: allowlist keys, redact, clamp, coerce.
 
     What ``_clean`` does for a peer's SEARCH row, applied to a peer's LIVE row.
@@ -2054,11 +2112,13 @@ class PeerSlots(NamedTuple):
     rows: list[dict[str, object]]
     filtered: int
     over_cap: int
-    #: The peer slot keys this hub drives, as judged for THIS listing. The rows
-    #: carrying them are already out of ``rows``; the chat-slots route needs the
-    #: set again to drop a surviving row's citation of one, so a driven key does
-    #: not reach the browser through ``parent`` after being kept out of ``key``.
-    driven: frozenset[str] = frozenset()
+    #: The peer slot keys this hub drives, as judged for THIS listing, each mapped
+    #: to the LOCAL slot key that drives it. The rows carrying them are already
+    #: out of ``rows``; the chat-slots route needs the map again to rewrite a
+    #: surviving row's citation of one to the local key, so a driven key does not
+    #: reach the browser through ``parent`` after being kept out of ``key``, and
+    #: the child still nests under the row that opened it.
+    driven: Mapping[str, str] = MappingProxyType({})
 
 
 async def read_peer_slots(
@@ -2186,9 +2246,14 @@ async def read_peer_slots(
     # slot and once as the peer row it was adopted from. Read after the await and
     # the set is as current as the rows it judges. ``is_remote`` requires the WHOLE
     # binding, so a half-written slot contributes no empty key.
-    driven: set[str] = {
-        slot.remote_slot
-        for slot in state._slots.values()
+    #
+    # Keyed by the PEER's slot key and valued by the local key that drives it: the
+    # peer key is what the peer's rows cite, the local key is what a surviving
+    # child's citation is rewritten to (``_clean_peer_parent``), so a worker a
+    # driven lead opened on the peer nests under the local row of that lead.
+    driven: dict[str, str] = {
+        slot.remote_slot: key
+        for key, slot in state._slots.items()
         if slot.is_remote and slot.instance_id == instance_id
     }
 
@@ -2238,7 +2303,9 @@ async def read_peer_slots(
         over_cap = max(0, len(rows) - effective_cap)
         if over_cap:
             rows = rows[:effective_cap]
-    return PeerSlots(rows=rows, filtered=filtered, over_cap=over_cap, driven=frozenset(driven))
+    return PeerSlots(
+        rows=rows, filtered=filtered, over_cap=over_cap, driven=MappingProxyType(driven)
+    )
 
 
 async def api_instances_chat_slots(request: web.Request) -> web.Response:
@@ -2265,8 +2332,10 @@ async def api_instances_chat_slots(request: web.Request) -> web.Response:
     the binding already lives, so no peer slot key has to cross to the browser to
     make it possible. The same rule covers the one other field that can carry a
     peer slot key, a surviving row's ``parent`` citation: a citation naming a
-    driven key is dropped by ``_clean_peer_parent``, so the key stays off the
-    wire by every route, not only the row's own ``key``.
+    driven key is rewritten by ``_clean_peer_parent`` to the LOCAL key that
+    drives it (``hub_key``), so the peer key stays off the wire by every route,
+    not only the row's own ``key`` -- and the worker still nests under the local
+    row that opened it.
 
     Surviving rows are then re-shaped by ``_clean_peer_slot`` rather than
     forwarded as the peer sent them. A slot title is MODEL-AUTHORED text from

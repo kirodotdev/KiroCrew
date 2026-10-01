@@ -177,69 +177,27 @@ Auto-sizing and the runtime gate are independent guards; readings fail open
 only when neither host memory nor a finite cgroup limit is available.
 
 When enabled, the per-spawn guard adds `_startup_memory_reserve_gb` to that
-floor. Two prices apply. A WARMING start -- the next one, a claim awaiting
-registration, a dedicated worker fewer than `_RSS_SAMPLES_TO_SETTLE` (2) sweeps
-have measured -- is priced at `_effective_next_start_gb`: the larger of
-`subagent_cost_gb`, the learned p90 for the run's cost bucket (`_cost_bucket`: the
-explicit agent, else the template the run inherits -- the same key `_record_cost`
-writes its samples under; `learned_cost_for` answers only that bucket's own
-dedicated p90, never another bucket's, since on a sharing-default backend a
-share-eligible agent's own bucket never forms and a heaviest-known fallback
-would price its every spawn at an unrelated figure) and any live dedicated peak,
-less the RSS it already holds. One reading can land mid-growth, so a single
-sample does not yet settle a worker. A SETTLED dedicated worker owes only the gap
-between the larger of `subagent_cost_gb` and its own peak and its observed RSS,
-so its reservation retires as RSS is observed and a learned p90 above what that
-worker needed never becomes a phantom reserve beyond the sweeps before it
-settles.
+floor. Every warming start -- the next one, a claim awaiting registration, a
+dedicated worker fewer than `_RSS_SAMPLES_TO_SETTLE` (2) sweeps have measured --
+is priced at `subagent_cost_gb` less the RSS it already holds; a settled worker
+owes nothing, since its memory is already inside the free-memory reading.
 Yielded parents retain their reservation; queued/terminal rows and confirmed
-shared sessions contribute none. This guards rapid admissions during delayed RSS
-growth without counting observed memory twice. The claim re-entry uses the
-reservation taken before its await.
+shared sessions contribute none. The claim re-entry uses the reservation taken
+before its await.
 
-The learned figures reach the gate as `SubagentManager._learned_costs_gb`, one
-p90 per cost bucket, published by the reaper sweep's off-loop `_refresh_learned_cost` (once at reaper
-start, then every `_REAPER_INTERVAL`); the gate itself does arithmetic only and
-never opens the cost log on the event loop. The read is `dedicated_only`: a
-session-shared run's sample (written with `shared: true`) is a per-session share
-of one runtime, not what a start that may run as its own process will cost, and
-`compact_cost_log` keeps one FIFO window per `(agent, shared)` so shared runs can
-never evict an agent's dedicated history. Records written before the field
-existed read as dedicated -- on a backend where sharing is the default, diluted
-shares can keep a bucket's p90 low until the 50-sample window turns over; that
-window is never worse than the fallback the fix replaces and self-corrects with
-every new sample. The reserve's read leaves out samples older than
-`_SAMPLE_MAX_AGE_SECS` (30 days), so a price learned under a workload that is
-gone expires without an operator reset while a host idle for less than that
-keeps its figure; the cap's reader (`read_learned_cost`, `_host_mem_term`)
-applies no horizon and is unchanged. The log is streamed, never held whole
-(`_iter_samples`): each bucket keeps at most `window` values in a bounded deque,
-at most `_PARSE_BUCKET_CEILING` buckets are held while parsing (a memory
-ceiling, with one WARNING naming an overflow), keys longer than `_BUCKET_KEY_CAP`
-are dropped, and what is returned and held is the heaviest `_MAX_BUCKETS`
-(`cap_buckets`); compaction streams the same way. The identity is read on both
-sides of the parse and a mismatch keeps the prior state. The held map is cleared
-when the log is ABSENT (first boot, or the operator's reset), and a COMPLETE read
-of an inspectable log is authoritative -- it replaces the map, so a bucket it
-does not yield (expired past the horizon, or below `min_samples`) retires on the
-running gateway without a restart; the same fresh read serves a REPLACED log
-(`cost_log_identity`: a new inode, or a shrunk size -- the reset re-created by the
-next sample within one sweep, or a compaction rewrite). An INCOMPLETE read
-(`read_learned_costs_checked`: a refused record ended the parse early, the
-present log could not be opened, or its identity could not be inspected) is
-MERGED, so an unreached bucket keeps its figure rather than being lowered
-silently. A cancel-recovery respawn resets the run's sample count and last
-reading and bumps `_rss_generation`, which the sweep re-checks after its off-loop
-`/proc` read so a reading of the dead process cannot settle the new one. That sweep interval is also why the
-reserve must read the learned cost at all: it is the only price on a start until
-the first RSS sample, and priced at the 0.5 GB fallback a burst of ~6 GB dedicated
-runtimes each cleared the raw free-memory check and then grew into the same
-headroom together. A low-memory deferral names the per-start price, the learned
-p90 and the configured cost (log line and SEL `startup_cost_gb` /
-`learned_cost_gb`), because a p90 that outlived the roster it was measured on
-can hold the bar above what the host will clear while deferred runs record no
-new samples; the remedies are lowering `agent.spawn_min_memory_gb` or deleting
-`subagents/cost_samples.jsonl` under the data home.
+The start price is deliberately the configured START cost, never a learned p90
+or a live peak: a run's sampled RSS is its whole process subtree, so its peak
+includes the test suites, builds and MCP servers it launched, not what a start
+needs. Pricing the next start at that figure held ordinary spawns at 10 GB+ on a
+laptop. Raising `agent.subagent_cost_gb` is the operator's knob when runtimes
+settle heavier than 0.5 GB. A settled kiro-cli runtime measured about
+0.3-0.6 GB resident on a macOS host and 0.47 GB on Linux with no MCP servers;
+with a roster of ~17 MCP-server processes it settled at ~1.5 GB on Linux.
+Raise `agent.subagent_cost_gb` toward that figure when agents carry a heavy
+MCP roster. A cancel-recovery respawn
+resets the run's sample count and last reading
+and bumps `_rss_generation`, which the sweep re-checks after its off-loop `/proc`
+read so a reading of the dead process cannot settle the new one.
 
 The adaptive growth bound is the user's ceiling itself (`user_max_concurrent`),
 with no static host prediction under it: the controller climbs on live pressure
@@ -531,7 +489,7 @@ made; no gate reads it back. Two consumers:
   `⏳ Queued subagent …` with the reason instead of `🚀 Spawned subagent …`. A
   `concurrency_limit` wait keeps `status: "spawned"`: it is the ordinary wave
   shape and clears within seconds. Neither the admission verdicts nor the memory
-  pricing (`_startup_cost_gb`, #13489) are touched by the label.
+  pricing (`_startup_memory_reserve_gb`) are touched by the label.
 
 ### Parent agent spec allowlist (`toolsSettings.subagent.availableAgents`)
 
@@ -630,6 +588,35 @@ declaration forbids and say so
 server resolves its own session's template best-effort and filters nothing
 when it cannot — and the gate above is the decision.
 
+### Kiro Crew's own generated specs are not sub-agents
+
+Two kinds of spec Kiro Crew writes into the user-level agents directory — the
+only place kiro-cli loads a spec from — exist for its own machinery:
+the side turn's derived read-only spec (`<agent>--readonly`, recognised by the
+owner marker its `description` opens with; `side.md`) and a skill-view alias
+(`kirocrew-skill-view-*`). `agent_discovery.is_internal_agent_spec` is the one
+predicate for both. A roster that offered one sent the model into a spawn that
+failed: the read-only spec is written per side turn, and a kiro-cli that listed
+its agents before then refuses the mode. So:
+
+- every spawn roster leaves them out — `spawn_run`'s parameter roster,
+  `spawn_list` (whose listing is otherwise unfiltered) and the unknown-agent
+  refusal's `available:` list;
+- `_validate_agent` refuses a named one with `agent_internal`
+  (`subagent.AGENT_INTERNAL_CODE`), naming the base agent a read-only spec was
+  derived from when that base is on offer. It is refused, not mapped onto the
+  base: the base carries the grants the read-only copy strips, so a silent
+  substitution would run the caller under more than it named. A PROJECT agent
+  declaring the same name is the user's own — kiro-cli resolves it first — and
+  is accepted. `spawn_run` stops the rest of a wave on this code, as it does on
+  `agent_not_found`;
+- an app does not own a spec derived from one of its agents
+  (`<app>--<agent>--readonly` shares the prefix): both the SpawnSDK's
+  ownership set and `_validate_app_agent_ownership` leave it out.
+
+The match is on the owner marker, never the name alone: a hand-authored agent
+that merely ends in `--readonly` stays listed and spawnable.
+
 Spawn flow:
 1. **YOLO mode**: skips approval, runs immediately
 2. **Parent trusted**: parent session has `approval_policy="auto"` (set by
@@ -693,9 +680,10 @@ The **operator** WARNING log names every auto-approve rung that would have let t
 spawn through (`approval_mode="auto"`, parent-session **Trust**,
 `hooks.auto_approve_subagent_spawn`, `hooks.auto_approve_sources`). The
 **agent-facing** `info.error` names none of them: two of those rungs are
-`config.json` edits, and `config.json` is writable by any auto-approved agent
-shell, so a bypass recipe in the completion event would hand an unattended or
-prompt-injected agent the steps to remove its own gate. The agent error stays
+`config.json` edits — the sandbox seals that file read-only against an in-sandbox
+agent shell, but a bypass recipe in the completion event would still hand an
+unattended or prompt-injected agent the exact edit to ask the operator for, or to
+make from an unsandboxed spawn, that removes its own gate. The agent error stays
 terse ("ask the operator to open the dashboard and spawn again, or to enable spawn
 auto-approval"). Because the channel hook and the Slack/dashboard gate own the
 "which surface was missing" half while the backstop owns the rung list, the
@@ -979,7 +967,7 @@ reaches a digest, parent route, or channel injection after cancellation. The
 full durable read-and-cancel pass runs through `TaskStore.run` on the store's
 single writer thread. A store failure leaves the scope held in memory, keeps its
 existing window rows parked, prevents matching store-only rows from refilling,
-surfaces a mirrored Autopilot halt notice, and is retried in insertion order
+and is retried in insertion order
 before dispatch on the next pump settlement pass. Only a successful store pass
 clears the retained scope. A
 writer-thread claim that crossed cancellation revalidates both its exact durable
@@ -988,8 +976,7 @@ cancellation authority immediately before registration; no await separates that
 check from registration. A cancelled claim returns the same stopped result as a
 claim the store refused initially, and the reserved slot is released. Store-only
 rows are filtered by `_stage_boundary_owner`; another owner under the same parent
-remains eligible. Autopilot calls this once per captured parent before clearing
-the UI boundary.
+remains eligible.
 
 ### `cancel_all() -> None`
 Cancels all running subagents, stops the reaper loop, and awaits their cleanup. Handles `CancelledError` gracefully — sessions released, count decremented.
@@ -1125,7 +1112,7 @@ A record's terminal outcome is three-way, with a **single canonical source**: th
 - A user stop is neutral **in the record itself**: `cancel()` sets `user_stopped=True` and neither it nor `_force_reap` ever synthesizes an `error` for it.
 - **A reap's echo is recorded as the reap, never as a runtime death.** `_force_reap` tears a dedicated run's session down (`sessions.reset` → `provider.shutdown()` → `runtime.kill(reason="provider shutdown")`) BEFORE it cancels the run task, so the in-flight `client.stream` observes the kill first and raises `AcpProcessDied` — `Runtime process died during prompt — killed (provider shutdown) [returncode=<not reaped>]` — inside `_run`'s `except Exception` arm, ahead of the reaper's own record. That arm reads `_reap_started` together with `agent_sdk.drivers.acp_vocab.is_runtime_death(exc)` (the `AcpProcessDied` test, offered from the driver vocabulary so application code never names the ACP class): both true, the exception is the ECHO of our own teardown; any other exception under a reap is the run's own fault and keeps the existing failure path and traceback and the record names the stop — `_stop_origin` ("stopped by user", "parent conversation ended (<verb>)", "reaped after Ns (<reason>)", written by `cancel()` / `cancel_for_teardown` / `_force_reap` next to the `_reap_started` marker) and the reap's own tombstone cause `_reap_reason` (`user_stop` / `parent_end` / `stage_cancel` / `reaped` / `startup_timeout`; the parent-end teardown and the stage-boundary cancel write it before calling `cancel`, a bare `cancel` is the user's Stop, and `_force_reap` fills in its own reason only when none is set — nothing is inferred from the origin text, and every writer assigns only when the field is still empty, so the FIRST stopper keeps the attribution when a user Stop, a parent end and a stage cancel race). `tombstone_terminal_state` maps `parent_end` / `stage_cancel` to the task queue's CANCELLED like `user_stop`, so boot reconciliation settles such a row instead of recovering a deliberately ended run. Neutrality is decided by the FIRST stopper, `SubagentInfo.stop_is_neutral` (`_reap_reason in _NEUTRAL_REAP_REASONS` = `user_stop` / `parent_end` / `stage_cancel`), never by `user_stopped` alone: a Stop that lands while a deadline reap is already tearing the run down sets `user_stopped` too, and both the echo arm and `_force_reap`'s own record put the flag back so the late Stop cannot convert a claimed deadline failure into a neutral stop. A user stop, a parent end and a stage cancel stay neutral (`error` unset, `outcome == "stopped"`, partial output preserved); a deadline reap is a failure whose `error` names the deadline. The gateway log gets ONE line — INFO for a user's own stop, WARNING for a parent end or a deadline reap — never `Subagent X failed` at ERROR with a traceback. Recording the death text as the run's error, tombstoned `cause="error"`, sends every reader of a run "dying at random" (a user Stop-all, an identity-sweep parent end) to the provider, the OOM killer and the leak reaper in turn. `_reap_started` (not `reaped`) is the gate because the reaper sets `reaped` late, after the awaits; the record is still first-arrival (`if not info.done`) so the reaper's own synthesis is never duplicated. Pinned by `test_subagent_reap_attribution.py`.
 - Every emission carries the flag explicitly: live `subagent_done` events, the `_run` finally emit, `_force_reap`'s emit, WS **reconnect replay** (managed and native), `native_subagent_snapshots`, and the `/api/spawn` listing all include `stopped`. Cancelling a native card persists `stopped` on the slot tracker record so replay reconstructs it as stopped.
-- The gateway completion consumer (`_subagent_done`) classifies three-way: a stopped agent is announced ⏹ with the record's own `_stop_origin` as its status ("stopped by user" when a user pressed Stop; a parent-end verb or a stage cancel otherwise, so the announce never credits the user with a stop they did not press), partial output flagged, and in orchestrator mode records **neither** `record_success` nor `record_failure`.
+- The gateway completion consumer (`_subagent_done`) classifies three-way: a stopped agent is announced ⏹ with the record's own `_stop_origin` as its status ("stopped by user" when a user pressed Stop; a parent-end verb or a stage cancel otherwise, so the announce never credits the user with a stop they did not press), and partial output flagged.
 - **Intentional-cancel rule**: every code path that cancels a subagent task on purpose MUST set a terminal marker first — `cancel()` → `user_stopped`, `cancel_all()` → `_shutting_down`, `_force_reap` → `reaped`. An unmarked cancel is treated as unexpected and recovered once (below). Enforced MECHANICALLY, not by convention: all in-module intentional cancels route through the `_cancel_task_intentionally(task, info, reason=...)` chokepoint, which verifies a marker is visible before cancelling (a missing marker logs an error and consumes the recovery budget defensively so a mis-marked cancel can never zombie-respawn), and a source-scan test asserts no raw `.cancel()` on a managed run task exists outside the chokepoint.
 
 ## Stop reason → state (`classify_stop_reason`)
@@ -1231,9 +1218,11 @@ Verdict → action:
 - `DEAD` / `STUCK_INPUT` — positive evidence of a wedge, so it flags **immediately**, skipping the two-sweep confirmation that exists to dampen guesses. That skip is **withdrawn whenever the runtime is session-shared** (see the third bound below), because the trust it assumes is exactly what a shared runtime removes — the parent session is always a co-tenant of that process, so a lone subagent is no safer than one with siblings.
 - `UNKNOWN` — no attributable evidence (no tool in flight, a non-shell tool with no child to match, unreadable `/proc`, or a refused executor): falls back to idle-time-only with two-sweep confirmation.
 
+The one non-shell tool that is attributable is the kirocrew-core `wait`. Its declared-duration contract (`ToolCallState.declared_wait_verdict`, shared with the main-agent oracle) reads only the call's own `seconds` and dispatch instant, so `_stall_verdict` answers it directly, with no `/proc` walk: `WORKING` until `min(seconds, WAIT_TOOL_MAX_SECS) + WAIT_TOOL_SLACK_SECS` has elapsed, then `UNKNOWN`. The reaper selects it by the adapter-authored identity (`ToolCallState.is_trusted_wait`: `mcp_server_name` is `kirocrew-core` from a provenance-verified frame and `tool_name` is `wait`, bare or server-qualified such as `kirocrew-core___wait`), never by the model-authored title, because this verdict is exempt from the ceiling below.
+
 Four bounds keep this honest, and each exists for a failure that was observed rather than imagined:
 
-- **`_SUPPRESS_CEILING`** — a `WORKING` verdict only suppresses while `idle < _stall_idle_secs * _SUPPRESS_CEILING`. Attribution is not infallible: two siblings running *similar* commands under `session_sharing` can cmdline-match the same child, so a wedged agent could read `WORKING` for as long as its sibling's child lives. Unbounded that would convert a case the idle-time-only path DID badge into a permanent false negative — worse than a spurious badge, since the badge is self-clearing and a missing one is not. Past the ceiling the badge wins, so misattribution costs latency, not the signal.
+- **`_SUPPRESS_CEILING`** — a `WORKING` verdict only suppresses while `idle < _stall_idle_secs * _SUPPRESS_CEILING`. Attribution is not infallible: two siblings running *similar* commands under `session_sharing` can cmdline-match the same child, so a wedged agent could read `WORKING` for as long as its sibling's child lives. Unbounded that would convert a case the idle-time-only path DID badge into a permanent false negative — worse than a spurious badge, since the badge is self-clearing and a missing one is not. Past the ceiling the badge wins, so misattribution costs latency, not the signal. The trusted `wait` contract is the one exception: it cannot land on another session's process and it ends by itself at its declared duration plus slack, so its `WORKING` suppresses past the ceiling.
 - **The wedged skip is withdrawn under a shared runtime.** The same fallible match runs in the other direction: a `DEAD` reading can describe *another session's* child that exited, and because `DEAD`/`STUCK_INPUT` normally bypass the two-sweep confirmation, that would raise an immediate badge on a healthy agent — defeating the dampening that keeps the badge trustworthy at 60-100 agents. Granting one path immediate trust in a signal the ceiling exists because it is unreliable is incoherent, so when `info._session_sharing` is set the wedged verdict earns its badge the same way a guess does: by holding across two sweeps (~60s). **The gate keys on the flag, not on a sibling count.** `_create_shared_session` puts the subagent on the **parent's** AcpRuntime — one process hosts everything — so `info._pid` is the parent's process and the parent's own tool children are descendants of it too. `_live_shared_count` iterates the subagent registry and therefore cannot see the parent, so an earlier `_live_shared_count(pid) > 1` form left a *lone* session-shared subagent on the fast path while it could still cmdline-match the parent's child and flag the instant that child exited. Since a shared runtime always contains the parent, "could this match belong to someone else?" holds for every session-sharing agent; only a dedicated-process subagent (`session_sharing` false, or a per-spawn model/effort override that forces its own process) keeps the immediate flag.
 - **The walk is offloaded, never inline.** `check_tool` is a synchronous `/proc` walk (`iter_descendants`, plus `os.readlink` on `/proc/<pid>/fd/*`, which can block on the very wedged fd being investigated) and the reaper runs on the same event loop that serves every chat turn. It is submitted through **`consult_offloaded` (`acp/liveness.py`) — the one shared guard, not a local mirror of it**: the same helper the main-agent watchdog reaches via `AcpSessionHandle._consult_oracle_offloaded`, so `SubagentInfo` supplies the `_consult_future` its `ConsultFutureHolder` protocol requires and a fix to the guard lands on every caller at once. The guard owns submission-inside-the-guard, exception retrieval attached at submission, the bound (`OFFLOADED_CONSULT_TIMEOUT_SECS`, 10s) via `wait_for(shield(...))`, at most **one outstanding walk per holder** so a permanently wedged read cannot leave a new blocked worker behind on every sweep, and degrade-to-`UNKNOWN` on any failure. Failure mode to be aware of: consults are awaited serially within a sweep, so if many agents cross the idle threshold while their `/proc` reads wedge, a single sweep can stretch toward N×10s and delay the wall-clock reap for the other agents in it. Bounded and unlikely (one walk per agent, later sweeps short-circuit on the in-flight guard), but it is the cost of doing this in the sweep rather than out of band.
 - **Generation counter.** The awaited verdict is discarded (`superseded mid-consult`) when `info._stall_gen` moved during the walk — i.e. activity, a final tool result, or the next dispatch retired the snapshot it was submitted for. Without this the walk's own latency is enough to flag an agent that has resumed working, and `DEAD`/`STUCK_INPUT` skip two-sweep dampening, so a stale one would flag instantly.
@@ -1360,10 +1349,9 @@ Native kiro-cli subagents run inside the parent ACP turn and are owned by the pa
 After a fan-out of sub-agents, a single dedicated **synthesis turn** produces
 the user-facing summary (restate goal → synthesize across all results →
 recommend next actions), instead of leaving the last visible message as a
-per-sub-agent completion note. Dashboard chat only (orchestrator mode has its
-own stage synthesis).
+per-sub-agent completion note. Dashboard chat only.
 
-- **Arm** — in `_subagent_done` (chat mode, `not _is_orchestrator`), when the
+- **Arm** — in `_subagent_done`, when the
   last outstanding sub-agent for the parent completes
   (`running_agents_for(parent_key) == []`), set `slot._pending_synthesis = True`.
 - **Fire** — in `chat_runner._run_chat`'s drain/idle branch, once the queue is
@@ -1956,8 +1944,7 @@ new dispatch. A failed/cancelled child is terminal for the barrier, not a
 successful task. Parent verifies artifacts and actual execution evidence,
 revalidates stale results against new instructions, and checks side effects
 before retrying. Dispatch, yielding and a child's success claim are not final
-task completion. The default and Autopilot prompts share this policy while
-Autopilot keeps its existing approval/stage boundaries. Conductor skills retain
+task completion. The default prompt carries this policy. Conductor skills retain
 their explicitly selected coordination role; this policy does not convert them
 into implementation workers.
 
@@ -1968,7 +1955,7 @@ Parameters:
 - `max_turns` (int, optional): override tool-call budget for this spawn (default: config or 1000)
 - `agent` (str, optional): one agent template applied to every task.
 - `agents` (list[str], optional): per-task agent templates; length must match `tasks`.
-- `crew` (str, optional): target Crew Member whose memory and provider template apply to every task; delegated tasks must be enabled.
+- `crew` (str, optional): target Crew Member whose memory and provider template apply to every task. Any existing member can be named; its `triggers` only decide automatic routing (`select_crew` / `route_crew`), not whether it can be named here. An unknown name is refused with `unknown_member`.
 - `target_member` (str, optional): explicit Crew Member selector; it must not conflict with `crew`.
 - `model` (str, optional): batch-wide model override; a non-empty effective model pin forces a dedicated process.
 - `keep` (bool, optional): request guaranteed resumability on a dedicated process and extend retention; ordinary runs remain continuable best-effort during their result-retention window.
@@ -2251,7 +2238,7 @@ the hint the parent re-spawns from scratch and pays for the same tool calls twic
 Retrieves live status and a redacted partial transcript for a running subagent, or
 the retained full transcript for a completed subagent. The completion event carries
 a **summary + the `result_path`** whenever the completion copy was truncated
-(`result_truncated`) or in orchestrator mode, so the parent reads the full transcript
+(`result_truncated`), so the parent reads the full transcript
 on demand instead of re-running the subagent.
 
 For a running in-memory record, `GET /api/spawn/{id}` keeps `done: false` and
@@ -2315,9 +2302,8 @@ When truncation drops content (`SubagentInfo.result_truncated`), the completion
 event is not a raw truncated blob: it carries a **first+last-words preview + the
 `result_path`** (via `context_management.summarize_result`) so the parent reads
 the full transcript on demand (read / grep / `spawn_status`) instead of
-re-running the subagent. This is the same shape orchestrator-mode deliveries
-have always used, now applied to chat mode too (gated on `result_truncated` so
-small results still inline in full).
+re-running the subagent. It is gated on `result_truncated`, so small results
+still inline in full.
 
 | Config key | Values | Default | Effect |
 |------------|--------|---------|--------|
@@ -2363,12 +2349,14 @@ machine-readable `code` beside the advisory `error` prose (plus `counted: true` 
 see Wave liveness above): `agent_not_found` for a named-but-unknown agent,
 `agent_not_available` for a target the parent agent spec's
 `toolsSettings.subagent.availableAgents` forbids (§ Parent agent spec allowlist),
+`agent_internal` for one of Kiro Crew's own generated specs (§ Kiro Crew's own
+generated specs are not sub-agents),
 `spawn_rejected` for every other kind (empty task, low memory, cwd refusal,
 governance). `code` is the contract and `error` is advisory (RFC 9457 3.1.3),
 which is what lets the refusal sentence be reworded without breaking a client.
-The identifiers are minted AT the decision — `subagent.AGENT_NOT_FOUND_CODE`,
-returned by `_validate_agent`, and `subagent.AGENT_NOT_AVAILABLE_CODE`, set by
-the gate — carried on `SubagentInfo.error_code`, and
+The identifiers are minted AT the decision — `subagent.AGENT_NOT_FOUND_CODE`
+and `subagent.AGENT_INTERNAL_CODE`, returned by `_validate_agent`, and
+`subagent.AGENT_NOT_AVAILABLE_CODE`, set by the gate — carried on `SubagentInfo.error_code`, and
 forwarded by the handler without being respelled there, so each value has exactly
 one spelling in the tree.
 

@@ -18,6 +18,41 @@ const {
 const LSOF_CANDIDATES = ["/usr/sbin/lsof", "/usr/bin/lsof"];
 
 /**
+ * Every descendant of `rootPid`, deepest first, from a `ps -A -o pid=,ppid=`
+ * table. `rootPid` itself is not included.
+ *
+ * The desktop's own child can be a launcher that forks the real gateway rather
+ * than exec'ing it (a package manager's shim is one). Signalling only that
+ * child leaves the gateway alive, re-parented to init, still holding the port
+ * and gateway.lock.
+ *
+ * @param {number} rootPid
+ * @param {string} psTable  one `pid ppid` pair per line
+ * @returns {number[]}
+ */
+function descendantPids(rootPid, psTable) {
+  const children = new Map();
+  for (const line of String(psTable || "").split(/\r?\n/)) {
+    const [pid, ppid] = line.trim().split(/\s+/).map((value) => parseInt(value, 10));
+    if (!Number.isInteger(pid) || !Number.isInteger(ppid) || pid <= 1) continue;
+    if (!children.has(ppid)) children.set(ppid, []);
+    children.get(ppid).push(pid);
+  }
+  const found = [];
+  const seen = new Set([rootPid]);
+  const walk = (pid) => {
+    for (const child of children.get(pid) || []) {
+      if (seen.has(child)) continue;
+      seen.add(child);
+      walk(child);
+      found.push(child);
+    }
+  };
+  walk(rootPid);
+  return found;
+}
+
+/**
  * The operating-system view of whoever holds a gateway port: the LISTEN pids
  * (lsof, or netstat on Windows), a pid's command line and parent, whether a
  * Windows command line is a gateway this app may treat as its own, the
@@ -161,6 +196,26 @@ function createPortHolders({
     });
   }
 
+  // Every live descendant of `pid`, deepest first. Empty when ps cannot run
+  // or hangs: the caller still signals `pid` itself, exactly as before. The
+  // execFile timeout only signals ps; a ps stuck in an uninterruptible read
+  // never exits, so a JS-side deadline keeps recovery from waiting forever.
+  function posixDescendantPids(pid) {
+    return new Promise((resolve) => {
+      const deadline = setTimeout(() => resolve([]), 6000);
+      if (typeof deadline.unref === "function") deadline.unref();
+      execFile(
+        "/bin/ps",
+        ["-A", "-o", "pid=,ppid="],
+        { timeout: 5000 },
+        (error, stdout) => {
+          clearTimeout(deadline);
+          resolve(error ? [] : descendantPids(pid, stdout));
+        },
+      );
+    });
+  }
+
   function forceStopGatewayPort(probePort) {
     if (IS_WIN) {
       return forceStopPort(probePort, {
@@ -188,6 +243,7 @@ function createPortHolders({
   return {
     windowsRealpath,
     isTrustedWindowsGatewayCommand,
+    posixDescendantPids,
     winListenPids,
     lsofListenPids,
     psCommand,
@@ -199,4 +255,4 @@ function createPortHolders({
   };
 }
 
-module.exports = { createPortHolders };
+module.exports = { createPortHolders, descendantPids };

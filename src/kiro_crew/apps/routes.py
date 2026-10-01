@@ -130,6 +130,7 @@ from kiro_crew.config.loader import (
     update_config_locked,
 )
 from kiro_crew.cron import CronStoreBusy, CronStoreUnreadable
+from kiro_crew.dashboard.conditional_get import conditional_response, is_not_modified
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.pinned_fs import (
     PinnedPathRefusal,
@@ -2277,6 +2278,12 @@ async def handle_open_app(request: web.Request) -> web.Response:
     On cloud/remote environments (no display), returns the command
     for the user to run locally instead of executing it.
     """
+    # local import: avoids a circular import with dashboard.handlers
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+    owner_denied = await require_owner_dashboard_request(request, "app_open")
+    if owner_denied is not None:
+        return owner_denied
     name = request.match_info["name"]
     info = get_app(name)
     if not info:
@@ -2945,7 +2952,7 @@ def _read_declared_art(name: str, file_path: str) -> tuple[bytes, str] | None:
         # Checked on the DESCRIPTOR, which is what makes it race-free: this fd already
         # refers to the inode being judged. Every other descriptor-validated read in
         # the tree applies the same gate (`hooks.py`, `memory.py`, `spec_builder`,
-        # `onboarding_import.py`, `pinned_fs.copy_file_pinned`), so this route was the
+        # `onboarding_scan.py`, `pinned_fs.copy_file_pinned`), so this route was the
         # outlier rather than a new rule.
         #
         # Inline rather than `pinned_fs.refuse_hardlink_alias`, which is the same
@@ -3035,15 +3042,14 @@ async def handle_app_art_file(request: web.Request) -> web.Response:
     #
     # Set on the response rather than in the middleware because the middleware uses
     # `setdefault` precisely so a handler can tighten its own answer.
-    headers = {
-        "Cache-Control": "no-cache",
-        "ETag": validator,
-        "Content-Security-Policy": "default-src 'none'; sandbox",
-        "X-Content-Type-Options": "nosniff",
-    }
-    if request.headers.get("If-None-Match") == validator:
-        return web.Response(status=304, headers=headers)
-    return web.Response(body=data, headers={**headers, "Content-Type": content_type})
+    return conditional_response(
+        request,
+        data,
+        content_type,
+        etag=validator,
+        cache_control="no-cache",
+        extra_headers={"Content-Security-Policy": "default-src 'none'; sandbox"},
+    )
 
 
 async def handle_app_config(request: web.Request) -> web.Response:
@@ -3424,28 +3430,17 @@ async def handle_app_ui_file(request: web.Request) -> web.StreamResponse:
                 "Content-Security-Policy": "default-src 'none'; sandbox",
                 "X-Content-Type-Options": "nosniff",
             }
-            # aiohttp's parsed accessors, not raw header strings: If-None-Match may
-            # carry a list, a weak `W/"..."` form, or `*`, and If-Modified-Since
-            # needs HTTP-date parsing that forces UTC (a raw `parsedate_to_datetime`
+            # The shared compare reads aiohttp's parsed accessors, not raw header
+            # strings: If-None-Match may carry a list, a weak `W/"..."` form, or
+            # `*` (RFC 9110 §13.1.2 weak comparison), and If-Modified-Since is
+            # evaluated only when no If-None-Match was sent (§13.1.3), with the
+            # HTTP-date parsing that forces UTC (a raw `parsedate_to_datetime`
             # hands back a NAIVE datetime for `-0000`/asctime forms, which
-            # `.timestamp()` then reads as server-LOCAL time — a stale 304 for up to
-            # a whole UTC offset after an app update). Mirrors what `FileResponse`
-            # did.
-            if_none_match = request.if_none_match
-            if if_none_match:
-                # RFC 7232 §3.2: If-None-Match uses the WEAK comparison, so a weak
-                # form of the current tag matches too.
-                if (len(if_none_match) == 1 and if_none_match[0].value == "*") or any(
-                    t.value == etag_value for t in if_none_match
-                ):
-                    return web.Response(status=304, headers=headers)
-            else:
-                # RFC 7232 §3.3: If-Modified-Since is evaluated only when no
-                # If-None-Match was sent. Both sides are second-granular (HTTP
-                # dates carry no sub-second part, so `st_mtime` is truncated).
-                since = request.if_modified_since
-                if since is not None and int(st.st_mtime) <= since.timestamp():
-                    return web.Response(status=304, headers=headers)
+            # `.timestamp()` then reads as server-LOCAL time — a stale 304 for
+            # up to a whole UTC offset after an app update). Mirrors what
+            # `FileResponse` did.
+            if is_not_modified(request, headers["ETag"], last_modified=st.st_mtime):
+                return web.Response(status=304, headers=headers)
             # Resolved HERE rather than at import: the operator's deadline is read
             # per request so an edit applies without a gateway restart. Off the
             # event loop because a config-cache miss reads and validates
@@ -4423,6 +4418,9 @@ async def handle_app_api_proxy(request: web.Request) -> web.StreamResponse:
             status=502,
         )
 
+    # Set once the relay has begun. The two handlers below consult it: after
+    # the head has gone out, no status of the gateway's own can be sent any more.
+    resp: web.StreamResponse | None = None
     try:
         # The total bound is enforced HERE rather than handed to aiohttp as
         # ``total``, because ``total`` also covers reading the response body and a
@@ -4481,12 +4479,40 @@ async def handle_app_api_proxy(request: web.Request) -> web.StreamResponse:
                 await session.close()
     except aiohttp.ClientError as exc:
         logger.warning("Proxy to app %s failed: %s", name, exc)
+        if resp is not None and resp.prepared:
+            return _end_relay_midbody(request, resp)
         return web.json_response(
             {"error": "backend unreachable"},
             status=502,
         )
     except asyncio.TimeoutError:
+        if resp is not None and resp.prepared:
+            return _end_relay_midbody(request, resp)
         return web.json_response({"error": "backend timeout"}, status=504)
+
+
+def _end_relay_midbody(request: web.Request, resp: web.StreamResponse) -> web.StreamResponse:
+    """End a relayed response whose head the client has already received.
+
+    The upstream failed or went silent after ``resp.prepare()``. A fresh
+    ``json_response`` at that point is not a reply: aiohttp writes its status
+    line and headers INTO the chunked body already in flight, so the client gets
+    a 200 whose body carries a second ``HTTP/1.1 502`` head, and the connection
+    then idles on keep-alive. Aborting the transport instead leaves the body
+    unterminated -- the one shape every client reads as a failed transfer
+    (``ERR_INCOMPLETE_CHUNKED_ENCODING``; an ``EventSource`` reconnects) -- and
+    frees the connection nothing more will be written on. Abort, not close:
+    abort discards whatever a slow client still has buffered, so the terminating
+    chunk the server's own post-handler ``write_eof`` would add can never be
+    flushed behind it and make a cut body look complete. ``force_close`` keeps
+    the server from offering keep-alive on it, and that ``write_eof`` fails on
+    the gone transport as a routine disconnect.
+    """
+    resp.force_close()
+    transport = request.transport
+    if transport is not None and not transport.is_closing():
+        transport.abort()
+    return resp
 
 
 async def handle_migrate_cleanup(request: web.Request) -> web.Response:

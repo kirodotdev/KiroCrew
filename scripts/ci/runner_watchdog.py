@@ -468,6 +468,18 @@ LIVE_CLASSIFY_READS = 50
 # runs could -- young enough to speak about the fleet now, old enough for a slow
 # start to show.
 LIVE_EVIDENCE_RESERVE = 10
+# The bound above is spent on EVERY tick, orphan or not, so it is sized for the
+# common tick. It leaves the runs past it unread, and an unread run that is old
+# enough to hold a slow start holds every heal (``SKIPPED_PARTIAL_EVIDENCE``). On a
+# tick that HAS an orphan to judge, the reads that would settle the hold are worth
+# spending: ``top_up_unread_evidence`` reads the jobs of every unread run that could
+# hold such a start, up to this many more, and only then. Measured on 2026-09-29: 133
+# live runs against the 50-read bound left 83 capable runs unread on a tick with four
+# orphans, none healed, and the next tick held the same four the same way. All or
+# nothing: a capable set larger than this bound is not read at all, because reading
+# part of it cannot lift the hold (any unread capable run still holds) and the reads
+# would be spent for no heal. A tick with no orphan spends nothing here.
+LIVE_EVIDENCE_TOPUP_READS = 200
 # A listed live run older than this is a GHOST: a record the runs index still
 # returns as queued, in progress or pending but that GitHub itself does not hold
 # as live. GitHub cancels any job that has not started within 24 hours and caps a
@@ -544,10 +556,11 @@ SKIPPED_NO_DISPATCH_EVIDENCE = "skipped-no-dispatch-evidence"
 # cancels finished work and re-queues it into a fleet the sweep could not see. The
 # premise is the unread SATURATION-CAPABLE runs, not merely that the read bound was
 # reached: a bound spent entirely on runs that could not carry such a start leaves
-# nothing unseen. At this repository's listing size the premise is still met on most
-# ticks (about 302 unread capable runs against a 50-read bound), so this is a more
-# honest hold rather than a rarer one; raising the bound or narrowing the listing is
-# what lowers it, tracked at #13644.
+# nothing unseen. On a tick with an orphan to judge, ``top_up_unread_evidence`` reads
+# those runs before the hold is judged, so this verdict is reached only when the
+# capable set exceeded ``LIVE_EVIDENCE_TOPUP_READS`` or a run crossed the age line
+# after the top-up. Without the top-up the premise is met on most ticks here (about
+# 302 unread capable runs against a 50-read bound), tracked at #13644.
 SKIPPED_PARTIAL_EVIDENCE = "skipped-partial-dispatch-evidence"
 LOOKUP_INCONCLUSIVE = "lookup-inconclusive"
 WAITING_ON_GROUP = "waiting-on-group"
@@ -1944,6 +1957,61 @@ def live_runs_within_read_bound(
     return selected, unread_candidates
 
 
+def top_up_unread_evidence(
+    api: Api,
+    policy: Policy,
+    evidence: DispatchEvidence,
+    log: Callable[[str], None] = print,
+    *,
+    read_jobs: Callable[[int], list[dict[str, Any]]] | None = None,
+) -> tuple[int, int]:
+    """Read the unread runs that hold the partial-evidence hold, when that buys a heal.
+
+    ``live_runs_within_read_bound`` leaves the runs past its bound unread, and every
+    unread run old enough to hold a slow start holds every heal of the tick
+    (``SKIPPED_PARTIAL_EVIDENCE``). That bound is spent on every tick; this read is
+    spent only on a tick that has an orphan to judge, which is the caller's decision
+    and the reason this is not folded into the bound. The runs are read oldest first so
+    the sweep's log stays chronological, each one's served starts are absorbed as
+    evidence, and each one leaves the retained unread set, so the hold judged after
+    this call is judged on what remains.
+
+    All or nothing against ``LIVE_EVIDENCE_TOPUP_READS``: the capable set is read in
+    full or not at all. A partial read cannot lift the hold -- any capable run still
+    unread holds it -- so it would spend reads against the shared installation quota
+    for no heal. The set is judged at ``policy.now``: a run under the age line at this
+    call is not read, and if it crosses the line before a later judgement it turns the
+    hold on from that moment, which is the same rule the hold itself follows.
+
+    Returns ``(read, unread)``: how many runs were read, and how many capable runs are
+    still unread because the set exceeded the bound.
+    """
+    reader = read_jobs or (lambda run_id: list_jobs(api, policy.repo, run_id))
+    capable = sorted(
+        (created, run_id)
+        for run_id, created in evidence.unread_candidates.items()
+        if policy.now - created >= policy.saturation_wait
+    )
+    if not capable:
+        return 0, 0
+    if len(capable) > LIVE_EVIDENCE_TOPUP_READS:
+        log(
+            f"::notice::{len(capable)} unread live runs could hold a slow CodeBuild start, past "
+            f"the {LIVE_EVIDENCE_TOPUP_READS}-read top-up bound; none read, since reading part of "
+            "them cannot lift the partial-evidence hold"
+        )
+        return 0, len(capable)
+    log(
+        f"::notice::reading the jobs of {len(capable)} unread live run(s) that could hold a slow "
+        f"CodeBuild start (top-up bound {LIVE_EVIDENCE_TOPUP_READS}), because an orphan is waiting "
+        "on the saturation question they hold open"
+    )
+    for _created, run_id in capable:
+        evidence.absorb(reader(run_id), policy)
+        evidence.unread_candidates.pop(run_id, None)
+    return len(capable), 0
+
+
 def list_recent_cancelled_runs(
     api: Api, repo: str, *, log: Callable[[str], None] = print
 ) -> list[dict[str, Any]]:
@@ -2744,7 +2812,10 @@ def resolve_hold(
         # completed-run sample does not settle it either: it reads the newest
         # completions, so a fleet serving some jobs promptly and queueing others past
         # the threshold can show a prompt start there while the slow one sits in a
-        # live run this sweep never read. Hold rather than guess.
+        # live run this sweep never read. Hold rather than guess. The callers that
+        # judge an orphan first spend ``top_up_unread_evidence`` on exactly these runs,
+        # so what remains unread here is a capable set past the top-up bound, or a run
+        # that crossed the age line after the top-up.
         #
         # An own-queue DISPATCHING reading does not lift this hold. It is derived from
         # the starts this sweep READ, and a slow start on the orphan's own queue would
@@ -2761,10 +2832,11 @@ def resolve_hold(
         return (
             SKIPPED_PARTIAL_EVIDENCE,
             f"{unread} live run(s) that could hold a slow CodeBuild "
-            f"start went unread against this tick's job-read bound of {LIVE_CLASSIFY_READS}, so "
-            f"saturation cannot be ruled out; nothing healed. Raising that bound or narrowing the "
-            f"listing is the response -- it is a job-read budget against the shared installation "
-            f"quota, not the API's reachable window",
+            f"start went unread (per-tick job-read bound {LIVE_CLASSIFY_READS}, topped up by at "
+            f"most {LIVE_EVIDENCE_TOPUP_READS} more reads on a tick with an orphan to judge, all or "
+            f"nothing), so saturation cannot be ruled out; nothing healed. Raising the top-up bound "
+            f"or narrowing the listing is the response -- it is a job-read budget against the "
+            f"shared installation quota, not the API's reachable window",
         )
     return None
 
@@ -3519,6 +3591,16 @@ def run_watchdog(
         if listing_abort is not None:
             raise listing_abort
 
+        # Only now, and only when there is an orphan to judge: the reads that settle
+        # the partial-evidence hold are spent on a tick that can heal something, and
+        # on no other. A tick whose verdicts hold no orphan reads nothing here.
+        if any(verdict.verdict == ORPHANED for verdict in verdicts):
+
+            def read_unread_jobs(run_id: int) -> list[dict[str, Any]]:
+                return cheap_retry(lambda: list_jobs(api, policy.repo, run_id))
+
+            top_up_unread_evidence(api, policy, evidence, log, read_jobs=read_unread_jobs)
+
         # The hold is judged per run, relative to when its NEWEST orphaned job
         # queued: a start that postdates an older orphan may still predate a
         # younger one, in another run or in the same one.
@@ -3638,6 +3720,10 @@ def run_watchdog(
             )
             for run in bounded_fresh:
                 latest.absorb(list_jobs(api, policy.repo, int(run["id"])), read_at)
+            # This read exists only because a cancel is about to be judged, so the
+            # top-up's premise -- an orphan waiting on the question -- holds by
+            # construction; the same bound and the same all-or-nothing rule apply.
+            top_up_unread_evidence(api, read_at, latest, log)
             sample_completed_runs(api, read_at, latest)
             fresh["evidence"] = latest
         except ApiError as exc:

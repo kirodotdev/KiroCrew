@@ -18,8 +18,8 @@ import type { SessionRef } from '../utils/sessionRefs'
  * and can carry an icon and a secondary line.
  *
  * The composer reserves space for this strip by MEASURING it (`rootRef`, wired
- * to `useMeasuredHeight` in ChatInput) rather than by predicting its height from
- * these classes. Change the padding or the chip's type scale freely: the
+ * to `useMeasuredHeight` in chat-input/sizing.ts) rather than by predicting its
+ * height from these classes. Change the padding or the chip's type scale freely: the
  * reservation follows. It used to be a hand-computed constant that had to be
  * edited in step with this file, and nothing enforced that.
  */

@@ -427,7 +427,7 @@ class TestThePublicationFence:
             (
                 "kiro_crew/dashboard/session_export.py",
                 "api_chat_slot_export",
-                "Response",
+                "_StagedExport",
             ),
             (
                 "kiro_crew/dashboard/handlers_instances.py",

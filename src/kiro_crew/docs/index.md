@@ -49,7 +49,7 @@ index, first-time setup, and connecting messaging channels.
 | [Artifacts](artifacts.md) | Save, version, and revert generated UI and documents so they outlive the chat scrollback |
 | [Monitor Loops](monitor-loops.md) | Keep one session checking something on an interval — a pull request, a CI run, a deployment — until an exit condition fires |
 | [Session Ledger](session-ledger.md) | A durable per-session record of goal, phase, and next step that survives context compaction |
-| [Session Control](session-control.md) | Let one chat session open, fork, seed, watch, broadcast to, stop, switch models on and close another one — the 21 `kirocrew-dashboard` MCP tools, plus the sidebar folders, tags and pins that keep them findable |
+| [Session Control](session-control.md) | Let one chat session open, fork, seed, watch, broadcast to, stop, switch models on, close and revive another one — the 27 `kirocrew-dashboard` MCP tools, plus the sidebar folders, tags, board columns and pins that keep them findable |
 | [Work Ledger](work-ledger.md) | Split a goal across one session per item: a conductor dispatches workers, reads their status as data, and settles every completion claim against an acceptance condition |
 | [Browser Control](browser-control.md) | Drive a real web page from the dashboard's Browser panel: navigate, snapshot, click, type, screenshot |
 | [Computer Use](computer-use.md) | Read and drive native desktop applications through the accessibility layer; opt-in and off by default |
@@ -86,7 +86,7 @@ documented by their own in-panel help.
 | Voice | Speech-to-text and spoken replies | [Configuration](configuration.md) |
 | Notifications | Where a proactive message is delivered | — |
 | Shortcuts | Keyboard bindings | — |
-| Skills | Whether sessions auto-generate skills, and whether a generated one needs your approval; installed skills live under Agent Capabilities | [Skills](skills.md) |
+| Skills | Whether sessions auto-generate skills, and whether a generated one needs your approval; installed skills live under Customize | [Skills](skills.md) |
 | Messaging Channels | Per-channel setup and access control | [Channel capabilities](channel-capabilities.md) |
 | Browser | Installing the browser engine and the attach token | [Browser control](browser-control.md) |
 | Computer Use | Driving native desktop apps; off by default | [Computer use](computer-use.md) |

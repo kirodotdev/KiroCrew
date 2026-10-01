@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { renderHook, waitFor } from '@testing-library/react'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { renderHook, waitFor, act } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
@@ -74,5 +74,29 @@ describe('useBranding — directLocal mapping', () => {
 
     await waitFor(() => expect(result.current.directLocal).toBe(true), { timeout: 5000 })
     expect(brandingMock.mock.calls.length).toBeGreaterThan(1)
+  })
+
+  describe('after every retry has failed', () => {
+    afterEach(() => { vi.useRealTimers() })
+
+    it('keeps trying and picks up the branding once the gateway answers', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      // Four rejections exhaust the query's own retry: 3, so the query settles
+      // in error; the gateway only answers on a later attempt.
+      brandingMock
+        .mockRejectedValueOnce(new Error('down'))
+        .mockRejectedValueOnce(new Error('down'))
+        .mockRejectedValueOnce(new Error('down'))
+        .mockRejectedValueOnce(new Error('down'))
+        .mockResolvedValue({ bot_name: 'Back', avatar: '/d.png', direct_local: false })
+      const { result } = renderHook(() => useBranding(), { wrapper })
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(20_000) })
+      expect(brandingMock).toHaveBeenCalledTimes(4)
+      expect(result.current.botName).toBe('Kiro Crew')
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(40_000) })
+      await waitFor(() => expect(result.current.botName).toBe('Back'))
+    })
   })
 })

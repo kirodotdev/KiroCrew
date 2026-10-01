@@ -32,7 +32,7 @@ page before you switch it on.
 | Model | Default model for its sessions | the template's pinned model, then the global default |
 | Reasoning effort | How long its sessions think before answering | the global default, or its role effort for a background worker crew; ignored by models that do not reason |
 | Description | One line about what it is for | no description shown |
-| Triggers (`triggers`) | Free text saying when work should go to it | never auto-selected, and delegation to it is refused |
+| Triggers (`triggers`) | Free text saying when work should go to it | never auto-selected; naming it still delegates to it |
 | Avatar | A ghost face with chosen traits, or an uploaded picture | a face derived from its name |
 | Session color | Tints the sessions it starts | no color of its own |
 
@@ -118,7 +118,7 @@ its own chat and memory.
 Beyond that, the only crewmate *configuration* the page writes is the star on a
 row, a roster preference stored on the crewmate. (Opening a member writes too,
 but only its own thread binding.) Both **Edit** affordances still navigate to
-the crew manager — **Agent Capabilities → Crews** (`/capabilities?tab=crews`) —
+the crew manager — **Customize → Crewmates** (`/capabilities?tab=crews`) —
 which remains the editor for an existing crewmate's name, template, model,
 reasoning effort, workspace, triggers, avatar and session color.
 
@@ -220,9 +220,10 @@ thing across the product.
   rather than picking the least-bad row.
 - **A weak match.** The roster's own guidance is to select only on a clear,
   specific, high-confidence match. One shared word is not one.
-- **No triggers.** A crewmate with empty triggers is opted out by its owner. It
-  is omitted from the roster, never ranked, and a delegation naming it is
-  refused outright with `crew_delegation_disabled`.
+- **No triggers.** A crewmate with empty triggers is never picked
+  automatically: it is omitted from the roster and never ranked. It can still be
+  delegated to by name with `spawn_run(crew=...)`. Triggers steer automatic
+  routing only; there is no separate "accept delegated tasks" switch.
 - **Memory unavailable.** A crewmate whose memory binding cannot be resolved
   comes back under `unavailable` with a reason. Report the refusal; running it on
   the default store instead is the one substitution never to make.

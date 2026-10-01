@@ -246,9 +246,9 @@ def pod_context(cfg: PodConfig, name: str) -> tuple[Path, dict[str, str]]:
 #                    off, so a pod seeded from the live config inherits the user's
 #                    real backup directory — `snapshot --keep 1` from a pod would
 #                    prune live backups. Destructive and cross-plane.
-#   doctor         — NOT read-only: `cli_doctor.py:126` does
+#   doctor         — NOT read-only: `cli_doctor._doctor_mcp_tools` does
 #                    `atomic_write(agent_path, ...)` where `agent_path` is
-#                    `KIRO_AGENTS_DIR / AGENT_FILENAME` (line 405), i.e. under the
+#                    `_agents_dir() / AGENT_FILENAME` (in `cli_doctor._doctor`), i.e. under the
 #                    real HOME. It auto-adds missing MCP servers, so a pod
 #                    `doctor` rewrites the LIVE agent configuration.
 #   tui, chat      — `cli_chat._tui` resolves its port as

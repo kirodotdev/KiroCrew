@@ -1113,7 +1113,11 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     # The side chat's derived read-only spec reads the base agent's spec in
     # BOTH scopes, project first (kiro-cli resolves --agent there before the
     # user level); one label for both so a refusal attributes to the side turn.
+    # The first read is not the side turn's: it words an ACP "Agent mode ... is
+    # not available" refusal by checking the derived file's owner marker, on
+    # whatever channel's session raised it -- hence its own label and "unknown".
     "kiro_crew/dashboard/side_readonly_spec.py": [
+        ("agent_mode_refusal", "unknown"),
         ("side_readonly_spec", "dashboard"),
         ("side_readonly_spec", "dashboard"),
     ],

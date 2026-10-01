@@ -1,18 +1,9 @@
 /**
- * The composer must OFFER video, not just tolerate it.
+ * The composer must OFFER media the upload boundary accepts.
  *
- * On a phone the `<input accept>` list is what the system photo picker filters
- * the library by, so an accept list of image MIME types plus document
- * extensions is exactly what made "attach" show photos and hide every
- * recording — the bug this covers. The picker is the only surface that carries
- * this hint (`openPicker` rewrites `accept` for the image-only entry), so it is
- * asserted on the rendered input rather than on the constant.
- *
- * VIDEO_EXT is pinned alongside it because the two must agree: the accept list
- * decides what a user can CHOOSE, VIDEO_EXT decides which of those choices skip
- * the 50 MB client-side pre-check, and a mismatch means either a file the
- * picker offers and the client then silently drops, or a document sent past a
- * guard that exists to catch it.
+ * Video uses MIME hints so mobile photo pickers surface recordings. Audio uses
+ * exact extensions so the dialog does not offer neighboring formats that the
+ * server's content-signature gate cannot verify.
  */
 import { describe, it, expect, vi } from 'vitest'
 import { screen } from '@testing-library/react'
@@ -51,6 +42,18 @@ describe('composer accept list — video', () => {
     expect(accept).toContain('image/png')
     expect(accept).toContain('.pdf')
     expect(accept).toContain('.zip')
+  })
+})
+
+describe('composer accept list — audio', () => {
+  it('offers exactly the audio containers the server accepts', () => {
+    renderWithProviders(<ChatInput {...base} />)
+    const accept = new Set((fileInput().getAttribute('accept') || '').split(','))
+    for (const ext of ['.mp3', '.m4a', '.wav', '.ogg', '.oga', '.opus', '.flac']) {
+      expect(accept).toContain(ext)
+    }
+    expect(accept).not.toContain('.aac')
+    expect(accept).not.toContain('.wma')
   })
 })
 

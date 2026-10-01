@@ -40,13 +40,13 @@ vi.mock('../api/client', () => ({
   },
 }))
 
-const NOTE = /switch this agent's template anytime/
+const NOTE = /change what this crewmate is built from anytime/
 
 describe('template edit-later note — create-only', () => {
-  it('renders under the Agent Template field in the create sheet', async () => {
+  it('renders under the Built from field in the create sheet', async () => {
     renderWithProviders(<KiroCrewAgentsPage />)
     fireEvent.click(await screen.findByTestId('new-crew'))
-    await screen.findByRole('combobox', { name: 'Agent Template' })
+    await screen.findByRole('combobox', { name: 'Built from' })
     expect(screen.getByText(NOTE)).toBeTruthy()
   })
 
@@ -57,7 +57,7 @@ describe('template edit-later note — create-only', () => {
     // form uses — asserting there, not just on the default pane, is what
     // actually pins the editLaterNote prop split.
     fireEvent.click(await screen.findByTestId('crew-rail-template'))
-    await screen.findByRole('combobox', { name: 'Agent Template' })
+    await screen.findByRole('combobox', { name: 'Built from' })
     expect(screen.queryByText(NOTE)).toBeNull()
   })
 })

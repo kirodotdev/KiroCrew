@@ -481,6 +481,50 @@ class TestStop:
         assert any("已停止" in s for s in client.said)
 
     @pytest.mark.asyncio
+    async def test_stop_is_declined_while_the_session_compacts(self) -> None:
+        provider = FakeProvider()
+        client = FakeClient()
+        sessions = FakeSessions(provider, busy=True)
+        sessions.is_compacting = lambda key: True
+        d = _dispatcher(sessions, client)
+
+        await d.handle_message(_inbound("/stop"))
+
+        assert provider.cancelled is False
+        assert any("nothing was stopped" in s for s in client.said)
+
+    @pytest.mark.asyncio
+    async def test_a_repeat_stop_while_compacting_forces_through_the_queue_keeping_helper(
+        self, monkeypatch
+    ) -> None:
+        """Under a unified ``dm_scope`` the key is shared with channels that queue;
+        the second press forces through ``force_stop_keeping_others``."""
+        from kiro_crew import session_lifecycle as sl
+        from kiro_crew.wecom import transport_dispatch as td
+
+        sl._stop_declined_markers.clear()
+        provider = FakeProvider()
+        client = FakeClient()
+        sessions = FakeSessions(provider, busy=True)
+        sessions.is_compacting = lambda key: True
+        d = _dispatcher(sessions, client)
+        calls: list = []
+
+        async def _helper(sess, key, owned_by):
+            calls.append((key, owned_by))
+            return True
+
+        monkeypatch.setattr(td, "force_stop_keeping_others", _helper)
+
+        await d.handle_message(_inbound("/stop"))
+        assert calls == [], "first press is declined"
+        await d.handle_message(_inbound("/stop"))
+        assert len(calls) == 1
+        assert calls[0][1]({"queued_owner": "telegram-bob"}) is False
+        assert any(td._STOPPED_TEXT in s for s in client.said)
+        sl._stop_declined_markers.clear()
+
+    @pytest.mark.asyncio
     async def test_stop_with_nothing_running_says_so(self) -> None:
         client = FakeClient()
         d = _dispatcher(FakeSessions(FakeProvider(), busy=False), client)

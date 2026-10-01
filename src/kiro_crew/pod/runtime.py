@@ -60,38 +60,74 @@ from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 if TYPE_CHECKING:  # served by ``__getattr__`` at runtime; named here for mypy
     from kiro_crew.pod.runtime_attestation import (  # noqa: F401
+        OWNER_FOREIGN,
         OWNER_POD,
+        OWNER_UNPROVEN,
+        attributed_descendants,
+        find_port_listeners,
+        listening_pid_tool_available,
+        loopback_owner_pids,
         port_owner,
+        process_start_time,
+        run_marker,
     )
     from kiro_crew.pod.runtime_boot import (  # noqa: F401
+        EXIT_PROVISIONING,
+        EXIT_REFUSED_UNRECOVERABLE,
+        TERMINAL_BOOT_EXIT_CODES,
         boot,
         exec_in_pod,
+        pod_context,
         refusal_reason,
         require_pod_safe_verb,
+        target_supports_flag,
         terminal_exit_code,
     )
     from kiro_crew.pod.runtime_client import (  # noqa: F401
+        API_BODY_MAX_BYTES,
+        API_METHODS,
         API_READ_METHODS,
+        API_TIMEOUT_SECS,
         HEALTH_FOREIGN,
         api_path,
+        get_peer_pid,
         health,
+        http,
+        loopback_urlopen,
         mint_token,
         pod_api,
         published_credential,
+        unix_socket_urlopen,
     )
     from kiro_crew.pod.runtime_home import (  # noqa: F401
+        SeedError,
+        StoreMapping,
+        atomic_write_at,
         cleanup_home,
+        is_link_or_junction,
         is_scenario_ref,
+        open_file_no_reparse,
         orphan_homes,
+        pin_directory,
         resolve_seed_scenario,
+        resolved_pod_home,
+        seed_home_from_scenario,
+        seed_mod,
         seeded_scenario_in_home,
+        store_mappings,
+        write_pod_config,
     )
     from kiro_crew.pod.runtime_lifecycle import (  # noqa: F401
+        DRAIN_TIMEOUT_SECS,
         RECLAIMED_MARKER,
+        cgroup_procs_file,
+        drain_cgroup,
         halt_pod,
         install_backend,
+        loaded_teardown_hook,
         start_pod,
         stop_pod,
+        time,
         unit_mod,
     )
     from kiro_crew.pod.runtime_ports import (  # noqa: F401
@@ -99,6 +135,7 @@ if TYPE_CHECKING:  # served by ``__getattr__`` at runtime; named here for mypy
         allocate_port,
         derive_port,
         operator_pinned,
+        socket,
     )
 
 # Pod names become systemd instance names and path segments; keep them strict.
@@ -1030,7 +1067,7 @@ def pod_plane_mutex(cfg: PodConfig):
     Without this, two colliding names ``up``'d concurrently (Dev Fleet's normal
     shape) hold disjoint name locks, both probe the same port free, and both boot
     onto it -- exactly the crash-loop :func:`allocate_port` exists to prevent.
-    ``apps/backend.py``'s ``_reserve_free_port`` carries the same lesson one
+    ``apps/backend_runtime/ports.py``'s ``_reserve_free_port`` carries the same lesson one
     subsystem over: "Probing without reserving ... lets two apps be handed the same
     port -- both children then bind it and the loser dies with EADDRINUSE."
 
@@ -1560,7 +1597,7 @@ def _owner(name: str) -> ModuleType:
 
 # Hidden from type checkers: mypy types every unknown attribute of a module that
 # defines ``__getattr__`` as ``Any``, so a mistyped or removed ``rt.<name>`` would
-# type-check. mypy sees the re-exports through the ``TYPE_CHECKING`` imports instead.
+# type-check. mypy sees every public re-export through the ``TYPE_CHECKING`` imports.
 if not TYPE_CHECKING:
 
     def __getattr__(name: str) -> Any:

@@ -37,6 +37,17 @@ interface PinnedPromptProps {
    * chasing it would lag behind the row it is supposed to track.
    */
   liveH?: number
+  /**
+   * The tallest the card may be, in px — from its top to the transcript floor
+   * (`computePinnedCardMaxH`). Set as the box's `max-height`, which outranks
+   * both writers of its `height` (the fold's `liveH` and the expand/peek morph)
+   * by CSS rule, so neither can grow the card past the scroller's content area
+   * and onto the composer dock below it. The expanded text's own scroll cap
+   * shrinks under it too (see the flex column on the body button), so a capped
+   * card scrolls its prompt rather than clipping the end of it. Absent means
+   * unbounded — the host has not measured a floor.
+   */
+  maxH?: number
   /** Measured card height, used to shrink the backing band as the card is pushed. */
   bannerH: number
   expanded: boolean
@@ -180,7 +191,7 @@ const THUMB_FRAME = 'bg-muted forced-colors:border'
  * size and the band it slides through is sized for it.
  */
 export default function PinnedPrompt({
-  text, fullText, images, bodyBeyondPreview, pushUp, liveH, bannerH, expanded, onToggleExpanded, onJump, cardRef, onCollapsedHeight, scrollTranscriptBy,
+  text, fullText, images, bodyBeyondPreview, pushUp, liveH, maxH, bannerH, expanded, onToggleExpanded, onJump, cardRef, onCollapsedHeight, scrollTranscriptBy,
 }: PinnedPromptProps) {
   const textRef = useRef<HTMLParagraphElement | null>(null)
   const boxRef = useRef<HTMLDivElement | null>(null)
@@ -310,6 +321,11 @@ export default function PinnedPrompt({
     }
     el.dataset.foldOwned = '1'
     el.style.transition = ''
+    // A morph the fold is interrupting may have left its `flex-start` behind
+    // (its transitionend never fires once the transition is cleared). Drop it:
+    // the fold wants the stretch, so the paragraph tracks the box under the
+    // ceiling, and a stale override here would outlive the fold too.
+    el.style.alignItems = ''
     el.style.overflow = 'hidden'
     el.style.height = `${liveH}px`
   }, [liveH])
@@ -446,7 +462,7 @@ export default function PinnedPrompt({
     // the next read is the true natural height.
     const inflight = !!el.style.height
     const current = inflight ? el.getBoundingClientRect().height : null
-    if (inflight) { el.style.height = ''; el.style.transition = ''; el.style.overflow = '' }
+    if (inflight) { el.style.height = ''; el.style.transition = ''; el.style.overflow = ''; el.style.alignItems = '' }
     const target = el.getBoundingClientRect().height
     const from = current ?? lastBoxH.current
     lastBoxH.current = target
@@ -464,6 +480,15 @@ export default function PinnedPrompt({
     // morph fire on every hover, which is far more often than the chevron did.
     if (reducedMotion) return
     el.style.overflow = 'hidden'
+    // The box is `items-stretch` (so the `maxH` ceiling can shrink the body — see
+    // the JSX), but for the morph's duration the body must keep its NATURAL
+    // height and be revealed by the moving edge, as it always was: stretched to
+    // the animating height, the scrollable paragraph would shrink with it and
+    // flash a scrollbar for 150ms on every expand. `flex-start` for the morph,
+    // cleared with the other inline values on transitionend — at which point the
+    // stretch resumes and, if the ceiling bites, the paragraph settles into its
+    // scrolling size exactly once, at the end.
+    el.style.alignItems = 'flex-start'
     el.style.height = `${from}px`
     void el.getBoundingClientRect() // force reflow so the next assignment animates
     el.style.transition = `height ${MORPH_MS}ms ${MORPH_EASE}`
@@ -473,6 +498,7 @@ export default function PinnedPrompt({
       el.style.transition = ''
       el.style.height = ''
       el.style.overflow = ''
+      el.style.alignItems = ''
       el.removeEventListener('transitionend', done)
     }
     el.addEventListener('transitionend', done)
@@ -511,6 +537,26 @@ export default function PinnedPrompt({
     if (box) ro.observe(box)
     return () => ro.disconnect()
   }, [text, expanded, peek, folding, onCollapsedHeight])
+
+  // Whether the expanded paragraph has content below its visible edge. Re-read on
+  // its own scroll (the reader moving through it), on a resize of the paragraph
+  // (the ceiling or the viewport moving the edge) and on expand itself.
+  const [moreBelow, setMoreBelow] = useState(false)
+  const measureMoreBelow = useCallback(() => {
+    const el = textRef.current
+    if (!el) return
+    setMoreBelow(el.scrollHeight - el.clientHeight - el.scrollTop > 1)
+  }, [])
+  useEffect(() => {
+    if (!expanded) { setMoreBelow(false); return }
+    const el = textRef.current
+    if (!el) return
+    measureMoreBelow()
+    if (typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(measureMoreBelow)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [expanded, fullText, shown.length, measureMoreBelow])
 
   // Images earn the chevron on their own. Without this an image-only prompt never
   // clamps (no text to clamp), so the readable expanded strip was unreachable and
@@ -573,7 +619,24 @@ export default function PinnedPrompt({
       >
         <div
           ref={boxRef}
-          className="user-bubble flex items-start gap-2 rounded-xl bg-card text-card-fg ring-1 ring-inset forced-colors:border ring-border shadow-sm px-4 py-2 text-sm"
+          // `items-stretch`, not `items-start`, and that is what makes `maxH` work
+          // rather than merely clip. A single-line flex container clamps its one
+          // line to its own max-height (css-flexbox §9.4 step 8) and a stretched
+          // item takes that clamped size as a DEFINITE height — so the body
+          // button below is exactly as tall as the room the ceiling leaves, and its
+          // scrollable paragraph (a `min-h-0` column item) shrinks to fit inside it
+          // instead of running past the box's edge into a clipped dead zone. The
+          // chevron carries its own `h-6`, which stretch never touches, so it still
+          // sits on the first line. At rest the stretch is invisible: the body is
+          // the box's only content, so the line is its height either way.
+          //
+          // `overflow-hidden` makes the ceiling a guarantee rather than a layout
+          // outcome: whatever inside refuses to shrink (an image strip wrapped to
+          // more rows than the room allows) is cut at the box's edge instead of
+          // painting on past it over the composer. The fold and the morph set the
+          // same value inline for their duration and clear it back to this.
+          className="user-bubble flex items-stretch gap-2 overflow-hidden rounded-xl bg-card text-card-fg ring-1 ring-inset forced-colors:border ring-border shadow-sm px-4 py-2 text-sm"
+          style={maxH != null ? { maxHeight: maxH } : undefined}
         >
           <button
             type="button"
@@ -588,29 +651,12 @@ export default function PinnedPrompt({
             title={folding ? undefined : i18nT('pages.chat.pinnedPrompt.jump_to_this_turn')}
             aria-disabled={folding || undefined}
             tabIndex={folding ? -1 : undefined}
-            className={`min-w-0 flex-1 bg-transparent border-none p-0 m-0 text-left ${folding ? '' : 'cursor-pointer'}`}
+            // A flex COLUMN so the paragraph can give height back (see the box's
+            // `items-stretch`). `min-h-0` on the button for the same reason one
+            // level up: a flex item's automatic minimum is its content height,
+            // which would let the column refuse to shrink below the full prompt.
+            className={`min-w-0 min-h-0 flex-1 flex flex-col bg-transparent border-none p-0 m-0 text-left ${folding ? '' : 'cursor-pointer'}`}
           >
-            {/* Expanded: images get their own strip at readable size, outside the
-                scrollable <p> so they stay put while long text scrolls. */}
-            {expanded && shown.length > 0 && (
-              <span className="flex flex-wrap gap-2 my-1">
-                {shown.map(src => (
-                  // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- onError is an image-load lifecycle event (drop the 404'd src so `shown` falls back to the ImageOff glyph), not a user interaction; there is nothing here for a keyboard to reach
-                  <img key={src} src={pinnedImageUrl(src)} alt="" loading="lazy"
-                    onError={() => markFailed(src)}
-                    className={`h-20 w-auto max-w-[160px] rounded object-cover p-0.5 ${THUMB_FRAME}`} />
-                ))}
-              </span>
-            )}
-            {/* The same all-failed fallback the collapsed card gets. Without it,
-                expanding an image-only prompt whose files are gone empties the card
-                completely — the strip is skipped and `fullText` is '' — so the
-                chevron's reward would be a blank box. */}
-            {expanded && !fullText && images.length > 0 && shown.length === 0 && (
-              <span className="flex my-1">
-                <ImageOff size={28} aria-hidden className="text-muted" />
-              </span>
-            )}
             <p
               ref={textRef}
               // The fold outranks `expanded`. Both can be true at once: the reader can
@@ -620,11 +666,27 @@ export default function PinnedPrompt({
               // over unread lines — the exact hole this fold exists to close. While
               // folding the text always wraps in full, so the box stays full of text;
               // the cap resumes the moment the fold ends.
-              className={`my-1 leading-6 ${folding
+              //
+              // `min-h-0` in every state: the paragraph is a column item, and the
+              // box's `maxH` ceiling reaches it only if it is allowed to shrink. The
+              // expanded `40vh` is then an upper cap on top of that — on a tall pane
+              // the card still takes at most 40vh, on a short one it takes the room
+              // the floor leaves and scrolls the rest.
+              //
+              // `pinned-scroll-more` (index.css) fades the paragraph's bottom edge
+              // while content continues below it — a mask, so no fill and no extra
+              // element. Set from the scroll position below, never unconditionally:
+              // a permanent fade would dim the prompt's last line once the reader
+              // reaches it, and a prompt that fits would lose its last line for
+              // nothing. A cut line with nothing to say "more" read as a rendering
+              // defect, not a scroll region — the scrollbar is overlay-hidden on
+              // macOS and absent from a headless capture.
+              className={`my-1 leading-6 min-h-0 ${folding
                 ? 'whitespace-pre-wrap break-words overflow-hidden'
                 : expanded
-                  ? 'whitespace-pre-wrap break-words max-h-[40vh] overflow-y-auto'
+                  ? `whitespace-pre-wrap break-words max-h-[40vh] overflow-y-auto${moreBelow ? ' pinned-scroll-more' : ''}`
                   : 'overflow-hidden'}`}
+              onScroll={expanded ? measureMoreBelow : undefined}
               style={expanded || folding ? { overflowWrap: 'anywhere' } : {
                 // Tailwind ships `line-clamp-<n>` only for a literal n, and the
                 // line counts are shared with the geometry module — so set the
@@ -663,6 +725,33 @@ export default function PinnedPrompt({
                   exists to fix, so leave a neutral icon standing in for them. */}
               {!expanded && !text && images.length > 0 && shown.length === 0 && (
                 <ImageOff size={20} aria-hidden className="inline-block align-middle text-muted" />
+              )}
+              {/* Expanded: images at readable size, as the leading content of the
+                  SAME scroll region as the text. One region, not a strip beside a
+                  scrolling paragraph: under the ceiling two sibling scroll areas
+                  shrank the strip to a sliver (flex shares the loss by base size,
+                  and a 30-line prompt dwarfs a row of thumbnails) and gave the
+                  wheel two places to land. Here the thumbnails scroll away with the
+                  first lines and come back with them. `mb-1` keeps the 4px gap the
+                  block layout gave between the strip and the text. */}
+              {expanded && shown.length > 0 && (
+                <span className="flex flex-wrap gap-2 mb-1">
+                  {shown.map(src => (
+                    // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- onError is an image-load lifecycle event (drop the 404'd src so `shown` falls back to the ImageOff glyph), not a user interaction; there is nothing here for a keyboard to reach
+                    <img key={src} src={pinnedImageUrl(src)} alt="" loading="lazy"
+                      onError={() => markFailed(src)}
+                      className={`h-20 w-auto max-w-[160px] rounded object-cover p-0.5 ${THUMB_FRAME}`} />
+                  ))}
+                </span>
+              )}
+              {/* The same all-failed fallback the collapsed card gets. Without it,
+                  expanding an image-only prompt whose files are gone empties the card
+                  completely — the strip is skipped and `fullText` is '' — so the
+                  chevron's reward would be a blank box. */}
+              {expanded && !fullText && images.length > 0 && shown.length === 0 && (
+                <span className="flex mb-1">
+                  <ImageOff size={28} aria-hidden className="text-muted" />
+                </span>
               )}
               {expanded || folding ? fullText : text}
             </p>

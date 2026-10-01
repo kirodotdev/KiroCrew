@@ -6148,23 +6148,51 @@ def test_concurrent_tombstone_writes_do_not_lose_deletions(tmp_path, monkeypatch
     pre-existing list, so the second write dropped the first spec's tombstone --
     and that spec was rediscovered and reappeared after the user deleted it.
 
-    Interleaves the transactions deliberately: each writer is parked between its
-    read and its write, which is exactly the window the lock has to close."""
+    Interleaves the transactions deliberately: the first writer is parked between its
+    read and its write, which is exactly the window the lock has to close, and is
+    released only once the second writer has made its next move. Under the lock that
+    move is waiting to acquire it; under the reported race it is a second read of the
+    same list. The parked writer is never released by a timeout: a three-party barrier
+    here could only fill under the race, so the fixed code paid the full 10-second
+    timeout on every run and the test told the two outcomes apart by elapsed time."""
     _redirect_state(monkeypatch, tmp_path)
     routes._remember_deleted("/p/keep-me")
 
     real_load = routes._load_deleted
-    parked = threading.Barrier(3, timeout=10)
+    real_lock = routes._INDEX_LOCK
+    first_parked = threading.Event()
+    second_moved = threading.Event()
+    release = threading.Event()
+    reads: list[str] = []
+    attempts: list[str] = []
+    bookkeeping = threading.Lock()
+
+    class _WatchedLock:
+        """The real lock, reporting the second writer's arrival at it."""
+
+        def __enter__(self):
+            with bookkeeping:
+                attempts.append(threading.current_thread().name)
+                if len(attempts) == 2:
+                    second_moved.set()
+            return real_lock.__enter__()
+
+        def __exit__(self, *exc):
+            return real_lock.__exit__(*exc)
 
     def _slow_load():
         current = real_load()
-        # Every writer waits here until both have read, then they race to write.
-        try:
-            parked.wait()
-        except threading.BrokenBarrierError:
-            pass
+        with bookkeeping:
+            reads.append(threading.current_thread().name)
+            first = len(reads) == 1
+            if not first:
+                second_moved.set()
+        if first:
+            first_parked.set()
+            release.wait(timeout=10)
         return current
 
+    monkeypatch.setattr(routes, "_INDEX_LOCK", _WatchedLock())
     monkeypatch.setattr(routes, "_load_deleted", _slow_load)
 
     threads = [
@@ -6173,12 +6201,19 @@ def test_concurrent_tombstone_writes_do_not_lose_deletions(tmp_path, monkeypatch
     for t in threads:
         t.start()
     try:
-        parked.wait()
-    except threading.BrokenBarrierError:
-        pass
+        assert first_parked.wait(timeout=10), "no writer reached its read"
+        assert second_moved.wait(timeout=10), "the second writer neither read nor reached the lock"
+        # Decide before releasing, so the verdict is about the parked window.
+        reads_while_parked = list(reads)
+    finally:
+        release.set()
+        for t in threads:
+            t.join(timeout=10)
     for t in threads:
-        t.join(timeout=10)
         assert not t.is_alive(), "a tombstone write deadlocked"
+    assert (
+        len(reads_while_parked) == 1
+    ), "the second writer read while the first was parked before its write"
 
     monkeypatch.setattr(routes, "_load_deleted", real_load)
     recorded = routes._load_deleted()

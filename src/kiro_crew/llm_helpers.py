@@ -45,6 +45,8 @@ from kiro_crew.platform.tool_paths import (
     command_shaped_strings,
     edit_target_candidates,
     is_document_writing_tool,
+    mcp_document_body_keys,
+    split_document_bodies,
 )
 from kiro_crew.providers.base import (
     EVENT_COMPLETE,
@@ -463,6 +465,33 @@ def provider_fallback_active(provider: Any) -> bool:
     """
     marker = getattr(provider, TURN_FALLBACK_ATTR, None)
     return isinstance(marker, (tuple, list)) and len(marker) >= 2
+
+
+def provider_model_pin_refused(provider: LLMProvider) -> bool:
+    """True when *provider*'s adapter refused its pinned model at startup.
+
+    A config-option backend applies a pin non-strictly: a refusal leaves the
+    session on the backend default and raises nothing. The session records the
+    refused id as ``model_pin_refused``. Callers treat a True here exactly as a
+    caught model-unavailable error: annotate the downgrade and blank the
+    explicit pin on the usage row.
+    """
+    # Declared on LLMProvider. The str check keeps a test double's auto-made
+    # attribute from reading as a refusal.
+    value = provider.model_pin_refused
+    return isinstance(value, str) and bool(value)
+
+
+def provider_model_pin_partial(provider: LLMProvider) -> str:
+    """The bare model *provider* runs when its pair pin only half applied.
+
+    A ``<model>[<effort>]`` pin is applied as two writes. When the model lands
+    and the effort does not, the session runs the bare model, not the pin and
+    not the default. Returns that bare model, or ``""``. A caller billing by the
+    pin bills this value instead.
+    """
+    value = provider.model_pin_partial
+    return value if isinstance(value, str) else ""
 
 
 def next_fallback_candidate(
@@ -1291,6 +1320,7 @@ def _first_tool_input_denial(
     denied_regexes: list[str] | None,
     *,
     exempt_command: str | None = None,
+    command_rules: bool = True,
 ) -> tuple[str, str, str] | None:
     """Return the first tool_input denial among *strings*, or ``None``.
 
@@ -1307,6 +1337,11 @@ def _first_tool_input_denial(
     own wall clock -- a denied oversized string is recoverable, a worker parked
     for minutes on a pathological payload is not -- and an oversized one is
     denied rather than scanned or skipped.
+
+    ``command_rules=False`` applies the size ceiling and the path tier only:
+    the caller passes it for a named MCP document body
+    (``platform.tool_paths.MCP_DOCUMENT_BODY_FIELDS``), which is stored text
+    and not a command line.
 
     The tuple is ``(kind, reason, matched_string)`` where *kind* is
     ``"path"`` / ``"bash"`` / ``"regex"`` / ``"oversize"``. Mechanism
@@ -1337,6 +1372,8 @@ def _first_tool_input_denial(
             if is_unverifiable_path_refusal(path_refusal):
                 return ("path", path_refusal, s)
             return ("path", f"Blocked: sensitive path in tool_input: {s}", s)
+        if not command_rules:
+            continue
         _input_bash = is_sensitive_bash_command(s)
         if _input_bash:
             return ("bash", _input_bash, s)
@@ -1393,7 +1430,9 @@ class ToolApprovalPolicy(Enum):
 _orphan_rejects: set[asyncio.Task[Any]] = set()
 
 
-async def _steer_host_deny(provider: Any, event: Any, reason: str, *, cause: str) -> None:
+async def _steer_host_deny(
+    provider: Any, event: Any, reason: str, *, cause: str, title: str = ""
+) -> None:
     """Tell the model, in-band, that the HOST denied this call -- not the person.
 
     A rejected permission reaches the model as kiro-cli's fixed "User denied tool
@@ -1420,7 +1459,10 @@ async def _steer_host_deny(provider: Any, event: Any, reason: str, *, cause: str
     ``test_llm_helpers_deny_notice`` walks the file to keep both halves honest.
 
     *reason* may echo agent-authored text (a matched path, a hook's reason), so it
-    is redacted here; the shared helper redacts the title. The reason is
+    is redacted here; the shared helper redacts the title. *title* overrides the
+    event's own when a caller renders the call differently -- the channel agent
+    stream (``kiro_crew.channel``) reuses this helper and names a permission
+    request by ``event.text`` where ``event.title`` is empty. The reason is
     otherwise passed VERBATIM, as the chat runner does: a rule-authored refusal's
     fixed lead (``Blocked by security policy: ``, the unverifiable-path stall
     prefix) is the structural key ``deny_guidance.classify_deny`` reads before any
@@ -1456,7 +1498,7 @@ async def _steer_host_deny(provider: Any, event: Any, reason: str, *, cause: str
     """
     safe_reason, _ = redact_exfiltration_urls(reason or "")
     safe_reason, _ = redact_credentials(safe_reason)
-    title = str(getattr(event, "title", "") or "") or "unnamed tool call"
+    title = title or str(getattr(event, "title", "") or "") or "unnamed tool call"
     try:
         await steer_refusal_notice(provider, title, safe_reason, cause=cause)
     except asyncio.CancelledError:
@@ -2907,11 +2949,41 @@ async def _resolve_permission(
         )
         else None
     )
+    # A Kiro Crew core MCP tool listed in ``platform.tool_paths.
+    # MCP_DOCUMENT_BODY_FIELDS`` (``knowledge_add_document``'s ``content``)
+    # stores that field as document text, so the field skips the command-text
+    # rules -- the deny list and the argv floor -- that read a page mentioning a
+    # product subcommand as an attempt to run it. The body keeps the size
+    # ceiling and the path tier; every other argument keeps the full scan. Same
+    # provenance bar as the built-in scoping above, and the identity is the
+    # cached server AND tool, so a same-named tool on another server, or a frame
+    # whose identity did not come from the caches, keeps the full scan.
+    _mcp_body_keys = (
+        mcp_document_body_keys(
+            getattr(event, "tool_name", ""), getattr(event, "mcp_server_name", "")
+        )
+        if (
+            _edit_params is None
+            and _scoped_params is None
+            and getattr(event, "shell_classified", False)
+            and not event.is_shell
+            and getattr(event, "raw_params_trusted", False)
+            and getattr(event, "mcp_identity_trusted", False)
+            and isinstance(getattr(event, "raw_tool_params", None), dict)
+        )
+        else frozenset()
+    )
     _scoped_truncated = False
+    _body_strings: list[str] = []
     if _edit_params is not None:
         _input_strings: list[str] = []
     elif _scoped_params is not None:
         _scoped_strings = command_shaped_strings(_scoped_params)
+        _scoped_truncated = _scoped_strings.truncated
+        _input_strings = list(_scoped_strings)
+    elif _mcp_body_keys and isinstance(event.raw_tool_params, dict):
+        _rest_params, _body_strings = split_document_bodies(event.raw_tool_params, _mcp_body_keys)
+        _scoped_strings = command_shaped_strings(_rest_params, body_keys=frozenset())
         _scoped_truncated = _scoped_strings.truncated
         _input_strings = list(_scoped_strings)
     else:
@@ -2953,6 +3025,10 @@ async def _resolve_permission(
             )
             if input_hit is not None:
                 return (*input_hit, "always_deny_input")
+        if _body_strings:
+            body_hit = _first_tool_input_denial(_body_strings, _denied_regexes, command_rules=False)
+            if body_hit is not None:
+                return (*body_hit, "always_deny_input")
         return None
 
     _hit = await asyncio.to_thread(_scan_off_loop)

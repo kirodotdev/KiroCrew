@@ -315,6 +315,15 @@ across slot switches and reloads for free. The chip's remove control strips
 exactly its token (boundary-checked, so a longer sibling token survives).
 Picker-picked FILES record their inserted `@rel` token too, and the file
 chip's remove strips it — the same remove contract for both chip kinds.
+The file's recorded token outlives that remove until the next send, so an
+undo that brings the token back re-stages the file and a redo unstages it
+again. The remove asks the same revival question the reconciliation asks:
+when a leftover in the stripped text would re-stage the removed file, the
+record is dropped; a leftover the reconciliation ignores, such as an old
+project's spelling, keeps it.
+The recorded tokens are persisted per slot beside the staged files
+(`chatFileTokenDrafts`, sessionStorage), so a chip restored after a reload
+keeps them and behaves like one picked in the current page.
 Uploaded/dropped files have no token and keep a state-only remove.
 
 **Wire.** On send, each `@rel/` token is rewritten in the
@@ -373,9 +382,17 @@ shows literally — the same trade-off inline file mentions make.
 | `src/kiro_crew/dashboard/file_index.py` | `FileIndex`, `FileIndexRegistry` |
 | `website/src/components/FilePickerMenu.tsx` | Picker UI, `kind` propagation, trailing-slash insertion, `pathMode` |
 | `website/src/components/composerTokens.ts` | Caret-relative `@` / `$` / `./` token matchers and the shared token replace |
-| `website/src/components/ChatInput.tsx` | Composer wiring, pending file/folder preview strip |
+| `website/src/components/ChatInput.tsx` | Composer wiring: mounts the trigger pickers and the preview strip |
+| `website/src/components/chat-input/pickers.ts` | Which trigger picker the text at the caret opens (`@` / `$` / `./` / `/`), one rule for the textarea and the Lexical editor |
+| `website/src/components/chat-input/PickerMenus.tsx` | The `@` file picker, the `./` path picker (`pathMode`) and the `$` / `/` menus, anchored to the composer |
+| `website/src/components/chat-input/FilePreviewStrip.tsx` | Pending file/folder preview strip: basename-first folder labels, per-tile remove |
 | `website/src/utils/fileTokens.ts` | Attachment-marker owner: file AND dir token parse/serialize/resolve |
-| `website/src/pages/ChatPage.tsx` | Token-derived staging and send/steer serialization |
+| `website/src/utils/chatFileTokenDrafts.ts` | Per-slot persistence of file-chip aliases beside the staged-file drafts |
+| `website/src/pages/ChatPage.tsx` | Send serialization (`meta.dirs`); the host that composes the owners below |
+| `website/src/pages/chat/page/composerStaging.ts` | Staged-resource state; folder chips derived from `@rel/` tokens (`useStagedFolderRefs`) |
+| `website/src/pages/chat/page/composerFileMentions.ts` | Caret mention insertion, file-chip ↔ alias reconciliation, chip remove and its undo |
+| `website/src/pages/chat/page/composerDrafts.ts` | Per-slot draft stores, including the picked-file aliases, and their slot-switch save/restore |
+| `website/src/pages/chat/page/busyTurnControls.ts` | Steer serialization (folder tokens stay `@rel/`) |
 | `website/src/pages/chat/ChatPageMessageContent.tsx` | User-message folder marker resolution and inline folder chips |
 
 ## Tests
@@ -384,6 +401,7 @@ shows literally — the same trade-off inline file mentions make.
 |---|---|
 | `test/test_file_search.py` | Endpoint behaviour, scoring, exclusions |
 | `test/test_path_complete.py` | Directory listing, prefix + dot-entry rules, cap, the containment refusals (`../` escape, absolute `dir`, symlink out, an entry pointing out), the re-entering `../` run, and the swap-after-validation race |
+| `website/src/test/ChatInput.refactor.pickers.test.tsx` | The same `@` / `$` / `./` / `/` trigger decision from the textarea and from the Lexical change callback, and the caret each publishes |
 | `website/src/test/ChatInput.pathTrigger.test.tsx` | The `./` trigger: scoping per token, Tab/Enter accept, directory re-open, the debounce and placeholder windows (an accepted row is always rebuilt on the prefix that produced it), the out-of-project empty state, Escape, no `~/`, no menu without a project |
 | `website/src/test/composerTokens.test.ts` | Token matchers and detection↔insertion span agreement |
 | `test/test_file_grep.py` | Engine parity, the stdin pattern channel, anchored exclusions, deadline-bounded extraction, row redaction |
@@ -395,4 +413,6 @@ shows literally — the same trade-off inline file mentions make.
 | `website/src/test/ChatInput.dirStripHeight.test.tsx` | Preview-strip height compensation for a folders-only strip |
 | `website/src/test/fileTokens.dirs.test.ts` | Token parse/serialize/resolve units, label widening, lossless spaced paths |
 | `website/src/test/ChatPage.dirStaging.test.tsx` | Token-derived staging, per-slot draft survival, remove parity, send serialization + `meta.dirs` |
+| `website/src/test/ChatPage.chipUndo.test.tsx` | File-chip remove then undo/redo: attachment restored and sent, removed again, duplicate-token, prefix-sibling, old-project-alias, after-reload and post-send cases |
+| `website/src/test/chatFileTokenDrafts.test.ts` | Alias-draft roundtrip and corruption guard |
 | `website/src/test/renderUserContent.dirs.test.tsx` | Bubble chips: fresh, replay, mixed file+dir, paste-adjacent |

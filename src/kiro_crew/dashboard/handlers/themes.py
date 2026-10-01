@@ -20,7 +20,6 @@ Endpoints
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import logging
 import os
@@ -39,6 +38,7 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew.atomic_write import atomic_write
+from kiro_crew.dashboard.conditional_get import conditional_response, weak_content_etag
 from kiro_crew.dashboard.theme_validate import (
     _THEME_ASSET_CSP,
     _THEME_ASSET_CT,
@@ -1044,15 +1044,6 @@ async def api_theme_asset(request: web.Request) -> web.Response:
 _THEME_ASSET_CACHE_CONTROL = "private, max-age=0, must-revalidate"
 
 
-def _theme_asset_etag(body: bytes) -> str:
-    """Bare weak-validator value for a theme asset body: 16 hex chars, no quotes.
-
-    The response header is built from it as ``W/"<hex>"``; the bare form is
-    what aiohttp's parsed ``request.if_none_match`` entries carry in ``.value``.
-    """
-    return hashlib.blake2b(body, digest_size=8).hexdigest()
-
-
 def _theme_asset_response(
     request: web.Request,
     body: bytes,
@@ -1067,24 +1058,15 @@ def _theme_asset_response(
     + CSP headers, so a 304 never relaxes what the 200 promised. Overlay and
     topbar HTML pass their sandbox CSP via ``csp``.
     """
-    etag_value = _theme_asset_etag(body)
-    headers = {
-        "ETag": f'W/"{etag_value}"',
-        "Cache-Control": _THEME_ASSET_CACHE_CONTROL,
-        "X-Content-Type-Options": "nosniff",
-        "Content-Security-Policy": csp,
-    }
-    # aiohttp's parsed accessor, not the raw header: it already splits the
-    # list, strips the ``W/`` weak marker and hands ``*`` back as a single
-    # entry. RFC 9110 §13.1.2: If-None-Match uses the WEAK comparison, so a
-    # weak form of the current tag matches too (same shape as apps/routes.py).
-    if_none_match = request.if_none_match
-    if if_none_match and (
-        (len(if_none_match) == 1 and if_none_match[0].value == "*")
-        or any(t.value == etag_value for t in if_none_match)
-    ):
-        return web.Response(status=304, headers=headers)
-    return web.Response(body=body, content_type=content_type, charset=charset, headers=headers)
+    return conditional_response(
+        request,
+        body,
+        content_type,
+        etag=weak_content_etag(body),
+        cache_control=_THEME_ASSET_CACHE_CONTROL,
+        extra_headers={"Content-Security-Policy": csp},
+        charset=charset,
+    )
 
 
 async def api_theme_overlay(request: web.Request) -> web.Response:

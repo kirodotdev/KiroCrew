@@ -1091,7 +1091,7 @@ class TestStartDashboardWiring:
         ``KIROCREW_BOUND_PORT``, which
         ``test_backends_spawn_with_the_reserved_ports_evidence_exported`` pins.
         The second wave (``start_deferred_app_backends``) still runs only after
-        the site serves: the admission split lives in ``apps/backend.py`` and is
+        the site serves: the admission split lives in ``apps/backend_runtime/startup.py`` and is
         shared with the headless entrypoint, where the bound port only exists
         post-listen."""
         seen: dict[str, bool] = {}

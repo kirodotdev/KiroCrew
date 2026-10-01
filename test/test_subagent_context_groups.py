@@ -17,8 +17,10 @@ that group's gate fails exactly one test.
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from types import SimpleNamespace
 
+from kiro_crew import context as context_module
 from kiro_crew.config.loader import config_path
 from kiro_crew.context import (
     CONTEXT_GROUP_LESSONS,
@@ -32,6 +34,18 @@ from kiro_crew.memory import MemoryStore
 from kiro_crew.skills import SkillsLoader
 
 ALL_GROUPS = frozenset(SWITCHABLE_CONTEXT_GROUPS)
+
+
+class _FrozenClock(datetime):
+    """A ``datetime`` whose ``now()`` does not advance.
+
+    The render carries a minute-resolution timestamp, so two renders that
+    straddle a minute boundary differ in that line alone.
+    """
+
+    @classmethod
+    def now(cls, tz=None):  # type: ignore[override]
+        return datetime(2026, 1, 1, 12, 0).replace(tzinfo=tz)
 
 
 def _builder(tmp_path) -> ContextBuilder:
@@ -63,8 +77,9 @@ def _builder(tmp_path) -> ContextBuilder:
 class TestDefaultIsUnchanged:
     """The all-on paths must not drift from the pre-feature builder."""
 
-    def test_none_and_all_groups_are_identical(self, tmp_path):
+    def test_none_and_all_groups_are_identical(self, tmp_path, monkeypatch):
         """A parent passing no flag (all groups) == every other caller (None)."""
+        monkeypatch.setattr(context_module, "datetime", _FrozenClock)
         b = _builder(tmp_path)
         assert b.build_session_context(context_groups=None) == b.build_session_context(
             context_groups=ALL_GROUPS

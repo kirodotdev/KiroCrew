@@ -22,31 +22,7 @@ import pytest
 from kiro_crew import platform_compat
 from kiro_crew.apps.builtins.auto_improvement.spine import pollute
 from kiro_crew.platform_compat import unlink_link_or_junction
-
-
-def _make_dir_link(link: Path, target: Path) -> None:
-    """Create a reparse point at *link* resolving to the directory *target*.
-
-    A local mirror of ``test/conftest.py::make_dir_link``, which these in-package
-    tests cannot import: only the ``test/`` testpath gets that conftest.
-
-    ``platform_compat.symlink_or_junction`` is deliberately NOT used here. It
-    tries ``os.symlink`` FIRST and falls back to a junction only where the
-    privilege is missing, so a runner with Developer Mode or an elevated shell
-    gets a SYMLINK and the junction arm these tests exist for is never exercised
-    -- silently, while still reporting green. ``CreateJunction`` is what that
-    helper falls back to, taken directly so the link type is not left to the host.
-    """
-    if platform_compat.IS_WINDOWS:
-        # Function-local because the module does not exist off Windows, so a
-        # top-level import would break collection on POSIX. Both in-repo callers
-        # of CreateJunction do the same -- test/conftest.py::make_dir_link and
-        # platform_compat.symlink_or_junction.
-        import _winapi
-
-        _winapi.CreateJunction(str(target), str(link))  # type: ignore[attr-defined]
-        return
-    link.symlink_to(target, target_is_directory=True)
+from kiro_crew.testing.links import make_dir_link as _make_dir_link
 
 
 def _symlinks_supported(tmp: Path) -> bool:

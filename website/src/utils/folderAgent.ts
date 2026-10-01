@@ -1,4 +1,5 @@
 import type { ChatFolder } from '../types'
+import { ApiError } from '../api/apiError'
 
 /**
  * First non-empty `pick(folder)` on the named folder or, failing that, on the
@@ -110,4 +111,21 @@ export function resolveFolderSteeringDirs(
     }
   }
   return out
+}
+
+/**
+ * True when a folder-inherited create failed because the folder's project
+ * directory no longer exists: the slot-project endpoint answers HTTP 400
+ * "Not a directory". It is the one create failure the user can fix, so both
+ * the drawer's folder `+` and the phone's new-chat button name the stale path.
+ *
+ * createSlot rethrows the ApiError, but createAsyncThunk serializes thrown
+ * errors down to {name, message, stack}, so the instance and its `status` are
+ * gone by the time `.unwrap()` delivers it. Match the live instance when
+ * present and fall back to the serialized shape.
+ */
+export function isStaleProjectDirError(err: unknown): boolean {
+  if (err instanceof ApiError) return err.status === 400 && err.message === 'Not a directory'
+  const e = err as { name?: unknown; message?: unknown } | null
+  return e?.name === 'ApiError' && e.message === 'Not a directory'
 }

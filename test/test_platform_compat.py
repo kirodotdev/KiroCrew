@@ -7957,3 +7957,177 @@ class TestStripExtendedLengthPrefix:
         monkeypatch.setattr(pc, "strip_extended_length_prefix", record)
         workflow_memory._allocator_path(tmp_path / "run-ids.json", tmp_path)
         assert calls, "workflow_memory did not reach the shared fold"
+
+
+class TestOpenCreateOrExisting:
+    """The one create-or-open every lock sidecar shares (SEL chain lock, decision
+    log, app-deps provisioning lock): elect one creator, hand contenders the
+    creator's inode, never recreate a leaf that vanished."""
+
+    def test_absent_name_is_created_with_the_mode(self, tmp_path):
+        target = tmp_path / "x.lock"
+        fd = pc.open_create_or_existing(target, os.O_RDWR, 0o600)
+        try:
+            assert target.exists()
+            if pc.IS_POSIX:
+                assert stat.S_IMODE(os.fstat(fd).st_mode) == 0o600
+        finally:
+            os.close(fd)
+
+    def test_existing_name_is_opened_not_truncated(self, tmp_path):
+        target = tmp_path / "x.lock"
+        target.write_bytes(b"held")
+        fd = pc.open_create_or_existing(target, os.O_RDWR)
+        try:
+            assert os.read(fd, 8) == b"held"
+        finally:
+            os.close(fd)
+
+    def test_a_missing_parent_is_the_callers_enoent(self, tmp_path):
+        with pytest.raises(FileNotFoundError):
+            pc.open_create_or_existing(tmp_path / "gone" / "x.lock", os.O_RDWR)
+
+    @pytest.mark.skipif(not pc.IS_POSIX, reason="dir_fd is a POSIX openat feature")
+    def test_descriptor_relative_open_lands_under_the_pin(self, tmp_path):
+        dir_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            fd = pc.open_create_or_existing("x.lock", os.O_RDWR, 0o600, dir_fd=dir_fd)
+            try:
+                assert os.fstat(fd).st_ino == (tmp_path / "x.lock").stat().st_ino
+            finally:
+                os.close(fd)
+        finally:
+            os.close(dir_fd)
+
+    def test_racing_creators_all_hold_one_inode(self, tmp_path):
+        """Forty threads race to create the same absent name, many rounds: every
+        caller comes back with a descriptor, and every descriptor names the one
+        inode -- the property a nonexclusive ``O_CREAT`` does not give on Darwin."""
+        for round_no in range(20):
+            target = tmp_path / f"race-{round_no}.lock"
+            gate = threading.Barrier(40)
+            fds: list[int] = []
+            errors: list[BaseException] = []
+            lock = threading.Lock()
+
+            def contend() -> None:
+                try:
+                    gate.wait(timeout=10)
+                    fd = pc.open_create_or_existing(target, os.O_RDWR, 0o600)
+                    with lock:
+                        fds.append(fd)
+                except BaseException as exc:  # noqa: BLE001 - recorded for the assert
+                    with lock:
+                        errors.append(exc)
+
+            threads = [threading.Thread(target=contend) for _ in range(40)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=30)
+            try:
+                assert not errors, errors
+                assert len(fds) == 40
+                assert len({os.fstat(fd).st_ino for fd in fds}) == 1
+            finally:
+                for fd in fds:
+                    os.close(fd)
+
+
+class TestOpenLockFileForSweep:
+    """``open_lock_file_for_sweep`` lets the orphan-lock sweep delete a lock file
+    while still holding its own verification handle on it. On POSIX an open fd
+    never blocks an unlink; on Windows a CRT descriptor omits
+    ``FILE_SHARE_DELETE``, so the sweep's own handle would block the delete with a
+    sharing violation and residue would never be reclaimed (the shard-2 reds). The
+    Windows path must open with delete-sharing.
+    """
+
+    def test_posix_opens_rdwr_without_following_links_and_allows_unlink_while_open(
+        self, tmp_path, monkeypatch
+    ):
+        if not pc.IS_POSIX:
+            pytest.skip("exercises real POSIX unlink-while-open semantics")
+        monkeypatch.setattr(pc, "IS_POSIX", True)
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        lock = tmp_path / "lock"
+        lock.write_bytes(b"")
+        fd = pc.open_lock_file_for_sweep(lock)
+        try:
+            # The whole point: the inode is deletable while this fd is open, which
+            # is what lets the sweep remove residue under its own held lock.
+            os.unlink(lock)
+            assert not lock.exists()
+            assert os.fstat(fd).st_size == 0
+        finally:
+            os.close(fd)
+
+    def test_posix_refuses_a_symlink_at_the_name(self, tmp_path, monkeypatch):
+        if not pc.IS_POSIX:
+            pytest.skip("exercises real POSIX symlink + O_NOFOLLOW semantics")
+        if not hasattr(os, "O_NOFOLLOW"):
+            pytest.skip("O_NOFOLLOW unavailable")
+        monkeypatch.setattr(pc, "IS_POSIX", True)
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        target = tmp_path / "target"
+        target.write_bytes(b"")
+        link = tmp_path / "lock"
+        os.symlink(target, link)
+        with pytest.raises(OSError):
+            pc.open_lock_file_for_sweep(link)
+
+    def test_windows_createfilew_requests_delete_sharing_and_read_write(self, monkeypatch):
+        # Simulate the Windows path and capture the CreateFileW arguments. The
+        # share mode must include FILE_SHARE_DELETE so the subsequent unlink lands
+        # while this handle (and its byte-range lock) is still held; without it a
+        # sharing violation leaves genuine residue behind.
+        captured: dict = {}
+
+        def create_file(path, access, share, security, disposition, flags, template):
+            captured.update(
+                path=path,
+                access=access,
+                share=share,
+                disposition=disposition,
+                flags=flags,
+            )
+            return 0x1234
+
+        kernel = types.SimpleNamespace(
+            CreateFileW=create_file,
+            CloseHandle=lambda _h: True,
+        )
+        monkeypatch.setattr(pc, "IS_POSIX", False)
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc.ctypes, "WinDLL", lambda *_a, **_k: kernel, raising=False)
+        monkeypatch.setattr(
+            pc, "msvcrt", types.SimpleNamespace(open_osfhandle=lambda _h, _flags: 77), raising=False
+        )
+
+        fd = pc.open_lock_file_for_sweep(r"C:\agents\alias.lock")
+
+        assert fd == 77
+        assert captured["share"] == pc._WIN_FILE_SHARE_READ_WRITE_DELETE
+        assert captured["share"] & 0x00000004  # FILE_SHARE_DELETE bit is set
+        assert captured["access"] == pc._WIN_GENERIC_READ | pc._WIN_GENERIC_WRITE
+        assert captured["disposition"] == pc._WIN_OPEN_EXISTING  # never creates
+        assert captured["flags"] == 0  # no OPEN_REPARSE_POINT; caller pre-checks
+
+    def test_windows_closes_the_native_handle_when_wrapping_fails(self, monkeypatch):
+        closed: list = []
+        kernel = types.SimpleNamespace(
+            CreateFileW=lambda *_a: 0x1234,
+            CloseHandle=lambda h: closed.append(h) or True,
+        )
+        monkeypatch.setattr(pc, "IS_POSIX", False)
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc.ctypes, "WinDLL", lambda *_a, **_k: kernel, raising=False)
+
+        def boom(_h, _flags):
+            raise OSError("wrap failed")
+
+        monkeypatch.setattr(pc, "msvcrt", types.SimpleNamespace(open_osfhandle=boom), raising=False)
+
+        with pytest.raises(OSError):
+            pc.open_lock_file_for_sweep(r"C:\agents\alias.lock")
+        assert closed == [0x1234]

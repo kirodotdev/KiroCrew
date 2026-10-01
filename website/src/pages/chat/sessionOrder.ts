@@ -38,7 +38,7 @@ export interface Sortable {
 
 /** Settled activity instant of an ACTIVE slot, as the ISO string the backend
  *  sent. `last_turn_ts` moves only when a prompt arrives or a turn ends, whereas
- *  `last_ts` is the newest row of any role and advances on every streamed tool
+ *  `last_ts` is the newest saved row of any role and advances on every streamed tool
  *  call — ranking or labelling a row by that makes the list churn while agents
  *  work. Display, date segmenting and the recency tint all read THIS so a row's
  *  visible timestamp cannot disagree with the position it was sorted into. */

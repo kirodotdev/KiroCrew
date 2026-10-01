@@ -486,7 +486,7 @@ class TestPublishHomeTabSessions:
         new_callable=AsyncMock,
         return_value="*SSO:* ✅",
     )
-    async def test_taskrunner_session_rendered_under_autopilot(
+    async def test_taskrunner_session_rendered_under_task_runner(
         self, _mw, _fmt, _yolo, tmp_path, monkeypatch
     ):
         sess_dir = tmp_path / "sessions"
@@ -502,7 +502,8 @@ class TestPublishHomeTabSessions:
         await _publish_home_tab(orch, "U123")
 
         text = str(orch.slack.views_publish.call_args[1]["view"]["blocks"])
-        assert "Autopilot / task runner" in text
+        assert "*Task runner*" in text
+        assert "Autopilot" not in text
         assert "Refactor login" in text
         assert "mc_session_resume_taskrunner_run-foo" in text
 

@@ -386,6 +386,15 @@ DISCORD_TRANSIENT = "transient"
 #: network. Transient in nature, but distinct because nothing was sent.
 DISCORD_BLOCKED = "blocked"
 
+#: Classified outcomes of an in-place message edit, for the seam grader.
+EDIT_OK = "ok"
+#: The message is gone (a moderator/automod deletion -> 404). A fresh
+#: POST replacing it lands below the message that was ABOVE the deleted bubble.
+EDIT_GONE = "gone"
+#: A transient edit failure (429/5xx/timeout); the bubble is still on screen, so
+#: a fresh POST lands below THAT frame.
+EDIT_FAILED = "failed"
+
 
 def _rate_limit_headers(resp: Any) -> Mapping[str, str]:
     """Response headers as a mapping, empty when there are none to read.
@@ -576,6 +585,24 @@ class DiscordApiResult:
 def _failed(outcome: str, *, status: int = 0, code: int = 0, detail: str = "") -> DiscordApiResult:
     """A failure result. ``data`` stays None so body checks read as "no send"."""
     return DiscordApiResult(outcome=outcome, status=status, code=code, detail=detail)
+
+
+def _classify_edit(result: DiscordApiResult) -> str:
+    """``EDIT_OK`` / ``EDIT_GONE`` / ``EDIT_FAILED`` for an in-place edit result.
+
+    GONE is a 404 -- Discord maps a deleted message to a non-retryable permanent
+    result (``retry cannot undelete a message``), so the bubble is off screen and
+    a replacement send lands below the message ABOVE it. Every other failure is
+    treated as still-on-screen (a transient 429/5xx, a local breaker block, a
+    timeout): fail-safe, because grading a fresh send against the still-visible
+    bubble's own frame is the same no-op the successful-edit path already relies
+    on, whereas mistaking a transient failure for GONE would drop a real seam.
+    """
+    if bool(result):
+        return EDIT_OK
+    if result.status == 404:
+        return EDIT_GONE
+    return EDIT_FAILED
 
 
 @dataclass
@@ -916,6 +943,30 @@ class DiscordClient:
         payload = _message_payload(text, components, keep_empty_components=True)
         result = await self._api("PATCH", f"/channels/{channel_id}/messages/{message_id}", payload)
         return result is not None
+
+    async def edit_message_with_files_outcome(
+        self,
+        channel_id: str,
+        message_id: str,
+        text: str,
+        files: Sequence[OutboundFile],
+        *,
+        components: list[dict] | None = None,
+    ) -> str:
+        """:meth:`edit_message_with_files` CLASSIFIED as ``EDIT_OK/GONE/FAILED``.
+
+        Returns ``EDIT_OK`` on success, ``EDIT_GONE`` when the message is gone
+        (a moderator/automod deletion -- a 404, which Discord maps to a
+        non-retryable permanent result), and ``EDIT_FAILED`` for a transient
+        failure (429/5xx, timeout) where the message is still on screen. The seam
+        grader needs the distinction: a fresh POST after a GONE bubble lands below
+        the message that was ABOVE it (``_bubble_above``), while one after a
+        TRANSIENT failure lands below the still-visible bubble (``_sent_tail``).
+        """
+        result = await self.edit_message_result(
+            channel_id, message_id, text, files=files, components=components
+        )
+        return _classify_edit(result)
 
     async def send_message_with_files(
         self,

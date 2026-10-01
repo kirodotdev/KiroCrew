@@ -247,7 +247,7 @@ def test_a_trusted_unc_root_is_not_refused_by_the_gate(
 
     monkeypatch.setattr("kiro_crew.hooks.is_unc_shape", lambda raw: True, raising=False)
     monkeypatch.setattr("kiro_crew.hooks.unc_probe_allowed", lambda raw: True, raising=False)
-    # ``kiro_crew.security``, NOT ``...security.paths``. build.py reads
+    # ``kiro_crew.security``, NOT ``...security.paths``. pipeline/crew.py reads
     # ``_sec.is_sensitive_path`` off the package, which re-exports its own binding, so
     # patching the submodule leaves the one the code reads untouched -- which is why an
     # earlier version of this test kept dying inside the fence it thought it had stubbed.

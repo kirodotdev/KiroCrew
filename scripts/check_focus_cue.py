@@ -822,6 +822,16 @@ def self_test() -> int:
         run("init", "-q")
         run("config", "user.email", "probe@example.invalid")
         run("config", "user.name", "probe")
+        # Keep git from writing into this repo in the background. `git commit` can
+        # kick off auto-maintenance (`gc.auto`), which runs detached and repacks
+        # into `.git/objects/pack` after the foreground command has already
+        # returned. Cleanup then lists that directory, deletes what it saw, and
+        # hits `rmdir` on entries the detached repack created in between, raising
+        # `ENOTEMPTY`. Disabling both the legacy `gc.auto` trigger and the
+        # `maintenance.auto` path leaves nothing writing here once each `run` exits,
+        # so the temp directory is quiescent by the time it is removed.
+        run("config", "gc.auto", "0")
+        run("config", "maintenance.auto", "false")
         target = os.path.join(repo, "a.tsx")
         with open(target, "w", encoding="utf-8") as handle:
             handle.write('<input\n  className="outline-none\n'

@@ -57,7 +57,7 @@ const slots = [
   mkSlot('chat-options', 'Draft release notes', { has_options: true, options: ['Ship it', 'Hold'], last_message: 'Two options for the changelog' }),
   mkSlot('chat-interrupted', 'Fix flaky shard 4', { interrupted: true, last_message: 'turn ended without a reply' }),
   mkSlot('chat-working', 'Refactor config loader', { running: true, last_message: 'editing loader.py' }),
-  mkSlot('chat-orchestrating', 'Ship board lanes', { running: true, orchestrating: true, last_message: 'stage 2 of 4' }),
+  mkSlot('chat-staged', 'Ship board lanes', { running: true, last_message: 'stage 2 of 4' }),
   mkSlot('chat-queued', 'Weekly dependency sweep', { queue_depth: 2, last_message: 'two prompts queued' }),
   mkSlot('chat-idle-1', 'Weekly report draft', { last_message: 'done — summary posted' }),
   mkSlot('chat-idle-2', 'Investigate disk alert', { last_message: 'closed, no action needed' }),
@@ -77,7 +77,7 @@ const placeholderColumns = [
 const EXPECTED = {
   'lane-needs_approval': ['chat-approval'],
   'lane-waiting': ['chat-question', 'chat-options', 'chat-interrupted'],
-  'lane-working': ['chat-working', 'chat-orchestrating', 'chat-queued', 'chat-subagents'],
+  'lane-working': ['chat-working', 'chat-staged', 'chat-queued', 'chat-subagents'],
   'lane-idle': ['chat-idle-1', 'chat-idle-2'],
 }
 

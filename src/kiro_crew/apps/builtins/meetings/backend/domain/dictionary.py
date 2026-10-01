@@ -33,7 +33,7 @@ from typing import Any, Callable
 # `ModuleNotFoundError` naming the app package itself — a bare `import tomllib`
 # raises with `exc.name == "tomllib"`, so it re-raises and the WHOLE gateway
 # fails to start on 3.10, not just this default-disabled app. Same ladder as
-# `onboarding_import.py`.
+# `onboarding_scan.py`.
 try:
     import tomllib as _toml  # type: ignore[import-not-found]
 except ModuleNotFoundError:  # pragma: no cover - exercised on Python 3.10

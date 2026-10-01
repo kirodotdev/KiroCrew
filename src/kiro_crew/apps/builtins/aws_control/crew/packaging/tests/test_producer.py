@@ -293,8 +293,8 @@ def load_build(
     sys.meta_path.insert(0, finder)
     try:
         mod = importlib.import_module(f"{root}.build")
-        # Every owner, while this finder can still serve it: the facade imports an owner on
-        # its first read, which would otherwise come after the finder is gone.
+        # Every owner, while this finder can still serve it: the facade imports each one as
+        # it loads, and importing them here too keeps the copy whole if a mutation stops it.
         for leaf in owners:
             importlib.import_module(f"{root}.pipeline.{leaf}")
     except BaseException:

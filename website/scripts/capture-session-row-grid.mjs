@@ -85,12 +85,12 @@ const slots = [
     source_links_total: 2,
   },
   {
-    // Autopilot mode, so the meta line carries a BADGE. The badge lost its own
-    // `text-[11px]` and inherits the meta line's 10px: an 11px chip inside a 12px
-    // line box overflows it, which would put the line — and every edge below it —
-    // back off the grid. Asserted below rather than eyeballed.
-    key: 'chat-mode', running: false, messages: 5, agent: 'kirocrew', mode: 'orchestrator',
-    title: '自动驾驶模式的会话', modified: now - 2400, last_ts: '2026-08-16T23:30:00Z',
+    // Incognito, so the meta line carries a marker beside the words. Anything in
+    // that line inherits its 10px: an 11px chip inside a 12px line box overflows
+    // it, which would put the line — and every edge below it — back off the
+    // grid. Asserted below rather than eyeballed.
+    key: 'chat-mode', running: false, messages: 5, agent: 'kirocrew', memory_mode: 'incognito',
+    title: '无痕模式的会话', modified: now - 2400, last_ts: '2026-08-16T23:30:00Z',
     folder_id: '', last_message: 'Queued three follow-ups.',
   },
   {
@@ -136,9 +136,9 @@ async function main() {
       localStorage.setItem('mc-privacy-notice-v1', '1')
       localStorage.setItem('mc-sidebar-pinned', 'true')
       // GRID_LANG renders the row in another UI language. The meta line is now
-      // 10px and the mode badges inherit it, so the question "is a translated
-      // badge still legible at 10px" needs a shot in the locale with the longest
-      // catalogued string (ja オートパイロット), not an English one.
+      // 10px and everything in it inherits that, so the question "is a
+      // translated label still legible at 10px" needs a shot in a locale with
+      // long catalogued strings, not an English one.
       if (lang) localStorage.setItem('mc-lang', lang)
     }, [ACTIVE, process.env.GRID_LANG || ''])
     await page.goto(base + '/chat', { waitUntil: 'domcontentloaded' })
@@ -182,7 +182,7 @@ async function main() {
         },
         // A fourth child is the PR/issue chip row.
         hasChips: col.children.length > 3,
-        // Tallest thing sitting inside the meta line — a mode badge when present.
+        // Tallest thing sitting inside the meta line — a marker when present.
         metaChildMax: Math.max(0, ...[...col.children[0].children]
           .map(c => round(c.getBoundingClientRect().height))),
         // Marker centre minus status-line centre. Zero is the whole point: the

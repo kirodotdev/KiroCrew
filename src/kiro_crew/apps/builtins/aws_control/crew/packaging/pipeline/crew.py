@@ -40,7 +40,7 @@ def _default_config_dir() -> Path:
     # The repo's real convention is ~/.kiro/crew, NOT ~/.kirocrew. Kiro Crew's
     # config_dir() defaults here (config/paths.py:44 CONFIG_DIR_NAME=".kiro/crew",
     # :93 "default data root: ~/.kiro/crew") and skills live at config_dir()/skills
-    # (config/sections.py: "Local ~/.kiro/crew/skills/ takes precedence"). The
+    # (config/memory_sections.py: "Local ~/.kiro/crew/skills/ takes precedence"). The
     # wrong default (~/.kirocrew) appeared nowhere else in the tree and, with
     # KIROCREW_HOME unset, made curation scan a directory that does not exist,
     # find no skills, and produce a bundle that silently omitted them.

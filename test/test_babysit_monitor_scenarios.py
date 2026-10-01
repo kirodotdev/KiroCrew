@@ -282,9 +282,12 @@ async def test_babysit_create_requires_application_before_state_is_authoritative
     assert monitor["objective"] == "review_ready"
     assert monitor["cadence_secs"] == 300
     assert monitor["token_usage_known"] is True
+    # A call that named no budgets gets the shipped defaults, and the wake budget's
+    # default is 0 -- unlimited. The runtime, token and provider-error budgets are
+    # what retire this watch.
     assert monitor["budgets"] == {
         "max_runtime_secs": 14_400,
-        "max_agent_turns": 8,
+        "max_agent_turns": 0,
         "max_tokens": 250_000,
         "max_provider_errors": 3,
     }

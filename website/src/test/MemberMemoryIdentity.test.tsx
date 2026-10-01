@@ -75,17 +75,33 @@ describe('private member memory controls', () => {
 
 describe('scheduled member identity', () => {
   it('preserves legacy display attribution while private jobs follow their durable member', () => {
+    // The legacy branches compare the DISPLAY name, because `agent` and
+    // `agent_sequence` hold template and crew names; a private job compares the
+    // IMMUTABLE id. The two arguments are the same here only because these fixtures
+    // use a name that is already its own slug.
     const legacy = { agent: 'reviewer' } as CronJob
     // Displaying a legacy schedule beside its agent does not grant V2 memory.
-    expect(wakesCrew(legacy, 'reviewer', true)).toBe(true)
-    expect(wakesCrew(legacy, 'default', false)).toBe(false)
+    expect(wakesCrew(legacy, 'reviewer', true, 'reviewer')).toBe(true)
+    expect(wakesCrew(legacy, 'default', false, 'default')).toBe(false)
     const unbound = { agent: '' } as CronJob
-    expect(wakesCrew(unbound, 'default', true)).toBe(true)
-    expect(wakesCrew(unbound, 'reviewer', false)).toBe(false)
+    expect(wakesCrew(unbound, 'default', true, 'default')).toBe(true)
+    expect(wakesCrew(unbound, 'reviewer', false, 'reviewer')).toBe(false)
     const member = { agent: 'shared-template', member_id: 'reviewer' } as CronJob
-    expect(wakesCrew(member, 'reviewer', false)).toBe(true)
-    expect(wakesCrew(member, 'shared-template', false)).toBe(false)
-    expect(wakesCrew(member, 'default', true)).toBe(false)
+    expect(wakesCrew(member, 'reviewer', false, 'reviewer')).toBe(true)
+    expect(wakesCrew(member, 'shared-template', false, 'shared-template')).toBe(false)
+    expect(wakesCrew(member, 'default', true, 'default')).toBe(false)
+  })
+
+  it('reads a private job by its immutable id even when the display name differs', () => {
+    // The case every fixture above misses, and the one that shipped broken: a crewmate
+    // displayed as "Radar One" whose allocated id is `radar-one`. The persisted
+    // `member_id` is the id, so matching on the name finds nothing.
+    const job = { agent: 'shared-template', member_id: 'radar-one' } as CronJob
+    expect(wakesCrew(job, 'Radar One', false, 'radar-one')).toBe(true)
+    expect(wakesCrew(job, 'Radar One', false, 'Radar One')).toBe(false)
+    // And the legacy branches still read the NAME, not the id.
+    const legacy = { agent: 'Radar One' } as CronJob
+    expect(wakesCrew(legacy, 'Radar One', false, 'radar-one')).toBe(true)
   })
 
   it('keeps the member immutable while editing a scheduled task', async () => {

@@ -187,6 +187,14 @@ SLOT_OWNED_META_KEYS: frozenset[str] = frozenset(
         "model",
         "reasoning_effort",
         "autocompact_pct",
+        # Source-link dismissals: the slot save is authoritative (it rebuilds the
+        # line from ``slot._dismissed_source_links``), so on a FULL save absence
+        # means "no dismissals". Naming it here also folds it into
+        # ROWS_ONLY_DEFERRED_META_KEYS (= SLOT_OWNED - ROWS_ONLY_OWNED), so a
+        # ROWS-ONLY save onto a transcript another live slot owns DEFERS it and
+        # carries the on-disk set back verbatim — without this a popped alias's
+        # rows-only handover would overwrite the replacement slot's own dismissals.
+        "dismissed_source_links",
         "mode",
         "workspace",
         # Slot-owned so ABSENCE can retract it. A crew rebound from a named
@@ -937,6 +945,17 @@ def carry_provenance(dest: dict, src: dict) -> None:
         value = src.get(field)
         if isinstance(value, str) and value:
             dest[field] = value
+
+
+#: ``meta`` key marking a row a PERSON authored, set by the send paths a human
+#: actually reaches. An ALLOWLIST on purpose: ``role == "user"`` does not mean a
+#: person typed it, because the gateway drives agent turns through the same shape
+#: -- ``_ChatSlot.enqueue_or_run_prompt`` appends ``("user", prompt, "msg msg-u")``
+#: for an Issue Radar wake, identical in role AND presentation class to a typed
+#: message. So a reader that wants human activity must require this marker rather
+#: than exclude the machine callers it happens to know about: an unmarked row
+#: simply does not count, which keeps the next machine caller harmless by default.
+HUMAN_TURN_META_KEY = "human"
 
 
 def _safe_mtime(path: Path) -> float | None:
@@ -3531,8 +3550,16 @@ class ConversationLog:
 
     def delete_session(self, key: str, *, skip_pinned: bool = False) -> bool | None:
         if skip_pinned:
-            return self._metadata_projection.delete_session(key, skip_pinned=True)
-        return self._metadata_projection.delete_session(key, skip_pinned=False)
+            deleted = self._metadata_projection.delete_session(key, skip_pinned=True)
+        else:
+            deleted = self._metadata_projection.delete_session(key, skip_pinned=False)
+        if deleted:
+            # A deleted session's restart-surviving vouch goes with it, so the
+            # vouched-executions/ files track live sessions, not every one ever made.
+            from kiro_crew._durable_vouch import forget_durable_vouch
+
+            forget_durable_vouch(key)
+        return deleted
 
     def delete_memory_consolidation_session(self, key: str, expected_store: str) -> bool:
         """Delete every artifact of one retired generated consolidation turn."""

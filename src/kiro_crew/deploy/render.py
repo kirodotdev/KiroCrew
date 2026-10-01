@@ -14,6 +14,8 @@ from __future__ import annotations
 import html as _html
 import re
 
+from kiro_crew.constants import md_link_destination
+
 # Fixed light theme — supplies the same theme CSS vars the dashboard iframe
 # normally injects, so widgets that reference var(--bg)/var(--text)/etc. render.
 _THEME_CSS = """
@@ -37,6 +39,14 @@ _SHELL = (
 )
 
 _HTML_DOC_RE = re.compile(r"<html[\s>]", re.IGNORECASE)
+
+#: An ``http(s)`` Markdown link. Its URL holds no whitespace, and a parenthesis
+#: only as a balanced pair; see :func:`kiro_crew.constants.md_link_destination`.
+#: Its label stops at the next ``[``, so a run of ``[`` cannot rescan the line.
+_LINK_DESTINATION_CHAR_CLASS = r"[^()\s]"
+_LINK_RE = re.compile(
+    rf"\[([^\[\]]+)\]\((https?://{md_link_destination(_LINK_DESTINATION_CHAR_CLASS)}+)\)"
+)
 
 
 def _wrap(body: str, title: str) -> str:
@@ -72,8 +82,9 @@ def _render_markdown(md: str) -> str:
         s = re.sub(r"`([^`]+)`", _code_placeholder, s)
         s = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", s)
         s = re.sub(r"(?<!\*)\*([^*]+)\*(?!\*)", r"<em>\1</em>", s)
-        s = re.sub(r"\[([^\]]+)\]\((https?://[^)\s]+)\)",
-                   lambda m: f'<a href="{_html.escape(_html.unescape(m.group(2)))}">{m.group(1)}</a>', s)
+        s = _LINK_RE.sub(
+            lambda m: f'<a href="{_html.escape(_html.unescape(m.group(2)))}">{m.group(1)}</a>', s
+        )
         for i, ph in enumerate(placeholders):
             s = s.replace(f"\x00{i}\x00", ph)
         return s

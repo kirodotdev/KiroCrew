@@ -39,6 +39,9 @@ from kiro_crew.discord.client import (
     DISCORD_OK,
     DISCORD_PERMANENT,
     DISCORD_TRANSIENT,
+    EDIT_FAILED,
+    EDIT_GONE,
+    EDIT_OK,
     DiscordApiResult,
     DiscordClient,
     _is_global_limit_exempt,
@@ -919,6 +922,73 @@ class TestClassifiedSendVerbs:
         harness = _harness(monkeypatch, [_Resp(503), _Resp(503), _Resp(503)])
         result = await harness.client.edit_message_result("9111", "7222333444", "body")
         assert result.outcome == DISCORD_TRANSIENT and result.retryable
+
+
+class TestEditOutcomeClassification:
+    """The seam grader picks its predecessor from the edit outcome, so an
+    ordinary edit failure (404/429/5xx/timeout) must classify -- never raise.
+
+    Regression guard: the outcome verb routes through ``edit_message_result``
+    for a real ``DiscordApiResult`` rather than ``_api_multipart``, whose parsed
+    BODY is ``None`` on any failure -- a falsy body reaching ``result.status``
+    raises ``AttributeError`` at every non-OK edit, and ``_land_sealed``'s blanket
+    ``except`` then swallows it and drops the finalized segment's fallback send.
+    These drive the real client against a failing transport, so the classified
+    result is what keeps them from raising.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_deleted_message_edit_classifies_gone(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        harness = _harness(monkeypatch, [_Resp(404, {"code": 10008})])
+        files = [OutboundFile(path="/tmp/a.png", data=b"png", alt="", mime="image/png")]
+        assert (
+            await harness.client.edit_message_with_files_outcome("9111", "72223", "body", files)
+            == EDIT_GONE
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_transient_edit_failure_classifies_failed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        harness = _harness(monkeypatch, [_Resp(503), _Resp(503), _Resp(503)])
+        files = [OutboundFile(path="/tmp/a.png", data=b"png", alt="", mime="image/png")]
+        assert (
+            await harness.client.edit_message_with_files_outcome("9111", "72223", "body", files)
+            == EDIT_FAILED
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_successful_edit_classifies_ok(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        harness = _harness(monkeypatch, [_Resp(200, {"id": "5"})])
+        files = [OutboundFile(path="/tmp/a.png", data=b"png", alt="", mime="image/png")]
+        assert (
+            await harness.client.edit_message_with_files_outcome("9111", "72223", "body", files)
+            == EDIT_OK
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_files_variant_classifies_a_deleted_message_gone(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        harness = _harness(monkeypatch, [_Resp(404, {"code": 10008})])
+        files = [OutboundFile(path="/tmp/a.png", data=b"png", alt="", mime="image/png")]
+        outcome = await harness.client.edit_message_with_files_outcome(
+            "9111", "72223", "body", files
+        )
+        assert outcome == EDIT_GONE
+
+    @pytest.mark.asyncio
+    async def test_the_files_variant_classifies_a_transient_failure_failed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        harness = _harness(monkeypatch, [_Resp(503), _Resp(503), _Resp(503)])
+        files = [OutboundFile(path="/tmp/a.png", data=b"png", alt="", mime="image/png")]
+        outcome = await harness.client.edit_message_with_files_outcome(
+            "9111", "72223", "body", files
+        )
+        assert outcome == EDIT_FAILED
 
 
 # ── The truthiness contract the old callers rely on ───────────────────────

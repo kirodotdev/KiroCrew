@@ -98,8 +98,8 @@ class PerToolDeny(str, Enum):
     runs.
 
     Three members rather than the one flag its shipped reader branches on
-    (``cli_doctor`` acts on ``WHOLE_SERVER`` alone), and the reason is the drift
-    test rather than a future renderer: the three states are told apart by two
+    (``doctor_checks.mcp`` acts on ``WHOLE_SERVER`` alone), and the reason is the
+    drift test rather than a future renderer: the three states are told apart by two
     INDEPENDENT observations -- whether a narrowed server stays mounted, and whether
     the projection hands the client a deny set -- so the test catches claude
     silently ceasing to write its deny rules and codex silently ceasing to hand over

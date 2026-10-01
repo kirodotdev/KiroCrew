@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   SETTLE_STABLE_SAMPLES,
+  createInflightUrls,
   createSettleTracker,
   sameRender,
   sampleIsQuiet,
@@ -101,5 +102,57 @@ describe('createSettleTracker', () => {
     expect(tracker.settled).toBe(true)
     expect(tracker.observe(busy(1, 1))).toBe(true)
     expect(tracker.last).toEqual({ chars: 400, nodes: 111, inflight: 0 })
+  })
+})
+
+describe('createInflightUrls', () => {
+  // A fake Playwright Request: the real one exposes url() as a method.
+  const req = url => ({ url: () => url })
+
+  it('lists the URL of a request that started and has not finished', () => {
+    const open = createInflightUrls()
+    open.start(req('/api/usage/kiro'))
+    expect(open.urls()).toEqual(['/api/usage/kiro'])
+    expect(open.size).toBe(1)
+  })
+
+  it('drops a request once it finishes, by identity', () => {
+    const open = createInflightUrls()
+    const a = req('/api/agents/catalog')
+    const b = req('/api/sessions/usage')
+    open.start(a)
+    open.start(b)
+    open.finish(a)
+    expect(open.urls()).toEqual(['/api/sessions/usage'])
+  })
+
+  it('tracks two concurrent fetches of the same URL independently', () => {
+    const open = createInflightUrls()
+    const first = req('/api/usage/kiro')
+    const second = req('/api/usage/kiro')
+    open.start(first)
+    open.start(second)
+    open.finish(first)
+    // The second fetch of the same URL is still open -- a URL key would have lost it.
+    expect(open.urls()).toEqual(['/api/usage/kiro'])
+    open.finish(second)
+    expect(open.urls()).toEqual([])
+  })
+
+  it('lists the oldest open request first', () => {
+    const open = createInflightUrls()
+    open.start(req('/api/one'))
+    open.start(req('/api/two'))
+    open.start(req('/api/three'))
+    expect(open.urls()).toEqual(['/api/one', '/api/two', '/api/three'])
+  })
+
+  it('reports empty when every request has settled', () => {
+    const open = createInflightUrls()
+    const a = req('/api/one')
+    open.start(a)
+    open.finish(a)
+    expect(open.urls()).toEqual([])
+    expect(open.size).toBe(0)
   })
 })

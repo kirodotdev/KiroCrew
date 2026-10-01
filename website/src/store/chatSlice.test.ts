@@ -27,7 +27,7 @@ function makeStore() {
   })
 }
 
-describe('sseSubagentBatchChunks — prototype-pollution guard (bug chatSlice.ts:931)', () => {
+describe('sseSubagentBatchChunks — prototype-pollution guard (bug chat/subagents.ts)', () => {
   it('ignores a poisoned __proto__ id and does not pollute Object.prototype', () => {
     const store = makeStore()
     store.dispatch(setActiveSlot('active'))
@@ -49,7 +49,7 @@ describe('sseSubagentBatchChunks — prototype-pollution guard (bug chatSlice.ts
   })
 })
 
-describe('sseToolResult — prefer exact tool_call_id match (bug chatSlice.ts:1213)', () => {
+describe('sseToolResult — prefer exact tool_call_id match (bug chat/activity.ts)', () => {
   it('attaches output to the entry with the matching tid, not a later id-less tool', () => {
     const store = makeStore()
     store.dispatch(setActiveSlot('active'))
@@ -187,7 +187,7 @@ describe('sseToolResult — tool output also lands on the tool MESSAGE meta', ()
   })
 })
 
-describe('warmSlotCache.fulfilled — hydrate queued bubbles (bug chatSlice.ts:1655)', () => {
+describe('warmSlotCache.fulfilled — hydrate queued bubbles (bug chat/slotRefresh.ts)', () => {
   it('appends d.queue queued bubbles to the warmed cache instead of dropping them', () => {
     const store = makeStore()
     // activeSlot stays null; warm a background slot 'bg'.

@@ -308,7 +308,17 @@ spec`, and the derived name must resolve to that file and nothing else:
 publication refuses a project-scope spec that declares or is named like the
 derived agent (kiro-cli would load it first), a second user-scope spec
 declaring the name, and a file at the derived path without the marker (a
-user's own agent, or a symlink) — none of them is rewritten. Every tool call on
+user's own agent, or a symlink) — none of them is rewritten. Because it sits in
+the same registry as the user's agents, the derived spec is NOT a sub-agent:
+`agent_discovery.is_internal_agent_spec` recognises it by that owner marker, and
+every spawn roster leaves it out while the spawn gate refuses it with
+`agent_internal` (`subagent.md` § Typed rejections). A kiro-cli that refuses the
+mode because it started before the spec was published gets
+`side_readonly_spec.unavailable_mode_explanation`, which names the base agent
+instead of telling the user to run `kirocrew setup --agent-only` — setup never
+writes this file. That wording is keyed on the owner marker of the file at the
+derived path (read off the event loop), so a user's own agent that is merely
+called `<x>--readonly` keeps the ordinary hint. Every tool call on
 a side turn that kiro-cli does not trust natively therefore raises a permission
 request, and the gate judges all of them. kiro-cli trusts `fs_read` natively
 (observed on a live pod: an `fs_read` ran with no permission request and no host

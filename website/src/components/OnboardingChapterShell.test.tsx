@@ -34,6 +34,28 @@ describe('OnboardingChapterShell narrow-viewport footer', () => {
     expect(footer!.className).toContain('env(safe-area-inset-bottom)')
   })
 
+  it('keeps floating mascots out of the narrow text column', () => {
+    render(
+      <OnboardingChapterShell
+        ariaLabel="Chapter"
+        panelHeadline="Own a goal. Follow it through."
+        panelBody="Work across chats, dashboards and notes."
+        panelFootnote=""
+        eyebrow="STEP · 1 OF 4"
+        dialogRef={createRef<HTMLDivElement>()}
+        header={null}
+        footer={<button type="button">Next</button>}
+      >
+        <p>Content</p>
+      </OnboardingChapterShell>,
+    )
+    const mascots = screen.getByRole('dialog', { name: 'Chapter' }).querySelectorAll('aside .pointer-events-none')
+    expect(mascots).toHaveLength(4)
+    for (const mascot of mascots) {
+      expect(mascot.classList.contains('hidden')).toBe(true)
+    }
+  })
+
   it('never sizes against the large viewport or clips with overflow-hidden', () => {
     // 100vh is the LARGE viewport on iOS Safari (URL bar hidden), which pushed
     // the footer under the toolbar; overflow-hidden would stop the sticky footer.

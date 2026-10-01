@@ -88,6 +88,7 @@ def _orchestrator(dashboard_state=None):
         dashboard_state=dashboard_state,
         sessions=SimpleNamespace(close_all=AsyncMock(), fence_update_restart=Mock()),
         _drain_update_callback_work=AsyncMock(return_value=True),
+        _stop_mcp_broker=AsyncMock(),
     )
 
 

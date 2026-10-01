@@ -109,7 +109,6 @@ from kiro_crew.config.service_sections import (
     CronHistoryConfig,
     MessagingConfig,
     MonitoringConfig,
-    OrchestratorConfig,
     TaskRunnerConfig,
     WatchdogConfig,
 )
@@ -156,24 +155,6 @@ def _build_taskrunner_config(taskrunner_data: dict) -> TaskRunnerConfig:
     )
 
 
-def _build_orchestrator_config(orchestrator_data: dict) -> OrchestratorConfig:
-    return OrchestratorConfig(
-        stage_timeout_seconds=_safe_int(orchestrator_data.get("stage_timeout_seconds", 1800), 1800),
-        # Default read off the dataclass rather than imported: the loader's
-        # re-export list from config.sections is a frozen boundary snapshot
-        # (test_config_module_boundaries), and this keeps
-        # DEFAULT_MAX_PLAN_DURATION as the single source of truth without
-        # adding an alias to it.
-        max_plan_duration_seconds=_safe_int(
-            orchestrator_data.get(
-                "max_plan_duration_seconds",
-                OrchestratorConfig.max_plan_duration_seconds,
-            ),
-            OrchestratorConfig.max_plan_duration_seconds,
-        ),
-    )
-
-
 def _build_messaging_config(messaging_data: dict) -> MessagingConfig:
     return MessagingConfig(
         use_transport=bool(messaging_data.get("use_transport", True)),
@@ -217,6 +198,7 @@ def _build_watchdog_config(watchdog_data: dict) -> WatchdogConfig:
         model_silent_probe_secs=_safe_float(
             watchdog_data.get("model_silent_probe_secs", 1800.0), 1800.0
         ),
+        remote_flat_probe_secs=_safe_float(watchdog_data.get("remote_flat_probe_secs", 0.0), 0.0),
         wellness_sample_secs=_safe_float(watchdog_data.get("wellness_sample_secs", 3.0), 3.0),
     )
 
@@ -270,6 +252,9 @@ def _build_memory_config(memory_data: dict) -> MemoryConfig:
         persistence_enabled=_safe_bool(memory_data.get("persistence_enabled", True), True),
         inject_memory=_safe_bool(memory_data.get("inject_memory", True), True),
         inject_lessons=_safe_bool(memory_data.get("inject_lessons", True), True),
+        inject_lessons_per_turn=_safe_bool(
+            memory_data.get("inject_lessons_per_turn", False), False
+        ),
         inject_activity=_safe_bool(memory_data.get("inject_activity", True), True),
         migrated=memory_data.get("migrated", False),
     )
@@ -702,6 +687,7 @@ def _build_slack_config(slack_data: dict) -> SlackConfig:
         show_thinking=bool(slack_data.get("show_thinking", True)),
         dm_single_session=bool(slack_data.get("dm_single_session", False)),
         home_tab_sessions_per_kind=_safe_int(slack_data.get("home_tab_sessions_per_kind", 5), 5),
+        sessions_limit=_safe_int(slack_data.get("sessions_limit", 10), 10),
     )
 
 

@@ -9,6 +9,18 @@ for the helper, not the stdlib call, even in code you believe only runs on POSIX
 import alone is enough to break a Windows install, and the failure lands at import time
 in a module a Windows user cannot avoid.
 
+`platform_compat` is the import and patch surface for every helper below. Two families
+are defined in their own modules and forwarded from it: the cross-process file locks
+(`file_lock`, `flock_exclusive`, `acquire_lock` / `release_lock`, `try_acquire_lock`,
+`open_lock_file`, `open_create_or_existing`, `probe_file_persistence`) in
+`platform_lock_compat`, and the owner-only access helpers (`current_user_sid`,
+`process_owner_sid`, `local_user_id`, the two writability checks, `restrict_to_owner` /
+`restrict_dir_to_owner`, `make_owner_only_dir`) in `platform_owner_compat`. Import and
+patch them as `platform_compat.<name>`: a patch there lands on the owner. The owners read
+the platform flag, the lock modules, the clock, `ctypes`, the Win32 struct layouts and
+two shared constants from `platform_compat` when they run, so a patch of one of those
+there reaches them too.
+
 This is the contract. The Windows install and runtime story a user follows is
 [windows-install.md](../../guides/windows-install.md).
 
@@ -26,6 +38,7 @@ produces exactly those silent failures, which is why the helper is named per cal
 |------|--------------------------|-----|
 | Tail a rotating log | `open_log_file_for_tail(path)` returns a binary read descriptor (caller closes); Windows permits read/write/delete sharing so the writer can rename during a read. Only for log readers, never security pinning. | plain `open` held while a Windows writer rolls over |
 | File lock | `file_lock(fd, exclusive=)` / `acquire_lock`+`release_lock` / `try_acquire_lock`. Windows takes a byte-range lock on byte 0 (`msvcrt.locking`), acquired by spinning on the non-blocking code because msvcrt's own blocking code gives up with `EDEADLOCK`; the spin is bounded so a stuck holder is reported rather than waited on forever, and both platforms fail CLOSED past the ceiling. That range lock is MANDATORY, unlike POSIX advisory `flock`: while it is held, byte 0 is unreadable and unwritable through every other descriptor, including another descriptor of the holding process. So a lock descriptor is never written through — not even to place a byte for the range to cover, which a sibling's acquire turns into `EACCES` on the writer. A byte-range lock covers byte 0 of a ZERO-LENGTH file and still excludes every other descriptor and process, so a lock sidecar stays empty | `fcntl.flock`; writing a byte through a lock descriptor to make its range "lockable" |
+| Create-or-open a lock sidecar race-safely | `open_create_or_existing(path, flags, mode, dir_fd=)` creates the name EXCLUSIVELY first and, when a sibling already made it, reopens WITHOUT `O_CREAT` so both hold the sibling's inode; never truncates; returns the raw fd the caller owns. `open_lock_file(path)` is the context-managed form for a plain lock file. A leaf that vanishes between the two opens is a genuine `ENOENT` left to the caller | nonexclusive `O_CREAT`, which can return `ENOENT` on Darwin when two callers race to create the same absent name |
 | Liveness probe | `pid_exists(pid)` / `pid_liveness(pid)` | `os.kill(pid, 0)` (kills on Windows!) |
 | Kill a process | `kill_pid(pid, sig)` | `os.kill(pid, sig)` |
 | Kill a tree | `kill_process_tree(pid, sig)` | `os.killpg(os.getpgid(pid), sig)` |
@@ -74,6 +87,7 @@ produces exactly those silent failures, which is why the helper is named per cal
 | FD soft limit | `raise_nofile_soft_limit(n)` | `resource.setrlimit` |
 | Port to PID | `find_listening_pids(port)` / `listening_pid_tool_available()`; `find_port_listeners(port)` when ownership must be scoped to the local address actually probed; `probe_port_listeners(port)` when completed-empty must be distinguished from timeout or execution failure; `process_owns_loopback_listener(pid, port)` for per-process ownership through Linux procfs, PID-scoped `lsof`, or Windows `GetExtendedTcpTable` owner-PID tables | `lsof` or `netstat` directly |
 | Spawn a system tool (`ps`, `lsof`, `netstat`, `taskkill`) | `trusted_system_bin(name)`, treating `None` as "unavailable" | a bare argv name (resolved through a `PATH` that can lead with same-uid-writable dirs) |
+| Resolve a system tool on the event loop (a periodically refreshed capability probe) | `trusted_system_bin_quiet(name)`: the same fixed-directory lookup with no miss diagnostic, reporting a miss in the caller's own words | `trusted_system_bin`, whose miss diagnostic walks `PATH` with `shutil.which` and can hang on an entry on a stalled mount |
 | Decide whether an executable's PATH can be trusted (ownership, mode bits, writability by some account) | `traversed_components(path)` for the ENUMERATION, then the site's own predicate over every entry. It resolves the path COMPONENT BY COMPONENT, expanding each symlink it meets, and returns every directory the walk actually reads — the original spelling's side, each hop's side and the target's side — plus the final target, root-first, each once; `None` on `OSError` or past `_MAX_SYMLINK_HOPS`, which every caller treats as a refusal. The trust QUESTION stays with the caller, because the sites ask different ones and must keep asking them: `_is_root_owned_path` (`trusted_aws_bin`: root's alone to change), `github_runner.validate_provider_executable` POSIX branch (not another uid's, not world-writable unless sticky; strict mode root-owned and unwritable), `browser_cli.install._gateway_writable_component` POSIX branch (not writable by this gateway process), `service.apparmor._substitutable_by_others` (no `0o022` bit, no third-account owner). Windows branches keep their ACL-driven lexical chains; the walker is `os.sep`-rooted and does not model drive anchors or junctions | `realpath` and then `.parents` / `os.path.dirname` (collapses the chain, so a hop through writable space — `gh -> /tmp/link -> /usr/bin/gh` — is never stat'd); a lexical `.parents` walk over the spelling as given (`os.stat` follows symlinks and `dirname` does not, so for `/usr/local/bin -> /opt/x/bin` the target's parent `/opt/x` is never visited); or walking BOTH endpoints' lexical chains (still names no hop in the middle). Adding a fourth spelling of the walk for a new site |
 | Spawn the AWS CLI (`aws`) | `trusted_aws_bin()` — `trusted_system_bin` plus a `/usr/local/bin` fallback (the installers' default `--bin-dir`), accepted only when `_is_root_owned_path` finds every entry of `traversed_components` (see the row above: every directory the walk reads, including the directories on a symlinked component's target side, plus the final target) root-owned, not group/world-writable, and (via `os.access(..., effective_ids=True)`, the only form that reads a POSIX ACL) not writable by the non-root account through an ACL entry `st_mode` cannot express. Running AS root DECLINES: there `os.access` answers True for everything, so the ACL arm has no signal, and the entry it would catch grants a NON-root user write — the one case root must not execute. Only the `/usr/local/bin` fallback is lost under root; `trusted_system_bin` does not route through this. The fallback also refuses a `#!` SCRIPT (`_is_native_program`): a shebang names its interpreter in the file's CONTENT, which the path walk never validated, and `sudo pip install awscli` against a pyenv Python produces exactly that — AWS CLI v2 ships a native executable, so the case this exists for is unaffected. Both conditions live in ONE predicate, `_local_aws_bin_is_trusted`, because the resolver and `aws_bin_declined_on_ownership` both ask and must never contradict each other about one file. Debian policy has `/usr/local` subdirectories `root:staff` mode `2775`, so the fallback DECLINES by default on stock Debian/Ubuntu: intended, because a `staff` member can replace the binary. A diagnostic must then report the decline with `aws_bin_declined_on_ownership()` rather than as absence | adding `/usr/local/bin` to `_TRUSTED_SYSTEM_BIN_DIRS` (Intel macOS Homebrew owns that directory as the console user, so membership alone would let a same-uid process supply `ps`, `lsof` and every other pinned tool); or validating the path with `realpath` (collapses a chain, so a hop through writable space vanishes) or a lexical `dirname` walk (`os.stat` follows symlinks and `dirname` does not, so a symlinked component's target ancestors are never seen) |
 | Read a Windows system tool's ANSWER (`schtasks /Query`, `tasklist`, `sc query`) | the tool's **exit code**, or a fact the program under test recorded itself | parsing its stdout (column headers AND status words are translated by the UI language, so a match on `"Running"` reports every instance down on a non-English host — the fail-OPEN direction) |
@@ -123,6 +137,91 @@ boundaries. It includes resident runtime workers such as
 parent-policy decision. Adding one requires routing it through the helper and adding it
 to that inventory, so a later spawn cannot silently return to the user-site-dependent
 behavior.
+
+## TLS trust bootstrap across an in-app restart
+
+`kiro_crew._ssl_compat._ensure_ssl_certs` runs in the startup prelude of every entry
+point (`__main__`, `cli`, `mcp_gateway.gatewayd`) before any HTTPS client caches an
+SSL context. Its order is the clean-start order: an operator's `SSL_CERT_FILE` wins
+outright (one warning when the file it names cannot be found, nothing else touched);
+Windows exports nothing (`rustls-native-certs` in the kiro-cli child treats
+`SSL_CERT_FILE` as a replacement for the platform store, so a public-roots bundle
+would subtract every private CA); macOS injects Security.framework evaluation for
+this process; then the interpreter's own default cafile (nothing to export), then the
+Linux distribution bundles in `_CA_CANDIDATES`, then certifi's bundle. The found
+bundle is exported as `SSL_CERT_FILE` / `REQUESTS_CA_BUNDLE` for the children that
+cannot inherit a process-local injection (kiro-cli, Node MCP servers).
+
+The certifi export is **install-pinned**: `certifi.where()` is
+`<prefix>/lib/pythonX.Y/site-packages/certifi/cacert.pem` inside the running install.
+The in-app restart seams hand the successor this process's environment
+(`platform_compat.reexec_launcher` / `reexec_python_module` behind the dashboard's
+update and restart actions, `service.live_target.maybe_reexec` for a live-target
+cutover), so a successor re-enters the prelude holding its predecessor's value.
+Honoured as an operator override, that value keeps the successor pointing at the
+previous install's bundle; once an upgrade or an installer re-run deletes that tree
+every TLS handshake fails until a restart from a clean environment (#15713).
+
+The rule is the one #15607 proposes for the other install-pinned runtime export,
+`LLAMA_CPP_LIB_PATH` (that change is not merged; its names are not cited here): **a value
+the runtime exported is its own transitional value, not an operator's, however it is
+inherited.** Here the export must stay in the environment — the children need it — so the
+runtime publishes its provenance beside it, **one marker per variable it assigns**:
+`KIROCREW_EXPORTED_SSL_CERT_FILE` and `KIROCREW_EXPORTED_REQUESTS_CA_BUNDLE`, each holding
+the value `_export_ca_bundle` wrote into that variable, and each published only when the
+call assigned the variable — `REQUESTS_CA_BUNDLE` is only defaulted, so an operator's
+value found there gets no marker, not even when it equals the bundle this install derives
+(an operator who pinned `REQUESTS_CA_BUNDLE` to `$(python -m certifi)` of this very
+install; one path marker shared by both variables would have vouched for theirs too).
+`_inherited_export_reason` is the one classifier, and it answers yes in exactly one case:
+the variable equals its own marker. A successor inherits a variable and its marker
+together, so it reads its predecessor's export as what it is; an operator sets the
+variable alone, so theirs never matches. **Nothing else is provenance** — not the path's
+shape, and not the directory it lies in, Kiro Crew's own install trees included. An
+operator who set `SSL_CERT_FILE` to a certifi bundle of their own (`$(python -m certifi)`,
+or one they appended a private CA to) holds a working policy while the file exists and a
+fail-closed one once it does not — every handshake fails until they repair the pin, as
+they chose; an operator can place a restricted bundle inside this runtime's own venv, and
+a tree the installers delete takes that pin with it, leaving a fail-closed state that is
+theirs rather than a stale export to re-derive over; and on macOS an explicit bundle is
+also an exclusion (it bypasses the Security.framework injection, so the Keychain's CAs are
+not trusted). Re-deriving over any of these would widen trust past what the operator
+chose, so the prelude infers nothing from a path. It reads no data home and does not load
+the config package or the update engine; the test file pins its import set at `kiro_crew`
+and `kiro_crew._ssl_compat`, the same on every platform.
+
+The one value this leaves unrecognised, by design, is a predecessor's export from **before
+the provenance existed**: it reads as an operator's and is kept. While its file exists it
+works (the managed-venv update engine prunes nothing, so an upgrade leaves the
+predecessor's bundle in place); once that tree is gone the successor fails closed, and the
+existing missing-file `WARNING` names the file and the way out — "if an earlier Kiro Crew
+install exported this value, start it from a clean environment". The producing case is
+narrow and one-time: an installer re-run deletes the retired `<data home>/venv` under a
+running gateway (`cli.sh` retires it without stopping the service), and the operator then
+uses the in-app restart rather than a service restart. One clean start heals the lineage
+for good, because this runtime publishes the provenance and every later restart is
+recognised.
+
+A runtime value in either variable is dropped before the operator check (so a stale
+`REQUESTS_CA_BUNDLE` beside an operator's `SSL_CERT_FILE` does not survive either), the
+inherited provenance is dropped with it, and trust is derived for this install in the
+clean-start order above, so a successor behaves exactly as a fresh start on the same host
+would: the system bundle wins where there is one, the same install re-exports the same
+path with nothing logged, both entry points running the prelude in one process see their
+own export and keep it silently, and an operator's `REQUESTS_CA_BUNDLE` beside the
+runtime's `SSL_CERT_FILE` survives the restart untouched. One `WARNING` line names each
+value that changed and the reason it was judged the runtime's — WARNING rather than the
+INFO #15607 proposes, because this runs in the prelude before logging is configured and
+the last-resort handler drops everything below WARNING. Not on Windows: the prelude
+exports nothing there, so no Kiro Crew process can have left a value behind, and whatever
+is set is an operator's. `test/test_ssl_certs.py::TestInheritedInstallPinnedBundle` pins
+the rule, including the two-bootstrap restart with the first run's environment carried
+into the second against a pruned bundle, a dead pin without provenance kept even inside a
+former install tree (with the clean-environment clause in its warning), an operator's
+`REQUESTS_CA_BUNDLE` at the derived path kept across an upgrade restart while the
+runtime's `SSL_CERT_FILE` beside it is re-derived, the two-module import set of the
+prelude, and the operator's certifi pin on macOS that keeps its exclusion.
+
 ## Confined decision-log append
 
 `platform_log_append.append_line` owns the decision log's filesystem transaction.

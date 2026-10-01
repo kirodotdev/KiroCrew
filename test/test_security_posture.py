@@ -255,10 +255,12 @@ def _gate_side_baseline_log_sites(
 #: single-scope (see :func:`_gate_side_baseline_log_sites`).
 _BASELINE_LOG_SITE_CENSUS: dict[str, int] = {
     # +1: model-unavailable warning log in the rejected-model path
-    "acp/client.py": 8,
+    "acp/client.py": 7,
+    # _format_acp_error's scrubbed-content warning, in the same gateway process as
+    # acp/client.py's sites.
+    "acp/transport_errors.py": 1,
     "apps/builtins/pptx_maker/backend/routes.py": 1,
     "dashboard/chat_nav.py": 1,
-    "dashboard/chat_orchestrator.py": 1,
     "dashboard/chat_runner.py": 9,
     "dashboard/chat_title.py": 1,
     "dashboard/handlers/discover.py": 3,

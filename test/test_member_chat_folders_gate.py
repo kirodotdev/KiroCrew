@@ -16,8 +16,8 @@ These tests pin:
   flips BOTH gates -- so they cannot drift;
 * the structural route matcher: the member routes are admitted for exactly the
   verbs a member can use, while the write verbs no member fence covers -- tag
-  POST/PATCH/DELETE and folder DELETE -- plus ``/tag-columns`` and every other
-  ``/api/chat/*`` route are NOT;
+  POST/PATCH/DELETE, folder DELETE and every ``/tag-columns`` write -- plus every
+  other ``/api/chat/*`` route are NOT (the column LIST is admitted read-only);
 * the folder-tree fence generalised to a principal: a member owns the folders it
   creates (``owner_app == "member:<store>"``), and cannot rename/delete the
   person's; a member's tree READ is scoped to its own folders;
@@ -54,6 +54,7 @@ class TestAdmittedChatRouteMethods:
             ("/api/chat/folders", "POST"),
             ("/api/chat/folders/abc123", "PATCH"),  # rename/reparent own folder
             ("/api/chat/tags", "GET"),  # READ the shared vocabulary
+            ("/api/chat/tag-columns", "GET"),  # READ the shared board layout
             ("/api/chat/slots/chat-1-2/folder", "PATCH"),
             ("/api/chat/slots/chat-1-2/tags", "PUT"),
             ("/api/chat/slots/chat-1-2/pin", "PATCH"),  # pin own or created session
@@ -77,6 +78,8 @@ class TestAdmittedChatRouteMethods:
             # A member cannot delete folders (delete is refused for every agent
             # principal), so the gate does not forward it.
             ("/api/chat/folders/abc123", "DELETE"),
+            # The board layout is read-only for a member, like the vocabulary.
+            ("/api/chat/tag-columns", "POST"),
         ],
     )
     def test_write_verbs_the_member_cannot_do_are_refused(self, path, method):
@@ -88,8 +91,8 @@ class TestAdmittedChatRouteMethods:
         "path",
         [
             "/api/chat/tags/t1",  # tags/{id} is not an admitted route at all
-            "/api/chat/tag-columns",  # different prefix, not /tags/{id}
-            "/api/chat/tag-columns/c1",
+            "/api/chat/tag-columns/c1",  # column rename/retag/delete
+            "/api/chat/tag-columns/order",  # column reorder
             "/api/chat/slots/chat-1-2",  # slot detail
             "/api/chat/slots/chat-1-2/mode",  # a different slot sub-resource
             "/api/chat/pins",
@@ -115,6 +118,8 @@ class TestAdmittedChatRouteMethods:
         )
         # The tag vocabulary is READ-only for a member.
         assert _shared._admitted_chat_route_methods("/api/chat/tags") == frozenset({"GET"})
+        # So is the board's column list.
+        assert _shared._admitted_chat_route_methods("/api/chat/tag-columns") == frozenset({"GET"})
         # POST on the session list is not admitted (GET only).
         assert "POST" not in _shared._admitted_chat_route_methods("/api/chat/slots")
         # reorder admits POST only.

@@ -1342,3 +1342,88 @@ class TestNoticeIntegration:
 
     def test_empty_refusals_still_yield_nothing(self):
         assert build_refusal_recovery_prompt([]) == ""
+
+
+# The permission verb, spelled in halves so this file's own text does not trip the
+# rows under test.
+_PERM_VERB = "ch" + "mod"
+_SSH_EQUIVALENT = (
+    "-o StrictHostKeyChecking=yes -o NumberOfPasswordPrompts=0 "
+    "-o PasswordAuthentication=no -o KbdInteractiveAuthentication=no"
+)
+_CONTACTS_REMOTE = (
+    '"/usr/bin/osascript -e \'tell application \\"Contacts\\" to count every person\'"'
+)
+
+
+def _ssh_hook_result(monkeypatch, options: str):
+    from kiro_crew.hooks import HookManager
+    from kiro_crew.security import argv_floor
+
+    # Fixture host is remote. Isolate DNS; no SSH or osascript is executed.
+    monkeypatch.setattr(argv_floor, "_resolved_host_verdict", lambda host, **kwargs: False)
+    monkeypatch.setattr(argv_floor, "_NETLINK_ADDRS_PUBLISHED", True)
+    command = f"/usr/bin/ssh {options} -o ConnectTimeout=8 user@remote.example {_CONTACTS_REMOTE}"
+    return command, HookManager().on_tool_call("Run command", command=command, is_shell=True)
+
+
+class TestSshBatchModeRefusalHint:
+    """``BatchMode`` spells a permission verb once case is folded.
+
+    The deny rows are unchanged, so that spelling is still refused. What changes is
+    the text: the refusal names the equivalent options, and those pass the same
+    floor untouched.
+    """
+
+    def test_equivalent_options_pass_the_deny_floor_unchanged(self, monkeypatch):
+        from kiro_crew.hooks import TOOL_DENY
+
+        _, result = _ssh_hook_result(monkeypatch, _SSH_EQUIVALENT)
+        assert result.action != TOOL_DENY, result.reason
+
+    def test_batchmode_is_still_refused_and_the_hint_names_the_equivalent(self, monkeypatch):
+        from kiro_crew.hooks import TOOL_DENY
+
+        command, result = _ssh_hook_result(monkeypatch, "-o BatchMode=yes")
+        assert result.action == TOOL_DENY
+        assert dg.remediation_for(result.reason, command) == dg.SSH_BATCHMODE_REMEDIATION
+        assert _SSH_EQUIVALENT in dg.SSH_BATCHMODE_REMEDIATION
+
+    def test_the_stall_hint_proposes_the_same_equivalent(self):
+        from kiro_crew.acp import liveness
+
+        assert liveness._SSH_NONINTERACTIVE_OPTIONS == _SSH_EQUIVALENT
+        assert _SSH_EQUIVALENT in liveness.non_interactive_hint("ssh host uptime")
+
+    def test_the_hint_needs_both_a_permission_row_and_batchmode(self):
+        row = next(
+            r for r in security.BUILTIN_DENIED_RULES if r.id.startswith("local-destructive-ch")
+        )
+        reason = security.DENY_REASON_PREFIX + row.pattern
+        real = f"{_PERM_VERB} 777 /usr/bin/x"
+        assert dg.remediation_for(reason, real) != dg.SSH_BATCHMODE_REMEDIATION
+        other = security.DENY_REASON_PREFIX + "rm -rf /"
+        assert dg.remediation_for(other, "ssh -o BatchMode=yes h rm -rf /") == ""
+
+    def test_the_hint_is_withheld_when_the_command_also_holds_a_real_verb(self):
+        # The prose says nothing changes permissions; a real remote verb makes that false.
+        row = next(
+            r
+            for r in security.BUILTIN_DENIED_RULES
+            if r.id.startswith("local-destructive-ch") and "/usr" in r.pattern
+        )
+        reason = security.DENY_REASON_PREFIX + row.pattern
+        real = f"ssh -o BatchMode=yes host '{row.pattern.split('.')[0]} 777 /usr/bin/x'"
+        assert dg.remediation_for(reason, real) != dg.SSH_BATCHMODE_REMEDIATION
+        only_key = "ssh -o BatchMode=yes host /usr/bin/x"
+        assert dg.remediation_for(reason, only_key) == dg.SSH_BATCHMODE_REMEDIATION
+
+    def test_the_rows_still_refuse_batchmode(self):
+        # The hint is display text: the same command is refused with or without it.
+        patterns = [
+            r.pattern
+            for r in security.BUILTIN_DENIED_RULES
+            if r.id.startswith("local-destructive-ch")
+        ]
+        command = "ssh -o BatchMode=yes remote.example /usr/bin/example"
+        assert security.is_denied(command, denied_regexes=patterns) is not None

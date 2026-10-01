@@ -51,7 +51,6 @@ import { useAvailableModels } from '../hooks/useAvailableModels'
 import { effortToCarry, filterInteractiveModels, legacyCodexEffort, modelWithoutEffort, shouldSeparateModelEffort, switchGroupedModel, useModelPickerConfigured, useModelPickerHiddenModelsQuery } from '../hooks/useInteractiveModels'
 import { modelSupportsEffort } from '../lib/effort'
 import { isUnpinnedModel, JEV_ROUTE_MODEL, jevRouteOffered, jevRouteShownModel, withJevRoute } from '../lib/jevRoute'
-import { usePlanActionMutation, isPlanAction } from '../hooks/usePlanActionMutation'
 import { useQueuedMessageActions, queuedSendStash } from '../hooks/useQueuedMessageActions'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { useKirocrewConfigReader } from '../hooks/useKirocrewConfigReader'
@@ -82,7 +81,8 @@ import { resolveAskAfterSend } from '../lib/resolveAskAfterSend'
 import { classifyDrop } from '../utils/dropClassify'
 import { prepareSendPayload, serializeDirTokens, spliceDirTokens, VIDEO_EXT } from '../utils/fileTokens'
 import { Composer, type ComposerHandle, type ComposerVoiceOptions } from '../chat-core/composer/Composer'
-import { displayModel } from '../lib/model'
+import { displayModel, modelChipMarker } from '../lib/model'
+import { useSettingsDefaultModel } from '../hooks/useSettingsDefaultModel'
 import { slotApprovalMode } from '../utils/slotApprovalMode'
 
 
@@ -125,6 +125,9 @@ export default function ChatPane({
   onOpenCrewWorkLog,
   onOpenCommandCenter,
   threads,
+  onSessionOpen,
+  sessions,
+  activeSession,
 }: {
   slotKey: string
   onOpenCommandCenter?: () => void
@@ -203,6 +206,20 @@ export default function ChatPane({
    *  crewmate's chat (the Members page) passes it; absent, the rows draw no
    *  thread footer and no "Reply in thread" action. */
   threads?: ThreadHooks
+  /** Session routing for this pane's transcript: switch to the session a
+   *  `/chat?sid=…` link, a slot-key chip or a short name names, plus the roster
+   *  that decides whether such a chip is offered at all and the key the reader
+   *  is already in. Capability by omission, like `onFileOpen`: a host that
+   *  passes none of it renders those links exactly as before, because the
+   *  markdown renderer gates on (`onSessionOpen` AND `sessions`) -- so a side
+   *  chat and an embedded chat are unchanged. `sessions` must be WITHHELD, not
+   *  emptied, while the host does not know which sessions exist (see
+   *  `markdown/contexts.ts`), and it should hold only slots the handler can
+   *  actually land on (`utils/sessionRoster.sessionTitleRoster`): a chip to a
+   *  destination the switch clears is worse than plain text. */
+  onSessionOpen?: (key: string) => void
+  sessions?: ReadonlyMap<string, string>
+  activeSession?: string
 }) {
   // One instance covers both dropdown filter inputs (never open at once).
   const dispatch = useAppDispatch()
@@ -473,7 +490,7 @@ export default function ChatPane({
   // for the same reason as ChatPage: both would offer the same choices, and
   // only the card can answer the blocked tool call.
   const pendingQuestion = useAppSelector((s) => pendingQuestionFor(s.chat.pendingQuestions, slotKey))
-  const { followUpOptions, followUpIsPlan, followUpSourceKey } = useMemo(
+  const { followUpOptions, followUpSourceKey } = useMemo(
     () => deriveFollowUpOptions(allMessages, busy, !!pendingQuestion),
     [allMessages, busy, pendingQuestion],
   )
@@ -502,21 +519,6 @@ export default function ChatPane({
     followUpInsertedRef.current = null
     setInput(next)
   }, [])
-  // Orchestrator plan dispatch (#5893) — same mutation ChatPage uses,
-  // targeting THIS pane's slot. The hook owns the latch acknowledgement,
-  // keyed on the derived options-row identity passed here; the ref lets the
-  // click handler see the in-flight state, not the render it closed over.
-  const planActionMutation = usePlanActionMutation(slotKey, followUpSourceKey)
-  const planActionMutationRef = useRef(planActionMutation); planActionMutationRef.current = planActionMutation
-  // One spelling for every plan-chip gesture (single-click, double-click,
-  // Send-now). `sourceKeyAtClick` is the row the gesture started on.
-  const dispatchPlanFollowUp = (action: string, sourceKeyAtClick?: string | null): boolean => {
-    if (!(followUpIsPlan && isPlanAction(action))) return false
-    if (!paneSlot) return true
-    if (paneSlot.mode !== 'orchestrator') return false
-    planActionMutationRef.current.mutate({ slot: slotKey, action, clickedSourceKey: sourceKeyAtClick })
-    return true
-  }
   const followUpOptionsKey = followUpOptions.join('\x00')
   useEffect(() => { setFollowUpPicked(new Set()); followUpInsertedRef.current = null }, [followUpOptionsKey, slotKey])
   // Quick Send parity with ChatPage: same query key, so the cache is shared
@@ -699,6 +701,19 @@ export default function ChatPane({
     displayModels,
     _modelsDegraded,
     paneSlot?.model_withheld,
+  )
+  // `default` only for the Settings default (see ChatPage).
+  const chipDefault = useSettingsDefaultModel(
+    paneSlot && !paneSlot.model ? paneAgentName : '',
+    paneRemoteCrew.isRemote,
+    codexPairModels,
+  )
+  const modelMarker = modelChipMarker(
+    paneSlot?.model || '',
+    shownModel,
+    _pinShownModel,
+    chipDefault.settingsDefault,
+    chipDefault.agentPinned,
   )
 
   // One-time hydrate of this slot's message history via React Query + the api
@@ -1461,8 +1476,14 @@ export default function ChatPane({
       onFileOpen,
       crewmate,
       crewmateTranscript,
+      // Session links resolve through the SAME renderer path the single-chat
+      // page uses; there is no second resolver. Absent from the host = the
+      // renderer's own gate leaves them plain.
+      onSessionOpen,
+      sessions,
+      activeSession,
     }),
-    [slotKey, toolDisclosure, setToolDisclosureFor, busyMode, onFileOpen, crewmate, crewmateTranscript],
+    [slotKey, toolDisclosure, setToolDisclosureFor, busyMode, onFileOpen, crewmate, crewmateTranscript, onSessionOpen, sessions, activeSession],
   )
 
   // Quote / Ask on selected assistant text — the same chat-core seam the main
@@ -1596,6 +1617,7 @@ export default function ChatPane({
                 bodyBeyondPreview={pinnedState.bodyBeyondPreview}
                 pushUp={pinnedState.push}
                 liveH={pinnedState.liveH}
+                maxH={pinnedState.maxH}
                 bannerH={pinnedState.bannerH}
                 expanded={pin.pinExpanded}
                 onToggleExpanded={() => setPinExpanded(p => !p)}
@@ -1882,6 +1904,13 @@ export default function ChatPane({
           message={provider.capabilities.reasoningEffort && selectionCapabilitiesQ.isError
             ? i18nT('pages.chatPage.effort_options_unavailable') : ''}
         />
+        {/* No hand-off: this pane holds an unsent draft; the reads retry in place. */}
+        <ErrorNotice
+          variant="inline"
+          className="mx-4 mt-2"
+          testId="chat-pane-model-default-error"
+          message={chipDefault.failed ? i18nT('pages.settings.chatPanel.failed_to_load_config') : ''}
+        />
         {/* No hand-off: the composer draft is untouched by a failed stop; the
             turn is still running, so the Stop button stays for a retry. */}
         <ErrorNotice
@@ -1951,7 +1980,8 @@ export default function ChatPane({
           // Effort is edited inside the model picker below; the chip only
           // names the level in force.
           hasEffort={effortSupported}
-          modelIsInheritedDefault={shownModel !== 'auto' && shownModel !== _pinShownModel}
+          modelIsInheritedDefault={modelMarker === 'default'}
+          modelIsAutoChosen={modelMarker === 'auto'}
           // See ChatPage: the slot's RAW model, because `shownModel` substitutes
           // the served id and would hide every routed turn.
           modelIsJevRouted={jevRouteOn && isUnpinnedModel(paneSlot?.model)}
@@ -1966,21 +1996,7 @@ export default function ChatPane({
           followUpLayout={chatConfig.followUpLayout}
           quickSend={dashCfg?.quick_send}
           followUpSourceKey={followUpSourceKey}
-          followUpPendingOptions={planActionMutation.latchedActions}
-          followUpRefusedOptions={new Set(followUpOptions.filter(planActionMutation.isRefused))}
-          followUpError={planActionMutation.failure}
-          onFollowUpSelect={(o: string, e: React.MouseEvent, sourceKeyAtClick?: string | null) => {
-            // Mirrors ChatPage's wiring, plan branch included (#5893). Plan
-            // options (Go / Go All / Cancel — the only labels the plan
-            // pipeline emits and the only actions the endpoint accepts)
-            // dispatch directly against THIS pane's slot — no input fill:
-            // the same chip must mean the same thing here as in the main
-            // chat. A plan-SHAPED message carrying non-protocol labels keeps
-            // the composer path — dispatching those would 400 server-side
-            // while also skipping the append, leaving a dead chip.
-            // Slot record not yet delivered: dispatchPlanFollowUp no-ops
-            // rather than appending an approval label (the reported bug).
-            if (dispatchPlanFollowUp(o, sourceKeyAtClick)) return
+          onFollowUpSelect={(o: string, e: React.MouseEvent) => {
             // One-click Quick Send takes the same gate as ChatPage: enabled +
             // no shift + not busy + not already in multi-select.
             if (tryQuickSend(o, dashCfg?.quick_send, e.shiftKey, busy, followUpPickedRef.current.size, (t: string) => doSend(t))) return
@@ -2014,13 +2030,7 @@ export default function ChatPane({
               setFollowUpPicked(next)
             }
           }}
-          onFollowUpSend={(text?: string, sourceKeyAtClick?: string | null) => {
-            // Double-click and Send-now share dispatchPlanFollowUp with
-            // single-click (#6240). `sourceKeyAtClick` is the first-click
-            // row — a straddled double-click on a replaced footer is refused.
-            if (text && dispatchPlanFollowUp(text, sourceKeyAtClick)) return
-            doSend(text)
-          }}
+          onFollowUpSend={(text?: string) => doSend(text)}
           project={paneSlot?.project ?? ''}
           // A crewmate's chat is a DM with one named crewmate, so the composer
           // addresses it by name rather than the product ("Message Kiro Crew…").

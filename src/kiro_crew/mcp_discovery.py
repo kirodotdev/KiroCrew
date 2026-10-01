@@ -38,6 +38,7 @@ from kiro_crew.env import (
     describe_search_path,
     emit_env,
     mcp_search_path,
+    resolved_command_casing,
     sanitize_spec_env,
     spec_env_path,
     spec_path_key,
@@ -2346,7 +2347,21 @@ async def probe_server(
         # the search-path report exists to draw -- so the report gets "" while
         # the lookup below still uses the real PATH.
         reported_path = "" if os.path.dirname(server.command) else effective_path
-        resolved = shutil.which(server.command, path=effective_path)
+        # Same rule the agent-config resolver and gatewayd's rewriter apply, so
+        # the probe spawns the spelling the session will use: an absolute
+        # command that exists and is executable is the operator's own spelling
+        # and runs verbatim; a PATH-resolved one gets the casing repair, since
+        # a PATHEXT-synthesized ``.EXE`` reaching an ``argv[0]``-dispatching
+        # shim would fail (or pass) the probe for a reason the session does
+        # not share.
+        if (
+            os.path.isabs(server.command)
+            and os.path.isfile(server.command)
+            and os.access(server.command, os.X_OK)
+        ):
+            resolved = server.command
+        else:
+            resolved = resolved_command_casing(shutil.which(server.command, path=effective_path))
         if not resolved:
             server.status = "error"
             server.error = _unresolved_error(server.command, reported_path)
@@ -2359,7 +2374,7 @@ async def probe_server(
         # fail later (no response, a JSON-RPC error reply, a timeout, any other
         # exception), leaving a stale key that silences the WARNING if the binary
         # is removed again. `command` is necessarily a str here, since
-        # `shutil.which` returned truthy for it.
+        # it resolved to a truthy path above.
         _clear_unresolvable(server.name, server.command)
 
         # A hostile MCP-config entry names the binary spawned here, so route it

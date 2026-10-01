@@ -56,6 +56,11 @@ def agents_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     agent_discovery.clear_list_agents_cache()
 
 
+@pytest.fixture(autouse=True)
+def _close_subagent_managers(close_subagent_managers):
+    """Every manager built here is closed at teardown; the body is in ``conftest``."""
+
+
 @pytest.fixture
 def triage_fixture(agents_dir: Path) -> Path:
     """§3c of the triage report: orchestrator + agent1..3 + an out-of-list agent."""

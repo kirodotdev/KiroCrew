@@ -29,6 +29,18 @@ type PendingEntry = { timer: ReturnType<typeof setTimeout>; again: boolean; ts?:
 
 let sendSlotReadImpl: (slot: string, readTs?: string) => void = () => {}
 const pending = new Map<string, PendingEntry>()
+/** Newest ts of a row the gateway never saves (a permission row) that this
+ *  window has received, per slot. The slot's `last_ts` skips those rows, so a
+ *  read watermarked at `last_ts` alone could not cover the badge another
+ *  window keeps for such a row. */
+const unsavedRowTs = new Map<string, string>()
+
+/** Record an unsaved row's server ts for `slot`. useWebSocket only. */
+export function noteUnsavedRowTs(slot: string, ts: string | undefined): void {
+  if (!slot || !ts) return
+  const next = newerTs(unsavedRowTs.get(slot), ts)
+  if (next !== undefined) unsavedRowTs.set(slot, next)
+}
 
 /** Bind (or unbind, by passing a no-op) the wire sender. useWebSocket only. */
 export function bindSlotReadSender(impl: (slot: string, readTs?: string) => void): void {
@@ -61,6 +73,9 @@ export const newerTs = (a?: string, b?: string): string | undefined => {
  *  carries the newest watermark seen during the window. */
 export function emitSlotRead(slot: string, readTs?: string): void {
   if (!slot) return
+  // Every caller reads the slot on screen, so it has also seen any unsaved row
+  // this window received for it; carry that ts so the read covers it.
+  readTs = newerTs(readTs, unsavedRowTs.get(slot))
   const entry = pending.get(slot)
   if (entry) {
     entry.again = true  // coalesce into one trailing send at quiet-window end
@@ -101,5 +116,6 @@ export function flushSlotRead(slot?: string): void {
 export function _resetSlotReadRelayForTest(): void {
   for (const e of pending.values()) clearTimeout(e.timer)
   pending.clear()
+  unsavedRowTs.clear()
   sendSlotReadImpl = () => {}
 }

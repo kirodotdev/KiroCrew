@@ -142,7 +142,8 @@ const SUMMARY = [
 const NOTICE_COMPACTED = '\u{1F504} Auto-compacted at 85%.'
 const NOTICE_RECYCLED =
   '\u267B\uFE0F Compaction didn\u2019t succeed at 91%, so the session was restarted '
-  + 'instead. The conversation above is still here; the agent no longer remembers it.'
+  + 'instead. The conversation above is still here, and the agent\u2019s next reply starts '
+  + 'from a recent excerpt of it rather than the whole thing.'
 const NOTICE_FAILED =
   '\u26A0 Auto-compact failed at 88% \u2014 will retry after cooldown. '
   + 'You can run `/compact` manually.'

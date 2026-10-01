@@ -18,7 +18,7 @@ authoring and launching happen in one step. You do not write the script.
 Two watching surfaces show a live run:
 
 - The chat side panel's **Workflows** tab, next to Changes and Subagents.
-- **Agent Capabilities → Workflows**, which is the saved library rather than the
+- **Customize → Workflows**, which is the saved library rather than the
   live view: it creates, edits, and runs reusable workflows.
 
 A run streams to the panel while it executes and injects its result into the

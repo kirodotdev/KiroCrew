@@ -26,7 +26,13 @@ rule is implemented:
 * that no test file passes ``mock.patch`` a ``create`` other than the literal
   ``False`` for a mirrored name on the facade, the one spelling whose undo loses
   the owner's binding. An AST guard enforces it, with an explicit
-  ``(path, test)`` allowlist that is empty.
+  ``(path, test)`` allowlist that is empty;
+* that a name a test rebinds on the facade has one binding every reader reads:
+  no engine module but the facade, or a mirrored name's owner, also binds it;
+* that the facade's ``__getattr__`` is hidden from type checkers, and every name
+  production imports from the facade resolves without it;
+* that every public project name the module bound before it was split into
+  owners still resolves on the facade, as the defining module's own object.
 """
 
 from __future__ import annotations
@@ -132,6 +138,34 @@ _OWNERS = {
     "_SOURCE_ID_RE": "kiro_crew.onboarding_sources",
     "_CORE_MANAGED_MCP_NAMES": "kiro_crew.onboarding_sources",
     "_scan_source": "kiro_crew.onboarding_sources",
+}
+
+#: Public project names the module bound before it was split into owners, each
+#: with the module that defines it. They stay bound on the facade, as that module's
+#: own object, so code written against the single module keeps resolving. Standard
+#: library, typing and third-party imports and private helpers are not surface.
+_PRE_SPLIT_PUBLIC_NAMES = {
+    "platform_compat": "kiro_crew",
+    "atomic_write": "kiro_crew.atomic_write",
+    "ConfigReadError": "kiro_crew.config.loader",
+    "update_config_locked": "kiro_crew.config.loader",
+    "config_dir": "kiro_crew.config.paths",
+    "make_sync_embed_fn": "kiro_crew.embeddings",
+    "ONBOARDING_IMPORT": "kiro_crew.frontmatter",
+    "parse_block_scalar_header": "kiro_crew.frontmatter",
+    "split_frontmatter": "kiro_crew.frontmatter",
+    "FileTooLargeError": "kiro_crew.hooks",
+    "safe_read_file_bytes_nolink": "kiro_crew.hooks",
+    "Lesson": "kiro_crew.learn",
+    "LessonStore": "kiro_crew.learn",
+    "contains_volatile_lesson_fact": "kiro_crew.lesson_validation",
+    "mcp_server_alias": "kiro_crew.mcp_utils",
+    "current_context": "kiro_crew.platform.context",
+    "safe_context_call": "kiro_crew.platform.context",
+    "contains_injection": "kiro_crew.security",
+    "is_sensitive_path": "kiro_crew.security",
+    "redact_with_findings": "kiro_crew.security",
+    "VectorMemoryStore": "kiro_crew.vector_memory",
 }
 
 #: Every module of the engine, facade included.
@@ -287,6 +321,13 @@ class TestFacadeSurface:
     def test_a_re_exported_name_is_its_owners_object(self, name: str) -> None:
         owner = importlib.import_module(_OWNERS[name])
         assert getattr(onboarding_import, name) is getattr(owner, name)
+
+    @pytest.mark.parametrize("name", sorted(_PRE_SPLIT_PUBLIC_NAMES))
+    def test_a_pre_split_public_name_is_still_bound_here(self, name: str) -> None:
+        """Bound, not forwarded: a type checker sees it, and a star import carries it."""
+        owner = importlib.import_module(_PRE_SPLIT_PUBLIC_NAMES[name])
+        assert vars(onboarding_import)[name] is getattr(owner, name)
+        assert name in onboarding_import.__all__
 
     @pytest.mark.parametrize("name", _FACADE_DEFINED)
     def test_a_facade_defined_name_is_defined_here(self, name: str) -> None:
@@ -663,6 +704,40 @@ class TestTheMirroredNamesStayVisibleToTypeCheckers:
         assert {name: imported.get(name) for name in onboarding_import._EXPORTS} == dict(
             onboarding_import._EXPORTS
         )
+
+    def test_type_checkers_resolve_what_production_imports_without_the_forwarding_hook(
+        self,
+    ) -> None:
+        """A visible ``__getattr__`` would let mypy accept any name read through the facade.
+
+        mypy types every attribute a module-level ``__getattr__`` could answer as
+        ``Any``, so a removed or mistyped name read through the facade would still
+        type-check. Behind ``if not TYPE_CHECKING:`` the hook answers at run time
+        only, so each name production imports from the facade must resolve from a
+        real binding or a ``TYPE_CHECKING`` import.
+        """
+        source = _engine_source(onboarding_import.__name__).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        hooks = [
+            (ast.unparse(node.test) if isinstance(node, ast.If) else "", statement.name)
+            for node in tree.body
+            for statement in (node.body if isinstance(node, ast.If) else [node])
+            if isinstance(statement, ast.FunctionDef) and statement.name == "__getattr__"
+        ]
+        assert hooks == [("not TYPE_CHECKING", "__getattr__")]
+
+        imported = {
+            alias.name
+            for _path, _text, parsed in source_corpus.parsed_candidates(
+                require_any=(onboarding_import.__name__,)
+            )
+            for node in ast.walk(parsed)
+            if isinstance(node, ast.ImportFrom) and node.module == onboarding_import.__name__
+            for alias in node.names
+        }
+        assert imported, "the scan found no production importer, so it measured nothing"
+        typed = set(_type_checking_imports(source))
+        assert sorted(imported - typed - set(vars(onboarding_import))) == []
 
     def test_the_check_can_fail(self) -> None:
         """An import outside the guard, or under another condition, is not counted."""
@@ -1433,6 +1508,141 @@ def test_no_test_patches_a_mirrored_name_with_create() -> None:
         "onboarding_import name deletes the owner's binding on exit and never puts it "
         f"back. Unlisted: {sorted((key, found[key]) for key in unexpected)}. Allowlist "
         f"entries nothing hits: {sorted(stale)}. Drop the create; the name exists."
+    )
+
+
+# ── A facade patch reaches every reader ────────────────────────────────────────
+#
+# Besides the mirrored seams, the facade binds by-name copies: the apply owner's
+# strategy constants, the registry's helpers, the scan owner's screens and the
+# public names the module bound before the split. The facade's own code reads a
+# few of them and no owner reads the facade's copy, so a test that rebinds one on
+# the facade changes that copy while every owner call site keeps its own binding.
+# The guard below reads what the tests rebind on the facade off the tests
+# themselves and refuses a name that an engine module other than the facade also
+# binds, unless that module is the name's owner in ``_EXPORTS``.
+
+
+def _engine_bound_names() -> set[str]:
+    """Every name an engine module binds, plus the mirrored seams."""
+    return set(onboarding_import._EXPORTS).union(
+        *(vars(importlib.import_module(module)) for module in _ENGINE_MODULES)
+    )
+
+
+def facade_rebinds(tree: ast.Module, names: Collection[str]) -> set[str]:
+    """The names in *names* that *tree* rebinds or deletes on the facade.
+
+    A rebind is a ``patch``, ``patch.object`` or ``patch.multiple`` call or
+    decorator the create guard resolves to the facade, or a ``setattr`` /
+    ``delattr`` on any receiver (``monkeypatch``, the builtins) whose target is the
+    facade with a static attribute name or a dotted ``kiro_crew.onboarding_import``
+    string. ``patch.dict`` is not one: it mutates the shared object in place, so
+    every holder sees it. A name the source only computes at runtime is skipped.
+    """
+    bindings = _bindings(tree)
+    found: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        method = _patch_method(node.func, bindings)
+        if method is not None:
+            if method != "dict":
+                found.update(_patched_names(node, method, bindings, names))
+            continue
+        func = node.func
+        verb = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+        if verb not in ("setattr", "delattr") or not node.args:
+            continue
+        if _is_facade(node.args[0], bindings):
+            attribute = _static_text(node.args[1], bindings) if len(node.args) > 1 else _HOLE
+            found.update([attribute] if attribute in names else [])
+        else:
+            found.update(_addressed(_static_text(node.args[0], bindings), names))
+    return found - {_DYNAMIC}
+
+
+def _other_holders(name: str) -> list[str]:
+    """Engine modules other than the facade and *name*'s owner that bind *name*."""
+    return [
+        module
+        for module in _ENGINE_MODULES
+        if module not in (_FACADE, onboarding_import._EXPORTS.get(name))
+        and name in vars(importlib.import_module(module))
+    ]
+
+
+_REBIND_PROBE = (
+    "import importlib\n"
+    "from unittest import mock\n"
+    "import kiro_crew.onboarding_import as backend\n"
+    "from kiro_crew import onboarding_import, onboarding_sources\n"
+    "def _api():\n"
+    '    return importlib.import_module("kiro_crew.onboarding_import")\n'
+    "def test_probe(monkeypatch, name):\n"
+    "    api = _api()\n"
+    # Must flag: each spelling of a rebind on the facade.
+    '    monkeypatch.setattr(api, "_managed_mcp_names", frozenset)\n'
+    '    monkeypatch.setattr(backend, "CATEGORY_IDS", ())\n'
+    '    monkeypatch.setattr("kiro_crew.onboarding_import.STRATEGY_SKIP", "rename")\n'
+    '    monkeypatch.delattr(onboarding_import, "_SOURCE_ID_RE")\n'
+    '    setattr(onboarding_import, "split_frontmatter", None)\n'
+    '    mock.patch.object(onboarding_import, "_sources", dict)\n'
+    '    mock.patch("kiro_crew.onboarding_import.CONFLICT_STRATEGIES", ())\n'
+    '    mock.patch.multiple(onboarding_import, STRATEGY_RENAME="r")\n'
+    # Must ignore: the owner, an attribute of a module the facade shares, a name
+    # computed at runtime, an in-place dict patch and the owner's dotted name.
+    '    monkeypatch.setattr(onboarding_sources, "_managed_mcp_names", frozenset)\n'
+    '    monkeypatch.setattr(onboarding_import.platform_compat, "IS_WINDOWS", True)\n'
+    "    monkeypatch.setattr(onboarding_import, name, None)\n"
+    "    mock.patch.dict(onboarding_import._EXPORTS, {})\n"
+    '    mock.patch("kiro_crew.onboarding_scan.CATEGORY_IDS", ())\n'
+)
+
+
+def test_the_rebind_guard_answers_both_ways() -> None:
+    """The scan and the holder check the guard rests on, pinned on a planted source."""
+    planted = facade_rebinds(ast.parse(_REBIND_PROBE), _engine_bound_names())
+    assert planted == {
+        "CATEGORY_IDS",
+        "CONFLICT_STRATEGIES",
+        "STRATEGY_RENAME",
+        "STRATEGY_SKIP",
+        "_SOURCE_ID_RE",
+        "_managed_mcp_names",
+        "_sources",
+        "split_frontmatter",
+    }
+    # Each planted name is a copy another engine module also binds, so a real
+    # test that rebinds any of them on the facade fails the guard below.
+    assert {name: bool(_other_holders(name)) for name in planted} == dict.fromkeys(planted, True)
+    # A mirrored seam (its owner holds the one binding) and a name only the facade
+    # binds have no other holder.
+    assert _other_holders("_write_json") == []
+    assert _other_holders("make_sync_embed_fn") == []
+
+
+def test_no_engine_module_binds_a_name_tests_rebind_on_the_facade() -> None:
+    """A name a test rebinds on the facade has one binding, so the patch applies.
+
+    That binding is the owner's for a mirrored seam and the facade's for a name
+    only the facade binds. Any other engine module holding the name keeps reading
+    its own copy, so the patch silently stops applying there: mirror the name in
+    ``_EXPORTS``, whose owner then holds the one binding, or patch the owner.
+    """
+    names = _engine_bound_names()
+    patched = set().union(
+        *(facade_rebinds(ast.parse(text), names) for _path, text in _patching_test_sources())
+    )
+    # Non-vacuous: the scan sees what the engine's own suites rebind on the facade,
+    # mirrored seams and facade-only names both.
+    expected = {"_is_link_like", "_write_json", "_MAX_LESSONS_TOTAL", "make_sync_embed_fn"}
+    assert expected <= patched, sorted(expected - patched)
+    stray = {name: holders for name in sorted(patched) if (holders := _other_holders(name))}
+    assert stray == {}, (
+        "these names are rebound on onboarding_import by a test but are also bound "
+        f"by another engine module, which keeps reading its own copy: {stray}. "
+        "Mirror the name in _EXPORTS, or patch the module that reads it."
     )
 
 

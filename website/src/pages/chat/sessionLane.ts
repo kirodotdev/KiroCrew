@@ -32,7 +32,6 @@ export interface LaneSlotFields {
   has_options?: boolean
   interrupted?: boolean
   running?: boolean
-  orchestrating?: boolean
   subagents_running?: boolean
   queue_depth?: number
 }
@@ -61,7 +60,6 @@ export interface LaneExtras {
 export function hasLiveSessionWork(slot: LaneSlotFields, extras: LaneExtras = {}): boolean {
   return !!(
     slot.running ||
-    slot.orchestrating ||
     slot.subagents_running ||
     (slot.queue_depth ?? 0) > 0 ||
     extras.workflowActive ||

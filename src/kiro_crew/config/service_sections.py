@@ -16,7 +16,6 @@ from kiro_crew.monitoring.limits import DEFAULT_RUNTIME_CEILING_SECS, MAX_RUNTIM
 
 # Ceiling for a WHOLE orchestrator plan. The per-stage timeout multiplies by
 # stage count, so this is the only bound on total unattended runtime.
-DEFAULT_MAX_PLAN_DURATION = 7200  # 2 h
 
 
 DEFAULT_MAX_PARALLEL_STEPS = (
@@ -41,26 +40,6 @@ class TaskRunnerConfig:
             "every execution operates in this folder instead of a per-run scratch "
             "directory, so the task runner works on the intended target location. "
             "Empty = use the default per-run workspace directory.",
-        ),
-    )
-
-
-@dataclass
-class OrchestratorConfig:
-    stage_timeout_seconds: int = field(
-        default=1800,
-        metadata=_meta(
-            "Stage Timeout", "Max seconds per stage before auto-run stops. Default 30 min."
-        ),
-    )
-    max_plan_duration_seconds: int = field(
-        default=DEFAULT_MAX_PLAN_DURATION,
-        metadata=_meta(
-            "Max Plan Duration",
-            "Ceiling for a WHOLE auto-run plan in seconds, checked at each stage "
-            "boundary, with one warning at 75% of the budget. The per-stage "
-            "timeout above multiplies by stage count, so without this a long "
-            "plan can run unattended for hours. 0 disables. Default 2 h.",
         ),
     )
 
@@ -297,6 +276,26 @@ class WatchdogConfig:
             "e.g. long xhigh thinks). Probing a live think cancels and regenerates "
             "it, so this window is deliberately generous: 30 min clears the long "
             "end of an extended-effort think.",
+        ),
+    )
+    remote_flat_probe_secs: float = field(
+        default=0.0,
+        metadata=_meta(
+            "Remote-call stall window (s)",
+            "Idle seconds before an MCP tool that looks blocked on its own remote "
+            "call is cancelled and the turn routed to tool-stall recovery. The "
+            "shape is a tool whose process tree shows no CPU or IO movement while "
+            "a process below kiro-cli holds an established TCP connection: a "
+            "remote call waiting on a peer that may never answer. The window is "
+            "measured from the last stream frame or the last probe that saw the "
+            "tree move, whichever is later, so a slow stream that moves bytes now "
+            "and then keeps the full tool_stall_suspect_secs window. Linux and "
+            "macOS only; Windows has no socket view and keeps the full window. "
+            "Off (0) by default: the connection cannot yet be tied to the MCP "
+            "server serving the in-flight tool, so another server's persistent "
+            "connection could cut a quiet tool short. 900 is the suggested value "
+            "when opting in. Clamped against the transport's per-prompt timeout "
+            "like the other windows.",
         ),
     )
     wellness_sample_secs: float = field(

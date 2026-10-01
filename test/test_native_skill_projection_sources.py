@@ -399,6 +399,37 @@ async def test_settings_that_cannot_be_read_refuse_the_search_agents_sessions_by
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("scope", ["global", "project"])
+@pytest.mark.parametrize(
+    "content",
+    [b"", b"  \n\t\r\n", b"{}", b"\n{}\n", b'{"mcpServers": {}}'],
+    ids=["zero_bytes", "whitespace", "empty_object", "padded_empty_object", "no_servers"],
+)
+async def test_an_empty_settings_file_starts_the_search_agents_sessions(tree, scope, content):
+    """An empty ``mcp.json`` declares no server and so no restriction: it reads as absent.
+
+    A 0-byte or whitespace-only file is what an editor, a truncating writer or a
+    user clearing the file leaves behind, and kiro-cli itself loads it as "no
+    servers". Reading it as unreadable withheld ``kirocrew-core`` and refused EVERY
+    session of every search agent, naming a file with nothing in it. The session
+    is driven through the runtime's own start guard, so the observable is the one
+    the user sees: the session starts and carries the element.
+    """
+    path = tree.settings if scope == "global" else _project_settings(tree)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(content)
+    from test_acp_runtime import _make_runtime
+
+    prepared = projection.prepare_native_skill_projection(tree.project)
+    assert prepared.search_agents == {"kirocrew"} and prepared.errors == {}
+    assert _withheld(prepared, tree) is None
+    runtime, _, _ = _make_runtime()
+    runtime._native_skill_projection = prepared
+    servers = await runtime._unpooled_control_planes([], "kirocrew", tree.project)
+    assert [server["name"] for server in servers] == ["kirocrew-core"]
+
+
+@pytest.mark.asyncio
 async def test_a_session_of_an_agent_the_spec_refused_reaches_no_guard(tree):
     """The ``session/new`` guard is unreachable once the projection has refused."""
     from test_acp_runtime import _make_runtime

@@ -5,7 +5,8 @@ import Modal from '../Modal'
 import ErrorNotice from '../ErrorNotice'
 import { Btn } from '../ui'
 import { ContentRenderer, langFor, wrapCode } from '../ContentRenderer'
-import { fileReadUrl, isAbsolutePath } from '../../utils/fileReadUrl'
+import { isAbsolutePath } from '../../utils/fileReadUrl'
+import { FILE_READ_STALE_MS, fetchFileRead, fileReadQueryKey } from '../../utils/fileReadQuery'
 import { docFileType } from './LibraryTable'
 import { i18nT } from '../../i18n/t'
 import type { SessionDoc } from '../../types'
@@ -21,9 +22,11 @@ import type { SessionDoc } from '../../types'
  * promotion gesture.
  *
  * The content comes from `/api/file-read` — the same redacting read the chat
- * side panel's file tabs use (same `['file-read', path]` cache key, so a doc
- * previewed here and opened there share one fetch). Nothing is registered or
- * written by opening it.
+ * side panel's file tabs use, through `utils/fileReadQuery` so the key, the
+ * freshness window and the stored shape are the helper's and not a second
+ * spelling of them: a doc previewed here and opened there share one fetch, and
+ * what the panel reads back carries the binary verdict that decides whether it
+ * offers an editor. Nothing is registered or written by opening it.
  */
 export default function SessionDocPreview({ doc, onClose, onMaterialize, materializingPath }: {
   /** The document being previewed; null renders the modal closed. */
@@ -47,39 +50,44 @@ export default function SessionDocPreview({ doc, onClose, onMaterialize, materia
   // no request leaves the browser) and explained below.
   const unsafeRelativePath = !!doc && !isAbsolutePath(path)
   const contentQ = useQuery({
-    // Same key AND shape as ChatPage.handleFileOpen / cold-tab hydration
-    // (`{ text, ok, status }`, never throws on HTTP errors) so the cache
-    // dedupes with the chat side panel's file tabs. A divergent shape here
-    // would poison the shared entry: a doc previewed first and opened there
-    // within staleTime would hand the panel an entry missing `ok`/`status`.
-    queryKey: ['file-read', path],
-    queryFn: async () => {
-      const res = await fetch(fileReadUrl(path))
-      // Same contract as ChatPage: a 404 is a real answer (the file was
-      // deleted or moved since the docs list was fetched) and carries the
-      // placeholder as its text; any other failure is an error, derived from
-      // `ok`/`status` at render — never shown as content.
-      const text = res.ok
-        ? await res.text()
-        : res.status === 404 ? i18nT('pages.chatPage.file_not_found_on_disk_it_may_have_been_moved_or')
-        : ''
-      return { text, ok: res.ok, status: res.status }
-    },
+    // The SHARED read, through the one helper that owns it — never a key
+    // spelled by hand and never a second fetch shape. `usePanelDocumentActions
+    // .openFile`, ChatPage's cold-tab hydration and SidePanel all read this
+    // entry back inside `FILE_READ_STALE_MS`, and what they read must be the
+    // whole contract: `binary` is the backend's verdict for the bytes THIS
+    // read saw, and it is what decides whether the chat panel offers an
+    // editor at all. An entry written without it opened an editable buffer
+    // over the binary ENVELOPE (`{"binary": true, "content": ""}`), which a
+    // save would then write over the user's file.
+    queryKey: fileReadQueryKey(path),
+    queryFn: ({ signal }) => fetchFileRead(path, signal),
     enabled: !!doc && !unsafeRelativePath,
-    staleTime: 10_000,
+    staleTime: FILE_READ_STALE_MS,
   })
 
   // Derived from the shared cache shape: 404 renders the placeholder as
   // prose; any other non-ok status renders the error notice below.
   const missing = contentQ.data?.status === 404
   const readFailed = !!contentQ.data && !contentQ.data.ok && !missing
+  // The read reached the file and could not decode it (the endpoint sniffs the
+  // first 8 KiB for a NUL, so a .md saved as UTF-16 lands here). Its body is an
+  // envelope, never the document, so there is nothing to preview — said as
+  // that, rather than as the empty document an envelope-free `text` would
+  // otherwise draw.
+  const undecodable = !!contentQ.data?.ok && !!contentQ.data.binary
 
   const kind = doc ? docFileType(doc.path) : 'markdown'
   // A missing file's placeholder is prose — render it as markdown even for a
   // .txt doc rather than as a code block claiming to be file content.
   const isMarkdown = kind === 'markdown' || missing
   const ext = isMarkdown ? '.md' : '.txt'
-  const content = contentQ.data?.text ?? ''
+  // The 404 placeholder is prose this surface writes, not something the shared
+  // entry carries: `fetchFileRead` stores `''` for every non-ok read, so each
+  // consumer keeps deciding what a 404 means for itself (the chat panel writes
+  // the same sentence into its tab).
+  const content = missing
+    ? i18nT('pages.chatPage.file_not_found_on_disk_it_may_have_been_moved_or')
+    : contentQ.data?.text ?? ''
 
   return (
     <Modal
@@ -140,6 +148,18 @@ export default function SessionDocPreview({ doc, onClose, onMaterialize, materia
           ) : contentQ.isPending ? (
             <div className="flex items-center gap-2 text-muted text-sm py-8 justify-center">
               <Loader2 size={14} className="animate-spin" /> {i18nT('pages.artifactsPage.loading')}
+            </div>
+          ) : undecodable ? (
+            // Same dress as the relative-path refusal above, and for the same
+            // reason: nothing failed. The read succeeded and the answer is
+            // that these bytes are not text, so this wears the warn status
+            // rather than danger tokens, and offers no Retry — a refetch
+            // cannot make a binary file previewable.
+            <div className="bg-warn-subtle border border-warn/20 rounded-lg p-3 flex items-start gap-3" role="status">
+              <AlertTriangle size={16} className="text-warn shrink-0 mt-0.5" aria-hidden="true" />
+              <div className="flex-1 min-w-0 text-sm text-warn break-words">
+                {i18nT('pages.artifactsPage.preview_binary_body')}
+              </div>
             </div>
           ) : contentQ.isError || readFailed ? (
             <div className="flex items-start gap-2">

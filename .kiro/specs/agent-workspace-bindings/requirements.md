@@ -1,6 +1,6 @@
 # Requirements Document
 
-Status: implemented in `src/kiro_crew/config/loader.py` and `src/kiro_crew/memory_stores.py`.
+Status: implemented in `src/kiro_crew/config/loader.py` (`resolve_agent_bindings`), `src/kiro_crew/config/sections.py` (`KiroCrewAgentConfig`, `WorkspaceConfig`), `src/kiro_crew/config/memory_sections.py` (`MemoryStoreConfig`, `resolve_memory_store_config`), `src/kiro_crew/config/migration.py` (the workspace and default-agent write-back migrations) and `src/kiro_crew/memory_stores.py`.
 
 ## Introduction
 

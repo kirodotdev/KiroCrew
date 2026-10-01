@@ -2,7 +2,7 @@
 # land. The folder form takes a TYPED absolute path (the native picker is
 # macOS-only and the browser policy blocks file dialogs anyway), and the seeded
 # home lives at a mktemp path no static YAML can spell, so `boot.sh` stages
-# three sample markdown notes at the fixed path named in step 4 and
+# three sample markdown notes at the fixed path named in step 5 and
 # `teardown.sh` removes them again (docs/build/gui-user-test.md, "Seeds").
 #
 # What the fake backend can and cannot prove: discovery and ingestion are local
@@ -11,8 +11,29 @@
 # items. Entity extraction runs LLM workers against the fake ACP backend, whose
 # canned reply is not the JSON the extractor wants, so extraction yields nothing
 # and is not asserted; neither is embedding (no model is downloaded on the
-# target). Only what the sources list shows is judged. Nightly: seven steps and
+# target). Only what the sources list shows is judged. Nightly: eight steps and
 # a scan to wait for is too long for the smoke tier.
+#
+# The badge the row SETTLES on is "synced", not "active". Adding the folder
+# leaves the row "Awaiting confirmation" (sync_status pending_confirmation);
+# "Start Scanning" moves it to "active" while the scan runs; the ingest then
+# writes "synced" (knowledge/ingestion.py), and SourcesList renders the status
+# verbatim as a green badge. The wait step runs until the row reads "3 items",
+# by which point the badge is already "synced", so an expectation naming
+# "active" asked for a state the final screen can never show -- and whether the
+# tester read "synced" as close enough flipped the verdict between nights.
+#
+# Retry-safe: a failed attempt is retried against the SAME live gateway with
+# nothing re-seeded (docs/build/gui-user-test.md, "Seeds"), so attempt 2 can
+# find the "Team notes" row attempt 1 already added. The add step therefore
+# names the FINAL STATE (exactly one such row) and adds nothing when the row is
+# already listed: the backend keys a source on its path and refuses a second
+# add of the same folder (POST /api/knowledge/sources answers 409
+# "source already exists"), which the form shows as red error text -- the very
+# thing the last expectation forbids. A row an earlier attempt added but never
+# confirmed still reads "Awaiting confirmation" and carries its own "Confirm"
+# button, which starts the same scan "Start Scanning" does. Both attempts then
+# meet the same wait step and the same final screen.
 name: knowledge-add-folder-source-and-scan
 tier: nightly
 feature: knowledge
@@ -26,17 +47,18 @@ preconditions:
   members: [nova-sky]
   start_url: /knowledge
 steps:
-  - You are on the Agent Capabilities page with its Knowledge tab selected; the pane header reads "Knowledge" with "Documents and sources your agent can search when answering" beneath it. Under that header is a row of view tabs (List View, Graph View, Sources, Settings). Click the "Sources" tab.
-  - Click the "+ Add Source" button on the right. A form titled "Add Source" opens with two type buttons, "Local File" and "Local Folder". Click "Local Folder".
+  - You are on the Customize page with its Knowledge tab selected; the pane header reads "Knowledge" with "Documents and sources your agent can search when answering" beneath it. Under that header is a row of view tabs (List View, Graph View, Sources, Settings). Click the "Sources" tab.
+  - Make sure the sources list has exactly one row named "Team notes" for /tmp/kirocrew-gui-user-test/team-notes. If that row is already listed (an earlier attempt added it), add nothing and do not click "+ Add Source" -- the same folder cannot be added twice. If its badge reads "Awaiting confirmation", click the "Confirm" button on that row once. Then go straight to the last step (the wait).
+  - Only if no row for that folder path is listed yet, click the "+ Add Source" button on the right. A form titled "Add Source" opens with two type buttons, "Local File" and "Local Folder". Click "Local Folder".
   - Click into the field whose placeholder reads "Name (optional)" and type exactly "Team notes".
   - Click into the field whose placeholder reads "Folder path (e.g., /home/user/notes)" and type exactly "/tmp/kirocrew-gui-user-test/team-notes".
   - Click the "Add Folder" button at the bottom right of the form.
-  - A confirmation dialog opens. It names the folder path and says "3 supported files found". Click its "Start Scanning" button.
-  - Wait about ten seconds, then look at the sources list. Repeat the wait (up to five more times) until the "Team notes" row no longer reads "0 items".
+  - A confirmation panel appears at the top of the sources list. It names the folder path and says "3 supported files found". Click its "Start Scanning" button.
+  - Wait about ten seconds, then look at the sources list. Repeat the wait (up to five more times) until the "Team notes" row reads "3 items" and its status badge reads "synced".
 expectations:
-  - The sources list has a row named "Team notes" whose second line reads "local_folder" followed by the folder path /tmp/kirocrew-gui-user-test/team-notes.
-  - That row's status badge reads "active" (not "Awaiting confirmation", "paused" or "error").
+  - The sources list has exactly one row named "Team notes", and its second line reads "local_folder" followed by the folder path /tmp/kirocrew-gui-user-test/team-notes.
+  - That row's status badge reads "synced" in green -- the state a finished scan settles on (it reads "active" only while the scan is still running). It does not read "Awaiting confirmation", "paused" or "error".
   - That row shows a count of "3 items".
-  - No red error text is visible on the Sources tab (for example nothing starting with "Failed to add source" or "Directory not found").
+  - No red error text is visible on the Sources tab (for example nothing starting with "Failed to add source", "source already exists" or "Directory not found").
 max_steps: 20
 max_seconds: 480

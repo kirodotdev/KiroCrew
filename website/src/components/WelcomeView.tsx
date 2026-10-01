@@ -4,17 +4,13 @@ import {
 } from 'lucide-react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { KiroGhost } from './KiroGhost'
-import { MemoryModeChip, type MemoryMode } from './MemoryModeChip'
 import { useTheme } from '../hooks/useTheme'
 import { getThemeBranding } from '../themeBranding'
 import { api, type SuggestionItem, type SuggestionKind } from '../api/client'
 
 import { i18nT } from '../i18n/t'
 interface WelcomeViewProps {
-  mode?: string
   setInput: (v: string) => void
-  memoryMode?: string
-  onSwitchMode?: (mode: MemoryMode) => void
 }
 
 /** Icon and tint per suggestion kind. */
@@ -52,7 +48,7 @@ export function normalizeSuggestion(item: SuggestionItem): Suggestion {
   return { text: coerceSuggestionText(item.text), kind }
 }
 
-/** Greeting catalog keys the non-orchestrator heading picks from; the last one follows the local hour. */
+/** Greeting catalog keys the heading picks from; the last one follows the local hour. */
 export function welcomeGreetingKeys(hour: number = new Date().getHours()): string[] {
   const timeOfDay = hour < 12
     ? 'components.welcomeView.greeting_good_morning'
@@ -156,19 +152,13 @@ function SuggestedCards({ setInput }: { setInput: (v: string) => void }) {
   )
 }
 
-export default function WelcomeView({
-  mode,
-  setInput,
-  memoryMode,
-  onSwitchMode,
-}: WelcomeViewProps) {
+export default function WelcomeView({ setInput }: WelcomeViewProps) {
   // One greeting per mount: the KEY is fixed here so a re-render never reshuffles,
   // while i18nT below still re-resolves it on a language switch.
   const [greetingKey] = useState(() => {
     const keys = welcomeGreetingKeys()
     return keys[Math.floor(Math.random() * keys.length)] ?? keys[0]
   })
-  const isOrchestrator = mode === 'orchestrator'
 
   // Per-theme brand mark: a registered theme (via the themeBranding seam) may
   // supply its own logo — render it here too, not just in the App shell, so the
@@ -177,44 +167,25 @@ export default function WelcomeView({
   const { colorTheme } = useTheme()
   const brandLogo = getThemeBranding(colorTheme)?.logo
   const brandMark = brandLogo
-    ? <img src={brandLogo} alt="" aria-hidden="true" className={`${isOrchestrator ? 'w-16 h-16' : 'w-12 h-12'} drop-shadow-lg shrink-0 animate-float rounded-md object-contain`} />
-    : <KiroGhost size={isOrchestrator ? 64 : 48} className="drop-shadow-lg shrink-0 animate-float" />
+    ? <img src={brandLogo} alt="" aria-hidden="true" className="w-12 h-12 drop-shadow-lg shrink-0 animate-float rounded-md object-contain" />
+    : <KiroGhost size={48} className="drop-shadow-lg shrink-0 animate-float" />
 
-  // Outside orchestrator mode the memory chip sits above the composer (ChatPage renders it).
-  if (!isOrchestrator) {
-    return (
-      // Unprefixed = phones: a safe-centred column (falls back to top-aligned when it
-      // overflows, so nothing clips). Short wide windows stack from the top. Wide and tall
-      // viewports switch to the spread grid: greeting ~20% down, cards ~60%.
-      <div data-testid="welcome-layout" className="w-full flex-1 min-h-0 pt-12 pb-4 flex flex-col [justify-content:safe_center] sm:justify-start gap-6 [@media(min-width:640px)_and_(min-height:600px)]:pt-0 [@media(min-width:640px)_and_(min-height:600px)]:pb-0 [@media(min-width:640px)_and_(min-height:600px)]:grid [@media(min-width:640px)_and_(min-height:600px)]:grid-cols-1 [@media(min-width:640px)_and_(min-height:600px)]:grid-rows-[1.3fr_auto_0.7fr] [@media(min-width:640px)_and_(min-height:600px)]:gap-0">
-        <div className="flex flex-col items-center w-full shrink-0 min-h-0">
-          <div aria-hidden="true" className="hidden basis-[45%] shrink min-h-4 [@media(min-width:640px)_and_(min-height:600px)]:block" />
-          <div className="flex flex-col items-center gap-3 text-center shrink-0">
-            {brandMark}
-            <h2 className="text-3xl sm:text-4xl font-light text-text-strong tracking-tight">{i18nT(greetingKey)}</h2>
-          </div>
-          <div aria-hidden="true" className="hidden grow min-h-8 [@media(min-width:640px)_and_(min-height:600px)]:block" />
-        </div>
-        <SuggestedCards setInput={setInput} />
-        <div aria-hidden="true" className="hidden [@media(min-width:640px)_and_(min-height:600px)]:block" />
-      </div>
-    )
-  }
-
+  // The memory chip sits above the composer (ChatPage renders it).
   return (
-    <div className="flex flex-col items-center w-full gap-6 px-8">
-      {brandMark}
-      <div className="text-center">
-        <h2 className="text-3xl sm:text-5xl font-light text-text-strong tracking-tight">{i18nT('components.welcomeView.autopilot')}</h2>
-        <p className="text-[13px] text-muted mt-1">{i18nT('components.welcomeView.simple_tasks_run_instantly_complex_ones_get_a_pl')}</p>
+    // Unprefixed = phones: a safe-centred column (falls back to top-aligned when it
+    // overflows, so nothing clips). Short wide windows stack from the top. Wide and tall
+    // viewports switch to the spread grid: greeting ~20% down, cards ~60%.
+    <div data-testid="welcome-layout" className="w-full flex-1 min-h-0 pt-12 pb-4 flex flex-col [justify-content:safe_center] sm:justify-start gap-6 [@media(min-width:640px)_and_(min-height:600px)]:pt-0 [@media(min-width:640px)_and_(min-height:600px)]:pb-0 [@media(min-width:640px)_and_(min-height:600px)]:grid [@media(min-width:640px)_and_(min-height:600px)]:grid-cols-1 [@media(min-width:640px)_and_(min-height:600px)]:grid-rows-[1.3fr_auto_0.7fr] [@media(min-width:640px)_and_(min-height:600px)]:gap-0">
+      <div className="flex flex-col items-center w-full shrink-0 min-h-0">
+        <div aria-hidden="true" className="hidden basis-[45%] shrink min-h-4 [@media(min-width:640px)_and_(min-height:600px)]:block" />
+        <div className="flex flex-col items-center gap-3 text-center shrink-0">
+          {brandMark}
+          <h2 className="text-3xl sm:text-4xl font-light text-text-strong tracking-tight">{i18nT(greetingKey)}</h2>
+        </div>
+        <div aria-hidden="true" className="hidden grow min-h-8 [@media(min-width:640px)_and_(min-height:600px)]:block" />
       </div>
-      <button
-        className="px-4 py-2 rounded-lg text-[13px] text-muted border border-border bg-card hover:border-accent hover:text-text transition-all cursor-pointer"
-        onClick={() => setInput('Create a plan to analyze Kiro Crew code package and report file count by major components')}
-      >
-        {i18nT('components.welcomeView.try_create_a_plan_to_analyze_kirocrew_code_packa')}
-      </button>
-      {onSwitchMode && <MemoryModeChip memoryMode={memoryMode} onSwitchMode={onSwitchMode} />}
+      <SuggestedCards setInput={setInput} />
+      <div aria-hidden="true" className="hidden [@media(min-width:640px)_and_(min-height:600px)]:block" />
     </div>
   )
 }

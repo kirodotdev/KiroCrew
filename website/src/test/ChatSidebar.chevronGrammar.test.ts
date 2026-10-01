@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { describe, it, expect } from 'vitest'
@@ -12,7 +12,7 @@ import { describe, it, expect } from 'vitest'
  * inline-style rotation and divergent durations cannot drift in per call
  * site. This ratchet covers only what the component cannot: (a) the
  * component itself carrying the canonical shape, and (b) no SECOND rotation
- * grammar appearing beside it in this file. Two banned modes, for the
+ * grammar appearing beside it in the sidebar's files. Two banned modes, for the
  * record:
  *
  * - the Right/Down GLYPH SWAP (`x ? <ChevronRight/> : <ChevronDown/>`, or the
@@ -34,6 +34,22 @@ const SRC = join(__dirname, '..', 'pages', 'ChatSidebar.tsx')
 // lines. Flattening makes every element a single matchable run.
 const flat = readFileSync(SRC, 'utf8').replace(/\s+/g, ' ')
 
+/** The owner modules under pages/chat-sidebar/, flattened the same way. The grammar
+ *  covers the whole sidebar, not only the facade that declares the component. */
+function ownerSources(): Array<[string, string]> {
+  const out: Array<[string, string]> = []
+  const walk = (dir: string) => {
+    for (const name of readdirSync(dir)) {
+      const p = join(dir, name)
+      if (statSync(p).isDirectory()) walk(p)
+      else if (/\.(ts|tsx)$/.test(name)) out.push([p, readFileSync(p, 'utf8').replace(/\s+/g, ' ')])
+    }
+  }
+  walk(join(__dirname, '..', 'pages', 'chat-sidebar'))
+  return out
+}
+const owners = ownerSources()
+
 describe('sidebar disclosure-chevron grammar (#2887)', () => {
   it('the shared DisclosureChevron carries the canonical shape', () => {
     const decl = flat.match(/function DisclosureChevron\b.*?<ChevronRight\b[^>]*\/>/)?.[0]
@@ -48,7 +64,7 @@ describe('sidebar disclosure-chevron grammar (#2887)', () => {
   })
 
   it('all six disclosure sites render DisclosureChevron', () => {
-    const uses = [...flat.matchAll(/<DisclosureChevron\b/g)]
+    const uses = [flat, ...owners.map(([, text]) => text)].flatMap(text => [...text.matchAll(/<DisclosureChevron\b/g)])
     // Older Sessions header, history group headers, hidden-folders reveal,
     // folders filter row, per-container stale-session expander, and the
     // conductor lane's expander on a card that opened other sessions. Adding a
@@ -70,6 +86,16 @@ describe('sidebar disclosure-chevron grammar (#2887)', () => {
     // No chevron rotated through an inline style.
     for (const el of flat.matchAll(/<Chevron(?:Right|Down)\b[^>]*\/>/g)) {
       expect(el[0]).not.toMatch(/style=\{\{[^}]*rotate/)
+    }
+    // The same three bans in every owner module, which declares no chevron of its own.
+    for (const [file, text] of owners) {
+      expect(text, file).not.toMatch(/function DisclosureChevron\b/)
+      expect(text, file).not.toContain('rotate-90')
+      expect(text, file).not.toMatch(/\?\s*<Chevron(?:Right|Down)\b[^>]*\/>\s*:\s*<Chevron(?:Right|Down)\b/)
+      expect(text, file).not.toMatch(/\?\s*Chevron(?:Right|Down)\b\s*:\s*Chevron(?:Right|Down)\b/)
+      for (const el of text.matchAll(/<Chevron(?:Right|Down)\b[^>]*\/>/g)) {
+        expect(el[0], file).not.toMatch(/style=\{\{[^}]*rotate/)
+      }
     }
   })
 })

@@ -581,8 +581,9 @@ def _protected_homes() -> set[Path]:
     purpose: seeding requires ``$KIROCREW_HOME`` to be set, so ``config_dir()``
     would return that override itself and the guardrail equality check would
     always fire. The guardrail must compare against the DEFAULT (non-override)
-    homes. Extracted as a helper so tests can monkeypatch ``Path.home()`` via
-    ``$HOME`` and exercise the guardrail on synthetic default-home paths.
+    homes. Extracted as a helper so tests can monkeypatch ``Path.home()``
+    directly (``$HOME`` alone does not reach it on Windows) and exercise the
+    guardrail on synthetic default-home paths.
     """
     homes: set[Path] = set()
     for home in (_default_home(), _legacy_home()):

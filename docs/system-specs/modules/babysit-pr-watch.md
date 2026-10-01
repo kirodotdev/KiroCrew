@@ -30,7 +30,8 @@ that names no value resolves toward spending a turn per interval rather than tow
 a watch that deactivates itself.
 
 A gated loop's WATCHED SUBJECT comes from the two strings it holds, resolved in one
-place (`autonudge.infer_subject`) so the monitor and the judge's collector are about
+place (`autonudge.infer_subject`, defined in `autonudge_service/subject.py`) so the monitor
+and the judge's collector are about
 the same pull request. The judge brief's `targets` list is read first, because
 `autonudge_judge.parse_targets` reads it first and asks about nothing else once it is
 present. A brief naming exactly one public GitHub pull request supplies the subject
@@ -164,7 +165,8 @@ waiting on it could give, stalling every co-hosted session until the timeout.
 costs nothing: the preflight exists to reach the MODEL in the arming turn, which
 only the MCP-side run can do.
 `monitoring.models.retained_outcome_blocks_rearm` is
-the single predicate shared with `autonudge._stopped_row_is_replaceable`, so what
+the single predicate shared with `autonudge._stopped_row_is_replaceable`
+(`autonudge_service/model.py`), so what
 cannot drift is the RULE itself — one outcome classification serves both sites,
 rather than two copies diverging. The replaceable/retained split is pinned as
 explicit data in `test_monitor_retained_stop_false_ack.py`, because a test that
@@ -182,7 +184,8 @@ from postponing monitoring forever while avoiding a nudge racing a user turn;
 `test_autonudge_deadline.py::test_user_turn_resumes_remaining_time_not_full_interval`
 and `test_delivered_fire_clears_deadline_then_turn_end_starts_fresh` pin both
 sides of the contract. Channel-bound loops re-arm after their unattended turn
-in `AutoNudgeService._run_fire_cycle` because they do not use the dashboard
+in `AutoNudgeService._run_fire_cycle` (`autonudge_service/firing.py`) because they do not
+use the dashboard
 turn-lifecycle hooks.
 
 The schemas in `validation.MONITOR_START_SCHEMA` and
@@ -191,10 +194,12 @@ wall-clock budget. `mcp_tools.control.monitor_start` supplies bounded positive
 defaults from `mcp_tools._limits`; zero and negative cycle or runtime limits are
 rejected. The operator ceiling is `monitoring.max_runtime_secs`; setting 2592000
 permits a 30-day request without extending existing loops. The cap is a runaway backstop, not evidence that the watched work
-completed: `AutoNudgeService._timer` deactivates a capped loop and emits
+completed: `AutoNudgeService._timer` (`autonudge_service/firing.py`) deactivates a capped
+loop and emits
 `expired`.
 
-`AutoNudgeService.runtime_budget_exceeded` measures a configured wall-clock
+`autonudge.runtime_budget_exceeded` (a module function in `autonudge_service/model.py`)
+measures a configured wall-clock
 budget from the persisted creation time. `_timer` checks it before a fire and
 `_run_fire_cycle` checks it after a delivered turn, so a running turn is not
 cancelled but an expired loop is not re-armed. `test_autonudge.py` pins budget

@@ -90,13 +90,14 @@ export function pinHandoffY(foldY: number): number {
  * grounds that admit any other typed row: the user wrote it, and inside the reply
  * that followed it, it is the most recent thing they asked. This deliberately
  * differs from the turn-BOUNDARY scans that share its shape —
- * `isTurnBoundaryUser` and the `lastUserIdx` walk in `store/chatSlice.ts`, the
- * turn-head walk in `app-sdk/turnPolicyBlock.ts` — all of which must skip a steer
- * because they answer "where does this turn BEGIN", and a row injected into a
- * running turn cannot end that scan. The banner answers "what did I last ask",
- * so it takes the opposite answer. The row that OPENED a steered turn is not
- * lost: it is the head of the steer's own prompt run, so it is where clicking the
- * banner lands (`jumpAnchorIdx`) or one step further up the chain.
+ * `isTurnBoundaryUser` in `thinking.ts` and the `lastUserIdx` walk in
+ * `selectors.ts` (both in `store/chat`), the turn-head walk in
+ * `app-sdk/turnPolicyBlock.ts` — all of which must skip a steer because they
+ * answer "where does this turn BEGIN", and a row injected into a running turn
+ * cannot end that scan. The banner answers "what did I last ask", so it takes the
+ * opposite answer. The row that OPENED a steered turn is not lost: it is the head
+ * of the steer's own prompt run, so it is where clicking the banner lands
+ * (`jumpAnchorIdx`) or one step further up the chain.
  *
  * A subagent completion in OLDER scrollback was persisted under role `user`
  * (before the `subagent` role existed) and IS excluded, by SHAPE rather than by
@@ -171,7 +172,7 @@ export function findNextPromptIdx(items: DisplayItem[], afterIdx: number): numbe
  * its own, with the banner above it naming the prompt the whole block answers.
  *
  * Walking up lengthens the jump. The virtualizer's near/far decision
- * (`mountIndex` in useVirtualChat) compares the anchor's jump window against
+ * (`mountIndex` in windowRange.ts) compares the anchor's jump window against
  * the COMMITTED window with `NEAR_JUMP_OVERSCAN_MULT` overscan windows of
  * slack (24 rows for the transcript, which passes `overscan: 6`) — a budget
  * shared with the distance the jump already covers, so the walk consumes
@@ -272,6 +273,35 @@ export function computeLiveCardH(
   const ceiling = Math.max(restingH, standinH)
   const wanted = bubbleBottomFromFold - ROW_PAD_Y
   return Math.min(ceiling, Math.max(restingH, wanted))
+}
+
+/**
+ * The tallest the card may ever be: from its own top (`foldY + ROW_PAD_Y`) down
+ * to the transcript's FLOOR — the line below which the scroller's content is no
+ * longer meant to be read, i.e. the top of its bottom padding.
+ *
+ * The card lives in an overlay that is a sibling of the scroller and paints
+ * above everything that follows it, so nothing else bounds it: the fold could
+ * hold it at a 30-line prompt's full height (`computeLiveCardH`'s ceiling) and
+ * the expansion at `40vh` plus an image strip, and on a short pane both ran past
+ * the scroller's bottom and over the composer dock that floats there — the
+ * reply's pinned bubble sat on the input box and the Dynamic Dashboard bar. The
+ * transcript's own rows never do that: they scroll UNDER the dock, and the
+ * scroller's `paddingBottom` is exactly the strip they are kept clear of. The
+ * card is a stand-in for one of those rows, so it takes the same floor.
+ *
+ * Measured, not configured: each host already writes that padding (the main
+ * chat as `dockH + DOCK_CLEARANCE_PX`, a pane as a fixed 12px), so reading the
+ * scroller's computed padding is what keeps the card's floor and the content's
+ * floor one value. Clamped at 0 so a degenerate layout (fold below floor) yields
+ * an empty card rather than a negative `max-height`.
+ *
+ * @param foldY  viewport Y of the fold line (the card's top is ROW_PAD_Y below)
+ * @param floorY viewport Y of the transcript floor: scroller bottom minus its
+ *               bottom padding
+ */
+export function computePinnedCardMaxH(foldY: number, floorY: number): number {
+  return Math.max(0, floorY - foldY - ROW_PAD_Y)
 }
 
 export function computePinPush(bannerH: number, foldY: number, nextTop: number | null): number {
@@ -569,6 +599,15 @@ export interface PinnedPromptState {
    */
   liveH?: number
   /**
+   * Ceiling on the card's height this frame — the distance from the card's top
+   * to the transcript floor (see computePinnedCardMaxH). Both the fold's `liveH`
+   * and the expansion's text cap stay under it, so the card can never paint
+   * past the scroller's content area onto the composer dock below. Recomputed
+   * every scroll frame alongside the rest of the geometry, and on a scroller
+   * resize.
+   */
+  maxH?: number
+  /**
    * The hidden row's action strip is still UNCOVERED — some of it sits below the
    * card's resting bottom, on screen. The hosts write it as the `folding` value
    * of the row's `data-pinned-standin` marker, which is what index.css re-shows
@@ -592,6 +631,8 @@ export interface PinnedPromptInput {
   bannerH: number
   /** See `PinnedPromptState.liveH`. Recomputed every scroll frame. */
   liveH?: number
+  /** See `PinnedPromptState.maxH`. Recomputed every scroll frame. */
+  maxH?: number
   /** See `PinnedPromptState.stripUncovered`. Recomputed every scroll frame. */
   stripUncovered?: boolean
 }
@@ -613,15 +654,16 @@ export function nextPinnedPromptState(
   prev: PinnedPromptState | null,
   input: PinnedPromptInput,
 ): PinnedPromptState {
-  const { idx, ts, raw, pastes, push, bannerH, liveH, stripUncovered } = input
+  const { idx, ts, raw, pastes, push, bannerH, liveH, maxH, stripUncovered } = input
   const sameMsg = prev !== null && prev.idx === idx && prev.raw === raw && prev.ts === ts
   if (sameMsg && prev.push === push && prev.bannerH === bannerH && prev.liveH === liveH
-    && prev.stripUncovered === stripUncovered) return prev
+    && prev.maxH === maxH && prev.stripUncovered === stripUncovered) return prev
   // `liveH` DOES move every frame — that is the fold. It is carried on the
   // same-message path for exactly that reason, unlike `push`/`bannerH` which only
   // change when the geometry does. `stripUncovered` flips on a later frame of
-  // the same pin (the strip slides under the resting card), so it rides here too.
-  if (sameMsg) return { ...prev, push, bannerH, liveH, stripUncovered }
+  // the same pin (the strip slides under the resting card), so it rides here too,
+  // as does `maxH`, which moves when the pane or the dock does.
+  if (sameMsg) return { ...prev, push, bannerH, liveH, maxH, stripUncovered }
   const { text, body: full, images } = derivePinnedPromptText(raw, pastes)
   return {
     idx,
@@ -636,6 +678,7 @@ export function nextPinnedPromptState(
     push,
     bannerH,
     liveH,
+    maxH,
     stripUncovered,
   }
 }

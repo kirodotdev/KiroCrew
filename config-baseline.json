@@ -1206,7 +1206,7 @@
       "sensitive": false,
       "tags": [],
       "label": "SubAgent Memory Cost (GB)",
-      "help": "First-boot per-agent memory-cost fallback (GB) used to auto-size the cap until a learned value accumulates.",
+      "help": "Free memory (GB) each sub-agent start must find on top of the admission floor; also the per-agent fallback used to auto-size the cap until a learned value accumulates. Raise it on hosts whose runtimes settle heavier.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 0.5
@@ -1457,7 +1457,8 @@
         "pool_ttl_secs": 1800,
         "eager_spawn": true,
         "archive_retention_days": 30,
-        "watchdog_rss_max_mb": 1536
+        "watchdog_rss_max_mb": 1536,
+        "reconcile_max_kills": 5
       }
     },
     {
@@ -1602,6 +1603,20 @@
       "defaultValue": 1536
     },
     {
+      "path": "session.reconcile_max_kills",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Reconciler Kill Budget (per pass)",
+      "help": "Unowned root candidates the runtime reconciler may signal the process tree of in one pass, at most 5 -- one candidate can signal several processes. Lower it where more than one install shares this data home, since a runtime owned by another install has no record here and reads as unowned. 0 makes the arm observe-only: it still publishes the leak reading and audits each candidate it would have signalled.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 5
+    },
+    {
       "path": "taskrunner",
       "kind": "core",
       "type": "object",
@@ -1645,51 +1660,6 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""
-    },
-    {
-      "path": "orchestrator",
-      "kind": "core",
-      "type": "object",
-      "required": false,
-      "deprecated": false,
-      "sensitive": false,
-      "tags": [],
-      "label": "Orchestrator",
-      "help": "Autopilot/orchestrator settings.",
-      "hasChildren": true,
-      "enumValues": null,
-      "defaultValue": {
-        "stage_timeout_seconds": 1800,
-        "max_plan_duration_seconds": 7200
-      }
-    },
-    {
-      "path": "orchestrator.stage_timeout_seconds",
-      "kind": "core",
-      "type": "integer",
-      "required": false,
-      "deprecated": false,
-      "sensitive": false,
-      "tags": [],
-      "label": "Stage Timeout",
-      "help": "Max seconds per stage before auto-run stops. Default 30 min.",
-      "hasChildren": false,
-      "enumValues": null,
-      "defaultValue": 1800
-    },
-    {
-      "path": "orchestrator.max_plan_duration_seconds",
-      "kind": "core",
-      "type": "integer",
-      "required": false,
-      "deprecated": false,
-      "sensitive": false,
-      "tags": [],
-      "label": "Max Plan Duration",
-      "help": "Ceiling for a WHOLE auto-run plan in seconds, checked at each stage boundary, with one warning at 75% of the budget. The per-stage timeout above multiplies by stage count, so without this a long plan can run unattended for hours. 0 disables. Default 2 h.",
-      "hasChildren": false,
-      "enumValues": null,
-      "defaultValue": 7200
     },
     {
       "path": "messaging",
@@ -1894,6 +1864,7 @@
         "persistence_enabled": true,
         "inject_memory": true,
         "inject_lessons": true,
+        "inject_lessons_per_turn": false,
         "inject_activity": true,
         "migrated": false
       }
@@ -2294,6 +2265,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
+    },
+    {
+      "path": "memory.inject_lessons_per_turn",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Lessons Per Message",
+      "help": "On each follow-up message, add up to three stored lessons that match it and have not been shown in the session yet. The session-start block holds only what fits its budget; this adds the rest as the topic reaches them. Requires inject_lessons.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "memory.inject_activity",
@@ -4445,6 +4430,7 @@
         "tool_stall_suspect_secs": 5400.0,
         "tool_stall_hard_cap_secs": 7200.0,
         "model_silent_probe_secs": 1800.0,
+        "remote_flat_probe_secs": 0.0,
         "wellness_sample_secs": 3.0
       }
     },
@@ -4517,6 +4503,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 1800.0
+    },
+    {
+      "path": "watchdog.remote_flat_probe_secs",
+      "kind": "core",
+      "type": "number",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Remote-call stall window (s)",
+      "help": "Idle seconds before an MCP tool that looks blocked on its own remote call is cancelled and the turn routed to tool-stall recovery. The shape is a tool whose process tree shows no CPU or IO movement while a process below kiro-cli holds an established TCP connection: a remote call waiting on a peer that may never answer. The window is measured from the last stream frame or the last probe that saw the tree move, whichever is later, so a slow stream that moves bytes now and then keeps the full tool_stall_suspect_secs window. Linux and macOS only; Windows has no socket view and keeps the full window. Off (0) by default: the connection cannot yet be tied to the MCP server serving the in-flight tool, so another server's persistent connection could cut a quiet tool short. 900 is the suggested value when opting in. Clamped against the transport's per-prompt timeout like the other windows.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 0.0
     },
     {
       "path": "watchdog.wellness_sample_secs",
@@ -4719,6 +4719,7 @@
         "show_thinking": true,
         "dm_single_session": false,
         "home_tab_sessions_per_kind": 5,
+        "sessions_limit": 10,
         "use_tunnel_url": false,
         "session_folder": ""
       }
@@ -4990,10 +4991,26 @@
         "slack"
       ],
       "label": "Home Tab Sessions Per Kind",
-      "help": "Max sessions shown per category (main chat / autopilot) in the Slack Home Tab.",
+      "help": "Max sessions shown per category (main chat / task runner) in the Slack Home Tab.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 5
+    },
+    {
+      "path": "slack.sessions_limit",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "slack"
+      ],
+      "label": "Sessions List Length",
+      "help": "Max sessions listed by the Slack 'sessions' DM keyword and the 'sessions' slash command. Raise it on an install with many background sessions, where the ones worth resuming are pushed past the end of the list.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 10
     },
     {
       "path": "slack.use_tunnel_url",
@@ -7732,6 +7749,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""
+    },
+    {
+      "path": "dashboard.terminal.reuse_current",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Reuse the current terminal",
+      "help": "Run-in-terminal focuses the terminal tab you have selected and copies the command, so you can paste it into that shell and keep its state (working directory, environment, an active login session). With no terminal open, it still copies the command for you to paste — it is never run for you. Off = a fresh terminal each time.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "dashboard.terminal.completion",

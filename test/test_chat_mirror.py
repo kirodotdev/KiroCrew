@@ -16,6 +16,7 @@ from chat_test_helpers import _make_state
 # eight-channel roster so there is one place a new channel has to be added.
 from test_options_cap_contract import _all_channel_capabilities
 
+from kiro_crew.discord.client import DiscordClient as _RealDiscordClient
 from kiro_crew.messaging.link import SLACK_NAMESPACE, ChannelLink, binding_token
 from kiro_crew.messaging.transport import ConfiguredChannelTarget
 
@@ -613,6 +614,280 @@ class TestMirrorLink:
         assert ("channel.proactive_send_authorize", "allowed") in [
             (kw["operation"], kw["outcome"]) for kw in recorded
         ]
+
+
+class _FakeDiscordClient(_RealDiscordClient):
+    """The real client with only its NETWORK edges replaced.
+
+    ``_api`` answers the one route the mirror-link handler reaches -- ``POST
+    /users/@me/channels``, Discord's own statement of which DM channel belongs to a
+    user -- from ``dm_for_user``; ``send_message`` records instead of posting;
+    ``is_thread_channel`` says yes. Everything that matters here is inherited and
+    real: ``create_dm_channel`` leaving the ``dm_channel_id -> user_id`` pairing
+    behind and ``cached_dm_recipient`` reading it back. A hand-written pairing
+    store would test the fake, not the fix.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(token="bot-secret")
+        self.dm_for_user: dict[str, str] = {"42": "dm-chan-9", "55": "dm-chan-55"}
+        self.sent: list[tuple[str, str]] = []
+
+    async def _api(self, method, path, payload, timeout=30, **kwargs):  # type: ignore[override]
+        if method == "POST" and path == "/users/@me/channels":
+            channel = self.dm_for_user.get(str((payload or {}).get("recipient_id", "")))
+            return {"id": channel} if channel else None
+        raise AssertionError(f"unexpected REST call {method} {path}")
+
+    async def send_message(self, channel_id, text, **kwargs):  # type: ignore[override]
+        self.sent.append((channel_id, text))
+        return "mid-1"
+
+    async def is_thread_channel(self, channel_id: str) -> bool:
+        return True
+
+    def forget_pairings(self) -> None:
+        """What a gateway restart does to the in-process pairing store."""
+        self._dm_recipients.clear()
+
+
+class TestADiscordDmMirrorOfADashboardSession:
+    """The dashboard menu link to a Discord DM, end to end through the REAL transport.
+
+    A dashboard-born slot's session key (``dashboard:chat-<n>-<ts>``) names no
+    peer, and Discord's DM channel id is unrelated to the user snowflake its roster
+    holds. So the link handler's own post-claim ladder recheck, and every later
+    dashboard-driven delivery, could only pass the recipient leg with a principal
+    from somewhere else: the record the gateway writes when it admits the mirror --
+    the peer, in the same write as the conversation id, under a MAC only the
+    gateway can mint. The session store here is the shared double, which signs a
+    principal-bearing row exactly as ``SessionMap.set_mirror_link`` does.
+    """
+
+    _SLOT = "chat-1-1700000000"
+    _KEY = f"dashboard:{_SLOT}"
+
+    @staticmethod
+    def _discord():
+        from kiro_crew.discord.transport import DiscordTransport
+
+        return DiscordTransport(
+            _FakeDiscordClient(), allowed_user_ids=["42", "55"], allowed_thread_ids=["thr-1"]
+        )
+
+    def _state(self, tmp_path, monkeypatch, transport):
+        state = _prep(tmp_path, monkeypatch)
+        state.get_or_create_slot(self._SLOT)
+        state.register_channel_transport(transport)
+        return state
+
+    async def _link(self, state, target_id: str) -> None:
+        async with TestClient(TestServer(_make_mirror_app(state))) as http:
+            resp = await http.post(
+                f"/api/chat/slots/{self._SLOT}/mirror-link",
+                json={"channel_type": "discord", "target_id": target_id},
+            )
+            assert resp.status == 200, await resp.text()
+
+    @staticmethod
+    def _plant(state, link: ChannelLink) -> None:
+        """Put *link* on the row the way a WRITE TO THE FILE would -- bypassing the
+        map's writer and its signing -- so the ladder reads it back verbatim."""
+        state.sessions.get_mirror_link = MagicMock(return_value=link)
+
+    @pytest.mark.asyncio
+    async def test_the_link_lands_records_the_peer_and_resolves_for_delivery(
+        self, tmp_path, monkeypatch
+    ):
+        from kiro_crew.dashboard.chat_runner import _resolve_mirror_target
+        from kiro_crew.mirror_admission import verify_mirror_admission
+
+        transport = self._discord()
+        state = self._state(tmp_path, monkeypatch, transport)
+        await self._link(state, "user:42")
+        stored = state.sessions.get_mirror_link(self._KEY)
+        assert stored == ChannelLink("discord", channel_id="dm-chan-9")
+        assert stored.principal == "42"
+        assert verify_mirror_admission(self._KEY, stored) is True
+        # Resolving the target opened the DM, so the client pairs the channel with
+        # 42 and the handler's own recheck admitted the peer: the notice landed.
+        assert transport.client.cached_dm_recipient("dm-chan-9") == "42"
+        assert transport.client.sent and transport.client.sent[0][0] == "dm-chan-9"
+        # And so does every later dashboard-driven reply, cron result or
+        # completion notice: the persisted link resolves through the ladder.
+        assert _resolve_mirror_target(state, self._KEY) == (stored, transport)
+
+    @pytest.mark.asyncio
+    async def test_delivery_survives_a_restart_with_no_inbound_dm(self, tmp_path, monkeypatch):
+        """The pairing is in-process and a restart forgets it; the admitted record is
+        on disk and verifies, so the very next dashboard reply is delivered with
+        no message from the peer and nothing re-linked."""
+        from kiro_crew.dashboard.chat_runner import _resolve_mirror_target
+
+        transport = self._discord()
+        state = self._state(tmp_path, monkeypatch, transport)
+        await self._link(state, "user:42")
+        stored = state.sessions.get_mirror_link(self._KEY)
+        transport.client.forget_pairings()
+        assert transport.direct_peer_of("dm-chan-9") == ""
+        assert _resolve_mirror_target(state, self._KEY) == (stored, transport)
+
+    @pytest.mark.asyncio
+    async def test_a_peer_revoked_after_linking_is_refused_at_delivery(self, tmp_path, monkeypatch):
+        """The record names the peer; the LIVE roster still judges each send."""
+        from kiro_crew.dashboard.chat_runner import _resolve_mirror_target
+
+        transport = self._discord()
+        state = self._state(tmp_path, monkeypatch, transport)
+        await self._link(state, "user:42")
+        transport._allowed = frozenset({"99"})
+        assert _resolve_mirror_target(state, self._KEY) is None
+
+    @pytest.mark.asyncio
+    async def test_a_row_rewritten_to_another_allowed_users_dm_is_refused(
+        self, tmp_path, monkeypatch
+    ):
+        """The session map is writable by in-sandbox code. A consistent rewrite of the
+        row -- another allow-listed user's DM channel AND that user's name, keeping
+        the admission the gateway minted for the original location -- does not
+        verify, so this session's replies cannot be aimed at that user."""
+        import dataclasses
+
+        from kiro_crew.dashboard.chat_runner import _resolve_mirror_target
+
+        transport = self._discord()
+        state = self._state(tmp_path, monkeypatch, transport)
+        await self._link(state, "user:42")
+        stored = state.sessions.get_mirror_link(self._KEY)
+        transport.client.remember_dm_recipient("dm-chan-55", "55")  # 55 has written before
+        self._plant(state, dataclasses.replace(stored, channel_id="dm-chan-55", principal="55"))
+        assert _resolve_mirror_target(state, self._KEY) is None
+
+    @pytest.mark.asyncio
+    async def test_a_row_pointed_at_a_revoked_users_dm_is_refused(self, tmp_path, monkeypatch):
+        """The other rewrite: the revoked user's DM channel with the allow-listed
+        principal kept. The admission covers the channel id, so it fails; and the
+        transport's own pairing of that channel with the revoked user refuses it a
+        second time."""
+        import dataclasses
+
+        from kiro_crew.dashboard.chat_runner import _resolve_mirror_target
+
+        transport = self._discord()
+        state = self._state(tmp_path, monkeypatch, transport)
+        await self._link(state, "user:42")
+        stored = state.sessions.get_mirror_link(self._KEY)
+        transport.client.remember_dm_recipient("dm-chan-revoked", "77")
+        self._plant(state, dataclasses.replace(stored, channel_id="dm-chan-revoked"))
+        assert _resolve_mirror_target(state, self._KEY) is None
+        # Unsigned entirely -- a row written by anything but the gateway -- is
+        # refused the same way, whatever the transport knows.
+        self._plant(state, ChannelLink("discord", channel_id="dm-chan-9", principal="42"))
+        assert _resolve_mirror_target(state, self._KEY) is None
+
+    @pytest.mark.asyncio
+    async def test_a_thread_target_records_no_peer(self, tmp_path, monkeypatch):
+        """A room audience names nobody; the thread roster answers that route."""
+        from kiro_crew.dashboard.chat_runner import _resolve_mirror_target
+
+        transport = self._discord()
+        state = self._state(tmp_path, monkeypatch, transport)
+        await self._link(state, "thread:thr-1")
+        stored = state.sessions.get_mirror_link(self._KEY)
+        assert stored == ChannelLink("discord", channel_id="thr-1")
+        assert stored.principal is None and stored.admission is None
+        assert _resolve_mirror_target(state, self._KEY) == (stored, transport)
+
+    @pytest.mark.parametrize("prior_is_genuine", [True, False], ids=["genuine", "forged"])
+    @pytest.mark.asyncio
+    async def test_a_failed_relink_restores_the_prior_row_without_laundering_it(
+        self, tmp_path, monkeypatch, prior_is_genuine
+    ):
+        """A link that fails after its claim puts the previous binding back. That
+        restore re-sets a row read from the agent-writable store, so it may carry the
+        prior peer only under an admission that verifies: a genuine prior row comes
+        back byte-for-byte and keeps delivering, a planted one comes back as its
+        location alone and stays refused. Nothing is minted on the way."""
+        import dataclasses
+
+        from kiro_crew.dashboard.chat_runner import _resolve_mirror_target
+        from kiro_crew.mirror_admission import sign_mirror_admission
+
+        transport = self._discord()
+        state = self._state(tmp_path, monkeypatch, transport)
+        prior = ChannelLink("discord", channel_id="dm-chan-9", principal="42")
+        prior = dataclasses.replace(
+            prior,
+            admission=sign_mirror_admission(self._KEY, prior) if prior_is_genuine else "f" * 64,
+        )
+        state.sessions.set_mirror_link(self._KEY, prior)  # as the store holds it
+
+        async def _refuse(channel_id, text, **kwargs):
+            raise RuntimeError("channel unavailable")
+
+        transport.client.send_message = _refuse  # type: ignore[method-assign]
+        async with TestClient(TestServer(_make_mirror_app(state))) as http:
+            resp = await http.post(
+                f"/api/chat/slots/{self._SLOT}/mirror-link",
+                json={"channel_type": "discord", "target_id": "user:55"},
+            )
+            assert resp.status == 502, await resp.text()
+        restored = state.sessions.get_mirror_link(self._KEY)
+        assert restored == ChannelLink("discord", channel_id="dm-chan-9")
+        if prior_is_genuine:
+            assert restored.principal == "42" and restored.admission == prior.admission
+            assert _resolve_mirror_target(state, self._KEY) == (restored, transport)
+        else:
+            assert restored.principal is None and restored.admission is None
+            assert _resolve_mirror_target(state, self._KEY) is None
+
+    @pytest.mark.asyncio
+    async def test_a_stale_requests_rollback_leaves_a_refreshed_relink_in_place(
+        self, tmp_path, monkeypatch
+    ):
+        """Two link requests for the same DM overlap: the first claims, then fails its
+        test message; while it is failing, the signing key rotates and a second request
+        re-links the same session to the same conversation under a fresh admission.
+        The first request's rollback owns only its OWN row. A location match would
+        call the refreshed row its own, clear it and put the obsolete state back, after
+        which every reply refuses; whole-row identity leaves the newer row alone and
+        it keeps delivering under the rotated key.
+        """
+        import dataclasses
+        import secrets
+
+        from kiro_crew.dashboard import token_secret
+        from kiro_crew.dashboard.chat_runner import _resolve_mirror_target
+        from kiro_crew.mirror_admission import sign_mirror_admission, verify_mirror_admission
+
+        transport = self._discord()
+        state = self._state(tmp_path, monkeypatch, transport)
+        refreshed: dict[str, ChannelLink] = {}
+        rotated = secrets.token_bytes(32)
+
+        async def _fail_after_a_relink(channel_id, text, **kwargs):
+            # The concurrent re-link: the key rotates, and the same session is bound
+            # to the same DM again with an admission minted under the new key.
+            monkeypatch.setattr(token_secret, "_get_secret", lambda: rotated)
+            row = ChannelLink("discord", channel_id="dm-chan-9", principal="42")
+            row = dataclasses.replace(row, admission=sign_mirror_admission(self._KEY, row))
+            state.sessions.set_mirror_link(self._KEY, row, accepts_inbound=True)
+            refreshed["row"] = row
+            raise RuntimeError("channel unavailable")
+
+        transport.client.send_message = _fail_after_a_relink  # type: ignore[method-assign]
+        async with TestClient(TestServer(_make_mirror_app(state))) as http:
+            resp = await http.post(
+                f"/api/chat/slots/{self._SLOT}/mirror-link",
+                json={"channel_type": "discord", "target_id": "user:42"},
+            )
+            assert resp.status == 502, await resp.text()
+        current = state.sessions.get_mirror_link(self._KEY)
+        assert current is not None, "the stale rollback cleared the newer binding"
+        assert current.admission == refreshed["row"].admission and current.principal == "42"
+        assert verify_mirror_admission(self._KEY, current) is True
+        assert self._KEY in state.sessions.find_mirror_sessions(current, inbound_only=True)
+        assert _resolve_mirror_target(state, self._KEY) == (current, transport)
 
 
 class TestMirrorUnlink:

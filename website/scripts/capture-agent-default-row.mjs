@@ -104,12 +104,12 @@ const shoot = async (picker, name) => {
 // write lands and the footer reports the new state.
 {
   const { context, picker } = await openPicker(OTHER)
-  await picker.getByRole('button', { name: `Set ${OTHER} as default agent for new sessions` })
+  await picker.getByRole('button', { name: `Set ${OTHER} as the default for new sessions` })
     .waitFor({ state: 'visible', timeout: 5000 })
   await shoot(picker, '02-footer-offers-the-write.png')
 
-  await picker.getByRole('button', { name: `Set ${OTHER} as default agent for new sessions` }).click()
-  await picker.getByRole('button', { name: 'Default agent for new sessions' })
+  await picker.getByRole('button', { name: `Set ${OTHER} as the default for new sessions` }).click()
+  await picker.getByRole('button', { name: 'Default for new sessions' })
     .waitFor({ state: 'visible', timeout: 5000 })
   await shoot(picker, '03-default-written.png')
   await context.close()

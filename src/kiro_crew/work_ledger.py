@@ -64,7 +64,7 @@ import secrets
 import shutil
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -858,8 +858,11 @@ def _read_json_record(path: Path, *, strict: bool = False) -> Any | None:
         if strict:
             raise
         return None
-    except (ValueError, UnicodeDecodeError):
-        # ``ValueError`` already covers ``json.JSONDecodeError``.
+    except (ValueError, UnicodeDecodeError, RecursionError):
+        # ``ValueError`` already covers ``json.JSONDecodeError``. A record nested
+        # deeper than the parser follows (a 20 KB file of ten thousand nested
+        # arrays is well under the ceiling) raises ``RecursionError`` from inside
+        # ``json.loads``, and reads the same way: content this reader cannot trust.
         return None
 
 
@@ -1018,7 +1021,11 @@ def _read_events_unlocked(path: Path, *, strict: bool = False) -> list[WorkEvent
             continue
         try:
             parsed = json.loads(stripped)
-        except json.JSONDecodeError:
+        except (ValueError, RecursionError):
+            # ``ValueError`` covers ``JSONDecodeError`` and the parser's other
+            # refusals (an integer past the interpreter's digit limit is one). A
+            # line nested deeper than the parser follows is as unreadable as a torn
+            # one. One bad line must not cost the rest of the log.
             continue
         event = WorkEvent.from_dict(parsed)
         if event is None:
@@ -1376,12 +1383,13 @@ def is_stale(
     reference = item.last_report_at or item.created_at
     if not reference:
         return True
-    stamped = _parse_iso(reference)
+    # Through ``parse_stamp``, whose UTC fallback covers a stamp at either end of
+    # the calendar: a hand-edited ``created_at`` of year 1 is a sentinel, not a
+    # moment, and the flag derived from it must not be what fails the read.
+    stamped = parse_stamp(reference)
     if stamped is None:
         return True
     moment = now or datetime.now().astimezone()
-    if stamped.tzinfo is None:
-        stamped = stamped.astimezone()
     if moment.tzinfo is None:
         moment = moment.astimezone()
     return moment - stamped > timedelta(seconds=max(window_secs, 0.0))
@@ -1487,6 +1495,35 @@ def _parse_iso(value: str) -> datetime | None:
         return datetime.fromisoformat(value)
     except (TypeError, ValueError):
         return None
+
+
+def parse_stamp(value: str) -> datetime | None:
+    """An ISO-8601 stamp as an AWARE datetime, or ``None`` when it is not one.
+
+    :func:`_now_iso` writes local time with an offset, so a stamp read back
+    compares directly; a stamp without an offset — a caller's ``since``, an older
+    record — is taken as local time, the same reading :func:`is_stale` gives its
+    reference. Comparing a naive datetime with an aware one raises, and a read
+    filter must never be the thing that raises.
+
+    Nor may the local-time reading itself. A naive stamp at either end of the
+    calendar — ``0001-01-01T00:00:00``, ``9999-12-31T23:59:59``, which is what a
+    caller spells for "since the beginning of time" — cannot be shifted into a
+    zone whose offset would carry it past year 1 or year 9999, and the platform
+    reports that as ``OverflowError`` or ``ValueError`` (which zone trips which end
+    depends on the host). Such a stamp is a sentinel, not a moment anyone measured
+    in local time, so it is read as UTC: ``since=0001-01-01T00:00:00`` means
+    "everything", never a refusal and never a failed read.
+    """
+    parsed = _parse_iso(value)
+    if parsed is None:
+        return None
+    if parsed.tzinfo is not None:
+        return parsed
+    try:
+        return parsed.astimezone()
+    except (OverflowError, ValueError, OSError):
+        return parsed.replace(tzinfo=timezone.utc)
 
 
 # --------------------------------------------------------------------------- #

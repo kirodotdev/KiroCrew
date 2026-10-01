@@ -63,4 +63,13 @@ export interface ClientTransport {
   removeAuthBanner: () => void
   /** `j`'s auth recovery for a response handed back RAW rather than parsed. */
   sendResponseAuthRecovery: (r: Response) => Response
+  /** `withDeadline`, plus the journal: a read that hits its bound is recorded like an
+   *  HTTP failure, and the report is pinned to the rejection so the notice that shows
+   *  it hands the agent THIS read's endpoint, not whichever bounded read timed out last. */
+  withJournaledDeadline: <T>(
+    ms: number,
+    outer: AbortSignal | undefined,
+    endpoint: string,
+    attempt: (signal: AbortSignal) => Promise<T>,
+  ) => Promise<T>
 }

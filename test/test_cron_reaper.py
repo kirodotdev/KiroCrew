@@ -7,7 +7,7 @@ import sys
 import threading
 import time
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from typing import Any
 from unittest.mock import ANY, AsyncMock, MagicMock, call, patch
@@ -297,6 +297,97 @@ class TestCronReaper:
             await svc._force_reap("persist1", _JOB_TIMEOUT_SECS + 10, claim=claim)
 
         mock_save.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_reaped_runs_count_toward_auto_pause(self, tmp_path: object) -> None:
+        """A started run the reaper kills is a failure: enough of them auto-pause the job."""
+        from kiro_crew.cron_service.model import _AUTO_PAUSE_THRESHOLD
+
+        svc = CronService(base_dir=None, on_job=AsyncMock())
+        svc._history = CronHistoryStore(base_dir=tmp_path)
+        svc._sessions = _mock_sessions()
+        job = _make_job("hang1")
+        svc._jobs = [job]
+
+        for n in range(1, _AUTO_PAUSE_THRESHOLD + 1):
+            job.failure_recorded = False  # each run starts with no failure recorded
+            claim = svc._claims["hang1"] = _RunClaim(
+                trigger="scheduled",
+                claimed_at=time.time() - _JOB_TIMEOUT_SECS - 10,
+                task=_live_task(),
+                started_monotonic=time.monotonic() - _JOB_TIMEOUT_SECS - 10,
+            )
+            with patch("kiro_crew.sel.sel"), patch.object(svc, "_save"):
+                await svc._force_reap("hang1", _JOB_TIMEOUT_SECS + 10, claim=claim)
+            assert job.consecutive_failures == n
+
+        assert job.auto_paused is True
+        assert job.enabled is False
+
+    @pytest.mark.asyncio
+    async def test_a_reaped_run_that_never_started_is_not_counted(self, tmp_path: object) -> None:
+        svc = CronService(base_dir=None, on_job=AsyncMock())
+        svc._history = CronHistoryStore(base_dir=tmp_path)
+        svc._sessions = _mock_sessions()
+        job = _make_job("nostart1")
+        svc._jobs = [job]
+        claim = svc._claims["nostart1"] = _RunClaim(
+            trigger="scheduled", claimed_at=time.time() - _JOB_TIMEOUT_SECS - 10, task=_live_task()
+        )
+        with patch("kiro_crew.sel.sel"), patch.object(svc, "_save"):
+            await svc._force_reap("nostart1", _JOB_TIMEOUT_SECS + 10, claim=claim)
+
+        assert job.consecutive_failures == 0
+
+    @pytest.mark.asyncio
+    async def test_a_reaped_run_whose_payload_never_started_is_not_counted(
+        self, tmp_path: object
+    ) -> None:
+        """A run stamped but stopped at the fire-time gate never ran a line: no count."""
+        svc = CronService(base_dir=None, on_job=AsyncMock())
+        svc._history = CronHistoryStore(base_dir=tmp_path)
+        svc._sessions = _mock_sessions()
+        job = _make_job("gated1")
+        job.run_never_started = True
+        svc._jobs = [job]
+        claim = svc._claims["gated1"] = _RunClaim(
+            trigger="scheduled",
+            claimed_at=time.time() - _JOB_TIMEOUT_SECS - 10,
+            task=_live_task(),
+            started_monotonic=time.monotonic() - _JOB_TIMEOUT_SECS - 10,
+        )
+        with patch("kiro_crew.sel.sel"), patch.object(svc, "_save"):
+            await svc._force_reap("gated1", _JOB_TIMEOUT_SECS + 10, claim=claim)
+
+        assert job.consecutive_failures == 0
+
+    @pytest.mark.parametrize("raises", [False, True])
+    def test_a_pause_the_store_did_not_take_is_rolled_back(self, raises: bool) -> None:
+        """A failed save keeps the in-memory job scheduled as the disk says."""
+        from kiro_crew.cron_service.model import _AUTO_PAUSE_THRESHOLD
+        from kiro_crew.cron_service.store import CronStoreUnreadable
+
+        svc = CronService(base_dir=None, on_job=AsyncMock())
+        job = _make_job("unread1")
+        job.consecutive_failures = _AUTO_PAUSE_THRESHOLD - 1
+        svc._jobs = [job]
+        error = OSError(28, "No space left on device") if raises else CronStoreUnreadable("x")
+        with (
+            patch("kiro_crew.sel.sel"),
+            patch.object(svc, "_save", side_effect=error),
+            pytest.raises(OSError) if raises else nullcontext(),
+        ):
+            svc._merge_terminal_state_locked(
+                "unread1",
+                last_status="error",
+                last_error="Reaped",
+                last_run_ts=time.time(),
+                run_generation=1,
+                count_failure=True,
+            )
+
+        assert (job.enabled, job.auto_paused) == (True, False)
+        assert job.consecutive_failures == _AUTO_PAUSE_THRESHOLD - 1
 
     @pytest.mark.asyncio
     async def test_reaped_flag_prevents_merge(self, tmp_path: object) -> None:

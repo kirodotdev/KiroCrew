@@ -6,7 +6,7 @@ created: 2026-09-22
 last-audited: 2026-09-22
 audited-at: 87553ba866
 doc-pr:
-implementation-prs: [12797, 12798, 12805, 12806, 12924, 14897, 14914]
+implementation-prs: [12797, 12798, 12805, 12806, 12924, 14897, 14914, 14925]
 tracking-issues: []
 supersedes: []
 superseded-by: []
@@ -187,7 +187,10 @@ or review; and the removal drops nothing the person made — every agent file
 stays, and one click re-enrols any of them. A package-installed agent is
 enrolled by the same sync as a person's own, so its generated row is the
 same leftover state; the runtime's own agents and uninstalled specs are left
-out because nothing re-enrols them in one click. Only a turn on the crewmate's
+out because nothing re-enrols them in one click. A row the sync wrote for a
+skill-view alias (`kirocrew-skill-view-*`) is not an uninstalled spec: the
+runtime writes that file to project another agent's skills, nobody installs
+or picks it, and it is removed under the same rule as any generated row. Only a turn on the crewmate's
 own page counts as chatting, because that thread is the crewmate: another
 session running the same agent file is a template use, and it survives the
 removal untouched. One unreadable thread keeps only its own crewmate, so a
@@ -204,6 +207,11 @@ each is the person's own act on that row, so the row is theirs.
 Decided: the existing detail page is kept as is and becomes the one place a
 crewmate is configured. The separate "Edit crewmate" modal is dropped from the
 plan. Manager metaphor: the detail page is the HR file.
+
+> **Amended 2026-09-30 (see § 10, CREW-18688) — ACCEPTED.** § 10 revises "the
+> modal is dropped": a bot is edited in place on the Crewmates page via a modal
+> that mounts the SAME editor the detail page uses (one editor, two front doors),
+> not a second, divergent editor. § 10 now supersedes this screen-04 decision.
 
 ### 05 Crewmate chat shows only what it says to you
 
@@ -244,6 +252,27 @@ Decided:
 - Manager metaphor: Notes is the team wiki, Work log is the weekly report,
   Dashboard is the project board.
 
+Amendment (2026-09-29, CREW-18721):
+
+- The per-crewmate panel gains a **fourth tab, Schedules**, after Dashboard. It
+  lists only that crewmate's OWN schedules — the ones whose `member_id` is this
+  crewmate — and its chip carries a live/total count badge, omitted entirely when
+  the crewmate has none or the read fails.
+- A schedule belonging to no crewmate stays on `/schedule` and appears on no
+  crewmate's tab. `/schedule` remains the full cross-crewmate view, unchanged.
+- **Create is available wherever a crewmate's schedules are shown**, so the tab
+  carries the create form. This narrows the decision above, which sent creation to
+  the Schedule page or the detail page: it applies to the removed Crew summary
+  tab's dialog, not to this one. The form is draft-safe — every gesture that would
+  unmount it asks first (`onBeforeLeave`), a create in flight refuses, and a window
+  resize that re-docks the panel keeps the form mounted rather than discarding it.
+- Unchanged by this amendment: the removal of the Crew summary tab, and the three
+  original tabs, their order and the tab the panel opens on.
+- Grounds: CREW-18721, a later product requirement that a crewmate's own schedules
+  are visible on that crewmate and not only on `/schedule`. It supersedes this
+  screen's read surface; the section 7 acceptance clause "offers exactly Notes,
+  Work log, Dashboard" reads as those three plus Schedules from this date.
+
 ### 07 Reply threads (P1)
 
 Decided:
@@ -278,6 +307,11 @@ cannot -- so the row reads "Active" or "Off" with the reason under it, and the
 only delivery choice the flow offers is "Its own chat" (`hide_in_chat`). Step 2
 calls the base agent "Starting setup" ("Standard (built in)" for the default),
 and the crewmate name is held to the roster's agent-name grammar before Next.
+
+Amended 2026-09-29 (PR #15085): the crewmate name is free-form. Step 2
+only refuses a blank name; the server's `validate_member_name` is the gate,
+and a name it refuses returns the user to step 2 with the reason under the
+field.
 
 Amended 2026-09-28 by the product owner (PR #14914): when the flow shows.
 Having seen it -- finished or dismissed, recorded as
@@ -358,7 +392,8 @@ The launch is complete when, on main:
   crewmate panel or the first-run flow says "Agent Capabilities", "Agent
   template", "crew member" or "Runs on".
 - The crewmate panel opens on Notes and offers exactly Notes, Work log,
-  Dashboard.
+  Dashboard — plus Schedules, per the section 06 amendment of 2026-09-29
+  (CREW-18721).
 - A new install reaches a crewmate's first greeting through either the
   four-step flow or New crewmate without seeing a settings form.
 - An install carrying crewmates an earlier sync generated loses, on its first
@@ -401,3 +436,34 @@ Branches not yet open as PRs; each will add its number to
 Product owner review, 2026-09-22, with rendered mocks of all nine screens.
 This document is the public record of that review; it carries no link to the
 review's internal notes.
+
+## 10. Amendment — edit a crewmate in place (CREW-18688)
+
+Status: ACCEPTED 2026-09-30 (product owner). This section supersedes screen 04's
+"the separate 'Edit crewmate' modal is dropped": a crewmate is edited in place
+on the Crewmates page via the modal below.
+
+The problem this fixes: to edit a bot from the Crewmates page today, the user is
+navigated away to the crew manager (`/capabilities?tab=crews&crew=<name>`). That
+drops them out of the crewmate thread they were reading, onto a different
+top-level page. Leaving the member page to make a quick edit is the specific
+experience the team decided to remove.
+
+Decision: a crewmate is edited in place on the Crewmates page. The thread-header
+identity pill opens the crew editor as a modal over the page. No navigation, no
+page change. The user stays on the member they were looking at.
+
+This revises screen 04. Screen 04's concern was a SECOND, divergent editor — two
+editors that drift out of sync. This decision keeps ONE editor: the modal mounts
+the same editor the detail page uses (`CrewEditorDialog` + `useCrewEditor`), so
+there is one write path reached from two entry points, and nothing to drift. The
+detail page stays the full "HR file" surface; the modal is the in-context edit
+for "edit the bot I am looking at".
+
+Implementation: the shared editor (hook + dialog) and the Crewmates-page wiring
+ship first. Folding the crew manager (`KiroCrewAgentsPage`) onto the same shared
+component, so "one editor" is literally true in code, is the committed follow-up.
+
+Provenance: accepted by the product owner on 2026-09-30 (CREW-18688), recorded
+here ahead of the implementation PR (#15275) so the decision lands on main
+before the code that relies on it.

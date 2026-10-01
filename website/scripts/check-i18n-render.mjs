@@ -80,6 +80,7 @@ import { browserBundle } from './lib/render-scan.mjs'
 import {
   SETTLE_POLL_MS,
   SETTLE_TIMEOUT_MS,
+  createInflightUrls,
   createSettleTracker,
 } from './lib/render-settle.mjs'
 import {
@@ -934,11 +935,17 @@ async function sweep(browser, dist, { scanScript, dnt, surfaces, locales, label 
         // Cumulative counters, deliberately never reset per surface. A request that
         // outlives the surface that started it still settles, so the difference
         // stays honest across the loop; resetting would strand those stragglers and
-        // leave the count permanently short.
-        const net = { started: 0, settled: 0, get inflight() { return this.started - this.settled } }
-        page.on('request', () => { net.started += 1 })
-        page.on('requestfinished', () => { net.settled += 1 })
-        page.on('requestfailed', () => { net.settled += 1 })
+        // leave the count permanently short. `open` names the requests still in
+        // flight so a timeout can say WHICH one it was waiting on, not just how
+        // many -- the diagnostic the quiet-wait failure needs to be actionable.
+        const open = createInflightUrls()
+        const net = {
+          started: 0, settled: 0, open,
+          get inflight() { return this.started - this.settled },
+        }
+        page.on('request', request => { net.started += 1; open.start(request) })
+        page.on('requestfinished', request => { net.settled += 1; open.finish(request) })
+        page.on('requestfailed', request => { net.settled += 1; open.finish(request) })
         await stubDashboardApi(page, {
           theme: 'dark',
           extra: (path, route) => FIXTURE_OVERRIDES(locale.code, path, route),
@@ -1082,8 +1089,13 @@ async function waitForSurfaceQuiet(page, net, surface, label) {
     await page.waitForTimeout(SETTLE_POLL_MS)
   }
   const seen = tracker.last || { chars: 0, nodes: 0 }
+  const stuck = net.open ? net.open.urls() : []
+  const stuckLine = stuck.length
+    ? `\n    Still in flight: ${stuck.join(', ')}.`
+    : ''
   die(`[${label}] ${surface.url} never went quiet in ${SETTLE_TIMEOUT_MS}ms `
-    + `(${net.inflight} request(s) in flight, ${seen.chars} chars, ${seen.nodes} nodes). `
+    + `(${net.inflight} request(s) in flight, ${seen.chars} chars, ${seen.nodes} nodes).`
+    + stuckLine + ' '
     + 'A surface that keeps changing cannot be compared against a second sweep. Give it a '
     + 'deterministic fixture in FIXTURE_OVERRIDES, or drop it from lib/i18n-surfaces.mjs '
     + 'with a comment saying why.')

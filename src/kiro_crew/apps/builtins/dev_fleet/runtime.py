@@ -6,6 +6,7 @@ import asyncio
 import functools
 import logging
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -48,6 +49,33 @@ def _redact_pr(pr: dict | None) -> dict | None:
         for k, v in pr.items()
         if not k.startswith("_")  # _repo etc. stay internal
     }
+
+
+# --- the one home of "what part of a git remote URL may be derived from" ---
+#
+# It lives HERE, in the module both ``repository`` and ``fleet_state`` already
+# import, because ``fleet_state`` imports ``repository`` and so the reverse
+# import is a cycle -- and a rule that cannot be shared gets copied, which is
+# what left three derivation sites each carrying their own suffix pattern.
+
+
+def remote_url_locator(remote_url: str) -> str:
+    """The locator half of a git remote URL: everything before a ``?`` or ``#``.
+
+    ``git remote set-url`` accepts a query or fragment and smart-HTTP transports
+    honour it, so an operator's own remote can legitimately hold
+    ``?access_token=...`` -- a personal access token in the URL is a common way to
+    make https pushes work unattended. No derivation this app makes from a remote
+    URL wants that credential: one becomes a browser URL rendered into an
+    issue-link ``href``, the others become an ``owner/repo`` name handed to
+    ``gh --repo`` in a child process's argv.
+
+    The cut must PRECEDE any pattern that anchors on ``$``. A retained ``?...``
+    sits between a trailing ``.git`` and the end of the string, so a suffix the
+    pattern means to strip survives, and one remote then derives a different name
+    than the same remote written without a query.
+    """
+    return re.split(r"[?#]", remote_url or "", maxsplit=1)[0].strip()
 
 
 # --- stream watchdog deadline (module constant so tests can patch it) ---
@@ -146,12 +174,23 @@ def _find_cli() -> list[str]:
 # first and a tamper pin second, and it is an env var rather than a config pair
 # so no config precedence applies to it at all. ``update_governance`` and
 # ``auto_improvement``'s clone setup already pin it for the same reason.
+#
+# GIT_OPTIONAL_LOCKS is the other non-config pin, and it is about WHAT GIT WRITES
+# on a read. ``git status`` refreshes the index's stat cache and saves it back,
+# taking ``index.lock`` to do so, which makes a command that is a read to its
+# caller a WRITE to the repository. Every fleet render runs one per row, so the
+# fleet contends with the operator's own git for the lock on the ordinary path.
+# Set to ``0`` here rather than as a ``--no-optional-locks`` flag per call site so
+# the argv this handler builds stays the subcommand it names, and so a read added
+# later inherits it. Nothing this handler needs is lost: the porcelain answer is
+# identical, and a real mutation still takes the locks it REQUIRES.
 # Harmless for non-git commands (pip/npm ignore GIT_*).
 _GIT_ENV_NEUTRALIZERS: dict[str, str] = {
     "GIT_ALLOW_PROTOCOL": "https:ssh",
     "GIT_PROTOCOL_FROM_USER": "0",
     "GIT_NO_REPLACE_OBJECTS": "1",
-    "GIT_CONFIG_COUNT": "4",
+    "GIT_OPTIONAL_LOCKS": "0",
+    "GIT_CONFIG_COUNT": "9",
     "GIT_CONFIG_KEY_0": "core.fsmonitor",
     "GIT_CONFIG_VALUE_0": "false",
     "GIT_CONFIG_KEY_1": "core.hooksPath",
@@ -160,6 +199,39 @@ _GIT_ENV_NEUTRALIZERS: dict[str, str] = {
     "GIT_CONFIG_VALUE_2": "",
     "GIT_CONFIG_KEY_3": "core.sshCommand",
     "GIT_CONFIG_VALUE_3": "ssh",
+    # Signature VERIFICATION is a third code-execution vector beside the two above,
+    # and it is reached by a READ: ``[log] showSignature=true`` in a repository's own
+    # config makes git verify every signature it prints, and verification EXECS the
+    # program these keys name. ``.git/config`` is agent-writable, which is the same
+    # premise that makes ``core.fsmonitor`` and ``core.hooksPath`` worth pinning
+    # here. ``update_governance`` pins the same key against the same vector.
+    #
+    # All four spellings, not just ``gpg.program``: ``gpg.<format>.program`` selects
+    # the program per signature format, and ``gpg.openpgp.program`` is a synonym for
+    # ``gpg.program`` that overrides it -- pinning only the bare key would leave the
+    # synonym as an unpinned way to name the same exec.
+    "GIT_CONFIG_KEY_4": "gpg.program",
+    "GIT_CONFIG_VALUE_4": "true",
+    "GIT_CONFIG_KEY_5": "gpg.openpgp.program",
+    "GIT_CONFIG_VALUE_5": "true",
+    "GIT_CONFIG_KEY_6": "gpg.ssh.program",
+    "GIT_CONFIG_VALUE_6": "true",
+    "GIT_CONFIG_KEY_7": "gpg.x509.program",
+    "GIT_CONFIG_VALUE_7": "true",
+    # The TRIGGER, pinned beside the four programs it would exec. ``showSignature``
+    # is what turns a plain ``git log`` into a verifying one, so pinning only the
+    # programs would leave every log read able to spawn a child -- ``true`` now, but
+    # a program name is a value and this is a place not to depend on one.
+    #
+    # Pinned HERE rather than as ``--no-show-signature`` at each ``log`` call site,
+    # for the reason GIT_OPTIONAL_LOCKS above is: the argv this handler builds keeps
+    # naming just its subcommand, and a ``log`` read added later inherits the pin
+    # instead of having to remember a flag. The flag form also has a measured cost --
+    # an earlier round of this change put a global flag in the argv and broke 28
+    # shard tests whose stubs match the argv they expect, in a file this change does
+    # not own.
+    "GIT_CONFIG_KEY_8": "log.showSignature",
+    "GIT_CONFIG_VALUE_8": "false",
 }
 
 # The credential.helper reset above kills repo-injected helpers (the attack
@@ -427,7 +499,7 @@ def _toolchain_bin(name: str) -> str | None:
 
     Managed toolchain first, system npm second: a distribution's node can be
     older than ``website/package.json``'s ``engines`` (Amazon Linux 2023 ships
-    node 18 against ``>=22``), while ``ensure-node.sh`` installs a version
+    node 18 against ``>=22.12.0``), while ``ensure-node.sh`` installs a version
     chosen to satisfy the build.
     """
     return find_node_tool(name, _TRUSTED_PATH) or _trusted_bin(name)
@@ -543,7 +615,13 @@ async def _run_cmd(
             await platform_compat.kill_and_reap(proc)
             raise
         return (
-            proc.returncode or 0,
+            # An unknown status is a FAILURE, not a success. ``or 0`` mapped None to
+            # 0, and 0 is what every caller here reads as "that worked": a row would
+            # report a clean tree, and a mutation's caller would go on to the next
+            # step, on the strength of an exit status nobody ever saw. None is
+            # reachable after ``communicate`` returns on a child whose status the
+            # event loop has not reaped yet, so it is not a theoretical branch.
+            proc.returncode if proc.returncode is not None else -1,
             (stdout or b"").decode(errors="replace"),
             (stderr or b"").decode(errors="replace"),
         )
@@ -1220,5 +1298,6 @@ __all__ = (
     "_warm_build_path",
     "logger",
     "prov",
+    "remote_url_locator",
     "rt",
 )

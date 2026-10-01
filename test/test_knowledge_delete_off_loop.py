@@ -206,7 +206,11 @@ async def test_handle_deleted_runs_the_delete_off_the_loop_thread(tmp_path, monk
             "delete_items_batch ran on the event-loop thread; it must be handed to "
             "asyncio.to_thread")
     finally:
-        store.close()
+        # The delete ran on a worker thread, which opened its own connection;
+        # ``close()`` is per-thread and would leave that one (``knowledge.db`` +
+        # ``-wal``) open until the cyclic collector ran. Same seam in every test
+        # below whose store is touched off the loop thread.
+        store._close_all_for_tests()
 
 
 @pytest.mark.asyncio
@@ -270,7 +274,7 @@ async def test_duplicate_skip_runs_the_delete_off_the_loop_thread(tmp_path):
             "the duplicate gate's delete ran on the event-loop thread; the whole "
             "gate must travel through run_to_completion")
     finally:
-        store.close()
+        store._close_all_for_tests()
 
 
 @pytest.mark.asyncio
@@ -397,7 +401,7 @@ async def test_duplicate_gate_reingests_when_the_holder_vanishes_before_the_lock
             (target,)).fetchone()[0] > 0, (
             "target kept no items of its own after the holder vanished")
     finally:
-        store.db.close()
+        store._close_all_for_tests()
 
 
 @pytest.mark.asyncio
@@ -517,7 +521,7 @@ async def test_deduped_state_write_is_off_loop_and_keeps_a_late_adoption(tmp_pat
             "the document is unreachable and undeletable "
             f"(status={row['status']!r})")
     finally:
-        store.close()
+        store._close_all_for_tests()
 
 
 def test_deduped_state_write_never_adopts_a_sibling_files_items(tmp_path):
@@ -755,7 +759,7 @@ def test_deduped_state_write_propagates_an_unreadable_group(tmp_path):
         assert row["status"] == "scanning", (
             f"expected the retryable marker to survive, got {row['status']!r}")
     finally:
-        store.close()
+        store._close_all_for_tests()
 
 
 def test_artifact_deduped_state_write_keeps_a_late_adoption(tmp_path):
@@ -954,7 +958,7 @@ async def test_duplicate_gate_records_terminal_state_even_when_cancelled(tmp_pat
             "the gate did not actually refuse the write, so this test would pass "
             "vacuously")
     finally:
-        store.close()
+        store._close_all_for_tests()
 
 
 @pytest.mark.asyncio
@@ -1037,4 +1041,4 @@ async def test_duplicate_gate_and_terminal_state_are_one_transaction(tmp_path):
             "a terminal skipped_duplicate job survived a failed state write, so a "
             "caller would read 'already present' for a refusal that was rolled back")
     finally:
-        store.close()
+        store._close_all_for_tests()

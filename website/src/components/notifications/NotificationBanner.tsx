@@ -36,9 +36,13 @@ export function computeExitDelta(card: DOMRect, bell: DOMRect): ExitDelta {
  *  lights as the card goes — and a card with no measured delta (bell unmounted,
  *  first paint) fades too rather than flying to a guessed point. */
 export function exitTarget(delta: ExitDelta | undefined, reduced: boolean): TargetAndTransition {
-  if (reduced || !delta) return { opacity: 0, transition: { duration: 0.18 } }
+  // A leaving card overlaps the slot the next card slides into, so it must stop
+  // taking the pointer as soon as exit starts. Framer Motion treats this
+  // non-animatable value as an instant target update.
+  if (reduced || !delta) return { opacity: 0, pointerEvents: 'none', transition: { duration: 0.18 } }
   return {
     x: delta.dx, y: delta.dy, scale: 0.15, opacity: 0, originX: 1, originY: 0,
+    pointerEvents: 'none',
     transition: { duration: 0.26, ease: [0.4, 0, 1, 1] },
   }
 }
@@ -343,7 +347,13 @@ export default function NotificationBanner({ bellRef, popoverOpen, onOpenNote }:
           syncPaused()
         }}
       >
-        <AnimatePresence custom={exitDeltas.current} initial={false}>
+        {/* `popLayout` takes a leaving card out of flow the instant it is
+            dismissed, so the card behind it moves into its slot straight away
+            instead of after the exit finishes. Every card's close sits at the
+            same offset from the card's top-right corner, so the next close
+            lands under the pointer and repeated clicks clear the stack, the
+            way closing iOS notifications or Chrome tabs does. */}
+        <AnimatePresence custom={exitDeltas.current} initial={false} mode="popLayout">
           {visible.map((n, idx) => {
             const prio = notePriority(n)
             const deck = !expanded && !isMobile && idx > 0
@@ -372,17 +382,27 @@ export default function NotificationBanner({ bellRef, popoverOpen, onOpenNote }:
                 layout={!reduced}
                 initial={enterInitial}
                 animate={reduced
-                  ? { opacity: 1 }
+                  ? { opacity: 1, pointerEvents: 'auto' }
                   // Deck cards shrink about the top centre so both side edges
                   // recede evenly; the exit re-anchors to the top-right corner
                   // the travel vector was measured from.
-                  : { x: 0, y: deck ? DECK_Y[idx] : 0, scale: deck ? DECK_SCALE[idx] : 1, opacity: 1, originX: deck ? 0.5 : 1, originY: 0 }}
+                  : { x: 0, y: deck ? DECK_Y[idx] : 0, scale: deck ? DECK_SCALE[idx] : 1, opacity: 1, originX: deck ? 0.5 : 1, originY: 0, pointerEvents: 'auto' }}
                 variants={variants}
                 exit="exit"
-                transition={{ duration: 0.22, ease: 'easeOut' }}
+                transition={{
+                  duration: 0.22, ease: 'easeOut',
+                  // The slide into a dismissed card's slot is the one motion a
+                  // user chases with a second click, so it is short and
+                  // front-loaded (ease-out-expo): the next close is under the
+                  // pointer within a few frames instead of at the end.
+                  layout: { duration: 0.16, ease: [0.16, 1, 0.3, 1] },
+                }}
                 // A deck card is pinned to the top card's box (inset 0 on the
                 // relative stack), so the blank shell always matches its height.
-                style={{ zIndex: 10 - idx, ...(deck ? { position: 'absolute', left: 0, right: 0, top: 0, bottom: 0 } : {}) }}
+                // The top card is `relative` so its zIndex applies: unpositioned,
+                // it painted UNDER the absolute shells, which blurred it and
+                // took its close click (the click expanded the deck instead).
+                style={{ zIndex: 10 - idx, ...(deck ? { position: 'absolute', left: 0, right: 0, top: 0, bottom: 0 } : { position: 'relative' }) }}
                 data-testid="notification-banner-card"
                 data-priority={prio}
                 data-deck={deck ? 'true' : undefined}

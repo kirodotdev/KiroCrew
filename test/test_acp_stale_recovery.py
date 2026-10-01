@@ -800,6 +800,7 @@ async def test_wait_tool_declared_duration_reads_working():
     handle._inflight_tool = ToolCallState(
         title="wait", command='{"seconds": 1800, "reason": "babysit"}',
         dispatch_ts=time.monotonic(), is_shell=False,
+        tool_name="wait", mcp_server_name="kirocrew-core",
     )
     handle._queue = _SilentQueue()  # type: ignore[assignment]
 

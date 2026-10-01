@@ -45,6 +45,9 @@ export interface UseVirtualChatOptions<T> {
    * detection stay on the pure sessionId.
    */
   heightScopeKey?: string
+  /** Whether live layout matches the height scope. Checked at every measurement
+   * write (observer, ref seed, farm); a changed callback remeasures mounted rows. */
+  canMeasure?: () => boolean
   /** Items to mount above and below the visible viewport. Default: 5. */
   overscan?: number
   /** Session ID — partitions the persisted height cache. */

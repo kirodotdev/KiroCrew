@@ -12,7 +12,7 @@ exfiltration, write-protected-config, deny-by-default-shell, and governance rule
 surfaces it for a human decision: `ApprovalCard.tsx` renders the pending call, the
 operator approves or rejects, and the decision flows back through
 `onApprove(decision, pattern?)` → `api.approveChatSlot(slot, action, extra)`
-(`ChatInput.tsx`) to resume the paused turn.
+(`chat-input/approval.ts`) to resume the paused turn.
 
 This is Kiro Crew's **batch-approve + inline tool-request preview** differentiator: a
 verification checkpoint that sits between an autonomous agent and any consequential
@@ -64,7 +64,7 @@ turn, so that the agent continues with my decision applied and no state is lost.
 #### Acceptance Criteria
 1. WHEN the operator approves a pending call THEN the decision SHALL flow through the existing `onApprove(decision, pattern?)` callback and the paused tool call SHALL execute.
 2. WHEN the operator rejects a pending call THEN the tool SHALL NOT execute and the agent turn SHALL resume with the rejection recorded.
-3. WHEN an approval decision is submitted from a chat slot THEN it SHALL resolve via the existing slot-scoped `api.approveChatSlot(slot, action, extra)` path in `ChatInput.tsx` — the layer SHALL NOT introduce a new approval API path.
+3. WHEN an approval decision is submitted from a chat slot THEN it SHALL resolve via the existing slot-scoped `api.approveChatSlot(slot, action, extra)` path in `chat-input/approval.ts` — the layer SHALL NOT introduce a new approval API path.
 4. WHEN a decision resumes a turn THEN the resumed state SHALL be the same interrupted invocation (same slot, same tool-call id), never a re-issued or duplicated call.
 5. IF the operator provides an approval `pattern` (e.g. "always allow this shape") THEN it SHALL be forwarded verbatim as the `extra`/`pattern` argument the existing path already accepts.
 

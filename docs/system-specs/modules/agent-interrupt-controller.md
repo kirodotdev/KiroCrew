@@ -31,7 +31,7 @@ delivered:
 The in-tree consumer is `PrWatchProbe`. It FETCHES a pull request through `gh` and
 classifies nothing: it publishes the reading on itself and returns a tick carrying
 only what the kernel needs of its own -- an epoch, a pending count, and whether the
-subject was reachable. The driver (`irq.poll`, from `autonudge.py`) reads the
+subject was reachable. The driver (`irq.poll`, from `autonudge_service/gate.py`) reads the
 published reading and the wake judge decides on it.
 
 So the kernel serves this consumer for two things a stateless reading cannot hold:

@@ -38,6 +38,7 @@ from kiro_crew.constants import (
     CHANNEL_OWNER_DM_NAMESPACES,
     MAX_BANNER_CHARS,
     SLACK_NAMESPACE,
+    WAIT_TOOL_MAX_SECS,
     WINDOWS_DEVICE_STEMS,
 )
 
@@ -1435,7 +1436,8 @@ MONITOR_WATCH_SCHEMA = ToolSchema(
             max_val=MAX_MONITOR_CADENCE_SECS,
         ),
         FieldSpec("max_runtime_secs", (int, float), min_val=1, max_val=MAX_RUNTIME_CEILING_SECS),
-        FieldSpec("max_agent_turns", int, min_val=1, max_val=MAX_MONITOR_AGENT_TURNS),
+        # Floor 0, not 1: zero is the unlimited sentinel for this one budget.
+        FieldSpec("max_agent_turns", int, min_val=0, max_val=MAX_MONITOR_AGENT_TURNS),
         FieldSpec("max_tokens", int, min_val=1, max_val=MAX_MONITOR_TOKENS),
         FieldSpec("max_provider_errors", int, min_val=1, max_val=MAX_MONITOR_PROVIDER_ERRORS),
         FieldSpec("wake_instructions", str, max_len=MAX_MONITOR_WAKE_INSTRUCTIONS_CHARS),
@@ -1591,7 +1593,8 @@ MONITOR_UPDATE_SCHEMA = ToolSchema(
         FieldSpec("max_runtime_secs", (int, float), min_val=1, max_val=MAX_RUNTIME_CEILING_SECS),
         FieldSpec("target", str, max_len=MAX_SHORT_STRING),
         FieldSpec("objective", str, allowed=publicly_armable_objectives()),
-        FieldSpec("max_agent_turns", int, min_val=1, max_val=MAX_MONITOR_AGENT_TURNS),
+        # Floor 0, not 1: zero is the unlimited sentinel for this one budget.
+        FieldSpec("max_agent_turns", int, min_val=0, max_val=MAX_MONITOR_AGENT_TURNS),
         FieldSpec("max_tokens", int, min_val=1, max_val=MAX_MONITOR_TOKENS),
         FieldSpec("max_provider_errors", int, min_val=1, max_val=MAX_MONITOR_PROVIDER_ERRORS),
         FieldSpec("wake_instructions", str, max_len=MAX_MONITOR_WAKE_INSTRUCTIONS_CHARS),
@@ -2461,6 +2464,29 @@ CHAT_SESSION_PIN_SCHEMA = ToolSchema(
     ],
 )
 
+# Board columns (``/api/chat/tag-columns``). A column name is stored as
+# ``name[:60]`` (``chat_tags._NAME_MAX``), the same cap as a tag name, and a
+# column reference is a 12-hex id or the column's exact name.
+CHAT_TAG_COLUMN_LIST_SCHEMA = ToolSchema(tool_name="chat_tag_column_list", fields=[])
+
+CHAT_TAG_COLUMN_CREATE_SCHEMA = ToolSchema(
+    tool_name="chat_tag_column_create",
+    fields=[
+        FieldSpec("name", str, required=True, max_len=_CHAT_TAG_NAME_MAX),
+        FieldSpec("tag", str, required=True, max_len=_CHAT_TAG_REF_MAX),
+    ],
+)
+
+CHAT_TAG_COLUMN_MOVE_SCHEMA = ToolSchema(
+    tool_name="chat_tag_column_move",
+    fields=[
+        # The handler requires exactly one of ``before`` / ``after``.
+        FieldSpec("column", str, required=True, max_len=_CHAT_TAG_REF_MAX),
+        FieldSpec("before", str, max_len=_CHAT_TAG_REF_MAX),
+        FieldSpec("after", str, max_len=_CHAT_TAG_REF_MAX),
+    ],
+)
+
 ARTIFACT_MOVE_SCHEMA = ToolSchema(
     tool_name="artifact_move",
     fields=[
@@ -3299,7 +3325,7 @@ READ_SLACK_PROFILE_SCHEMA = ToolSchema(
 WAIT_SCHEMA = ToolSchema(
     tool_name="wait",
     fields=[
-        FieldSpec("seconds", int, required=True, min_val=60, max_val=1800),
+        FieldSpec("seconds", int, required=True, min_val=60, max_val=WAIT_TOOL_MAX_SECS),
         FieldSpec("reason", str, required=True, max_len=MAX_SHORT_STRING),
     ],
 )
@@ -3463,6 +3489,13 @@ SESSION_STOP_SCHEMA = ToolSchema(
     ],
 )
 
+SESSION_END_WAIT_SCHEMA = ToolSchema(
+    tool_name="session_end_wait",
+    fields=[
+        FieldSpec("target", str, required=True, max_len=MAX_SHORT_STRING),
+    ],
+)
+
 SESSION_SET_MODEL_SCHEMA = ToolSchema(
     tool_name="session_set_model",
     fields=[
@@ -3475,6 +3508,19 @@ SESSION_CLOSE_SCHEMA = ToolSchema(
     tool_name="session_close",
     fields=[
         FieldSpec("target", str, required=True, max_len=MAX_SHORT_STRING),
+    ],
+)
+
+SESSION_REVIVE_SCHEMA = ToolSchema(
+    tool_name="session_revive",
+    fields=[
+        FieldSpec("target", str, required=True, max_len=MAX_SHORT_STRING),
+        # Same folder reference ``session_create.folder`` takes. The folder is
+        # resolved and checked BEFORE anything is revived, so an unknown or
+        # deleted folder refuses with nothing done; a revive-then-move pair
+        # would leave the session revived and unfiled when the move refused.
+        # Filing itself runs after the revive has committed and is best-effort.
+        FieldSpec("folder", str, required=False, default="", max_len=_ARTIFACT_FOLDER_REF_MAX),
     ],
 )
 
@@ -3547,6 +3593,13 @@ SESSION_READ_MESSAGE_SCHEMA = ToolSchema(
         FieldSpec("target", str, required=True, max_len=MAX_SHORT_STRING),
         FieldSpec("limit", int, required=False, min_val=1, max_val=100, default=20),
         FieldSpec("since", int, required=False, min_val=0),
+    ],
+)
+
+SESSION_SUMMARY_SCHEMA = ToolSchema(
+    tool_name="session_summary",
+    fields=[
+        FieldSpec("target", str, required=True, max_len=MAX_SHORT_STRING),
     ],
 )
 
@@ -3788,14 +3841,17 @@ MCP_DASHBOARD_SCHEMAS: dict[str, ToolSchema] = {
     "session_create": SESSION_CREATE_SCHEMA,
     "session_fork": SESSION_FORK_SCHEMA,
     "session_stop": SESSION_STOP_SCHEMA,
+    "session_end_wait": SESSION_END_WAIT_SCHEMA,
     "session_set_model": SESSION_SET_MODEL_SCHEMA,
     "session_close": SESSION_CLOSE_SCHEMA,
+    "session_revive": SESSION_REVIVE_SCHEMA,
     "session_send": SESSION_SEND_SCHEMA,
     "session_broadcast": SESSION_BROADCAST_SCHEMA,
     "session_status": SESSION_STATUS_SCHEMA,
     "session_adopt": SESSION_ADOPT_SCHEMA,
     "session_release": SESSION_RELEASE_SCHEMA,
     "session_read_message": SESSION_READ_MESSAGE_SCHEMA,
+    "session_summary": SESSION_SUMMARY_SCHEMA,
     "chat_folder_tree": CHAT_FOLDER_TREE_SCHEMA,
     "chat_folder_create": CHAT_FOLDER_CREATE_SCHEMA,
     "chat_folder_move": CHAT_FOLDER_MOVE_SCHEMA,
@@ -3806,6 +3862,9 @@ MCP_DASHBOARD_SCHEMAS: dict[str, ToolSchema] = {
     "chat_tag_update": CHAT_TAG_UPDATE_SCHEMA,
     "chat_tag_assign": CHAT_TAG_ASSIGN_SCHEMA,
     "chat_session_pin": CHAT_SESSION_PIN_SCHEMA,
+    "chat_tag_column_list": CHAT_TAG_COLUMN_LIST_SCHEMA,
+    "chat_tag_column_create": CHAT_TAG_COLUMN_CREATE_SCHEMA,
+    "chat_tag_column_move": CHAT_TAG_COLUMN_MOVE_SCHEMA,
 }
 
 # ── Tool Schemas (MCP crew log — server ``kirocrew-crew-log``) ──
@@ -3855,7 +3914,12 @@ CREW_LOG_PROJECTION_SCHEMA = ToolSchema(
             "name",
             str,
             required=True,
-            allowed=frozenset({"status", "usage", "timeline", "tools", "approvals"}),
+            # Must hold every name the tool ADVERTISES in its ``inputSchema`` enum, which is
+            # ``mcp_crew_log.PROJECTION_NAMES``. Spelled literally rather than imported
+            # because that module imports this one, and the two are pinned together by
+            # ``test_the_projection_schema_accepts_every_advertised_fold`` so a fold added to
+            # one and not the other fails CI instead of advertising a name this refuses.
+            allowed=frozenset({"status", "usage", "timeline", "tools", "approvals", "subagents"}),
         ),
     ],
 )
@@ -4005,7 +4069,22 @@ WORK_REPORT_SCHEMA = ToolSchema(
     custom_validator=lambda cleaned: _validate_work_artifacts(cleaned.get("artifacts")),
 )
 
-WORK_LEDGER_READ_SCHEMA = ToolSchema(tool_name="work_ledger_read")
+#: Every parameter of ``work_ledger_read`` narrows or shapes the read; none is
+#: required, and with none the whole board comes back as it always has. The
+#: ``events`` ceiling restates the route's own tail cap (``_MAX_EVENT_TAIL`` in
+#: ``dashboard/handlers/work_ledger.py``), pinned together by its tests.
+WORK_LEDGER_READ_SCHEMA = ToolSchema(
+    tool_name="work_ledger_read",
+    fields=[
+        FieldSpec("events", int, min_val=0, max_val=20),
+        FieldSpec("item_id", str, max_len=16, pattern=re.compile(r"^it_[0-9a-f]{8}$")),
+        FieldSpec("state", str, allowed=_WORK_ITEM_STATES),
+        # Long enough for an offset-carrying ISO-8601 stamp with microseconds;
+        # whether it PARSES is the route's check, with the store's own reader.
+        FieldSpec("since", str, max_len=40),
+        FieldSpec("compact", bool),
+    ],
+)
 WORK_LEDGER_REBUILD_SCHEMA = ToolSchema(tool_name="work_ledger_rebuild")
 
 WORK_LEDGER_RECORD_SCHEMA = ToolSchema(

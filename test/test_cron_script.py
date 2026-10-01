@@ -312,11 +312,14 @@ class TestCommandCronShellResolution:
         assert cron_script._resolve_command_shell() == "/bin/sh"
 
     def test_brace_expanding_sh_is_rejected(self, monkeypatch):
-        """macOS /bin/sh is bash-in-POSIX-mode and STILL performs brace
-        expansion, so the runtime probe MUST reject it — otherwise
-        `cat ~/.a{w,w}s/credentials` hides from the vet the same way a `bash -c`
-        candidate would. No fallback: the caller then fails-closed with a
-        legible error, matching the Windows path."""
+        """A trusted `sh` the probe rejects in EVERY form is refused.
+
+        bash-as-`sh` (macOS /bin/sh, Linux `/bin/sh -> bash`) is not such a
+        shell: it passes invoked `+B` — see
+        ``test_bash_invoked_as_sh_passes_the_real_probe_with_expansion_off``.
+        What stays refused is a shell that expands however it is invoked,
+        otherwise `cat ~/.a{w,w}s/credentials` hides from the vet. No fallback:
+        the caller then fails-closed with a legible error."""
         from kiro_crew import cron_script
 
         monkeypatch.setattr(cron_script.platform_compat, "IS_WINDOWS", False)
@@ -399,6 +402,151 @@ class TestCommandCronShellResolution:
         result = cron_script.run_command_sandboxed("echo hi", timeout=10)
         assert result["status"] == "error"
         assert "No POSIX shell" in result["output"]
+
+    def test_posix_refusal_names_this_hosts_shells_not_windows(self, monkeypatch):
+        """On macOS / Linux the refusal must describe THIS host.
+
+        A refusal naming Windows ("Windows ships no such shell") gives a Mac
+        operator whose /bin/sh plainly works nothing to act on. The POSIX wording
+        names the trusted paths, the probe they failed and the remedy, and never
+        names Windows.
+        """
+        from kiro_crew import cron_script
+
+        monkeypatch.setattr(cron_script.platform_compat, "IS_WINDOWS", False)
+        monkeypatch.setattr(cron_script, "_resolve_command_shell", lambda: None)
+        result = cron_script.run_command_sandboxed("echo hi", timeout=10)
+
+        assert result["status"] == "error"
+        assert result["exit_code"] == -1
+        output = result["output"]
+        assert "Windows" not in output
+        assert "/bin/sh" in output and "/usr/bin/sh" in output
+        assert "+B" in output
+        assert "script cron" in output
+
+    def test_windows_refusal_keeps_its_by_design_reason(self, monkeypatch):
+        """The Windows wording is unchanged: there the refusal IS the platform."""
+        from kiro_crew import cron_script
+
+        monkeypatch.setattr(cron_script.platform_compat, "IS_WINDOWS", True)
+        output = cron_script.run_command_sandboxed("echo hi", timeout=10)["output"]
+
+        assert "Windows ships no such shell" in output
+        assert "Git for Windows" in output
+
+    def test_a_concurrent_failing_probe_cannot_erase_a_proven_form(self, monkeypatch):
+        """Two command crons resolving the shell on a cold cache stay coherent.
+
+        Thread A proves the ``+B`` form. Thread B starts on the same cold cache
+        and its probe fails transiently. Unserialized, B finishes after A,
+        clears the brace-off record A just wrote and caches the shell as
+        unusable, so A's executor reads the plain form and runs with brace
+        expansion ON. The probe must own the check-probe-record sequence, so B
+        sees A's answer instead of probing.
+        """
+        import threading
+
+        from kiro_crew import cron_script
+
+        monkeypatch.setattr(cron_script, "_POSIX_STRICT_CACHE", {})
+        monkeypatch.setattr(cron_script, "_BRACE_OFF_SHELLS", {})
+        a_in_brace_off_probe = threading.Event()
+        b_probing = threading.Event()
+        a_done = threading.Event()
+        b_probe_calls: list[bool] = []
+
+        def _probe(shell: str, brace_off: bool) -> bool:
+            if threading.current_thread().name == "probe-a":
+                if not brace_off:
+                    return False
+                a_in_brace_off_probe.set()
+                # Give B the chance to probe concurrently; it can only if the
+                # sequence is unserialized.
+                b_probing.wait(timeout=1.0)
+                return True
+            b_probe_calls.append(brace_off)
+            b_probing.set()
+            a_done.wait(timeout=5.0)
+            return False
+
+        monkeypatch.setattr(cron_script, "_probe_one_form", _probe)
+        results: dict[str, bool] = {}
+
+        def _run_a() -> None:
+            results["a"] = cron_script._shell_is_posix_strict("/bin/sh")
+            a_done.set()
+
+        def _run_b() -> None:
+            results["b"] = cron_script._shell_is_posix_strict("/bin/sh")
+
+        a = threading.Thread(target=_run_a, name="probe-a")
+        b = threading.Thread(target=_run_b, name="probe-b")
+        a.start()
+        assert a_in_brace_off_probe.wait(timeout=5.0)
+        b.start()
+        a.join(timeout=10.0)
+        b.join(timeout=10.0)
+
+        assert results == {"a": True, "b": True}
+        assert b_probe_calls == [], "a second probe ran while the first owned the cold cache"
+        assert cron_script._command_argv("/bin/sh", "echo p.{q,q}") == [
+            "/bin/sh",
+            "+B",
+            "-c",
+            "echo p.{q,q}",
+        ]
+
+    @pytest.mark.skipif(pc.IS_WINDOWS, reason="POSIX shell semantics")
+    @pytest.mark.parametrize("source", ["bash-linked-as-sh", "host-bin-sh"])
+    def test_bash_invoked_as_sh_passes_the_real_probe_with_expansion_off(
+        self, monkeypatch, tmp_path, source
+    ):
+        """The shape of macOS /bin/sh, measured on a real shell rather than a stub.
+
+        bash started under the name ``sh`` enters POSIX mode, which is what
+        macOS /bin/sh is, and POSIX mode still brace-expands: the plain probe
+        form prints ``x.a x.a``. The resolver must accept it through the ``+B``
+        form and the executor must reuse that form, so the command the cron
+        actually runs keeps a brace group literal.
+
+        ``host-bin-sh`` runs the same assertions on this host's own /bin/sh when
+        it is such a shell -- on a macOS runner that is the bash 3.2 the report
+        came from, on AL2023 / RHEL / Fedora it is the ``/bin/sh -> bash`` link.
+        ``bash-linked-as-sh`` builds the shape from whatever bash is installed,
+        so a host whose /bin/sh is dash still exercises the ``+B`` path.
+        """
+        import shutil
+        import subprocess
+
+        from kiro_crew import cron_script
+
+        if source == "host-bin-sh":
+            sh = "/bin/sh"
+        else:
+            bash = shutil.which("bash")
+            if bash is None:
+                pytest.skip("no bash on this host")
+            link = tmp_path / "sh"
+            link.symlink_to(bash)
+            sh = str(link)
+        plain = subprocess.run(
+            [sh, "-c", "echo x.{a,a}"], capture_output=True, text=True, encoding="utf-8"
+        )
+        if source == "host-bin-sh" and plain.stdout.strip() != "x.a x.a":
+            pytest.skip("this host's /bin/sh does not brace-expand (dash / ash)")
+        assert plain.stdout.strip() == "x.a x.a", "bash-as-sh should brace-expand plainly"
+
+        monkeypatch.setattr(cron_script, "wrap_argv", lambda argv, **k: (list(argv), None))
+        monkeypatch.setattr(cron_script, "cgroup_scope_argv", lambda argv: list(argv))
+        monkeypatch.setattr(cron_script, "_POSIX_STRICT_CACHE", {})
+        monkeypatch.setattr(cron_script, "_BRACE_OFF_SHELLS", {})
+
+        assert cron_script._shell_is_posix_strict(sh) is True
+        argv = cron_script._command_argv(sh, "echo p.{q,q}")
+        assert argv == [sh, "+B", "-c", "echo p.{q,q}"]
+        ran = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8")
+        assert ran.stdout.strip() == "p.{q,q}"
 
 
 class TestRunScriptSandboxed:

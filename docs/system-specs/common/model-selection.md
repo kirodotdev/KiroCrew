@@ -189,6 +189,41 @@ result clock, `entitlement_probe_result_at`), not by its call time, so its floor
 never rises above the data it holds and a replayed answer is never re-dated out
 of the spawn-race window it was captured in.
 
+The same snapshot judges three more decisions, and all revalidate before they
+trust a denial or a narrowing. A direct-spawn `AcpClient` (one kiro-cli process
+per session, no shared runtime) refuses an explicit `set_model` pick and withholds
+a startup pin only after `AcpClient.refresh_available_models` agrees, and the
+picker read on that same dedicated transport (`AcpProvider.maybe_refresh_available_models`
+with a plain kiro `AcpClient`) is served by the same method whenever the snapshot
+would drop a catalog row (`catalog_row_would_drop`): that client has no shared
+probe cache, so its own snapshot is the cache -- a snapshot a probe confirmed
+within `_ENTITLEMENT_PROBE_TTL_SECS` is fresh and is not re-probed, anything else
+(a `session/new` capture, an older confirmation) earns one throwaway `session/new`
+on a dedicated short-lived probe process of its own (never this session's stream,
+so none of its frames can reach this session), overlapping callers share one
+in-flight probe, and a failed probe keeps the snapshot's verdict. The picker read
+honours `_READ_PATH_REPROBE_MIN_INTERVAL_SECS` against a probe-confirmed list, and
+is bounded by the same `_READ_PATH_PROBE_DEADLINE_SECS` (3s) shielded deadline the
+shared read path uses: past it the read raises `EntitlementRevalidating` (the
+endpoint's degraded response; the probe keeps running and the next read serves its
+landed answer) rather than holding a picker poll or a pin-save for the probe's full
+`initialize`+`session/new` timeout. A role pin
+(`agent.role_models.*`, `agent.fallback_model`, `agent.refusal_fallback_model`,
+the `decisions.*` model pins, a crew's `model`) is judged by the synchronous
+`_validate_role_model` against the NEWEST live session in the target namespace
+(always scoped: the PATCH path resolves the default harness `agent.acp_backend`
+and the crew handlers the member's, so a newer session on another harness can
+neither admit nor reject the pin)
+-- the same session `_entitled_kiro_models` reads, so a session started before a
+downgrade cannot keep admitting the model the account lost. Its callers first
+await `_revalidate_role_pin_evidence`, which hands that session to the same
+`maybe_refresh_available_models` seam the picker uses (the pin judged beside the
+rows the snapshot already serves, so a lone pin never reads as the fail-open
+namespace mismatch). The seam heals the snapshot in place, so the validator reads
+the fresh answer; a deadline miss is a retryable 400, never an acceptance on no
+evidence, and a probe failure proceeds on the snapshot as it was. The crew
+handlers run it before taking the config lock, so no probe holds the lock.
+
 The vocabulary side and the spelling side fold ids with ONE function. A pin can be
 native to a harness while spelled in another namespace's provider-id form:
 `global.anthropic.claude-opus-4-8[1m]` folds through `catalog_key` onto kiro's

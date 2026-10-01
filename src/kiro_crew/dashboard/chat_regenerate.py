@@ -8,6 +8,7 @@ import logging
 
 from aiohttp import web
 
+from kiro_crew.dashboard.chat_delivery import queued_text_for_display
 from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
 from kiro_crew.dashboard.chat_runner import _run_chat, _start_next_queued_turn
 from kiro_crew.dashboard.chat_utils import (
@@ -538,8 +539,19 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
         # Prepare the truncated+edited window on a COPY. The dirty-slot flush
         # can run while either durable boundary below is pending, so exposing a
         # truncated live window here could make a rejected edit permanent.
-        _bc, _ = redact_exfiltration_urls(content)
-        _bc, _ = redact_credentials(_bc)
+        # This edited value is BOTH the persisted user row (``append`` below)
+        # and the turn's input (``_run_chat`` runs the same ``_bc``), so the
+        # session's own human's edit is delivered AS TYPED -- the rule an
+        # ordinary send follows -- and redacting it would strip a link the human
+        # kept in the message from the model. An app-driven edit-resend
+        # (``request_app`` set) is not the reader's own words and stays
+        # display-redacted, matching ``queue_entry_is_user_origin``'s boundary
+        # and the ``_directive_user_origin=not bool(request_app)`` stamp below.
+        # ``not request_app`` is the whole owner test here, not a narrowing of
+        # that discriminator: this HTTP endpoint carries only the dashboard
+        # composer or an app, so a channel or producer ``kind`` stamp cannot
+        # reach it -- the sole question left is whether an app drives the edit.
+        _bc = queued_text_for_display(content, user_origin=not bool(request_app))
         prospective_slot = copy.copy(slot)
         prospective_slot.messages = list(slot.messages[:index])
         # ``copy.copy`` is SHALLOW, so every mutable attribute still IS the live

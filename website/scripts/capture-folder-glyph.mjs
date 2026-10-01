@@ -34,9 +34,14 @@ const folders = [
   { id: 'f3', name: 'Infra', order: 2, collapsed: true },
 ]
 
+const NOW = Date.now()
 const slot = (key, title, folder_id, last_ts, running = false) => ({
   key, title, messages: 4, running, agent: 'kirocrew',
-  created: '2026-07-20T01:00:00Z', last_ts, folder_id,
+  created: '2026-07-20T01:00:00Z',
+  // Re-base the fixture dates onto "now" (keeping their order) so the rows
+  // render instead of folding into the dormant-sessions expander.
+  last_ts: new Date(NOW - (Date.parse('2026-07-29T22:00:00Z') - Date.parse(last_ts))).toISOString(),
+  folder_id,
 })
 
 // f1 is expanded, so its children are visible under the open glyph.
@@ -74,11 +79,10 @@ async function main() {
   // Crop to the session/folder panel (the second column) so the folder rows
   // and their glyphs fill the frame. Derive the box from the folder rows.
   async function shot(name) {
-    const f1 = page.locator('[data-testid="folder-collapse-f1"]')
-    const box = (await f1.count()) ? await f1.first().boundingBox() : null
-    // The panel's left edge sits just left of the glyph; give it a generous
-    // fixed width so long session titles are not clipped.
-    const x = box ? Math.max(0, box.x - 44) : 470
+    // FIXED crop, anchored to the sidebar panel rather than a folder glyph:
+    // a glyph-anchored crop moves with the very indent being compared, which
+    // hides the before/after delta.
+    const x = 200
     await page.screenshot({
       path: `${OUT}/${name}.png`,
       clip: { x, y: 118, width: Math.min(1400 - x, 380), height: 1000 },

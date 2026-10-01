@@ -8,6 +8,7 @@ grammars run first, the operator allowlists next, and registered providers last.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 from pathlib import PurePosixPath
 from urllib.parse import urlparse, urlunparse
 
@@ -25,6 +26,64 @@ _GITLAB_PATH_MARKERS: tuple[tuple[str, str], ...] = (
 # segments. The captured segment is what derives the kind.
 _GITHUB_PATH_RE = re.compile(r"/([^/]+)/([^/]+)/(pull|issues)/(\d+)", re.IGNORECASE)
 _GITHUB_SEGMENT_KINDS = {"pull": "change", "issues": "issue"}
+
+
+# Characters that terminate a raw ``https://`` token inside message text. Shared
+# by every transcript scanner so the token boundary cannot drift between them.
+_SOURCE_URL_STOP_CHARS = frozenset(" \t\n<>()[]{}\"'")
+
+
+def iter_source_url_candidates(
+    content: str,
+    path_markers: tuple[str, ...],
+    *,
+    stop_chars: frozenset[str] = _SOURCE_URL_STOP_CHARS,
+) -> Iterator[str]:
+    """Yield each raw source-URL candidate in one message's text, front to back.
+
+    This is the single token-extraction step both transcript scanners share --
+    the sidebar chip derivation (:meth:`SlotProjection.source_links`) and the
+    unlink-authorization predicate (:meth:`_ChatSlot.mentions_source_identity`).
+    Each finds a ``https://`` run, extends it to the next boundary character,
+    strips trailing punctuation, and drops it unless a path marker makes it worth
+    a full :func:`parse_source_url`. Factoring only THIS out keeps the parser and
+    the boundary/punctuation rules identical for both, so a change to the token
+    grammar cannot silently diverge -- while each caller keeps its OWN traversal
+    policy, which is deliberately different: the derivation walks newest-first
+    under a parse budget and stops at ``max_links`` (it renders a bounded list on
+    the event loop), whereas the predicate must scan the WHOLE transcript with no
+    budget and no early exit (an early give-up would wrongly report a genuinely
+    mentioned identity as absent and misauthorize a durable tombstone). Yielding
+    candidates lets the derivation consume lazily and the predicate exhaustively
+    from the same source.
+
+    Each candidate's end is bounded by the NEXT ``https://`` occurrence as well as
+    by ``stop_chars``. Without the next-occurrence bound, a message made of
+    adjacent ``https://`` prefixes has no stop character until its very end, so
+    one token would extend across the whole message and the per-candidate marker
+    and parse work would go quadratic (the derivation runs synchronously during
+    ``push_slots_update``). The bound also means a ``https://`` NESTED inside
+    another URL (a redirect/tracking wrapper) is examined on its own, so a real
+    change URL carried inside a wrapper still surfaces -- the backend
+    re-validates every URL before any provider call.
+    """
+    search = 0
+    n = len(content)
+    while True:
+        idx = content.find("https://", search)
+        if idx == -1:
+            return
+        # Bound this token by the next ``https://`` as well as by a stop char, so
+        # adjacent prefixes stay linear and a nested URL is examined separately.
+        nxt = content.find("https://", idx + len("https://"))
+        token_limit = n if nxt == -1 else nxt
+        end = idx
+        while end < token_limit and content[end] not in stop_chars:
+            end += 1
+        search = idx + len("https://")
+        candidate = content[idx:end].rstrip(".,!?;:*_~`")
+        if any(marker in candidate for marker in path_markers):
+            yield candidate
 
 
 def _parse_gitlab_path(path: str) -> tuple[str, int, str]:

@@ -26,11 +26,13 @@ run lifecycle, the reaper and ``cancel()`` teardown, and every store transaction
 
 This module is also the subsystem's import and patch surface: every function,
 class and constant it defined before those owners moved out still resolves here
-as the same object.
+as the same object, and so does every public name it imported from the rest of
+the package.
 The names tests patch here that moved code reads -- ``datetime``,
 ``get_local_tz``, ``published_config_timezone``, ``cron_expr_matches``,
 ``config_dir``, ``_record_is_enabled``, ``sel`` and ``_JOB_TIMEOUT_SECS`` -- the
-owners read through this module on each call, so a patch here reaches them.
+owners read through this module on each call, so a patch here reaches them. Every
+other name the owners read is their own global, which a patch here does not reach.
 """
 
 from __future__ import annotations
@@ -56,6 +58,7 @@ from typing import (
 if TYPE_CHECKING:
     from kiro_crew.session import SessionManager
 
+from kiro_crew import platform_compat  # noqa: F401 -- re-exported
 from kiro_crew import (
     cron_inflight,
     cron_script,
@@ -165,6 +168,7 @@ from kiro_crew.cron_service.store import (  # noqa: F401 -- re-exported
     encode_store,
     store_digest,
 )
+from kiro_crew.executors import cron_gate_budget  # noqa: F401 -- re-exported
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.metrics.events import CRON_FIRES, emit_counter
 from kiro_crew.process_identity import (
@@ -186,6 +190,11 @@ from kiro_crew.process_identity import (
 )
 from kiro_crew.resource_status import admission_check
 from kiro_crew.runtime_ownership import authorize_runtime_kill
+from kiro_crew.validation import (  # noqa: F401 -- re-exported
+    CHANNEL_MAX_LEN,
+    MAX_CRON_MESSAGE,
+    MAX_SHORT_STRING,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -880,6 +889,11 @@ class CronService:
                         last_run_ts=last_run_ts,
                         run_generation=generation,
                         result_produced=taken.started_monotonic is not None and job.result_produced,
+                        # A reaped run that started counts toward auto-pause, like
+                        # the wait_for timeout arm; one that never started does not.
+                        count_failure=taken.started_monotonic is not None
+                        and not job.failure_recorded
+                        and not job.run_never_started,
                     )
                 except Exception:
                     logger.exception("Reaper: failed to persist state for cron %s", job_id)
@@ -4193,6 +4207,7 @@ class CronService:
         last_run_ts: float,
         run_generation: int,
         result_produced: bool = False,
+        count_failure: bool = False,
     ) -> None:
         """Persist a job's terminal runtime state under the store lock.
 
@@ -4222,8 +4237,9 @@ class CronService:
         record would persist that run's success as the cancellation or timeout
         that came before it. Returning early here skips nothing owed: unlike
         ``_merge_job_result`` this helper writes only the three status fields
-        (plus clearing a command/script job's carried result), and the save
-        after them has nothing to record once they are skipped.
+        (plus clearing a command/script job's carried result, and the failure
+        count when ``count_failure``), and the save after them has nothing to
+        record once they are skipped.
         """
         with self._file_lock():
             self._sync()
@@ -4244,6 +4260,11 @@ class CronService:
             target.last_status = last_status
             target.last_error = last_error
             target.last_run_ts = last_run_ts
+            # Counted on the disk copy under the lock, so the failure count and
+            # any auto-pause it triggers persist with the terminal record.
+            counted = (target.enabled, target.auto_paused, target.consecutive_failures)
+            if count_failure:
+                target.record_failure()
             # A command/script run that produced nothing must not show the
             # previous run's result beside this error. The caller passes the
             # flag because a reload in _sync() drops the runtime-only marker.
@@ -4254,7 +4275,12 @@ class CronService:
             # cancel. An unreadable store must not abort the reaper loop.
             try:
                 self._save()
-            except CronStoreUnreadable as exc:
+            except Exception as exc:
+                # Keep scheduling as the disk says (like the loop-stall breaker):
+                # a pause the store did not take must not stop the job in memory.
+                target.enabled, target.auto_paused, target.consecutive_failures = counted
+                if not isinstance(exc, CronStoreUnreadable):
+                    raise
                 logger.warning("Cron terminal state not persisted: %s", exc)
 
     # ── Loop-stall breaker ──

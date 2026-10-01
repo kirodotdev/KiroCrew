@@ -102,7 +102,8 @@ class TestRestoreRecentSessions:
         assert slot.title == "Test Chat"
         assert slot.agent == "kirocrew"
         assert slot.workspace == "myws"
-        assert slot.mode == "orchestrator"
+        # Autopilot retired: the persisted mode restores as plain chat.
+        assert slot.mode == ""
         assert len(slot.messages) == 2
         assert slot.messages[0]["content"] == "hello"
         assert slot.messages[1]["content"] == "hi there"

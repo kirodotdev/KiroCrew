@@ -698,6 +698,67 @@ class TestMemberSectionInjection:
         assert "[MEMBER IDENTITY]" not in ctx
         assert "[HOW YOU WORK]" not in ctx
 
+    @pytest.mark.parametrize("entrypoint", ["session", "fresh", "warm_reinjection", "resumed"])
+    def test_plain_chat_on_a_v1_crew_alias_is_not_the_member_desk(self, tmp_path, entrypoint):
+        """An ordinary chat whose record resolved to a V1 crew alias.
+
+        Every plain dashboard chat lands on the stock ``default`` alias, which the
+        loader classifies ``selection_kind == "member"`` (a V1-store member is
+        named by that field and ``selection_name`` alone). The record decides
+        whose rules and memory the turn carries, so identity and [PERMANENT
+        RULES] stay. It does NOT decide that the chat is the member's desk: the
+        dashboard passes ``member=`` for a ``mode == "member"`` slot only, and
+        without it the turn gets no working protocol, no briefing and nothing
+        telling it to maintain one -- on the session-start, warm-reinjection and
+        slim-resume legs alike.
+        """
+        from kiro_crew.execution_context import ExecutionContext, MemoryStoreRef
+
+        write_member_rules(CREW, member=CREW, text="Never merge PRs.")
+        bp = member_briefing_path(CREW)
+        bp.parent.mkdir(parents=True, exist_ok=True)
+        bp.write_text("This week: crash issues.", encoding="utf-8")
+        record = ExecutionContext(
+            None, MemoryStoreRef("default"), "member", "kirocrew-autofix", selection_name=CREW
+        )
+        builder = _builder(tmp_path)
+        with patch("kiro_crew.context.KiroCrewConfig.load", return_value=_fake_config()):
+            if entrypoint == "session":
+                ctx = builder.build_session_context(
+                    session_key="dashboard:chat-1-123", agent=CREW, execution_context=record
+                )
+            elif entrypoint == "fresh":
+                ctx, _ = builder.build_message(
+                    "hello", True, "dashboard:chat-1-123", agent=CREW, execution_context=record
+                )
+            elif entrypoint == "warm_reinjection":
+                ctx, _ = builder.build_message(
+                    "hello again",
+                    False,
+                    "dashboard:chat-1-123",
+                    agent=CREW,
+                    execution_context=record,
+                    needs_reinjection=True,
+                )
+            else:
+                ctx, _ = builder.build_message(
+                    "back",
+                    True,
+                    "dashboard:chat-1-123",
+                    agent=CREW,
+                    execution_context=record,
+                    resumed=True,
+                )
+        assert f"You are {CREW}. Not a generic assistant" in ctx
+        assert "[PERMANENT RULES" in ctx
+        assert "Never merge PRs." in ctx
+        assert "This DM thread" not in ctx
+        assert "[HOW YOU WORK]" not in ctx
+        assert "[CURRENT ASSIGNMENT" not in ctx
+        assert "This week: crash issues." not in ctx
+        assert str(bp) not in ctx
+        assert "working protocol above" not in ctx
+
     def test_unregistered_crew_refuses_but_configured_empty_description_keeps_floor(self, tmp_path):
         from kiro_crew.memory_stores import UnknownMemoryStore
 

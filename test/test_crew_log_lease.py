@@ -416,7 +416,13 @@ def _child(home: Path, tmp_path: Path) -> "subprocess.Popen[str]":
         ready, _, _ = select.select([child.stdout], [], [], CHILD_TIMEOUT)
         assert ready, "the child never announced, so its pipe stayed silent"
         announced = child.stdout.readline().strip()
-        assert announced == "owned", f"the child never claimed the log: {announced!r}"
+        # An empty line is EOF: the child died before announcing, and its reason is on
+        # stderr. Quoting it here is the difference between a named cause and a bare
+        # "never claimed the log" -- the same reason ``_release`` quotes stderr.
+        assert announced == "owned", (
+            f"the child never claimed the log: {announced!r}; "
+            f"stderr:\n{child.stderr.read() if child.stderr else ''}"
+        )
     except BaseException:
         child.kill()
         with contextlib.suppress(subprocess.TimeoutExpired):

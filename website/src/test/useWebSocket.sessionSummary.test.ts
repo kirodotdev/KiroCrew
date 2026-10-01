@@ -1,6 +1,7 @@
 /**
- * The two halves of the session summary panel's freshness contract, both in
- * `useWebSocket.ts`.
+ * The two halves of the session summary panel's freshness contract: the live
+ * frame's arm in `useWebSocket.ts` and the reconnect catch-up in
+ * `hooks/websocket/`.
  *
  * The panel deliberately does not poll, so a push it never receives is not a
  * late update — it is no update at all until the tab remounts. That makes both

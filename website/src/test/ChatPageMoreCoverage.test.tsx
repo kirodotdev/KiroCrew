@@ -6,8 +6,7 @@
  * Three cold areas, all through a real `render(<ChatPage />)`:
  *
  *  1. The row callbacks ChatPage hands to AssistantMessage: `handleFork` (all
- *     three outcomes plus the cold-config refetch), `handlePlanFromHere`,
- *     `handleQuote`, `handleAsk`, `handleRegenerate` (including the snapshot
+ *     three outcomes plus the cold-config refetch), `handleQuote`, `handleAsk`, `handleRegenerate` (including the snapshot
  *     rollback on a failed request), `handleSpeak` (both voice states) and
  *     `handleApplyPlan`'s failure path. AssistantMessage is stubbed as a prop
  *     recorder so the callbacks can be invoked directly — the card's own
@@ -34,7 +33,7 @@ import { Provider } from 'react-redux'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
 import { createTestStore } from './helpers'
 import { RUN_IN_TERMINAL_READY_DEADLINE_MS, RUN_IN_TERMINAL_OPENING_GRACE_MS } from '../utils/fenceShell'
-import { useBottomTerminal, __resetBottomTerminal, removeTab } from '../hooks/useBottomTerminal'
+import { useBottomTerminal, __resetBottomTerminal, removeTab, addTab, MAX_TERMINALS } from '../hooks/useBottomTerminal'
 import { registerTerminalWs, unregisterTerminalWs } from '../utils/terminalRegistry'
 
 // The run-in-terminal rollback consults the popout probe to avoid tearing a
@@ -43,6 +42,10 @@ let mockTerminalPopoutOpen = false
 vi.mock('../utils/terminalPopout', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../utils/terminalPopout')>()),
   isPopoutOpen: () => mockTerminalPopoutOpen,
+}))
+const copyToClipboardMock = vi.hoisted(() => vi.fn<(text: string) => Promise<boolean>>())
+vi.mock('../utils/clipboard', () => ({
+  copyToClipboard: (text: string) => copyToClipboardMock(text),
 }))
 const disposeTerminalSessionSpy = vi.hoisted(() => vi.fn())
 vi.mock('../components/CliPanel', async (importOriginal) => {
@@ -68,7 +71,6 @@ interface AssistantProps {
   content: string
   timestamp?: string
   onFork?: (visibleIndex: number) => void | Promise<void>
-  onPlanFromHere?: (visibleIndex: number) => void | Promise<void>
   onQuote?: (text: string, rect: DOMRect) => void
   onAsk?: (text: string) => void
   onSpeak?: (content: string) => void
@@ -161,16 +163,21 @@ vi.mock('../components/AgentDropdownList', () => ({ default: () => null, Default
 vi.mock('../components/ModelDropdownList', () => ({ default: () => null }))
 vi.mock('../components/InfoTip', () => ({ default: () => null }))
 vi.mock('../components/SegmentedControl', () => ({ default: () => null }))
-interface WelcomeProps {
-  onSwitchMode?: (mode: 'persistent' | 'incognito' | 'temporary') => void | Promise<void>
-}
-let welcomeProps: WelcomeProps | null = null
 vi.mock('../components/WelcomeView', async () => {
   const React = await import('react')
+  return { default: () => React.createElement('div', { 'data-testid': 'welcome' }) }
+})
+// The welcome-state memory chip sits above the composer, rendered by ChatPage itself.
+interface MemoryChipProps {
+  onSwitchMode?: (mode: 'persistent' | 'incognito' | 'temporary') => void | Promise<void>
+}
+let memoryChipProps: MemoryChipProps | null = null
+vi.mock('../components/MemoryModeChip', async () => {
+  const React = await import('react')
   return {
-    default: (props: WelcomeProps) => {
-      welcomeProps = props
-      return React.createElement('div', { 'data-testid': 'welcome' })
+    MemoryModeChip: (props: MemoryChipProps) => {
+      memoryChipProps = props
+      return React.createElement('div', { 'data-testid': 'memory-mode-chip' })
     },
   }
 })
@@ -372,11 +379,13 @@ beforeEach(() => {
   inputProps = null
   projectPickerProps = null
   gridProps = null
-  welcomeProps = null
+  memoryChipProps = null
   chatSettings = { contentWidth: 'compact' }
   localStorage.clear()
   sessionStorage.clear()
   for (const k of Object.keys(apiMocks)) delete apiMocks[k]
+  copyToClipboardMock.mockReset()
+  copyToClipboardMock.mockResolvedValue(true)
   disposeTerminalSessionSpy.mockClear()
   alertSpy = makeAlertSpy()
   vi.useFakeTimers({ shouldAdvanceTime: true })
@@ -398,10 +407,10 @@ describe('Welcome recreation preserves remote execution', () => {
     })
     apiSpy('deleteChatSlot').mockResolvedValue({ ok: true })
     renderChatPage([], { slots: [REMOTE_SLOT] })
-    await waitFor(() => expect(welcomeProps).not.toBeNull())
+    await waitFor(() => expect(memoryChipProps).not.toBeNull())
 
     await act(async () => {
-      await welcomeProps!.onSwitchMode?.('persistent')
+      await memoryChipProps!.onSwitchMode?.('persistent')
     })
 
     await waitFor(() => expect(apiMocks.createChatSlot).toHaveBeenCalled())
@@ -465,26 +474,7 @@ describe('ChatPage row callbacks — fork', () => {
   })
 })
 
-describe('ChatPage row callbacks — plan from here', () => {
-  it('forks into an orchestrator session without a direction', async () => {
-    apiSpy('forkChatSlot').mockResolvedValue({ ok: true, key: 'chat-2' })
-    await renderTurn()
-    await act(async () => { await assistantProps!.onPlanFromHere!(2) })
-    await waitFor(() => expect(apiMocks.forkChatSlot).toHaveBeenCalled())
-    expect(apiMocks.forkChatSlot).toHaveBeenCalledWith('chat-1', 2, undefined, 'orchestrator', undefined)
-    expect(alertSpy).not.toHaveBeenCalled()
-  })
-
-  it('reports a refused plan-from-here with its own message, not the fork one', async () => {
-    apiSpy('forkChatSlot').mockResolvedValue({ ok: false, error: 'no orchestrator agent' })
-    await renderTurn()
-    await act(async () => { await assistantProps!.onPlanFromHere!(2) })
-    const said = (await screen.findByTestId('action-error')).textContent ?? ''
-    expect(said).toContain('no orchestrator agent')
-    expect(said).not.toContain('Fork failed')
-    expect(alertSpy).not.toHaveBeenCalled()
-  })
-
+describe('ChatPage row callbacks — apply plan', () => {
   it('surfaces a failed plan apply and resolves false', async () => {
     apiSpy('planFromChat').mockResolvedValue({ ok: false })
     await renderTurn()
@@ -1146,6 +1136,209 @@ describe('ChatPage run-in-terminal dispatch rollback (#10822)', () => {
       stop()
       if (sessionId) unregisterTerminalWs(sessionId)
       vi.unstubAllGlobals()
+    }
+  })
+})
+
+describe('ChatPage run-in-terminal reuse-current (#11641)', () => {
+  const collect = () => {
+    const results: { reqId?: string; ok?: boolean }[] = []
+    const onResult = (e: Event) => { results.push((e as CustomEvent).detail) }
+    window.addEventListener('mc:run-in-terminal-result', onResult)
+    return { results, stop: () => window.removeEventListener('mc:run-in-terminal-result', onResult) }
+  }
+
+  beforeEach(() => { __resetBottomTerminal(); mockTerminalPopoutOpen = false })
+
+  it('focuses the existing terminal and copies the command instead of injecting bytes', async () => {
+    // Setting ON: the handler reads it off the kirocrewConfig query at event
+    // time. A stale fetch mock would read as off, so seed BEFORE render.
+    apiMocks.kirocrewConfig = vi.fn().mockResolvedValue({
+      dashboard: { terminal: { reuse_current: true } },
+    })
+    await renderTurn()
+    const dock = renderHook(() => useBottomTerminal())
+
+    // A terminal the user already has open. The security contract is that a
+    // possibly partially typed command is NEVER concatenated with a snippet;
+    // the command is copied for the user to paste after they inspect the shell.
+    let existingId = ''
+    act(() => { existingId = addTab() ?? '' })
+    await waitFor(() => expect(dock.result.current.tabs.length).toBe(1))
+    expect(existingId).toBeTruthy()
+
+    const { results, stop } = collect()
+    try {
+      act(() => {
+        window.dispatchEvent(new CustomEvent('mc:run-in-terminal', {
+          detail: { code: 'aws s3 ls', reqId: 're-reuse' },
+        }))
+      })
+      await waitFor(() => expect(results.length).toBe(1))
+      expect(results[0]).toMatchObject({ reqId: 're-reuse', ok: true, copied: true })
+      expect(copyToClipboardMock).toHaveBeenCalledWith('aws s3 ls')
+      // The selected tab is focused but untouched: no raw PTY bytes and no
+      // second terminal tab are created.
+      expect(dock.result.current.tabs).toHaveLength(1)
+      expect(dock.result.current.tabs[0].id).toBe(existingId)
+      expect(dock.result.current.activeId).toBe(existingId)
+    } finally {
+      stop()
+    }
+  })
+
+  it('reports failure when copying for the selected terminal is refused', async () => {
+    apiMocks.kirocrewConfig = vi.fn().mockResolvedValue({
+      dashboard: { terminal: { reuse_current: true } },
+    })
+    copyToClipboardMock.mockResolvedValueOnce(false)
+    await renderTurn()
+    act(() => { addTab() })
+
+    const { results, stop } = collect()
+    try {
+      act(() => {
+        window.dispatchEvent(new CustomEvent('mc:run-in-terminal', {
+          detail: { code: 'aws s3 ls', reqId: 're-copy-failed' },
+        }))
+      })
+      await waitFor(() => expect(results.length).toBe(1))
+      expect(results[0]).toMatchObject({ reqId: 're-copy-failed', ok: false, copied: false })
+      const notice = await screen.findByTestId('action-error')
+      expect(notice).toHaveAttribute('role', 'alert')
+      expect(notice.textContent).toContain("The command couldn't be copied")
+    } finally {
+      stop()
+    }
+  })
+
+  it('surfaces a read-failure notice and still opens a fresh terminal when the config fetch fails (F1)', async () => {
+    // A failed kirocrewConfig read means the saved reuse setting is unknown, so
+    // a saved reuse-on would be silently ignored. errors-use-error-notice: the
+    // query's failure must reach a user-facing notice rather than collapsing
+    // into the off branch with nothing on screen. The command is NOT dropped —
+    // a fresh tab is still minted and runs it — but the read failure is stated.
+    apiMocks.kirocrewConfig = vi.fn().mockRejectedValue(new Error('settings unavailable'))
+    await renderTurn()
+    const dock = renderHook(() => useBottomTerminal())
+
+    const { stop } = collect()
+    try {
+      act(() => {
+        window.dispatchEvent(new CustomEvent('mc:run-in-terminal', {
+          detail: { code: 'aws s3 ls', reqId: 're-cfg-failed' },
+        }))
+      })
+      // The command still runs: a fresh tab is minted.
+      await waitFor(() => expect(dock.result.current.tabs.length).toBe(1))
+      // The config-read failure IS surfaced (errors-use-error-notice): a saved
+      // reuse-on cannot be honoured when the read failed, and that is stated.
+      const notice = await screen.findByTestId('action-error')
+      expect(notice).toHaveAttribute('role', 'alert')
+      expect(notice.textContent).toContain("terminal settings couldn't be read")
+    } finally {
+      stop()
+      const id = dock.result.current.tabs[0]?.id
+      if (id) unregisterTerminalWs(id)
+    }
+  })
+
+  it('surfaces an ErrorNotice when the terminal cap blocks the fresh-tab fallback (F3)', async () => {
+    // Reuse on, no reusable tab, and the cap is already full: no fresh tab can
+    // be minted, so the command is neither copied nor run. Say so through
+    // ErrorNotice rather than only the button glyph (errors-use-error-notice).
+    apiMocks.kirocrewConfig = vi.fn().mockResolvedValue({
+      dashboard: { terminal: { reuse_current: false } },
+    })
+    await renderTurn()
+    const dock = renderHook(() => useBottomTerminal())
+    // Fill to the cap so addDockTerminal returns null.
+    act(() => { for (let i = 0; i < MAX_TERMINALS; i++) addTab() })
+    await waitFor(() => expect(dock.result.current.tabs.length).toBe(MAX_TERMINALS))
+
+    const { results, stop } = collect()
+    try {
+      act(() => {
+        window.dispatchEvent(new CustomEvent('mc:run-in-terminal', {
+          detail: { code: 'aws s3 ls', reqId: 're-cap' },
+        }))
+      })
+      const notice = await screen.findByTestId('action-error')
+      expect(notice).toHaveAttribute('role', 'alert')
+      expect(notice.textContent).toContain('too many are already open')
+      await waitFor(() => expect(results.length).toBe(1))
+      expect(results[0]).toMatchObject({ reqId: 're-cap', ok: false })
+      // No tab beyond the cap was minted.
+      expect(dock.result.current.tabs.length).toBe(MAX_TERMINALS)
+    } finally {
+      stop()
+      for (const t of dock.result.current.tabs) unregisterTerminalWs(t.id)
+    }
+  })
+
+  it('copies (never runs) when reuse is on but no terminal is open — the dialog promised a copy', async () => {
+    // Opus BLOCKING (#11641): the reuse-current confirm dialog promises a COPY
+    // for manual paste. When no reusable tab exists, the handler must still copy
+    // — NOT fall through to minting a fresh tab and executing the command, which
+    // would run something the dialog said would only be copied. With no tab to
+    // focus, the raw command is copied verbatim (no shell to fence-transform for)
+    // and no tab is minted.
+    apiMocks.kirocrewConfig = vi.fn().mockResolvedValue({
+      dashboard: { terminal: { reuse_current: true } },
+    })
+    await renderTurn()
+    const dock = renderHook(() => useBottomTerminal())
+    expect(dock.result.current.tabs.length).toBe(0)
+
+    const { results, stop } = collect()
+    try {
+      act(() => {
+        window.dispatchEvent(new CustomEvent('mc:run-in-terminal', {
+          detail: { code: 'aws s3 ls', reqId: 're-none' },
+        }))
+      })
+      // The command is copied for manual paste; the result reports copied=true.
+      await waitFor(() => expect(results.length).toBe(1))
+      expect(results[0]).toMatchObject({ reqId: 're-none', ok: true, copied: true })
+      expect(copyToClipboardMock).toHaveBeenCalledWith('aws s3 ls')
+      // No fresh tab is minted and nothing is executed.
+      expect(dock.result.current.tabs.length).toBe(0)
+    } finally {
+      stop()
+    }
+  })
+
+  it('copies (never runs) while the initial config read is still pending (F1) — no execute on an unknown', async () => {
+    // GPT 5.6 BLOCKING (#11641): the handler installs once ([]-deps) and reads
+    // the reuse setting at event time. Before the kirocrewConfig query settles
+    // we cannot know whether reuse was saved on; collapsing that unknown to the
+    // fresh-tab EXECUTE path would run a command a reuse-on user expected only
+    // to be copied. So an UNSETTLED read takes the copy-never-run path: a tab is
+    // not minted and nothing is executed, exactly as reuse-on behaves. (Benign
+    // if reuse was actually off — the user merely pastes it themselves.)
+    let resolveCfg: (v: unknown) => void = () => {}
+    apiMocks.kirocrewConfig = vi.fn().mockImplementation(
+      () => new Promise(res => { resolveCfg = res }), // never settles during the test
+    )
+    await renderTurn()
+    const dock = renderHook(() => useBottomTerminal())
+    expect(dock.result.current.tabs.length).toBe(0)
+
+    const { results, stop } = collect()
+    try {
+      act(() => {
+        window.dispatchEvent(new CustomEvent('mc:run-in-terminal', {
+          detail: { code: 'aws s3 ls', reqId: 're-pending' },
+        }))
+      })
+      // Copied for manual paste; no execution, no fresh tab minted.
+      await waitFor(() => expect(results.length).toBe(1))
+      expect(results[0]).toMatchObject({ reqId: 're-pending', ok: true, copied: true })
+      expect(copyToClipboardMock).toHaveBeenCalledWith('aws s3 ls')
+      expect(dock.result.current.tabs.length).toBe(0)
+    } finally {
+      stop()
+      resolveCfg({ dashboard: { terminal: { reuse_current: false } } })
     }
   })
 })

@@ -19,7 +19,7 @@ const OUT = process.env.OUT_DIR || '/tmp/send-key-shots'
 mkdirSync(OUT, { recursive: true })
 
 const SLOTS = [
-  { key: 'chat-1-a', title: 'Send key — P2', running: true, orchestrating: true, messages: 4, agent: 'kirocrew', last_ts: new Date().toISOString() },
+  { key: 'chat-1-a', title: 'Send key — P2', running: true, messages: 4, agent: 'kirocrew', last_ts: new Date().toISOString() },
 ]
 
 const { srv, base } = await serveDist(process.env.DIST || DEFAULT_DIST)

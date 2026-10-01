@@ -51,7 +51,6 @@ vi.mock('../api/client', () => ({
     setSlotColor: vi.fn().mockResolvedValue({ ok: true }),
     setSlotFolder: vi.fn().mockResolvedValue({ ok: true }),
     dashboardConfig: vi.fn().mockResolvedValue({ quick_send: false }),
-    planAction: vi.fn().mockResolvedValue({ ok: true }),
     // The sidebar's folder and board-column reads now report a failure through
     // an ErrorNotice (with a Retry button); an absent mock reads as a failure,
     // so answer them so the notice does not compete with the assertions below.
@@ -81,12 +80,8 @@ import { api } from '../api/client'
 /** The marker has to close its own line for OPTION_MARKER_RE to match. */
 const ASSISTANT_WITH_OPTIONS = 'Ready to proceed.\n\n[OPTIONS: Deploy | Roll back | Retry]'
 
-/** A plan needs BOTH the header and a stage line for parseOptions to set isPlan;
- *  the footer mirrors the plan pipeline's normalized template exactly. */
+/** Plan-shaped text (header, stage line, Go/Go All/Cancel footer): an ordinary options message. */
 const ASSISTANT_WITH_PLAN = '📋 Plan for: ship it\n\nStage 1: build the thing\n\n[OPTION: Go | Go All | Cancel]'
-
-/** Plan-SHAPED but carrying non-protocol labels — must keep the composer path. */
-const ASSISTANT_PLAN_SHAPED_CUSTOM = '📋 Plan for: ship it\n\nStage 1: build the thing\n\n[OPTIONS: Approve it | Revise stage 2]'
 
 function makeStore(content = ASSISTANT_WITH_OPTIONS, mode = '', slot = 'chat-1') {
   return configureStore({
@@ -114,11 +109,7 @@ function makeStore(content = ASSISTANT_WITH_OPTIONS, mode = '', slot = 'chat-1')
   })
 }
 
-/** Render with real timers so the queries settle, then hand back to the caller.
- *  `slot` is the active slot key: a test that DISPATCHES a plan action must pass
- *  a key no other test in this file dispatches on, because the hook's per-slot
- *  latches are module-level and a successful dispatch stays latched until the
- *  transcript acknowledges — which these static-store fixtures never simulate. */
+/** Render with real timers so the queries settle, then hand back to the caller. */
 async function renderPage(content = ASSISTANT_WITH_OPTIONS, mode = '', settleChip = 'Deploy', slot = 'chat-1') {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   ;(api.chatSlots as ReturnType<typeof vi.fn>).mockResolvedValue([{ key: slot, messages: 1, running: false, mode, project: '/repo' }])
@@ -307,53 +298,28 @@ describe('ChatPage follow-up option toggle', () => {
   })
 })
 
-describe('ChatPage plan follow-ups (issue #5893 parity)', () => {
-  // Each test that DISPATCHES uses its OWN slot key. The hook's per-slot
-  // latches are module-level and survive vi.clearAllMocks(), and a SUCCESSFUL
-  // dispatch stays latched until the transcript acknowledges — which these
-  // static-store fixtures never simulate. Unique keys make the collision
-  // structurally impossible, so no reset hook (and no production-facing
-  // release escape hatch on the hook) is needed.
-
-  it('a plan chip in orchestrator mode dispatches the plan action and never touches the composer', async () => {
-    await renderPage(ASSISTANT_WITH_PLAN, 'orchestrator', 'Go', 'chat-plan-dispatch')
+describe('ChatPage plan-shaped follow-ups', () => {
+  // A Go / Go All / Cancel footer is an ordinary options row: the chip edits the
+  // composer or sends its text, whatever the slot's (legacy) mode says.
+  it('a single click appends the chip text to the composer, even on a legacy orchestrator-mode slot', async () => {
+    await renderPage(ASSISTANT_WITH_PLAN, 'orchestrator', 'Go')
     vi.useFakeTimers()
     await act(async () => { clickOption('Go') })
-    expect(api.planAction).toHaveBeenCalledTimes(1)
-    expect(api.planAction).toHaveBeenCalledWith('chat-plan-dispatch', 'Go')
-    expect(composer().value).toBe('')
+    expect(composer().value).toBe('Go')
     expect(api.sendChat).not.toHaveBeenCalled()
   })
 
-  it('a plan-shaped message with NON-protocol labels keeps the composer path (allowlist gate)', async () => {
-    // The endpoint accepts only go / go all / cancel; a plan-shaped message
-    // quoting a plan while offering its own choices must compose text, not
-    // fire a dispatch the server would 400 (which also skips the append —
-    // a dead chip). This pins the allowlist ON THE MAIN SURFACE, so a future
-    // server-side action added without updating isPlanAction fails a test
-    // here instead of silently degrading to composer text.
-    await renderPage(ASSISTANT_PLAN_SHAPED_CUSTOM, 'orchestrator', 'Approve it', 'chat-plan-allowlist')
-    vi.useFakeTimers()
-    await act(async () => { clickOption('Approve it') })
-    expect(composer().value).toBe('Approve it')
-    expect(api.planAction).not.toHaveBeenCalled()
-  })
-
-  it('double-click on a plan chip dispatches the plan action, never sendChat (issue #6240)', async () => {
-    await renderPage(ASSISTANT_WITH_PLAN, 'orchestrator', 'Go', 'chat-plan-dbl')
+  it('double-click sends the chip text as a chat message', async () => {
+    await renderPage(ASSISTANT_WITH_PLAN, '', 'Go')
     fireEvent.doubleClick(chip('Go'))
-    await waitFor(() => expect(api.planAction).toHaveBeenCalledTimes(1))
-    expect(api.planAction).toHaveBeenCalledWith('chat-plan-dbl', 'Go')
-    expect(api.sendChat).not.toHaveBeenCalled()
-    expect(composer().value).toBe('')
+    await waitFor(() => expect(api.sendChat).toHaveBeenCalledTimes(1))
+    expect(JSON.stringify((api.sendChat as ReturnType<typeof vi.fn>).mock.calls[0])).toContain('"Go"')
   })
 
-  it('Send now on a plan chip dispatches the plan action, never sendChat (issue #6240)', async () => {
-    await renderPage(ASSISTANT_WITH_PLAN, 'orchestrator', 'Go', 'chat-plan-sendnow')
+  it('Send now sends the chip text as a chat message', async () => {
+    await renderPage(ASSISTANT_WITH_PLAN, '', 'Go')
     fireEvent.click(screen.getByRole('button', { name: 'Send now: Go All' }))
-    await waitFor(() => expect(api.planAction).toHaveBeenCalledTimes(1))
-    expect(api.planAction).toHaveBeenCalledWith('chat-plan-sendnow', 'Go All')
-    expect(api.sendChat).not.toHaveBeenCalled()
-    expect(composer().value).toBe('')
+    await waitFor(() => expect(api.sendChat).toHaveBeenCalledTimes(1))
+    expect(JSON.stringify((api.sendChat as ReturnType<typeof vi.fn>).mock.calls[0])).toContain('"Go All"')
   })
 })

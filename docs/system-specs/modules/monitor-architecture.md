@@ -34,7 +34,7 @@ this spec states the target and that one states the present.
 | Observation | `partial` | the `MonitorCondition` type and the `MonitorSeverity` / `MonitorResetsOn` vocabulary live in `monitoring/models.py`, all four pull-request kinds derive their named conditions in `monitoring/pull_request.py`, and `monitoring/decision.py` masks, ages and resets per condition; `irq.py` keeps its own copy of the vocabulary while the cron driver lives, and a subject's fingerprint is still derived from the canonical facts rather than from the conditions |
 | Decision | `partial` | `decide_monitor` is IO-free but state-mutating: it coalesces successive changes to one subject over time through a window on `MonitorState` (a floor and a head-change reset) and derives its dedup comparison so an unresolved change re-asserts on a re-alert interval. It writes the window fields on the staged state and READS the alert map; the caller stamps the alert map on a wake and persists the same staged state, so decide-and-persist is a required pairing. `irq.py` keeps its own multi-signal coalescing for the cron path |
 | Persistence | `partial` | versioned in `monitoring/`; unversioned in `irq.py`, which also holds decision logic |
-| Driver | `implemented` | in-session timer in `autonudge.py`, which reads the subject each tick and screens it with the wake judge |
+| Driver | `implemented` | in-session timer of `AutoNudgeService` (`autonudge_service/firing.py`; probe gate `gate.py`, judge `judge_tick.py`), which reads the subject each tick and screens it with the wake judge |
 | Delivery | `implemented` | session directive keyed by the call's input digest, shared by both arming paths |
 
 ## Three prerequisites
@@ -272,7 +272,7 @@ credential) rule as a check rather than as a grouping pass: the credential is th
 call's own argument, and a chunk is refused if it names two hosts. The
 other four adapters still loop internally and declare so in their own docstrings.
 What is missing is above the probe, not inside it: the in-session driver arms one
-`asyncio` task per loop in `autonudge.py`, so a tick structurally sees one
+`asyncio` task per loop in `autonudge_service/timers.py`, so a tick structurally sees one
 monitor, and the out-of-session poller runs one subject per cron job through
 `irq.Probe.observe`, which is singular. A batch therefore has no assembler; that
 is a driver change, and it belongs with the consolidation rather than with the
@@ -572,7 +572,8 @@ cooldown makes a probe return WITHOUT calling the API, and it borrows the shape 
 refusal to say so (`REASON_SHARED_COOLDOWN`, `is_unattempted_probe`). That is
 neither a success nor a provider error: it is no evidence about the subject at all,
 so it moves NEITHER counter — at `shadow.apply_monitor_probe` and at the production
-counting site in `autonudge`. `_provider_error_decision` is the third place, and it
+counting site, `AutoNudgeService.apply_monitor_probe` in
+`autonudge_service/monitor_records.py`. `_provider_error_decision` is the third place, and it
 is the one a counter fix does not reach: it reads the same budget one tick into the
 FUTURE (`consecutive_provider_errors + 1 >= max_provider_errors`), so a watch two
 real errors into a budget of three would be retired by an unrelated scope's
@@ -810,7 +811,8 @@ enforced nowhere:
   outcome this version does not recognise) is preserved, and clearing it is an
   owner-only dashboard action because it destroys audit evidence.
   `monitoring.models.retained_outcome_blocks_rearm` is the one predicate that
-  answers this, consumed both by `autonudge._stopped_row_is_replaceable` at the
+  answers this, consumed both by `autonudge._stopped_row_is_replaceable` (defined in
+  `autonudge_service/model.py`) at the
   enforcement point and by the `mcp_tools.control` preflight that refuses in band
   before the model ends its turn. What that shared predicate buys is that the
   RULE cannot drift between the two sites; the preflight remains advisory, since
@@ -1051,7 +1053,7 @@ reviewer wrote and no body text survives into the condition key.
 Flipping the key back restores the previous wording on the next tool-list build
 and needs nothing else. An already-armed monitor is different:
 `monitor_stop` records `MonitorOutcome.USER_STOP`
-(`autonudge._apply_monitor_user_stop`), and `_stopped_row_is_replaceable` admits
+(`autonudge_service.monitor_records._apply_monitor_user_stop`), and `_stopped_row_is_replaceable` admits
 only `BUDGET`, `SUCCESS`, `BLOCKED` and `TARGET_UNAVAILABLE` -- the
 system-imposed outcomes. A consumer-recorded stop is retained evidence, and an
 unknown outcome fails closed the same way, so the next arm on that session is

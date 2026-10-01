@@ -96,7 +96,7 @@ vi.mock('./useAppUpdates', () => ({
 
 import DiscoverPage from './DiscoverPage'
 
-/** The registries response shape (api/client.ts `refreshRegistries`). */
+/** The registries response shape (api/client/apps.ts `refreshRegistries`). */
 function registriesResult(over: Partial<{
   ok: boolean; refreshed: string[]; failed: string[]
   results: { name: string; ok: boolean }[]; apps: number; lastSyncedAt: string

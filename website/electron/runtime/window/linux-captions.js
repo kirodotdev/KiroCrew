@@ -6,6 +6,10 @@
  * shift their glyphs, and their actions cross the allowlisted preload IPC
  * (window.kirocrew.windowControl). The maximize button tracks the window's
  * real state, since a double-click or a WM shortcut can change it too.
+ *
+ * The injected CSS and script literals are whitespace-normalized: their
+ * indentation follows this file's nesting and carries no meaning to the page,
+ * and test/window-lifecycle.test.js records each one by its first trimmed line.
  */
 
 function syncLinuxMaximizeState(win, view) {

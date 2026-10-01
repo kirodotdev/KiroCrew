@@ -22,7 +22,7 @@ import inspect
 import logging
 from typing import Awaitable, Callable
 
-from kiro_crew.agent_discovery import list_agents
+from kiro_crew.agent_discovery import is_internal_agent_spec, list_agents
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
@@ -172,7 +172,13 @@ def build_spawn_impl(subagents: object) -> SpawnImpl:
             # approval_mode="auto", a full-privilege escalation from the app's own
             # restricted background agent.
             prefix = f"{app}--"
-            known = {a.name for a in agents if a.filename.startswith(prefix)}
+            # Kiro Crew's own generated specs are never an app's agent, even when
+            # derived from one (``<app>--<agent>--readonly`` shares the prefix).
+            known = {
+                a.name
+                for a in agents
+                if a.filename.startswith(prefix) and not is_internal_agent_spec(a)
+            }
         except Exception as exc:  # noqa: BLE001 — cannot confirm → refuse
             reason = f"cannot verify agent {agent!r} for app {app!r}: {exc}"
             _audit_spawn_denied(app, agent, reason)

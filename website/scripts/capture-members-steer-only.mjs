@@ -211,7 +211,7 @@ if (EXPECT === 'after') {
     // The card FUSES onto the composer's top edge; it must never cover the
     // typing area itself.
     const g = await page.evaluate(() => {
-      const card = document.querySelector('.queue-card')?.getBoundingClientRect()
+      const card = document.querySelector('[data-testid="queue-card"]')?.getBoundingClientRect()
       const ta = document.querySelector('[data-chat-pane] textarea')?.getBoundingClientRect()
       return { cardBottom: card ? Math.round(card.bottom) : null, textareaTop: ta ? Math.round(ta.top) : null }
     })

@@ -10,10 +10,9 @@ import { sendTurn } from '../../../chat-core/transport/sendTurn'
 import { Btn } from '../../../components/ui'
 import QuestionCard from '../../../components/QuestionCard'
 import ErrorNotice from '../../../components/ErrorNotice'
-import { APPROVAL_MODE_KEYS, type AttentionItem } from './model'
+import { APPROVAL_MODE_KEYS, approvalTitle, type AttentionItem } from './model'
 import { toApiDecision } from '../../../utils/approvalDecision'
-import { isTerminalApprovalRefusal } from '../../../api/apiError'
-import { deriveToolCallTitle, parseToolArgs } from '../../../utils/toolCallTitle'
+import { ApiError, isTerminalApprovalRefusal } from '../../../api/apiError'
 
 /** Kept mounted while other inbox items are selected, preserving each answer draft. */
 export default function AttentionCard({ item, title, context, onDraftChange }: { item: AttentionItem; title: string; context?: string; onDraftChange?: (active: boolean) => void }) {
@@ -45,7 +44,13 @@ export default function AttentionCard({ item, title, context, onDraftChange }: {
           // visual card fails. The next inventory read reconciles server state.
           setDelivered(true)
           if (q.card_id) {
-            await api.dismissQuestionCard(item.slot, q.card_id)
+            try {
+              await api.dismissQuestionCard(item.slot, q.card_id)
+            } catch (err) {
+              // The answer's own user row retires a stateless card server-side,
+              // often before this dismiss lands: a 404 means it is already gone.
+              if (!(err instanceof ApiError && err.status === 404)) throw err
+            }
             dispatch(clearQuestionCard({ slot: item.slot, card_id: q.card_id }))
           }
         }
@@ -54,15 +59,14 @@ export default function AttentionCard({ item, title, context, onDraftChange }: {
     },
     onSettled: () => {
       locked.current = false
-      void queryClient.invalidateQueries({ queryKey: ['command-center'] })
+      // Only the inventories a decision changes; artifact bodies and the work
+      // board are unaffected, and their own frames refresh them.
+      void queryClient.invalidateQueries({ queryKey: ['global-approvals'] })
+      void queryClient.invalidateQueries({ queryKey: ['command-center', 'questions'] })
     },
   })
   const expired = !!item.approval && isTerminalApprovalRefusal(mutation.error)
-  const approvalInput = item.approval?.tool_input
-  const approvalTitle = item.approval ? deriveToolCallTitle({
-    toolName: item.approval.tool, title: item.approval.tool || '',
-    rawInput: parseToolArgs(approvalInput) ?? (typeof approvalInput === 'string' ? { command: approvalInput } : approvalInput),
-  }).title || t('commandCenter.approval_needed') : ''
+  const approvalHeading = item.approval ? approvalTitle(item.approval) || t('commandCenter.approval_needed') : ''
   const submit = (action: Parameters<typeof mutation.mutate>[0]) => {
     if (locked.current || delivered || expired) return
     locked.current = true
@@ -70,7 +74,7 @@ export default function AttentionCard({ item, title, context, onDraftChange }: {
   }
   return <section className="rounded-lg border border-border bg-card p-3 space-y-3">
     <div className="flex items-center gap-2 min-w-0">
-      <h3 className="text-sm font-semibold break-words min-w-0 flex-1">{item.approval && <ShieldCheck size={15} className="lucide-inline" />}{approvalTitle || title}</h3>
+      <h3 className="text-sm font-semibold break-words min-w-0 flex-1">{item.approval && <ShieldCheck size={15} className="lucide-inline" />}{approvalHeading || title}</h3>
       <Link to={`/chat?sid=${encodeURIComponent(item.slot)}`} className="text-accent text-[12px] inline-flex items-center gap-1 shrink-0">{t('commandCenter.open_session')}<ArrowUpRight size={13} /></Link>
     </div>
     {item.approval && <p className="text-[12px] text-muted break-words">{t('commandCenter.from_session', { name: title })}</p>}

@@ -333,30 +333,39 @@ class TestEveryDenySiteAuditsBeforeTheWire:
     inline (hook TOOL_DENY, batch cascade, interactive rejection) inside the
     turn coroutine where a unit test cannot reach. Same doctrine as
     TestEveryHostDenyCallSiteIsWired: the coverage claim must be checkable.
-    For each ``await client.reject_tool(`` site, its decision's
+    For each answer site -- ``await client.reject_tool(`` or the
+    ``await _reject_attributed(`` chokepoint call -- its decision's
     ``sel().log_tool_invocation(`` must appear BEFORE it within the site's own
     window (bounded by the nearest preceding wire answer or function def, so
     one site's audit cannot vouch for another's).
     """
 
     RUNNER = pathlib.Path(__file__).resolve().parents[1] / "src/kiro_crew/dashboard/chat_runner.py"
-    REJECT = re.compile(r"^\s*await client\.reject_tool\(")
-    BOUNDARY = re.compile(
-        r"^\s*(?:await client\.approve_tool\(|await client\.reject_tool\(|async def )"
-    )
+    WIRE = r"await (?:client\.reject_tool|_reject_attributed)\("
+    REJECT = re.compile(r"^\s*" + WIRE)
+    BOUNDARY = re.compile(r"^\s*(?:await client\.approve_tool\(|%s|async def )" % WIRE)
+    #: The chokepoint's own reject: it audits nothing because each caller does.
+    CHOKEPOINT = "async def _reject_attributed("
     AUDIT = "log_tool_invocation("
 
     def _lines(self) -> list[str]:
         return self.RUNNER.read_text(encoding="utf-8").splitlines()
 
     def _reject_sites(self, lines: list[str]) -> list[int]:
-        return [i for i, line in enumerate(lines) if self.REJECT.match(line)]
+        sites, owner = [], ""
+        for i, line in enumerate(lines):
+            if line.startswith("async def ") or line.startswith("def "):
+                owner = line
+            if self.REJECT.match(line) and not owner.startswith(self.CHOKEPOINT):
+                sites.append(i)
+        return sites
 
     def test_the_scan_finds_every_reject_site(self):
         # Count-matched against a plain textual count so a call-shape drift
         # cannot silently drop a site out of the ordering assertion below.
         lines = self._lines()
-        textual = sum("await client.reject_tool(" in line for line in lines)
+        # Minus one: the chokepoint's own reject is excluded by design.
+        textual = sum(len(re.findall(self.WIRE, line)) for line in lines) - 1
         found = len(self._reject_sites(lines))
         assert found == textual, (
             f"the site scan found {found} of {textual} reject sites -- its regex "

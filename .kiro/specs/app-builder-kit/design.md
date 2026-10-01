@@ -42,7 +42,7 @@ website/src/
 | `app-sdk/index.ts` (`useTheme`, `useAppEvents`, `AppApi`) | Kit consumes; source of theme + events |
 | `apps/builtinRegistry.ts` (`registerBuiltinComponents`) | `kit/app/defineApp` wraps registration |
 | `components/ApprovalCard.tsx`, `components/ToolInputPreview.tsx` | Enhanced to host `ToolPreviewFrame` |
-| `components/ChatInput.tsx` (`api.approveChatSlot`) | Unchanged approval path the preview reuses |
+| `components/chat-input/approval.ts` (`api.approveChatSlot`) | Unchanged approval path the preview reuses |
 | `components/WidgetFrame.tsx`, `components/ArtifactBody.tsx` | Inline tool views render inside these |
 | `components/DiffBlock.tsx` | `DiffToolView` reuses it |
 | `components/ContentRenderer.tsx` | `ToolRenderer` dispatch integrates here |

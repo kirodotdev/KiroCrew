@@ -2,23 +2,28 @@
 
 `ACP_BACKENDS_COMPACT` in `src/kiro_crew/agent_sdk/backends.py` decides whether Kiro
 Crew offers a manual `/compact` on a backend at all. A harness joins that set on a
-DRIVEN capture, never on its source: the bar opencode met is a live session whose
-`usage_update.used` was seen to fall below its pre-compact peak.
+DRIVEN capture, never on its source: the bar opencode and goose met is a live session
+whose `usage_update.used` was seen to fall below its pre-compact peak.
 
-pi and goose are outside the set today, and not because they lack the feature. Both
-finish a compaction inline according to their own code — pi-acp intercepts the command
-in `prompt()`, goose routes it through its `handle_compact_command` — and neither has
-ever been driven: pi answered `Authentication required` and goose
-`Failed to resolve provider: GOOSE_PROVIDER` on the host where the note was written.
-Source says what the code WOULD do. A capture says what the harness DID, and for a
+pi is outside the set today, and not because it lacks the feature. It finishes a
+compaction inline according to its own code — pi-acp intercepts the command in
+`prompt()` — and it has never been driven: it answered `Authentication required` on the
+host where the note was written. Source says what the code WOULD do. A capture says what the harness DID, and for a
 membership whose wrong answer makes `wait_for_compaction` report a completion that
 never happened, only the second counts.
 
 This guide is how anyone holding a credential closes that gap in one command.
 
 ```
-python3 scripts/capture_acp_compaction.py --harness goose
+python3 scripts/capture_acp_compaction.py --harness pi
 ```
+
+goose's capture (`test/fixtures/acp_frames/goose/compact-live.jsonl`) was driven with
+three settings worth copying. Its default extensions were turned off except
+`developer`, in a scratch `XDG_CONFIG_HOME`, so the tool list fits a small local
+model's window. The local model's window was larger than the whole session, because a
+server that cuts the prompt at its window reports the same `used` on every turn. And
+`GOOSE_DISABLE_SESSION_NAMING=1` spared one model call per session.
 
 `scripts/capture_acp_compaction.py` spawns the harness the way Crew spawns it, drives
 four ordinary turns, sends `/compact`, drives one more ordinary turn, writes the frames
@@ -172,7 +177,7 @@ the frame classes, the section names what the `used` series shows.
   compaction status frame means, and what both harnesses' source predicts. Skip this and
   `wait_for_compaction` waits out its whole timeout on a compaction that already
   happened;
-- rewrite the "pi and goose are NOT members" paragraph on `ACP_BACKENDS_COMPACT`. It is
+- rewrite the "pi is NOT a member" paragraph on `ACP_BACKENDS_COMPACT`. It is
   the record of WHY the set asks for a capture, so replace the waiting-for-a-drive part
   with what the drive found — the `used` series, the harness version, the fixture path —
   and leave whichever harness is still unmeasured saying what it still lacks;
@@ -182,9 +187,9 @@ the frame classes, the section names what the `used` series shows.
 **4. The backend card's unmeasured cell.** The Developer > Agent Backend card renders
 three marks per line — available, not available, and NOT MEASURED — and the third one is
 the only per-harness table in `src/kiro_crew/agent_sdk/backend_cards.py`:
-`DECLARED_UNMEASURED`. It holds exactly two entries, both the `manual_compact` cell, one
-for pi and one for goose, each citing `ACP_BACKENDS_COMPACT`'s own words. A capture is
-what that cell was waiting for, so delete the entry for the harness you drove.
+`DECLARED_UNMEASURED`. It holds one entry, pi's `manual_compact` cell, citing
+`ACP_BACKENDS_COMPACT`'s own words. A capture is what that cell was waiting for, so
+delete the entry for the harness you drove.
 
 Three tests in `test/test_backend_cards.py` hold this together, and each fails for a
 different half-done move:
@@ -194,12 +199,12 @@ different half-done move:
 - every entry must be supported by the deciding set's comment, which names the harness
   and says the gap is evidence. If step 3 rewrote that comment, the REMAINING entry's
   support has to survive the rewrite;
-- one test asserts the unmeasured cells are exactly those two. Removing one means editing
-  that assertion, and removing both means the card has no unmeasured cell at all.
+- one test asserts the unmeasured cells are exactly the declared ones. Removing one means
+  editing that assertion, and removing the last means the card has no unmeasured cell.
 
 `website/scripts/capture-agent-backend-unmeasured.mjs` captures the screenshots that show
-the three marks side by side, and its header names pi and goose as the two unmeasured
-cells. Update that prose; if both cells go, the capture has no subject left and the frames
+the three marks side by side, and its header names pi as the unmeasured cell and keeps
+goose's pre-capture rows. Update that prose; if both cells go, the capture has no subject left and the frames
 it produces are the all-measured case.
 
 The frontend needs nothing. `unmeasured_reason` is a machine code labelled in
@@ -210,15 +215,15 @@ neither knows which harness carries the cell.
 design:
 
 - `test/test_manual_compact_gate.py` — an exact-set equality on `ACP_BACKENDS_COMPACT`
-  plus explicit `not in` assertions for pi and goose;
+  plus an explicit `not in` assertion for pi;
 - `test/test_acp_capability_sets_leaf.py` — a second exact-set equality on the same set;
-- `test/test_compaction_other_backends.py` — `test_pi_and_goose_wait_for_a_capture` (the
+- `test/test_compaction_other_backends.py` — `test_pi_waits_for_a_capture` (the
   test that says what the bar is), the `UNCLASSIFIED` frozenset and its reason comment,
-  `test_pi_and_goose_are_the_unclassified_case_today`, and the refusal-arm assertion that
+  `test_pi_is_the_unclassified_case_today`, and the refusal-arm assertion that
   names pi as the unclassified example. If BOTH harnesses become members, `UNCLASSIFIED`
   empties out — the arm itself stays covered by the unknown-id case beside it;
-- `test/test_acp_goose_backend.py` — a block asserting goose's absence from the
-  compaction sets, with the reason in its docstring (goose only);
+- `test/test_acp_goose_backend.py` — a block asserting goose's membership in the
+  compaction sets, with the capture named in its docstring;
 - `test/test_agent_sdk_capabilities.py` — no edit expected: it asserts
   `ACP_BACKENDS_INLINE_COMPACTION` is a subset of `ACP_BACKENDS_COMPACT` and of
   `ACP_BACKENDS_KNOWN`. Run it; a subset break there means step 3 added the inline

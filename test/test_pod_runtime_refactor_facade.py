@@ -1259,6 +1259,24 @@ def test_the_type_checking_names_are_the_owners_reexports() -> None:
                 assert rt._EXPORTS.get(alias.name) == node.module, alias.name
 
 
+def test_every_public_reexport_is_named_for_type_checkers() -> None:
+    """mypy cannot see ``__getattr__``, so a public re-export the ``TYPE_CHECKING``
+    block leaves out resolves at run time and fails type checking as ``rt.<name>``."""
+    tree = ast.parse(Path(rt.__file__).read_text(encoding="utf-8"))
+    (guarded,) = [
+        n for n in tree.body if isinstance(n, ast.If) and ast.unparse(n.test) == "TYPE_CHECKING"
+    ]
+    declared = {
+        alias.asname or alias.name
+        for node in ast.walk(guarded)
+        if isinstance(node, ast.ImportFrom)
+        for alias in node.names
+    }
+    public = {name for name in rt._EXPORTS if not name.startswith("_")}
+    assert public, "the export table names no public re-export, so this measured nothing"
+    assert sorted(public - declared) == []
+
+
 def _bare_loads(tree: ast.Module) -> list[tuple[int, str]]:
     """Each Load of a re-exported name as a bare global, outside import lines."""
     import_lines: set[int] = set()

@@ -939,7 +939,12 @@ class TestWriteStructuredMemory:
         assert all(call["retirement_embedding_resolved"] is True for call in calls)
         assert all(call["retirement_value_json"] is None for call in calls)
         vs.embed_semantic_retirement.assert_not_called()
-        vs.delete_semantic.assert_called_once_with("stale", "consolidation:sess")
+        # A non-lesson key ("stale") is never tier-guarded, so it still deletes --
+        # now with expect_value_json=None, since only a lesson.* key carries a
+        # body to compare-and-delete against.
+        vs.delete_semantic.assert_called_once_with(
+            "stale", "consolidation:sess", expect_value_json=None
+        )
         assert "2 written, 1 deleted" in caplog.text
 
     def test_semantic_reject_is_refused_not_written(self, caplog) -> None:

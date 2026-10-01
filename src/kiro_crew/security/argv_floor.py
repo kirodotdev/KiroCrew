@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import fnmatch
 import ipaddress
+import logging
 import os
 import re
 import socket
@@ -121,6 +122,8 @@ from .shell_normalizer import (
     _xargs_here_string_rebuild,
 )
 from .vocabulary import _KILL_BY_NAME_PROGRAMS, _SELF_FILE_DELIVERY_VERBS, _SELF_NAME_RE
+
+logger = logging.getLogger(__name__)
 
 # ── Git publish detection (verb-anchored) ──
 # ``git push`` must be blocked, but ``push`` appearing anywhere in arbitrary
@@ -1426,7 +1429,9 @@ def _hosts_file_verdict(host: str) -> "bool | None":
     for path in _hosts_file_paths():
         try:
             stat = os.stat(path)
-            key = (stat.st_mtime, stat.st_size, _NETLINK_ADDRS_PUBLISHED)
+            # Flag BEFORE the names: see the note in ``_host_is_self``.
+            published = _NETLINK_ADDRS_PUBLISHED
+            key = (stat.st_mtime, stat.st_size, published)
             cached = _HOSTS_FILE_CACHE.get(path)
             if cached is None or cached[0] != key:
                 table: "dict[str, bool]" = {}
@@ -1459,7 +1464,7 @@ def _hosts_file_verdict(host: str) -> "bool | None":
                 cached = (key, table)
                 _HOSTS_FILE_CACHE[path] = cached
             verdict = cached[1].get(host)
-            if verdict is False and not _NETLINK_ADDRS_PUBLISHED:
+            if verdict is False and not published:
                 # Not-local is untrustworthy while the own-address set
                 # is incomplete: defer to the async verdict layer.
                 verdict = None
@@ -1822,6 +1827,52 @@ _NETLINK_ADDRS_PUBLISHED: bool = not (
 )
 
 
+def warm_own_host_names() -> None:
+    """Start the own-address enrichment worker now instead of at the first ssh.
+
+    Without it the first IP-literal ssh check of a process is what starts the
+    worker, and that check sees the still-unpublished flag in the same instant,
+    so it is always refused.  The worker reads the netlink table before any DNS
+    lookup and publishes it at once.  This only runs the synchronous seed and
+    schedules the worker; the gateway startup hook calls it through
+    ``asyncio.to_thread`` so the seed stays off the event loop.
+    """
+    _own_host_names()
+
+
+def _publish_netlink_addresses(addrs: "set[str]") -> None:
+    """Merge the netlink table into the own-name cache, THEN open the window.
+
+    The order is load-bearing: flipping ``_NETLINK_ADDRS_PUBLISHED`` before
+    the addresses are in the cache would let a concurrent check see the
+    window open while an own secondary IP is still missing from the set,
+    and admit it.
+    """
+    global _OWN_HOST_NAMES_CACHE, _NETLINK_ADDRS_PUBLISHED
+    with _OWN_HOST_RESOLVE_LOCK:
+        base = _OWN_HOST_NAMES_CACHE if _OWN_HOST_NAMES_CACHE is not None else _own_host_seed()
+        _OWN_HOST_NAMES_CACHE = base | frozenset(a for a in addrs if a)
+        _NETLINK_ADDRS_PUBLISHED = True
+
+
+# Consecutive worker passes whose netlink dump did not complete.  A host
+# where every dump fails keeps IP-literal ssh refused for good, so the third
+# miss in a row logs one warning an operator can find.
+_NETLINK_MISSES = 0
+_NETLINK_MISS_WARN_AT = 3
+
+
+def _note_netlink_result(ok: bool) -> None:
+    global _NETLINK_MISSES
+    _NETLINK_MISSES = 0 if ok else _NETLINK_MISSES + 1
+    if _NETLINK_MISSES == _NETLINK_MISS_WARN_AT:
+        logger.warning(
+            "own-address netlink read has not completed in %d attempts; ssh/scp/sftp/rsync "
+            "to IP-literal targets stays refused until it does",
+            _NETLINK_MISSES,
+        )
+
+
 def _resolve_own_host_names() -> "tuple[frozenset[str], bool]":
     """Resolve this machine's own hostname/FQDN/addresses (lowered).
 
@@ -1835,6 +1886,24 @@ def _resolve_own_host_names() -> "tuple[frozenset[str], bool]":
     """
     names: set[str] = set(_own_host_seed())
     complete = True
+    # The netlink RTM_GETADDR dump lists EVERY assigned address (secondary
+    # IPv4s the SIOCGIFADDR sweep cannot see).  Its recv blocks, so it lives
+    # here in the worker.  Unlike the sweeps below it is LOAD-BEARING: the
+    # IP-literal window stays closed until it publishes, so an empty pass on
+    # a netlink-capable host keeps ``complete`` False and the backoff retry
+    # alive rather than caching a table-less process for its lifetime.
+    #
+    # It runs FIRST and publishes at once: it is a kernel-local read, while
+    # the DNS lookups below can take many seconds on a host whose name is not
+    # in DNS, and every IP-literal ssh is refused until this publishes.
+    nl = _linux_netlink_addresses()
+    if nl:
+        _note_netlink_result(True)
+        names |= nl
+        _publish_netlink_addresses(nl)
+    elif sys.platform.startswith("linux") and hasattr(socket, "AF_NETLINK"):
+        complete = False
+        _note_netlink_result(False)
     try:
         fqdn = socket.getfqdn().strip().lower()
         if fqdn and fqdn != "localhost":
@@ -1860,19 +1929,6 @@ def _resolve_own_host_names() -> "tuple[frozenset[str], bool]":
     # enrichment, and a host with no IPv6 route is not a partial pass -- so this
     # never touches ``complete`` (and the helper is best-effort, never raising).
     names |= _own_interface_addresses()
-    # The netlink RTM_GETADDR dump lists EVERY assigned address (secondary
-    # IPv4s the SIOCGIFADDR sweep cannot see).  Its recv blocks, so it lives
-    # here in the worker.  Unlike the sweeps above it is LOAD-BEARING: the
-    # IP-literal window stays closed until it publishes, so an empty pass on
-    # a netlink-capable host keeps ``complete`` False and the backoff retry
-    # alive rather than caching a table-less process for its lifetime.
-    global _NETLINK_ADDRS_PUBLISHED
-    nl = _linux_netlink_addresses()
-    if nl:
-        names |= nl
-        _NETLINK_ADDRS_PUBLISHED = True
-    elif sys.platform.startswith("linux") and hasattr(socket, "AF_NETLINK"):
-        complete = False
     return frozenset(n for n in names if n), complete
 
 
@@ -1893,8 +1949,12 @@ def _resolve_own_host_names_into_cache() -> None:
     try:
         resolved, complete = _resolve_own_host_names()
         if resolved:
-            existing = _OWN_HOST_NAMES_CACHE or frozenset()
-            _OWN_HOST_NAMES_CACHE = existing | resolved
+            # Under the lock: ``_publish_netlink_addresses`` merges into the
+            # same cache mid-pass, and an unlocked read-modify-write here
+            # could drop its addresses after the window already opened.
+            with _OWN_HOST_RESOLVE_LOCK:
+                existing = _OWN_HOST_NAMES_CACHE or frozenset()
+                _OWN_HOST_NAMES_CACHE = existing | resolved
         if complete:
             _OWN_HOST_RESOLVE_DONE = True
             _OWN_HOST_RESOLVE_STAMP = time.monotonic()
@@ -1982,9 +2042,13 @@ def _host_is_self(host: str, *, dns_fallback: bool = True) -> bool:
             ip = mapped
         if ip.is_loopback or ip.is_unspecified:
             return True
+        # Read the window flag BEFORE the names: the publisher stores the
+        # addresses and then sets the flag under one lock, so a True flag seen
+        # first guarantees the names read next already hold the netlink table.
+        published = _NETLINK_ADDRS_PUBLISHED
         if str(ip).lower() in _own_host_names():
             return True
-        if dns_fallback and not _NETLINK_ADDRS_PUBLISHED:
+        if dns_fallback and not published:
             # Same unread-table window as the ``inet_aton`` branch below --
             # this branch is the one IPv6 literals take (round-33).
             return True
@@ -1995,9 +2059,10 @@ def _host_is_self(host: str, *, dns_fallback: bool = True) -> bool:
         ip4 = ipaddress.IPv4Address(packed)
         if ip4.is_loopback or ip4.is_unspecified:
             return True
+        published = _NETLINK_ADDRS_PUBLISHED
         if str(ip4) in _own_host_names():
             return True
-        if dns_fallback and not _NETLINK_ADDRS_PUBLISHED:
+        if dns_fallback and not published:
             # The kernel address table is unread; this literal could be an
             # unlisted secondary of this machine.  Deny until the worker
             # publishes (round-33) -- host position only.

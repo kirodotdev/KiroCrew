@@ -29,7 +29,8 @@ import {
 } from '../hooks/useTheme'
 import { safeSetItem } from '../utils/safeStorage'
 // Consent contract lives in ONE module so the token format can't drift between
-// the write/strict-read side (this layer) and the wire-flag reader (client.ts).
+// the write/strict-read side (this layer) and the wire-flag reader
+// (api/client/chat.ts).
 import { grantConsent, getStoredConsent, revokeConsent } from '../utils/themeConsent'
 // App-event → theme-audio bridge: real chat/notification events route to the
 // active theme's manifest sounds (message-received / notification triggers).
@@ -268,8 +269,8 @@ export default function ThemeExperienceLayer() {
     // Revoke-on-mismatch hygiene: if a grant is stored but no longer matches the
     // current content fingerprint — persona re-installed with a new sha256, or a
     // legacy '1' token — DELETE it now, before the user answers the re-prompt, so
-    // the stale grant can't be transmitted on the wire (client.ts reads the raw
-    // token) in the window before they decide.
+    // the stale grant can't be transmitted on the wire (api/client/chat.ts reads
+    // the raw token) in the window before they decide.
     if (stored !== null && stored !== consentToken) {
       revokeConsent(slug)
     }

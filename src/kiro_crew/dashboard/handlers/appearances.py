@@ -31,7 +31,6 @@ Two properties worth reading here rather than inferring:
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import logging
 from typing import Any
@@ -46,6 +45,7 @@ from kiro_crew.dashboard.appearances import (
     pack_slot_file,
     slot_body,
 )
+from kiro_crew.dashboard.conditional_get import conditional_response, strong_content_etag
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 
 logger = logging.getLogger(__name__)
@@ -186,18 +186,17 @@ def _media_response(request: web.Request, body: bytes, content_type: str, **extr
     can carry active content the way SVG can"). A pack's art has to be SVG, so
     the answer here is to serve it inert rather than to refuse it.
     """
-    etag = f'"{hashlib.sha256(body).hexdigest()[:32]}"'
-    headers = {
-        "ETag": etag,
-        "Cache-Control": _MEDIA_CACHE_CONTROL,
-        "X-Content-Type-Options": "nosniff",
-        **extra,
-    }
+    headers = dict(extra)
     if content_type == "image/svg+xml":
         headers["Content-Security-Policy"] = _SVG_CSP
-    if request.headers.get("If-None-Match") == etag:
-        return web.Response(status=304, headers=headers)
-    return web.Response(body=body, content_type=content_type, headers=headers)
+    return conditional_response(
+        request,
+        body,
+        content_type,
+        etag=strong_content_etag(body),
+        cache_control=_MEDIA_CACHE_CONTROL,
+        extra_headers=headers,
+    )
 
 
 # ── reads ───────────────────────────────────────────────────────────────────

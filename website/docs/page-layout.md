@@ -11,12 +11,19 @@ conventions around them (a11y, data fetching, typography) live in
 
 ## Page skeleton
 
-### Dynamic Dashboard in chat and Crew
+### Dashboard in chat and Crew
 
 Long-run status uses the existing side-panel dock, expansion and narrow-screen
-overlay, not another drawer. In chat, a collapsible summary above the composer
-opens the Dynamic Dashboard tab; the panel's + menu remains the empty-state
-entry. Crew reuses its single permanent **Dashboard** tab instead: its compact
+overlay, not another drawer. In chat, a dock above the composer, in the
+composer's own column (`--mc-input-width`), shows three tiles: progress (done/total
+with a plan, else "N running"), blocked
+and Needs you. Each tile is a disclosure button for the short list beneath it (a
+second click closes it), and the row wraps in a narrow column; beside the tiles
+sit two actions, open the **Dashboard** tab (a labelled "Open Dashboard" button) and
+hide. Hidden, the dock is one pill at the row's end. It carries the hide glyph,
+or a red count while something needs the user (`mc-task-dashboard-hidden`, per
+browser); the dock is one element in both forms. It is removed once every run rests,
+no request waits and the plan is complete. Crew reuses its single permanent **Dashboard** tab instead: its compact
 entrance focuses that tab, and its + menu withholds the parallel chat view.
 The existing member publication and task artifacts share a Published view selector, with
 human-readable titles, while retaining their separate renderer sandboxes. A
@@ -31,10 +38,10 @@ tabs, but unload model-authored iframe documents while inactive to cap resources
 This does not change the existing Crew protected-template renderer's lifecycle.
 Approval counts and exact session identity stay outside the
 sandboxed page, so a model redesign cannot hide or impersonate those controls.
-The panel keeps its approval count on the Approvals tab; the compact entrance
-retains its Needs you count while collapsed.
+The panel keeps its approval count on the Approvals tab; the dock's Needs you
+tile and its hidden pill carry the same count.
 
-The Sessions header's three-dot menu offers **All Dynamic Dashboards**, a standalone
+The Sessions header's three-dot menu offers **All Dashboards**, a standalone
 `/session-dashboards` page with currently open sessions' saved summaries and authored
 dashboards. Native pending questions and approvals appear in a central **Needs
 you** inbox above the summary gallery, with each request labeled by its exact
@@ -320,6 +327,17 @@ toward a row that may not be mounted (the pinned-prompt glide) asks the hook
 through `mountIndex` and `estimateRowTop`. The page keeps `overflow-anchor: auto`
 on the scroller as the browser's own stabiliser. WebKit ships none, so the hook
 carries its own anchors as well.
+
+The pinned-prompt card is an overlay beside the scroller, not a row in it, and
+it paints above the composer dock, so nothing but geometry bounds it. Its
+ceiling is the transcript FLOOR: the scroller's bottom less the scroller's own
+`padding-bottom`, which is each host's statement of where readable rows stop
+(the main chat pads by the dock's height plus a clearance). `usePinnedPrompt`
+measures that floor off the scroller rather than taking it as a prop, clamps the
+fold's live height to it and hands it to the card as `maxH`, which lands as
+`max-height` on the bubble; the body is a shrinkable flex column so the cap
+scrolls the prompt instead of clipping it. A host that moves its floor (a dock
+that grows a status bar) only has to keep its `padding-bottom` honest.
 
 | What moves the scroller | Owner (`website/src/hooks/virtualizer/`) |
 |---|---|

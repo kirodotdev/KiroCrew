@@ -10,6 +10,7 @@ import {
   pinHandoffY,
   pinPushTravel,
   computeLiveCardH,
+  computePinnedCardMaxH,
   ROW_PAD_Y,
   DEFAULT_PINNED_CARD_H,
   PINNED_PREVIEW_LINES,
@@ -432,5 +433,27 @@ describe('computeLiveCardH', () => {
       expect(h).toBeGreaterThanOrEqual(prev)
       prev = h
     }
+  })
+})
+
+describe('computePinnedCardMaxH', () => {
+  // The card's top is ROW_PAD_Y under the fold; the floor is the scroller's bottom less
+  // its bottom padding (the host's own clearance for the composer dock). The card may
+  // run from the one to the other and no further — a card past the floor is a card over
+  // the input box, which is the bug this ceiling exists to close.
+  it('is the distance from the card top to the floor', () => {
+    expect(computePinnedCardMaxH(100, 400)).toBe(400 - 100 - ROW_PAD_Y)
+  })
+
+  it('is a ceiling the fold respects: a bubble below the floor folds to the floor instead', () => {
+    const foldY = 100, floorY = 400, RESTING = 48
+    const wanted = computeLiveCardH(ROW_PAD_Y + 856, RESTING, 856)
+    const capped = Math.min(computePinnedCardMaxH(foldY, floorY), wanted)
+    // card bottom === floor, not the bubble's bottom 460px under it
+    expect(foldY + ROW_PAD_Y + capped).toBe(floorY)
+  })
+
+  it('never goes negative when the fold itself is below the floor', () => {
+    expect(computePinnedCardMaxH(500, 400)).toBe(0)
   })
 })

@@ -65,6 +65,7 @@ from kiro_crew.acp.types import (
 from kiro_crew.acp_backends import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
+    ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
@@ -163,7 +164,7 @@ class TestMembership:
     def test_no_other_harness_was_granted_anything(self) -> None:
         """One membership edit, not a widening: KAS in particular stays out.
 
-        Every member is named, opencode included (its evidence lives in
+        Every member is named, opencode and goose included (their evidence lives in
         ``test_compaction_other_backends``), which is what the pin is FOR: a member
         is here by a deliberate edit carrying a capture, so a widening cannot
         arrive unannounced.
@@ -175,10 +176,11 @@ class TestMembership:
                 ACP_BACKEND_CLAUDE,
                 ACP_BACKEND_CODEX,
                 ACP_BACKEND_OPENCODE,
+                ACP_BACKEND_GOOSE,
             }
         )
         assert ACP_BACKENDS_INLINE_COMPACTION == frozenset(
-            {ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_OPENCODE}
+            {ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_OPENCODE, ACP_BACKEND_GOOSE}
         )
 
 

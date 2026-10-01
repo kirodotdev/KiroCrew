@@ -25,11 +25,17 @@
 // source and is checked exactly.
 
 import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 
 const CHAT_PAGE = join(__dirname, '..', 'pages', 'ChatPage.tsx')
-const source = readFileSync(CHAT_PAGE, 'utf-8')
+const pageSource = readFileSync(CHAT_PAGE, 'utf-8')
+// ChatPage composes owners under pages/chat/page/ (the model chip's resolver
+// read among them), so every guard below covers the page AND those owners.
+const OWNER_DIR = join(__dirname, '..', 'pages', 'chat', 'page')
+const source = [pageSource, ...readdirSync(OWNER_DIR)
+  .filter(f => /\.tsx?$/.test(f) && !/\.test\./.test(f))
+  .map(f => readFileSync(join(OWNER_DIR, f), 'utf-8'))].join('\n')
 
 /** Arguments that are legitimate for a create-time model: nothing, or an
  *  explicit user pick. `v` is the setter's own parameter; `modelName` is the
@@ -63,7 +69,7 @@ describe('ChatPage — a new session carries no model the user did not pick', ()
     // Switching agent must not carry the old agent's explicit pick forward, and
     // must not re-seed a resolved one either -- it clears, so createSlot omits
     // `model` and the backend resolves the NEW agent's chain.
-    const switchAgent = source.slice(source.indexOf('const switchAgent = useCallback'))
+    const switchAgent = pageSource.slice(pageSource.indexOf('const switchAgent = useCallback'))
     const body = switchAgent.slice(0, switchAgent.indexOf('}, ['))
     expect(body).toMatch(/setPendingModel\(''\)/)
     expect(body).not.toMatch(/resolveModel/)

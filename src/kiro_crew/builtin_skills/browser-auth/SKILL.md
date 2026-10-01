@@ -36,8 +36,14 @@ it:
 <https://chromewebstore.google.com/detail/playwright-extension/mmlmfjhmonkocbjadbfplnigmagldckm>
 
 The extension holds the `debugger` permission, which is what lets a command drive a
-tab the user is already logged into. Headless browsing needs none of this, so a
-missing extension costs attach mode only.
+tab the user is already logged into. A managed browser the CLI downloads needs none
+of this, so a missing extension costs attach mode only.
+
+**The browser must run on the gateway's machine.** The CLI reaches the extension
+through a relay on the machine it runs on. A user viewing a remote gateway from a
+laptop who installs the extension in the laptop's browser has not made that browser
+reachable; say so rather than retrying. Having the extension installed, or a token
+saved in Settings, is not proof that a browser is connected.
 
 **A failure to reach the relay endpoint means the extension is absent or disabled,
 not that the command was wrong.** Say so and point the user at the link rather than

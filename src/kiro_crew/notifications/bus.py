@@ -27,7 +27,8 @@ PRIORITIES = ("critical", "default", "passive")
 _DEFAULT_PRIORITY = "default"
 _SYSTEM_SOURCE = "system"
 
-# System channels mirror the legacy notification kinds one-to-one.
+# System channels mostly mirror the legacy notification kinds one-to-one;
+# system.monitor is the exception (its notes keep kind "agent", see below).
 # Values are the channel's default priority (RFC "Priority semantics"):
 # approval is critical (blocks an agent turn); subagent is passive (the
 # completion event already injects into the originating chat session).
@@ -53,7 +54,18 @@ SYSTEM_CHANNELS: dict[str, str] = {
     # default stays `default`; the producer escalates the entering-critical
     # note explicitly (see notifications/resource_pressure.py).
     "system.resources": _DEFAULT_PRIORITY,
+    # Monitoring-loop lifecycle notices (a watch finished, spent its budget,
+    # stopped on a blocker or a stalled verdict). A separate channel lets the
+    # user mute them without muting system.agent, which carries the notes
+    # agents write for a human decision. Same default priority as
+    # system.agent: nothing changes until the user mutes or re-prioritises it.
+    "system.monitor": _DEFAULT_PRIORITY,
 }
+
+# The channel the gateway's monitor-loop stop/finish notices use. Their legacy
+# ``kind`` stays "agent" so the feed badge, stat cards and per-kind sound are
+# unchanged; only the mute/priority channel moves.
+MONITOR_CHANNEL = "system.monitor"
 
 # Fallback channel for legacy kinds that have no dedicated system channel
 # (defensive: nothing emits unknown kinds today, but old JSONL rows might).
@@ -265,6 +277,7 @@ def payload_from_legacy(
     *,
     url: str | None = None,
     actions: list[dict[str, Any]] | None = None,
+    channel: str | None = None,
 ) -> NotificationPayload:
     """Build a v2 payload from the legacy ``notify(kind, ...)`` call shape.
 
@@ -284,8 +297,15 @@ def payload_from_legacy(
     path-validated rather than discarded. Unlike the title/body repairs above
     these do NOT repair: an invalid deep link raises, because a button that
     navigates somewhere unintended is worse than no button.
+
+    ``channel`` routes the note to a system channel other than the one its
+    ``kind`` maps to, keeping ``kind`` for the frontend. It must name a system
+    channel (the note's source is ``system``); anything else raises.
     """
-    channel = _channel_for_kind(kind)
+    if channel is None:
+        channel = _channel_for_kind(kind)
+    elif channel not in SYSTEM_CHANNELS:
+        raise NotificationValidationError(f"not a system channel: {channel!r}")
     # Coerce first: notify() never raised, and a non-string here would
     # TypeError out of the adapter before validation could catch it.
     if not isinstance(title, str):

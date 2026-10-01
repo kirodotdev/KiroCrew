@@ -48,10 +48,14 @@ KIROCREW_APP_DIR="$(cd "$(dirname "$0")" && pwd)"
 # pre-move ~/.kirocrew, which is not the data home).
 KIROCREW_DATA_DIR="${KIROCREW_HOME:-$HOME/.kiro/crew}"
 NODE_VERSION="24"
-# Minimum Node major the frontend build actually supports. Defined here
-# (not just at the post-install check) because DETECTION consults it: a
-# pre-existing but too-old node must not short-circuit the install ladder.
-NODE_MIN_MAJOR=22
+# Minimum Node version (major.minor.patch) Kiro Crew supports -- the same
+# floor as MIN_NODE_VERSION in src/kiro_crew/constants.py and ensure-node.sh.
+# A full version, not a major: an early 22.x lacks APIs the code needs
+# (worker_threads.markAsUncloneable landed in 22.10.0) and is below the
+# bundler's declared ">=22.12.0". Defined here (not just at the post-install
+# check) because DETECTION consults it: a pre-existing but too-old node must
+# not short-circuit the install ladder.
+NODE_MIN_VERSION="22.12.0"
 PYTHON_VERSION="3.12"
 KIROCREW_PORT="${KIROCREW_PORT:-5476}"
 ACP_NPM_PKG="@agentclientprotocol/claude-agent-acp"
@@ -135,8 +139,18 @@ has() { command -v "$1" >/dev/null 2>&1; }
 # fails the comparison, which is the intended answer.
 node_supported() {
     has node || return 1
-    _n="$( { node --version 2>/dev/null || echo v0; } | sed 's/^v//' | cut -d. -f1)"
-    [ -n "$_n" ] && [ "$_n" -ge "$NODE_MIN_MAJOR" ] 2>/dev/null
+    _nv="$( { node --version 2>/dev/null || echo v0; } | sed 's/^v//')"
+    _maj="$(printf '%s' "$_nv" | cut -d. -f1)"
+    _min="$(printf '%s.0' "$_nv" | cut -d. -f2)"
+    _pat="$(printf '%s.0.0' "$_nv" | cut -d. -f3)"
+    _fmaj="$(printf '%s' "$NODE_MIN_VERSION" | cut -d. -f1)"
+    _fmin="$(printf '%s' "$NODE_MIN_VERSION" | cut -d. -f2)"
+    _fpat="$(printf '%s' "$NODE_MIN_VERSION" | cut -d. -f3)"
+    [ "$_maj" -gt "$_fmaj" ] 2>/dev/null && return 0
+    [ "$_maj" -eq "$_fmaj" ] 2>/dev/null || return 1
+    [ "$_min" -gt "$_fmin" ] 2>/dev/null && return 0
+    [ "$_min" -eq "$_fmin" ] 2>/dev/null || return 1
+    [ "$_pat" -ge "$_fpat" ] 2>/dev/null
 }
 
 # ── Pre-flight ──
@@ -316,7 +330,7 @@ if node_supported; then
 elif has node; then
     # Present but below the floor: say so, then fall through to the install
     # ladder below rather than building against it.
-    info "Node.js $(node --version 2>/dev/null || echo v0) is below the supported floor (>= $NODE_MIN_MAJOR) — installing a supported Node…"
+    info "Node.js $(node --version 2>/dev/null || echo v0) is below the supported floor (>= v$NODE_MIN_VERSION) — installing a supported Node…"
     if has apt-get; then
         sudo apt-get install -y nodejs npm >/dev/null 2>&1 || true
     elif has dnf; then
@@ -339,7 +353,7 @@ elif has node; then
     fi
     node_supported \
         && ok "Node.js $(node --version) now active" \
-        || warn "Node.js is still below v$NODE_MIN_MAJOR — the frontend build will fail"
+        || warn "Node.js is still below v$NODE_MIN_VERSION — the frontend build will fail"
 elif has apt-get; then
     info "Installing nodejs via apt…"
     sudo apt-get install -y nodejs npm >/dev/null 2>&1
@@ -377,9 +391,8 @@ fi # USE_MISE -eq 0 (Node.js)
 if has node; then
     # `|| echo v0` keeps a broken node binary (loader error) from killing the
     # installer under `set -e`; v0 then trips the floor warning below.
-    _node_major="$( { node --version 2>/dev/null || echo v0; } | sed 's/^v//' | cut -d. -f1)"
-    if [ -n "$_node_major" ] && [ "$_node_major" -lt "$NODE_MIN_MAJOR" ] 2>/dev/null; then
-        warn "Node.js v$_node_major is below the supported floor (>= $NODE_MIN_MAJOR) — the frontend build will fail"
+    if ! node_supported; then
+        warn "Node.js $( { node --version 2>/dev/null || echo v0; } ) is below the supported floor (>= v$NODE_MIN_VERSION) — the frontend build will fail"
         detail "Install Node.js $NODE_VERSION (LTS): https://nodejs.org or 'nvm install $NODE_VERSION'"
     fi
 fi
@@ -515,7 +528,7 @@ if has node && [ -d "$KIROCREW_APP_DIR/website" ]; then
     fi
 else
     warn "Skipping frontend build (Node.js or website/ not available)"
-    detail "Install Node.js 22+ (24 LTS recommended) for the full React dashboard experience"
+    detail "Install Node.js 22.12+ (24 LTS recommended) for the full React dashboard experience"
 fi
 
 # ── Python virtual environment & package ──

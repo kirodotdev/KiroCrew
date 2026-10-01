@@ -49,8 +49,10 @@ from kiro_crew.dashboard.chat_delivery import (
     TURN_ACTOR_META_KEY,
     attachment_meta,
     normalize_send_id,
+    queue_entry_is_user_origin,
     queue_entry_view,
     queue_for_next_turn,
+    queued_text_for_display,
     start_queue_persist,
     steer_into_running_turn,
 )
@@ -58,26 +60,19 @@ from kiro_crew.dashboard.chat_folders import (
     _unhide_folder,
     resolve_folder_project_dir_off_loop,
 )
-from kiro_crew.dashboard.chat_orchestrator import (
-    _cancel_stage_subagents,
-    _capture_stage_cancellation_scope,
-    _queue_consumed_stage_resume,
-    _release_cancelled_plan_boundary,
-    _reserve_stage_cancellation_scopes,
-    _settle_discarded_stage_deliveries,
-    _stage_loop,
-)
 from kiro_crew.dashboard.chat_persistence import (
     _FLUSH_SNAPSHOT_RETRIES,
     _TRANSIENT_ROLES,
     COLOR_HEX_RE,
     _attach_variants,
+    _coerce_requested_mode,
     _local_turn_generation,
     _local_turn_prompt,
     _rebase_rehydrated_refresh_mark,
     _reconcile_local_turn_marker,
     _rehydrate_slot_title,
     _remember_reasoning_effort_for_restore,
+    _restore_dismissed_source_links,
     _restored_agent_name,
     _restored_mode,
     _validate_autocompact_pct,
@@ -97,7 +92,7 @@ from kiro_crew.dashboard.chat_runner import (
     context_entry_expired,
     schedule_eager_spawn,
 )
-from kiro_crew.dashboard.chat_summary import generate_session_summary
+from kiro_crew.dashboard.chat_summary import generate_session_summary, read_cached_intent_summary
 from kiro_crew.dashboard.chat_tags import (
     _bump_slot_tags_revision,
     tags_write_lock,
@@ -173,8 +168,10 @@ from kiro_crew.dashboard.slot_buffers import (
     note_hold_durable,
     persist_deferred_notes_sync,
 )
+from kiro_crew.dashboard.slot_projection import resolved_row_identity, stop_declined_armed
 from kiro_crew.dashboard.slot_queue_repository import warn_if_not_durable
 from kiro_crew.dashboard.state import (
+    _MAX_DISMISSED_SOURCE_LINKS,
     DashboardState,
     SlotOrigin,
     _ChatSlot,
@@ -185,6 +182,7 @@ from kiro_crew.dashboard.state import (
     durable_row_count,
     is_stop_event_row,
     is_turn_interrupted,
+    note_crew_log_class,
     parse_cls_meta,
     request_slot_origin,
     row_mid,
@@ -193,12 +191,9 @@ from kiro_crew.dashboard.state import (
 from kiro_crew.dashboard.system_notices import SESSION_RELOAD_KIND, is_system_notice
 from kiro_crew.dashboard.turn_dispatch import spawn_guarded_turn
 from kiro_crew.history import (
-    ConversationLog,
-    TranscriptBusy,
+    HUMAN_TURN_META_KEY,
     carry_provenance,
     is_incognito_transcript,
-    transcript_lock_stems,
-    transcript_withholds_derivation,
 )
 from kiro_crew.history_projection import TranscriptRevisionChanged
 from kiro_crew.jsonl_util import OversizedRecord, SplitlinesBoundaryRecord
@@ -219,7 +214,7 @@ from kiro_crew.security import (
     redact_credentials,
     redact_exfiltration_urls,
 )
-from kiro_crew.sel import SecurityEvent, sel
+from kiro_crew.sel import sel
 from kiro_crew.session_agent_selection import (
     SelectionChange,
     record_agent_selection,
@@ -227,6 +222,7 @@ from kiro_crew.session_agent_selection import (
     restore_agent_selection,
     session_agent_selection_name,
 )
+from kiro_crew.session_lifecycle import compaction_in_flight
 from kiro_crew.session_summary import count_user_turns_in_records
 from kiro_crew.trust_patterns import (
     base_consent_pattern,
@@ -247,6 +243,11 @@ if TYPE_CHECKING:  # circular at runtime: autonudge -> dashboard.chat -> chat_ha
     from kiro_crew.config.sections import ResolvedBindings
 
 logger = logging.getLogger(__name__)
+
+# Sentinel: the authorized transcript's identity (created_at) could NOT be read,
+# so a source-link unlink write cannot be proven to target it. Distinct from a
+# real created_at of None (a metadata line that simply lacks the field).
+_UNPINNED: object = object()
 
 # Feed notice appended by api_chat_slot_reload. A constant, not LLM-derived
 # text, so it needs no redaction pass.
@@ -353,8 +354,13 @@ def _deny_app_yolo(request_app: str, operation: str) -> web.Response:
 #: surface reads them as the gateway's own claim. ``decisions_strip`` is a Jev
 #: decision receipt with a verdict control attached (``decisions/points/
 #: message_steer.py``, ``website/src/pages/chat/SteerDecisionLine.tsx``), so a
-#: caller-supplied one would render a decision nobody made.
-RESERVED_ROW_META_KEYS = frozenset({"decisions_strip"})
+#: caller-supplied one would render a decision nobody made. ``HUMAN_TURN_META_KEY``
+#: is the gateway's own claim that a PERSON typed a row; a caller-supplied one
+#: forges human-turn provenance and advances the last-human-turn ranking stamp
+#: (``chat_persistence._newest_human_turn_ts``), so an app token owning its slot
+#: could displace human sessions. Stripped here so the gateway re-applies it below
+#: only for a genuine human send.
+RESERVED_ROW_META_KEYS = frozenset({"decisions_strip", HUMAN_TURN_META_KEY})
 
 #: The ``steer`` value that means "let Jev choose between the two paths" rather
 #: than naming one. A STRING beside the boolean the two manual modes send, so the
@@ -827,27 +833,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
             {"error": "message is required", "code": "message_required"}, status=400
         )
 
-    _pending_control_text = message.strip().lower()
-    _pending_control_words = _pending_control_text.split()
-    _widget_origin = user_meta is not None and user_meta.get("origin") == "widget"
-    _stop_words = {"stop", "cancel", "abort"}
-    _orchestrator_mode = getattr(slot, "mode", "") == "orchestrator"
-    _is_go = _pending_control_text in ("go", "go all")
-    _is_go_all = _pending_control_text == "go all"
-    tracker = slot._orch_tracker
-    _pending_escalated_stop = bool(
-        tracker is not None
-        and tracker.has_escalated
-        and not tracker.stopped
-        and _pending_control_words
-        and _pending_control_words[0] in _stop_words
-    )
-    _pending_stage_control = _orchestrator_mode and (
-        (_is_go and not _widget_origin) or _pending_escalated_stop
-    )
-    _pending_stage_boundary = (
-        stage_boundary_for(slot).stage is not None and not _pending_stage_control
-    )
+    _pending_stage_boundary = stage_boundary_for(slot).stage is not None
     if slot.turn_running or slot._in_stage_execution or _pending_stage_boundary:
         # Mid-turn steer: inject into the RUNNING turn instead of queueing for
         # the next turn. Gated on an explicit `steer` flag + a live, steer-capable
@@ -1043,9 +1029,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
             meta=_hold_meta,
             directive_user_origin=not bool(request_app),
         )
-        _c, _ = redact_exfiltration_urls(message)
-        _c, _ = redact_credentials(_c)
-        _redacted = _redact_for_display(_c)
+        _redacted = queued_text_for_display(message, user_origin=not bool(request_app))
         warn_if_not_durable(slot._queue, qid, slot.key)
         # Start the durable write here too, not only in the busy-slot branch.
         # This branch holds an IDLE slot, so no drain is coming to write the
@@ -1094,7 +1078,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     # row in local history, and the user's retry would append a SECOND one while
     # only the retry ever reaches the peer — the local and peer transcripts then
     # diverge. Every turn-refusing validation (member reserve, app
-    # ownership, agent conflict, busy/steer/queue, crew and orchestrator modes)
+    # ownership, agent conflict, busy/steer/queue, crew and app-worker modes)
     # has already run above, so a remote slot that reaches here is otherwise
     # cleared to dispatch.
     #
@@ -1208,9 +1192,16 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     # reply so every pane sees the user row in order, independently of when the
     # HTTP receipt arrives. sendId/mid reconcile an existing optimistic bubble;
     # callers without a correlation id keep their existing delivery contract.
-    _user_row = slot.append(
-        "user", message, "msg msg-u", meta=_redact_meta(user_meta) if user_meta else None
-    )
+    _user_row_meta = _redact_meta(user_meta) if user_meta else {}
+    if not request_app:
+        # A PERSON typed this. Marked explicitly rather than inferred, because the
+        # row's role and presentation class cannot tell it apart from a turn the
+        # gateway drives on its own (see history.HUMAN_TURN_META_KEY). An app
+        # token reaches this same handler, so the marker rides the same
+        # app-origin signal as `user_origin` and `turn_actor` above: an app's
+        # send is not a human turn and must not advance the ranking stamp.
+        _user_row_meta[HUMAN_TURN_META_KEY] = True
+    _user_row = slot.append("user", message, "msg msg-u", meta=_user_row_meta)
     _user_mid = _user_row.get("meta", {}).get("mid")
     if ws_mode and user_meta and user_meta.get("sendId"):
         # Raw user content belongs on the per-client slot-authorized WS path.
@@ -1236,127 +1227,6 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
             _autonudge.notify_user_input(slot.key)
     except Exception:
         logger.warning("autonudge.notify_user_input failed", exc_info=True)
-
-    # ── Orchestrator "Go All" detection ─────────────────────────────
-    # Deny-by-default trust boundary: a turn tagged origin="widget" was
-    # pre-filled into the composer by an LLM-emitted <mcwidget> postMessage.
-    # Even though the frontend requires a human gesture to send it, the
-    # message TEXT is still attacker-controlled — an
-    # injected widget can pre-fill "go all" and socially engineer the user
-    # into pressing Enter. "go"/"go all" is the only chat-text-reachable
-    # privilege escalation (it flips the orchestrator into unattended
-    # per-stage auto-approval via slot._auto_run + _stage_loop), so we refuse
-    # to honour it for widget-origin turns and let the text fall through to a
-    # normal, fully-gated _run_chat turn instead. Mode changes and tool
-    # approvals live on separate endpoints a widget iframe cannot reach.
-    # `is not None` (not truthiness): user_meta is normalized to dict-or-None
-    # above, and with the body typed by read_bounded_json, mypy narrows the
-    # Optional only through an explicit None check. `_widget_origin` is computed
-    # before pending-stage admission so rejected control text cannot bypass that
-    # boundary and fall through as an ordinary turn.
-    if _orchestrator_mode and _is_go and _widget_origin:
-        sel().log(
-            SecurityEvent(
-                event_id=uuid.uuid4().hex,
-                timestamp=datetime.now(tz=timezone.utc).isoformat(),
-                event_type="auto_run_denied",
-                caller_identity=f"dashboard:{slot.key}",
-                agent=getattr(slot, "agent", ""),
-                source="dashboard",
-                operation="go_typed_widget_origin",
-                outcome="denied",
-                resources=f"slot={slot.key}",
-                error="orchestrator go/go-all refused for widget-origin turn",
-            )
-        )
-        logger.warning(
-            "Refused orchestrator auto-run escalation for widget-origin turn on slot %s",
-            slot.key,
-        )
-    elif _orchestrator_mode and _is_go:
-        _is_auto = _is_go_all
-        if _is_auto:
-            slot._auto_run = True
-            logger.info("Auto-run enabled for slot %s", slot.key)
-            sel().log(
-                SecurityEvent(
-                    event_id=uuid.uuid4().hex,
-                    timestamp=datetime.now(tz=timezone.utc).isoformat(),
-                    event_type="auto_run_enabled",
-                    caller_identity=f"dashboard:{slot.key}",
-                    agent=getattr(slot, "agent", ""),
-                    source="dashboard",
-                    operation="go_all_typed",
-                    outcome="approved",
-                    resources=f"slot={slot.key}",
-                )
-            )
-        sel().log(
-            SecurityEvent(
-                event_id=uuid.uuid4().hex,
-                timestamp=datetime.now(tz=timezone.utc).isoformat(),
-                event_type="stage_approved",
-                caller_identity=f"dashboard:{slot.key}",
-                agent=getattr(slot, "agent", ""),
-                source="dashboard",
-                operation="go_typed",
-                outcome="approved",
-                resources=f"slot={slot.key}",
-            )
-        )
-        # Use Python-controlled stage loop instead of _run_chat
-        if stage_boundary_for(slot).stage is not None:
-            _queue_consumed_stage_resume(
-                state,
-                slot,
-                directive_user_origin=not bool(request.get("app", "")),
-            )
-            slot._last_turn_auth_required = False
-        task = asyncio.create_task(
-            _stage_loop(state, slot, auto_run=_is_auto),
-            name=f"dashboard-stage:{slot.key}",
-        )
-        slot.track_stage_controller(task)
-        slot.task = task
-        # S4: one accepted Go resets the recovery budget shared by its stages.
-        stage_boundary_for(slot).recovery_retrigger_count = 0
-        state._background_tasks.add(task)
-        task.add_done_callback(state._background_tasks.discard)
-        state.push_slots_update()
-        # All output delivered via WebSocket — return JSON like api_chat_plan_action
-        return web.json_response({"ok": True, "slot": slot.key})
-
-    # ── Orchestrator stop detection ─────────────────────────────────
-    if _pending_escalated_stop and tracker is not None:
-        tracker.stop()
-        # Same latch as the plan-action Cancel handler: tracker.stopped
-        # alone does not survive the Slack gateway lazily re-creating a fresh
-        # unstopped tracker on this slot, so without the latch a later Go could
-        # resurrect a plan the user stopped by word. One revocation semantics
-        # across both cancel surfaces.
-        scope = _capture_stage_cancellation_scope(slot)
-        slot._plan_cancelled = True
-        slot._auto_run = False
-        reservation_reason = _reserve_stage_cancellation_scopes(state, scope)
-        await _cancel_stage_controller(slot)
-        release_boundary = await _cancel_stage_subagents(
-            state,
-            slot,
-            scope=scope,
-            reservation_reason=reservation_reason,
-        )
-        if release_boundary:
-            await _release_cancelled_plan_boundary(
-                state,
-                slot,
-                terminal_message="🛑 [SYSTEM] Orchestration stopped by user.",
-            )
-        return web.json_response({"ok": True, "stopped": True})
-
-    # ── Reset rounds after user guidance (not a stop) ───────────────
-    if tracker is not None and tracker.has_escalated:
-        tracker.reset_after_guidance()
-        logger.info("Rounds reset after user guidance for slot %s", slot.key)
 
     # Drain stale pending messages from previous turns that completed
     # after their SSE reader disconnected. Must happen BEFORE _run_chat
@@ -1673,6 +1543,988 @@ async def api_chat_slot_source_links(request: web.Request) -> web.Response:
     )
 
 
+_source_link_unlink_tasks: set[asyncio.Task] = set()
+
+
+def _audit_source_link_unlink(name: str, outcome: str, **fields: Any) -> None:
+    """Best-effort terminal audit must never change a settled write's outcome."""
+    try:
+        sel().log_tool_invocation(
+            session_key=f"dashboard:{name}",
+            agent="kirocrew",
+            source="dashboard",
+            tool_name="source_link_unlink",
+            tool_kind="permission",
+            outcome=outcome,
+            **fields,
+        )
+    except Exception:
+        logger.warning("Source-link unlink audit unavailable")
+
+
+async def api_chat_slot_source_link_unlink(request: web.Request) -> web.Response:
+    """Keep accepted unlink settlement alive across HTTP-request cancellation.
+
+    Cancelling to_thread cannot stop its writer. Keep the transaction lock,
+    reconciliation, final publication and depth cleanup together until settled.
+    A repeated caller cancellation may stop waiting, never the owned task; the
+    strong reference and completion callback retain and observe it in that case.
+    """
+    task = asyncio.create_task(_apply_source_link_unlink(request))
+    _source_link_unlink_tasks.add(task)
+
+    def completed(done: asyncio.Task) -> None:
+        _source_link_unlink_tasks.discard(done)
+        if not done.cancelled():
+            done.exception()  # retrieve even if a repeatedly-cancelled caller left
+
+    task.add_done_callback(completed)
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        _audit_source_link_unlink(
+            request.match_info["slot"],
+            "failed",
+            error="request_cancelled",
+            metadata={"phase": "request", "settlement": "shielded"},
+        )
+        try:
+            await asyncio.shield(task)
+        except Exception:
+            pass  # the operation emitted its own terminal failure
+        raise
+
+
+async def _apply_source_link_unlink(request: web.Request) -> web.Response:
+    """DELETE /api/chat/slots/{slot}/source-links/{identity} — unlink one chip.
+
+    The PR/issue/Jira chips are DERIVED by re-scanning the transcript, so there
+    is nothing to delete: the next re-scan would re-add a removed link. Unlinking
+    instead records the link's serialized identity into the slot's dismissed set,
+    which the derivation filters against, and persists it so the chip stays gone
+    across a gateway restart. Purely local -- no remote provider is touched, so a
+    pull request is not closed and an issue is not deleted.
+
+    The ``{identity}`` segment is the serialized ``SourceRef.identity`` key that
+    the slots payload now carries on each source link (the ``identity`` field);
+    the frontend echoes that opaque value straight back here rather than
+    re-deriving it. It is validated against the canonical grammar before use --
+    a malformed key is rejected with 400 and a machine-readable ``code`` rather
+    than stored as junk that can never match a real identity.
+    """
+    # Function-local to avoid a circular import: source_providers imports from
+    # the dashboard state/handler layer. Same lazy form the sibling source-link
+    # handlers use.
+    from kiro_crew.dashboard.source_providers.contract import (
+        bounded_valid_identities,
+        is_valid_source_identity_key,
+    )
+
+    state: DashboardState = request.app["state"]
+    name = request.match_info["slot"]
+
+    def _reject(response: web.Response, error: str, phase: str) -> web.Response:
+        # Every rejection is a failed invocation of a permission-class tool, so
+        # it must leave a SEL trail like the persist-failure and lock-rebind
+        # paths do -- otherwise a malformed/stale/absent-identity attempt (or an
+        # ownership denial) unlinks nothing yet is invisible to the audit log.
+        _audit_source_link_unlink(
+            name, "failed", error=error, metadata={"slot": name, "phase": phase}
+        )
+        return response
+
+    publication_needed = False
+
+    def _publish(phase: str) -> None:
+        nonlocal publication_needed
+        # Delivery is not the commit point. A publication here fires only AFTER
+        # the guarded durable write has committed (persist-before-publish) OR
+        # after a refused write has rolled the tentative dismissal back (the
+        # ``rollback`` phase re-converges the client with the unchanged disk
+        # state) — never on a tentative, not-yet-durable dismissal. Either way a
+        # broadcast failure never interrupts persist/compensate/reconcile or
+        # turns a committed 200 into a 500 the client rolls back — it only flags
+        # ``publication_needed`` so a later push re-converges the client with disk.
+        try:
+            state.push_slots_update()
+            publication_needed = False
+        except Exception:
+            publication_needed = True
+            _audit_source_link_unlink(
+                name,
+                "failed",
+                error="broadcast_failed",
+                metadata={"slot": name, "phase": phase},
+            )
+
+    txn_slots: list[_ChatSlot] = []
+
+    @contextlib.asynccontextmanager
+    async def _transaction(history_key: str):
+        async with _source_link_txn_lock(history_key):
+            try:
+                yield
+            finally:
+                # Every increment is recorded, including multiple increments
+                # on an alias that departs and returns. Release exactly ours.
+                for touched in txn_slots:
+                    touched._dismissed_txn_depth -= 1
+                    # At transaction exit the key is settled: a committed write
+                    # leaves it durably dismissed (so it projects as dismissed),
+                    # a rolled-back write leaves it absent from the set. Either
+                    # way it is not tentative, so drop it from the pending fence
+                    # on every touched slot and invalidate, letting the settled
+                    # state — chip gone on commit, chip present on rollback — be
+                    # what the next projection publishes.
+                    if identity_key in touched._dismissed_txn_pending:
+                        touched._dismissed_txn_pending.discard(identity_key)
+                        touched.invalidate_source_links()
+
+    slot = state._slots.get(name)
+    if not slot:
+        # Same indistinguishable 404 + code as the GET path, so the response
+        # cannot serve as a probe for which slots exist.
+        return _reject(
+            web.json_response({"error": "not found", "code": "slot_not_found"}, status=404),
+            error="slot_not_found",
+            phase="lookup",
+        )
+    # Session-aware ownership gate, NOT the slot-only check: the dismissal is
+    # persisted (forced save) into the transcript this slot routes to, so a
+    # linked app-owned slot (a channel stem) would otherwise let an app write
+    # metadata into a foreign human conversation. _check_slot_app_ownership
+    # authorizes the transcript key the write actually lands on -- same as
+    # /autocompact, /context and /note, all of which persist slot metadata.
+    request_app = request.get("app", "")
+    denied = _check_slot_app_ownership(slot, name, request_app, "slot_source_link_unlink")
+    if denied is not None:
+        return _reject(denied, error="app_isolation", phase="ownership")
+
+    # Expected-session-identity gate, checked at the ENTRY lookup. The client
+    # sends the identity of the session it MEANT to unlink from -- the same
+    # ``<row_identity>|<created_at>|<linked_session_key>`` string the sidebar
+    # rendered the chip under (see the frontend ``slotGeneration``/``sessionId``);
+    # the transcript binding is the part a rebind changes -- as the ``expect``
+    # query param. If the slot living behind ``name`` now carries a DIFFERENT
+    # identity, a permanent delete + same-key recreation replaced the targeted
+    # session with another BEFORE this request ran, so proceeding would dismiss a
+    # link on a session the user never chose. This gate rejects the wrong session
+    # at the point the slot is captured and is what makes the request
+    # self-describing about which session it targeted.
+    #
+    # ``expect`` is REQUIRED. The downstream ``created_at`` pin alone cannot close
+    # the hole: a same-key recreation that FINISHES before the entry lookup makes
+    # the pin read the REPLACEMENT's own identity (so it matches itself and
+    # passes), and ``mentions_source_identity`` passes precisely in the wrong-
+    # session case -- when the replacement transcript genuinely mentions the same
+    # link. With no un-dismiss route, that wrong tombstone would be permanent. So
+    # an ABSENT ``expect`` is refused here rather than falling through to the pin.
+    # This endpoint is new and its only caller (``SourceLinksSubmenu``) always
+    # sends ``expect``, so there is no client to preserve.
+    expected_identity = request.rel_url.query.get("expect")
+    if not expected_identity:
+        return _reject(
+            web.json_response(
+                {
+                    "error": "expected session identity is required",
+                    "code": "expected_identity_required",
+                },
+                status=400,
+            ),
+            error="expected_identity_required",
+            phase="expected_identity",
+        )
+    # Mirror the client's generation TRIPLE: row identity, birth stamp, AND
+    # the transcript binding (``linked_session_key``). The binding is what a
+    # REBIND changes when neither of the other two moves — a live slot pointed
+    # at a different transcript (a cron/workflow injector assigning
+    # ``linked_session_key`` on an already-existing slot) — so without it the
+    # gate would pass and the dismissal would land on the replacement
+    # transcript the user never chose. Including it fails the check on rebind.
+    current_identity = (
+        f"{resolved_row_identity(slot)}"
+        f"|{getattr(slot, 'created_at', '') or ''}"
+        f"|{getattr(slot, 'linked_session_key', '') or ''}"
+    )
+    if expected_identity != current_identity:
+        return _reject(
+            web.json_response(
+                {"error": "session was deleted or rebound", "code": "session_gone"},
+                status=409,
+            ),
+            error="session_gone",
+            phase="expected_identity",
+        )
+
+    # aiohttp has ALREADY percent-decoded the dynamic route segment into
+    # ``match_info``. The frontend single-encodes the identity
+    # (``encodeURIComponent``), so this one decode round-trips it exactly. Do NOT
+    # ``unquote`` again: a second decode collapses two identities that differ
+    # only by encoding (``/acme/a/pull/1`` vs ``/acme/%61/pull/1``) onto the same
+    # key, so an unlink would permanently dismiss the WRONG source link.
+    identity_key = request.match_info["identity"]
+    if not is_valid_source_identity_key(identity_key):
+        return _reject(
+            web.json_response(
+                {"error": "invalid source-link identity", "code": "invalid_source_identity"},
+                status=400,
+            ),
+            error="invalid_source_identity",
+            phase="validate",
+        )
+
+    # Only an identity that is ACTUALLY one of this slot's currently-derived
+    # chips (or one already dismissed) may be dismissed. Without this bound a
+    # caller could submit unlimited distinct format-valid-but-absent identities,
+    # each growing the persisted dismissed set and forcing a disk write --
+    # unbounded durable-state growth. Gating on the derived set means an identity
+    # can only be dismissed if the transcript actually mentions it, so the
+    # dismissed set is bounded by the count of DISTINCT real source links the
+    # transcript carries -- not by any single snapshot's budgeted slice (dismissing
+    # one budgeted chip can reveal the next-ranked real link), but still finite and
+    # tied to genuine transcript content rather than attacker-chosen junk.
+    # Already-dismissed is allowed through so a double-click / retry stays an
+    # idempotent 200 no-op rather than a confusing 404 (the chip is gone from the
+    # derived set precisely because it worked). This pre-lock gate is an
+    # anti-abuse bound only — it keeps a caller from growing the dismissed set
+    # with unlimited format-valid-but-absent junk. It is NOT the authorization to
+    # WRITE: the slot's in-memory ``_dismissed_source_links`` can hold a foreign
+    # identity a concurrent unlink on a since-rebound slot left TENTATIVELY (not
+    # yet committed, about to roll back), so admitting it here must not let a
+    # DELETE without ``expect`` durably tombstone that key on the PINNED
+    # transcript. The write authorization for a non-derived identity is therefore
+    # re-checked inside the lock against the pinned transcript's DURABLE line and
+    # its RAW mentions (see ``non_derived_identity`` below).
+    derived_identities = {link.get("identity") for link in slot._pr_source_links()}
+    non_derived_identity = identity_key not in derived_identities
+    known = derived_identities | slot._dismissed_source_links
+    if identity_key not in known:
+        return _reject(
+            web.json_response({"error": "not found", "code": "source_link_not_found"}, status=404),
+            error="source_link_not_found",
+            phase="derive",
+        )
+
+    # Serialize the ENTIRE dismiss decision — the newly-dismissed check, the
+    # in-memory mutation, the mirror, and the save/rollback — under a
+    # per-transcript transaction lock (mirrors api_chat_slot_autocompact). The
+    # lock is acquired BEFORE any mutation on purpose: if the mutation ran first
+    # (outside the lock), two concurrent DELETEs would race — the second would
+    # see the identity already in the set, take the "already dismissed" no-op
+    # path, and return 200, while the first's save could then fail and roll the
+    # dismissal back, so the second would acknowledge state absent from disk.
+    # Doing the check-and-mutate inside the lock means the second DELETE only
+    # runs after the first has fully committed or rolled back, and re-derives
+    # its own newly-dismissed decision from the settled state. Keyed by the
+    # TRANSCRIPT so alias slots serialize together; a mid-request rebind is
+    # handled by the reauth + expected_history_key pin below, not the lock key.
+    locked_history_key = slot_history_key(slot)
+    async with _transaction(locked_history_key):
+        stale = _reauthorize_after_await(state, slot, name, request_app, "slot_source_link_unlink")
+        if stale is not None:
+            # A DELETE that waited on the transaction lock can find its slot
+            # replaced/rebound by the time it acquires it; the reauth rejects,
+            # and that rejection is a failed permission-tool invocation like the
+            # input-validation ones, so it must leave a SEL trail too.
+            return _reject(stale, error="session_gone", phase="reauth")
+        authorized_history_key = slot_history_key(slot)
+        if authorized_history_key != locked_history_key:
+            # Rebound between the lock-key read and acquisition: this request
+            # holds the OLD transcript's lock while the write would target the
+            # new one, so the serialization guarantee does not cover it.
+            _audit_source_link_unlink(
+                name,
+                "failed",
+                error="session_gone",
+                metadata={"slot": name, "phase": "lock_rebind"},
+            )
+            return web.json_response(
+                {"error": "session was deleted or rebound", "code": "session_gone"},
+                status=409,
+            )
+        # The check-and-mutate now happens under the lock, so it sees state
+        # settled by a concurrent request (committed OR rolled back).
+        #
+        # Pin the authorized transcript's IDENTITY (its ``created_at``, unique per
+        # transcript creation) BEFORE any mutation — right after the reauth +
+        # ``expected_history_key`` check that already established this is the
+        # transcript we are authorized to write. EVERY metadata write below
+        # (including the first) requires the on-disk ``created_at`` to still
+        # equal this pin, so a permanent delete + same-path recreation at ANY
+        # point after authorization yields a fresh ``created_at`` that fails the
+        # guard: the write is declined and rolled back, never landing a stale
+        # dismissal in a replacement session. The pin is read once, off-loop,
+        # before ``dismiss_source_link`` touches memory; if the transcript is not
+        # readable we cannot authorize a write to it, so we 409 without mutating.
+        pinned_created_at: object = _UNPINNED
+        if state.conversation_log is not None:
+            try:
+                _pin_meta, _pin_readable = await asyncio.to_thread(
+                    state.conversation_log.get_metadata_status, authorized_history_key
+                )
+                if _pin_readable and _pin_meta.get("_type") == "metadata":
+                    pinned_created_at = _pin_meta.get("created_at")
+            except Exception:
+                pinned_created_at = _UNPINNED
+        if pinned_created_at is _UNPINNED:
+            # Could not establish the authorized transcript's identity, so a
+            # write cannot be proven to target it — decline without mutating.
+            return _reject(
+                web.json_response(
+                    {"error": "session was deleted or rebound", "code": "session_gone"},
+                    status=409,
+                ),
+                error="session_gone",
+                phase="identity_pin",
+            )
+
+        # The metadata pin is an await too: the same slot object may now route
+        # elsewhere, or its app owner may have changed. Reject before mutation.
+        stale = _reauthorize_after_await(state, slot, name, request_app, "slot_source_link_unlink")
+        if stale is not None:
+            return _reject(stale, error="session_gone", phase="identity_pin_reauth")
+        if slot_history_key(slot) != authorized_history_key:
+            return _reject(
+                web.json_response(
+                    {"error": "session was deleted or rebound", "code": "session_gone"},
+                    status=409,
+                ),
+                error="session_gone",
+                phase="identity_pin_rebind",
+            )
+
+        def _guard(meta: dict) -> bool:
+            # Every write — first, confirm, and compensate — must observe the
+            # SAME transcript identity captured before mutation. A recreated
+            # transcript (fresh ``created_at``) or a non-metadata line is rejected.
+            return meta.get("_type") == "metadata" and meta.get("created_at") == pinned_created_at
+
+        def _locked_dismissed_set(meta: dict) -> set[str]:
+            # The dismissed set on the LOCKED on-disk metadata line. ``meta`` is
+            # read INSIDE ``update_metadata_if``'s cross-process lock, so it is
+            # the authoritative durable set at write time — not the pre-lock
+            # snapshot the request computed its ``union``/``compensate`` from.
+            raw = meta.get("dismissed_source_links")
+            if not isinstance(raw, list):
+                return set()
+            # Bound retention DURING iteration (never materialize the whole
+            # untrusted on-disk list before the cap): the on-disk line is
+            # externally controllable, so collect at most the ceiling.
+            return bounded_valid_identities(raw, _MAX_DISMISSED_SOURCE_LINKS)
+
+        def _merge_guard(payload: dict[str, object]) -> Callable[[dict], bool]:
+            # A guard that ALSO recomputes ``payload["dismissed_source_links"]``
+            # against the locked on-disk line, closing the read-before-write
+            # union race: the request's ``union``/``compensate`` was fixed from a
+            # disk read taken BEFORE ``update_metadata_if`` acquired the
+            # cross-process lock, so a concurrent gateway sharing this data home
+            # could commit a different dismissal in that window and this write's
+            # precomputed set would erase it (last-writer-wins lost update).
+            #
+            # ``update_metadata_if`` calls this guard while holding the lock, with
+            # the freshly-read ``meta``, and only THEN applies ``payload`` via
+            # ``_update_metadata_locked``. Mutating ``payload`` here therefore
+            # rewrites what actually lands. ``payload`` already carries this
+            # request's own contribution (``{identity_key}`` for an add, or the
+            # empty/pre-existing base for a compensation); we UNION the locked
+            # disk set in so every concurrently-committed sibling dismissal
+            # survives. Dismissals only grow, so a union can only ADD — it never
+            # drops the on-disk tombstones the request had not yet observed.
+            #
+            # The cap bounds the field it retains: if folding the locked disk set
+            # in would exceed ``_MAX_DISMISSED_SOURCE_LINKS``, the durable set is
+            # already at the ceiling, so REJECT (guard returns False -> the write
+            # declines and the caller rolls back + 409) rather than commit an
+            # oversized line restore would tail-truncate.
+            def _merge(meta: dict) -> bool:
+                if not _guard(meta):
+                    return False
+                base = payload.get("dismissed_source_links")
+                base_set = set(base) if isinstance(base, (list, set)) else set()
+                merged = base_set | _locked_dismissed_set(meta)
+                if len(merged) > _MAX_DISMISSED_SOURCE_LINKS:
+                    return False
+                payload["dismissed_source_links"] = sorted(merged)
+                return True
+
+            return _merge
+
+        # Is this identity DURABLY dismissed on the authorized transcript's disk
+        # line (read once, above, into ``_pin_meta``)? A plain
+        # ``dismiss_source_link`` returning False means only that the key is in
+        # the slot's IN-MEMORY set — which a CONCURRENT unlink on a since-rebound
+        # slot may have put there TENTATIVELY (its guarded write not yet
+        # committed, and about to roll back). Fast-returning 200 off that
+        # in-memory presence would acknowledge a dismissal disk never recorded
+        # and that the other request is about to retract, leaving this
+        # transcript's chip linked after a reported success. So the "already
+        # dismissed" fast path is valid ONLY when the key is on DISK; otherwise
+        # we fall through and persist it authoritatively under our own guard.
+        _disk_dismissed = (
+            _pin_meta.get("dismissed_source_links") if isinstance(_pin_meta, dict) else None
+        )
+        durably_dismissed = isinstance(_disk_dismissed, list) and identity_key in _disk_dismissed
+
+        # Authorize a NON-DERIVED identity to enter the persist path ONLY when the
+        # PINNED transcript legitimately carries it: either it is DURABLY
+        # dismissed on disk (an idempotent retry whose chip is gone from the
+        # derived set because a prior unlink committed), or the transcript RAW-
+        # mentions it (a real chip currently suppressed only by THIS slot's own
+        # in-memory dismissal). Both are independent of the tentative in-memory
+        # set a concurrent unlink on a since-rebound slot may have populated with
+        # a FOREIGN key, so this closes the path where such a key would authorize
+        # a durable tombstone on a transcript that never mentioned the link
+        # (silent, grow-only, non-self-correcting). A derived identity skips this
+        # — it is trivially legitimate.
+        if (
+            non_derived_identity
+            and not durably_dismissed
+            and not slot.mentions_source_identity(identity_key)
+        ):
+            _audit_source_link_unlink(
+                name,
+                "failed",
+                error="source_link_not_found",
+                metadata={"slot": name, "phase": "derive_pinned"},
+            )
+            return web.json_response(
+                {"error": "not found", "code": "source_link_not_found"}, status=404
+            )
+
+        newly_dismissed = slot.dismiss_source_link(identity_key)
+        # ``dismiss_source_link`` returns False for TWO reasons: the key is
+        # already dismissed (idempotent repeat), or the per-slot ceiling
+        # ``_MAX_DISMISSED_SOURCE_LINKS`` was hit and the add was REFUSED. Only
+        # the idempotent case may proceed. A cap-refused add must NOT fall into
+        # the persist path below: that path writes ``union = on-disk ∪
+        # {identity_key}``, which for a full on-disk set is ceiling+1 entries —
+        # past the very bound the add-site refuses, and the oversized line is
+        # then tail-truncated on restore, resurrecting whichever chip fell off.
+        # Enforce the cap HERE, before any union write, by rejecting the request
+        # when the key is neither already in memory nor durably on disk yet the
+        # slot is at the ceiling.
+        cap_refused = (
+            not newly_dismissed
+            and identity_key not in slot._dismissed_source_links
+            and len(slot._dismissed_source_links) >= _MAX_DISMISSED_SOURCE_LINKS
+        )
+        if cap_refused:
+            return _reject(
+                web.json_response(
+                    {
+                        "error": "too many dismissed source links for this session",
+                        "code": "dismissed_source_links_full",
+                    },
+                    status=409,
+                ),
+                error="dismissed_source_links_full",
+                phase="cap",
+            )
+        # Enter the persist path when THIS request first dismissed the key, OR
+        # when the key sits in memory only tentatively (not yet on disk) — the
+        # latter is the concurrent-rebind case that must not be acknowledged off
+        # an uncommitted dismissal.
+        if newly_dismissed or not durably_dismissed:
+            # Persist-before-publish: the dismissal is applied in memory and
+            # tracked as txn-in-flight here, but the client broadcast that makes
+            # the chip disappear is deferred until AFTER the guarded durable write
+            # lands (see the ``persisted`` success path below). Announcing removal
+            # only once disk has recorded it means a persist failure rolls the
+            # tentative in-memory dismissal back and returns 409 with NO broadcast
+            # ever having gone out, so a client never observes a chip removed that
+            # disk rejected. The durable write is a fast local metadata write, so
+            # the removal still lands within the same request without a refetch.
+            aliases = [
+                s
+                for s in list(state._slots.values())
+                if slot_history_key(s) == authorized_history_key
+            ]
+            # Track which slots THIS request newly added the identity to (the
+            # requesting slot plus any alias that was not already showing it
+            # dismissed). Only these may be rolled back on a persist failure —
+            # an alias that had already committed this dismissal keeps it, or the
+            # rollback would resurrect a chip it legitimately removed earlier.
+            # Include the requesting slot ONLY when THIS request actually added
+            # the key to it (``newly_dismissed``). When we entered the persist
+            # path over a key the slot ALREADY held (a pre-existing durable
+            # tombstone reached via a non-durable/stale read), rolling it back
+            # would erase a dismissal this request did not create.
+            newly_added = [slot] if newly_dismissed else []
+            for other in aliases:
+                if other is not slot and other.dismiss_source_link(identity_key):
+                    newly_added.append(other)
+                    publication_needed = True
+            # Mark every slot carrying THIS request's tentative dismissal as
+            # txn-in-flight by INCREMENTING its depth counter, so a periodic
+            # full-save flush that fires before the guarded write commits carries
+            # the on-disk dismissed line forward instead of persisting the
+            # tentative set. Keep every touched slot tracked through ALL awaits,
+            # including a slot that leaves and later returns to this transcript.
+            # A concurrent unlink on a different transcript keeps its own depth.
+            txn_slots.extend(newly_added)
+            for s in txn_slots:
+                s._dismissed_txn_depth += 1
+                # Mark THIS request's key tentative on every touched slot so the
+                # source-link projection keeps the chip visible until the guarded
+                # write commits. Without this, a concurrent ``push_slots_update``
+                # during the write below would publish the removal off the
+                # in-memory set alone, and a failed write rolling it back would
+                # leave a client showing a chip disk still records. Invalidate the
+                # cached projection so that concurrent broadcast recomputes with
+                # the key still present.
+                s._dismissed_txn_pending.add(identity_key)
+                s.invalidate_source_links()
+            # The write set is deliberately NOT the raw union of every live
+            # alias's in-memory dismissed set. A slot that rebound B→A can arrive
+            # in ``aliases`` still carrying a CONCURRENT unlink's TENTATIVE (not
+            # yet committed) dismissal for B's identity; unioning that in would
+            # persist B's tombstone onto A and hide a link A never dismissed. So
+            # this request contributes ONLY the one identity it is authorized to
+            # dismiss (``identity_key``); every OTHER dismissal A legitimately
+            # holds is COMMITTED, hence on A's on-disk line, and is folded in
+            # below. A committed sibling dismissal is therefore retained; an
+            # in-memory-only (tentative, possibly foreign) key is correctly
+            # excluded. Dismissals still only grow: on-disk ∪ {identity_key}.
+            union: set[str] = {identity_key}
+            conv_log = state.conversation_log
+            # ALWAYS fold the on-disk dismissed set into ``union`` before writing
+            # — not only when a live alias is dismissed-unhydrated. Two distinct
+            # ways ``union`` (rebuilt from the LIVE aliases' in-memory sets) can
+            # under-represent the durable set:
+            #   1. a live alias is dismissed-unhydrated (its in-memory set is an
+            #      incomplete EMPTY stand-in), or
+            #   2. an alias that held a UNIQUE, already-committed tombstone has
+            #      DEPARTED this transcript (rebound away), so its tombstone is on
+            #      disk but in NO live alias's memory.
+            # In (2) every live alias can be fully hydrated yet ``union`` still
+            # omits the departed alias's tombstone, so a fold gated on
+            # "any unhydrated alias" would skip it and this write would SHRINK the
+            # on-disk line — the departed alias's dismissed chip reappears after
+            # restart. Dismissals only ever grow, so folding the on-disk line in
+            # unconditionally can only ADD, never remove, which also keeps the
+            # tiny read-before-write window safe. Publish the full set and mark
+            # current aliases hydrated only after the transaction's final await.
+            #
+            # If that fold-in read is ITSELF unreadable we do not know the durable
+            # set, so writing ``union`` could overwrite real tombstones (a
+            # departed alias's, or an unhydrated alias's). Mark the fold failed
+            # and DECLINE to persist (fall to rollback + 409) rather than persist
+            # an under-approximation that erases a committed dismissal.
+            fold_failed = False
+            if conv_log is not None:
+                try:
+                    _disk_meta, _disk_readable = await asyncio.to_thread(
+                        conv_log.get_metadata_status, authorized_history_key
+                    )
+                except Exception:
+                    _disk_meta, _disk_readable = {}, False
+                # Do not install the folded set into live aliases here. They
+                # can depart during this read OR a subsequent write. Publish it
+                # only after the last await, onto freshly selected live aliases.
+                if _disk_readable:
+                    _disk = _disk_meta.get("dismissed_source_links")
+                    if isinstance(_disk, list):
+                        # Bound the disk-fold DURING collection so an oversized
+                        # on-disk line never materializes in full before the
+                        # ceiling below applies.
+                        union |= bounded_valid_identities(_disk, _MAX_DISMISSED_SOURCE_LINKS)
+                        # The add-site cap guards the per-slot in-memory set, but
+                        # folding the authoritative on-disk line in can still push
+                        # the write past the ceiling when disk already holds the
+                        # full set and this request contributes a new key. A bound
+                        # must bound every field it RETAINS, so never write more
+                        # than ``_MAX_DISMISSED_SOURCE_LINKS`` entries: if the fold
+                        # exceeds it, the durable set is already at the limit, so
+                        # deny this request's growth (fall to rollback + 409)
+                        # rather than commit an oversized line that restore would
+                        # tail-truncate — resurrecting whichever chip fell off.
+                        if len(union) > _MAX_DISMISSED_SOURCE_LINKS:
+                            fold_failed = True
+                else:
+                    fold_failed = True
+            stale = _reauthorize_after_await(
+                state, slot, name, request_app, "slot_source_link_unlink"
+            )
+            if stale is not None or slot_history_key(slot) != authorized_history_key:
+                fold_failed = True
+            # update_metadata_if reports whether the merge actually landed: it
+            # returns False when the transcript's metadata line is unreadable or
+            # the guard rejects it (``_update_metadata_locked`` silently no-ops on
+            # a malformed/absent line, so a plain update_metadata could write
+            # NOTHING yet raise nothing — acknowledging a dismissal disk never
+            # recorded). The guard requires an EXISTING metadata line
+            # (``_type == "metadata"``): a concurrently-deleted transcript reads
+            # back as ``({}, True)`` (readable, empty), and a guard that merely
+            # accepted any dict would let the write RECREATE the deleted line and
+            # resurrect the session. Requiring ``_type`` rejects the empty case,
+            # so a lost race declines to persist (rollback + 409) instead.
+            try:
+                if conv_log is None:
+                    raise RuntimeError("no conversation log")
+                if fold_failed:
+                    # An unhydrated alias whose durable set we could not read:
+                    # persisting the incomplete union would drop real tombstones,
+                    # so decline (rollback + 409) rather than under-approximate.
+                    raise RuntimeError("dismissed fold-in read unreadable")
+                # update_metadata_if enters ``_locked`` (flock + os.close), which
+                # is blocking-on-loop-prohibited, so it goes to a worker thread.
+                # The payload carries the pre-lock ``union``; ``_merge_guard``
+                # re-folds the locked on-disk set into it at write time so a
+                # concurrent gateway's dismissal in the read-to-lock window is
+                # not erased.
+                _add_payload: dict[str, object] = {"dismissed_source_links": sorted(union)}
+                persisted = await asyncio.to_thread(
+                    conv_log.update_metadata_if,
+                    authorized_history_key,
+                    _add_payload,
+                    _merge_guard(_add_payload),
+                )
+                if persisted:
+                    # ``_merge_guard`` rewrote ``_add_payload`` under the lock to
+                    # the set that ACTUALLY landed on disk — this request's
+                    # contribution UNIONED with the locked on-disk line, which a
+                    # concurrent gateway sharing this data home may have grown
+                    # with its own committed dismissal in the read-to-lock
+                    # window. Fold that persisted set back into ``union`` so the
+                    # values installed onto live aliases and published below
+                    # reflect what disk holds, not the pre-lock ``union`` that
+                    # omits the sibling. Without this, aliases are marked
+                    # hydrated on an incomplete set and the sibling's chip
+                    # resurfaces until a later disk re-read. Dismissals only
+                    # grow, so this can only ADD.
+                    _persisted_set = _add_payload.get("dismissed_source_links")
+                    if isinstance(_persisted_set, list):
+                        union |= {k for k in _persisted_set if is_valid_source_identity_key(k)}
+            except Exception:
+                persisted = False
+                logger.exception("Slot %s source-link dismissal persist failed", name)
+            # Reauthorize across the persist await. ``linked_session_key`` is
+            # rebound on already-live slots with no ``running`` gate (a cron
+            # completion, a workflow injection), so during the ``to_thread``
+            # window a slot this request just dismissed on can be rebound to a
+            # DIFFERENT transcript. The in-memory dismissal would then ride into
+            # the new conversation and suppress an unrelated matching link on its
+            # next save. Drop the dismissal from any slot whose current history
+            # key differs from the authorized transcript (that transcript was
+            # never its to dismiss), on BOTH the success and failure paths.
+            # Rollback separately checks the current key so it never removes a
+            # foreign conversation's independently committed dismissal.
+            #
+            # BUT only KEEP the dismissal on a rebound slot when ``identity_key``
+            # IS already dismissed on the slot's NEW transcript: a concurrent
+            # unlink may have committed exactly this key on the rebind target, and
+            # a blind discard would erase that freshly-committed dismissal in
+            # memory and make the chip the other request just removed reappear.
+            # Read the new transcript's dismissed set off-loop; keep the key when
+            # it is durably dismissed there (legitimately the target's), discard
+            # it otherwise. On an UNREADABLE read we DISCARD (the safe default):
+            # keeping a key that turns out foreign would let the union-on-save
+            # guard persist it into the target and hide the target's own chip,
+            # while discarding a key that turns out to be the target's own is
+            # re-added from the target's on-disk line on its next save — a wrong
+            # discard self-heals, a wrong keep contaminates.
+            # This reconciliation must run after EVERY await that can rebind a
+            # slot in ``newly_added`` — the first persist await above and the
+            # confirm await further below (late-alias joiners are appended to
+            # ``newly_added`` just before that second await, so a joiner that
+            # rebinds during the confirm would otherwise carry a foreign dismissal
+            # into its replacement transcript's next save). Hence the helper.
+
+            async def _reconcile_rebound() -> None:
+                # One bounded read batch, followed by one non-awaiting apply.
+                # Keep tracking ALL transaction slots even after a prior pass:
+                # a slot kept on B can move to C during a later confirm/read.
+                rebound = [
+                    (s, slot_history_key(s))
+                    for s in txn_slots
+                    if slot_history_key(s) != authorized_history_key
+                ]
+                readings: dict[str, tuple[dict, bool]] = {}
+                for _, new_key in rebound:
+                    if new_key not in readings and conv_log is not None:
+                        try:
+                            readings[new_key] = await asyncio.to_thread(
+                                conv_log.get_metadata_status, new_key
+                            )
+                        except Exception:
+                            readings[new_key] = ({}, False)
+                # No awaits below: even a second rebind during an earlier
+                # target's read cannot install that target's value elsewhere.
+                # Include slots that departed DURING the batch, not just those
+                # in the initial snapshot. Unknown targets discard and retry
+                # hydration later; never chase a moving slot with a read loop.
+                changed = False
+                for s in txn_slots:
+                    current_key = slot_history_key(s)
+                    if current_key == authorized_history_key:
+                        continue
+                    meta, readable = readings.get(current_key, ({}, False))
+                    disk = meta.get("dismissed_source_links")
+                    keep = readable and isinstance(disk, list) and identity_key in disk
+                    if not keep:
+                        changed |= identity_key in s._dismissed_source_links
+                        s._dismissed_source_links.discard(identity_key)
+                        s.invalidate_source_links()
+                        if not readable:
+                            s._dismissed_hydrated = False
+                if changed:
+                    _publish("reconcile")
+
+            await _reconcile_rebound()
+            first_committed = False  # set True only if a confirm follows a landed first write
+            if persisted:
+                # The guarded durable write has landed, so the dismissal is
+                # committed: drop the committed identity from every tracked
+                # slot's pending fence BEFORE publishing. The fence exists only
+                # to keep the chip visible while the write is in flight; once
+                # disk records the removal, a post-commit broadcast must project
+                # the chip as GONE. Clearing here (not only in the transaction's
+                # ``finally``, which runs after this publish) ensures the
+                # ``broadcast`` / late-alias / confirm publishes below all
+                # project the committed removal rather than subtracting a
+                # now-stale pending key and leaving other clients showing the
+                # chip. The ``finally`` still clears the fence on the rollback
+                # path where no commit reached this point.
+                for s in txn_slots:
+                    if identity_key in s._dismissed_txn_pending:
+                        s._dismissed_txn_pending.discard(identity_key)
+                        s.invalidate_source_links()
+                # Persist-before-publish: the guarded durable write has now
+                # landed, so announce the chip removal. Deferring the broadcast
+                # to here (instead of an optimistic pre-persist publish) means a
+                # persist failure returns 409 with no removal ever broadcast, so
+                # a client never observes a chip that disk rejected. This publish
+                # runs with the default non-aborting mode: a delivery failure only
+                # flags ``publication_needed`` for a later retry and never
+                # unwinds the committed durable write, so disk and the client
+                # re-converge on the next push without leaking an unacknowledged
+                # chip.
+                _publish("broadcast")
+                # Mirror onto any alias that bound INTO the authorized transcript
+                # DURING the await. The ``aliases`` snapshot was taken before the
+                # persist, so a slot rebound onto this transcript mid-write missed
+                # the in-memory mirror; the persisted line already carries the
+                # dismissal, but the joined alias's own set is stale until it next
+                # hydrates, and its full save meanwhile would serialize a set
+                # WITHOUT this identity and overwrite the acknowledged tombstone.
+                # Re-scan and add it so every live alias's in-memory set matches
+                # what disk now records.
+                joined = [
+                    s
+                    for s in list(state._slots.values())
+                    if slot_history_key(s) == authorized_history_key
+                    and identity_key not in s._dismissed_source_links
+                ]
+                if joined:
+                    for s in joined:
+                        s.dismiss_source_link(identity_key)
+                        s._dismissed_txn_depth += 1
+                        txn_slots.append(s)
+                        # Track them for the failure rollback below: if the
+                        # confirm write fails, their just-mirrored dismissal must
+                        # be reverted too so acknowledged state matches disk.
+                        newly_added.append(s)
+                    _publish("late_alias")
+                    # Confirm the field-scoped write AFTER mirroring the late
+                    # joiners. The first write's union predates them, and a
+                    # joiner can carry a stale full-slot flush (queued with its
+                    # OLD dismissed set, before it joined) that lands AFTER this
+                    # request and overwrites the acknowledged tombstone. Re-assert
+                    # the recomputed union so disk reflects every live alias; if
+                    # this confirm cannot land, the acknowledgement is not durable
+                    # — fall through to the rollback + 409 below.
+                    # Re-assert EXACTLY the first write's set (A's on-disk
+                    # committed line ∪ this request's ``identity_key``), never a
+                    # fresh union of the live aliases' raw in-memory sets: those
+                    # can carry a concurrent unlink's TENTATIVE foreign key on a
+                    # rebound slot, which the confirm would then persist onto A
+                    # (the same cross-transcript leak the first ``union`` avoids).
+                    # ``union`` already merged the on-disk line, so this is the
+                    # complete, leak-free set; dismissals only grow, so it can
+                    # never drop a departed alias's committed tombstone either.
+                    confirm_union: set[str] = set(union)
+                    first_committed = persisted  # the pre-confirm write reached disk
+                    try:
+                        if conv_log is None:
+                            raise RuntimeError("no conversation log")
+                        _confirm_payload: dict[str, object] = {
+                            "dismissed_source_links": sorted(confirm_union)
+                        }
+                        persisted = await asyncio.to_thread(
+                            conv_log.update_metadata_if,
+                            authorized_history_key,
+                            _confirm_payload,
+                            _merge_guard(_confirm_payload),
+                        )
+                    except Exception:
+                        persisted = False
+                        logger.exception("Slot %s source-link dismissal confirm failed", name)
+                    if persisted:
+                        # As with the first write, ``_merge_guard`` rewrote
+                        # ``_confirm_payload`` under the lock to the set that
+                        # actually landed. Fold it back into ``union`` so the
+                        # install/publish below reflects a concurrent gateway's
+                        # committed sibling rather than the pre-lock set.
+                        _confirmed_set = _confirm_payload.get("dismissed_source_links")
+                        if isinstance(_confirmed_set, list):
+                            union |= {k for k in _confirmed_set if is_valid_source_identity_key(k)}
+                    # A late-alias joiner (appended to ``newly_added`` above) can
+                    # rebind AWAY during the confirm await just as an original slot
+                    # can rebind during the first persist await. Re-run the same
+                    # reconciliation so a joiner that left carries no foreign
+                    # dismissal into its replacement transcript's next save.
+                    await _reconcile_rebound()
+            if not persisted:
+                # The merge did not reach disk (raised, or refused by the guard /
+                # unreadable line), so acknowledging 200 would show a chip gone
+                # that reappears on restart. Roll back ONLY the slots this request
+                # newly dismissed AND still owns so acknowledged state matches
+                # disk, and 409.
+                #
+                # BUT only when the FIRST write did not commit. If it did
+                # (``first_committed``), disk already durably holds this request's
+                # dismissal (a grow-only tombstone) and the accept-committed path
+                # below keeps it — stripping it here and publishing would emit a
+                # chip-RESTORED frame that the accept-committed publish then undoes,
+                # a visible flicker of a chip disk never un-dismissed. So when the
+                # first write committed, leave the in-memory dismissal in place and
+                # publish nothing here; the accept-committed branch (or the
+                # else-branch rollback, if the transcript was since recreated)
+                # emits the single correct final frame.
+                if not first_committed:
+                    for s in newly_added:
+                        if slot_history_key(s) == authorized_history_key:
+                            s._dismissed_source_links.discard(identity_key)
+                            s.invalidate_source_links()
+                    # Keep the flush guards through compensation and its reads:
+                    # rebound slots still carry a tentative key until the LAST
+                    # reconciliation, even if they survived an earlier pass.
+                    _publish("rollback")
+                # Treat a committed FIRST write as TERMINAL — never compensate it
+                # with a strip. When the pre-confirm write reached disk but the
+                # confirm did not, disk already carries this request's dismissal.
+                # A dismissal is a GROW-ONLY tombstone, so the committed set is a
+                # valid durable state on its own (the confirm only re-asserted the
+                # same set after mirroring late-alias joiners; its failure loses
+                # nothing durable). Rolling the committed write back would require
+                # reading the on-disk line and rewriting it MINUS ``identity_key``
+                # — but that on-disk line can, on a shared-data-home multi-gateway
+                # deployment, already carry ANOTHER gateway's independently-
+                # committed dismissal of the SAME identity landed in the window
+                # between our first write and the compensation read; subtracting
+                # the key would then erase that gateway's acknowledged unlink.
+                # There is no cross-process lock spanning the first write and the
+                # compensation, so the only safe move is to NOT compensate:
+                # keep the committed grow-only tombstone and accept it below, once
+                # the transcript identity is re-verified. ``compensated`` stays
+                # False so the identity re-check + accept-committed path runs.
+                compensated = False
+                # A committed first write was NOT undone (we deliberately do not
+                # compensate it). Before accepting that write as durable we MUST
+                # confirm the transcript is still the one we committed to:
+                #   (a) transient confirm failure — the committed dismissal is
+                #       still on the SAME transcript, so accepting it matches disk.
+                #   (b) the transcript was deleted and recreated (fresh
+                #       created_at) between the first write and now — the committed
+                #       write went with the OLD transcript and is GONE; mirroring
+                #       the dismissal onto the replacement would contaminate a
+                #       session that never dismissed anything.
+                # Re-read the identity off-loop and accept-committed ONLY when it
+                # still matches the pin; a changed/unreadable identity falls to
+                # the 409 rollback, leaving the replacement transcript untouched.
+                still_authorized = False
+                if first_committed and not compensated and conv_log is not None:
+                    try:
+                        _rc_meta, _rc_readable = await asyncio.to_thread(
+                            conv_log.get_metadata_status, authorized_history_key
+                        )
+                        still_authorized = (
+                            _rc_readable
+                            and _rc_meta.get("_type") == "metadata"
+                            and _rc_meta.get("created_at") == pinned_created_at
+                        )
+                    except Exception:
+                        still_authorized = False
+                # Compensation/read awaits can rebind any tracked slot again.
+                # Nothing below this last pass may await or publish
+                # a pre-await slot snapshot.
+                await _reconcile_rebound()
+                if first_committed and not compensated and still_authorized:
+                    # The committed write IS durable on the SAME transcript, so
+                    # reporting 409 while disk keeps the dismissal would desync
+                    # (restart hides the chip for a "failed" request). Accept the
+                    # committed state: re-mirror the dismissal onto every live
+                    # alias and fall through to the success path, so acknowledged
+                    # state matches what disk actually holds.
+                    for s in list(state._slots.values()):
+                        if slot_history_key(s) == authorized_history_key:
+                            s.dismiss_source_link(identity_key)
+                            s._dismissed_hydrated = True
+                    _publish("accept_committed")
+                else:
+                    # A slot may have returned to the authorized transcript
+                    # during compensation. Roll it back too, without touching
+                    # a foreign target's independently committed dismissal.
+                    for s in newly_added:
+                        if slot_history_key(s) == authorized_history_key:
+                            publication_needed |= identity_key in s._dismissed_source_links
+                            s._dismissed_source_links.discard(identity_key)
+                            s.invalidate_source_links()
+                    if publication_needed:
+                        _publish("final")
+                    _audit_source_link_unlink(
+                        name,
+                        "failed",
+                        error="session_gone",
+                        metadata={"slot": name, "phase": "metadata_persist"},
+                    )
+                    return web.json_response(
+                        {"error": "session was deleted or rebound", "code": "session_gone"},
+                        status=409,
+                    )
+            # Install the folded values only on CURRENT aliases after the last
+            # await. Until here only identity_key was tentative and tracked, so
+            # a departed alias never inherits the rest of this transcript's set.
+            for s in list(state._slots.values()):
+                if slot_history_key(s) == authorized_history_key:
+                    if not union <= s._dismissed_source_links:
+                        # ASSIGN the authoritative bounded ``union`` — never
+                        # ``|=`` it. ``union`` is on-disk ∪ {identity_key} and was
+                        # already guarded to ``_MAX_DISMISSED_SOURCE_LINKS`` above
+                        # (an over-cap fold set ``fold_failed`` and never reached
+                        # here), so it holds every committed tombstone this slot
+                        # should carry. Unioning it INTO the slot's existing
+                        # in-memory set could push that set past the ceiling
+                        # (existing keys not in ``union`` + ``union``'s keys),
+                        # and the next capped save would then drop durable
+                        # tombstones and resurrect hidden chips. Replacing with the
+                        # bounded authoritative set keeps the field within its
+                        # bound — ``a-bound-bounds-every-field-it-retains``.
+                        s._dismissed_source_links = set(union)
+                        s.invalidate_source_links()
+                        publication_needed = True
+                    s._dismissed_hydrated = True
+            if publication_needed:
+                _publish("final")
+    _audit_source_link_unlink(
+        name, "allowed", metadata={"slot": name, "already_dismissed": not newly_dismissed}
+    )
+    # Return the AUTHORITATIVE post-unlink total (the count the next slots push
+    # will also carry) so the client assigns it rather than decrementing its own
+    # ``source_links_total`` locally. A local ``- 1`` double-counts on an
+    # idempotent retry: a peer tab's unlink of the same identity can already have
+    # reduced the total while this client's placeholder still lists the chip, so
+    # a second local decrement would understate the "+N" overflow count until the
+    # next authoritative frame. ``_summary_source_links`` is the same pre-budget
+    # derived list ``source_links_total`` is ``len()``'d from in the projection,
+    # and the dismissal is already applied in memory here, so this is exactly the
+    # value the projection would compute.
+    source_links_total = len(slot._summary_source_links())
+    return web.json_response(
+        {"ok": True, "dismissed": True, "source_links_total": source_links_total}
+    )
+
+
 def _finite_number(value: Any) -> float | None:
     """Return *value* as a float when it is a real, finite number, else None.
 
@@ -1830,7 +2682,7 @@ async def api_chat_slot_summary(request: web.Request) -> web.Response:
     # stop serving summaries, not just stop producing them, or a sidecar written
     # during an earlier opt-in keeps being returned after opt-out.
     if enabled and log is not None:
-        payload, stale = await _read_intent_summary_if_derivation_is_allowed(log, slot)
+        payload, stale = await read_cached_intent_summary(log, slot)
 
     body: dict = {
         "enabled": enabled,
@@ -1843,38 +2695,6 @@ async def api_chat_slot_summary(request: web.Request) -> web.Response:
         "generate_state": _generate_state(cfg, slot),
     }
     return web.json_response(body)
-
-
-async def _read_intent_summary_if_derivation_is_allowed(
-    log: ConversationLog, slot: Any
-) -> tuple[dict | None, bool]:
-    """Read *slot*'s ``.intents`` sidecar only if its transcript may be derived from.
-
-    The one read both summary routes use: the sidecar is itself derived from
-    the transcript, so it is served under the same two gates as the transcript
-    -- the live slot's mode, and the on-disk line validated while holding the
-    same physical lock as metadata writers. A ``.intents`` file can outlive the
-    persistent life that wrote it (the key is recreated restricted; the sidecar
-    stays, by design, for a later persistent holder), and
-    ``read_intent_summary`` reports its signature mismatch as ``stale`` rather
-    than dropping it, so a bare read would hand a restricted session its
-    predecessor's summary. Unreadable fails closed; a lock timeout is the same
-    empty result.
-    """
-    if is_incognito_transcript(getattr(slot, "memory_mode", "")):
-        return None, False
-    history_key = slot_history_key(slot)
-
-    def _read() -> tuple[dict | None, bool]:
-        with log.derivation_hold(transcript_lock_stems(history_key)):
-            if transcript_withholds_derivation(log, history_key):
-                return None, False
-            return log.read_intent_summary(history_key)
-
-    try:
-        return await asyncio.to_thread(_read)
-    except TranscriptBusy:
-        return None, False
 
 
 def _generate_state(cfg: KiroCrewConfig, slot: Any) -> str:
@@ -1996,7 +2816,7 @@ async def api_chat_slot_summary_generate(request: web.Request) -> web.Response:
     # the same gated read as the GET: a pass the generator skipped for
     # ``memory_mode`` must not be answered with a sidecar left over from the
     # key's earlier persistent life.
-    payload, stale = await _read_intent_summary_if_derivation_is_allowed(log, slot)
+    payload, stale = await read_cached_intent_summary(log, slot)
     if payload is None:
         return web.json_response(
             {"error": "could not summarize this session", "code": "summary_unavailable"},
@@ -2098,7 +2918,7 @@ def _is_answered_permission(m: dict) -> bool:
     (``state.py`` ``_mark_permission_resolved``), which is also the only place the
     stale-sweep and the slot resolver read it, so ``cls`` is the single source of
     truth here. Truthiness rather than key presence mirrors the client's own
-    ``!meta.resolved`` test (``chatSlice.ts`` ``selectSlotPendingApproval``), so an
+    ``!meta.resolved`` test (``store/chat/selectors.ts`` ``selectSlotPendingApproval``), so an
     empty decision still counts as pending and an actionable approval is never lost.
     """
     if m.get("role") != "permission":
@@ -2905,7 +3725,7 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
             # CLIENT DEPENDENCY on this collapse shape: while a slot streams, the
             # in-flight chunk run folds into ONE trailing row that carries no durable
             # `meta.mid`, and the bounded window ends in it. The dashboard's
-            # `warmSlotCache` (website/src/store/chatSlice.ts) sizes its count-matched
+            # `warmSlotCache` (website/src/store/chat/slotRefresh.ts) sizes its count-matched
             # request to the durable rows a pane holds and asks for ONE EXTRA row on a
             # running slot so the folded row does not displace a durable one out of
             # the window. A change here that folds the run into more than one row, or
@@ -2931,12 +3751,16 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
     display_title = slot.display_title
     # Shallow copies, so the off-loop render below reads a frozen entry while
     # the loop keeps editing the live one; the view helper does the redaction.
+    # The two origin stamps ride along because the view reads them to decide
+    # whether an entry is shown as typed (`queue_entry_is_user_origin`).
     queue_snapshot = [
         {
             "id": q["id"],
             "content": q["content"],
             "kind": q.get("kind", ""),
             "meta": dict(q.get("meta") or {}),
+            "_directive_user_origin": q.get("_directive_user_origin", False),
+            "_directive_channel_origin": q.get("_directive_channel_origin", False),
         }
         for q in slot._queue
     ]
@@ -2990,11 +3814,11 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
 # allowlist (chat_folders._VALID_MODES) and the fork override allowlist
 # (chat_fork): "design-critique" is an app-worker mode assigned at birth by the
 # Design Critique app's openSlot() — the custom mode keeps its throwaway dc-*
-# slots off the chat sidebar, which renders only "" and "orchestrator"
+# slots off the chat sidebar, which renders only plain "" slots
 # (ChatPage.tsx filteredSlots). Switching an existing session INTO an app-worker
 # mode, or forking one with it as an override, is not a real flow, so those two
 # allowlists deliberately stay narrower — do not "sync" them to this one.
-_CREATABLE_MODES = ("", "orchestrator", "design-critique")
+_CREATABLE_MODES = ("", "design-critique")
 
 # Deferral is an optimization, so a request shape added later must stay on the
 # synchronous path until its publication ordering has been reviewed explicitly.
@@ -3155,12 +3979,11 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
     memory_mode = body.get("memory_mode", "persistent")
     if memory_mode not in ("persistent", "incognito", "temporary"):
         return web.json_response({"error": "invalid memory_mode"}, status=400)
-    _mode = body.get("mode", "")
+    _mode = _coerce_requested_mode(body.get("mode", ""))
     if _mode not in _CREATABLE_MODES:
         return web.json_response({"error": "invalid mode", "code": "invalid_mode"}, status=400)
-    # A crew-bound session runs PLAIN chat only. A non-plain mode (orchestrator,
-    # design-critique) is consumed by an EARLIER dispatch branch in ``api_chat``
-    # — the orchestrator stage loop — not by the remote arm, which only replaces
+    # A crew-bound session runs PLAIN chat only. A non-plain mode
+    # (design-critique) is not handled by the remote arm, which only replaces
     # the plain ``_run_chat`` dispatch. So a remote slot created with a mode
     # would run that mode's tools and filesystem work on THIS machine instead of
     # the crew the user picked. Refused here, alongside the other pre-peer
@@ -4528,7 +5351,15 @@ def _resolve_stop_event(slot: _ChatSlot, outcome: str) -> None:
     if not stop_id:
         return
     now_ts = datetime.now(tz=timezone.utc).isoformat()
-    final_state = "stopped" if outcome == "soft" else "stop_failed_reset"
+    if outcome == "soft":
+        final_state = "stopped"
+    elif outcome == "compacting":
+        # Nothing was stopped: the session's own /compact turn held it and a
+        # cooperative Stop was declined. The card becomes the notice,
+        # so the row the press opened tells the user what happened to it.
+        final_state = "stop_declined_compacting"
+    else:
+        final_state = "stop_failed_reset"
     found = False
     for msg in reversed(slot.messages):
         cls_val = msg.get("cls", "")
@@ -4918,19 +5749,34 @@ def _app_cancel_denied(
     return _slot_not_found()
 
 
-async def _cancel_stage_controller(slot: "_ChatSlot") -> None:
-    """Cancel and boundedly join the outer Autopilot controller, if live."""
-    controller = getattr(slot, "_stage_controller_task", None)
-    if controller is None or controller is asyncio.current_task() or controller.done():
+async def _settle_discarded_stage_deliveries(
+    state: "DashboardState",
+    slot: "_ChatSlot",
+    contents: list[str],
+) -> None:
+    """Settle queued completion and boundary report debt through one seam."""
+    manager = getattr(state, "subagents", None)
+    if manager is None:
         return
-    controller.cancel()
-    try:
-        await asyncio.wait_for(
-            asyncio.gather(controller, return_exceptions=True),
-            timeout=2.0,
-        )
-    except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
-        pass
+    owed = slot.take_pending_subagent_deliveries(contents)
+    if owed:
+        try:
+            settlement = manager.settle_queued_delivery(owed)
+            if asyncio.iscoroutine(settlement):
+                await settlement
+        except Exception:
+            logger.warning(
+                "Could not settle discarded stage deliveries for slot %s",
+                slot.key,
+                exc_info=True,
+            )
+    boundary = stage_boundary_for(slot)
+    owner = boundary.owner or boundary.generation
+    parents = tuple(boundary.parent_session_keys) or (effective_session_key(slot),)
+    discard_failures = getattr(manager, "discard_report_failures", None)
+    if owner and callable(discard_failures):
+        for parent in parents:
+            discard_failures(parent, owner)
 
 
 async def stop_slot_turn(
@@ -4979,6 +5825,52 @@ async def stop_slot_turn(
     # travel. Deliberately placed before the local path rather than beside it:
     # there is no local turn to also stop, and running both would insert a second
     # stop_event card for one press.
+    # The second press after a DECLINED Stop (the session was compacting) is
+    # the user's escape hatch and takes the escalation branch below, which is
+    # the only path to a hard kill. The decline itself leaves ``_stop_state``
+    # idle -- the queue drain reads that machine as "a stop is in progress" and
+    # would persist a false "Session reset" row on the next queued turn -- so the
+    # arming lives in its own marker, consumed here: the claim it makes lasts
+    # exactly as long as the escalation needs it, on a press that IS a stop.
+    # Gated on the caller's own ``escalate``: a caller that says its call may be
+    # a retry (a board stop re-sent by a timed-out browser, the steer-containment
+    # stop) must never be turned into a hard kill by a marker it did not set.
+    # ...and on the compaction still holding the session: the marker is a
+    # memory of a refusal, not proof the refusal still applies. Once the
+    # compaction has ended, the next press is an ordinary first press and
+    # takes the cooperative path; the stale marker is simply dropped.
+    # Set when this press is the ESCAPE from a compaction decline (the armed
+    # second press, or an explicit ``?force=true``). The hard kill below then
+    # keeps the SESSION queue: on a channel-linked slot that queue is the linked
+    # channel's, holding other people's messages the compaction, not the user,
+    # is what the Stop is aimed at; ``stop_turn`` parks it for the successor.
+    # The slot's own dashboard queue is still discarded, as on any hard kill.
+    compaction_escape = False
+    if slot.running and slot._stop_state == "idle" and stop_declined_armed(slot):
+        if escalate and _compaction_in_flight(state, cancel_key):
+            # Consumed by the press it armed. A non-escalating call (a retry, the
+            # steer-containment stop) must not spend the user's hatch, and a
+            # marker for a compaction that has ended is dropped as stale.
+            slot._stop_declined_at = 0.0
+            slot._stop_state = "soft_pending"
+            compaction_escape = True
+        elif not _compaction_in_flight(state, cancel_key):
+            slot._stop_declined_at = 0.0
+    elif (
+        force
+        and escalate
+        and slot.running
+        and slot._stop_state == "idle"
+        and _compaction_in_flight(state, cancel_key)
+    ):
+        # An explicit ``?force=true`` on an idle stop state is the escape hatch
+        # from the DECLINE only: it must reach the hard-stop escalation below
+        # rather than be declined. Without a compaction, a ``force`` arriving on
+        # an idle state is a retried first press whose original was lost on the
+        # wire, and it keeps the cooperative path it always had.
+        slot._stop_state = "soft_pending"
+        compaction_escape = True
+
     if slot.is_remote:
         accepted = await forward_peer_stop(state, slot, force or slot._stop_state == "soft_pending")
         if not accepted:
@@ -5005,6 +5897,11 @@ async def stop_slot_turn(
     if escalate and slot._stop_state == "soft_pending":
         slot._stop_state = "killing"
         stage_boundary_for(slot).preserve_stop_generation = -1
+        # A decline settled its own card and left no open one; the hard kill
+        # that follows needs a row of its own, or the last stop row the user
+        # sees still reads "nothing was stopped" for a session that was reset.
+        if not slot._stop_event_id:
+            _open_stop_event_card(slot, "stopping")
         # Survives turn teardown, which resets _stop_state to "idle". Without
         # it a cooperative ack from the first press could still land and label
         # this hard kill a clean stop. Scoped to this card so it cannot defer
@@ -5034,6 +5931,7 @@ async def stop_slot_turn(
             # the client's send id onto.
             slot._steer_send_ids.pop(_discarded, None)
             slot._steer_user_origin.pop(_discarded, None)
+            slot._steer_channel_origin.pop(_discarded, None)
             slot._steer_admissions.pop(_discarded, None)
             slot._steer_attachment_meta.pop(_discarded, None)
             slot._steer_decision_strips.pop(_discarded, None)
@@ -5053,8 +5951,12 @@ async def stop_slot_turn(
         # dashboard:<slot> key names a session no running turn owns — the stop
         # reports success and cancels nothing. The SEL record below stays on the
         # slot-derived key, which identifies the tab the operator pressed.
-        await state.sessions.stop_turn(cancel_key, force=True, on_hard=_on_hard_force)
-        await _cancel_stage_controller(slot)
+        await state.sessions.stop_turn(
+            cancel_key,
+            force=True,
+            preserve_queue=compaction_escape,
+            on_hard=_on_hard_force,
+        )
         sel().log_tool_invocation(
             session_key=_history_key_for(name),
             agent=getattr(slot, "agent", "") or "kirocrew",
@@ -5099,27 +6001,47 @@ async def stop_slot_turn(
         # reaches routinely.
         return {"ok": True, "info": _info, "already_stopping": bool(slot.running)}
 
+    # A cooperative Stop while the session's own automatic /compact holds it is
+    # DECLINED, before any of the soft-stop side effects below run. Cancelling
+    # that turn fails the compaction, and the failure arm recycles the session:
+    # a user who pressed Stop on what looked like a stalled turn would lose the
+    # session's memory to a restart the notice then blames on compaction.
+    # The card the press would have opened is opened and settled in
+    # one step, so the press still leaves a visible answer in the transcript.
+    # A force stop (second press, or ?force=true) is the escape hatch and is
+    # never declined: the force branch above runs first, and the decline below
+    # arms ``_stop_declined_at`` so the NEXT press reaches that branch instead
+    # of being declined again -- a live turn that shares the session with a
+    # compaction must stay stoppable. ``_stop_state`` stays idle: nothing is
+    # stopping. ``stop_turn`` repeats the compacting check for the race in
+    # which a compaction starts between here and the cancel.
+    if _compaction_in_flight(state, cancel_key):
+        stop_id = _open_stop_event_card(slot, "stopping")
+        _resolve_stop_event(slot, "compacting")
+        slot._stop_event_id = None
+        if escalate:
+            # Only a press that could itself escalate arms the second press; a
+            # caller that said "this may be a retry" must not arm a hard kill
+            # for the user's next ordinary Stop.
+            slot._stop_declined_at = time.monotonic()
+        state.push_slots_update()
+        logger.info("Stop: declined for slot %s — compaction in flight", name)
+        sel().log_tool_invocation(
+            session_key=_history_key_for(name),
+            agent=getattr(slot, "agent", "") or "kirocrew",
+            source="dashboard",
+            tool_name="dashboard_stop",
+            tool_kind="command",
+            outcome="compacting",
+            metadata={"slot": name, "via": source, "force": False, "stop_id": stop_id},
+        )
+        return {"ok": True, "info": "compacting", "compacting": True}
+
     # First press: soft stop
     slot._stop_state = "soft_pending"
     # NOTE: Do NOT clear the queue here — stop should only cancel the
     # currently running turn, leaving queued messages intact for the user
     # to process or dismiss individually.
-    _was_auto = slot._auto_run
-    slot._auto_run = False
-    if _was_auto:
-        sel().log(
-            SecurityEvent(
-                event_id=uuid.uuid4().hex,
-                timestamp=datetime.now(tz=timezone.utc).isoformat(),
-                event_type="auto_run_stopped",
-                caller_identity=f"dashboard:{slot.key}",
-                agent=getattr(slot, "agent", ""),
-                source="dashboard",
-                operation="stop",
-                outcome="stopped",
-                resources=f"slot={slot.key}",
-            )
-        )
 
     # One card per press: re-arm an orphaned card in place or append a fresh
     # one (see _open_stop_event_card for why sweeping the orphan rendered two
@@ -5143,11 +6065,22 @@ async def stop_slot_turn(
         on_soft=_on_soft,
         on_hard=_on_hard,
     )
-    await _cancel_stage_controller(slot)
     # Resolve orphaned card when provider reports no active turn
     if outcome == "idle" and slot._stop_event_id:
         _resolve_stop_event(slot, "soft")
         slot._stop_state = "idle"
+        state.push_slots_update()
+    elif outcome == "compacting":
+        # The race the pre-check above cannot close: the compaction committed
+        # between that read and the cancel. Same answer, and the soft-stop side
+        # effects taken above are undone: ``_stop_state`` back to idle (nothing
+        # is stopping), the decline marker armed so the next press escalates,
+        # as on the pre-check path.
+        _resolve_stop_event(slot, "compacting")
+        slot._stop_event_id = None
+        slot._stop_state = "idle"
+        if escalate:
+            slot._stop_declined_at = time.monotonic()
         state.push_slots_update()
     sel().log_tool_invocation(
         session_key=_history_key_for(name),
@@ -5158,7 +6091,14 @@ async def stop_slot_turn(
         outcome=outcome,
         metadata={"slot": name, "via": source, "force": False},
     )
+    if outcome == "compacting":
+        return {"ok": True, "info": "compacting", "compacting": True}
     return {"ok": True}
+
+
+def _compaction_in_flight(state: DashboardState, cancel_key: str) -> bool:
+    """The shared pre-stop probe (``session_lifecycle.compaction_in_flight``)."""
+    return compaction_in_flight(state.sessions, cancel_key)
 
 
 async def api_chat_slot_stop(request: web.Request) -> web.Response:
@@ -5547,6 +6487,9 @@ async def api_chat_slot_end_wait(request: web.Request) -> web.Response:
             {"error": "no such wait in flight", "code": "wait_not_in_flight"}, status=409
         )
     slot._end_wait_request = wait_id
+    # The button, not a session: clears any requester a session_end_wait left
+    # behind, so the woken tool reports the user as the one who ended it.
+    slot._end_wait_by = ""
     sel().log_tool_invocation(
         session_key=_history_key_for(name),
         agent=getattr(slot, "agent", "") or "kirocrew",
@@ -5683,13 +6626,35 @@ async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
     if not slot._queue:
         return web.json_response({"error": "queue empty, use /stop instead"}, status=400)
 
+    # An automatic compaction holds the session: the interrupt is declined
+    # BEFORE the claim below mutates the running turn (``_stop_state``) and
+    # before ``_unblock_pending_waits`` rejects its pending
+    # approvals -- none of that may happen to a turn that is not being stopped.
+    # No escalation marker: an interrupt is "run the next queued message", not
+    # a Stop, and must not turn the user's next Stop press into a hard kill.
+    # ``_stop_state`` stays idle.
+    if _compaction_in_flight(state, cancel_key):
+        stop_id = _open_stop_event_card(slot, "interrupting")
+        _resolve_stop_event(slot, "compacting")
+        slot._stop_event_id = None
+        state.push_slots_update()
+        sel().log_tool_invocation(
+            session_key=_history_key_for(name),
+            agent=getattr(slot, "agent", "") or "kirocrew",
+            source="dashboard",
+            tool_name="dashboard_interrupt",
+            tool_kind="command",
+            outcome="compacting",
+            metadata={"slot": name, "stop_id": stop_id},
+        )
+        return web.json_response({"ok": True, "outcome": "compacting", "compacting": True})
+
     # Claim the stop slot synchronously BEFORE the await below: the
     # idempotency guard above is check-then-act, and a concurrent /interrupt
     # arriving during the awaited body read below would otherwise still see
     # _stop_state == "idle" and slip past the guard (double stop_turn +
     # double SEL audit for one logical press). /stop is race-safe because it
     # has no await between guard and claim; this makes /interrupt match.
-    prev_auto_run = slot._auto_run
     slot._stop_state = "soft_pending"
     # Per-attempt identity for the claim itself. The stand-down guard below
     # cannot rely on the state VALUE alone: a concurrent /stop can escalate,
@@ -5699,14 +6664,11 @@ async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
     # identity that survives card reuse); the claim above bumped it, so any
     # later initiation moves it again.
     claim_generation = slot._stop_generation
-    slot._auto_run = False
 
     # Optionally promote a specific queue item to front. The except is not a
     # parse guard (read_bounded_json owns that): it rolls the claimed stop
     # state back when the body read fails in transit, and the refused-body
-    # branch below rolls it back the same way. Both paths also restore
-    # _auto_run: a refused request must not leave orchestrator auto-run
-    # disabled when no interrupt actually happened. The rollback is
+    # branch below rolls it back the same way. The rollback is
     # conditional on our claim being intact: a concurrent /stop arriving
     # during the body await may escalate _stop_state (e.g. to "killing"),
     # and an unconditional reset to "idle" would erase that escalation and
@@ -5721,12 +6683,10 @@ async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
         # re-enable auto-run under a real stop.
         if slot._stop_state == "soft_pending" and slot._stop_generation == claim_generation:
             slot._stop_state = "idle"
-            slot._auto_run = prev_auto_run
         raise
     if body_err is not None:
         if slot._stop_state == "soft_pending" and slot._stop_generation == claim_generation:
             slot._stop_state = "idle"
-            slot._auto_run = prev_auto_run
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
     queue_id = body.get("queue_id")
@@ -5757,8 +6717,7 @@ async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
     # marker-clear would erase a LIVE escalation marker, letting a late
     # cooperative ack relabel the hard kill as a clean stop. The other stop
     # owns the posture now: stand down and answer like the idempotent-repeat
-    # branch above. `_auto_run` stays disabled — a stop was initiated either
-    # way. This also fires when the superseding stop has ALREADY settled
+    # branch above. This also fires when the superseding stop has ALREADY settled
     # (state back to "idle"), including the benign case where the running
     # turn simply ended during the body read; queue promotion already
     # happened above, so nothing of the user's intent is dropped.
@@ -5773,6 +6732,28 @@ async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
             metadata={"slot": name, "reason": "stop claim superseded during body read"},
         )
         return web.json_response({"ok": True, "info": "stop already in progress"})
+
+    # The probe again, AFTER the body await and with no await between here and
+    # the pending-wait rejection below. A compaction that committed during the
+    # body read would otherwise have the user's pending approval or question
+    # rejected (irreversible) by a Stop the compaction then declines. Same
+    # answer as the pre-check: the claim is released, nothing is touched.
+    if _compaction_in_flight(state, cancel_key):
+        slot._stop_state = "idle"
+        stop_id = _open_stop_event_card(slot, "interrupting")
+        _resolve_stop_event(slot, "compacting")
+        slot._stop_event_id = None
+        state.push_slots_update()
+        sel().log_tool_invocation(
+            session_key=_history_key_for(name),
+            agent=getattr(slot, "agent", "") or "kirocrew",
+            source="dashboard",
+            tool_name="dashboard_interrupt",
+            tool_kind="command",
+            outcome="compacting",
+            metadata={"slot": name, "stop_id": stop_id, "reason": "committed during body read"},
+        )
+        return web.json_response({"ok": True, "outcome": "compacting", "compacting": True})
 
     # Stop current turn but preserve the queue so dequeue loop fires
     # (soft_pending already claimed above, before the request-body await)
@@ -5803,6 +6784,18 @@ async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
         _resolve_stop_event(slot, "soft")
         slot._stop_state = "idle"
         state.push_slots_update()
+    elif outcome == "compacting":
+        # The window the two probes above cannot close: a compaction commits
+        # between the second probe and ``stop_turn`` taking the registry lock,
+        # with no await of ours in between, so only another task's tick can
+        # land here. Nothing was interrupted. The pending waits
+        # ``_unblock_pending_waits`` rejected cannot be un-rejected, which is
+        # why both probes run first. ``_stop_state`` goes back to idle; no
+        # escalation marker, for the reason the pre-check gives.
+        _resolve_stop_event(slot, "compacting")
+        slot._stop_event_id = None
+        slot._stop_state = "idle"
+        state.push_slots_update()
     sel().log_tool_invocation(
         session_key=_history_key_for(name),
         agent=getattr(slot, "agent", "") or "kirocrew",
@@ -5831,12 +6824,18 @@ async def api_chat_slot_queue_cancel(request: web.Request) -> web.Response:
     denied = _deny_cross_app_slot_access(request, slot, name, "slot_queue_cancel")
     if denied is not None:
         return denied
+    # Read the entry's origin before removing it: a cancel puts the text back in
+    # the composer, so a redacted copy of the user's own words would replace the
+    # link they typed with a placeholder.
+    _user_origin = queue_entry_is_user_origin(
+        next((i for i in slot._queue if i["id"] == queue_id), None)
+    )
     content = slot.queue_remove_by_id(queue_id)
     if content is None:
         return web.json_response({"error": "queue item not found"}, status=404)
     _remove_queued_by_id(slot.messages, queue_id)
     slot.invalidate_source_links()
-    _redacted = _redact_for_display(content)
+    _redacted = queued_text_for_display(content, user_origin=_user_origin)
     state.broadcast_ws("queue_cancel", {"slot": name, "queue_id": queue_id, "content": _redacted})
     state.push_slots_update()
     sel().log_tool_invocation(
@@ -5889,7 +6888,7 @@ async def api_chat_slot_queue_edit(request: web.Request) -> web.Response:
         content = stored
     _edit_queued_by_id(slot.messages, queue_id, content)
     slot.invalidate_source_links()
-    _redacted = _redact_for_display(content)
+    _redacted = queued_text_for_display(content, user_origin=queue_entry_is_user_origin(entry))
     frame: dict[str, Any] = {"slot": name, "queue_id": queue_id, "content": _redacted}
     # The edit prunes and renumbers the entry's attachment lists alongside the
     # text (`prune_attachment_meta`), so the frame carries the lists the
@@ -6692,11 +7691,7 @@ async def _close_slot(
     # was claimed), while a cancel landing mid-removal would interrupt
     # provider.shutdown() after the registry entry was already popped and
     # leak the process holding kiro-cli's native session lock.
-    _teardown_tasks = {
-        task
-        for task in (slot.task, slot._stage_controller_task)
-        if task is not None and not task.done()
-    }
+    _teardown_tasks = {task for task in (slot.task,) if task is not None and not task.done()}
     if _teardown_tasks:
         for task in _teardown_tasks:
             task.cancel()
@@ -9287,6 +10282,24 @@ def _autocompact_txn_lock(history_key: str) -> asyncio.Lock:
     return lock
 
 
+# Same per-transcript transaction lock, for the source-link unlink write. A
+# dismissal is persisted into the shared transcript metadata, so concurrent
+# unlinks (or an unlink racing a sibling flush) on alias slots that resolve onto
+# one transcript must serialize or a loser's rollback / a stale sibling can
+# overwrite the winner's acknowledged commit. Keyed by transcript, like above.
+_source_link_txn_locks: "weakref.WeakValueDictionary[str, asyncio.Lock]" = (
+    weakref.WeakValueDictionary()
+)
+
+
+def _source_link_txn_lock(history_key: str) -> asyncio.Lock:
+    lock = _source_link_txn_locks.get(history_key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _source_link_txn_locks[history_key] = lock
+    return lock
+
+
 async def api_chat_slot_autocompact(request: web.Request) -> web.Response:
     """GET/POST /api/chat/slots/{slot}/autocompact — per-session compact threshold.
 
@@ -11317,16 +12330,19 @@ def _resume_session_identity(state: DashboardState, history_key: str) -> str:
     return _history_key_for(history_key)
 
 
-async def _live_slot_resume_response(
-    state, request: web.Request, history_key: str, name: str
-) -> web.Response | None:
+async def _live_slot_for_resume(
+    state, request_app: str, history_key: str, name: str, caller_label: str = ""
+) -> "ResumeOutcome | None":
     """Answer a resume that a live slot already satisfies, else return None.
 
-    Returns 404 when the caller's app does not own the slot, otherwise the
-    dedup early-return. Called on BOTH sides of the threaded transcript read:
-    that await lets a concurrent resume publish the slot in between, and
-    ``get_or_create_slot`` would then hand it back having never applied this
-    ownership gate for the second caller's app.
+    Returns the app-isolation 404 refusal when the caller's app does not own
+    the slot, the ``member_pin_mismatch`` 409 when a member thread's stored pin is
+    not dispatchable (``caller_label`` is what SEL records), otherwise the dedup
+    outcome carrying the EXISTING slot. Called on
+    BOTH sides of the threaded transcript read: that await lets a concurrent
+    resume publish the slot in between, and ``get_or_create_slot`` would then
+    hand it back having never applied this ownership gate for the second
+    caller's app.
     """
     canonical = _resume_session_identity(state, history_key)
     existing = state._slots.get(name)
@@ -11336,8 +12352,6 @@ async def _live_slot_resume_response(
                 existing = slot
                 break
     if existing:
-        # App ownership check (App Kit §5.2)
-        request_app = request.get("app", "")
         if request_app:
             if not existing._app:
                 sel().log_api_access(
@@ -11348,7 +12362,7 @@ async def _live_slot_resume_response(
                     resources=f"slot={existing.key}",
                     error="app cannot access unscoped slots",
                 )
-                return web.json_response({"error": "not found"}, status=404)
+                return ResumeOutcome(refusal=ResumeRefusal("not found", "slot_not_found", 404))
             elif request_app != existing._app:
                 sel().log_api_access(
                     caller=request_app,
@@ -11358,79 +12372,53 @@ async def _live_slot_resume_response(
                     resources=f"slot={existing.key}",
                     error="app does not own this slot",
                 )
-                return web.json_response({"error": "not found"}, status=404)
+                return ResumeOutcome(refusal=ResumeRefusal("not found", "slot_not_found", 404))
         if (
             existing.mode == members_mod.DM_SLOT_MODE
             and not members_mod.is_dispatchable_member_name(existing.agent)
         ):
             sel().log_api_access(
-                caller=request.remote or "",
+                caller=caller_label,
                 operation="chat_resume",
                 outcome="denied",
                 source="member_pin",
                 resources=f"slot={existing.key}",
                 error="stored member pin is not dispatchable",
             )
-            return web.json_response(
-                {
-                    "error": "this thread's crew name cannot be dispatched",
-                    "code": "member_pin_mismatch",
-                },
-                status=409,
+            return ResumeOutcome(
+                refusal=ResumeRefusal(
+                    "this thread's crew name cannot be dispatched", "member_pin_mismatch", 409
+                )
             )
-        # Reconcile: if disk grew beyond what the in-memory window covers,
-        # append the missing tail so a page refresh self-heals.
-        await _reconcile_slot_window(state, existing)
-        # Reduce the wire-only rows before bounding, for the same reason the
-        # detail handler does: a segment still streaming is hundreds of `chunk`
-        # rows that render as one message, so a raw 200-row bound over the live
-        # window can be filled entirely by one unfinished reply -- and it then
-        # returns only that window's slice of the reply, dropping the text
-        # ahead of it. Reducing first makes the bound, `total` and the cursor
-        # below all count displayed messages.
-        #
-        # It also puts the cursor's two terms in the same unit: persisted rows
-        # carry no wire-only role, so `_disk_older_count` is already a message
-        # count, while a raw window length is not.
-        #
-        # O(window) on the event loop, and the window is capped -- the
-        # `_prepare_messages` redaction pass on the next line is the larger
-        # cost at this call site either way.
-        window = _collapse_wire_rows(existing.messages)
-        total = len(window)
-        recent = window[-200:] if total > 200 else window
-        prepared = _prepare_messages(
-            recent,
-            existing.running,
-            live_child=_live_child_instance(state, existing),
-            workspace=existing.workspace,
-        )
-        # Raw index this window starts at: the frozen on-disk prefix plus the
-        # in-memory rows it skipped. has_more is derived from the same number so
-        # the flag cannot contradict the cursor -- counting only the in-memory
-        # window said "no more" for a slot with a prefix, and the client drops a
-        # cursor it was told not to use.
-        next_before = (getattr(existing, "_disk_older_count", 0) or 0) + (total - len(recent))
-        return web.json_response(
-            {
-                "ok": True,
-                "key": existing.key,
-                "messages": prepared,
-                "queue": [queue_entry_view(q) for q in existing._queue],
-                "total": total,
-                "has_more": next_before > 0,
-                "next_before": next_before,
-                "memory_mode": existing.memory_mode,
-                # Return the slot's mode (and its `surface` alias) so the
-                # frontend can render the recovered slot in the correct mode
-                # (e.g. autopilot/"orchestrator") immediately, without waiting
-                # for the racy SSE slots push to arrive (resumed autopilot
-                # sessions came back as plain chat until SSE reconciled).
-                "mode": existing.mode,
-                "surface": existing.mode,
-            }
-        )
+        return ResumeOutcome(slot=existing, already_live=True)
     return None
+
+
+async def _live_slot_resume_payload(state, existing) -> dict:
+    """The resume endpoint's dedup body: the already-open slot's live window."""
+    await _reconcile_slot_window(state, existing)
+    window = _collapse_wire_rows(existing.messages)
+    total = len(window)
+    recent = window[-200:] if total > 200 else window
+    prepared = _prepare_messages(
+        recent,
+        existing.running,
+        live_child=_live_child_instance(state, existing),
+        workspace=existing.workspace,
+    )
+    next_before = (getattr(existing, "_disk_older_count", 0) or 0) + (total - len(recent))
+    return {
+        "ok": True,
+        "key": existing.key,
+        "messages": prepared,
+        "queue": [queue_entry_view(q) for q in existing._queue],
+        "total": total,
+        "has_more": next_before > 0,
+        "next_before": next_before,
+        "memory_mode": existing.memory_mode,
+        "mode": existing.mode,
+        "surface": existing.mode,
+    }
 
 
 # Bound for normalising the non-string ``content`` a legacy or hand-edited
@@ -11593,8 +12581,9 @@ def _materialise_slot_from_history(
     caller switches. ``window_limit`` is how many newest rows to surface as the
     live window given that earlier rows are already durable elsewhere: resume's
     rows are a window onto a longer on-disk transcript (cap 500, the rest frozen
-    on disk), import's rows exist only in memory and are ALL persisted by its own
-    save (``None`` = surface every row, ``_disk_older_count`` falls out as 0).
+    on disk), and import writes its older rows to the transcript as the frozen
+    prefix before its save and passes the same cap. ``None`` surfaces every row,
+    for a caller whose rows are all persisted by the save itself.
     ``disk_meta_observed`` is whether this hydration read an existing transcript
     off disk: resume did (True), import synthesised its metadata (False), and it
     gates the delete-won disk-identity bookkeeping that only means something for a
@@ -11751,7 +12740,7 @@ def _hydrate_slot_from_history(
     (RFC 7.1b); see the parameter docs on the public function.
     """
     # PERSISTED METADATA IS AUTHORITATIVE for the title. The sidebar's resume
-    # call always sends a ``title`` (see website/src/api/client.ts
+    # call always sends a ``title`` (see website/src/api/client/chat.ts
     # resumeChatSlot: ``title: title || key``), and that value is client
     # chrome — often a STALE echo of an older name (a notification deep link,
     # a sidebar row rendered before a background refresh landed). Classifying
@@ -11825,6 +12814,15 @@ def _hydrate_slot_from_history(
             slot.mode = _mode
     if meta.get("workspace"):
         slot.workspace = meta["workspace"]
+    # The namespace the agent was picked in rides with the pick itself, exactly
+    # as in the two persistence loaders (same position, same two-value guard on
+    # the operator-editable transcript). Restoring the name without it leaves
+    # the dropdown's name-only fallback lighting the same-name MEMBER row for a
+    # template-picked slot, and the next canonical full save -- which rebuilds
+    # meta_line from the live slot -- then omits the empty field and strips the
+    # recorded namespace from disk.
+    if meta.get("agent_kind") in ("member", "template"):
+        slot.agent_kind = meta["agent_kind"]
     if meta.get("project"):
         slot.project = meta["project"]
     if meta.get("channel_folder_filed"):
@@ -11872,6 +12870,13 @@ def _hydrate_slot_from_history(
         slot.autocompact_pct = _validate_autocompact_pct(meta["autocompact_pct"])
         if slot.autocompact_pct is not None and state.sessions:
             state.sessions.set_autocompact_pct(effective_session_key(slot), slot.autocompact_pct)
+    # Restore the dismissed source-link tombstones, mirroring the persistence
+    # loaders (_rehydrate_slot_from_history / _apply_recent_session). This
+    # RESUME path re-applies metadata by hand rather than going through those
+    # loaders, so without this an unlinked PR/issue/Jira chip reappears on
+    # resume and the next save — serializing an empty dismissed set — erases the
+    # persisted tombstone for good.
+    _restore_dismissed_source_links(slot, meta.get("dismissed_source_links"))
     # Restore tags + the auto-tag once-flag (mirrors the persistence loaders).
     # Without the flag, resuming a session whose auto-tag the user removed
     # would re-run maybe_auto_tag on the next message and silently re-add it.
@@ -11910,11 +12915,11 @@ def _hydrate_slot_from_history(
     # the newest rows to surface as the live window, given that any rows before
     # it are ALREADY DURABLE somewhere the next save will not rewrite. Resume's
     # rows are a window onto a longer on-disk transcript, so it caps at 500 and
-    # the earlier rows stay frozen on disk. Import's rows exist only in memory
-    # and are ALL persisted by the caller's save below, so nothing is "older on
-    # disk": it passes ``None`` (surface every row) and ``_disk_older_count``
-    # falls out as 0. Applying resume's cap to import would drop every row past
-    # the last 500 and claim a frozen prefix of rows that were never written.
+    # the earlier rows stay frozen on disk. Import caps the same way and writes
+    # the rows before the window to the transcript itself, before its save, so
+    # ``_disk_older_count`` counts exactly the rows that write put on disk. A
+    # caller passing a cap without that write would claim a frozen prefix of
+    # rows that were never written.
     if window_limit is None or disk_total <= window_limit:
         messages = all_messages
     else:
@@ -11980,9 +12985,160 @@ def _hydrate_slot_from_history(
     _rebase_rehydrated_refresh_mark(slot)
 
 
+class ResumeRefusal(NamedTuple):
+    """One refusal of :func:`resume_slot_from_history`, shaped for the wire.
+
+    Every refusal carries a machine-readable ``code`` (the error-code contract),
+    including the missing conversation log (``no_conversation_log``) and the
+    app-isolation 404 on a live slot (``slot_not_found``), so the wire wrapper
+    can emit one transparent coded body for every status.
+    """
+
+    error: str
+    code: str
+    status: int
+
+
+class ResumeOutcome(NamedTuple):
+    """What :func:`resume_slot_from_history` decided.
+
+    Exactly one of ``refusal`` / ``slot`` is set. ``already_live`` marks the
+    dedup arm: the session was already open, so ``slot`` is the EXISTING slot
+    and nothing was hydrated; ``total`` is the effective hydrated length on the
+    hydrate arm (durable rows plus a recovered interruption row when one was
+    appended), what the wrapper's ``next_before`` is derived from.
+    """
+
+    refusal: ResumeRefusal | None = None
+    slot: "_ChatSlot | None" = None
+    already_live: bool = False
+    total: int = 0
+
+
 async def api_chat_slot_resume(request: web.Request) -> web.Response:
-    """POST /api/chat/slots/{slot}/resume — load a history session into a slot."""
+    """POST /api/chat/slots/{slot}/resume — load a history session into a slot.
+
+    Thin wire wrapper over :func:`resume_slot_from_history`: it reads the
+    request, hands the core the request-derived facts, and shapes the outcome
+    into the responses this endpoint has always returned.
+    """
     state: DashboardState = request.app["state"]
+    name = _normalize_slot_key(request.match_info["slot"])
+    request_app = request.get("app", "")
+    if not state.conversation_log:
+        return web.json_response(
+            {"error": "no conversation log", "code": "no_conversation_log"}, status=400
+        )
+    if name.casefold().startswith(members_mod.DM_SLOT_KEY_PREFIX) and request_app:
+        # Refused by the core too; checked here first so the body is not read
+        # for a request that cannot proceed (the entry-gate posture the core
+        # documents).
+        outcome = await resume_slot_from_history(
+            state, name=name, request_app=request_app, caller_label=request.remote or ""
+        )
+        assert outcome.refusal is not None
+        return _resume_refusal_response(outcome.refusal)
+    body, body_err = await read_bounded_json(request, allow_absent=True)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
+    outcome = await resume_slot_from_history(
+        state,
+        name=name,
+        history_key=body.get("key", name),
+        request_app=request_app,
+        caller_label=request.remote or "",
+        request_title=body.get("title", ""),
+    )
+    if outcome.refusal is not None:
+        return _resume_refusal_response(outcome.refusal)
+    assert outcome.slot is not None
+    if outcome.already_live:
+        return web.json_response(await _live_slot_resume_payload(state, outcome.slot))
+    slot, total = outcome.slot, outcome.total
+    recent = slot.messages[-200:] if len(slot.messages) > 200 else slot.messages
+    return web.json_response(
+        {
+            "ok": True,
+            "key": slot.key,
+            # `total` is the effective hydrated length (durable rows plus a
+            # recovered interruption row when one was appended), so this is
+            # the raw index the next older page starts from.
+            "next_before": total - len(recent),
+            "messages": _prepare_messages(
+                recent,
+                slot.running,
+                live_child=_live_child_instance(state, slot),
+                workspace=slot.workspace,
+            ),
+            "queue": [queue_entry_view(q) for q in slot._queue],
+            "total": total,
+            "has_more": total > len(recent),
+            "memory_mode": slot.memory_mode,
+            "mode": slot.mode,
+            "surface": slot.mode,
+        }
+    )
+
+
+def _resume_refusal_response(refusal: ResumeRefusal) -> web.Response:
+    return web.json_response({"error": refusal.error, "code": refusal.code}, status=refusal.status)
+
+
+async def resume_slot_from_history(
+    state: "DashboardState",
+    *,
+    name: str,
+    history_key: str | None = None,
+    request_app: str = "",
+    caller_label: str = "",
+    request_title: str = "",
+    containment: "Callable[[_ChatSlot], Awaitable[ResumeRefusal | None]] | None" = None,
+    final_check: "Callable[[_ChatSlot], ResumeRefusal | None] | None" = None,
+) -> ResumeOutcome:
+    """Load an archived (history) session back into a live slot.
+
+    The request-free core behind ``POST /api/chat/slots/{slot}/resume``; the
+    session-control ``revive`` verb reaches the same path so a controlled revive
+    and a human click in the History tab share one materialisation, one set of
+    guards and one set of refusal codes. ``name`` is the slot key to publish
+    under (any spelling ``_normalize_slot_key`` folds), ``history_key`` the
+    transcript to load (``None`` means ``name``), ``request_app`` the app token's
+    scope when the caller is an app (empty for the dashboard user and for
+    session control), and ``caller_label`` what SEL records as the caller.
+
+    ``containment`` is a caller's LAST gate before publish. It runs once the slot
+    is hydrated -- so it reads the fields the slot actually carries, not a
+    metadata snapshot from before the transcript read -- and before the slot is
+    published, with the slot RETRACTED from ``state._slots`` and its construction
+    mark held for the duration (the import path's posture for an awaited tail):
+    nothing resolves it, ``serialize_slots`` never shows it, and a named create on
+    its key is refused by the construction guard. A refusal it returns discards
+    the built slot the way a failed construction is discarded and comes back as
+    ``ResumeOutcome.refusal``. With a hook the reopen write (clearing ``closed``)
+    is deferred until the hook has passed, so a hook refusal has nothing durable
+    to undo, and a clear that cannot land refuses (``reopen_failed``) rather than
+    publishing a tab that would not restore. The hook is an idempotent pre-publish
+    check (it may update in-memory bookkeeping such as ``_created_by`` and
+    ``_revived_by`` on the built slot, never durable state) and runs TWICE: once before the deferred clear, and once after it as the last
+    awaiting act, because the clear and its verification read are awaits during
+    which a store-recorded channel binding could land, and ``final_check`` may not
+    read the store. The existence and ``created_at`` identity barrier is re-run
+    after each of those awaits, the last time synchronously, so a delete or a
+    delete-and-recreate inside the window is refused rather than published over
+    the replacement, and the marker rollback only ever targets the transcript
+    this resume read. The folder un-hide keeps the
+    hook-less path's place, before construction: a refused resume can leave a
+    folder visible, as a click refused at the member barrier already can.
+    ``final_check`` is the SYNCHRONOUS last word, run after the last await and
+    immediately before the publish, for the hook's store-free answers (slot
+    fields, caps); a refusal there restores the marker the deferred clear just
+    dropped. Nothing is published on any refusal. A human click passes neither.
+
+    Refusals come back as :class:`ResumeOutcome.refusal` rather than being
+    raised, because the wire wrapper reproduces each one's historical body and
+    status and a session-control caller maps them onto its own error class.
+    """
     # Fold the requested name with the function that keys the slot table, so
     # every spelling of one slot resolves to that slot: a caller may hold a
     # filename stem, a session key (a notification deep link carries the
@@ -11990,29 +13146,28 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
     # fold leaves the lookup below missing an open tab and falls through to the
     # create path, which re-reads the transcript into the slot it should have
     # returned.
-    name = _normalize_slot_key(request.match_info["slot"])
+    name = _normalize_slot_key(name)
+    if history_key is None:
+        history_key = name
     if not state.conversation_log:
-        return web.json_response({"error": "no conversation log"}, status=400)
+        return ResumeOutcome(
+            refusal=ResumeRefusal("no conversation log", "no_conversation_log", 400)
+        )
     # App tokens get the uniform isolation 404 for member-* keys AT ENTRY —
     # before the live-slot probe, the folder unhide, the closed-flag clear, or
     # any transcript read. An app can never own a member slot; running any of
     # those side effects first would let an unauthorized caller mutate the
     # member thread's history state even while the resume itself is refused.
-    if name.casefold().startswith(members_mod.DM_SLOT_KEY_PREFIX) and request.get("app", ""):
+    if name.casefold().startswith(members_mod.DM_SLOT_KEY_PREFIX) and request_app:
         sel().log_api_access(
-            caller=request.get("app", ""),
+            caller=request_app,
             operation="chat_resume",
             outcome="denied",
             source="app_isolation",
             resources=f"slot={name}",
             error="app cannot access member slots",
         )
-        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
-    body, body_err = await read_bounded_json(request, allow_absent=True)
-    if body_err is not None:
-        return body_err
-    assert body is not None  # read_bounded_json returns (dict, None) on success
-    history_key = body.get("key", name)
+        return ResumeOutcome(refusal=ResumeRefusal("not found", "slot_not_found", 404))
 
     # If slot already exists (active session), just return it — no duplicate.
     # Check both by slot name AND by canonical session key to prevent two
@@ -12024,9 +13179,11 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
     # the same way, via the session map. Two rules in play and a channel
     # transcript matches nothing here: it gets a second tab, so one conversation
     # shows as two sidebar rows backed by two kiro-cli processes.
-    resume_resp = await _live_slot_resume_response(state, request, history_key, name)
-    if resume_resp is not None:
-        return resume_resp
+    resume_outcome = await _live_slot_for_resume(
+        state, request_app, history_key, name, caller_label
+    )
+    if resume_outcome is not None:
+        return resume_outcome
 
     # Boundary for the compare-and-clear below, captured BEFORE the metadata read
     # it is compared against. Everything from here to the ``clear_closed`` call is
@@ -12064,54 +13221,50 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
             _early_binding.get("member")
         ):
             sel().log_api_access(
-                caller=request.remote or "",
+                caller=caller_label,
                 operation="chat_resume",
                 outcome="denied",
                 source="member_pin",
                 resources=f"slot={name} key={history_key}",
                 error="stored member pin is not dispatchable",
             )
-            return web.json_response(
-                {
-                    "error": "this thread's crew name cannot be dispatched",
-                    "code": "member_pin_mismatch",
-                },
-                status=409,
+            return ResumeOutcome(
+                refusal=ResumeRefusal(
+                    "this thread's crew name cannot be dispatched", "member_pin_mismatch", 409
+                )
             )
         if _early_binding is None or history_key != _history_key_for(name):
             sel().log_api_access(
-                caller=request.remote or "",
+                caller=caller_label,
                 operation="chat_resume",
                 outcome="denied",
                 source="member_pin",
                 resources=f"slot={name} key={history_key}",
                 error="member binding missing or foreign history key",
             )
-            return web.json_response(
-                {
-                    "error": "member thread agent is pinned",
-                    "code": "member_thread_agent_pinned",
-                },
-                status=409,
+            return ResumeOutcome(
+                refusal=ResumeRefusal(
+                    "member thread agent is pinned", "member_thread_agent_pinned", 409
+                )
             )
     elif str(meta.get("mode", "")) == members_mod.DM_SLOT_MODE:
         # Same early refusal for the mirror case: a member transcript may not
         # ride onto an ordinary key, and that rejection must also precede the
         # mutations. The late twin re-checks against the post-await snapshot.
         sel().log_api_access(
-            caller=request.remote or "",
+            caller=caller_label,
             operation="chat_resume",
             outcome="denied",
             source="member_pin",
             resources=f"slot={name} key={history_key}",
             error="member transcript on an ordinary key",
         )
-        return web.json_response(
-            {
-                "error": "a member thread can only be resumed on its own member slot",
-                "code": "member_mode_key_mismatch",
-            },
-            status=409,
+        return ResumeOutcome(
+            refusal=ResumeRefusal(
+                "a member thread can only be resumed on its own member slot",
+                "member_mode_key_mismatch",
+                409,
+            )
         )
 
     # Read the transcript BEFORE publishing the slot: this await would otherwise
@@ -12135,7 +13288,24 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
     if meta.get("folder_id"):
         folder_checked_id = meta["folder_id"]
         folder_unhidden = await _unhide_folder(state, folder_checked_id)
-    if meta.get("closed"):
+    cleared_closed: bool = False
+    cleared_closed_at: Any = meta.get("closed_at")
+    # With a containment hook the clear is DEFERRED until the hook has passed:
+    # a refusal then has no durable change to undo, and a clear that cannot
+    # land refuses the resume instead of publishing a tab that would not restore.
+    defer_clear = containment is not None and bool(meta.get("closed"))
+    if name in getattr(state, "_slots_under_construction", ()):
+        # Another resume of this key is between hydration and publish. The same
+        # coded conflict is answered again at construction (the window can open
+        # after this read); asking here first means the common case refuses
+        # BEFORE the eager clear below has dropped the ``closed`` marker, so a
+        # click that lost the race leaves the line as it found it.
+        return ResumeOutcome(
+            refusal=ResumeRefusal(
+                "this session is being resumed elsewhere; try again", "resume_in_progress", 409
+            )
+        )
+    if meta.get("closed") and not defer_clear:
         # Clear the closed flag so the session restores on the next gateway restart.
         # Offloaded because clear_closed takes the per-session cross-process lock,
         # which fails fast on the loop under contention. Best-effort: resume anyway.
@@ -12158,6 +13328,7 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
         except Exception:
             logger.warning("Failed to clear closed flag for %s", history_key, exc_info=True)
         else:
+            cleared_closed = True
             # Absorb OUR OWN mutation into the identity baseline: the member
             # guard further down compares a later snapshot against ``meta``,
             # and clear_closed just dropped exactly ``closed``/``closed_at``
@@ -12179,9 +13350,11 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
     )
     # Re-check after the await: a concurrent resume can publish the slot while we
     # are suspended, and the publish below would skip the ownership gate above.
-    resume_resp = await _live_slot_resume_response(state, request, history_key, name)
-    if resume_resp is not None:
-        return resume_resp
+    resume_outcome = await _live_slot_for_resume(
+        state, request_app, history_key, name, caller_label
+    )
+    if resume_outcome is not None:
+        return resume_outcome
 
     # Re-check DELETION in the same window and for the same reason. The transcript
     # loaded above can be permanently deleted while we are suspended, and
@@ -12227,12 +13400,10 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
             "refusing to publish a slot that would resurrect it",
             history_key,
         )
-        return web.json_response(
-            {
-                "error": "the session was deleted while it was being resumed",
-                "code": "resume_session_deleted",
-            },
-            status=409,
+        return ResumeOutcome(
+            refusal=ResumeRefusal(
+                "the session was deleted while it was being resumed", "resume_session_deleted", 409
+            )
         )
     # IDENTITY, not merely existence. The arm above fires on metadata being
     # ABSENT, which the delete-then-RECREATE interleaving does not produce: the
@@ -12278,12 +13449,10 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
         # session it asked for was deleted. That it was then recreated does not
         # change what happened to the conversation being resumed, and one code
         # keeps the client contract single-valued.
-        return web.json_response(
-            {
-                "error": "the session was deleted while it was being resumed",
-                "code": "resume_session_deleted",
-            },
-            status=409,
+        return ResumeOutcome(
+            refusal=ResumeRefusal(
+                "the session was deleted while it was being resumed", "resume_session_deleted", 409
+            )
         )
 
     # ── Member-thread pin guard ─────────────────────────────────────────────
@@ -12312,19 +13481,17 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
             _member_binding.get("member")
         ):
             sel().log_api_access(
-                caller=request.remote or "",
+                caller=caller_label,
                 operation="chat_resume",
                 outcome="denied",
                 source="member_pin",
                 resources=f"slot={name} key={history_key}",
                 error="stored member pin is not dispatchable",
             )
-            return web.json_response(
-                {
-                    "error": "this thread's crew name cannot be dispatched",
-                    "code": "member_pin_mismatch",
-                },
-                status=409,
+            return ResumeOutcome(
+                refusal=ResumeRefusal(
+                    "this thread's crew name cannot be dispatched", "member_pin_mismatch", 409
+                )
             )
         # Re-check the LIVE slot after this await: it is the one suspension
         # point between the earlier ownership re-checks and the publish
@@ -12332,24 +13499,24 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
         # go unseen — this request would then get_or_create the EXISTING
         # slot and hydrate the disk transcript onto it a second time,
         # persisting duplicated history on the next flush.
-        resume_resp = await _live_slot_resume_response(state, request, history_key, name)
-        if resume_resp is not None:
-            return resume_resp
+        resume_outcome = await _live_slot_for_resume(
+            state, request_app, history_key, name, caller_label
+        )
+        if resume_outcome is not None:
+            return resume_outcome
         if _member_binding is None or history_key != _history_key_for(name):
             sel().log_api_access(
-                caller=request.remote or "",
+                caller=caller_label,
                 operation="chat_resume",
                 outcome="denied",
                 source="member_pin",
                 resources=f"slot={name} key={history_key}",
                 error="member binding missing or foreign history key (late barrier)",
             )
-            return web.json_response(
-                {
-                    "error": "member thread agent is pinned",
-                    "code": "member_thread_agent_pinned",
-                },
-                status=409,
+            return ResumeOutcome(
+                refusal=ResumeRefusal(
+                    "member thread agent is pinned", "member_thread_agent_pinned", 409
+                )
             )
     post_read_meta = state.conversation_log.get_metadata(history_key)
     if _member_binding is not None and post_read_meta != meta:
@@ -12361,36 +13528,34 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
         # them. Equal snapshots bracket the whole window — the pairing is
         # consistent; any drift refuses, and re-opening reads fresh.
         sel().log_api_access(
-            caller=request.remote or "",
+            caller=caller_label,
             operation="chat_resume",
             outcome="denied",
             source="member_pin",
             resources=f"slot={name} key={history_key}",
             error="metadata drifted across the binding read",
         )
-        return web.json_response(
-            {
-                "error": "this thread changed while resuming; open it again",
-                "code": "member_resume_conflict",
-            },
-            status=409,
+        return ResumeOutcome(
+            refusal=ResumeRefusal(
+                "this thread changed while resuming; open it again", "member_resume_conflict", 409
+            )
         )
     meta = post_read_meta
     if _member_binding is None and str(meta.get("mode", "")) == members_mod.DM_SLOT_MODE:
         sel().log_api_access(
-            caller=request.remote or "",
+            caller=caller_label,
             operation="chat_resume",
             outcome="denied",
             source="member_pin",
             resources=f"slot={name} key={history_key}",
             error="member transcript on an ordinary key (late barrier)",
         )
-        return web.json_response(
-            {
-                "error": "a member thread can only be resumed on its own member slot",
-                "code": "member_mode_key_mismatch",
-            },
-            status=409,
+        return ResumeOutcome(
+            refusal=ResumeRefusal(
+                "a member thread can only be resumed on its own member slot",
+                "member_mode_key_mismatch",
+                409,
+            )
         )
 
     # Redact only the newest 500 rows -- the live window the next save
@@ -12399,57 +13564,340 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
     # put transcript-sized GIL regex on the loop for bytes that never change.
     # Bounded by the window, so a long transcript costs the same as a short one.
     all_messages = _redact_history_rows(all_messages, window_limit=500)
+
+    async def _restore_closed_marker() -> bool:
+        # Put the ``closed`` marker back and CONFIRM it is there. The
+        # compare-and-set answers False for two states that are both fine
+        # (somebody re-closed the session, or its file is gone), so the
+        # verdict is the re-read, not the write's return value: one retry
+        # on a raise, then the marker must be readable on disk.
+        #
+        # The marker belongs to the transcript this resume READ: a delete and
+        # same-key recreate landing inside the clear's own worker call leaves
+        # a replacement whose line carries a different ``created_at``, and
+        # archiving that would put a marker the user never set onto a live
+        # conversation. Both the write's guard and the verdict compare the
+        # stamp; a stamp that moved means there is nothing of ours to restore.
+        log = state.conversation_log
+        if log is None:
+            return True
+
+        def _same_transcript(current: dict) -> bool:
+            stamp = current.get("created_at")
+            return not pre_identity or not stamp or stamp == pre_identity
+
+        fields = {"closed": True, "closed_at": cleared_closed_at}
+        for attempt in range(2):
+            try:
+                await asyncio.to_thread(
+                    log.update_metadata_if,
+                    history_key,
+                    fields,
+                    lambda current: "closed" not in current and _same_transcript(current),
+                    require_existing=True,
+                )
+                break
+            except Exception:
+                if attempt == 0:
+                    logger.warning(
+                        "restoring the closed marker of %s failed once; retrying",
+                        history_key,
+                        exc_info=True,
+                    )
+        try:
+            current, readable = await asyncio.to_thread(log.get_metadata_status, history_key)
+        except Exception:
+            return False
+        if not readable:
+            return False
+        # An absent line means the session was deleted meanwhile, and a moved
+        # stamp means it was replaced: in both there is nothing of ours to
+        # restore, and nothing of ours that would reopen at the next start.
+        return not current or not _same_transcript(current) or "closed" in current
+
+    if name in getattr(state, "_slots_under_construction", ()):
+        # Another resume of this key is between hydration and publish with the
+        # slot retracted (the containment hook's window; the import path's tail
+        # has the same shape). ``get_or_create_slot`` would refuse the mint with
+        # a bare ``ValueError``; answer with a coded conflict instead, since a
+        # retry a moment later finds the key either published or free.
+        #
+        # This arm sits AFTER the hook-less path's eager clear: a click that won
+        # the guard at the top and lost here has already dropped the ``closed``
+        # marker, and if the resume it lost to is then refused (a hooked revive
+        # discards its build and restores only what IT cleared) the archived
+        # session would come back as a sidebar row at the next start. Put the
+        # marker back, compare-and-set, before answering.
+        if cleared_closed and not await _restore_closed_marker():
+            logger.error(
+                "resume of %s lost to a concurrent resume after its closed marker was "
+                "cleared, and the marker could not be confirmed restored; the session "
+                "may restore as open",
+                history_key,
+            )
+            # The same answer ``_discard`` gives for this failure: the caller
+            # must hear that the durable session is not as it found it, not an
+            # ordinary conflict that a retry would clear.
+            return ResumeOutcome(
+                refusal=ResumeRefusal(
+                    "the session was refused but its closed marker could not be restored; "
+                    "close it again from the History tab",
+                    "reopen_rollback_failed",
+                    503,
+                )
+            )
+        return ResumeOutcome(
+            refusal=ResumeRefusal(
+                "this session is being resumed elsewhere; try again", "resume_in_progress", 409
+            )
+        )
     slot = _materialise_slot_from_history(
         state,
         name=name,
         history_key=history_key,
         meta=meta,
         all_messages=all_messages,
-        app=request.get("app", ""),
-        request_title=body.get("title", ""),
+        app=request_app,
+        request_title=request_title,
         member_binding=_member_binding,
         folder_unhidden=folder_unhidden,
         folder_checked_id=folder_checked_id,
+        # Under a hook the rows must not reach any client before the hook has
+        # passed: a refused build is discarded, and frames already pushed for it
+        # would describe a session that never appears.
+        broadcast_rows=containment is None,
     )
     if _member_binding is None:
         # Restore the protected choice read before construction, not the
         # editable transcript's provisional agent name.
         slot.agent = restored_agent
+    if containment is not None and not getattr(slot, "_app", "") and post_read_meta.get("app"):
+        # The hook reads the slot's own fields; ``_app`` comes from the request
+        # (none here), so the line's app scope is restored onto the built slot
+        # the way the restart path restores it, and the hook's app check is a
+        # real read rather than a constant. From the fresh re-read, as below.
+        slot._app = str(post_read_meta["app"])
+    if containment is not None:
+        # Same for the channel link: the resume core does not hydrate
+        # ``linked_session_key`` (the restart path and the History surfacing do),
+        # so the hook's link check would read an empty field whatever the line
+        # says. Restored from the FRESH re-read (``post_read_meta``), not the
+        # pre-transcript snapshot, so a link written to the line inside the read
+        # window is what the hook sees; a channel-born key marks the origin the
+        # way the surfacing path does.
+        fresh_link = str(post_read_meta.get("linked_session_key") or "")
+        if fresh_link and not getattr(slot, "linked_session_key", ""):
+            slot.linked_session_key = fresh_link
+            # Beside the assignment, as every link-setting site records it
+            # (``test_crew_log_class_recorder``). The built slot has no open
+            # log yet, so this is the in-memory restriction mark; a hook that
+            # refuses the linked build discards the slot and the mark with it.
+            note_crew_log_class(state, slot)
+        if fresh_link or post_read_meta.get("channel_origin"):
+            slot.channel_origin = True
     # Hydrated length, not the raw disk count: materialisation may append one
-    # unsaved interruption row, and the paging cursor below has to account for
-    # it or the next older page repeats a row.
+    # unsaved interruption row, and the wrapper's paging cursor has to account
+    # for it or the next older page repeats a row.
     total = slot._disk_older_count + len(slot.messages)
-    recent = slot.messages[-200:] if len(slot.messages) > 200 else slot.messages
+    if containment is not None:
+        # Retract while the hook awaits, keep the construction mark: a lookup
+        # finds nothing, the payload shows nothing, and a create on this key is
+        # refused by the construction guard, so no acquirer can reach a slot the
+        # hook may still refuse. The refusal discard mirrors the construction
+        # rollback above (mark released, key freed, restricted marker dropped) and
+        # puts back the ``closed`` marker this call cleared, so a refused resume
+        # leaves the durable session exactly as it found it.
+        state._slots.pop(slot.key, None)
+
+        async def _discard() -> ResumeRefusal | None:
+            # Durable rollback FIRST, while the construction mark still reserves
+            # the key: released earlier, a concurrent resume of the same session
+            # could publish in the gap and then have its live slot marked closed
+            # by the restore below. The mark is the reservation; it goes last.
+            # Returns the rollback failure when the marker could NOT be confirmed
+            # restored; that answer outranks the refusal that triggered the
+            # discard, because the durable session is now in a state the caller
+            # must hear about (it would reopen at the next start).
+            rollback: ResumeRefusal | None = None
+            if cleared_closed and not await _restore_closed_marker():
+                logger.error(
+                    "resume of %s refused after its closed marker was cleared and the "
+                    "marker could not be confirmed restored; the session may restore as open",
+                    history_key,
+                )
+                rollback = ResumeRefusal(
+                    "the session was refused but its closed marker could not be restored; "
+                    "close it again from the History tab",
+                    "reopen_rollback_failed",
+                    503,
+                )
+            state._restricted_keys.discard(f"dashboard:{slot.key}")
+            state.end_slot_construction(slot.key)
+            return rollback
+
+        def _identity_refusal(post: dict, readable: bool) -> ResumeRefusal | None:
+            # The existence and ``created_at`` identity barrier above ran BEFORE
+            # the hook's awaits. A delete, or a delete-and-recreate, landing
+            # inside the hook window would otherwise publish a slot holding the
+            # old transcript under the new file's key; every later save then
+            # takes the delete-won arm and drops its rows. Same terms, same code
+            # as the pre-hook barrier, re-read after the last await.
+            #
+            # UNREADABLE refuses here, unlike the pre-hook barrier, which lets it
+            # through to protect legitimate resumes of transcripts that predate
+            # the stamp. That leniency is affordable before the build because a
+            # bad publish there is still caught by these re-reads; on the LAST
+            # read there is nothing after it, and the read that cannot be made
+            # is exactly the delete-and-recreate's own signature (the file is
+            # being rewritten). A hooked caller retries; the marker rollback is
+            # identity-guarded, so a replacement is never archived by it.
+            if not readable:
+                return ResumeRefusal(
+                    "this session changed while resuming; open it again",
+                    "resume_conflict",
+                    409,
+                )
+            if not post and session_existed:
+                return ResumeRefusal(
+                    "the session was deleted while it was being resumed",
+                    "resume_session_deleted",
+                    409,
+                )
+            post_created = post.get("created_at")
+            if pre_identity and post_created and pre_identity != post_created:
+                return ResumeRefusal(
+                    "the session was deleted while it was being resumed",
+                    "resume_session_deleted",
+                    409,
+                )
+            return None
+
+        # ONE arm for every await between the retraction and the publish. A
+        # cancellation (the task torn down mid-resume) is a ``BaseException``,
+        # and an ``except Exception`` on any of these awaits would let it skip
+        # ``_discard``: the slot is already popped from the table, so the
+        # construction mark would stay reserved for the process lifetime
+        # (counted by ``live_slot_count``, refusing every later mint on the key,
+        # with no scavenge) and a cleared ``closed`` marker would stay cleared.
+        # Same shape as the construction rollback above. The discard is
+        # shielded so a second cancellation cannot cut the rollback short.
+        try:
+            refusal = await containment(slot)
+            if refusal is not None:
+                return ResumeOutcome(refusal=(await _discard()) or refusal)
+            holder = state._slots.get(slot.key)
+            if holder is not None and holder is not slot:
+                # Cannot happen while the construction mark holds (the create guard
+                # refuses the key); kept as the fail-closed answer rather than
+                # clobbering whatever did take it.
+                return ResumeOutcome(
+                    refusal=(await _discard())
+                    or ResumeRefusal(
+                        "this session changed while resuming; open it again", "resume_conflict", 409
+                    )
+                )
+            log = state.conversation_log
+            try:
+                _post_hook, _post_readable = await asyncio.to_thread(
+                    log.get_metadata_status, history_key
+                )
+            except Exception:
+                _post_hook, _post_readable = {}, False
+            refusal = _identity_refusal(_post_hook, _post_readable)
+            if refusal is not None:
+                return ResumeOutcome(refusal=(await _discard()) or refusal)
+            if defer_clear:
+                # The reopen write, after the hook and before the publish. A clear
+                # that cannot land refuses: publishing a tab whose line still says
+                # ``closed`` would give the person a session that vanishes at the
+                # next start. Compare-and-clear against the resume's own boundary,
+                # as on the hook-less path; a marker still present afterwards means
+                # somebody re-closed the session inside the window, which refuses too.
+                try:
+                    # Recorded BEFORE the write is awaited: a cancellation can be
+                    # delivered at this very await after the worker has already
+                    # written, and a flag set afterwards would then never be set,
+                    # leaving the session durably reopened. Likewise a
+                    # verification read that comes back unreadable (a
+                    # just-rewritten file is transiently unopenable on Windows)
+                    # must refuse WITH the restore. Restoring a marker the clear
+                    # never removed is a no-op (the restore's guard requires the
+                    # marker absent), so an early flag costs nothing.
+                    cleared_closed = True
+                    await asyncio.to_thread(
+                        log.clear_closed, history_key, only_if_closed_before=resume_started_at
+                    )
+                    _after, _readable = await asyncio.to_thread(
+                        log.get_metadata_status, history_key
+                    )
+                except Exception:
+                    logger.warning("Failed to clear closed flag for %s", history_key, exc_info=True)
+                    return ResumeOutcome(
+                        refusal=(await _discard())
+                        or ResumeRefusal(
+                            "the session could not be reopened; try again", "reopen_failed", 503
+                        )
+                    )
+                # The clear was itself an await: the identity barrier runs once more
+                # on the verification read, before the marker check.
+                refusal = _identity_refusal(_after, _readable)
+                if refusal is not None:
+                    return ResumeOutcome(refusal=(await _discard()) or refusal)
+                if not _readable or "closed" in _after:
+                    return ResumeOutcome(
+                        refusal=(await _discard())
+                        or ResumeRefusal(
+                            "this session changed while resuming; open it again",
+                            "resume_conflict",
+                            409,
+                        )
+                    )
+            # The identity re-read and the deferred reopen write above were awaits
+            # taken AFTER the hook answered, and the hook is where the store-backed
+            # boundaries (channel link, Slack binding, outbound mirror) are read --
+            # ``final_check`` below may not touch the store. A binding recorded in the
+            # store during those awaits would otherwise publish. So the hook runs
+            # once more here, as the LAST awaiting act: after it only the synchronous
+            # ``final_check`` and the publish remain. The hook is a read-only
+            # predicate, so the second pass has no side effect of its own.
+            refusal = await containment(slot)
+            if refusal is not None:
+                return ResumeOutcome(refusal=(await _discard()) or refusal)
+            # The second hook pass was itself an await, so the transcript identity is
+            # read one final time SYNCHRONOUSLY here, where nothing can run between
+            # the read and the publish. A plain file read, not a session-store getter
+            # (those share a lock with an off-loop writer and stay in the hook);
+            # ``get_metadata_status`` sleeps between retries only when off the loop,
+            # so on the loop it answers at once; an unreadable answer refuses
+            # (``resume_conflict``) rather than publishing on a read that could not
+            # be made, and the caller retries.
+            try:
+                _last, _last_readable = log.get_metadata_status(history_key)
+            except Exception:
+                _last, _last_readable = {}, False
+            refusal = _identity_refusal(_last, _last_readable)
+            if refusal is not None:
+                return ResumeOutcome(refusal=(await _discard()) or refusal)
+            if final_check is not None:
+                # The last word, SYNCHRONOUS, after the last await above: the hook's
+                # answers that need no store read are re-asserted on the built slot
+                # with nothing able to run between this and the publish.
+                refusal = final_check(slot)
+                if refusal is not None:
+                    return ResumeOutcome(refusal=(await _discard()) or refusal)
+            state._slots[slot.key] = slot
+        except BaseException:
+            await asyncio.shield(_discard())
+            raise
     # The slot was registered throughout hydration (so a concurrent same-key
     # resume resolved it and hit the idempotency guard) but hidden from the
     # payload while under construction. End construction and push once: this is
     # the first frame any client sees, and it shows a fully hydrated session.
-    # Nothing awaits between here and the response.
+    # Nothing awaits between here and the return.
     state.end_slot_construction(slot.key)
     _sync_dashboard_slots(state)
     state.push_slots_update()
-    return web.json_response(
-        {
-            "ok": True,
-            "key": slot.key,
-            # `total` is the effective hydrated length (durable rows plus a
-            # recovered interruption row when one was appended), so this is
-            # the raw index the next older page starts from.
-            "next_before": total - len(recent),
-            "messages": _prepare_messages(
-                recent,
-                slot.running,
-                live_child=_live_child_instance(state, slot),
-                workspace=slot.workspace,
-            ),
-            "queue": [queue_entry_view(q) for q in slot._queue],
-            "total": total,
-            "has_more": total > len(recent),
-            "memory_mode": slot.memory_mode,
-            "mode": slot.mode,
-            "surface": slot.mode,
-        }
-    )
+    return ResumeOutcome(slot=slot, total=total)
 
 
 async def _end_trust_scopes(slots: list[Any], audit_caller: Callable[[str], str]) -> None:

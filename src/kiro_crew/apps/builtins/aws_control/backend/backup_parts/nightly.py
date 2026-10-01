@@ -25,7 +25,10 @@ from kiro_crew.apps.builtins.aws_control.backend.backup_parts.state import (
     NIGHTLY_FAILURE_STATE_KEY,
     _account_state,
     _account_view,
+    _held_runs,
     _locked_state_update,
+    _run_is_newer,
+    _run_lock,
 )
 from kiro_crew.apps.builtins.aws_control.backend.backup_parts.traversal import (
     kind_unavailable_reason,
@@ -413,7 +416,10 @@ def nightly_failures(account: str) -> dict[str, Any]:
     ``{kind: {"at": iso8601, "since": iso8601, "consecutive": int, "error": str}}``, and
     absent for a kind whose last attempt completed -- :func:`_record_run_locked` clears
     the entry as it writes the run, and :func:`_merge_pending` clears it when a recovered
-    run arrives that way instead.
+    run arrives that way instead. Until that recovery lands, the run is held in memory
+    (see :data:`_unpersisted_runs`) and the row is still on disk, so a row is also left
+    out while a held run is newer than BOTH the persisted run and the row itself. A
+    failure stamped after the held run is the latest outcome and stays.
 
     ``at`` is the LATEST attempt and is what the backoff measures from; ``since`` is when
     the current run of failures began. Both are reported because they answer different
@@ -429,13 +435,28 @@ def nightly_failures(account: str) -> dict[str, Any]:
     absence is stated here so someone deciding whether to build the panel finds it.
 
     Leaf values are served as stored, exactly as :func:`last_runs` serves a run
-    record, so this stays one projection of the state file rather than a second
-    validator of it -- :func:`_backoff_withholds` is where the values are judged.
+    record, so this is one projection of the latest outcome -- the state file with
+    the same held-run overlay :func:`last_runs` applies -- rather than a second
+    validator of it. :func:`_backoff_withholds` reads this projection and is where
+    the values are judged.
     """
-    recorded = _account_view(account).get(NIGHTLY_FAILURE_STATE_KEY, {})
-    if not isinstance(recorded, dict):
-        return {}
-    return {str(kind): dict(row) for kind, row in recorded.items() if isinstance(row, dict)}
+    with _run_lock:
+        entry = _account_view(account)
+        recorded = entry.get(NIGHTLY_FAILURE_STATE_KEY, {})
+        if not isinstance(recorded, dict):
+            return {}
+        visible = {str(kind): dict(row) for kind, row in recorded.items() if isinstance(row, dict)}
+        runs = entry.get("runs")
+        persisted_runs = runs if isinstance(runs, dict) else {}
+        for kind, record in _held_runs(account).items():
+            # Newer than the persisted run is what makes the hold the latest RUN; newer
+            # than the row is what makes it the latest OUTCOME. A failure stamped after
+            # the hold -- another process's later attempt -- must still be served.
+            if _run_is_newer(record, persisted_runs.get(kind)) and _run_is_newer(
+                record, visible.get(kind)
+            ):
+                visible.pop(kind, None)
+        return visible
 
 
 def nightly_retry_delay_secs(consecutive: int) -> int:
@@ -461,11 +482,12 @@ def _backoff_withholds(account: str, kind: str, now: Optional[dt.datetime]) -> b
     enabled silently stops running, and a failure record is a new place for exactly
     that to happen. So a corrupt count, a corrupt stamp, a missing field and a clock
     that stepped backwards all read as "attempt it", never as "stay quiet".
+
+    The row comes from :func:`nightly_failures`, so the schedule and the status read
+    agree on the latest outcome: a row a newer held success has superseded withholds
+    nothing, even while it is still on disk.
     """
-    recorded = _account_view(account).get(NIGHTLY_FAILURE_STATE_KEY)
-    if not isinstance(recorded, dict):
-        return False
-    row = recorded.get(kind)
+    row = nightly_failures(account).get(kind)
     if not isinstance(row, dict):
         return False
     consecutive = row.get("consecutive")

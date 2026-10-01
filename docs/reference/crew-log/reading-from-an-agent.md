@@ -20,7 +20,7 @@ being able to touch it.
 |---|---|
 | `crew_log_list` | One row per session log on this host: unit, slot, agent, model, first and last entry time, last seq, whether the session is open. `with_type_counts=True` adds the per-type histogram, per unit and across the listing. |
 | `crew_log_read` | A range of entries as `{seq, ts, type, data}`, each citation resolved to its verdict and span, with `next_from` when more follows. |
-| `crew_log_projection` | One fold and the seq it was folded through: `status`, `usage`, `timeline`, `tools`, `approvals`. |
+| `crew_log_projection` | One fold and the seq it was folded through: `status`, `usage`, `timeline`, `tools`, `approvals`, `subagents`. |
 
 There is no write tool, and none may be added: `test/test_mcp_crew_log.py` ratchets
 the set to exactly these three names, so adding one fails a test rather than
@@ -62,7 +62,7 @@ Every failure is a typed code, never a traceback.
 | `crew_log_disabled` | Session crew-log emission is off because `KIROCREW_CREW_LOG` is set to a falsy or unrecognised value. Unset it (or remove it from `~/.kiro/crew/.env`) and restart the gateway. |
 | `unknown_unit` | No session log for that unit. |
 | `unresolvable_key` | The key names no live ACP session, so no unit is receiving its work right now. |
-| `unknown_projection` | Not one of the five folds. |
+| `unknown_projection` | Not one of the six folds. |
 | `bad_range` | The requested seq range is not readable as one. |
 | `forbidden` | The caller may not read that unit. See below. |
 | `unavailable` | Nothing answered — the gateway is not reachable. |

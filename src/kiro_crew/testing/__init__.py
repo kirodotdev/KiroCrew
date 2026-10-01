@@ -25,6 +25,8 @@ Public entry points:
   messaging-channel client owns. Assign one onto ``client._session`` and the
   real client, transport, dispatcher, pipeline and renderer all run against
   pinned vendor request/response shapes with no credentials or network.
+- :mod:`kiro_crew.testing.links` — ``make_dir_link``, which stages a directory
+  link as a junction on Windows (no privilege needed) and a symlink elsewhere.
 
 Import submodules directly (``from kiro_crew.testing.fixtures import ...``,
 ``from kiro_crew.testing.harness import ...``); no top-level re-exports,

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { screen, fireEvent, act, waitFor } from '@testing-library/react'
+import { screen, fireEvent, act, waitFor, render } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { renderWithProviders } from './helpers'
 import RunInTerminalBtn from '../components/RunInTerminalBtn'
 import { RUN_IN_TERMINAL_RESULT_FALLBACK_MS } from '../utils/fenceShell'
@@ -170,5 +171,53 @@ describe('RunInTerminalBtn', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Run in terminal' }))
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     expect(requests).toHaveLength(0)
+  })
+
+  // When dashboard.terminal.reuse_current is on, confirming COPIES the command
+  // rather than running it (ChatPage's handler copies to the clipboard and
+  // replies copied:true). The confirm dialog must say Copy, not Run, so it does
+  // not promise an action it will not take.
+  describe('reuse-current (copy) path', () => {
+    /** Pre-seed the kirocrewConfig cache BEFORE mount so willCopy is settled on
+     *  the first render (no post-mount state churn), then open the dialog. The
+     *  suite runs on fake timers, so async findBy* would stall — everything is
+     *  synchronous. */
+    function openDialogWithReuse(reuse: boolean) {
+      const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+      queryClient.setQueryData(['kirocrewConfig'], { dashboard: { terminal: { reuse_current: reuse } } })
+      render(
+        <QueryClientProvider client={queryClient}>
+          <RunInTerminalBtn code="echo hi" />
+        </QueryClientProvider>,
+      )
+      act(() => {
+        fireEvent.click(screen.getByRole('button', { name: 'Run in terminal' }))
+      })
+    }
+
+    it('shows Copy button and copy copy in the dialog when reuse is on', () => {
+      openDialogWithReuse(true)
+      expect(screen.getByRole('button', { name: 'Copy' })).toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: /^Run( anyway)?$/ })).not.toBeInTheDocument()
+      expect(screen.getByRole('dialog').textContent).toContain('paste into the terminal')
+      expect(screen.getByRole('dialog').textContent).not.toContain('will run in a new terminal tab')
+    })
+
+    it('keeps the Run button when reuse is off', () => {
+      openDialogWithReuse(false)
+      expect(screen.getByRole('button', { name: 'Run' })).toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Copy' })).not.toBeInTheDocument()
+    })
+
+    it('flashes the copied state when the reuse path confirms', () => {
+      openDialogWithReuse(true)
+      act(() => { fireEvent.click(screen.getByRole('button', { name: 'Copy' })) })
+      expect(requests).toHaveLength(1)
+      act(() => {
+        const last = requests[requests.length - 1]
+        window.dispatchEvent(new CustomEvent('mc:run-in-terminal-result', { detail: { reqId: last.reqId, ok: true, copied: true } }))
+      })
+      expect(screen.getByLabelText('Copied — paste it into the terminal')).toBeInTheDocument()
+    })
   })
 })

@@ -72,8 +72,15 @@ function TokenRow({ token, systemOff }: { token: WebhookTokenEntry; systemOff: b
   )
 }
 
-export default function CrewWebhookSection({ crew }: { crew: string }) {
+export default function CrewWebhookSection({ crew, onNavigateAway }: {
+  crew: string
+  /** How to leave for the Webhooks page. Mounted inside an editor with other
+   *  unsaved panes, the host passes a guarded navigate so the jump asks before
+   *  discarding them; a standalone mount omits it and navigates directly. */
+  onNavigateAway?: (to: string) => void
+}) {
   const navigate = useNavigate()
+  const leaveFor = onNavigateAway ?? ((to: string) => navigate(to))
   const { data, isLoading, isError, refetch } = useQuery({
     queryKey: crewWebhooksQueryKey,
     queryFn: () => api.webhooks(),
@@ -94,9 +101,13 @@ export default function CrewWebhookSection({ crew }: { crew: string }) {
     : isError
       ? (
         <div className="flex items-center gap-2">
-          {/* Read failure; the section holds no draft (tokens are edited on the Webhooks page). */}
+          {/* Read failure; the section holds no draft of its own (tokens are
+              edited on the Webhooks page). Suppressed when hosted in the
+              in-place editor (`onNavigateAway` set): the /chat hand-off would
+              unmount the host modal's unsaved panes, which this section cannot
+              see — Retry still works there. */}
           <ErrorNotice
-            askAgent
+            askAgent={!onNavigateAway}
             testId="crew-webhook-load-error"
             className="flex-1"
             message={i18nT('components.crewWebhookSection.could_not_load_webhooks')}
@@ -117,7 +128,7 @@ export default function CrewWebhookSection({ crew }: { crew: string }) {
     <section className="flex flex-col gap-3" data-testid="crew-webhook-section">
       <div className="flex items-center gap-2">
         <h3 className="text-[12px] font-semibold uppercase tracking-wider text-muted">{i18nT('components.crewWebhookSection.webhooks_that_wake_this_crew')}</h3>
-        <Btn className="ml-auto" onClick={() => navigate('/webhooks')}>
+        <Btn className="ml-auto" onClick={() => leaveFor('/webhooks')}>
           <ExternalLink className="lucide-inline" aria-hidden="true" />
           {i18nT('components.crewWebhookSection.open_webhooks')}
         </Btn>

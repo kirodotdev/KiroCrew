@@ -1,19 +1,21 @@
 # Session Control — driving another session
 
-One chat session can open, fork, seed, watch, stop and close another one, change its model, and take
-another one under itself in the sidebar. The tools come from the
+One chat session can open, fork, seed, watch, stop, close and revive another one,
+change its model, and take another one under itself in the sidebar. The tools come from the
 `kirocrew-dashboard` MCP server, so an agent that does not mount that server
 never has them — exactly like any other MCP server. This page is the reference
-for all 21 of its tools, written for the agent that is about to use them.
+for all 27 of its tools, written for the agent that is about to use them.
 
 The server is defined in `src/kiro_crew/mcp_dashboard.py`. Two halves:
 
 - **Session control** — `session_create`, `session_fork`, `session_send`,
-  `session_read_message`, `session_stop`, `session_set_model`, `session_close`,
-  `session_adopt`, `session_release`. These reach another session.
+  `session_read_message`, `session_summary`, `session_stop`, `session_end_wait`,
+  `session_set_model`, `session_close`, `session_revive`, `session_broadcast`,
+  `session_status`, `session_adopt`, `session_release`. These reach another session.
 - **Sidebar shape** — `chat_folder_tree`, `chat_folder_create`,
   `chat_folder_move`, `chat_folder_move_session`, `chat_folder_file_self`,
   `chat_tag_list`, `chat_tag_create`, `chat_tag_update`, `chat_tag_assign`,
+  `chat_tag_column_list`, `chat_tag_column_create`, `chat_tag_column_move`,
   `chat_session_pin`. These organize what the person sees in the sidebar.
 
 Everything a created session does is visible: it appears in the user's sidebar
@@ -289,6 +291,46 @@ not re-read what it already saw. Two readings matter:
 
 `wait`, then read. See [Monitor loops](monitor-loops.md) for the loop shape.
 
+### `session_summary`
+
+| Argument | Required | Meaning |
+|---|---|---|
+| `target` | yes | Session key, or its exact title |
+
+Returns the target's intent summary, the digest the dashboard's summary panel
+shows: each goal with its status, recent progress and next steps, then the
+session's recurring project notes. The reply is bounded: the ten most recently
+touched goals, the last five progress items and first five next steps of each,
+ten notes, and 500 characters per line, with a count of anything it left out. Use it when a patrol cycle needs to know what
+a peer is doing and a transcript tail would cost 20 rows to find out.
+
+```
+🧭 `chat-7` — fix the build (idle)
+Summary written 2026-09-29T21:40:12Z.
+- [in-progress] Get the build green
+    progress: 3 of 5 failing tests fixed
+    next: fix the two remaining snapshot tests
+```
+
+It is a cached read and never spends a model call. The dashboard writes the
+summary at turn end, and only when the operator has turned on
+`session_summary.enabled`, so three answers are normal:
+
+- Summaries are off: the reply says so. Use `session_read_message`.
+- No summary yet: a session with too few turns has none.
+- `STALE`: turns have landed since the summary was written. The digest still
+  describes the session, but anything newer is only in the transcript.
+
+It is authorized exactly as `session_read_message` is, because the summary is
+derived from the same transcript: a session you cannot read, you cannot
+summarize. The check runs again after the summary is read, so a session that
+gains a channel link or is replaced in between is refused (`target_replaced`)
+rather than answered. An incognito session never has one. Read-only.
+
+Each goal carries the panel's state word (`in-progress`, `needs-you`, `done`,
+`dropped`), so work that finished without being verified reads `needs-you`
+rather than done.
+
 ### `session_adopt` and `session_release`
 
 Both take only `target`. They change where a session sits in the sidebar and
@@ -347,9 +389,36 @@ The reply distinguishes the two facts a stop can report: `nothing to stop` for a
 target that was never running, and `the earlier stop still stands` for one whose
 cancel is still in flight.
 
-`session_close` is not a permanent delete — the conversation is archived and can
-be reopened — but it does discard a running turn's work. Read the session first
+`session_close` is not a permanent delete — the conversation is archived and
+`session_revive` brings it back — but it does discard a running turn's work. Read the session first
 when you are not sure what it is doing.
+
+### `session_end_wait`
+
+| Argument | Required | Meaning |
+|---|---|---|
+| `target` | yes | Session key or exact title |
+
+Wakes a session that is sleeping in the `wait` tool, the same way the End wait
+button on its countdown does. The turn is not cancelled: the target's `wait`
+returns a normal result, and the turn carries on from there. Use it when a
+worker is waiting for something that has already happened, such as a build you
+watched finish. It reaches only sessions you created; any other target is
+refused with `not_creator`, even for a caller the other verbs do not fence.
+
+The target's `wait` result names your session (`Wait ended early by session
+<key> (session_end_wait) ...`), so the woken agent can tell that a peer ended its
+sleep rather than the person or a steer. The wake lands on the target's next
+keepalive ping, within about five seconds.
+
+A target that is not sleeping in `wait` gets an informational reply ending
+`Nothing to end.`, not an error, so there is nothing to retry. The same reply
+comes back when two sleeps share the target's session key: the dashboard cannot
+tell which one to wake, and hides the button for the same reason.
+
+Compared with the verbs next to it: `session_stop` discards the turn's work,
+and `session_send` to a sleeping target also ends its wait (as a steer) but
+delivers text the target then acts on. `session_end_wait` does neither.
 
 ### `session_set_model`
 
@@ -376,6 +445,37 @@ To force the change, call `session_stop`, then retry once the target is idle.
 Also refused: `auto` and `Auto (Jev)` (`model_owner_only`), because with the Jev
 preview on a slot on `auto` hands each turn's model to Jev routing, which only the
 owner may arm; and a target bound to a remote crew (`remote_target_unsupported`).
+
+### `session_revive`
+
+| Argument | Required | Meaning |
+|---|---|---|
+| `target` | yes | The archived session: its slot key (`chat-7-...`), its `dashboard:<slot>` session key, the transcript name `list_sessions` reports, or its exact title when it is unique among archived sessions |
+| `folder` | no | Sidebar folder id or `/`-separated path to file it into once it is live (best-effort; the result's `filed` says whether it happened). Missing path segments are created (`mkdir -p`), like `session_create`'s `folder` |
+
+The mirror of `session_close`: it pulls a history session back up into a live
+tab with its full transcript — the same thing as clicking it in the History tab.
+Nothing runs until someone sends it a message, so the revived session is idle
+and addressable by the key the reply returns: `session_send`,
+`session_read_message`, `chat_folder_move_session` and `chat_tag_assign` all
+work on it afterwards. Reviving does not transfer ownership — the session keeps
+the creator it had — and a session that is already open is refused with its
+live key (`target_already_live`) rather than opened twice.
+
+The same containment as the other verbs applies, read from the archived
+session's own metadata since there is no live slot yet: same workspace only, no
+app-scoped or channel-linked sessions, and an ownership-fenced caller (a crew
+member, a scheduled run, an agent-created session) may revive only a session it
+created itself. Because the archived metadata line is a file an agent's tools can
+edit, that ownership is corroborated against the crew log's session-tree lineage,
+which only the gateway writes: a fenced caller's revive is refused
+`ownership_unverified` when the lineage is off or names a different parent. The
+crew log is on by default (`KIROCREW_CREW_LOG` unset, empty or truthy); a fenced
+revive is refused when the log is off, its projection is unseeded, or the session
+predates it, since none of those leaves a lineage to check. The person's own sessions are not ownership-gated and are
+unaffected. A revive also spends the caller's create budget and per-caller slot
+cap (the revived slot is charged to the reviver for the cap while keeping its own
+creator) and the global slot cap.
 
 ## Folders
 
@@ -407,8 +507,8 @@ worker under one heading. It can write no placement but its own, which is why it
 is safe to grant where `chat_folder_move_session` is withheld.
 
 Folder moves are metadata only: the session keeps its transcript, its model, and
-any running turn. Archived (history) sessions cannot be moved — revive one into
-the sidebar first. There is no delete verb here.
+any running turn. Archived (history) sessions cannot be moved — bring one back
+with `session_revive` first. There is no delete verb here.
 
 ## Tags
 
@@ -433,6 +533,22 @@ never delete a tag**, so nothing here can lose a label the person put on a
 session. `chat_tag_update` is metadata only: every session carrying the tag keeps
 it, and a column filtering on it keeps filtering.
 
+## Board columns
+
+The sidebar board shows one column per tag filter (or live-state lane). The
+column list is part of the person's own layout, shared by every session.
+
+| Tool | Arguments | What it does |
+|---|---|---|
+| `chat_tag_column_list` | none | Every column in board order: id, name, what it filters on. Read-only |
+| `chat_tag_column_create` | `name` (required), `tag` (required) | Append a column showing sessions that carry `tag`. A column with the same name and tag is returned instead of duplicated |
+| `chat_tag_column_move` | `column` (required), exactly one of `before` / `after` | Move one column next to another. The others keep their order |
+
+`tag`, `column`, `before` and `after` take an id or an exact name. There is
+no delete or retag verb: removing a column or changing its filter removes a view
+the person built. An app agent and a crew member can list columns but not
+write them; the `/api/chat/tag-columns` write endpoints refuse both.
+
 ## Pins
 
 | Tool | Arguments | What it does |
@@ -453,7 +569,8 @@ gateway-issued key counts. Refusals you should expect, by code:
 
 | Code | Meaning |
 |---|---|
-| `target_not_found` | No open session matches that key or title. A closed tab is out of scope |
+| `target_not_found` | No open session matches that key or title. A closed tab is out of scope for every verb except session_revive, whose target is precisely an archived session |
+| `target_already_live` | session_revive only: the session is open already. The message carries its live key — address it directly |
 | `ambiguous_target` | The string matches more than one session across the three forms below. Address it by its session key |
 | `self_target` | A session cannot control itself |
 | `not_creator` | The caller is fenced to sessions it created itself (a crew member's DM slot, a scheduled run, and anything either of them created) |
@@ -492,6 +609,8 @@ other humans can see, and sending would run channel text as a turn inside it.
 sidebar the same way `session_adopt` and `session_release` do. The tool also
 refuses a `channel:` caller itself, before listing any session, so an
 auto-approved call that never reaches the permission prompt is still refused.
+`chat_tag_column_create` and `chat_tag_column_move` are blocked and refused at
+dispatch in the same way, because they rearrange the person's board.
 `session_broadcast` is blocked for that reason multiplied by the fleet, and
 `session_status` because its rows carry other sessions' titles — the names of the
 user's private work, in front of whoever is in the thread.
@@ -505,7 +624,7 @@ user's private work, in front of whoever is in the thread.
 | `agent.crew_panel` | `true` | A crew member publishes its own webview, shown in that member's drawer on the Crew page. Its own mount and its own switch, so withdrawing session control leaves the drawer alone and withdrawing the drawer leaves session control alone |
 
 Rate limits are per caller, per verb, over a 300-second window: **20** session
-creates (forks included), **10** folder creates, **10** tag creates. Capacity ceilings sit behind
+creates (forks included), **10** folder creates, **10** tag creates, **10** board-column creates. Capacity ceilings sit behind
 them: 500 live sessions, 50 per creator, 500 folders.
 
 ## This or `spawn_run`?

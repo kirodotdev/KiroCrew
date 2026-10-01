@@ -35,6 +35,7 @@ from kiro_crew.dashboard.chat_runner import (
     _MAX_TURN_SNAPSHOT_ENTRIES,
     _apply_turn_snapshot_budget,
     _flush_file_changes,
+    _note_reply_row,
     _record_turn_snapshot,
     _run_chat,
     _safe_read_snapshot,
@@ -42,7 +43,7 @@ from kiro_crew.dashboard.chat_runner import (
     _truncate_snapshot,
     _turn_line_changes,
 )
-from kiro_crew.dashboard.state import _ChatSlot
+from kiro_crew.dashboard.state import _ChatSlot, row_mid
 from kiro_crew.security import redact
 
 
@@ -339,6 +340,113 @@ class TestFlushFileChanges:
         # Slot's accumulator is reset for the next turn.
         assert slot._file_changes == []
 
+    def test_turn_boundary_keeps_chips_off_the_previous_turns_answer(self, short_tmp_dir: Path):
+        # Turn 1 answered; turn 2 changed a file and ended without an assistant
+        # row (error-only exit). The chips belong to turn 2, so the flush must
+        # add a synthetic anchor after the boundary, not annotate turn 1's row.
+        f = short_tmp_dir / "x.py"
+        f.write_text("after\n")
+        slot = _make_slot_with_assistant_message()
+        boundary = len(slot.messages)
+        start_mid = row_mid(slot.messages[-1])
+        slot.append("user", "change x.py", "msg msg-u", broadcast=False)
+        slot._file_changes = [{"path": str(f), "content": "before\n"}]
+        _flush_file_changes(slot, turn_boundary=boundary, turn_start_mid=start_mid)
+        assert "file_changes" not in slot.messages[0].get("meta", {})
+        assert slot.messages[-1]["role"] == "assistant"
+        assert slot.messages[-1]["meta"]["file_changes"][0]["path"] == str(f)
+
+    def test_trimmed_window_still_finds_this_turns_rows_by_identity(self, short_tmp_dir: Path):
+        # At the row cap every append front-trims one row and the length stays
+        # pinned, so the index captured at turn start names the wrong row. The
+        # identity of the turn-start tail row does not move with the trim.
+        f = short_tmp_dir / "x.py"
+        f.write_text("after\n")
+        slot = _ChatSlot("test-flush-cap")
+        slot.append("assistant", "old answer", "msg msg-a", broadcast=False)
+        slot.append("user", "change x.py", "msg msg-u", broadcast=False)
+        boundary = len(slot.messages)  # 2, the cap
+        start_mid = row_mid(slot.messages[-1])
+        _note_reply_row(slot, slot.append("assistant", "new answer", "msg msg-a", broadcast=False))
+        del slot.messages[:1]  # what _ChatSlot.append does at the cap
+        slot._file_changes = [{"path": str(f), "content": "before\n"}]
+        _flush_file_changes(slot, turn_boundary=boundary, turn_start_mid=start_mid)
+        assert [m["content"] for m in slot.messages] == ["change x.py", "new answer"]
+        assert slot.messages[-1]["meta"]["file_changes"][0]["path"] == str(f)
+
+    def test_trimmed_window_with_no_answer_never_reaches_an_earlier_turn(self, short_tmp_dir: Path):
+        # Same trim, but this turn aborted before any assistant row. The
+        # previous answer must stay clean even though the index says otherwise.
+        f = short_tmp_dir / "x.py"
+        f.write_text("after\n")
+        slot = _ChatSlot("test-flush-cap-abort")
+        slot.append("assistant", "old answer", "msg msg-a", broadcast=False)
+        slot.append("user", "first", "msg msg-u", broadcast=False)
+        boundary = len(slot.messages)
+        start_mid = row_mid(slot.messages[-1])
+        slot.append("user", "change x.py", "msg msg-u", broadcast=False)
+        del slot.messages[:1]
+        slot._file_changes = [{"path": str(f), "content": "before\n"}]
+        _flush_file_changes(slot, turn_boundary=boundary, turn_start_mid=start_mid)
+        assert slot.messages[0]["content"] == "first"
+        assert "file_changes" not in slot.messages[0].get("meta", {})
+        assert slot.messages[-1]["content"] == ""
+
+    def test_evicted_start_row_means_every_row_is_this_turns(self, short_tmp_dir: Path):
+        # The turn-start tail row itself was trimmed away: everything left in
+        # the window arrived after it, so the newest assistant row is the anchor.
+        f = short_tmp_dir / "x.py"
+        f.write_text("after\n")
+        slot = _ChatSlot("test-flush-evicted")
+        slot.append("user", "hi", "msg msg-u", broadcast=False)
+        start_mid = row_mid(slot.messages[-1])
+        _note_reply_row(slot, slot.append("assistant", "new answer", "msg msg-a", broadcast=False))
+        del slot.messages[:1]
+        slot._file_changes = [{"path": str(f), "content": "before\n"}]
+        _flush_file_changes(slot, turn_boundary=1, turn_start_mid=start_mid)
+        assert [m["content"] for m in slot.messages] == ["new answer"]
+        assert slot.messages[-1]["meta"]["file_changes"][0]["path"] == str(f)
+
+    def test_idless_start_row_falls_back_to_the_clamped_index(self, short_tmp_dir: Path):
+        # A transcript restored from a pre-id disk format has no identity to
+        # match, so the index is the only signal. Past the end it yields no
+        # rows, which means a synthetic anchor, never an earlier turn's row.
+        f = short_tmp_dir / "x.py"
+        f.write_text("after\n")
+        slot = _ChatSlot("test-flush-idless")
+        slot.append("assistant", "old answer", "msg msg-a", broadcast=False, mint_mid=False)
+        assert row_mid(slot.messages[-1]) is None
+        slot._file_changes = [{"path": str(f), "content": "before\n"}]
+        _flush_file_changes(slot, turn_boundary=5, turn_start_mid=None)
+        assert "file_changes" not in slot.messages[0].get("meta", {})
+        assert slot.messages[-1]["content"] == ""
+
+    def test_the_mid_turn_clear_resets_the_boundary_id_beside_the_text(self):
+        # The clear branch restarts the turn's row bookkeeping. Capturing the
+        # start id there must be ADDED next to the accumulator reset, not put in
+        # its place: without `assistant_text = ""` the text streamed before the
+        # clear survives it and the terminal flush re-appends what the user
+        # just deleted.
+        tree = ast.parse(inspect.getsource(_run_chat))
+        [clear] = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.If)
+            and isinstance(node.test, ast.Compare)
+            and isinstance(node.test.comparators[0], ast.Name)
+            and node.test.comparators[0].id == "EVENT_CLEAR_STATUS"
+        ]
+        resets = {
+            target.id
+            for stmt in clear.body
+            if isinstance(stmt, ast.Assign)
+            and isinstance(stmt.value, ast.Constant)
+            and stmt.value.value == ""
+            for target in stmt.targets
+            if isinstance(target, ast.Name)
+        }
+        assert {"assistant_text", "_turn_start_mid"} <= resets, resets
+
     @pytest.mark.parametrize(
         ("before_length", "after_length"),
         [(_MAX_SNAPSHOT + 1, 1), (1, _MAX_SNAPSHOT + 1), (_MAX_SNAPSHOT + 1, _MAX_SNAPSHOT + 2)],
@@ -500,8 +608,101 @@ class TestFlushFileChanges:
         # New synthetic message appended at the end.
         last = slot.messages[-1]
         assert last["role"] == "assistant"
-        assert "stopped" in last["content"].lower()
+        # Content-less: the anchor lands after the turn's error row, and a
+        # row with text there would read as the turn's reply.
+        assert last["content"] == ""
         assert last["meta"]["file_changes"][0]["path"] == str(f)
+
+    def test_aborted_turn_with_chips_still_reads_as_interrupted(self, short_tmp_dir: Path):
+        # The runner appends the error row in its ``except`` branch and flushes
+        # in ``finally``, so the synthetic anchor follows the error row. The
+        # transcript must still read as interrupted: the anchor is looked
+        # through, the trailing error decides. On the old anchor text this
+        # returned False and the composer lost its Resume control.
+        from kiro_crew.dashboard.state import is_turn_interrupted
+
+        f = short_tmp_dir / "edit.py"
+        f.write_text("after\n")
+        slot = _ChatSlot("aborted-turn-interrupted")
+        slot.append("user", "hi", "msg msg-u", broadcast=False)
+        boundary = len(slot.messages)
+        slot.append("error", "⟳ Connection lost — please retry.", "msg msg-err", broadcast=False)
+        slot._file_changes = [{"path": str(f), "content": "before\n"}]
+        _flush_file_changes(slot, turn_boundary=boundary)
+        assert [m["role"] for m in slot.messages] == ["user", "error", "assistant"]
+        assert slot.messages[-1]["meta"]["file_changes"][0]["path"] == str(f)
+        assert is_turn_interrupted(slot.messages) is True
+
+    def test_injected_assistant_row_is_never_the_anchor(self, short_tmp_dir: Path):
+        # workflow_inject.py appends a workflow completion into the LIVE window
+        # as an assistant row with no in-flight guard. Landing after this turn's
+        # last append and before the flush, it is the newest assistant row in
+        # the turn, and position alone would hand it the chips. It was not
+        # recorded as this runner's reply, so a synthetic anchor is added and
+        # the injected row's meta stays exactly as written.
+        f = short_tmp_dir / "x.py"
+        f.write_text("after\n")
+        slot = _ChatSlot("test-flush-injected")
+        slot.append("user", "change x.py", "msg msg-u", broadcast=False)
+        boundary = len(slot.messages)
+        injected = slot.append(
+            "assistant",
+            "[Workflow completion event]\nWorkflow `w` (wf_1) → **ok**",
+            "msg msg-a",
+            broadcast=False,
+            meta={"kind": "workflow_result"},
+        )
+        slot._file_changes = [{"path": str(f), "content": "before\n"}]
+        _flush_file_changes(slot, turn_boundary=boundary)
+        assert set(injected["meta"]) == {"kind", "mid"}
+        assert slot.messages[-1] is not injected
+        assert slot.messages[-1]["content"] == ""
+        assert slot.messages[-1]["meta"]["file_changes"][0]["path"] == str(f)
+
+    def test_own_reply_wins_over_a_later_injected_row(self, short_tmp_dir: Path):
+        # The reply this runner appended is the anchor even when an injected
+        # assistant row arrived after it.
+        f = short_tmp_dir / "x.py"
+        f.write_text("after\n")
+        slot = _ChatSlot("test-flush-injected-after-reply")
+        slot.append("user", "change x.py", "msg msg-u", broadcast=False)
+        boundary = len(slot.messages)
+        reply = slot.append("assistant", "done", "msg msg-a", broadcast=False)
+        _note_reply_row(slot, reply)
+        injected = slot.append(
+            "assistant", "Agent `a` ✅ ok", "msg msg-a", broadcast=False, meta={"kind": "x"}
+        )
+        slot._file_changes = [{"path": str(f), "content": "before\n"}]
+        _flush_file_changes(slot, turn_boundary=boundary)
+        assert reply["meta"]["file_changes"][0]["path"] == str(f)
+        assert "file_changes" not in injected["meta"]
+        assert len(slot.messages) == 3
+        # The flush consumed the turn's identities along with its snapshots.
+        assert slot._turn_reply_mids == []
+
+    def test_flush_segment_records_the_reply_identity(self, monkeypatch):
+        # The production reply path registers its row, so the flush can tell it
+        # from an injected one without any caller threading a list through.
+        from kiro_crew.dashboard import chat_runner as cr
+
+        slot = _ChatSlot("test-flush-segment-identity")
+        slot.append("user", "hi", "msg msg-u", broadcast=False)
+        monkeypatch.setattr(cr.crew_log_emit, "on_message_sent", lambda *a, **k: None)
+        cr._flush_segment(MagicMock(), slot, "the reply", broadcast=False)
+        assert slot.messages[-1]["content"] == "the reply"
+        assert slot._turn_reply_mids == [row_mid(slot.messages[-1])]
+
+    def test_reply_identities_are_bounded_at_the_window_cap(self, monkeypatch):
+        # A row older than the window cap has been trimmed away and cannot be an
+        # anchor, so its id leaves the list; the newest ids stay.
+        from kiro_crew.dashboard import chat_runner as cr
+
+        monkeypatch.setattr(cr, "_MAX_SLOT_MESSAGES", 2)
+        slot = _ChatSlot("test-reply-ids-bounded")
+        rows = [slot.append("assistant", str(i), "msg msg-a", broadcast=False) for i in range(3)]
+        for r in rows:
+            _note_reply_row(slot, r)
+        assert slot._turn_reply_mids == [row_mid(rows[1]), row_mid(rows[2])]
 
 
 # ── Regression tests: real event ordering & content-block paths ────────────
@@ -1544,7 +1745,15 @@ def snapshot_turn():
         exec(compile(ast.Module(body=nodes, type_ignores=[]), "<snapshot-turn>", "exec"), env)  # nosemgrep: python.lang.security.audit.exec-detected.exec-detected -- runs the PRODUCTION admission statements lifted out of this repo's own source by AST, never external input; a hand-copied duplicate of them is exactly what this test exists to rule out  # noqa: E501  # fmt: skip
 
     def start(slot):
-        env = {**_run_chat.__globals__, "slot": slot}
+        # The flush sites read the runner's turn boundary; the harness has no
+        # turn, so it scopes to the whole slot the way a turn started on an
+        # empty slot would.
+        env = {
+            **_run_chat.__globals__,
+            "slot": slot,
+            "_turn_msg_boundary": 0,
+            "_turn_start_mid": "",
+        }
 
         def record(path, key="call", site=0, content="before\n"):
             env["event"] = SimpleNamespace(tool_call_id=key)

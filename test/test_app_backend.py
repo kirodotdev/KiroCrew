@@ -1981,6 +1981,37 @@ class TestGatewayOriginInjection:
             f"every entry type must get the same generic origin (saw {origins!r})"
         )
 
+    @requires_symlinks
+    def test_node_backend_is_spawned_with_the_resolved_entry_path(
+        self, tmp_path, app_env, monkeypatch
+    ):
+        """A symlinked app dir must not reach node's argv[1]: ESM main guards compare realpaths."""
+        import kiro_crew.apps.backend as bmod
+        from kiro_crew.apps.manager import app_dir
+
+        monkeypatch.setattr(bmod, "_find_node_binary", lambda: sys.executable)
+        self._install_typed_backend_app(tmp_path, "node-link", "server.mjs", "node", "//\n")
+        linked = app_dir("node-link")
+        real = tmp_path / "real-node-link"
+        linked.rename(real)
+        linked.symlink_to(real, target_is_directory=True)
+        entry_args: list[str] = []
+        real_popen = bmod.subprocess.Popen
+
+        def _spy_popen(cmd, *a, **k):
+            hits = [str(c) for c in cmd if str(c).endswith("server.mjs")]
+            if not hits:  # an unrelated helper process (e.g. a sandbox probe)
+                return real_popen(cmd, *a, **k)
+            entry_args.extend(hits)
+            raise OSError("captured argv; stop before the real spawn")
+
+        monkeypatch.setattr(bmod, "wrap_argv", lambda cmd, **kw: (list(cmd), None))
+        monkeypatch.setattr(bmod.subprocess, "Popen", _spy_popen)
+        bmod.start_app_backend("node-link")
+
+        assert entry_args, "the node spawn never reached the Popen boundary"
+        assert entry_args == [str((real / "server.mjs").resolve())]
+
     def test_child_gets_exact_proof_keyed_by_the_app_secret(
         self, tmp_path, app_env, monkeypatch
     ):

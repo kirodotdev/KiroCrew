@@ -174,6 +174,9 @@ with no row here.
      - pre-session registry query (whether a side-chat turn may execute
        read-only tools under the derived ``<agent>--readonly`` spec; asked
        about the configured backend id before the side session is created)
+   * - ``ACP_BACKENDS_SERIAL_SESSION_STARTS``
+     - driver-internal (whether a timed-out session start names the unanswered
+       starts and mode switches it was sent behind on the same process)
    * - ``ACP_BACKENDS_HARNESS_OWNED_SESSIONS``
      - driver-internal (whether ``session/load`` is gated on a Crew-side transcript)
    * - ``ACP_BACKENDS_LOAD_WITHOUT_MODES``
@@ -1102,8 +1105,8 @@ ACP_BACKENDS_STEERING_REQUEST = frozenset({ACP_BACKEND_CODEX})
 # sends. They do not all answer it the same way, and that split is
 # ``ACP_BACKENDS_INLINE_COMPACTION``: kiro-cli ACKs the prompt then emits
 # ``_kiro.dev/compaction/status``, which ``wait_for_compaction()`` picks up, while
-# claude-agent-acp, codex-acp, opencode, pi-acp and goose finish the whole
-# compaction inside the ``session/prompt`` turn.
+# claude-agent-acp, codex-acp, opencode and goose finish the whole compaction inside
+# the ``session/prompt`` turn.
 #
 # opencode is a member on a LIVE capture against opencode 1.18.30, and it joins
 # despite advertising nothing: its ``available_commands_update`` lists only
@@ -1135,28 +1138,33 @@ ACP_BACKENDS_STEERING_REQUEST = frozenset({ACP_BACKEND_CODEX})
 # "manages compaction automatically" promise was true only for an operator who had
 # configured it.
 #
-# pi and goose are NOT members, and the reason is the evidence CLASS rather than the
-# feature. Both advertise a ``compact`` built-in and both dispatch it before any
-# model turn -- pi-acp 0.0.33 intercepts it in ``prompt()``, awaits
-# ``session.proc.compact(...)`` and returns ``{ stopReason: "end_turn" }``; goose
-# 1.50.1 routes it through ``Agent::reply`` -> ``execute_command`` ->
-# ``handle_compact_command``, and its own ``command_starts_turn("/compact")`` is
-# false. So the source says inline in both cases.
+# goose is a member on a LIVE capture against goose 1.50.1. Driven over three turns,
+# its ``usage_update.used`` climbed 1529 -> 1991 -> 2453. A ``/compact`` prompt then
+# answered ``Compaction complete`` inside the turn, read ``used: 224``, and returned
+# ``stopReason: end_turn`` with no status frame after it. The next ORDINARY turn read
+# 1749, below the pre-compact peak. The drive is committed as evidence:
+# ``test/fixtures/acp_frames/goose/compact-live.jsonl``. Its source agreed before the
+# drive did: ``Agent::reply`` routes ``/compact`` through ``execute_command`` to
+# ``handle_compact_command``, and ``command_starts_turn("/compact")`` is false.
 #
-# What neither has is a driven capture, and this set asks for one: the bar opencode
-# met is a live session whose ``usage_update.used`` was seen to fall. Source says
-# what the code WOULD do; a capture says what the harness DID. For a membership whose
-# wrong answer makes ``wait_for_compaction`` report a completion that did not happen,
-# the second is the bar, and holding both to it is what keeps this set's memberships
-# comparable to each other. Neither could be driven where this was written -- pi
-# answers ``Authentication required``, goose
-# ``Failed to resolve provider: GOOSE_PROVIDER`` -- so they wait for someone who can
-# drive them rather than entering on the weaker class.
+# pi is NOT a member, and the reason is the evidence CLASS rather than the feature.
+# It advertises a ``compact`` built-in and dispatches it before any model turn --
+# pi-acp 0.0.33 intercepts it in ``prompt()``, awaits ``session.proc.compact(...)``
+# and returns ``{ stopReason: "end_turn" }``. So the source says inline.
 #
-# Until then both are unclassified, which is a better position than the one they
-# held: they take the ``COMPACT_ARM_UNCLASSIFIED`` refusal, which promises nothing,
-# and the gate logs a WARNING naming the memberships they lack, instead of being
-# told their harness manages compaction itself on no evidence at all.
+# What it lacks is a driven capture, and this set asks for one: the bar opencode and
+# goose met is a live session whose ``usage_update.used`` was seen to fall. Source
+# says what the code WOULD do; a capture says what the harness DID. For a membership
+# whose wrong answer makes ``wait_for_compaction`` report a completion that did not
+# happen, the second is the bar, and holding every member to it is what keeps this
+# set's memberships comparable to each other. pi could not be driven where this was
+# written -- it answers ``Authentication required`` -- so it waits for someone who can
+# drive it rather than entering on the weaker class.
+#
+# Until then pi is unclassified, which is a better position than the one it held: it
+# takes the ``COMPACT_ARM_UNCLASSIFIED`` refusal, which promises nothing, and the gate
+# logs a WARNING naming the memberships it lacks, instead of being told its harness
+# manages compaction itself on no evidence at all.
 #
 # kas and deepseek are the other two non-members, and none of the four is the same
 # case.
@@ -1170,6 +1178,7 @@ ACP_BACKENDS_COMPACT = frozenset(
         ACP_BACKEND_CLAUDE,
         ACP_BACKEND_CODEX,
         ACP_BACKEND_OPENCODE,
+        ACP_BACKEND_GOOSE,
     }
 )
 
@@ -1219,8 +1228,8 @@ ACP_BACKENDS_COMPACT = frozenset(
 # by exclusion would be the same unproven claim this set exists to remove, only
 # louder. What such a harness gets instead is a WARNING from the gate naming both
 # memberships it lacks, and the refusal arm that promises nothing -- so the leak is
-# reported rather than either denied or answered by ending the conversation. pi and
-# goose are that case today.
+# reported rather than either denied or answered by ending the conversation. pi is
+# that case today.
 ACP_BACKENDS_HARNESS_MANAGED_COMPACTION = frozenset({ACP_BACKEND_KAS})
 
 # Backends whose FULL context is answered by recycling the session, because no
@@ -1282,14 +1291,18 @@ ACP_BACKENDS_CONTEXT_RECYCLE = frozenset({ACP_BACKEND_DEEPSEEK})
 # status frame at all, so the turn's terminal frame is the ONLY signal there is,
 # which makes awaiting one a strand rather than a wait.
 #
-# pi and goose are absent for the reason recorded on ``ACP_BACKENDS_COMPACT``: their
-# source says inline, no capture confirms it, and the two memberships move together
-# when one does.
+# goose is a member on the same capture: its ``/compact`` turn carries the
+# ``Compaction complete`` chunk and ends with ``stopReason: end_turn``, with no status
+# frame after it.
+#
+# pi is absent for the reason recorded on ``ACP_BACKENDS_COMPACT``: its source says
+# inline, no capture confirms it, and the two memberships move together when one does.
 ACP_BACKENDS_INLINE_COMPACTION = frozenset(
     {
         ACP_BACKEND_CLAUDE,
         ACP_BACKEND_CODEX,
         ACP_BACKEND_OPENCODE,
+        ACP_BACKEND_GOOSE,
     }
 )
 
@@ -1647,6 +1660,14 @@ def model_refusal_phrase(backend: str) -> str:
 # opencode is NOT a member, which is exactly the split this separate set exists
 # for: the same ``session/new`` result that advertises its ``model`` select
 # advertises a ``mode`` select beside it and no ``effort`` option at all.
+#
+# goose is NOT a member, though it advertises an effort option: ``thinking_effort``
+# sits on its ``session/new`` result (``test/fixtures/acp_frames/goose/
+# handshake-live.jsonl``). goose 1.50.1 offers that option PER MODEL. Driven against a
+# local model with no extended thinking, it offered only ``off``, accepted a write of
+# ``high`` without error, and read the option back as ``off``. So a Crew write there is
+# a silent no-op, and no capture shows the levels a thinking model is offered. goose
+# waits for that capture rather than joining on the option's name.
 #
 # pi IS a member, and joins under its OWN spelling rather than the default one: the
 # option beside its ``model`` select is ``thought_level``, offering off, minimal,
@@ -2065,6 +2086,22 @@ ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD = frozenset({ACP_BACKEND_KIRO})
 # than asks, so no call reaches the host gate and no SEL row is written. A side turn
 # on it runs ``REJECT_ALL``.
 ACP_BACKENDS_SIDE_READONLY = frozenset({ACP_BACKEND_KIRO})
+
+# Backends whose process answers ``session/new``, ``session/load`` and
+# ``session/set_mode`` one at a time, so a session start sent while one of those is
+# unanswered spends its budget waiting for it. Membership decides only whether a
+# timed-out start's error names the requests it was sent behind
+# (``AcpRuntime._one_at_a_time_ahead``); nothing is sent differently.
+#
+# kiro-cli is a member on measurement: on 2.26.1, four ``session/new`` sent at once
+# on one process, each injecting a server that never answers ``initialize``,
+# returned at 31 / 61 / 91 / 121 s, and a ``session/new`` sent during a slow
+# ``set_mode`` returned only when the ``set_mode`` did. Its ACP handlers await those
+# requests inside the connection's dispatch loop.
+#
+# KAS and codex are NOT members: neither has been measured, so a start that
+# overlaps another on them is not claimed to have waited for it.
+ACP_BACKENDS_SERIAL_SESSION_STARTS = frozenset({ACP_BACKEND_KIRO})
 
 # Backends whose model-side REFUSAL arrives with a structured reason, not just a
 # stop reason. When the Kiro service's content filter declines a turn, kiro-cli

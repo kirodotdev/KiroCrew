@@ -517,6 +517,207 @@ async def test_handle_stop_confirm_uses_stop_turn(orch_fixture: MagicMock) -> No
 
 
 @pytest.mark.asyncio
+async def test_handle_stop_confirm_declined_by_a_compaction_arms_this_pressers_repeat(
+    orch_fixture: MagicMock,
+) -> None:
+    """The decline reply promises that a repeat !stop forces; the button decline
+    must therefore arm the marker, for the presser who read the promise."""
+    from kiro_crew import session_lifecycle as sl
+    from kiro_crew.slack import interactions
+    from kiro_crew.slack.handler import set_allowed_users, set_owner_id
+
+    sl._stop_declined_markers.clear()
+    set_owner_id("U123")
+    set_allowed_users({"U123"})
+
+    orch = orch_fixture
+    orch.sessions.has_session = MagicMock(return_value=True)
+    orch.sessions.stop_turn = AsyncMock(return_value="compacting")
+    task = MagicMock()
+    orch._session_tasks = {"100.0": task}
+
+    payload = {
+        "type": "block_actions",
+        "user": {"id": "U123"},
+        "team": {"id": "T1"},
+        "channel": {"id": "C1"},
+        "response_url": "",
+        "message": {"ts": "200.0", "thread_ts": "100.0", "blocks": []},
+        "actions": [
+            {
+                "action_id": "mc_stop_confirm",
+                "value": "",
+                "text": {"type": "plain_text", "text": "Confirm"},
+            }
+        ],
+    }
+
+    with patch.object(interactions, "sel") as mock_sel:
+        mock_sel.return_value = MagicMock()
+        await interactions.dispatch(payload)
+
+    assert orch._session_tasks == {"100.0": task}, "nothing was stopped"
+    task.cancel.assert_not_called()
+    assert sl.consume_stop_declined("100.0", "U999") is False, "not another presser's"
+    assert sl.consume_stop_declined("100.0", "U123") is True
+    sl._stop_declined_markers.clear()
+
+
+@pytest.mark.asyncio
+async def test_handle_stop_confirm_repeat_press_forces_after_a_decline(
+    orch_fixture: MagicMock,
+) -> None:
+    """The decline reply promises a repeat forces; a repeat press of the button by
+    the same presser inside the window, while the compaction still holds the
+    session, passes ``force=True``. A press with no marker does not."""
+    from kiro_crew import session_lifecycle as sl
+    from kiro_crew.slack import interactions
+    from kiro_crew.slack.handler import set_allowed_users, set_owner_id
+
+    sl._stop_declined_markers.clear()
+    set_owner_id("U123")
+    set_allowed_users({"U123"})
+
+    orch = orch_fixture
+    orch.sessions.has_session = MagicMock(return_value=True)
+    orch.sessions.is_compacting = MagicMock(return_value=True)
+    orch.sessions.stop_turn = AsyncMock(return_value="hard")
+    orch._session_tasks = {}
+
+    def payload(user: str) -> dict:
+        return {
+            "type": "block_actions",
+            "user": {"id": user},
+            "team": {"id": "T1"},
+            "channel": {"id": "C1"},
+            "response_url": "",
+            "message": {"ts": "200.0", "thread_ts": "100.0", "blocks": []},
+            "actions": [
+                {
+                    "action_id": "mc_stop_confirm",
+                    "value": "",
+                    "text": {"type": "plain_text", "text": "Confirm"},
+                }
+            ],
+        }
+
+    with patch.object(interactions, "sel") as mock_sel:
+        mock_sel.return_value = MagicMock()
+        await interactions.dispatch(payload("U123"))
+        assert orch.sessions.stop_turn.await_args.kwargs.get("force") is None, "no marker"
+        sl.note_stop_declined("100.0", "U123")
+        await interactions.dispatch(payload("U123"))
+        assert orch.sessions.stop_turn.await_args.kwargs["force"] is True
+        assert orch.sessions.stop_turn.await_args.kwargs["preserve_queue"] is True
+    sl._stop_declined_markers.clear()
+
+
+@pytest.mark.asyncio
+async def test_handle_stop_confirm_arms_nothing_when_the_decline_reaches_nobody(
+    orch_fixture: MagicMock,
+) -> None:
+    """With no response url the card cannot be replaced, so the decline falls back
+    to a thread message. When that fails too the presser was never warned, and
+    their next press must not be the reset the warning would have promised."""
+    from kiro_crew import session_lifecycle as sl
+    from kiro_crew.slack import interactions
+    from kiro_crew.slack.handler import set_allowed_users, set_owner_id
+
+    sl._stop_declined_markers.clear()
+    set_owner_id("U123")
+    set_allowed_users({"U123"})
+
+    orch = orch_fixture
+    orch.sessions.has_session = MagicMock(return_value=True)
+    orch.sessions.stop_turn = AsyncMock(return_value="compacting")
+    orch.slack.post_message = AsyncMock(side_effect=RuntimeError("slack 503"))
+    orch._session_tasks = {}
+
+    payload = {
+        "type": "block_actions",
+        "user": {"id": "U123"},
+        "team": {"id": "T1"},
+        "channel": {"id": "C1"},
+        "response_url": "",
+        "message": {"ts": "200.0", "thread_ts": "100.0", "blocks": []},
+        "actions": [
+            {
+                "action_id": "mc_stop_confirm",
+                "value": "",
+                "text": {"type": "plain_text", "text": "Confirm"},
+            }
+        ],
+    }
+
+    with patch.object(interactions, "sel") as mock_sel:
+        mock_sel.return_value = MagicMock()
+        await interactions.dispatch(payload)
+
+    orch.slack.post_message.assert_awaited()
+    assert sl._stop_declined_markers == {}, "the retry is a first press again"
+    assert sl.consume_stop_declined("100.0", "U123") is False
+    sl._stop_declined_markers.clear()
+
+
+@pytest.mark.asyncio
+async def test_handle_stop_confirm_arms_nothing_when_the_card_post_is_rejected(
+    orch_fixture: MagicMock,
+) -> None:
+    """A response url expires. An expired one answers 4xx with a body instead of
+    raising, so the card post returns normally having shown the presser nothing.
+    The marker must read that status: a 410 leaves their next press a first
+    press, and only a 2xx arms the reset the warning promises."""
+    from kiro_crew import session_lifecycle as sl
+    from kiro_crew.slack import interactions
+    from kiro_crew.slack.handler import set_allowed_users, set_owner_id
+
+    set_owner_id("U123")
+    set_allowed_users({"U123"})
+
+    orch = orch_fixture
+    orch.sessions.has_session = MagicMock(return_value=True)
+    orch.sessions.stop_turn = AsyncMock(return_value="compacting")
+    # The thread fallback runs only when the card itself did not land, so it
+    # must fail here too for the status to be the thing under test.
+    orch.slack.post_message = AsyncMock(return_value="")
+    orch._session_tasks = {}
+
+    payload = {
+        "type": "block_actions",
+        "user": {"id": "U123"},
+        "team": {"id": "T1"},
+        "channel": {"id": "C1"},
+        "response_url": "https://hooks.slack.com/actions/T1/expired",
+        "message": {"ts": "200.0", "thread_ts": "100.0", "blocks": []},
+        "actions": [
+            {
+                "action_id": "mc_stop_confirm",
+                "value": "",
+                "text": {"type": "plain_text", "text": "Confirm"},
+            }
+        ],
+    }
+
+    def aio(status: int) -> AsyncMock:
+        sess = AsyncMock()
+        sess.__aenter__ = AsyncMock(return_value=sess)
+        sess.__aexit__ = AsyncMock(return_value=None)
+        sess.post = AsyncMock(return_value=MagicMock(status=status))
+        return sess
+
+    for status, armed in ((410, False), (200, True)):
+        sl._stop_declined_markers.clear()
+        with (
+            patch.object(interactions, "sel") as mock_sel,
+            patch("aiohttp.ClientSession", return_value=aio(status)),
+        ):
+            mock_sel.return_value = MagicMock()
+            await interactions.dispatch(payload)
+        assert sl.consume_stop_declined("100.0", "U123") is armed, f"status {status}"
+    sl._stop_declined_markers.clear()
+
+
+@pytest.mark.asyncio
 async def test_handle_stop_confirm_rejects_unauthorized(orch_fixture: MagicMock) -> None:
     """_handle_stop_confirm enforces is_allowed_user() — deny-by-default.
 

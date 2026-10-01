@@ -389,7 +389,7 @@ export default function AgentSkillsEditor({ agentName, skills, unmanaged = [], o
               key={key}
               className={`group inline-flex min-w-0 max-w-full items-center gap-1 pl-2 pr-1 py-1 rounded-full text-[12px] font-mono ${
                 unresolved
-                  ? 'bg-warn-subtle border border-warn text-warn-fg'
+                  ? 'bg-warn-subtle border border-warn text-text'
                   : 'bg-accent-subtle border border-accent/30 text-text'
               }`}
               title={
@@ -408,7 +408,7 @@ export default function AgentSkillsEditor({ agentName, skills, unmanaged = [], o
               }
             >
               {unresolved ? (
-                <AlertTriangle className="lucide-inline text-warn-fg" />
+                <AlertTriangle className="lucide-inline text-text" />
               ) : (
                 <Brain className="lucide-inline" />
               )}
@@ -564,7 +564,7 @@ export default function AgentSkillsEditor({ agentName, skills, unmanaged = [], o
       {/* Visible, not only a `title` and an aria-label: a sighted keyboard or touch user
           otherwise sees a yellow chip and a triangle and is told nothing. */}
       {unresolvedCount > 0 && (
-        <div className="text-[11px] text-warn-fg mt-1.5">
+        <div className="text-[12px] text-text mt-1.5">
           {i18nT('components.agentSkillsEditor.mapping_unresolved_count', {
             count: unresolvedCount,
           })}

@@ -434,3 +434,20 @@ def test_type_checkers_resolve_what_production_imports_without_the_forwarding_ho
                 imported.update(alias.name for alias in node.names)
     assert imported, "the scan found no production importer, so it measured nothing"
     assert sorted(imported - typed - set(vars(sp))) == []
+
+
+def test_type_checkers_resolve_every_public_forwarded_name_from_its_owner() -> None:
+    """mypy cannot see ``__getattr__``, so a public forwarded name the ``TYPE_CHECKING``
+    imports leave out resolves at run time and fails type checking as ``sp.<name>``."""
+    tree = ast.parse(Path(inspect.getfile(sp)).read_text(encoding="utf-8"))
+    typed = {
+        alias.asname or alias.name: statement.module
+        for node in tree.body
+        if isinstance(node, ast.If) and ast.unparse(node.test) == "TYPE_CHECKING"
+        for statement in node.body
+        if isinstance(statement, ast.ImportFrom)
+        for alias in statement.names
+    }
+    public = {name: owner for name, owner in sp._EXPORTS.items() if not name.startswith("_")}
+    assert public, "the export table names no public name, so this measured nothing"
+    assert {name: typed.get(name) for name in public} == public

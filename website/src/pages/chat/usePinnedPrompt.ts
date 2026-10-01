@@ -6,6 +6,7 @@ import {
   DEFAULT_PINNED_CARD_H,
   ROW_PAD_Y,
   computeLiveCardH,
+  computePinnedCardMaxH,
   computePinPush,
   findNextPromptIdx,
   findPinnedPromptIdx,
@@ -206,8 +207,22 @@ export function usePinnedPrompt({ scrollerRef, requiresMountedHandoff = false }:
     // The threshold lives here because this is where the resting height lives;
     // duplicating it in the card would let the two disagree about "at rest".
     const restingH = pinCollapsedHRef.current
+    // The transcript FLOOR: the scroller's bottom edge minus its bottom padding.
+    // That padding is each host's own statement of where readable content stops
+    // — the main chat sets it to the floating composer dock's height plus a
+    // clearance, a pane to a fixed inset — so reading it back is what keeps the
+    // card's ceiling and the rows' floor one line. Read from computed style
+    // rather than a prop so a host cannot set the two apart.
+    const scrollerRect = el.getBoundingClientRect()
+    const padBottom = parseFloat(getComputedStyle(el).paddingBottom) || 0
+    const maxH = computePinnedCardMaxH(foldY, scrollerRect.bottom - padBottom)
     const liveRaw = (bubbleBottom != null && standinH != null)
-      ? computeLiveCardH(bubbleBottom - foldY, restingH, standinH)
+      // Clamped to the ceiling: the fold tracks the pinned bubble's bottom, which
+      // for a tall prompt is under the dock for the first stretch of the fold, and
+      // a card held at that height painted over the composer. The card is capped
+      // in the same way (its `maxH` prop), so this clamp is what keeps
+      // `cardBottom` below honest about where the card actually ends.
+      ? Math.min(maxH, computeLiveCardH(bubbleBottom - foldY, restingH, standinH))
       : undefined
     const liveH = liveRaw != null && liveRaw > restingH + 0.5 ? liveRaw : undefined
     // Whether the row's re-shown action strip is still UNCOVERED — any of it
@@ -295,6 +310,7 @@ export function usePinnedPrompt({ scrollerRef, requiresMountedHandoff = false }:
       push,
       bannerH,
       liveH,
+      maxH,
       stripUncovered,
     }))
   }, [requiresMountedHandoff, scrollerRef])
@@ -308,13 +324,28 @@ export function usePinnedPrompt({ scrollerRef, requiresMountedHandoff = false }:
   // attached before this effect runs. This replaces a callback the card would
   // otherwise have to report through every host; an environment without
   // ResizeObserver keeps the scroll-driven recompute alone.
+  //
+  // The SCROLLER is observed too, for the same reason from the other side: the
+  // card's ceiling (`maxH`) is read off the scroller's box and bottom padding,
+  // and both move with no scroll to notice — the window resizes, the composer
+  // dock grows a status bar (which the main chat passes on as padding; the
+  // observer's default content-box watches padding changes). Without this a
+  // pane that shrank under an expanded card left it over the composer until the
+  // next scroll.
+  //
+  // Keyed on the pinned INDEX as well as its `ts`: a transcript whose messages
+  // carry no timestamp (an import, a legacy log) reads `ts` as '' for every
+  // pin, so a hand-off from one such prompt to the next changed nothing the
+  // effect was keyed on — the observer stayed on the previous card and the new
+  // one was never watched.
   useEffect(() => {
     const card = pinCardRef.current
     if (!card || typeof ResizeObserver === 'undefined') return
     const observer = new ResizeObserver(() => { updatePinnedPrompt() })
     observer.observe(card)
+    if (scrollerRef.current) observer.observe(scrollerRef.current)
     return () => observer.disconnect()
-  }, [pinned?.ts, updatePinnedPrompt])
+  }, [pinned?.idx, pinned?.ts, updatePinnedPrompt, scrollerRef])
   // rAF-throttle the per-scroll recompute: updatePinnedPrompt does a
   // querySelectorAll + getBoundingClientRect loop (a forced layout read), and a
   // fling fires scroll dozens of times/sec. Coalesce to at most once per frame,

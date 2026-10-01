@@ -6,6 +6,7 @@ import asyncio
 import functools
 import logging
 from pathlib import Path
+from typing import Any
 
 from aiohttp import web
 
@@ -21,6 +22,7 @@ from kiro_crew.dashboard.handlers.agents import (
 )
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 from kiro_crew.executors import discovery_executor
+from kiro_crew.platform import current_context, safe_context_call
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +44,16 @@ def _is_background_only(agent: AgentInfo) -> bool:
     the user's file, an ordinary choice like any other project template.
     """
     return agent.kirocrew_owned and agent.filename in _BACKGROUND_ONLY_FILES
+
+
+def _agent_runtime_policy(name: str, engine_identity: str) -> dict[str, Any] | None:
+    """Return companion-owned UI policy without making it an enforcement boundary."""
+    policy = safe_context_call(
+        lambda: current_context().providers.agent_runtime_policy(engine_identity),
+        fallback=None,
+        log_message=f"Failed to read runtime policy for crew {name}",
+    )
+    return policy if isinstance(policy, dict) else None
 
 
 def _templates(project_dir: Path | None) -> list[AgentInfo]:
@@ -130,6 +142,11 @@ async def api_agent_catalog(request: web.Request) -> web.Response:
     for name, member in config.agents.items():
         row = _agent_roster_row(name, "global", member, redact=redact)
         row["selection_kind"] = "member"
+        if not redact:
+            engine_identity = member.kiro_agent or name
+            policy = _agent_runtime_policy(name, engine_identity)
+            if policy is not None:
+                row["runtime_policy"] = policy
         rows.append(row)
     rows.extend(_template_row(agent) for agent in templates)
     return web.json_response(

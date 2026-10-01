@@ -79,7 +79,7 @@ async function main() {
 
       // Named, not getByRole('dialog'): the confirm below is a second dialog and
       // an unnamed locator would go strict-mode ambiguous the moment it opens.
-      const sheet = page.getByRole('dialog', { name: /Edit agent/ })
+      const sheet = page.getByRole('dialog', { name: /Edit crewmate/ })
       await sheet.waitFor({ state: 'visible', timeout: 15000 })
       await page.waitForTimeout(500)
 

@@ -1,4 +1,4 @@
-"""Regression tests for subprocess-timeout remediation in apps/registry.py.
+"""Regression tests for subprocess-timeout remediation in apps/registry_pipeline/.
 
 These cover the audit findings that timed-out child subprocesses were left
 un-reaped (zombie/leak) or, for the install-script path, only sent a single

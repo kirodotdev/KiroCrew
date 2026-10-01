@@ -130,11 +130,11 @@ describe('provenance helpers', () => {
   })
 
   it('rejects a forged origin: "builtin" from an external registry entry', () => {
-    // registry.py copies index keys verbatim for not-yet-installed apps, so an
-    // external index can declare origin: "builtin". _registry must be rejected
-    // BEFORE the builtin short-circuit or the badge (and the "Built-in"
-    // provenance label) is forgeable. Genuine built-ins are merged from the
-    // installed list client-side and never carry _registry.
+    // registry_pipeline/ copies index keys verbatim for not-yet-installed
+    // apps, so an external index can declare origin: "builtin". _registry must
+    // be rejected BEFORE the builtin short-circuit or the badge (and the
+    // "Built-in" provenance label) is forgeable. Genuine built-ins are merged
+    // from the installed list client-side and never carry _registry.
     expect(isVerified({ origin: 'builtin', author: 'whoever', _registry: 'evil' })).toBe(false)
     expect(sourceLabel({ origin: 'builtin', _registry: 'evil' })).toBe('evil')
     // A real built-in (no _registry) still verifies and labels correctly.
@@ -168,10 +168,10 @@ describe('isRegistrySourced', () => {
 
   it('survives a non-string source from an index-controlled catalog row', () => {
     // The detail page spreads a CATALOG row into its app object when the
-    // installed-record fetch fails, and registry.py copies index keys verbatim
-    // for a row it has not installed — so `source` can arrive as an object even
-    // though the type says string. This runs inside the autoAction effect, where
-    // an unguarded startsWith throws and Sync never dispatches.
+    // installed-record fetch fails, and registry_pipeline/ copies index keys
+    // verbatim for a row it has not installed — so `source` can arrive as an
+    // object even though the type says string. This runs inside the autoAction
+    // effect, where an unguarded startsWith throws and Sync never dispatches.
     const objectSource = { source: { type: 'git' }, origin: 'registry' } as unknown as
       Parameters<typeof isRegistrySourced>[0]
     expect(() => isRegistrySourced(objectSource)).not.toThrow()
@@ -269,8 +269,9 @@ describe('gradientFor', () => {
 
 describe('normalizeRegistryApp', () => {
   it('fills display fields for a minimal entry (failed app.json fetch)', () => {
-    // registry.py yields name/repo only when the manifest fetch fails; the
-    // store sorts and lowercases these, so undefined must never reach it.
+    // registry_pipeline/manifests.py yields name/repo only when the manifest
+    // fetch fails; the store sorts and lowercases these, so undefined must
+    // never reach it.
     const out = normalizeRegistryApp({ name: 'orphan-app' } as RegistryApp)
     expect(out.displayName).toBe('orphan-app')
     expect(out.description).toBe('')

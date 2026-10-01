@@ -21,6 +21,7 @@ import asyncio
 import contextlib
 import json
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
 from aiohttp import web
@@ -39,6 +40,9 @@ def _req(payload: object) -> web.Request:
     path.
     """
     request = make_mocked_request("POST", "/api/apps/issue-radar/issue/assignees")
+    request.app["state"] = SimpleNamespace(owner_id="")
+    request["user"] = "local-app"
+    request["app"] = ""
 
     async def _json(*_args: object, **_kwargs: object) -> object:
         if isinstance(payload, Exception):

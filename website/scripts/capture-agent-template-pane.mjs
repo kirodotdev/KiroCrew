@@ -87,17 +87,17 @@ const DETAIL = {
   },
 }
 
-/** Open one crew's editor and land on the Agent Template pane. */
+/** Open one crew's editor and land on the Built from pane. */
 async function openTemplatePane(page, crew) {
   await page.goto('/capabilities?tab=crews', { waitUntil: 'domcontentloaded' })
-  await page.locator('#main-content').getByText('Agents you chat with', { exact: false })
+  await page.locator('#main-content').getByText('Your AI teammates', { exact: false })
     .waitFor({ state: 'visible', timeout: 15000 })
-  const card = page.getByRole('button', { name: new RegExp(`Edit (crew|agent) ${crew}`, 'i') })
+  const card = page.getByRole('button', { name: new RegExp(`Edit (crew|agent|crewmate) ${crew}`, 'i') })
   await card.waitFor({ state: 'visible', timeout: 15000 })
   await card.click()
-  const sheet = page.getByRole('dialog', { name: /edit (crew|agent)/i })
+  const sheet = page.getByRole('dialog', { name: /edit (crew|agent|crewmate)/i })
   await sheet.waitFor({ state: 'visible', timeout: 10000 })
-  await sheet.getByRole('button', { name: /agent template/i }).first().click()
+  await sheet.getByRole('button', { name: /^built from/i }).first().click()
   return sheet
 }
 
@@ -151,14 +151,14 @@ try {
     // Self-checks: a stale or half-rendered frame must fail the run, not ship.
     // The header SELECT displays the ORIGIN for a customized copy — the copy's
     // auto-derived filename must never surface as the selection.
-    const headerSelect = sheet.getByRole('combobox', { name: /agent template/i }).first()
+    const headerSelect = sheet.getByRole('combobox', { name: /built from/i }).first()
     await headerSelect.waitFor({ state: 'visible', timeout: 10000 })
     const selected = ((await headerSelect.textContent()) || '').trim()
     if (!selected.includes(template)) {
       throw new Error(`${crew}: header select shows "${selected}", expected "${template}"`)
     }
-    if (!(await sheet.getByText(/^Template$/i).count())) {
-      throw new Error(`${crew}: header never rendered the "Template" prefix`)
+    if (!(await sheet.getByText(/^Built from$/i).count())) {
+      throw new Error(`${crew}: header never rendered the "Built from" prefix`)
     }
     const customizedTag = await sheet.getByText(/^Customized$/).count()
     if (expectOwnCopy && !customizedTag) throw new Error(`${crew}: own copy lacks the Customized tag`)
@@ -187,10 +187,10 @@ try {
       if (!(await sheet.getByText(new RegExp(`^${expectBadge}$`)).count())) {
         throw new Error(`${crew}: template is not badged "${expectBadge}"`)
       }
-      if (!(await sheet.getByText(/give this agent its own copy/i).count())) {
+      if (!(await sheet.getByText(/give this crewmate its own copy/i).count())) {
         throw new Error(`${crew}: shared template shows no fork hint`)
       }
-      const usedText = crew === 'atlas' ? /used by 2 agents/i : /used by this agent only/i
+      const usedText = crew === 'atlas' ? /used by 2 crewmates/i : /used by this crewmate only/i
       if (!(await sheet.getByText(usedText).count())) {
         throw new Error(`${crew}: header is missing the used-by reach text`)
       }

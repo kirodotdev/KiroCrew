@@ -1,6 +1,11 @@
 "use strict";
 
-const { parseRemoteCrewFields, remoteCrewDraft } = require("../../remote-crew-setup");
+const {
+  TUNNEL_OPTION_LABEL,
+  parseRemoteCrewFields,
+  remoteCrewDraft,
+  tunnelOptionHint,
+} = require("../../remote-crew-setup");
 const { DEFAULT_REMOTE_BIN, DEFAULT_REMOTE_PATH } = require("../../remote-token");
 
 /**
@@ -10,7 +15,7 @@ const { DEFAULT_REMOTE_BIN, DEFAULT_REMOTE_PATH } = require("../../remote-token"
  * (saveRemoteCrewConfig), so a refused save can reopen the form on what the
  * user typed.
  */
-function createRemoteCrewPrompt({ BrowserWindow, nativeTheme }) {
+function createRemoteCrewPrompt({ BrowserWindow, nativeTheme, isWindows = false }) {
   /**
    * Collect a remote crew's address for `promptPort`, opening on `initial`.
    * Resolves with what the user saved, or null when the window was closed
@@ -23,8 +28,8 @@ function createRemoteCrewPrompt({ BrowserWindow, nativeTheme }) {
       const opening = remoteCrewDraft(initial);
       const promptWindow = new BrowserWindow({
         width: 480,
-        // Four labelled fields, each with a defaults hint under it.
-        height: 470,
+        // Four labelled fields and (off Windows) the tunnel option, each with a hint.
+        height: isWindows ? 470 : 540,
         resizable: false,
         useContentSize: true,
         parent: hasParent ? parentWindow : undefined,
@@ -47,6 +52,8 @@ function createRemoteCrewPrompt({ BrowserWindow, nativeTheme }) {
         .title { font-size:15px; font-weight:700; margin-bottom:10px; }
         label { display:block; font-size:12px; font-weight:600; margin:10px 0 4px; }
         .hint { font-size:11px; color:${muted}; margin-top:4px; }
+        label.check { display:flex; align-items:center; gap:6px; margin-top:14px; }
+        label.check input { width:auto; }
         input { width:100%; padding:7px 8px; border-radius:6px; font-size:13px;
           border:1px solid ${dark ? "#475569" : "#cbd5e1"};
           background:${dark ? "#0f172a" : "#ffffff"}; color:${foreground}; }
@@ -69,6 +76,8 @@ function createRemoteCrewPrompt({ BrowserWindow, nativeTheme }) {
         <label>Remote PATH</label>
         <input id="pa" value="${escapeAttr(opening.remotePath)}" placeholder="${escapeAttr(DEFAULT_REMOTE_PATH)}">
         <div class="hint">Leave blank for ${escapeAttr(DEFAULT_REMOTE_PATH)}.</div>
+        ${isWindows ? "" : `<label class="check"><input type="checkbox" id="mt"${opening.manageTunnel ? " checked" : ""}> ${TUNNEL_OPTION_LABEL}</label>
+        <div class="hint">${escapeAttr(tunnelOptionHint(promptPort))}</div>`}
         <div class="row">
           <button class="ok" onclick="save()">Save &amp; Retry</button>
           <button class="cancel" onclick="window.close()">Cancel</button>
@@ -80,6 +89,7 @@ function createRemoteCrewPrompt({ BrowserWindow, nativeTheme }) {
               binPath: document.getElementById('b').value.trim(),
               remotePort: document.getElementById('rp').value.trim(),
               remotePath: document.getElementById('pa').value.trim(),
+              manageTunnel: !!(document.getElementById('mt') || {}).checked,
             });
             window.close();
           }

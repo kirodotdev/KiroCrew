@@ -236,6 +236,11 @@ describe('chat sidebar — flat view respects the folder filter', () => {
     expect(row.textContent).toContain('1 hidden folder')
     expect(queryByTestId('hidden-reveal-cronsF')).toBeNull() // not at any other level
     expect(queryByTestId('folder-menu-cronsF')).toBeNull()   // still hidden
+    // Root lane: the button carries the session rows' root pad class, no inline pad.
+    const button = row.querySelector('button')!
+    expect(button.hasAttribute('data-folder-hidden-reveal')).toBe(true)
+    expect(button.style.paddingLeft).toBe('')
+    expect(button.className.split(/\s+/)).toContain('pl-2.5')
   })
 
   it('peeking the row open renders the hidden folder\'s real block, and closes again', () => {
@@ -269,6 +274,13 @@ describe('chat sidebar — flat view respects the folder filter', () => {
       [{ ...cronInFolder, folder_id: 'childF' }, looseChat], folders)
     expect(getByTestId('hidden-reveal-parentF').textContent).toContain('1 hidden folder')
     expect(queryByTestId('hidden-reveal-root')).toBeNull()
+    // The row sits in parent's folder body, so it takes the body's row pad via
+    // the `data-folder-hidden-reveal` hook in FOLDER_ROW_PAD_CLS. An inline
+    // paddingLeft would be un-overridable and compound per nesting level.
+    const button = getByTestId('hidden-reveal-parentF').querySelector('button')!
+    expect(button.hasAttribute('data-folder-hidden-reveal')).toBe(true)
+    expect(button.style.paddingLeft).toBe('')
+    expect(button.className.split(/\s+/)).toContain('pl-2.5')
   })
 
   it('reports one row per container, and stays silent under an already-hidden ancestor', () => {

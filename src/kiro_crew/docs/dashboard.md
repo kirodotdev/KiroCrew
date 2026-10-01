@@ -56,9 +56,9 @@ Multi-session parallel chat with full Markdown rendering, syntax-highlighted cod
 
 Settings uses tabbed panels for Overview, Imports, Chat, Display, Voice, Notifications, Shortcuts, Skills, Channels, Browser, Computer Use, Webhooks, Instances, Privacy, Security, Connections, Secrets, Developer, Releases, and About. `/overview` redirects to `/settings/overview`.
 
-### Agent Capabilities (`/capabilities`)
+### Customize (`/capabilities`)
 
-Tabbed management for crews, agent templates, MCP connections, skills, the knowledge library, steering, hooks, prompts, and workflow libraries. `/agents`, `/connections` and `/knowledge` redirect here.
+Tabbed management for crewmates, custom agents, MCP connections, skills, the knowledge library, steering, hooks, prompts, and workflow libraries. `/agents`, `/connections` and `/knowledge` redirect here.
 
 ### Schedule (`/schedule`)
 

@@ -1252,3 +1252,351 @@ def test_the_deferred_binder_resolves_each_handler():
         bound = server._deferred_work_ledger(name)
         assert bound.__name__ == name
         assert getattr(routes, name, None) is not None, name
+
+
+# ── the read's narrowing arguments and compact rows ──
+#
+# An argument-less read is the whole board; every argument narrows it. Sizing the
+# reply is the tool layer's job (``mcp_work._fit_ledger``), pinned in test_mcp_work.
+
+
+async def _read_with(sk: str, query: str) -> tuple[int, dict[str, Any]]:
+    resp = await routes.api_work_ledger_get(_req("GET", f"/api/work-ledger?{query}", sk=sk))
+    return resp.status, json.loads(resp.text)
+
+
+async def _create_stamped(
+    monkeypatch, conductor: str, title: str, stamp: str, *, first: bool = False
+) -> str:
+    """One item created at *stamp*, through the routes, with no worker bound.
+
+    ``_now_iso`` is the store's one clock, so pinning it here dates the item's
+    ``created_at`` exactly — the field the response order and ``since`` read.
+    """
+    monkeypatch.setattr(wl, "_now_iso", lambda: stamp)
+    if first:
+        status, body = await _record(conductor, {"action": "goal", "goal": "g", "round": 1})
+        assert status == 200, body
+    status, body = await _record(
+        conductor, {"action": "create", "title": title, "acceptance": {"kind": "human_approval"}}
+    )
+    assert status == 200, body
+    return body["item"]["item_id"]
+
+
+async def _three_dated_items(monkeypatch) -> list[str]:
+    """Three items a day apart, returned OLDEST first — the store's own order."""
+    ids = []
+    for day, first in ((1, True), (2, False), (3, False)):
+        ids.append(
+            await _create_stamped(
+                monkeypatch,
+                CONDUCTOR_A,
+                f"item {day}",
+                f"2026-03-0{day}T10:00:00+00:00",
+                first=first,
+            )
+        )
+    return ids
+
+
+async def _decide_n_times(conductor: str, item_id: str, count: int) -> None:
+    """*count* distinct decision events on one item (event ids are content-addressed,
+    so the texts must differ for the lines not to collapse)."""
+    for n in range(count):
+        status, body = await _record(
+            conductor, {"action": "decide", "item_id": item_id, "decision": f"decision {n}"}
+        )
+        assert status == 200, body
+
+
+@pytest.mark.asyncio
+async def test_read_keeps_the_stores_order_for_items_and_the_batch(monkeypatch):
+    """An argument-less read is unchanged: rows and ``accept_batch`` come in the
+    store's own order, oldest first. Only the budget trim ranks by age."""
+    ids = await _three_dated_items(monkeypatch)
+    _, body = await _read(CONDUCTOR_A)
+    assert [r["item_id"] for r in body["items"]] == ids
+    assert [e["id"] for e in body["accept_batch"]["items"]] == ids
+    assert [it.item_id for it in wl.list_work_items(CONDUCTOR_A)] == ids
+
+
+@pytest.mark.asyncio
+async def test_read_default_tail_is_the_ceiling_and_events_narrows_or_drops_it(monkeypatch):
+    """The default tail is unchanged — the 20 ceiling the Crew board reads too —
+    and ``events=<n>`` can only shorten it."""
+    ids = await _three_dated_items(monkeypatch)
+    await _decide_n_times(CONDUCTOR_A, ids[2], 12)
+    assert len(wl.read_events(CONDUCTOR_A, ids[2])) == 13, "create + 12 decisions on disk"
+
+    _, body = await _read(CONDUCTOR_A)
+    row = next(r for r in body["items"] if r["item_id"] == ids[2])
+    assert len(row["events"]) == 13 <= routes._MAX_EVENT_TAIL == 20
+    assert [e["text"] for e in row["events"]][1:] == [f"decision {n}" for n in range(12)]
+
+    _, body = await _read_with(CONDUCTOR_A, "events=10")
+    row = next(r for r in body["items"] if r["item_id"] == ids[2])
+    assert len(row["events"]) == 10
+    # The NEWEST ten, in log order.
+    assert [e["text"] for e in row["events"]] == [f"decision {n}" for n in range(2, 12)]
+    _, body = await _read_with(CONDUCTOR_A, "events=0")
+    assert all(r["events"] == [] for r in body["items"])
+    assert "events" in body["items"][0], "events=0 keeps the key, so the shape is stable"
+    _, body = await _read_with(CONDUCTOR_A, f"events={routes._MAX_EVENT_TAIL}")
+    row = next(r for r in body["items"] if r["item_id"] == ids[2])
+    assert len(row["events"]) == 13
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "query,field",
+    [
+        ("events=21", "events"),
+        ("events=-1", "events"),
+        ("events=five", "events"),
+        ("item_id=it_nothex", "item_id"),
+        ("item_id=..%2Fetc", "item_id"),
+        ("state=closed", "state"),
+        ("since=yesterday", "since"),
+        ("compact=maybe", "compact"),
+        ("status=done", "status"),
+        # An EMPTY value is refused for every parameter: the schema skips a pattern
+        # on an empty string, so ``item_id=`` would otherwise select nothing and
+        # answer 200 with no rows beside a whole-board batch.
+        ("item_id=", "item_id"),
+        ("state=", "state"),
+        ("since=", "since"),
+        ("events=", "events"),
+        ("compact=", "compact"),
+    ],
+)
+async def test_read_refuses_an_out_of_shape_query_and_names_the_field(monkeypatch, query, field):
+    """The route validates the query with the tool's own schema, so a loopback
+    caller that bypasses the tool layer meets the same bounds — and an unknown
+    parameter is refused, never silently ignored into a whole-board answer."""
+    await _three_dated_items(monkeypatch)
+    status, body = await _read_with(CONDUCTOR_A, query)
+    assert status == 400, body
+    assert body["code"] == wl.CODE_INVALID_VALUE
+    assert body["field"] == field
+
+
+@pytest.mark.asyncio
+async def test_read_filters_by_item_id(monkeypatch):
+    ids = await _three_dated_items(monkeypatch)
+    status, body = await _read_with(CONDUCTOR_A, f"item_id={ids[1]}")
+    assert status == 200
+    assert [r["item_id"] for r in body["items"]] == [ids[1]]
+    # The batch is the WHOLE bar, whatever the rows were narrowed to.
+    assert [e["id"] for e in body["accept_batch"]["items"]] == ids
+    # Well-formed but not on this board: an empty answer, not an error.
+    status, body = await _read_with(CONDUCTOR_A, "item_id=it_00000000")
+    assert status == 200
+    assert body["items"] == []
+
+
+@pytest.mark.asyncio
+async def test_read_filters_by_state(monkeypatch):
+    ids = await _three_dated_items(monkeypatch)
+    status, body = await _record(
+        CONDUCTOR_A, {"action": "close", "item_id": ids[0], "state": "accepted", "decision": "ok"}
+    )
+    assert status == 200, body
+    _, body = await _read_with(CONDUCTOR_A, "state=open")
+    assert [r["item_id"] for r in body["items"]] == [ids[1], ids[2]]
+    _, body = await _read_with(CONDUCTOR_A, "state=accepted")
+    assert [r["item_id"] for r in body["items"]] == [ids[0]]
+    _, body = await _read_with(CONDUCTOR_A, "state=rejected")
+    assert body["items"] == []
+
+
+@pytest.mark.asyncio
+async def test_read_filters_by_since_on_created_reported_and_closed(monkeypatch):
+    """``since`` reads the stamps another party writes: a create, a worker's
+    report, a close. Inclusive at the stamp, so a caller can pass back the newest
+    stamp it saw and still receive the item that carried it."""
+    ids = await _three_dated_items(monkeypatch)
+    _, body = await _read_with(CONDUCTOR_A, "since=2026-03-02T10:00:00%2B00:00")
+    assert [r["item_id"] for r in body["items"]] == [ids[1], ids[2]]
+    _, body = await _read_with(CONDUCTOR_A, "since=2026-03-04T00:00:00%2B00:00")
+    assert body["items"] == []
+
+    # A worker report on the OLDEST item moves it into a later window.
+    _dispatched(WORKER_A, CONDUCTOR_A)
+    status, body = await _record(
+        CONDUCTOR_A, {"action": "bind", "item_id": ids[0], "worker_session_key": WORKER_A}
+    )
+    assert status == 200, body
+    monkeypatch.setattr(wl, "_now_iso", lambda: "2026-03-05T10:00:00+00:00")
+    status, body = await _report(WORKER_A, {"status": "progress", "summary": "moving"})
+    assert status == 200, body
+    _, body = await _read_with(CONDUCTOR_A, "since=2026-03-05T00:00:00%2B00:00")
+    assert [r["item_id"] for r in body["items"]] == [ids[0]]
+
+    # And so does a close, on the middle one.
+    monkeypatch.setattr(wl, "_now_iso", lambda: "2026-03-06T10:00:00+00:00")
+    status, body = await _record(
+        CONDUCTOR_A, {"action": "close", "item_id": ids[1], "state": "abandoned", "decision": "x"}
+    )
+    assert status == 200, body
+    _, body = await _read_with(CONDUCTOR_A, "since=2026-03-06T00:00:00%2B00:00")
+    assert [r["item_id"] for r in body["items"]] == [ids[1]]
+    # A stamp with no offset is read as local time, like the store's own reader.
+    _, body = await _read_with(CONDUCTOR_A, "since=2000-01-01T00:00:00")
+    assert len(body["items"]) == 3
+
+
+@pytest.mark.asyncio
+async def test_read_since_the_beginning_of_time_returns_the_whole_board(monkeypatch):
+    """``since=0001-01-01T00:00:00`` is how a caller spells "everything", and
+    ``9999-12-31T23:59:59`` "nothing". Neither may be a 400, and neither may be a
+    500: shifting an extreme naive stamp into the local zone can run off the
+    calendar, which the platform reports as ``ValueError`` / ``OverflowError``, and
+    the read must answer through that. The overflow is also FORCED below, since
+    which end trips depends on the host's zone."""
+    ids = await _three_dated_items(monkeypatch)
+    status, body = await _read_with(CONDUCTOR_A, "since=0001-01-01T00:00:00")
+    assert status == 200, body
+    assert {r["item_id"] for r in body["items"]} == set(ids) and len(body["items"]) == 3
+    status, body = await _read_with(CONDUCTOR_A, "since=9999-12-31T23:59:59")
+    assert status == 200, body
+    assert body["items"] == []
+
+    class _Unshiftable(datetime):
+        def astimezone(self, tz=None):  # type: ignore[override]
+            raise OverflowError("date value out of range")
+
+    real_parse = wl._parse_iso
+    monkeypatch.setattr(
+        wl,
+        "_parse_iso",
+        lambda value: (
+            _Unshiftable(1, 1, 1) if value == "0001-01-01T00:00:00" else real_parse(value)
+        ),
+    )
+    status, body = await _read_with(CONDUCTOR_A, "since=0001-01-01T00:00:00")
+    assert status == 200, body
+    assert {r["item_id"] for r in body["items"]} == set(ids) and len(body["items"]) == 3
+
+
+@pytest.mark.asyncio
+async def test_read_filters_compose_and_leave_the_batch_whole(monkeypatch):
+    ids = await _three_dated_items(monkeypatch)
+    status, body = await _record(
+        CONDUCTOR_A, {"action": "close", "item_id": ids[2], "state": "rejected", "decision": "no"}
+    )
+    assert status == 200, body
+    _, whole = await _read(CONDUCTOR_A)
+    _, body = await _read_with(CONDUCTOR_A, "state=open&since=2026-03-02T00:00:00%2B00:00&events=1")
+    assert [r["item_id"] for r in body["items"]] == [ids[1]]
+    assert len(body["items"][0]["events"]) == 1
+    # The batch is the bar's own document (every OPEN item with a concrete
+    # acceptance) and the row filters do not reach it.
+    assert body["accept_batch"] == whole["accept_batch"]
+    assert {e["id"] for e in body["accept_batch"]["items"]} == {ids[0], ids[1]}
+
+
+@pytest.mark.asyncio
+async def test_read_compact_mode_has_no_events_acceptance_or_batch(monkeypatch):
+    """The patrol read: the columns that decide who moves next, and no document
+    that is large in its own right. Still the store's order, still filterable."""
+    ids = await _three_dated_items(monkeypatch)
+    await _decide_n_times(CONDUCTOR_A, ids[2], 3)
+    status, body = await _read_with(CONDUCTOR_A, "compact=true")
+    assert status == 200, body
+    assert body["compact"] is True
+    assert "accept_batch" not in body
+    assert [r["item_id"] for r in body["items"]] == ids
+    for row in body["items"]:
+        assert set(row) == set(routes._COMPACT_ROW_FIELDS)
+        assert "events" not in row and "acceptance" not in row and "artifacts" not in row
+        # The derived flags ride along: a patrol read must still see a dead worker.
+        assert {"orphaned", "stale", "acceptance_concrete"} <= set(row)
+        assert row["acceptance_concrete"] is True
+        # The trim orders open rows by age, so a compact row must carry it.
+        assert row["created_at"]
+    newest = body["items"][-1]
+    assert newest["decision"] == "decision 2"
+    assert newest["state"] == "open"
+    # Composes with the filters, and the full read carries no ``compact`` key.
+    _, body = await _read_with(CONDUCTOR_A, f"compact=1&item_id={ids[0]}")
+    assert [r["item_id"] for r in body["items"]] == [ids[0]]
+    _, body = await _read_with(CONDUCTOR_A, "compact=false")
+    assert "compact" not in body
+    assert "accept_batch" in body
+    assert "events" in body["items"][0]
+
+
+@pytest.mark.asyncio
+async def test_a_compact_read_shows_a_stale_worker(monkeypatch):
+    """The patrol read the skill recommends is the compact one, and the dead-worker
+    signal is exactly what a patrol is there to notice — so ``stale`` (and its two
+    siblings) are on the compact row, not only on the full one."""
+    ids = await two_by_two()
+    _SLOTS[CONDUCTOR_A] = _Slot()  # the conductor's own slot is open: not orphaned
+    real_is_stale = wl.is_stale
+    monkeypatch.setattr(wl, "is_stale", lambda item, **kw: real_is_stale(item, window_secs=0, **kw))
+    _, body = await _read_with(CONDUCTOR_A, "compact=true")
+    row = next(r for r in body["items"] if r["item_id"] == ids["item_a"])
+    assert row["stale"] is True, "a bound worker whose slot is not running, past the window"
+    assert row["orphaned"] is False
+    assert row["acceptance_concrete"] is True
+    assert "events" not in row and "acceptance" not in row
+    _, full = await _read(CONDUCTOR_A)
+    full_row = next(r for r in full["items"] if r["item_id"] == ids["item_a"])
+    assert (row["stale"], row["orphaned"]) == (full_row["stale"], full_row["orphaned"])
+
+
+@pytest.mark.asyncio
+async def test_read_of_an_item_nested_too_deep_for_the_parser_answers(monkeypatch):
+    """A 20 KB item file of ten thousand nested arrays is under the reader's ceiling
+    and raises ``RecursionError`` from inside ``json.loads`` — before any fit. The
+    store reads it as content it cannot trust, the same as a torn file, so the read
+    answers 200 with the rest of the board; an event line nested as deep, or holding
+    an integer past the interpreter's digit limit (a bare ``ValueError``), is skipped
+    like a torn line and costs none of its neighbours."""
+    ids = await _three_dated_items(monkeypatch)
+    wl.item_path(CONDUCTOR_A, ids[0]).write_text("[" * 10_000 + "]" * 10_000, encoding="utf-8")
+    events_path = wl.item_events_path(CONDUCTOR_A, ids[1])
+    kept = events_path.read_text(encoding="utf-8")
+    events_path.write_text(
+        "[" * 10_000 + "]" * 10_000 + "\n" + "1" * 5_000 + "\n" + kept, encoding="utf-8"
+    )
+    resp = await routes.api_work_ledger_get(_req("GET", "/api/work-ledger", sk=CONDUCTOR_A))
+    assert resp.status == 200
+    body = json.loads(resp.text)
+    assert [r["item_id"] for r in body["items"]] == ids[1:], "the unreadable item is absent"
+    second = body["items"][0]
+    assert second["events"], "the readable event lines survive the unreadable one"
+
+
+@pytest.mark.asyncio
+async def test_read_of_an_open_item_with_a_year_one_stamp_answers(monkeypatch):
+    """An open, bound item whose hand-edited ``created_at`` is ``0001-01-01T00:00:00``
+    reaches ``is_stale`` before the fit; shifting that stamp into the local zone runs
+    off the calendar. It reads as UTC instead, so the read answers 200 and the item
+    is stale (year one is long past the window), never a 500."""
+    ids = await two_by_two()
+    item_path = wl.item_path(CONDUCTOR_A, ids["item_a"])
+    stored = json.loads(item_path.read_text(encoding="utf-8"))
+    stored["created_at"] = "0001-01-01T00:00:00"
+    stored["last_report_at"] = None
+    item_path.write_text(json.dumps(stored), encoding="utf-8")
+    resp = await routes.api_work_ledger_get(_req("GET", "/api/work-ledger", sk=CONDUCTOR_A))
+    assert resp.status == 200
+    row = next(r for r in json.loads(resp.text)["items"] if r["item_id"] == ids["item_a"])
+    assert row["stale"] is True
+    assert row["created_at"] == "0001-01-01T00:00:00"
+
+
+def test_the_schema_ceiling_restates_the_route_caps():
+    """``validation`` cannot import the handler, so the ``events`` ceiling is
+    spelled twice; this is what keeps the two spellings one number."""
+    events = next(f for f in validation.WORK_LEDGER_READ_SCHEMA.fields if f.name == "events")
+    assert events.max_val == routes._MAX_EVENT_TAIL
+    assert events.min_val == 0
+    assert routes._MAX_EVENT_TAIL <= wl.MAX_EVENTS_PER_ITEM
+    state = next(f for f in validation.WORK_LEDGER_READ_SCHEMA.fields if f.name == "state")
+    assert state.allowed == wl.ITEM_STATES
+    item_id = next(f for f in validation.WORK_LEDGER_READ_SCHEMA.fields if f.name == "item_id")
+    assert item_id.pattern is not None and item_id.pattern.pattern == wl._ITEM_ID_RE.pattern

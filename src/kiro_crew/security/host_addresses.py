@@ -142,8 +142,13 @@ def _linux_netlink_addresses() -> "set[str]":
     read -- no resolver, no packet leaves the host -- but the ``recv`` is a
     blocking socket read, so this dump must run only in the DNS enrichment
     worker, never the synchronous seed (``_NETLINK_ADDRS_PUBLISHED`` keeps
-    ``_host_is_self`` fail-closed until the worker publishes).  Off Linux
-    (or on any failure) it contributes an empty set.
+    ``_host_is_self`` fail-closed until the worker publishes).  Off Linux,
+    on any failure, on a dump that ends without NLMSG_DONE (an error reply,
+    a recv timeout, the datagram cap), on an NLMSG_DONE whose errno is not
+    0, and on a dump the kernel flags
+    NLM_F_DUMP_INTR (the table changed mid-dump) it contributes an empty
+    set: a partial table would open the IP-literal window with an own
+    secondary address missing, so only a complete, consistent dump counts.
     """
     if not sys.platform.startswith("linux") or not hasattr(socket, "AF_NETLINK"):
         return set()
@@ -158,14 +163,23 @@ def _linux_netlink_addresses() -> "set[str]":
             for _ in range(64):  # dump replies span multiple datagrams
                 data = _sock.recv(65536)
                 addrs |= _parse_netlink_addr_dump(data)
-                if any(
-                    struct.unpack_from("=H", data, off + 4)[0] in (2, 3)  # ERROR, DONE
-                    for off in _nlmsg_offsets(data)
-                ):
+                offs = _nlmsg_offsets(data)
+                heads = [struct.unpack_from("=HH", data, off + 4) for off in offs]
+                types = {t for t, _ in heads}
+                if any(f & 0x10 for _, f in heads):  # NLM_F_DUMP_INTR: inconsistent
+                    break
+                done = [off for off, (t, _) in zip(offs, heads) if t == 3]
+                if done:  # NLMSG_DONE: complete only if its int32 errno is 0
+                    ok = all(
+                        off + 20 <= len(data) and struct.unpack_from("=i", data, off + 16)[0] == 0
+                        for off in done
+                    )
+                    return addrs if ok else set()
+                if 2 in types:  # NLMSG_ERROR: the dump is cut short
                     break
     except Exception:
         pass
-    return addrs
+    return set()
 
 
 def _nlmsg_offsets(data: bytes) -> "list[int]":

@@ -153,11 +153,21 @@ def deck_root() -> Path:
     """
     override = os.environ.get(DECK_ROOT_ENV)
     if override:
-        return Path(override).expanduser().resolve()
+        resolved = Path(override).expanduser().resolve()
+        logger.debug("deck root: from %s override -> %r", DECK_ROOT_ENV, resolved)
+        return resolved
     configured = read_engine_config().get("output_dir")
     if isinstance(configured, str) and configured.strip():
-        return Path(configured.strip()).expanduser().resolve()
-    return (Path.home() / ENGINE_DEFAULT_DECK_ROOT).resolve()
+        resolved = Path(configured.strip()).expanduser().resolve()
+        logger.debug("deck root: from engine config output_dir -> %r", resolved)
+        return resolved
+    # POSIX-oriented default: expands the user home and a relative sub-path. On
+    # Windows Path.home() and the separator differ, so logging which branch
+    # produced the root tells a reader whether this fallback ran or a configured
+    # value won — the resolution left no such signal before.
+    resolved = (Path.home() / ENGINE_DEFAULT_DECK_ROOT).resolve()
+    logger.debug("deck root: from home default -> %r", resolved)
+    return resolved
 
 
 def _contained(candidate: Path, root: Path) -> Path | None:

@@ -12,7 +12,11 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 $MaxInstallSeconds = 120
-$MaxGatewayReadySeconds = 30
+# Healthy boot on the runner is ~12-24 s (observed 2026-09-29). /api/ready does not await
+# the Kiro CLI probe, but a tolerated probe timeout (_PROBE_TIMEOUT_SECS = 10 s in
+# src/kiro_crew/kiro_prerequisite.py) still slowed one boot from 12.8 s to 30.1 s on the
+# same sha (issue #11810). 24 s plus that ~17 s is ~41 s, rounded up to 50.
+$MaxGatewayReadySeconds = 50
 
 # `Stop-GatewayTree`, shared with `scripts/smoke-windows-install.ps1`. Both boot a
 # gateway out of an installed tree and then uninstall it, so the teardown that makes
@@ -337,7 +341,7 @@ try {
   # Marks this as a test rig. It grants no launch privilege: the shim above is
   # exec'd by the ordinary in-place path like any other runnable file.
   $env:KIROCREW_FAKE_ACP_TEST_MODE = "1"
-  # Embeddings are default-on; a ~610MB download inside a 30-second readiness
+  # Embeddings are default-on; a ~610MB download inside a 50-second readiness
   # ceiling would fail the gate for a reason unrelated to the artifact.
   $env:KIROCREW_SKIP_MODEL_DOWNLOAD = "1"
   # Bytecode this boot compiles goes OUTSIDE the installed tree, which is what the
@@ -406,7 +410,9 @@ if (-not $gatewayReady) {
   Get-Content -LiteralPath $gatewayStdout -Tail 30 -ErrorAction SilentlyContinue
   Write-Host "Gateway stderr tail:"
   Get-Content -LiteralPath $gatewayStderr -Tail 30 -ErrorAction SilentlyContinue
-  throw "Installed gateway was not ready within $MaxGatewayReadySeconds seconds."
+  $probeTimedOut = [bool](Select-String -LiteralPath $gatewayStderr -Pattern 'probe timed out' `
+    -SimpleMatch -Quiet -ErrorAction SilentlyContinue)
+  throw "Installed gateway was not ready within $MaxGatewayReadySeconds seconds (Kiro CLI probe timed out: $probeTimedOut)."
 }
 Write-Host "Installed gateway became ready in $gatewayElapsed seconds ($startupPycCount pycs)."
 if ($env:GITHUB_STEP_SUMMARY) {

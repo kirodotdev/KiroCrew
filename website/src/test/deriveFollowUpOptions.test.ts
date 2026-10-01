@@ -124,13 +124,6 @@ describe('deriveFollowUpOptions', () => {
     expect(deriveFollowUpOptions(msgs, false).followUpOptions).toEqual(['Alpha', 'Beta', 'Gamma'])
   })
 
-  it('suppresses the plan flag along with the options while a card is pending', () => {
-    const plan = assistant('📋 Plan for: ship it\nStage 1: build\n[OPTIONS: Approve | Revise]')
-    const derived = deriveFollowUpOptions([user('go'), plan], false, true)
-    expect(derived.followUpOptions).toEqual([])
-    expect(derived.followUpIsPlan).toBe(false)
-  })
-
   // A note is written as role="inject", which used to match no branch and fall through.
   // Carrying options is what lets a zero-token cron offer an action without an LLM turn.
   describe('note-carried options', () => {
@@ -140,7 +133,7 @@ describe('deriveFollowUpOptions', () => {
     })
 
     // A note row needs an identity for the same reason an assistant row does: the
-    // plan-dispatch latch and the bar's render key are gated on followUpSourceKey, and a
+    // bar's render key is gated on followUpSourceKey, and a
     // null key would read as "no options on offer" while chips were on screen. Note rows
     // reached this derivation only after the note-carried-options feature landed, so
     // nothing pinned their key until now.
@@ -236,46 +229,14 @@ describe('deriveFollowUpOptions', () => {
       const msgs = [user('go'), assistant(OPTIONS_MSG), noticeInject]
       expect(deriveFollowUpOptions(msgs, false).followUpOptions).toEqual(['Alpha', 'Beta', 'Gamma'])
     })
-
-    // Was asserted as `true` before GPT 5.6 flagged it on a05bb7e38: `followUpIsPlan` is read
-    // ONLY to dispatch /plan-action, so a plan-shaped note could cancel a live plan.
-    it('never claims the plan flag for a note, even when the note text is plan-shaped', () => {
-      const planNote = note('📋 Plan for: ship it\nStage 1: build\n[OPTIONS: Approve | Revise]')
-      const derived = deriveFollowUpOptions([user('go'), planNote], false)
-      expect(derived.followUpOptions).toEqual(['Approve', 'Revise'])
-      expect(derived.followUpIsPlan).toBe(false)
-    })
-
-    // The SAME plan text on a real assistant turn must still dispatch, or the fix would have
-    // broken the orchestrator instead of scoping the flag to its actual provenance.
-    it('still claims the plan flag for the same text on an assistant turn', () => {
-      const planText = '📋 Plan for: ship it\nStage 1: build\n[OPTIONS: Approve | Revise]'
-      expect(deriveFollowUpOptions([user('go'), note(planText)], false).followUpIsPlan).toBe(false)
-      expect(deriveFollowUpOptions([user('go'), assistant(planText)], false).followUpIsPlan).toBe(true)
-    })
-
-    // The transcript guard dispatches a plan action on
-    // `followUpIsPlan && mode === 'orchestrator' && slot`; only the first term a note controls.
-    it('a plan-shaped note carrying Cancel does not dispatch a plan action', () => {
-      // Mirrors that guard with its real inputs.
-      const dispatchesPlanAction = (m: ChatMessage, mode: string, slot: string | null) =>
-        deriveFollowUpOptions([user('go'), m], false).followUpIsPlan && mode === 'orchestrator' && !!slot
-      const planText = '📋 Plan for: ship it\nStage 1: build\n[OPTIONS: Go | Cancel]'
-      expect(deriveFollowUpOptions([user('go'), note(planText)], false).followUpOptions)
-        .toEqual(['Go', 'Cancel'])
-      expect(dispatchesPlanAction(note(planText), 'orchestrator', 'slot-1')).toBe(false)
-      // Negative control: the real orchestrator plan still dispatches, so the assertion above
-      // measures provenance rather than a guard that refuses everything.
-      expect(dispatchesPlanAction(assistant(planText), 'orchestrator', 'slot-1')).toBe(true)
-    })
   })
 
-  // The plan-dispatch latch is acknowledgement-gated on followUpSourceKey, so a row that
-  // re-keys WITHOUT actually changing frees the latch while the same chips are still on
-  // screen — and a stale second click then queues an unintended extra Go. The store keys
+  // Consumers compare followUpSourceKey to tell a fresh offer from a stale one, so a row
+  // that re-keys WITHOUT actually changing reads as a new offer while the same chips are
+  // still on screen. The store keys
   // virtual rows by `clientTs ?? ts` and deliberately carries `clientTs` onto the reloaded
-  // server copy (chatSlice.ts), so this derivation must follow the same order rather than
-  // invent a conflicting one.
+  // server copy (transcript.ts in store/chat), so this derivation must follow the same
+  // order rather than invent a conflicting one.
   describe('row identity stability across hydration', () => {
     const withMeta = (content: string, meta: Record<string, unknown>): ChatMessage =>
       ({ role: 'assistant', content, cls: 'msg msg-a', meta })
@@ -332,15 +293,6 @@ describe('deriveFollowUpOptions', () => {
     it('keeps options when the turn the user started failed', () => {
       const msgs = [user('go'), assistant(OPTIONS_MSG), user('Alpha'), errorRow()]
       expect(deriveFollowUpOptions(msgs, false).followUpOptions).toEqual(['Alpha', 'Beta', 'Gamma'])
-    })
-
-    // Was `keeps the plan flag too` until validation found the double-advance: the pill's click
-    // was dispatched, and a dispatch that fails ambiguously may already have committed.
-    it('drops the plan flag, because a failed plan turn may already have advanced', () => {
-      const plan = assistant('📋 Plan for: ship it\nStage 1: build\n[OPTIONS: Approve | Revise]')
-      const derived = deriveFollowUpOptions([user('go'), plan, user('Approve'), errorRow()], false)
-      expect(derived.followUpOptions).toEqual([])
-      expect(derived.followUpIsPlan).toBe(false)
     })
 
     // Asserted the opposite until validation found the double-run: a `queued` row's QUEUE
@@ -603,56 +555,31 @@ describe('deriveFollowUpOptions', () => {
       expect(deriveFollowUpOptions(msgs, false).followUpOptions).toEqual(['Alpha', 'Beta', 'Gamma'])
     })
 
-    // Demotion was tried first and was not enough: Quick Send sends a pill in one click
-    // whatever `followUpIsPlan` says, so the ambiguous plan case is offered nothing at all.
-    it('offers nothing for a re-offered PLAN row after a completed reply', () => {
-      const plan = assistant('📋 Plan for: ship it\nStage 1: build\n[OPTIONS: Go | Go All | Cancel]')
-      const msgs = [user('go'), plan, user('Go'), assistant('Stage 1 complete.'), errorRow()]
-      const derived = deriveFollowUpOptions(msgs, false)
-      expect(derived.followUpOptions).toEqual([])
-      expect(derived.followUpIsPlan).toBe(false)
-      expect(derived.followUpSourceKey).toBe(null)
-    })
-
-    // Was `keeps the plan flag when only a failed user row was crossed`: that rested on the plan
-    // not having advanced, but the go-latch is per page load, so a reload re-exposes the Go.
-    it('offers nothing for a PLAN row reached by crossing a failed user turn', () => {
+    // A plan-shaped message is an ordinary options message: crossing a failed turn restores
+    // its chips exactly like any other options row.
+    it('restores a plan-shaped row across a failed user turn like any options row', () => {
       const plan = assistant('📋 Plan for: ship it\nStage 1: build\n[OPTIONS: Go | Go All | Cancel]')
       const derived = deriveFollowUpOptions([user('go'), plan, user('Go'), errorRow()], false)
-      expect(derived.followUpOptions).toEqual([])
-      expect(derived.followUpIsPlan).toBe(false)
-      expect(derived.followUpSourceKey).toBe(null)
+      expect(derived.followUpOptions).toEqual(['Go', 'Go All', 'Cancel'])
+      expect(derived.followUpSourceKey).not.toBe(null)
     })
 
-    it('offers nothing for a PLAN row across two stacked failed attempts', () => {
-      const plan = assistant('📋 Plan for: ship it\nStage 1: build\n[OPTIONS: Go | Go All | Cancel]')
-      const msgs = [user('go'), plan, user('Go'), errorRow(), user('Go'), errorRow()]
-      expect(deriveFollowUpOptions(msgs, false).followUpOptions).toEqual([])
-    })
-
-    // Scoping control: suppression is PLAN-only, so a blanket regression fails here.
-    it('still restores NON-plan options across the same failed user turn', () => {
+    it('still restores options across the same failed user turn', () => {
       const msgs = [user('go'), assistant(OPTIONS_MSG), user('Alpha'), errorRow()]
       expect(deriveFollowUpOptions(msgs, false).followUpOptions).toEqual(['Alpha', 'Beta', 'Gamma'])
     })
 
-    // Control: plan chips are not blanket-suppressed. With no failed turn crossed, one-tap
-    // approval is still correct and `followUpIsPlan` must survive.
-    it('keeps a PLAN row offered when no failed turn was crossed', () => {
+    it('offers a plan-shaped row when no failed turn was crossed', () => {
       const plan = assistant('📋 Plan for: ship it\nStage 1: build\n[OPTIONS: Go | Go All | Cancel]')
-      const derived = deriveFollowUpOptions([user('go'), plan], false)
-      expect(derived.followUpOptions).toEqual(['Go', 'Go All', 'Cancel'])
-      expect(derived.followUpIsPlan).toBe(true)
+      expect(deriveFollowUpOptions([user('go'), plan], false).followUpOptions).toEqual(['Go', 'Go All', 'Cancel'])
     })
 
-    // Control for the tests above: without it, they still pass if the
-    // derivation stops keying on the error row at all.
-    it('does not re-offer a PLAN row when the completed reply was not followed by an error', () => {
+    // Control: without it, the restore tests still pass if the derivation stops keying on
+    // the error row at all.
+    it('does not re-offer earlier choices when the completed reply was not followed by an error', () => {
       const plan = assistant('📋 Plan for: ship it\nStage 1: build\n[OPTIONS: Go | Go All | Cancel]')
       const msgs = [user('go'), plan, user('Go'), assistant('Stage 1 complete.')]
-      const derived = deriveFollowUpOptions(msgs, false)
-      expect(derived.followUpOptions).toEqual([])
-      expect(derived.followUpIsPlan).toBe(false)
+      expect(deriveFollowUpOptions(msgs, false).followUpOptions).toEqual([])
     })
 
     it('still suppresses a crossed partial while streaming or a card is pending', () => {

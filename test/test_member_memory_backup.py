@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import stat
 import zipfile
 from contextlib import closing
@@ -477,6 +478,19 @@ def test_private_zip_retention_is_per_store(env):
     assert memory_backup.prune_backups(env.paths["alice"], keep=2) == 1
     assert len(memory_backup.list_backups(env.paths["alice"])) == 2
     assert memory_backup.list_backups(env.paths["bob"]) == [bob]
+
+
+def test_prune_leaves_member_backup_stages_alone(env):
+    """The V1 stale-stage sweep does not reach a member store's ZIP stages."""
+    path = env.paths["alice"]
+    memory_backup.backup_store(path, now=datetime(2026, 9, 7, tzinfo=timezone.utc))
+    out = memory_backup.backup_dir_for(path)
+    stage = out / f".memory.20260101T000000000000Z-{'a' * 32}.zip.{'b' * 32}.partial"
+    stage.write_bytes(b"x")
+    old = datetime.now(timezone.utc).timestamp() - memory_backup.STALE_STAGE_SECONDS - 60
+    os.utime(stage, (old, old))
+    memory_backup.prune_backups(path)
+    assert stage.exists()
 
 
 def test_pending_status_cancel_and_retry_preserve_live_memory_and_backup(env):

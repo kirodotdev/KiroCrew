@@ -7754,9 +7754,13 @@ class TestWatcherSandboxConfinesCredentialsButNotEgress:
         whole directory (which would expose `id_rsa`)."""
         import inspect
 
-        from kiro_crew import sandbox
+        from kiro_crew import sandbox, sandbox_launcher, sandbox_seatbelt
 
-        src = inspect.getsource(sandbox)
+        src = (
+            inspect.getsource(sandbox)
+            + inspect.getsource(sandbox_launcher)
+            + inspect.getsource(sandbox_seatbelt)
+        )
         assert "known_hosts" in src, "the narrow known_hosts exposure disappeared"
         assert '".ssh"' in src, "the .ssh handling disappeared"
 

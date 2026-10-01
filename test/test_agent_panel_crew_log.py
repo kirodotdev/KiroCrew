@@ -28,7 +28,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import pytest
 
@@ -37,6 +37,7 @@ from kiro_crew import crew_log as lg
 from kiro_crew.crew_log import CrewLog
 from kiro_crew.crew_log import emit as crew_log_emit
 from kiro_crew.crew_log import projection as crew_log
+from kiro_crew.crew_log import store
 from kiro_crew.crew_log.entry_types import (
     PANEL_CREW_KEY_LIMIT,
     PANEL_ENTRY_TYPE,
@@ -107,6 +108,27 @@ def _lines(unit_id: str = UNIT) -> list[dict[str, Any]]:
         if raw.strip():
             out.append(json.loads(raw))
     return out
+
+
+def _rewrite_log(unit_id: str, edit: "Callable[[list[str]], list[str]]") -> None:
+    """Read a unit's log, map its lines through *edit*, and write them back.
+
+    The read and the write are held under the unit's own append lock, the one the
+    emitter's writer thread takes to append and to roll a failed append back. A
+    publish hands its line to that writer and returns once the line is on disk, but
+    the writer owns the file beyond that return: a later publish's append, and the
+    truncate that rolls one back on a failed fsync, both run on the writer thread.
+    So a test that reaches past the store to rewrite the file races those: the
+    rewrite and an append can interleave their bytes, or a rollback can cut the
+    rewritten file back to a size that predates it, and the fold then reads a log
+    short by whole entries. Taking the same lock serializes the rewrite against the
+    writer, so the file the fold reads is the one the test wrote.
+    """
+    lock_path = store._lock_path(lg.KIND_SESSION, unit_id)
+    path = lg.crew_log_path(lg.KIND_SESSION, unit_id)
+    with store._open_lock(lock_path):
+        lines = path.read_text(encoding="utf-8").splitlines()
+        path.write_text("\n".join(edit(lines)) + "\n", encoding="utf-8")
 
 
 # --------------------------------------------------------------------- emitter
@@ -262,17 +284,18 @@ def test_eviction_ranks_on_fold_order_not_on_a_stamp():
     _publish(crew_key=keys[0], title="republished", data={"cycle": 99})
 
     # Damage ONLY that last entry, so the empty stamp is the one it keeps.
-    path = lg.crew_log_path(lg.KIND_SESSION, UNIT)
-    lines = path.read_text(encoding="utf-8").splitlines()
-    last = max(
-        i
-        for i, raw in enumerate(lines)
-        if raw.strip() and json.loads(raw).get("type") == PANEL_ENTRY_TYPE
-    )
-    entry = json.loads(lines[last])
-    entry["time"] = 10**19
-    lines[last] = json.dumps(entry)
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    def _damage_last(lines: list[str]) -> list[str]:
+        last = max(
+            i
+            for i, raw in enumerate(lines)
+            if raw.strip() and json.loads(raw).get("type") == PANEL_ENTRY_TYPE
+        )
+        entry = json.loads(lines[last])
+        entry["time"] = 10**19
+        lines[last] = json.dumps(entry)
+        return lines
+
+    _rewrite_log(UNIT, _damage_last)
 
     # One more owner than the cap allows, which forces exactly one eviction.
     _publish(crew_key=keys[PANEL_OWNER_LIMIT], title="newcomer", data={"cycle": 7})
@@ -284,6 +307,42 @@ def test_eviction_ranks_on_fold_order_not_on_a_stamp():
     # The crew that published least recently is the one evicted, not the one whose
     # stamp is unreadable.
     assert keys[1] not in value["owners"], "fold order did not decide the eviction"
+
+
+def test_a_file_rewrite_waits_for_the_unit_append_lock():
+    """A test rewriting a unit's log holds the lock the writer appends under.
+
+    A publish returns once its line is on disk, but the emitter's writer thread owns
+    the file past that return: a later publish's append, and the truncate that rolls
+    a failed append back, both run there. A rewrite that reached straight past the
+    store could interleave its bytes with one of those or be truncated by a
+    rollback, and the fold would then read a log short by whole entries -- the shape
+    behind the eviction above dropping the crew it was meant to keep. The guarantee
+    that closes it is that :func:`_rewrite_log` takes the unit's own append lock, so
+    this holds that lock and shows the rewrite cannot proceed until it is released.
+    """
+    import threading
+
+    _unit()
+    _publish(data={"cycle": 1})
+
+    started = threading.Event()
+    finished = threading.Event()
+
+    def _rewrite() -> None:
+        started.set()
+        _rewrite_log(UNIT, lambda lines: lines)
+        finished.set()
+
+    lock_path = store._lock_path(lg.KIND_SESSION, UNIT)
+    with store._open_lock(lock_path):
+        worker = threading.Thread(target=_rewrite)
+        worker.start()
+        assert started.wait(timeout=5.0), "the rewrite thread never started"
+        # The lock is held here, so the rewrite must be parked waiting for it.
+        assert not finished.wait(timeout=0.5), "the rewrite did not wait for the lock"
+    worker.join(timeout=5.0)
+    assert finished.is_set(), "the rewrite never completed once the lock was free"
 
 
 def test_the_recorded_order_beats_a_backward_header_clock(monkeypatch):
@@ -396,14 +455,16 @@ def test_an_unreadable_time_costs_the_stamp_not_the_panel():
     """
     _unit()
     _publish(data={"cycle": 47})
-    path = lg.crew_log_path(lg.KIND_SESSION, UNIT)
-    lines = path.read_text(encoding="utf-8").splitlines()
-    for i, raw in enumerate(lines):
-        entry = json.loads(raw) if raw.strip() else {}
-        if entry.get("type") == PANEL_ENTRY_TYPE:
-            entry["time"] = 10**19  # outside what a datetime can hold
-            lines[i] = json.dumps(entry)
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    def _damage_every_panel(lines: list[str]) -> list[str]:
+        for i, raw in enumerate(lines):
+            entry = json.loads(raw) if raw.strip() else {}
+            if entry.get("type") == PANEL_ENTRY_TYPE:
+                entry["time"] = 10**19  # outside what a datetime can hold
+                lines[i] = json.dumps(entry)
+        return lines
+
+    _rewrite_log(UNIT, _damage_every_panel)
 
     value = _folded()
     assert value["published_at"] == "", "an unreadable time must answer the empty stamp"

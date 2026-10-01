@@ -48,10 +48,12 @@ WINDOW_SECS = 300.0
 #: so that budget only has to absorb retries and a nested tree. A tag vocabulary is
 #: a handful of workflow states, so tags share the folder budget: enough to seed
 #: a board in one turn, far below what an unattended loop would need to grow
-#: ``tags.json`` without bound.
+#: ``tags.json`` without bound. Board columns are one per workflow state for the
+#: same reason, so they get the same budget.
 MAX_SESSION_CREATES_PER_WINDOW = 20
 MAX_FOLDER_CREATES_PER_WINDOW = 10
 MAX_TAG_CREATES_PER_WINDOW = 10
+MAX_TAG_COLUMN_CREATES_PER_WINDOW = 10
 
 #: How often stale buckets are swept, so the map cannot grow without bound across
 #: the many distinct session keys a long-lived gateway sees.
@@ -64,11 +66,13 @@ _last_sweep = 0.0
 SESSION_CREATE = "session_create"
 FOLDER_CREATE = "folder_create"
 TAG_CREATE = "tag_create"
+TAG_COLUMN_CREATE = "tag_column_create"
 
 _BUDGETS = {
     SESSION_CREATE: MAX_SESSION_CREATES_PER_WINDOW,
     FOLDER_CREATE: MAX_FOLDER_CREATES_PER_WINDOW,
     TAG_CREATE: MAX_TAG_CREATES_PER_WINDOW,
+    TAG_COLUMN_CREATE: MAX_TAG_COLUMN_CREATES_PER_WINDOW,
 }
 
 
@@ -87,6 +91,27 @@ def _sweep(now: float, *, force: bool = False) -> None:
             stale.append(key)
     for key in stale:
         _buckets.pop(key, None)
+
+
+def has_create_budget(verb: str, caller_key: str, *, now: float | None = None) -> bool:
+    """Whether :func:`allow_create` would admit *caller_key* now. Spends nothing.
+
+    The read-only twin a preview asks, with the same fail-closed answers for an
+    unknown verb or an empty key. Two calls racing between this answer and the
+    real ``allow_create`` can still see different budgets; the real call stays
+    the one that decides.
+    """
+    budget = _BUDGETS.get(verb)
+    if budget is None or not caller_key:
+        return False
+    if now is None:
+        now = time.monotonic()
+    cutoff = now - WINDOW_SECS
+    with _lock:
+        bucket = _buckets.get((verb, caller_key))
+        if bucket is None:
+            return True
+        return sum(1 for t in bucket if t >= cutoff) < budget
 
 
 def allow_create(verb: str, caller_key: str, *, now: float | None = None) -> bool:

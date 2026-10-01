@@ -130,9 +130,9 @@ RESERVED_SLOTS: "dict[str, str]" = {
         "embeddings.register_embedding_backend() instead."
     ),
     "package_manager": (
-        "no core call site: install paths (ollama, ffmpeg, whisper) are inline "
-        "step-by-step brew/curl/pip logic in cli_doctor.py, not a single "
-        "plan-resolution point this seam could own."
+        "no core call site: external-tool install hints (ffmpeg, faiss, the voice-aws "
+        "extra) are inline brew/winget/pip text in doctor_checks/features.py, not a "
+        "single plan-resolution point this seam could own."
     ),
     "feature_apps": (
         "no core call site: bundled apps are discovered through "

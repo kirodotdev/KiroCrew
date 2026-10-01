@@ -64,12 +64,11 @@ slot, so it lives here instead of weakening the guard.
 from __future__ import annotations
 
 import asyncio
-import gzip
-import json
 import logging
 import re
 import urllib.parse
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from aiohttp import web
@@ -81,8 +80,10 @@ from kiro_crew.dashboard.session_transfer import (
     SnapshotUnstable,
     TranscriptBusy,
     TranscriptWithheld,
+    _rm_import_temps,
     build_transfer_bundle_async,
-    bundle_rejection_reason,
+    release_bundle_files,
+    write_bundle_file,
 )
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.sel import sel
@@ -161,30 +162,32 @@ def content_disposition(filename: str) -> str:
     return f"attachment; filename*=UTF-8''{urllib.parse.quote(filename, safe='')}"
 
 
-def gzip_bundle(bundle: dict[str, Any]) -> bytes:
-    """Serialise *bundle* as gzipped JSON. **Blocking CPU, thread-safe.**
+def _stage_export(bundle: dict[str, Any]) -> Path:
+    """The export body, built compressed in a temp file. **Blocking.**
 
-    Offloaded by the caller: a bundle runs to ``session_transfer``'s 20M-char
-    content cap, and both the JSON encode and the deflate over that much text are
-    far too much CPU to hold the event loop with — the same starvation that stops
-    the liveness heartbeat and lets the watchdog exit the gateway.
-
-    ``ensure_ascii`` is left at its DEFAULT, and that is a correctness choice
-    rather than a stylistic one. A transcript can legitimately contain a LONE
-    SURROGATE: ``_validate_bundle`` accepts any ``str`` content, and
-    ``json.loads('"\\ud800"')`` yields exactly that, so an imported conversation
-    can persist one. With ``ensure_ascii=False`` the following ``.encode("utf-8")``
-    raises ``UnicodeEncodeError`` on it and the export answers 500 for a session
-    the user can otherwise read. ASCII escaping represents the same character as
-    ``\\ud800`` and round-trips through ``json.loads`` unchanged. The size cost is
-    paid back by the gzip immediately below.
-
-    ``mtime=0`` because the export instant is already inside the document as
-    ``source.exported_at``. A second copy of it in the gzip header would add
-    nothing and would make two otherwise-identical exports differ in their bytes.
+    Offloaded by the caller: a bundle can carry a whole long session, and both
+    the JSON encode and the deflate over that much text are far too much CPU to
+    hold the event loop with. Neither the document nor its compressed form is
+    ever resident: the file is what :class:`_StagedExport` sends.
     """
-    raw = json.dumps(bundle, separators=(",", ":")).encode("utf-8")
-    return gzip.compress(raw, mtime=0)
+    return write_bundle_file(bundle, compress=True)
+
+
+class _StagedExport(web.FileResponse):
+    """An export served from its staged file, which is removed once sent.
+
+    The file is streamed to the socket a chunk at a time, so a session of any
+    size leaves the gateway without its compressed body ever being held in
+    memory. It is removed when the send ends, whether it completed or the
+    client went away; a response that is never sent leaves its file under the
+    egress staging directory.
+    """
+
+    async def prepare(self, request: web.BaseRequest) -> Any:
+        try:
+            return await super().prepare(request)
+        finally:
+            await asyncio.to_thread(_rm_import_temps, self._path)
 
 
 #: Whether the operator has granted STANDING PERMISSION for the file export to
@@ -235,7 +238,7 @@ def _export_layer_b_requested(request: web.Request) -> bool:
     return raw.strip().lower() in ("1", "true", "yes", "on")
 
 
-async def api_chat_slot_export(request: web.Request) -> web.Response:
+async def api_chat_slot_export(request: web.Request) -> web.StreamResponse:
     """GET /api/chat/slots/{slot}/export — download one session as a file."""
     state: DashboardState = request.app["state"]
     request_app = request.get("app", "")
@@ -408,72 +411,59 @@ async def api_chat_slot_export(request: web.Request) -> web.Response:
         # answer than saying so now. Only measurable after the build — the
         # visible transcript lives on disk, not in the resident window.
         _audit("denied", error="no visible messages")
+        release_bundle_files(bundle)
         return web.json_response(
             {"error": "this session has no messages to export", "code": "export_bundle_empty"},
             status=400,
         )
 
-    # A file must not be handed over unless this instance's OWN importer would
-    # accept it. The bounds are the importer's (5 000 messages, 1 MB per message,
-    # 20 MB of content total) and they are consulted through the validator itself
-    # rather than restated here, so the two cannot drift apart.
-    #
-    # Without this, a session past those bounds exports 200 and is then refused
-    # wherever it is taken: a file that looked complete, cost a download, and can
-    # never be installed. Refusing at the producer puts the failure next to the
-    # only party who can act on it.
-    reason, importer_code = bundle_rejection_reason(bundle)
-    if reason:
-        # The importer's own code goes in the AUDIT, not the response body. Nothing
-        # reads it off the wire, and the response already says which bound was hit
-        # in prose -- a machine-readable third copy of the same fact is a field this
-        # code invents and no caller consumes.
-        _audit("denied", error=f"the importer would reject this bundle: {importer_code}")
-        return web.json_response(
-            {
-                "error": f"this session is too large to export: {reason}",
-                "code": "export_bundle_rejected",
-            },
-            status=400,
+    # Serialised to a temp file a message at a time, with a Layer B log streamed
+    # from its snapshot, and sent from that file, so neither the document nor
+    # its compressed form is ever resident.
+    try:
+        staged = await asyncio.to_thread(_stage_export, bundle)
+    except Exception:
+        # A full staging volume, most often. The same audited, coded failure as
+        # a build that could not complete; nothing reached the client.
+        logger.warning(
+            "session_export: could not serialise the bundle for slot=%s", slot_key, exc_info=True
         )
-
-    body = await asyncio.to_thread(gzip_bundle, bundle)
+        _audit("error", error="bundle serialisation failed")
+        return web.json_response(
+            {"error": "the session could not be exported", "code": "export_failed"},
+            status=500,
+        )
+    finally:
+        release_bundle_files(bundle)
     filename = export_filename(bundle.get("title") or "")
 
     publication_key = slot_history_key(slot)
 
-    def _commit_response() -> web.Response:
+    def _commit_response() -> tuple[web.StreamResponse, int]:
+        size = staged.stat().st_size
+        headers = {
+            "Content-Type": "application/gzip",
+            "Content-Disposition": content_disposition(filename),
+            # The body is a session's own text coming back out of the gateway on
+            # the dashboard's own origin. Without this a browser is free to sniff
+            # it and render it as something executable instead of saving it.
+            "X-Content-Type-Options": "nosniff",
+        }
         log = state.conversation_log
         if log is None:
-            return web.Response(
-                body=body,
-                content_type="application/gzip",
-                headers={
-                    "Content-Disposition": content_disposition(filename),
-                    "Content-Length": str(len(body)),
-                    "X-Content-Type-Options": "nosniff",
-                },
-            )
+            return _StagedExport(staged, headers=headers), size
         expected_keys = getattr(bundle, "publication_keys", (publication_key,))
         with log.publication_hold(publication_key, expected_keys=expected_keys):
-            return web.Response(
-                body=body,
-                content_type="application/gzip",
-                headers={
-                    "Content-Disposition": content_disposition(filename),
-                    "Content-Length": str(len(body)),
-                    # The body is a session's own text coming back out of the gateway on
-                    # the dashboard's own origin. Without this a browser is free to sniff
-                    # it and render it as something executable instead of saving it.
-                    "X-Content-Type-Options": "nosniff",
-                },
-            )
+            return _StagedExport(staged, headers=headers), size
 
     # Response construction is synchronous, so the publication lock covers the
     # commit without crossing an await. The socket write happens after the handler
-    # returns and is the unavoidable residual transmit window.
+    # returns and is the unavoidable residual transmit window. Until the response
+    # owns the staged file, every exit here removes it.
+    handed_off = False
     try:
-        response = await asyncio.to_thread(_commit_response)
+        response, size = await asyncio.to_thread(_commit_response)
+        handed_off = True
     except TranscriptBusy:
         _audit("failure", error="transcript busy at response commit")
         return web.json_response(
@@ -485,6 +475,9 @@ async def api_chat_slot_export(request: web.Request) -> web.Response:
         )
     except TranscriptWithheld as exc:
         return _refuse_restricted(f"on-disk line at response commit: {exc}")
+    finally:
+        if not handed_off:
+            await asyncio.to_thread(_rm_import_temps, staged)
     # Recorded only once the commit has taken the response: an ``allowed`` written
     # before the revalidation above would name a byte count that was never
     # transmitted whenever the line tightened during the build, and sit right
@@ -493,7 +486,7 @@ async def api_chat_slot_export(request: web.Request) -> web.Response:
         "allowed",
         resources=(
             f"slot={slot_key},messages={len(bundle['messages'])},"
-            f"bytes={len(body)},layer_b={'yes' if bundle.get('layer_b') else 'no'}"
+            f"bytes={size},layer_b={'yes' if bundle.get('layer_b') else 'no'}"
         ),
     )
     return response

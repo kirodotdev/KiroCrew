@@ -61,7 +61,15 @@ from kiro_crew.messaging.link import (
     release_conversation_location,
     seed_generation,
 )
+from kiro_crew.messaging.queue_drain import entries_queued_by, owner_token
 from kiro_crew.safety_override import safety_override
+from kiro_crew.session_lifecycle import (
+    STOP_DECLINED_COMPACTING_TEXT,
+    compaction_in_flight,
+    consume_stop_declined,
+    decline_stop,
+    force_stop_keeping_others,
+)
 from kiro_crew.wecom.attachments import process_wecom_attachments
 from kiro_crew.wecom.commands import (
     ConversationState,
@@ -73,6 +81,13 @@ from kiro_crew.wecom.commands import (
 )
 from kiro_crew.wecom.renderer import WeComRenderer
 from kiro_crew.wecom.transport import WECOM_CAPABILITIES
+
+#: The stop command's two replies (pre-existing wording, hoisted so both call
+#: sites share one literal).
+_STOPPED_TEXT = "\U0001f6d1 \u5df2\u505c\u6b62\u672c\u6b21\u56de\u590d\u3002"
+_STOP_FAILED_TEXT = (
+    "\u26a0\ufe0f \u505c\u6b62\u5931\u8d25\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5\u3002"
+)
 
 if TYPE_CHECKING:
     from kiro_crew.config.loader import KiroCrewConfig
@@ -703,6 +718,41 @@ class WeComDispatcher:
         """
         assert self.client is not None
         session_key = self._session_key(inbound.userid)
+        # Before the Stop record: a Stop the session's own automatic compaction
+        # declines ends nothing and must record nothing.
+        if compaction_in_flight(self.sessions, session_key):
+            # A repeat within the window is the second press and forces. Keyed
+            # by the presser too: under a unified ``dm_scope`` one session key
+            # is every user's, and another user's declined Stop must not arm
+            # this user's first press.
+            if not consume_stop_declined(session_key, inbound.userid):
+                # Sent before the marker is armed: an undelivered warning plus an
+                # armed escalation is a retry that hard-resets the session with
+                # this user never told that it would.
+                client = self.client
+                await decline_stop(
+                    session_key,
+                    inbound.userid,
+                    lambda: client.say(inbound, STOP_DECLINED_COMPACTING_TEXT),
+                )
+                return
+            note_user_stop(self.sessions, session_key)
+            try:
+                # Through the queue-keeping helper: this channel queues nothing
+                # itself, but under a unified ``dm_scope`` the key is shared
+                # with channels that do, and the hard reset would pop their
+                # queued messages and unlink their attachments. The presser's
+                # own token matches none of those entries, so all are carried.
+                forced = await force_stop_keeping_others(
+                    self.sessions,
+                    session_key,
+                    entries_queued_by(owner_token("wecom", (inbound.userid,))),
+                )
+            except Exception:
+                logger.warning("wecom /stop: force stop failed for %s", session_key, exc_info=True)
+                forced = False
+            await self.client.say(inbound, _STOPPED_TEXT if forced else _STOP_FAILED_TEXT)
+            return
         # Recorded before the busy check, so a Stop landing while the session is
         # between an abandoned attempt and its replay still counts (see
         # ``note_user_stop``).
@@ -719,9 +769,9 @@ class WeComDispatcher:
             await cancel(wait_ack_timeout=0)
         except Exception:
             logger.warning("WeCom /stop: cancel failed for %s", session_key, exc_info=True)
-            await self.client.say(inbound, "⚠️ 停止失败，请稍后重试。")
+            await self.client.say(inbound, _STOP_FAILED_TEXT)
             return
-        await self.client.say(inbound, "🛑 已停止本次回复。")
+        await self.client.say(inbound, _STOPPED_TEXT)
 
     async def _handle_compact(self, inbound: "WeComInbound") -> None:
         """In-place ACP ``/compact`` on the user's current session."""

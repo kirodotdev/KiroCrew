@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import collections
 import functools
+import hmac
 import json
 import logging
 import os
@@ -36,6 +37,7 @@ from kiro_crew.dashboard.handlers._shared import (
 )
 from kiro_crew.dashboard.state import DashboardState, chat_message_frame
 from kiro_crew.dashboard.status_counts import cached_status_snapshot
+from kiro_crew.dashboard.urls import is_loopback
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.gateway_restart import resolve_restart_launcher
 from kiro_crew.git_divergence import (
@@ -1546,6 +1548,26 @@ async def _restart_gateway(
             await state.sessions.close_all()
         except Exception:
             logger.debug("Session cleanup before restart failed", exc_info=True)
+        # The broker this gateway spawned dies with it, the same as on a clean
+        # shutdown; an adopted daemon belongs to its own owner and is left alone,
+        # as ``GatewayManager.shutdown`` already does. The exec below does not run
+        # that shutdown, and the successor can only replace a survivor whose owner
+        # pid is its own (an exec that kept the pid) or gone. Through a launcher
+        # that runs the new gateway as a child, this pid lives on as its
+        # supervisor: the daemon's owner-liveness check keeps passing, and the
+        # successor refuses a broker "owned by another live gateway" for its whole
+        # lifetime. Sessions are closed, so nothing is mid-call. The stop is
+        # bounded: the daemon's own drain budget on SIGTERM, then a SIGKILL and
+        # a reap of its pooled backends if the drain does not finish.
+        # Wired by the orchestrator after dashboard init; absent means no broker.
+        stop_broker = getattr(state, "_mcp_gateway_stop", None)
+        if stop_broker is not None:
+            try:
+                await stop_broker()
+            except Exception:
+                # Past the point of no return: a broker that will not stop must
+                # not strand a gateway whose sessions are already closed.
+                logger.debug("MCP broker stop before restart failed", exc_info=True)
         sys.stdout.flush()
         sys.stderr.flush()
         # The safety-override record publishes on a worker thread (its callers sit
@@ -2419,6 +2441,64 @@ async def api_update_channel(request: web.Request) -> web.Response:
             ),
         }
     )
+
+
+async def api_update_revalidate(request: web.Request) -> web.Response:
+    """POST /api/update/revalidate — drop the cached verdict and re-check now.
+
+    A terminal ``kirocrew update`` on a git checkout moves the tree while THIS
+    gateway keeps running, so its cached ``_update_info`` verdict still describes
+    the pre-update HEAD. The About panel keeps showing "Update available" for a
+    checkout that is now current until the 12-hourly poll, a manual check, or a
+    restart. This endpoint lets the CLI reconcile the badge the moment the update
+    finishes.
+
+    It does MORE than the recompute ``GET /api/update/check`` already performs:
+    it first calls :func:`_invalidate_update_check`, which bumps the check
+    GENERATION. That is the load-bearing half — an update check ALREADY in flight
+    against the pre-update state (the 12-hourly coordinator, or a dashboard poll
+    that overlapped the update) cannot be cancelled, and without the generation
+    bump it finishes after the recompute and re-pins its stale verdict plus the
+    12-hourly clock. A bare re-check cannot close that race; the invalidation can.
+
+    Authenticated like the other CLI→gateway endpoints (``/api/token/local``,
+    ``/api/logout``): loopback origin plus the per-generation local secret in
+    ``X-Local-Secret``, compared in constant time. This is a CLI-only endpoint —
+    the dashboard panel reconciles through ``GET /api/update/check`` — so it does
+    NOT use the browser owner gate, whose identity the raw local-secret request
+    never carries.
+    """
+    if not is_loopback(request.remote or ""):
+        await _audit_update_event(
+            request, operation="update.revalidate", outcome="denied", resources="non-loopback"
+        )
+        return web.json_response({"error": "loopback only", "code": "loopback_only"}, status=403)
+    expected = request.app.get("local_secret", "")
+    provided = request.headers.get("X-Local-Secret", "")
+    # Compare as bytes: hmac.compare_digest raises TypeError on a str carrying a
+    # non-ASCII character, and this header is attacker-controllable on the
+    # tokenless bypass path, so a str compare would turn an auditable 403 into an
+    # unaudited 500. Encoding both sides makes a non-ASCII secret an ordinary
+    # constant-time mismatch instead.
+    if (
+        not expected
+        or not provided
+        or not hmac.compare_digest(str(expected).encode("utf-8"), provided.encode("utf-8"))
+    ):
+        await _audit_update_event(
+            request, operation="update.revalidate", outcome="denied", resources="invalid-secret"
+        )
+        return web.json_response({"error": "invalid secret", "code": "invalid_secret"}, status=403)
+
+    # A config read is disk I/O on a path the operator may have put on a network
+    # mount, so keep the reads off the event loop for the same reason the channel
+    # switch does.
+    channel = await asyncio.to_thread(_release_channel)
+    _invalidate_update_check(channel)
+    await _do_update_check()
+    await _audit_update_event(request, operation="update.revalidate", outcome="completed")
+    # The CLI reads only the HTTP status, so the body carries nothing more.
+    return web.json_response({"ok": True})
 
 
 async def api_gateway_restart(request: web.Request) -> web.Response:

@@ -9,8 +9,7 @@ The actual implementation lives in:
 - chat_persistence.py — session save/restore, history
 - chat_runner.py      — _run_chat, streaming, prompt expansion
 - chat_handlers.py    — HTTP API endpoints
-- chat_orchestrator.py — stage loop, plan actions
-- chat_title.py       — title generation, plan metadata
+- chat_title.py       — title generation
 - chat_regenerate.py  — regenerate, variant switch, edit-resend
 - chat_folders.py     — folder CRUD, pin, assignment
 - chat_voice.py       — TTS config + synthesis (optional)
@@ -72,6 +71,7 @@ from kiro_crew.dashboard.chat_handlers import (  # noqa: F401
     api_chat_slot_reset_conversation,
     api_chat_slot_resume,
     api_chat_slot_selection_capabilities,
+    api_chat_slot_source_link_unlink,
     api_chat_slot_source_links,
     api_chat_slot_stop,
     api_chat_slot_summary,
@@ -90,12 +90,6 @@ from kiro_crew.dashboard.chat_mirror import (  # noqa: F401
 )
 from kiro_crew.dashboard.chat_nav import (  # noqa: F401
     api_chat_nav_resolve_links,
-)
-from kiro_crew.dashboard.chat_orchestrator import (  # noqa: F401
-    _build_stage_context,
-    _previous_result_paths,
-    _stage_loop,
-    api_chat_plan_action,
 )
 from kiro_crew.dashboard.chat_persistence import (  # noqa: F401
     _attach_variants,
@@ -148,15 +142,13 @@ from kiro_crew.dashboard.chat_tags import (  # noqa: F401
 )
 from kiro_crew.dashboard.chat_title import (  # noqa: F401
     _build_title_prompt,
-    _extract_and_redact_plan_metadata,
     _generate_title_via_kiro,
     _maybe_auto_title,
     _persist_title,
-    _rephrase_plan_lite,
-    _reset_auto_run_for_new_plan,
     api_chat_slot_generate_title,
     api_chat_slot_rename,
 )
+from kiro_crew.dashboard.chat_todo import api_chat_slot_todo  # noqa: F401
 from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     _BLOCKED_SLASH_COMMANDS,
     _SLASH_COMMANDS,

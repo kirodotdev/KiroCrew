@@ -563,12 +563,10 @@ def provision_app_deps(app_name: str, root: Path) -> str:
             lflags = os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
             lock_name = lock_path.name if pin.fd is not None else str(lock_path)
             # Concurrent openat(O_CREAT) of an absent file can return ENOENT on
-            # macOS. Elect one creator, then let contenders open its existing
-            # inode. Never recreate a lock that disappears before the reopen.
-            try:
-                lfd = os.open(lock_name, lflags | os.O_CREAT | os.O_EXCL, 0o644, dir_fd=pin.fd)
-            except FileExistsError:
-                lfd = os.open(lock_name, lflags, dir_fd=pin.fd)
+            # macOS; the shared helper elects one creator, then lets contenders
+            # open its existing inode, and never recreates a lock that
+            # disappears before the reopen.
+            lfd = platform_compat.open_create_or_existing(lock_name, lflags, 0o644, dir_fd=pin.fd)
             with os.fdopen(lfd, "r+") as lf:
                 with platform_compat.file_lock(lf.fileno(), exclusive=True):
                     provision_error = _provision_app_deps_locked(app_name, root, pin)

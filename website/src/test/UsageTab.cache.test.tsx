@@ -30,9 +30,10 @@ vi.mock('../api/client', () => ({
   },
 }))
 
-function report(plan = 'Cached plan'): NormalizedUsage {
+function report(plan = 'Cached plan', refreshing = false): NormalizedUsage {
   const period = { sessions: 3, messages: 12, toolCalls: 2 }
   return {
+    refreshing,
     billing: { plan, unit: 'credits', used: 10, limit: 100, percentUsed: 10 },
     sessions: {
       total: 3, today: period, thisWeek: period, thisMonth: period,
@@ -72,7 +73,7 @@ async function tick(ms = 10) {
   await act(() => vi.advanceTimersByTimeAsync(ms))
 }
 
-describe.each([['Usage tab', UsageTab], ['Overview summary', OverviewPage]] as const)('%s cache', (_name, View) => {
+describe.each([['Usage tab', UsageTab], ['Overview summary', OverviewPage]] as const)('%s cache', (name, View) => {
   it('reopens from the cache without fetching again inside five minutes', async () => {
     const first = mount(View)
     await tick()
@@ -112,6 +113,37 @@ describe.each([['Usage tab', UsageTab], ['Overview summary', OverviewPage]] as c
     expect(screen.getByText('Updated plan')).toBeInTheDocument()
     await tick(FIVE_MINUTES)
     expect(fetchUsage).toHaveBeenCalledTimes(3)
+  })
+
+  it('fast-polls while a cold session scan refreshes without hiding billing', async () => {
+    fetchUsage
+      .mockResolvedValueOnce(report('Visible plan', true))
+      .mockResolvedValueOnce(report('Fresh plan'))
+    mount(View)
+    await tick()
+    expect(screen.getByText('Visible plan')).toBeInTheDocument()
+    const loadingId = name === 'Usage tab'
+      ? 'usage-session-refreshing'
+      : 'overview-usage-refreshing'
+    expect(screen.getByTestId(loadingId)).toBeInTheDocument()
+    await tick(1_000)
+    expect(fetchUsage).toHaveBeenCalledTimes(2)
+    expect(screen.getByText('Fresh plan')).toBeInTheDocument()
+    expect(screen.queryByTestId(loadingId)).not.toBeInTheDocument()
+  })
+
+  it('backs off after a partial-refresh poll fails', async () => {
+    fetchUsage
+      .mockResolvedValueOnce(report('Visible plan', true))
+      .mockRejectedValueOnce(new Error('Refresh unavailable'))
+    mount(View)
+    await tick()
+    await tick(1_000)
+    expect(fetchUsage).toHaveBeenCalledTimes(2)
+    expect(screen.getByText('Visible plan')).toBeInTheDocument()
+    expect(screen.getByText('Refresh unavailable')).toBeInTheDocument()
+    await tick(1_000)
+    expect(fetchUsage).toHaveBeenCalledTimes(2)
   })
 
   it('keeps refreshing a mounted report in a hidden browser tab', async () => {

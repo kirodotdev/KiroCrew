@@ -258,7 +258,8 @@ describe('AboutPanel download states', () => {
     expect(screen.queryByTestId('update-manual-fallback')).toBeNull()
   })
 
-  // auto-update.js emits phase:'install'; the panel must branch on it, or an
+  // The update lanes under electron/runtime/update/ (feed-lane.js,
+  // managed-lane.js) emit phase:'install'; the panel must branch on it, or an
   // install failure is labelled "couldn't check for updates", unmounts the card,
   // and hides the manual-reinstall link at the exact moment it exists for.
   it('keeps an INSTALL failure in the card, labelled honestly, with the escape hatch', async () => {

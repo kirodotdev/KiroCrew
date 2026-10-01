@@ -634,9 +634,9 @@ describe('AppsPage — uninstall dialog', () => {
     // which is exactly how the never-registered route (#10880) stayed
     // invisible to this suite. This one routes through the REAL
     // `api.uninstallPreview` and stubs only `fetch`, so it exercises the URL
-    // in `client.ts` and the `j()` non-OK throw: if the client ever fetches a
-    // path the backend does not register, the 404 body below turns into a
-    // rejection and the panel assertion fails.
+    // in `api/client/apps.ts` and the `j()` non-OK throw: if the client ever
+    // fetches a path the backend does not register, the 404 body below turns
+    // into a rejection and the panel assertion fails.
     const actual = await vi.importActual<typeof import('../api/client')>('../api/client')
     const fetchSpy = vi.fn(async (input: RequestInfo | URL) => {
       if (String(input) !== '/api/apps/secretary/uninstall/preview') {

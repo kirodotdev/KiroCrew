@@ -81,11 +81,8 @@ def test_goose_is_not_in_the_capability_sets_it_has_no_evidence_for() -> None:
     steer method, or an internal sandbox that would displace the credential mask
     this harness depends on.
 
-    ``ACP_BACKENDS_COMPACT`` is deliberately NOT in this list, and the sibling
-    test below says why: goose publishes ``compact`` among the built-ins its
-    ``available_commands_update`` carries and dispatches it before any model
-    turn, so its membership rests on evidence rather than on resemblance.
-    ``test_compaction_other_backends`` holds that evidence.
+    ``ACP_BACKENDS_COMPACT`` is deliberately NOT in this list: goose is a member,
+    on the driven capture the sibling test below names.
     """
     assert GOOSE not in sdk_backends.ACP_BACKENDS_ACP_RUNTIME
     assert GOOSE not in sdk_backends.ACP_BACKENDS_STEER
@@ -93,28 +90,34 @@ def test_goose_is_not_in_the_capability_sets_it_has_no_evidence_for() -> None:
     assert GOOSE not in sdk_backends.ACP_BACKENDS_SESSION_SHARING
 
 
-def test_goose_compaction_is_unclassified_pending_a_capture() -> None:
-    """Absence as a decision, and the decision is about the evidence CLASS.
+def test_goose_compacts_inline_on_a_driven_capture() -> None:
+    """goose 1.50.1 serves a manual ``/compact`` and finishes it inside the turn.
 
-    goose 1.50.1 -- the release this harness pins as its VERIFIED RANGE --
-    dispatches ``/compact`` out of ``Agent::reply`` through ``execute_command``
-    before a model turn starts, and its own ``command_starts_turn("/compact")``
-    is false, so its SOURCE says the compaction finishes inside the prompt turn.
-    What it lacks is a driven capture, which is the bar
-    ``ACP_BACKENDS_COMPACT`` holds its members to.
-
-    So goose is in none of the three compaction sets, and that is the position
-    every arm has to agree on: it is not offered a manual ``/compact``, it is not
-    claimed to manage its own context, and it is not recycled.
+    ``test/fixtures/acp_frames/goose/compact-live.jsonl`` is the drive:
+    ``usage_update.used`` climbed 1529 -> 1991 -> 2453, the ``/compact`` turn
+    ended with ``end_turn`` and no status frame, and the next ordinary turn read
+    1749. So Crew compacts it, and it is neither harness-managed nor recycled.
     """
-    assert GOOSE not in sdk_backends.ACP_BACKENDS_COMPACT
-    assert GOOSE not in sdk_backends.ACP_BACKENDS_INLINE_COMPACTION
+    assert GOOSE in sdk_backends.ACP_BACKENDS_COMPACT
+    assert GOOSE in sdk_backends.ACP_BACKENDS_INLINE_COMPACTION
     harness_managed = getattr(sdk_backends, "ACP_BACKENDS_HARNESS_MANAGED_COMPACTION", None)
     assert harness_managed is not None, "agent_sdk.backends declares no harness-managed set"
     assert GOOSE not in harness_managed
     recycle = getattr(sdk_backends, "ACP_BACKENDS_CONTEXT_RECYCLE", None)
     assert recycle is not None, "agent_sdk.backends declares no context-recycle set"
     assert GOOSE not in recycle
+
+
+def test_goose_takes_no_effort_channel_while_its_option_is_per_model() -> None:
+    """goose advertises ``thinking_effort`` and is still kept out of the effort channel.
+
+    The option is offered per model. On a model with no extended thinking it offers
+    only ``off``, accepts ``high`` without error and reads back ``off``, so a write
+    there changes nothing and says nothing. Joining waits for a capture of the levels
+    a thinking model is offered.
+    """
+    assert GOOSE not in sdk_backends.ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION
+    assert GOOSE not in sdk_backends.ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION
 
 
 def test_goose_serves_session_load_so_it_needs_no_load_workaround() -> None:

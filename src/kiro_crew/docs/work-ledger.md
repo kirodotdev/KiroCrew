@@ -53,7 +53,12 @@ An item is the unit of dispatch. It holds:
 
 The conductor writes its half with `work_ledger_record` (one action per call:
 `goal`, `create`, `bind`, `decide`, `verdict`, `accept`, `close`) and reads the
-whole ledger back with `work_ledger_read`. A worker writes its half with
+ledger back with `work_ledger_read`. A patrol cycle reads it with `compact=true`
+(status columns and derived flags only); `item_id`, `state`, `since` and
+`events` narrow a full read. A reply over the tool-result limit comes back as
+valid JSON marked `truncated`: event tails go first, then oversized acceptances
+are elided, then rows are dropped (closed first, then open oldest-created), and
+the newest open item is always kept. A worker writes its half with
 `work_report` and reads its own item with `work_brief`. A conductor whose ledger
 files read as damaged or missing rewrites them from the crew log with
 `work_ledger_rebuild`: every accepted write was recorded there, so the files are a

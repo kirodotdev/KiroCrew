@@ -1349,8 +1349,9 @@ class TestErrorCodes:
 
     The prose is kept and keeps its meaning -- demoted to advisory, not removed
     -- so a client that only reads ``error`` is unaffected. Backend-only,
-    because neither consumer renders that prose: ``useWebSocket.ts`` awaits
-    ``api.pendingQuestions()`` without reading a failure body, and
+    because neither consumer renders that prose:
+    ``hooks/websocket/composerCards.ts`` awaits ``api.pendingQuestions()``
+    without reading a failure body, and
     ``resolveAskAfterSend.ts`` catches ``ApiError`` and branches on
     ``err.status === 404`` alone. ``POST /api/ask-question`` has no browser
     caller at all -- it is the MCP tool's leg, and that path decodes through

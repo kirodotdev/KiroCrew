@@ -1983,6 +1983,65 @@ def _update(force: bool = False) -> None:
 
     _refresh_agent_config(proj)
 
+    # Reconcile the running gateway's update badge. The reset above moved the
+    # tree, but a long-lived gateway keeps serving the pre-update verdict from
+    # its cache until the next 12-hourly poll, a manual check, or a restart --
+    # so the About panel shows "Update available" for a checkout that is now
+    # current. Poke it to drop the cache and re-check. Best-effort: the update
+    # has already succeeded, so a gateway that is not running or a call that
+    # fails must not change the outcome or the exit code.
+    _revalidate_gateway_update_check()
+
+
+def _revalidate_gateway_update_check() -> None:
+    """Best-effort: tell the running gateway to re-check for updates now.
+
+    Called at the end of a successful git-checkout update so the About panel's
+    "Update available" badge reconciles immediately instead of waiting for the
+    next scheduled poll. Reuses the CLI's own loopback transport and the
+    per-generation local secret, the same pair `kirocrew token` and
+    `kirocrew logout` use to reach the gateway.
+
+    No gateway (no secret to reach one) returns silently — the next boot
+    re-checks anyway. A reachable gateway that refuses or errors prints one
+    fallback line. Nothing here raises, and nothing changes the exit code: the
+    update has already succeeded.
+    """
+    try:
+        port = resolve_client_port(None)
+        # Verify the port is held by THIS install's gateway before reading or
+        # sending the secret. Without this, a stale configured port bound by a
+        # co-resident local user would receive the shared local secret -- the
+        # live gateway's own accepted credential -- which they could replay to
+        # mint owner tokens. _gateway_owns_port closes exactly that escalation.
+        if not _gateway_owns_port(port):
+            return
+        secret = read_local_secret(port, dial_host=_CLI_LOOPBACK)
+        if not secret:
+            # No gateway running (or no secret to reach one) -- the next boot
+            # re-checks anyway, so there is nothing to reconcile.
+            return
+        req = urllib.request.Request(
+            f"http://{_CLI_LOOPBACK}:{port}/api/update/revalidate",
+            method="POST",
+            headers={"X-Local-Secret": secret, "Content-Type": "application/json"},
+            data=b"{}",
+        )
+        with loopback_urlopen(req, timeout=5) as resp:
+            if int(resp.status) == 200:
+                print("  🔄 Update badge refreshed on the running gateway")
+                return
+        print("  ℹ️  Could not refresh the update badge; it reconciles on next check")
+    except (
+        http.client.HTTPException,
+        OSError,
+        ValueError,
+        urllib.error.URLError,
+    ):
+        # Includes a gateway that is not up (connection refused) and any
+        # malformed response. The update stands regardless.
+        print("  ℹ️  Could not refresh the update badge; it reconciles on next check")
+
 
 def _refresh_agent_config(proj: str) -> None:
     """Re-install agent config so new denied commands take effect.
@@ -2621,6 +2680,8 @@ async def _run_task(args: argparse.Namespace) -> None:
         sessions=sessions,
         lesson_store=lessons,
         history_idle_secs=cfg.memory.history_idle_hours * 3600,
+        vector_store=vector_memory,
+        migrated=cfg.memory.migrated,
         skills_loader=skills,
         auto_skills_enabled=cfg.skills.auto_create_from_sessions,
         auto_refine_enabled=cfg.skills.auto_refine_on_deviation,

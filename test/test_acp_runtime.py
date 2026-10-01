@@ -35,6 +35,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from spawn_test_helpers import strip_spawn_shim
 
+from kiro_crew.acp import runtime as runtime_mod
 from kiro_crew.acp.client import _OVERSIZE_DRAIN_MAX_BYTES
 from kiro_crew.acp.harness import SessionExtras
 from kiro_crew.acp.runtime import (
@@ -321,7 +322,10 @@ async def test_derived_worker_identity_keeps_freshness_and_readiness(
     agents_dir = tmp_path / "agents"
     agents_dir.mkdir()
     monkeypatch.setattr(agent, "kiro_agents_dir_path", lambda: agents_dir)
-    monkeypatch.setattr(paths_mod, "kiro_agents_dir", lambda: agents_dir)
+    # Redirect through the override: ``acp.skill_projection`` is first imported
+    # inside this test and binds ``kiro_agents_dir`` by name, so the redirect must
+    # live in a value that function reads on every call.
+    monkeypatch.setattr(paths_mod, "_agents_dir_override", lambda: agents_dir)
     monkeypatch.setattr(agent_state, "config_dir", lambda: tmp_path / "derived-state")
     default = agents_dir / "kirocrew.json"
     spec = {
@@ -1303,7 +1307,8 @@ async def test_missing_agent_spec_error_reaches_caller_actionable(tmp_path):
     text = str(excinfo.value)
     assert "'kirocrew.json'" in text  # the file that is missing
     assert str(tmp_path) in text  # where it was looked for
-    assert "kirocrew setup --agent-only --clean" in text  # the repair
+    assert "kirocrew setup --agent-only`" in text  # the repair
+    assert "--clean" not in text  # which would drop the operator's own config
     assert "-32603" not in text  # no raw protocol frame
 
 
@@ -1455,6 +1460,145 @@ async def test_oversize_stdout_frame_is_dropped_not_fatal():
         assert not rt._dead
     finally:
         await _stop_reader(task)
+
+
+@pytest.mark.asyncio
+async def test_an_oversize_reply_fails_its_awaited_request_with_the_size_and_limit():
+    """A session/new reply over the frame limit (every agent's welcomeMessage,
+    say) must fail that request at once naming the frame size and the limit --
+    not surface minutes later as a session/new timeout blamed on MCP servers.
+    The reader keeps routing afterwards."""
+    from kiro_crew.acp.session_handle import AcpFrameTooLarge
+
+    rt, _, proc = _make_runtime()
+    reader = asyncio.StreamReader(limit=256)
+    proc.stdout = reader
+    q = _register(rt, "sA")
+    future: asyncio.Future = asyncio.get_running_loop().create_future()
+    rt._pending_requests[7] = future
+    task = await _start_reader(rt)
+    try:
+        frame = b'{"jsonrpc":"2.0","id":7,"result":{"modes":"' + b"W" * 2048 + b'"}}\n'
+        reader.feed_data(frame)
+        with pytest.raises(AcpFrameTooLarge) as excinfo:
+            await asyncio.wait_for(future, timeout=5.0)
+        message = str(excinfo.value)
+        assert f"{len(frame):,} bytes" in message
+        assert f"{runtime_mod._STDOUT_BUFFER_LIMIT:,}-byte" in message
+        assert not getattr(excinfo.value, "transient", False)
+        assert "MCP" not in message
+        assert 7 not in rt._pending_requests
+        _feed(reader, {"method": "session/update", "params": {"sessionId": "sA"}})
+        msg = await asyncio.wait_for(q["sA"].get(), timeout=5.0)
+        assert msg.params["sessionId"] == "sA"
+        assert not rt._dead
+    finally:
+        await _stop_reader(task)
+
+
+@pytest.mark.asyncio
+async def test_an_oversize_host_request_never_fails_one_of_ours():
+    """The host numbers its own requests (a permission prompt) independently, so
+    an oversize frame carrying ``method`` must not fail our request with that id."""
+    rt, _, proc = _make_runtime()
+    reader = asyncio.StreamReader(limit=256)
+    proc.stdout = reader
+    future: asyncio.Future = asyncio.get_running_loop().create_future()
+    rt._pending_requests[3] = future
+    task = await _start_reader(rt)
+    try:
+        reader.feed_data(
+            b'{"jsonrpc":"2.0","id":3,"method":"session/request_permission","params":"'
+            + b"P" * 2048
+            + b'"}\n'
+        )
+        await asyncio.sleep(0.2)
+        assert not future.done()
+        assert 3 in rt._pending_requests
+    finally:
+        future.cancel()
+        await _stop_reader(task)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["create", "load"])
+async def test_an_oversize_session_start_reply_is_a_tagged_start_failure(monkeypatch, path):
+    """A self-driving caller counts start failures by ``session_start_failed`` to back
+    off; an oversize session/new or session/load reply is one, and it is not
+    transient -- the same request gets the same reply."""
+    from kiro_crew.acp.session_handle import AcpFrameTooLarge
+
+    rt, _, _ = _make_runtime()
+    rt._can_load_session = True
+
+    async def _oversize(method, params, timeout=None):
+        if method in (METHOD_SESSION_NEW, METHOD_SESSION_LOAD):
+            raise AcpFrameTooLarge(runtime_mod._oversize_frame_message(11_000_000))
+        return {}
+
+    monkeypatch.setattr(rt, "_send_and_await", _oversize)
+    with pytest.raises(AcpFrameTooLarge) as excinfo:
+        if path == "create":
+            await rt.create_session(cwd="/work", agent="kirocrew")
+        else:
+            await rt.load_session(
+                "/home/u/.kiro/sessions/cli/sid-1.json", "sid-1", cwd="/work", agent="kirocrew"
+            )
+    assert excinfo.value.session_start_failed is True
+    assert excinfo.value.transient is False
+    from kiro_crew.llm_helpers import acp_error_is_transient
+
+    assert acp_error_is_transient(excinfo.value) is False
+
+
+@pytest.mark.asyncio
+async def test_an_oversize_session_new_reply_releases_its_start_permit(monkeypatch):
+    """The start gate admits a few session starts at once and has no reaper, so a
+    start that fails on an oversize reply must give its slot back -- otherwise two
+    such failures block every later ``create_session`` on the loop."""
+    from kiro_crew.acp import runtime_start
+    from kiro_crew.acp.session_handle import AcpFrameTooLarge
+
+    released: list[str] = []
+    recorded: list[bool] = []
+    real_acquire = runtime_mod.SessionStartGate.acquire
+
+    async def acquire(self, *a, **k):
+        permit = await real_acquire(self, *a, **k)
+        original = permit.release
+
+        def release():
+            released.append("x")
+            return original()
+
+        permit.release = release
+        return permit
+
+    monkeypatch.setattr(runtime_mod.SessionStartGate, "acquire", acquire)
+    monkeypatch.setattr(
+        runtime_start, "_record_session_start", lambda *_a, ok, **_k: recorded.append(ok)
+    )
+    rt, _, _ = _make_runtime()
+
+    async def _oversize(method, params, timeout=None):
+        if method == METHOD_SESSION_NEW:
+            raise AcpFrameTooLarge(runtime_mod._oversize_frame_message(11_000_000))
+        return {}
+
+    monkeypatch.setattr(rt, "_send_and_await", _oversize)
+    with pytest.raises(AcpFrameTooLarge):
+        await rt.create_session(cwd="/work", agent="kirocrew")
+    assert released == ["x"]
+    assert recorded == [False]
+
+
+def test_the_oversize_frame_id_is_read_only_from_a_reply_envelope():
+    rid = runtime_mod._oversize_frame_request_id
+    assert rid(b'{"jsonrpc":"2.0","id":12,"result":{') == 12
+    assert rid(b'{"jsonrpc":"2.0","result":{"availableModes":[{"id":"kiro_default"}') is None
+    assert rid(b'{"jsonrpc":"2.0","id":4,"method":"session/request_permission"') is None
+    assert rid(b"XXXX") is None
+    assert rid(b'{"jsonrpc":"2.0","result":{"x":{"id":5,"y":1}}') is None
 
 
 @pytest.mark.asyncio
@@ -5720,7 +5864,7 @@ class TestAcpSessionHandleCommands:
         sent_payloads = []
         req_counter = [100]
 
-        async def capture_send(method, params):
+        async def capture_send(method, params, **_kw):
             sent_payloads.append((method, params))
             req_id = req_counter[0]
             req_counter[0] += 1
@@ -5746,7 +5890,7 @@ class TestAcpSessionHandleCommands:
         sent_payloads = []
         req_counter = [200]
 
-        async def capture_send(method, params):
+        async def capture_send(method, params, **_kw):
             sent_payloads.append((method, params))
             req_id = req_counter[0]
             req_counter[0] += 1
@@ -5772,7 +5916,7 @@ class TestAcpSessionHandleCommands:
         sent_payloads = []
         req_counter = [300]
 
-        async def capture_send(method, params):
+        async def capture_send(method, params, **_kw):
             sent_payloads.append((method, params))
             req_id = req_counter[0]
             req_counter[0] += 1
@@ -7874,7 +8018,7 @@ async def test_send_command_redacts_output(monkeypatch):
     rt, _, _ = _make_runtime()
     q = _register(rt, "sA")
 
-    async def _fake_send_request(method, params):
+    async def _fake_send_request(method, params, **_kw):
         return 1
 
     rt.send_request = _fake_send_request  # type: ignore[method-assign]
@@ -9267,12 +9411,43 @@ async def test_create_session_fails_closed_when_agent_not_advertised():
     # session/new response, then the terminate roundtrip from the fail-closed path
     rt._send_and_await = AsyncMock(side_effect=[resp, {}])  # type: ignore[method-assign]
     with patch.object(AcpSessionHandle, "drain_init", AsyncMock()):
-        with pytest.raises(AcpRuntimeError, match="not available"):
+        with pytest.raises(AcpRuntimeError, match="not available") as exc:
             await rt.create_session(agent="kirocrew", mcp_servers=[])
+    # An ordinary agent keeps the materialize hint: setup does write that file.
+    assert "kirocrew setup --agent-only" in str(exc.value)
     methods = [c.args[0] for c in rt._send_and_await.call_args_list]
     assert METHOD_SET_MODE not in methods  # never activated the wrong mode
     assert METHOD_SESSION_TERMINATE in methods  # created session cleaned up
     assert "s1" not in rt._session_queues  # unregistered
+
+
+@pytest.mark.asyncio
+async def test_create_session_refusal_explains_a_derived_readonly_spec(tmp_path, monkeypatch):
+    """The side turn's ``<agent>--readonly`` spec is written by the side turn,
+    never by ``kirocrew setup``, and kiro-cli lists agents only at process start.
+    The refusal must say that and name the base agent -- the setup hint sent the
+    user to a command that cannot create the file. The spec is published by the
+    real publisher, because the owner marker on it is what the wording keys on."""
+    from kiro_crew import agent as agent_mod
+    from kiro_crew.dashboard import side_readonly_spec as srs
+
+    monkeypatch.setattr(agent_mod, "KIRO_AGENTS_DIR", tmp_path)
+    monkeypatch.setattr(srs, "_refresh_materialized_snapshot", lambda: None)
+    (tmp_path / "scout.json").write_text(json.dumps({"name": "scout"}), encoding="utf-8")
+    assert srs.publish_readonly_spec("scout").name == "scout--readonly"
+    rt, _, _ = _make_runtime()
+    rt._finish_session_init = MagicMock(return_value=[])  # type: ignore[method-assign]
+    resp = _new_resp({"currentModeId": "kirocrew", "availableModes": [{"id": "kirocrew"}]})
+    rt._send_and_await = AsyncMock(side_effect=[resp, {}])  # type: ignore[method-assign]
+    with patch.object(AcpSessionHandle, "drain_init", AsyncMock()):
+        with pytest.raises(AcpRuntimeError, match="not available") as exc:
+            await rt.create_session(agent="scout--readonly", mcp_servers=[])
+    message = str(exc.value)
+    assert "kirocrew setup --agent-only" not in message
+    assert "is likely missing" not in message
+    assert "read-only spec Kiro Crew derives from 'scout'" in message
+    assert "name 'scout'" in message
+    assert "Refusing to run the backend default mode kirocrew in its place" in message
 
 
 @pytest.mark.asyncio

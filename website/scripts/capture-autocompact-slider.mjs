@@ -66,7 +66,8 @@ const detail = {
     { role: 'assistant', ts: now - 30, content: 'The gate ladder reads the threshold on every context reading.' },
   ],
   // Seeds the context gauge so the chip renders gateway-free: 72% of 200K.
-  // Wire shape is flat (`context_pct` etc.) — see fetchSlotDetail, chatSlice.ts.
+  // Wire shape is flat (`context_pct` etc.) — see fetchSlotDetail,
+  // store/chat/wire.ts.
   context_pct: 72,
   context_used_tokens: 144_000,
   context_window_tokens: 200_000,

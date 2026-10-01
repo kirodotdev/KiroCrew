@@ -8,8 +8,19 @@ every sibling can import this module and it imports none of them.
 
 from __future__ import annotations
 
+import json
+import logging
 from dataclasses import dataclass, fields
 from typing import Any, Protocol, TypedDict
+
+# Every owner module logs under the handlers' historical name, not its own
+# ``__name__`` — the facade-surface test pins this so logging configuration keyed
+# on the old path keeps reaching every relocated helper. The shared
+# ``LOGGER_NAME`` constant lives in this package's ``__init__``, but ``contract``
+# deliberately imports none of its siblings (see the module docstring), and
+# importing it from the package ``__init__`` would be a cycle — so spell the same
+# literal here. Keep it identical to ``source_providers.LOGGER_NAME``.
+logger = logging.getLogger("kiro_crew.dashboard.handlers.source_providers")
 
 _MAX_URL_LENGTH = 2048
 
@@ -82,6 +93,138 @@ class SourceRef:
         return tuple(getattr(self, f.name) for f in fields(self) if f.name != "url") + (
             instance_context,
         )
+
+
+# Defensive cap on a dismissed-identity key travelling in a URL path segment,
+# rejecting a hand-crafted oversized path before it is decoded/hashed. A GitHub
+# or GitLab identity's canonical JSON is far below this. The one identity that
+# could approach it is a self-hosted Jira, whose identity embeds the full
+# instance URL (its context path is load-bearing for uniqueness); a
+# pathologically long such URL would exceed the cap and its chip would then be
+# un-unlinkable (a graceful degradation — 400 on unlink, never a crash), which
+# is an accepted trade to keep the bound tight against abuse.
+_MAX_SOURCE_IDENTITY_KEY_LENGTH = 512
+
+
+def _identity_shape() -> tuple[int, frozenset[int]]:
+    """Derive the serialized-identity arity and which member slots are ints.
+
+    ``SourceRef.identity`` is ``[every field except url, in field order] +
+    [instance_context]`` (see the property). Rather than hardcode "8 members,
+    int at index 4" -- which silently rots the moment a field is added to the
+    dataclass, dropping every persisted dismissal on restore -- derive the arity
+    and the integer slots from the dataclass itself, so the validator tracks the
+    identity's true shape automatically. ``instance_context`` is a str, so it
+    adds one to the arity and no int slot.
+    """
+    members = [f for f in fields(SourceRef) if f.name != "url"]
+    int_slots = frozenset(i for i, f in enumerate(members) if f.type in ("int", int))
+    return len(members) + 1, int_slots
+
+
+_IDENTITY_ARITY, _IDENTITY_INT_SLOTS = _identity_shape()
+
+
+def source_ref_identity_key(identity: tuple) -> str:
+    """Serialize a :attr:`SourceRef.identity` tuple to a stable string key.
+
+    The dismissed-identity suppression set is persisted to disk and echoed in a
+    DELETE URL path, neither of which can carry a Python tuple. This renders the
+    identity to canonical JSON: a fixed member order (the tuple's own), no
+    incidental whitespace, and ``ensure_ascii`` so a non-ASCII owner/repo cannot
+    change the byte shape between a writer and a reader on different locales. The
+    mapping is total and deterministic, so the same object always yields the same
+    key and two distinct objects never collide.
+
+    Keyed on the identity rather than the URL for the same reason the derivation
+    dedups on identity: one change can be mentioned through more than one URL
+    shape, and a dismiss must suppress the object, not one spelling of it.
+    """
+    return json.dumps(list(identity), ensure_ascii=True, separators=(",", ":"))
+
+
+def is_valid_source_identity_key(key: object) -> bool:
+    """True when *key* is a well-formed serialized identity key.
+
+    The DELETE endpoint takes the key from an untrusted URL path segment, so it
+    is validated before it is recorded: it must be a bounded string that decodes
+    to the exact JSON shape :func:`source_ref_identity_key` emits — the 8-member
+    ``SourceRef.identity`` list ``(provider, host, owner, repo, number, project,
+    kind, instance_context)`` whose ``number`` slot is an int and whose other
+    seven members are strings — and it must re-serialize byte-for-byte to the
+    same key (rejecting any non-canonical spelling). A key that is merely a list
+    of scalars but the wrong arity/type (e.g. ``[1]``) is rejected too: it could
+    never match a real identity and would otherwise accumulate as stored junk.
+    """
+    if not isinstance(key, str) or not key or len(key) > _MAX_SOURCE_IDENTITY_KEY_LENGTH:
+        return False
+    try:
+        decoded = json.loads(key)
+    except (ValueError, TypeError):
+        return False
+    if not isinstance(decoded, list) or not decoded:
+        return False
+    # Enforce the exact ``SourceRef.identity`` arity and per-field types, not
+    # just "a list of scalars": without this a canonical-but-nonsense key such
+    # as ``[1]`` round-trips through the re-serialize check below and is stored
+    # -- inert (it can never match a real identity) but accumulating as junk.
+    # The arity and which slots are ints are DERIVED from the dataclass
+    # (``_identity_shape``) so a new field cannot silently invalidate this. Every
+    # non-int slot is a string; ``bool`` is a subclass of ``int`` so it is
+    # rejected explicitly for the int slots.
+    if len(decoded) != _IDENTITY_ARITY:
+        return False
+    for i, member in enumerate(decoded):
+        if i in _IDENTITY_INT_SLOTS:
+            if isinstance(member, bool) or not isinstance(member, int):
+                return False
+        elif not isinstance(member, str):
+            return False
+    return json.dumps(decoded, ensure_ascii=True, separators=(",", ":")) == key
+
+
+def bounded_valid_identities(raw: object, cap: int) -> set[str]:
+    """Collect at most *cap* distinct VALID identity keys from *raw*, bounding
+    retention DURING iteration.
+
+    Every reader of an on-disk ``dismissed_source_links`` line filters it through
+    :func:`is_valid_source_identity_key` and then bounds it to the per-slot
+    ceiling. Doing that as ``{k for k in raw if valid}`` first and slicing after
+    materializes the WHOLE (externally-controllable, possibly oversized/tampered)
+    list before the cap applies — the ``a-bound-bounds-every-field-it-retains``
+    hazard. At most *cap* distinct valid keys are ever RESIDENT: once the kept
+    set is full it grows no further, so no more than *cap* keys are held
+    regardless of how large *raw* is. Iteration continues past that only to COUNT
+    the valid keys it had to drop and emit one truncation warning — a single
+    integer counter, not more retained keys — because the invariant requires the
+    overflow be said out loud once per snapshot rather than silently discarded. A
+    non-list *raw* yields the empty set (the line records no dismissals).
+    """
+    out: set[str] = set()
+    if not isinstance(raw, list):
+        return out
+    # Count VALID keys that arrived once the cap was already reached and were
+    # therefore dropped, and say so once — the sibling bounded helpers in
+    # ``chat_persistence`` (write + restore) both count and warn, and
+    # ``a-bound-bounds-every-field-it-retains`` requires the overflow be counted
+    # and surfaced once per snapshot rather than silently discarded. A key
+    # already collected (a duplicate) is not a drop, so it is not counted.
+    truncated = 0
+    for key in raw:
+        if not is_valid_source_identity_key(key):
+            continue
+        if len(out) >= cap:
+            if key not in out:
+                truncated += 1
+            continue
+        out.add(key)
+    if truncated:
+        logger.warning(
+            "dismissed_source_links read bounded: dropped %d valid key(s) past the %d cap",
+            truncated,
+            cap,
+        )
+    return out
 
 
 class SourceChangeCommit(TypedDict):

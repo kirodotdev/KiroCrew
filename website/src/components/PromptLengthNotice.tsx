@@ -25,6 +25,8 @@ interface Props {
   blocks: readonly PasteBlock[]
   /** The active model's context window in tokens; 0/undefined = unknown. */
   contextWindowTokens?: number
+  /** A send of this over-limit draft was held and is waiting for a repeat. */
+  confirmPending?: boolean
 }
 
 /**
@@ -36,20 +38,26 @@ interface Props {
  * nothing and the numbers in the visible line never flood the reader. Neither
  * element is focusable.
  */
-function PromptLengthNoticeImpl({ value, blocks, contextWindowTokens }: Props) {
+function PromptLengthNoticeImpl({ value, blocks, contextWindowTokens, confirmPending = false }: Props) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   // A multi-megabyte paste is measured off the typing path.
   const deferredValue = useDeferredValue(value)
+  const measuredValue = confirmPending ? value : deferredValue
   const check = useMemo(
-    () => checkPromptLength(measurePrompt(sentPromptText(deferredValue, blocks)), contextWindowTokens),
-    [deferredValue, blocks, contextWindowTokens],
+    () => checkPromptLength(measurePrompt(sentPromptText(measuredValue, blocks)), contextWindowTokens),
+    [measuredValue, blocks, contextWindowTokens],
   )
-  const announce = check.level === 'over'
+  const holding = confirmPending && check.level === 'over'
+  const announce = holding
+    ? i18nT('components.promptLength.sr_confirm')
+    : check.level === 'over'
     ? i18nT('components.promptLength.sr_over')
     : check.level === 'near'
       ? i18nT('components.promptLength.sr_near')
       : ''
-  const message = promptLengthMessage(check)
+  const message = holding
+    ? i18nT('components.promptLength.held_tokens', { over: fmtCompact(check.overBy), limit: fmtCompact(check.limit) })
+    : promptLengthMessage(check)
   return (
     <>
       <span className="sr-only" aria-live="polite" aria-atomic="true" data-testid="prompt-length-live">
@@ -59,7 +67,8 @@ function PromptLengthNoticeImpl({ value, blocks, contextWindowTokens }: Props) {
         <div
           data-testid="prompt-length-notice"
           data-level={check.level}
-          className={`flex items-start gap-1.5 px-3 pb-1 text-[11px] leading-snug ${check.level === 'over' ? 'text-danger' : 'text-warn'}`}
+          data-held={holding ? 'true' : undefined}
+          className={`flex items-start gap-1.5 px-3 pb-1 text-[11px] leading-snug ${check.level === 'over' ? 'text-danger' : 'text-warn'} ${holding ? 'font-semibold' : ''}`}
         >
           <AlertTriangle size={12} className="shrink-0 mt-[1px]" aria-hidden="true" />
           <span>{message}</span>

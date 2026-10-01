@@ -297,7 +297,7 @@ per-crewmate vs per-project is the caller's choice, not baked into the store
 (Phase 2 keys by the crewmate's slot). A malformed or wrong-version entry is
 dropped on load. Moving off `localStorage` later (for the admin-template
 exploration, §8) changes only this envelope, not the tree shape. The idea here is to
-key it as experimental so we do not need to worry about backwards compatability during
+key it as experimental so we do not need to worry about backwards compatibility during
 development, and will drop the experimental prefix once this is stable.
 
 ## 6. Key decisions

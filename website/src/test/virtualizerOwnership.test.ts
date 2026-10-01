@@ -75,7 +75,7 @@ describe('phase order (source guard)', () => {
       'useReadingPositionEntry', 'useHeightOwner', 'useWindowOperations', 'usePinning', 'useGeometrySync',
       'useRowMeasurement', 'useShiftCompensation', 'useFollowPlacementPins', 'useVisibilityReplacement',
       'useScrollListener', 'useCoverageWatchdog', 'useResizeObserver', 'useWindowEdgeTriggers',
-      'useReadingPositionRestore',
+      'useReadingPositionRestore', 'useMeasurementScopeReseed',
     ]
     const src = code('useVirtualChat.ts')
     const body = src.slice(src.indexOf('export function useVirtualChat<T>('))
@@ -104,7 +104,8 @@ describe('phase order (source guard)', () => {
       'useCoverageWatchdog',
       'useResizeObserver',
       'useWindowEdgeTriggers',
-      'useReadingPositionRestore', // the last layout effect: slot entry
+      'useReadingPositionRestore', // the last placing layout effect: slot entry
+      'useMeasurementScopeReseed', // after placement: width-scope reseed (measurements only)
       'useEffect', // recompute on count
       'useEffect', // the dev probe
       'useEffect', // the unmount teardown
@@ -123,7 +124,7 @@ describe('phase order (source guard)', () => {
         ['}, [itemCount])', true], // part 1: re-running would re-fire a consumed prepend
         ['}, [windowRange, rebaseScheduledRef, shiftStageRef])', false], // stage promotion
         ['}, [windowRange, itemCount, spliceCommit, scrollerRef, writeScrollTop, recomputeWindow])', true], // part 2
-        ['}, [heightCommit, scrollerRef, writeScrollTop])', true], // height-sync anchor
+        ['}, [heightCommit, offsetIndex, scrollerRef, writeScrollTop])', true], // height-sync anchor (+ the owner identity: TRIGGER 7 stands down on the swap commit)
       ]],
       ['geometryScheduling.ts', [
         // syncHeightsNow: BASE froze this callback on `[scrollerRef]` behind an
@@ -180,7 +181,7 @@ describe('phase order (source guard)', () => {
     const P = 'passive' as const
     const expected: Record<string, [typeof L | typeof P, string][]> = {
       'geometryScheduling.ts': [[L, 'prevStreamingIndexRef.current = streamingIndex']], // streaming grace
-      'measurement.ts': [], // the store subscription is useSyncExternalStore's own
+      'measurement.ts': [[L, 'reseedMounted()']], // width-scope reseed; the store subscription is useSyncExternalStore's own
       'shiftCompensation.ts': [
         [L, 'prependPrevRef.current = prependMirrorNext'], // prepend baseline mirror
         [L, 'prependNetRef.current = 0'], // part 1

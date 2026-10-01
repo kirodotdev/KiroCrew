@@ -321,6 +321,19 @@ export default function NewCrewmateDialog({ open, onClose, onCreated, existingNa
       const warm = Promise.all([
         queryClient.invalidateQueries({ queryKey: ['kirocrew-agents'], exact: true, refetchType: 'all' }),
         queryClient.invalidateQueries({ queryKey: ['kirocrewConfig'], refetchType: 'all' }),
+        // The shared sessionless catalog key this dialog also reads at
+        // `staleTime: 0` on open. Every OTHER reader of it holds it longer: the
+        // command bar's crewmates view serves from it at `MATES_STALE_MS`, and
+        // no server event invalidates it, so a crewmate created here would be
+        // absent from that view for the stale window and from any later reader
+        // until a reload. Marking it stale on create is the one freshness rule
+        // every reader of this key inherits, in place of each inventing its own.
+        // `refetchType: 'none'`: no reader is mounted on it at create time (the
+        // dialog's own read is gated on `open`), so an eager refetch here would
+        // be a catalog GET for a cache nobody is watching -- the next reader's
+        // first fetch after this invalidation refetches because the key is
+        // stale, which is the once-per-entry cost each view already pays.
+        queryClient.invalidateQueries({ queryKey: ['agents-catalog', 'global'], refetchType: 'none' }),
       ])
       await Promise.race([warm, new Promise<void>((resolve) => setTimeout(resolve, CACHE_WARM_BOUND_MS))])
       if (!mounted.current) return

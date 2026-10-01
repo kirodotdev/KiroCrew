@@ -219,6 +219,24 @@ def test_stale_preview_parent_and_request_rejected(editor):
     assert len(list(specs.glob("*.json"))) == 1
 
 
+@pytest.mark.parametrize("codepoint", [0x00E9, 0x63D0, 0x1F600, 0xDCFF])
+def test_a_non_ascii_preview_token_is_refused_not_raised(editor, codepoint):
+    """A non-ASCII token must be refused like any other stale one.
+
+    ``hmac.compare_digest`` rejects a ``str`` holding a non-ASCII character by
+    raising ``TypeError``. The token travels in the request body, and the
+    handler catches only ``CapabilityError`` and ``(OSError, ValueError)``, so a
+    raise escapes as a 500 instead of the ``stale_preview`` refusal that a wrong
+    ASCII token produces. Code points are built rather than written literally
+    because ``0xDCFF`` is a lone surrogate, which cannot appear in source.
+    """
+    service, home, specs, parent = editor
+    body = {"revision": service.get("A")["revision"], "enroll": True}
+    service.preview("A", body)
+    with pytest.raises(CapabilityError, match="stale_preview"):
+        service.put("A", {**body, "preview_token": chr(codepoint)})
+
+
 @pytest.mark.parametrize(
     "extra",
     [

@@ -11,10 +11,10 @@
  *   (3) Temporary with 'temporary' — the memory mode is the entire feature, and
  *       it must ride the CREATE call: a session that starts persistent and is
  *       corrected afterwards has already written to memory by then;
- *   (4) neither entry smuggles the `defaultAutopilot` preference in as
- *       'orchestrator' — these entries name a memory mode, not a run mode — and
- *       the plain "New chat" entry carries the configured default while the
- *       explicit submenu choices remain pinned.
+ *   (4) both entries create in the default run mode ('') — they name a memory
+ *       mode, not a run mode — and the plain "New chat" entry carries the
+ *       configured default memory mode while the explicit submenu choices
+ *       remain pinned.
  *
  * Radix DropdownMenu cannot be opened by mouse in jsdom (needs PointerEvent),
  * so the trigger is activated by keyboard — the path jsdom does handle. Submenus
@@ -64,9 +64,8 @@ vi.mock('framer-motion', async () => {
 
 vi.mock('../components/ProjectPicker', () => ({ default: () => null }))
 
-// `defaultAutopilot` is load-bearing for assertion (4), so the config mock is a
-// mutable box the tests flip between renders.
-const cfg = vi.hoisted(() => ({ value: { tagColumnsEnabled: false, confirmCloseSession: false, defaultAutopilot: false } as Record<string, unknown> }))
+// A mutable box so a test can flip the config between renders.
+const cfg = vi.hoisted(() => ({ value: { tagColumnsEnabled: false, confirmCloseSession: false } as Record<string, unknown> }))
 vi.mock('../pages/chat/ChatSettings', () => ({
   loadChatConfig: () => cfg.value,
   saveChatConfig: vi.fn(),
@@ -154,7 +153,7 @@ async function openEphemeralSubmenu() {
 beforeEach(() => {
   localStorage.clear()
   mobile.value = false
-  cfg.value = { tagColumnsEnabled: false, confirmCloseSession: false, defaultAutopilot: false }
+  cfg.value = { tagColumnsEnabled: false, confirmCloseSession: false }
   mocks.createChatSlot.mockResolvedValue({ key: 'chat-new-1' })
 })
 afterEach(() => vi.clearAllMocks())
@@ -173,10 +172,6 @@ describe('create-button caret menu: ephemeral chats', () => {
   })
 
   it('Incognito creates with memory_mode "incognito"', async () => {
-    // The preference is ON to prove the entry pins the run mode: it names a
-    // MEMORY mode, so silently returning an autopilot session would be a second,
-    // unasked-for choice.
-    cfg.value = { tagColumnsEnabled: false, confirmCloseSession: false, defaultAutopilot: true }
     renderSidebar()
     openCreateMenu()
     await openEphemeralSubmenu()
@@ -184,12 +179,11 @@ describe('create-button caret menu: ephemeral chats', () => {
     await waitFor(() => expect(mocks.createChatSlot).toHaveBeenCalledTimes(1))
     const call = mocks.createChatSlot.mock.calls[0]
     expect(call[ARG_MEMORY_MODE]).toBe('incognito')
-    expect(call[ARG_MODE]).not.toBe('orchestrator')
+    expect(call[ARG_MODE]).toBe('')
     expect(call[ARG_AGENT]).toBe(DEFAULT_AGENT)
   })
 
   it('Temporary creates with memory_mode "temporary"', async () => {
-    cfg.value = { tagColumnsEnabled: false, confirmCloseSession: false, defaultAutopilot: true }
     renderSidebar()
     openCreateMenu()
     await openEphemeralSubmenu()
@@ -197,7 +191,7 @@ describe('create-button caret menu: ephemeral chats', () => {
     await waitFor(() => expect(mocks.createChatSlot).toHaveBeenCalledTimes(1))
     const call = mocks.createChatSlot.mock.calls[0]
     expect(call[ARG_MEMORY_MODE]).toBe('temporary')
-    expect(call[ARG_MODE]).not.toBe('orchestrator')
+    expect(call[ARG_MODE]).toBe('')
     expect(call[ARG_AGENT]).toBe(DEFAULT_AGENT)
   })
 
@@ -237,7 +231,6 @@ describe('create-button caret menu: ephemeral chats', () => {
     // reuses them rather than re-deriving the create call — the memory mode is the
     // whole feature and must still ride the CREATE.
     mobile.value = true
-    cfg.value = { tagColumnsEnabled: false, confirmCloseSession: false, defaultAutopilot: true }
     renderSidebar()
     openCreateMenu()
 
@@ -245,7 +238,7 @@ describe('create-button caret menu: ephemeral chats', () => {
     await waitFor(() => expect(mocks.createChatSlot).toHaveBeenCalledTimes(1))
     const call = mocks.createChatSlot.mock.calls[0]
     expect(call[ARG_MEMORY_MODE]).toBe('temporary')
-    expect(call[ARG_MODE]).not.toBe('orchestrator')
+    expect(call[ARG_MODE]).toBe('')
     expect(call[ARG_AGENT]).toBe(DEFAULT_AGENT)
   })
 })

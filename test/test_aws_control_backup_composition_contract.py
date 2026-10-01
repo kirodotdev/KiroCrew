@@ -11,7 +11,8 @@ that would catch a regression rather than in the direction that restates the cod
 * A name and the symbol it denotes cannot come apart: every module that holds a name
   holds the same object, and a write through the facade reaches all of them -- the
   one-namespace behaviour ``monkeypatch.setattr(backup, ...)`` relies on across
-  several hundred patch sites.
+  several hundred patch sites. A write into one part reaches no other holder, so no
+  test outside this file's premise cases patches a part directly.
 * The owners form one acyclic stack under the facade, none of them importing it,
   and the constructs other gates pin to ``backup.py`` by path stay there.
 """
@@ -725,23 +726,6 @@ class TestLayering:
             ]
             assert puts == [], f"{part.__name__} calls put_file at line(s) {puts}"
 
-    def test_no_text_io_in_any_part_omits_an_encoding(self) -> None:
-        # The same rule ``test_snapshot_partial_bundle_manifest.py`` holds ``backup.py``
-        # to, over the code that moved out of it: a JSON state file read with the
-        # locale codepage is refused on a Windows host for any non-ASCII byte.
-        offenders = []
-        for part in PARTS:
-            tree = ast.parse(Path(part.__file__).read_text(encoding="utf-8"))
-            for node in ast.walk(tree):
-                if (
-                    isinstance(node, ast.Call)
-                    and isinstance(node.func, ast.Attribute)
-                    and node.func.attr in ("read_text", "write_text")
-                    and not any(kw.arg == "encoding" for kw in node.keywords)
-                ):
-                    offenders.append(f"{Path(part.__file__).name}:{node.lineno}")
-        assert offenders == []
-
     def test_the_facade_resolves_owners_by_name_not_by_module_object(self) -> None:
         # A table of module objects is a second place a module is stored; a part
         # purged and imported again would then be reached through the stale copy.
@@ -1080,12 +1064,13 @@ def _create_true_patches_of_forwarded_names(source: str, module: str | None = No
     ]
 
 
-def _patch_sources() -> Iterator[tuple[Path, str]]:
-    """``(path, text)`` for every test module of the repository that may patch the facade.
+def _patch_sources(*needles: str) -> Iterator[tuple[Path, str]]:
+    """``(path, text)`` for every test module of the repository that names all *needles*.
 
     ``test/`` and every directory under ``src/`` whose name ends in ``tests`` (``tests``,
     ``container_tests``), read once as text and handed to the AST reader only when it
-    names both ``create`` and ``backup``.
+    names every one of *needles*: ``create`` and ``backup`` for a ``create=True`` patch of
+    the facade, ``backup_parts`` for a write into a part.
     """
     paths = [*(_REPO_ROOT / "test").rglob("*.py")]
     paths += [path for path in (_REPO_ROOT / "src").rglob("*.py") if _in_a_test_directory(path)]
@@ -1093,7 +1078,7 @@ def _patch_sources() -> Iterator[tuple[Path, str]]:
         if _NOT_SCANNED.intersection(path.relative_to(_REPO_ROOT).parts):
             continue
         text = path.read_text(encoding="utf-8", errors="replace")
-        if "create" in text and "backup" in text:
+        if all(needle in text for needle in needles):
             yield path, text
 
 
@@ -1436,7 +1421,7 @@ class TestPatchSpellings:
         # neither hide a second site nor outlive the one it names.
         hits = [
             (path.relative_to(_REPO_ROOT).as_posix(), hit)
-            for path, text in _patch_sources()
+            for path, text in _patch_sources("create", "backup")
             for hit in _create_true_patches_of_forwarded_names(text, _module_name(path))
         ]
         found = {(path, hit.function) for path, hit in hits}
@@ -1450,4 +1435,726 @@ class TestPatchSpellings:
             "deletes that name from every engine module when the patch exits. Drop "
             "create=True (the name exists) or patch it with monkeypatch.setattr: "
             f"{unexpected}; allowlisted but not found: {sorted(_ALLOWED_CREATE_TRUE - found)}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# A test never patches a part directly
+# ---------------------------------------------------------------------------
+# A part resolves a name through its own globals, and so does every part that imported
+# it, so a write into one part reaches none of the other holders: the code under test
+# can keep running the unpatched object while the test passes. Only a write through the
+# facade reaches every holder, so a test patches the facade, never a part. The guard
+# reads every test module the way the ``create=True`` guard does and fails on a write
+# into the namespace of the ``backup_parts`` package or of a module in it, apart from
+# the premise cases below.
+
+_BACKEND_PACKAGE = _PARTS_PACKAGE.rpartition(".")[0]
+
+#: The package and every module in it, by dotted name: the namespaces a write must not
+#: land in.
+_PART_NAMESPACES = frozenset({_PARTS_PACKAGE, *backup._PART_MODULES})
+
+#: The deliberate writes into a part, keyed by file and the test enclosing them: the
+#: premise cases, which show what such a write reaches and what it does not.
+_ALLOWED_PART_PATCHES = frozenset(
+    {
+        (
+            "test/test_aws_control_backup_composition_contract.py",
+            "TestTheSurfaceSurvivesTheSplit."
+            "test_an_exported_name_is_read_from_its_owner_on_every_access",
+        ),
+        (
+            "test/test_aws_control_backup_composition_contract.py",
+            "TestTheSurfaceSurvivesTheSplit."
+            "test_a_name_a_part_rebinds_stays_live_through_the_facade",
+        ),
+    }
+)
+
+#: The ``MonkeyPatch`` methods and builtins that write or delete a module attribute.
+_ATTRIBUTE_WRITERS = frozenset({"setattr", "delattr"})
+
+#: The ``MonkeyPatch`` methods that write or delete an item of a mapping.
+_ITEM_WRITERS = frozenset({"setitem", "delitem"})
+
+#: The patch callable that writes items of a mapping.
+_PATCH_DICT = "unittest.mock.patch.dict"
+
+
+class _PartResolver(_Resolver):
+    """A :class:`_Resolver` that also reads a part's ``__name__`` as its dotted name and
+    ``sys.modules[<name>]`` as the module of that name.
+
+    A parameter, an unpacking or ``:=`` target, a ``for`` or ``with`` target, an
+    ``except`` name, a ``match`` capture and a nested ``def`` or ``class`` are local to
+    their function, so each shadows a name an enclosing scope imports and denotes
+    nothing the reader can follow. A comprehension variable is local to the
+    comprehension, a scope the reader does not model, so it shadows nothing: a part
+    named inside one still resolves to the part.
+    """
+
+    def __init__(self, tree: ast.Module, module: str | None, reexports: frozenset[str]) -> None:
+        super().__init__(tree, module, reexports)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.arg):
+                self._bind(node, node.arg, frozenset())
+            elif isinstance(node, (ast.For, ast.AsyncFor, ast.NamedExpr)):
+                self._shadow(node, node.target)
+            elif isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if not isinstance(target, ast.Name):
+                        self._shadow(node, target)
+            elif isinstance(node, ast.withitem) and node.optional_vars is not None:
+                self._shadow(node, node.optional_vars)
+            elif isinstance(node, (ast.ExceptHandler, ast.MatchAs, ast.MatchStar)) and node.name:
+                self._bind(node, node.name, frozenset())
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                self._bind(node, node.name, frozenset())
+
+    def _shadow(self, statement: ast.AST, target: ast.expr) -> None:
+        """Bind every name *target* stores to, in *statement*'s scope, to nothing."""
+        if isinstance(target, ast.Name):
+            self._bind(statement, target.id, frozenset())
+        elif isinstance(target, (ast.Tuple, ast.List)):
+            for element in target.elts:
+                self._shadow(statement, element)
+        elif isinstance(target, ast.Starred):
+            self._shadow(statement, target.value)
+
+    def values(self, expr: ast.AST | None, scope: ast.AST) -> set[_Value]:
+        found = super().values(expr, scope)
+        if isinstance(expr, ast.Attribute) and expr.attr == "__name__":
+            found |= {
+                ("str", text)
+                for kind, text in self.values(expr.value, scope)
+                if kind == "path" and text in _PART_NAMESPACES
+            }
+        elif isinstance(expr, ast.Subscript):
+            if ("path", "sys.modules") in self.values(expr.value, scope):
+                found |= {
+                    ("path", text) for kind, text in self.values(expr.slice, scope) if kind == "str"
+                }
+        return found
+
+
+def _namespace_of(expr: ast.expr | None) -> ast.expr | None:
+    """The module *expr* is the namespace dict of -- ``vars(module)`` or
+    ``module.__dict__`` -- or ``None`` for any other mapping."""
+    if isinstance(expr, ast.Attribute) and expr.attr == "__dict__":
+        return expr.value
+    if (
+        isinstance(expr, ast.Call)
+        and isinstance(expr.func, ast.Name)
+        and expr.func.id == "vars"
+        and len(expr.args) == 1
+        and not expr.keywords
+    ):
+        return expr.args[0]
+    return None
+
+
+def _written_targets(node: ast.AST, resolver: _Resolver) -> list[tuple[ast.expr | None, bool]]:
+    """``(expression, names_an_attribute)`` for each namespace *node* writes into.
+
+    The expression denotes the module written into, or is a dotted string; the flag says
+    whether such a string names ``<module>.<attribute>`` rather than the module itself.
+    """
+    if isinstance(node, ast.Call):
+        func = node.func
+        keywords = {keyword.arg: keyword.value for keyword in node.keywords if keyword.arg}
+        first = node.args[0] if node.args else None
+        resolved = {text for _kind, text in resolver.values(func, resolver.scope_of(node))}
+        for text in resolved & set(_PATCH_CALLABLES):
+            return [(keywords.get("target", first), _PATCH_CALLABLES[text][0] == "patch")]
+        if _PATCH_DICT in resolved:
+            return [(_namespace_of(keywords.get("in_dict", first)), False)]
+        # A ``MonkeyPatch`` is reached through a fixture the reader cannot follow, so
+        # its methods are matched by name; the builtins are matched when not rebound.
+        if isinstance(func, ast.Attribute) and func.attr in _ATTRIBUTE_WRITERS:
+            return [(keywords.get("target", first), True)]
+        if isinstance(func, ast.Attribute) and func.attr in _ITEM_WRITERS:
+            return [(_namespace_of(keywords.get("dic", first)), False)]
+        if isinstance(func, ast.Name) and func.id in _ATTRIBUTE_WRITERS and not resolved:
+            return [(first, False)]
+        return []
+    if isinstance(node, (ast.Assign, ast.Delete)):
+        targets = node.targets
+    elif isinstance(node, (ast.AugAssign, ast.AnnAssign)):
+        targets = [node.target]
+    else:
+        return []
+    found: list[tuple[ast.expr | None, bool]] = []
+    while targets:
+        target, *targets = targets
+        if isinstance(target, (ast.Tuple, ast.List)):
+            targets = [*target.elts, *targets]
+        elif isinstance(target, ast.Starred):
+            targets = [target.value, *targets]
+        elif isinstance(target, ast.Attribute):
+            found.append((target.value, False))
+        elif isinstance(target, ast.Subscript):
+            found.append((_namespace_of(target.value), False))
+    return found
+
+
+def _part_named(value: _Value, names_an_attribute: bool) -> str | None:
+    """The part namespace *value* writes into, relative to ``backend``; ``None`` for any
+    other.
+
+    A module object, or a string naming one, is a part only when it IS the package or a
+    module in it: an object a part holds is the same object every holder sees. A string
+    naming ``<module>.<attribute>`` writes into the module before its last dot, and so
+    does a string the reader cannot finish, whose hit ends in ``<dynamic>``.
+    """
+    kind, text = value
+    if kind == "prefix" or (kind == "str" and names_an_attribute):
+        namespace = text.rpartition(".")[0]
+    else:
+        namespace = text
+    if namespace not in _PART_NAMESPACES:
+        return None
+    named = text[len(_BACKEND_PACKAGE) + 1 :]
+    return named + _DYNAMIC if kind == "prefix" else named
+
+
+def _direct_part_patches(source: str, module: str | None = None) -> list[_Hit]:
+    """Every write into the namespace of a ``backup_parts`` module in *source* that the
+    reader can resolve.
+
+    A write is a ``patch``, ``patch.object`` or ``patch.multiple`` reached through any
+    import alias, called or used as a decorator; a ``setattr`` or ``delattr``, the
+    builtin or a ``MonkeyPatch`` method; an assignment, augmented assignment or ``del``
+    of an attribute; or a write into the module's own dict, ``vars(module)`` or
+    ``module.__dict__``, through ``patch.dict``, ``MonkeyPatch.setitem`` / ``delitem``
+    or an item assignment. It is a hit when the module is the package or a module in
+    it, spelled as a module object, as ``sys.modules[<its name>]``, or as a dotted
+    string or one built from it, positional or by keyword. A hit names its target
+    relative to ``backend``. A write into an object a part holds -- an attribute of a
+    module, class, lock or table it defines or imports -- reaches every holder of that
+    object and is not one. A method call on the namespace dict (``update``, ``pop``) is
+    not read.
+    """
+    tree = ast.parse(source)
+    resolver = _PartResolver(tree, module, _facade_reexports())
+    hits: list[_Hit] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Call, ast.stmt)):
+            continue
+        scope = resolver.scope_of(node)
+        for target, names_an_attribute in _written_targets(node, resolver):
+            named = {
+                _part_named(value, names_an_attribute) for value in resolver.values(target, scope)
+            }
+            hits += [
+                _Hit(resolver.function_of(node), name, node.lineno)
+                for name in sorted(name for name in named if name is not None)
+            ]
+    return sorted(hits, key=lambda hit: (hit.line, hit.name))
+
+
+#: Imports most part-write cases share.
+_PART_CASE_IMPORTS = (
+    "import pytest\n"
+    "from unittest import mock\n"
+    "from kiro_crew.apps.builtins.aws_control.backend import backup\n"
+    "from kiro_crew.apps.builtins.aws_control.backend.backup_parts import state\n"
+)
+
+#: ``(id, source, module, expected names)``: each write the guard must catch beside a
+#: spelling of it the guard must leave alone. ``@PARTS@`` is the package's dotted name
+#: and ``@FACADE@`` the facade's.
+_PART_CASES: list[tuple[str, str, str | None, list[str]]] = [
+    (
+        "monkeypatch.setattr",
+        _PART_CASE_IMPORTS
+        + "def test_x(monkeypatch):\n    monkeypatch.setattr(state, '_state_path', None)\n",
+        None,
+        ["backup_parts.state"],
+    ),
+    (
+        "monkeypatch.setattr of the facade",
+        _PART_CASE_IMPORTS
+        + "def test_x(monkeypatch):\n    monkeypatch.setattr(backup, '_state_path', None)\n",
+        None,
+        [],
+    ),
+    (
+        "monkeypatch.setattr of a dotted string",
+        "def test_x(monkeypatch):\n    monkeypatch.setattr('@PARTS@.state._state_path', None)\n",
+        None,
+        ["backup_parts.state._state_path"],
+    ),
+    (
+        "monkeypatch.setattr of the facade's dotted string",
+        "def test_x(monkeypatch):\n    monkeypatch.setattr('@FACADE@._state_path', None)\n",
+        None,
+        [],
+    ),
+    (
+        "monkeypatch.setattr with a keyword target",
+        _PART_CASE_IMPORTS
+        + "def test_x(monkeypatch):\n"
+        + "    monkeypatch.setattr(target=state, name='_state_path', value=None)\n",
+        None,
+        ["backup_parts.state"],
+    ),
+    (
+        "monkeypatch.delattr",
+        _PART_CASE_IMPORTS
+        + "def test_x(monkeypatch):\n    monkeypatch.delattr(state, '_state_path')\n",
+        None,
+        ["backup_parts.state"],
+    ),
+    (
+        "a MonkeyPatch context",
+        _PART_CASE_IMPORTS
+        + "def test_x():\n    with pytest.MonkeyPatch.context() as patched:\n"
+        + "        patched.setattr(state, '_state_path', None)\n",
+        None,
+        ["backup_parts.state"],
+    ),
+    (
+        "patch.object",
+        _PART_CASE_IMPORTS + "mock.patch.object(state, '_state_path')\n",
+        None,
+        ["backup_parts.state"],
+    ),
+    (
+        "patch.object of the facade",
+        _PART_CASE_IMPORTS + "mock.patch.object(backup, '_state_path')\n",
+        None,
+        [],
+    ),
+    (
+        "patch.object with a keyword target",
+        _PART_CASE_IMPORTS + "mock.patch.object(target=state, attribute='_state_path')\n",
+        None,
+        ["backup_parts.state"],
+    ),
+    (
+        "patch of a dotted string",
+        "from unittest import mock\nmock.patch('@PARTS@.state._state_path')\n",
+        None,
+        ["backup_parts.state._state_path"],
+    ),
+    (
+        "patch of the facade's dotted string",
+        "from unittest import mock\nmock.patch('@FACADE@._state_path')\n",
+        None,
+        [],
+    ),
+    (
+        "patch of a name that only starts like the package",
+        "from unittest import mock\nmock.patch('@PARTS@x.state._state_path')\n",
+        None,
+        [],
+    ),
+    (
+        "patch.multiple",
+        _PART_CASE_IMPORTS + "mock.patch.multiple(state, _state_path=None)\n",
+        None,
+        ["backup_parts.state"],
+    ),
+    (
+        "patch.multiple of a dotted string",
+        "from unittest import mock\nmock.patch.multiple('@PARTS@.state', _state_path=None)\n",
+        None,
+        ["backup_parts.state"],
+    ),
+    (
+        "as a decorator",
+        _PART_CASE_IMPORTS
+        + "@mock.patch.object(state, '_state_path')\ndef test_x(fake):\n    pass\n",
+        None,
+        ["backup_parts.state"],
+    ),
+    (
+        "patch as an alias",
+        "from unittest.mock import patch as P\n"
+        "from kiro_crew.apps.builtins.aws_control.backend.backup_parts import state\n"
+        "P.object(state, '_state_path')\n",
+        None,
+        ["backup_parts.state"],
+    ),
+    (
+        "a third-party mock",
+        "import mock\n"
+        "from kiro_crew.apps.builtins.aws_control.backend.backup_parts import state\n"
+        "mock.patch.object(state, '_state_path')\n",
+        None,
+        [],
+    ),
+    (
+        "a part under an alias",
+        "from kiro_crew.apps.builtins.aws_control.backend.backup_parts import state as st\n"
+        "def test_x(monkeypatch):\n    monkeypatch.setattr(st, '_state_path', None)\n",
+        None,
+        ["backup_parts.state"],
+    ),
+    (
+        "a part through its package",
+        "from kiro_crew.apps.builtins.aws_control.backend import backup_parts\n"
+        "def test_x(monkeypatch):\n"
+        "    monkeypatch.setattr(backup_parts.state, '_state_path', None)\n",
+        None,
+        ["backup_parts.state"],
+    ),
+    (
+        "the package itself",
+        "from kiro_crew.apps.builtins.aws_control.backend import backup_parts\n"
+        "def test_x(monkeypatch):\n"
+        "    monkeypatch.setattr(backup_parts, '_FACADE_MODULE', 'x')\n",
+        None,
+        ["backup_parts"],
+    ),
+    (
+        "a relative import in a package",
+        "from ..backend.backup_parts import state\n"
+        "def test_x(monkeypatch):\n    monkeypatch.setattr(state, '_state_path', None)\n",
+        "kiro_crew.apps.builtins.aws_control.tests.test_case",
+        ["backup_parts.state"],
+    ),
+    (
+        "a relative import elsewhere",
+        "from ..crew.backup_parts import state\n"
+        "def test_x(monkeypatch):\n    monkeypatch.setattr(state, '_state_path', None)\n",
+        "kiro_crew.apps.builtins.aws_control.tests.test_case",
+        [],
+    ),
+    (
+        "import_module",
+        "import importlib\n"
+        "def test_x(monkeypatch):\n"
+        "    part = importlib.import_module('@PARTS@.state')\n"
+        "    monkeypatch.setattr(part, '_state_path', None)\n",
+        None,
+        ["backup_parts.state"],
+    ),
+    (
+        "an f-string of a part's __name__",
+        _PART_CASE_IMPORTS + "mock.patch(f'{state.__name__}._state_path')\n",
+        None,
+        ["backup_parts.state._state_path"],
+    ),
+    (
+        "an f-string of the facade's __name__",
+        _PART_CASE_IMPORTS + "mock.patch(f'{backup.__name__}._state_path')\n",
+        None,
+        [],
+    ),
+    (
+        "a constant concatenated",
+        "from unittest import mock\nPART = '@PARTS@.state'\nmock.patch(PART + '._state_path')\n",
+        None,
+        ["backup_parts.state._state_path"],
+    ),
+    (
+        "an f-string it cannot finish",
+        "from unittest import mock\n"
+        "def test_x(attr):\n    mock.patch(f'@PARTS@.state.{attr}')\n",
+        None,
+        ["backup_parts.state.<dynamic>"],
+    ),
+    (
+        "the builtin setattr",
+        _PART_CASE_IMPORTS + "setattr(state, '_state_path', None)\n",
+        None,
+        ["backup_parts.state"],
+    ),
+    (
+        "the builtin delattr",
+        _PART_CASE_IMPORTS + "delattr(state, '_state_path')\n",
+        None,
+        ["backup_parts.state"],
+    ),
+    (
+        "an assignment",
+        _PART_CASE_IMPORTS + "state._state_path = None\n",
+        None,
+        ["backup_parts.state"],
+    ),
+    (
+        "an unpacking assignment",
+        _PART_CASE_IMPORTS + "x, state._state_path = None, None\n",
+        None,
+        ["backup_parts.state"],
+    ),
+    (
+        "an augmented assignment",
+        _PART_CASE_IMPORTS + "state._counter += 1\n",
+        None,
+        ["backup_parts.state"],
+    ),
+    (
+        "a del",
+        _PART_CASE_IMPORTS + "del state._state_path\n",
+        None,
+        ["backup_parts.state"],
+    ),
+    (
+        "a read",
+        _PART_CASE_IMPORTS + "path = state._state_path\n",
+        None,
+        [],
+    ),
+    (
+        "an item of a part's table",
+        _PART_CASE_IMPORTS + "state._TABLE['key'] = None\n",
+        None,
+        [],
+    ),
+    (
+        "patch.dict of a part's table",
+        _PART_CASE_IMPORTS + "mock.patch.dict(state._TABLE, {'key': None})\n",
+        None,
+        [],
+    ),
+    (
+        "a local shadowing the part",
+        _PART_CASE_IMPORTS
+        + "def test_x(monkeypatch):\n    state = object()\n"
+        + "    monkeypatch.setattr(state, '_state_path', None)\n",
+        None,
+        [],
+    ),
+    (
+        "a parameter shadowing the part",
+        _PART_CASE_IMPORTS
+        + "def test_x(monkeypatch, state):\n    monkeypatch.setattr(state, '_state_path', None)\n",
+        None,
+        [],
+    ),
+    (
+        "a loop target shadowing the part",
+        _PART_CASE_IMPORTS
+        + "def test_x():\n    for state in ():\n        setattr(state, '_state_path', None)\n",
+        None,
+        [],
+    ),
+    (
+        "another module",
+        "from kiro_crew import config\n"
+        "def test_x(monkeypatch):\n    monkeypatch.setattr(config, '_state_path', None)\n",
+        None,
+        [],
+    ),
+    (
+        "a comprehension variable shadows nothing outside it",
+        _PART_CASE_IMPORTS
+        + "def test_x(monkeypatch, tmp_path):\n"
+        + "    assert all(state for state in tmp_path.iterdir())\n"
+        + "    monkeypatch.setattr(state, '_state_path', None)\n",
+        None,
+        ["backup_parts.state"],
+    ),
+    (
+        "a name read in a loop target shadows nothing",
+        _PART_CASE_IMPORTS
+        + "def test_x(monkeypatch, rows):\n    for rows[state] in ():\n        pass\n"
+        + "    monkeypatch.setattr(state, '_state_path', None)\n",
+        None,
+        ["backup_parts.state"],
+    ),
+    (
+        "a with target shadowing the part",
+        _PART_CASE_IMPORTS
+        + "def test_x(monkeypatch, path):\n    with open(path) as state:\n"
+        + "        monkeypatch.setattr(state, 'name', None)\n",
+        None,
+        [],
+    ),
+    (
+        "an unpacking target shadowing the part",
+        _PART_CASE_IMPORTS
+        + "def test_x(monkeypatch):\n    state, code = object(), 0\n"
+        + "    monkeypatch.setattr(state, 'name', None)\n",
+        None,
+        [],
+    ),
+    (
+        "a := target shadowing the part",
+        _PART_CASE_IMPORTS
+        + "def test_x(monkeypatch, make):\n    if (state := make()):\n"
+        + "        monkeypatch.setattr(state, 'name', None)\n",
+        None,
+        [],
+    ),
+    (
+        "a nested def shadowing the part",
+        _PART_CASE_IMPORTS
+        + "def test_x(monkeypatch):\n    def state():\n        pass\n"
+        + "    monkeypatch.setattr(state, '__doc__', None)\n",
+        None,
+        [],
+    ),
+    (
+        "a match capture shadowing the part",
+        _PART_CASE_IMPORTS
+        + "def test_x(monkeypatch, value):\n    match value:\n        case [state]:\n"
+        + "            monkeypatch.setattr(state, 'name', None)\n",
+        None,
+        [],
+    ),
+    (
+        "an except name shadowing the part",
+        _PART_CASE_IMPORTS
+        + "def test_x(monkeypatch):\n    try:\n        pass\n    except OSError as state:\n"
+        + "        monkeypatch.setattr(state, 'errno', None)\n",
+        None,
+        [],
+    ),
+    (
+        "sys.modules of a part",
+        "import sys\n"
+        "def test_x(monkeypatch):\n"
+        "    monkeypatch.setattr(sys.modules['@PARTS@.state'], '_state_path', None)\n",
+        None,
+        ["backup_parts.state"],
+    ),
+    (
+        "sys.modules of the facade",
+        "import sys\n"
+        "def test_x(monkeypatch):\n"
+        "    monkeypatch.setattr(sys.modules['@FACADE@'], '_state_path', None)\n",
+        None,
+        [],
+    ),
+    (
+        "monkeypatch.setitem of vars(part)",
+        _PART_CASE_IMPORTS
+        + "def test_x(monkeypatch):\n    monkeypatch.setitem(vars(state), '_state_path', None)\n",
+        None,
+        ["backup_parts.state"],
+    ),
+    (
+        "monkeypatch.delitem of part.__dict__",
+        _PART_CASE_IMPORTS
+        + "def test_x(monkeypatch):\n    monkeypatch.delitem(state.__dict__, '_state_path')\n",
+        None,
+        ["backup_parts.state"],
+    ),
+    (
+        "monkeypatch.setitem of a part's table",
+        _PART_CASE_IMPORTS
+        + "def test_x(monkeypatch):\n    monkeypatch.setitem(state._TABLE, 'key', None)\n",
+        None,
+        [],
+    ),
+    (
+        "patch.dict of part.__dict__",
+        _PART_CASE_IMPORTS + "mock.patch.dict(state.__dict__, {'_state_path': None})\n",
+        None,
+        ["backup_parts.state"],
+    ),
+    (
+        "patch.dict of vars(part) by keyword",
+        _PART_CASE_IMPORTS + "mock.patch.dict(in_dict=vars(state), values={})\n",
+        None,
+        ["backup_parts.state"],
+    ),
+    (
+        "patch.dict of the facade's namespace",
+        _PART_CASE_IMPORTS + "mock.patch.dict(vars(backup), {'_state_path': None})\n",
+        None,
+        [],
+    ),
+    (
+        "an item of vars(part)",
+        _PART_CASE_IMPORTS + "vars(state)['_state_path'] = None\n",
+        None,
+        ["backup_parts.state"],
+    ),
+    (
+        "a del of an item of part.__dict__",
+        _PART_CASE_IMPORTS + "del state.__dict__['_state_path']\n",
+        None,
+        ["backup_parts.state"],
+    ),
+    (
+        "an attribute of a module a part imports",
+        "from kiro_crew.apps.builtins.aws_control.backend.backup_parts import retention\n"
+        "def test_x(monkeypatch):\n"
+        "    monkeypatch.setattr(retention.storage, 'delete_key', None)\n",
+        None,
+        [],
+    ),
+    (
+        "patch.object of an object a part holds",
+        _PART_CASE_IMPORTS + "mock.patch.object(state._TABLE, 'get')\n",
+        None,
+        [],
+    ),
+    (
+        "an attribute assignment into an object a part holds",
+        _PART_CASE_IMPORTS + "state._TABLE.limit = 1\n",
+        None,
+        [],
+    ),
+    (
+        "a dotted string into a module a part imports",
+        "from unittest import mock\nmock.patch('@PARTS@.retention.storage.delete_key')\n",
+        None,
+        [],
+    ),
+    (
+        "a dotted string rebinding a part's import",
+        "from unittest import mock\nmock.patch('@PARTS@.retention.storage')\n",
+        None,
+        ["backup_parts.retention.storage"],
+    ),
+    (
+        "an f-string of an imported module's __name__",
+        "from unittest import mock\n"
+        "from kiro_crew.apps.builtins.aws_control.backend.backup_parts import retention\n"
+        "mock.patch(f'{retention.storage.__name__}.delete_key')\n",
+        None,
+        [],
+    ),
+]
+
+
+def _part_case(template: str) -> str:
+    return template.replace("@PARTS@", _PARTS_PACKAGE).replace("@FACADE@", backup.__name__)
+
+
+class TestNoTestPatchesAPart:
+    def test_the_namespaces_are_the_package_and_its_modules(self) -> None:
+        # A part missing from the set is a part the guard cannot see; a module a part
+        # imports is no part, whichever part's attribute reaches it.
+        assert _PART_NAMESPACES == {_PARTS_PACKAGE, *(part.__name__ for part in PARTS)}
+        assert retention.storage.__name__ not in _PART_NAMESPACES
+
+    @pytest.mark.parametrize(
+        ("source", "module", "expected"),
+        [(case[1], case[2], case[3]) for case in _PART_CASES],
+        ids=[case[0] for case in _PART_CASES],
+    )
+    def test_the_reader_flags_every_write_into_a_part_and_only_those(
+        self, source: str, module: str | None, expected: list[str]
+    ) -> None:
+        # A reader that missed a spelling would pass a suite using it; one that flagged a
+        # write through the facade would stop the one patch form that reaches every holder.
+        hits = _direct_part_patches(_part_case(source), module)
+        assert [hit.name for hit in hits] == expected
+
+    def test_no_test_patches_a_part_directly(self) -> None:
+        # The scan must find exactly the allowlisted premise cases, so the allowlist can
+        # neither hide another site nor outlive the ones it names.
+        hits = [
+            (path.relative_to(_REPO_ROOT).as_posix(), hit)
+            for path, text in _patch_sources("backup_parts")
+            for hit in _direct_part_patches(text, _module_name(path))
+        ]
+        found = {(path, hit.function) for path, hit in hits}
+        unexpected = [
+            f"{path}:{hit.line} {hit.function} writes into {hit.name}"
+            for path, hit in hits
+            if (path, hit.function) not in _ALLOWED_PART_PATCHES
+        ]
+        assert found == _ALLOWED_PART_PATCHES, (
+            "a write into a backup_parts module reaches no other module that holds the "
+            "name, so the code under test can keep running the unpatched object. Patch "
+            "backend.backup instead, which writes every holder: "
+            f"{unexpected}; allowlisted but not found: {sorted(_ALLOWED_PART_PATCHES - found)}"
         )

@@ -1080,7 +1080,17 @@ def apply_import_zip(zip_path: Path, mode: str = "merge") -> dict:
                 if fpath.is_file() and is_sensitive_path(str(fpath)):
                     fpath.unlink()
             auto_dir = snap / "skills" / "auto"
-            if auto_dir.is_dir():
+            # ``is_link_or_junction`` FIRST, not a bare ``is_dir()``: a Windows
+            # directory JUNCTION answers ``is_dir()`` True and ``is_symlink()``
+            # False, and it is the only directory link an unprivileged Windows
+            # writer can plant in the extraction tree. ``shutil.rmtree`` follows
+            # a junction into its target, so an ``is_dir()``-only guard let a
+            # junction planted at this name aim the delete OUTSIDE the extracted
+            # archive. ``unlink_link_or_junction`` removes the LINK, never what it
+            # points at; only a real directory reaches ``rmtree``.
+            if platform_compat.is_link_or_junction(auto_dir):
+                platform_compat.unlink_link_or_junction(auto_dir)
+            elif auto_dir.is_dir():
                 shutil.rmtree(str(auto_dir))
             # A platform that cannot pin a directory by descriptor refuses this
             # staging pass, and the refusal is allowed to propagate. An earlier

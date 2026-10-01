@@ -8,11 +8,11 @@
  * countdown silently never appeared — which reads as "the feature is broken on my
  * machine" rather than as a name mismatch.
  *
- * Frontend mirror of `src/kiro_crew/acp/liveness.py::is_wait_tool`. The two have
- * to agree on every form here: the backend uses its copy to decide the session is
- * alive (and to keep minting `wait_state`), and this one decides whether anything
- * renders. A form only one side matches is a countdown that never shows for a
- * sleep the backend is happily tracking.
+ * The backend has no title matcher to mirror: its liveness contract selects the
+ * wait by the provenance-verified adapter identity
+ * (`src/kiro_crew/acp/liveness.py::ToolCallState.is_trusted_wait`). This title
+ * match is the frontend's only signal, so every transport form a real `wait` call
+ * arrives under must match here, or its countdown never shows.
  */
 import { describe, it, expect } from 'vitest'
 import { isWaitToolTitle } from '../utils/waitToolTitle'

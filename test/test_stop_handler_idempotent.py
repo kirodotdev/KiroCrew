@@ -25,7 +25,6 @@ class _FakeSlot:
         self._stop_event_id = None
         self._stop_escalated_card_id = None
         self._queue: list[dict] = []
-        self._auto_run = False
         self.running = True
         self.key = "test-slot"
         #: Set on every slot whose turns run on a session it did not name
@@ -200,13 +199,12 @@ class TestInterruptHandlerIdempotent:
         assert len(slot._queue) == 1
 
     @pytest.mark.asyncio
-    async def test_refused_body_restores_auto_run(self):
-        """A 400-refused body rolls back BOTH claimed fields.
+    async def test_refused_body_restores_the_stop_claim(self):
+        """A 400-refused body rolls back the claimed ``_stop_state``.
 
-        The handler claims ``_stop_state`` and disables ``_auto_run`` before
-        the body await; a request refused by the body guard must restore both,
-        or a malformed /interrupt permanently disables orchestrator auto-run
-        without interrupting anything.
+        The handler claims ``_stop_state`` before the body await; a request
+        refused by the body guard must restore it, or a malformed /interrupt
+        leaves the slot looking mid-stop without interrupting anything.
         """
         from aiohttp import web
 
@@ -215,7 +213,6 @@ class TestInterruptHandlerIdempotent:
         slot = _FakeSlot()
         slot.running = True
         slot._queue = [{"id": "q1", "content": "hello"}]
-        slot._auto_run = True
 
         state = _FakeState(slot)
         app = web.Application()
@@ -235,7 +232,6 @@ class TestInterruptHandlerIdempotent:
 
         assert resp.status == 400
         assert slot._stop_state == "idle"
-        assert slot._auto_run is True
 
     @pytest.mark.asyncio
     async def test_refused_body_does_not_erase_a_concurrent_hard_stop(self):
@@ -246,7 +242,7 @@ class TestInterruptHandlerIdempotent:
         (e.g. to ``"killing"``). When the body is then refused, rolling back to
         ``"idle"`` would erase the escalation and admit another stop while the
         hard kill still runs -- so the rollback fires only while the handler's
-        own claim is intact, and the escalated stop keeps ``_auto_run`` too.
+        own claim is intact.
         """
         from aiohttp import web
 
@@ -255,7 +251,6 @@ class TestInterruptHandlerIdempotent:
         slot = _FakeSlot()
         slot.running = True
         slot._queue = [{"id": "q1", "content": "hello"}]
-        slot._auto_run = True
 
         class EscalatingPayload(BodyStreamPayload):
             """Body stream that simulates a concurrent /stop mid-read."""
@@ -283,7 +278,6 @@ class TestInterruptHandlerIdempotent:
 
         assert resp.status == 400
         assert slot._stop_state == "killing"
-        assert slot._auto_run is False
 
     @pytest.mark.asyncio
     async def test_promotion_lands_even_when_the_claim_was_superseded(self):
@@ -458,8 +452,7 @@ class TestInterruptHandlerIdempotent:
         The same ABA the stand-down guard closes: our claim is escalated,
         settled, and a THIRD press re-claims "soft_pending" (new generation)
         during our body await — then our body read FAILS. A value-only
-        rollback would reset that press's live claim to idle mid-cancel and
-        re-enable auto-run while a real stop is in flight.
+        rollback would reset that press's live claim to idle mid-cancel.
         """
         from aiohttp import web
 
@@ -468,7 +461,6 @@ class TestInterruptHandlerIdempotent:
         slot = _FakeSlot()
         slot.running = True
         slot._queue = [{"id": "q1", "content": "hello"}]
-        slot._auto_run = True  # restored-on-rollback value
 
         class SupersedingPayload(BodyStreamPayload):
             """Third press claims during the await; then the body is refused."""
@@ -476,7 +468,6 @@ class TestInterruptHandlerIdempotent:
             async def iter_chunked(self, n: int):
                 slot._stop_generation += 1
                 slot._stop_state = "soft_pending"  # the third press's claim
-                slot._auto_run = False  # its own disable
                 async for chunk in super().iter_chunked(n):
                     yield chunk
 
@@ -499,7 +490,6 @@ class TestInterruptHandlerIdempotent:
         assert resp.status == 400
         # The third press's claim survives our rollback.
         assert slot._stop_state == "soft_pending"
-        assert slot._auto_run is False
 
     @pytest.mark.asyncio
     async def test_superseded_claim_does_not_touch_the_live_escalation(self):

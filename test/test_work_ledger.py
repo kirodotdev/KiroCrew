@@ -1334,6 +1334,20 @@ def test_a_torn_event_line_is_skipped_and_the_history_before_it_survives():
     assert kinds == ["create", "decision"]
 
 
+def test_an_event_line_the_parser_refuses_is_skipped():
+    """Ten thousand nested arrays on one line raise ``RecursionError`` from inside
+    ``json.loads``, and a 5,000-digit integer raises a bare ``ValueError`` (the
+    interpreter's digit limit) — neither is a ``JSONDecodeError``, and each line is
+    as unreadable as a torn one: skipped, with its neighbours intact."""
+    item_id = _new_item()
+    wl.apply_conductor_action(CONDUCTOR, "decide", item_id=item_id, decision="keep me")
+    path = wl.item_events_path(CONDUCTOR, item_id)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write("[" * 10_000 + "]" * 10_000 + "\n")
+        handle.write('{"id": "big", "kind": "decision", "text": "", "n": ' + "1" * 5_000 + "}\n")
+    assert [event.kind for event in wl.read_events(CONDUCTOR, item_id)] == ["create", "decision"]
+
+
 def test_a_line_with_an_unknown_kind_or_a_non_object_is_skipped():
     item_id = _new_item()
     path = wl.item_events_path(CONDUCTOR, item_id)
@@ -1557,6 +1571,17 @@ def test_one_torn_item_does_not_hide_its_siblings():
     good = _new_item(title="good")
     bad = _new_item(title="bad")
     wl.item_path(CONDUCTOR, bad).write_text("{", encoding="utf-8")
+    assert [item.item_id for item in wl.list_work_items(CONDUCTOR)] == [good]
+
+
+def test_an_item_nested_too_deep_for_the_parser_reads_as_absent():
+    """A 20 KB item file of ten thousand nested arrays is under the ceiling and
+    raises ``RecursionError`` from inside ``json.loads``; it reads the way any
+    other content the reader cannot trust does — absent — and hides no sibling."""
+    good = _new_item(title="good")
+    deep = _new_item(title="deep")
+    wl.item_path(CONDUCTOR, deep).write_text("[" * 10_000 + "]" * 10_000, encoding="utf-8")
+    assert wl.read_work_item(CONDUCTOR, deep) is None
     assert [item.item_id for item in wl.list_work_items(CONDUCTOR)] == [good]
 
 
@@ -1830,6 +1855,76 @@ def test_stale_uses_a_default_window_when_none_is_given():
     assert wl.DEFAULT_STALE_WINDOW_SECS > 0
     recent = wl.WorkItem(last_report_at=datetime.now().astimezone().isoformat())
     assert wl.is_stale(recent, worker_running=False) is False
+
+
+# ── parse_stamp: a read filter never raises ───────────────────────────────
+
+
+@pytest.mark.parametrize("stamp", ["0001-01-01T00:00:00", "9999-12-31T23:59:59"])
+def test_parse_stamp_reads_an_extreme_naive_stamp_as_an_aware_moment(stamp):
+    """The two ends of the calendar are what a caller spells for "since the
+    beginning of time" / "until the end of it". Shifting either into a local zone
+    can run off the calendar, and the platform reports that as ``ValueError`` or
+    ``OverflowError`` -- which end trips depends on the host's zone, and on some
+    platforms both do. Neither may escape a read: the stamp is a sentinel and is
+    read as a moment, whatever the zone."""
+    parsed = wl.parse_stamp(stamp)
+    assert parsed is not None
+    assert parsed.tzinfo is not None and parsed.utcoffset() is not None
+    # Whether the local shift succeeded or UTC was the fallback, the fields stand.
+    assert parsed.replace(tzinfo=None) == datetime.fromisoformat(stamp)
+    # Comparable against the store's own aware stamps in both directions.
+    real = wl.parse_stamp(wl._now_iso())
+    assert real is not None
+    assert (parsed < real) == stamp.startswith("0001")
+
+
+@pytest.mark.parametrize(
+    "failure", [OverflowError("date value out of range"), ValueError("year 0")]
+)
+def test_parse_stamp_falls_back_to_utc_when_the_local_shift_fails(monkeypatch, failure):
+    """The overflow path, forced, so it is covered on every host zone: the naive
+    stamp comes back aware in UTC with its fields intact, and nothing raises."""
+
+    class _Unshiftable(datetime):
+        def astimezone(self, tz=None):  # type: ignore[override]
+            raise failure
+
+    real_parse = wl._parse_iso
+    monkeypatch.setattr(
+        wl,
+        "_parse_iso",
+        lambda value: (
+            _Unshiftable(1, 1, 1) if value == "0001-01-01T00:00:00" else real_parse(value)
+        ),
+    )
+    parsed = wl.parse_stamp("0001-01-01T00:00:00")
+    assert parsed == datetime(1, 1, 1, tzinfo=timezone.utc)
+    assert parsed.tzinfo == timezone.utc
+    # An ordinary naive stamp still takes the local reading.
+    ordinary = wl.parse_stamp("2026-01-01T10:00:00")
+    assert ordinary is not None and ordinary.tzinfo is not None
+    assert ordinary.replace(tzinfo=None) == datetime(2026, 1, 1, 10, 0)
+
+
+def test_is_stale_reads_an_extreme_naive_stamp_without_raising():
+    """A hand-edited ``created_at`` of year 1 reaches ``is_stale`` on every read;
+    shifting it into the local zone runs off the calendar. Through ``parse_stamp``
+    it reads as UTC: year 1 is long past any window, so the item is stale — and
+    nothing raises."""
+    item = wl.WorkItem(
+        item_id=wl.mint_item_id(),
+        created_at="0001-01-01T00:00:00",
+        worker_session_key="chat-w",
+    )
+    assert wl.is_stale(item, worker_running=False) is True
+    assert wl.is_stale(item, worker_running=True) is False
+    far = wl.WorkItem(
+        item_id=wl.mint_item_id(),
+        created_at="9999-12-31T23:59:59",
+        worker_session_key="chat-w",
+    )
+    assert wl.is_stale(far, worker_running=False) is False, "the far end is not past yet"
 
 
 # ── concurrency ───────────────────────────────────────────────────────────

@@ -333,7 +333,7 @@ access token.
   Kiro Crew"`, the engine does not wedge — `initialize` and `session/new` still
   complete, it re-asks on each attempt, and `session/prompt` fails `-32000` with its
   own "not signed in … Please sign in and retry" (`ModelRegistryUnauthenticatedError`
-  / `TokenExpiredError`), which `acp/client.py`'s auth-failure vocabulary now
+  / `TokenExpiredError`), which `acp/transport_errors.py`'s auth-failure vocabulary now
   recognizes so the dashboard renders the sign-in prompt rather than a raw error.
 - A Crew sign-out deletes the vault entry under the identity's refresh lock and
   retires running identity-store processes (`dashboard/handlers/kas_login.py`), so

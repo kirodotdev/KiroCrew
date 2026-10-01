@@ -23,16 +23,9 @@ from kiro_crew import memory_schema, memory_v2
 from kiro_crew.embeddings import PRIORITY_BULK, PRIORITY_INTERACTIVE
 from kiro_crew.lesson_validation import order_by_request_relevance
 from kiro_crew.validation import ALLOWED_LESSON_CATEGORIES
+from kiro_crew.vector_memory_runtime import lessons as _lessons
+from kiro_crew.vector_memory_runtime import text_scoring as _text_scoring
 from kiro_crew.vector_memory_runtime.embedding import _RecallQuery
-from kiro_crew.vector_memory_runtime.lessons import _LESSON_NEGATIVE_SEP, _lesson_fields
-from kiro_crew.vector_memory_runtime.text_scoring import (
-    _contains_memory_search_text,
-    _hybrid_score,
-    _keyword_score,
-    _normalize_memory_search_query,
-    _row_stem_tokens_for_scan,
-    _stem_words,
-)
 
 if TYPE_CHECKING:
     from kiro_crew.vector_memory import SemanticRejectCode, VectorMemoryStore
@@ -225,7 +218,11 @@ def validate_semantic(
     # Every stored byte is therefore either raw-measured or bounded by a
     # constant (the enum member and the key envelope).
     size_basis = vj
-    if key.startswith("lesson.") and isinstance(value, dict) and _lesson_fields(value) is not None:
+    if (
+        key.startswith("lesson.")
+        and isinstance(value, dict)
+        and _lessons._lesson_fields(value) is not None
+    ):
         cat = value.get("category")
         raw_negative = value.get("negative")
         raw_scope = value.get("repo_scope")
@@ -237,7 +234,7 @@ def validate_semantic(
         ):
             raw_rule = value["rule"]  # _lesson_fields guarantees a str
             if isinstance(raw_negative, str):
-                size_basis = f"{raw_rule}{_LESSON_NEGATIVE_SEP}{raw_negative}"
+                size_basis = f"{raw_rule}{_lessons._LESSON_NEGATIVE_SEP}{raw_negative}"
             else:
                 size_basis = raw_rule
             # A scope is measured at its RAW size too, rather than trusted to be
@@ -248,7 +245,7 @@ def validate_semantic(
             # entirely, so a near-limit multibyte rule would be refused while a
             # caller with a JSONL fallback reported it saved.
             if isinstance(raw_scope, str):
-                size_basis = f"{size_basis}{_LESSON_NEGATIVE_SEP}{raw_scope}"
+                size_basis = f"{size_basis}{_lessons._LESSON_NEGATIVE_SEP}{raw_scope}"
     # json.dumps(..., ensure_ascii=False) accepts a lone surrogate (and so
     # does json.loads, so an LLM payload can carry one), but the result
     # cannot be UTF-8 encoded -- neither here nor by SQLite. Reject it as
@@ -313,7 +310,7 @@ def get_all_semantic(
     Optional ``q`` matches literal Unicode text in keys and decoded values
     before pagination. Omitting it keeps the existing unfiltered read path.
     """
-    query = _normalize_memory_search_query(q)
+    query = _text_scoring._normalize_memory_search_query(q)
     sql = "SELECT * FROM semantic_memory WHERE is_deleted = 0"
     if store.algorithm_version == "v2":
         # Compatibility views intentionally omit facets. Private lifecycle readers
@@ -330,7 +327,10 @@ def get_all_semantic(
     if query:
         with store._db_lock:
             store.db.create_function(
-                "memory_text_contains", 3, _contains_memory_search_text, deterministic=True
+                "memory_text_contains",
+                3,
+                _text_scoring._contains_memory_search_text,
+                deterministic=True,
             )
             rows = store._fetch_all_locked(sql, params)
     else:
@@ -734,7 +734,7 @@ def semantic_candidates_v1(
     store: VectorMemoryStore, query_text: str, *, recall_query: _RecallQuery | None = None
 ) -> list[dict]:
     """The existing V1 hybrid policy, exposed to explicit bounded recall."""
-    query_words = _stem_words(set(re.findall(r"\w+", query_text.lower())))
+    query_words = _text_scoring._stem_words(set(re.findall(r"\w+", query_text.lower())))
     if recall_query is not None:
         query_embedding = recall_query.vector
     elif store.embed_fn:
@@ -781,7 +781,7 @@ def semantic_candidates_v1(
     # them per query is the bulk of a warm call — but only a scan that
     # fits the cache can hit it, so the width decides which form runs.
     # Two entries per row: one for the key, one for the value.
-    row_tokens = _row_stem_tokens_for_scan(2 * len(all_rows))
+    row_tokens = _text_scoring._row_stem_tokens_for_scan(2 * len(all_rows))
 
     identities = store._fact_identities()
     scored_rows: list[tuple[float, dict]] = []
@@ -794,7 +794,7 @@ def semantic_candidates_v1(
         key_overlap = len(query_words & key_words)
         val_overlap = len(query_words & val_words)
         kw_raw = key_overlap * 3 + val_overlap
-        kw_score = _keyword_score(kw_raw)
+        kw_score = _text_scoring._keyword_score(kw_raw)
 
         # Vector score (when a stored vector is present). The mixed
         # population is real — legacy rows stay NULL until the backfill
@@ -806,7 +806,7 @@ def semantic_candidates_v1(
         # keyword-only floor a merely-dissimilar row should get.
         vec_score = max(0.0, similarity(r))
 
-        score = _hybrid_score(kw_score, vec_score, query_has_vector=query_has_vector)
+        score = _text_scoring._hybrid_score(kw_score, vec_score, query_has_vector=query_has_vector)
 
         if score > 0:
             r["retrieval"] = {

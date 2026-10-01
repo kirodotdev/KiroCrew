@@ -76,6 +76,67 @@ This setting alone changes nothing: a chat is only routed while its model is set
 
 After setting the provider and sampling values, enable the switch only if the data transfer below is acceptable. Turn it off to return to normal trigger matching. Old `preview` and per-point mode values do not enable this new behavior.
 
+## Running a model on this machine
+
+Instead of Jev, decisions can be answered by an open-weight model running on your own machine. It speaks the same request format as Jev, so every feature on this page works with it, and **nothing a decision point collects leaves the machine**. Pick it under **Decision model** on the Decisions card. The card offers two models and marks the one your machine's memory suits:
+
+| Model | Accuracy vs Jev | Hard decisions vs Jev | Memory it uses | Recommended from | Time per decision (CPU) |
+|---|---|---|---|---|---|
+| Plumb-4B | about 103% | about 109% | about 15 GB | 24 GB total | about 2.4 s, up to 32 s |
+| Laya | about 67% | about 47% | about 6 GB | 12 GB total | about 0.2 s, up to 0.5 s |
+
+"Accuracy vs Jev" is how many of Jev's correct answers the model also got right on the 231 public items of [JevBench](https://github.com/fstandhartinger/jevbench), measured on a 10-core CPU with no GPU. A machine below 12 GB is better served by hosted Jev, and the card recommends it there.
+
+A local model is slower than Jev, and each decision point waits only a few seconds for an answer. A slower answer is skipped and the point does what it does without Jev, so a slow model makes fewer decisions, not worse ones. Two points do wait in front of you: picking the model for a turn, and placing a message you send mid-turn. With Plumb-4B each can add up to 5 seconds, and up to 2 seconds with Laya. The accuracy figures on the card were measured with no time limit, and the answers that take longest are mostly the hard ones, so treat them as an upper bound: with its 5-second limit, Plumb-4B skips many of the long, hard decisions its "hard" figure counts. Plumb-4B is the better choice for the background points (risky tool calls, recalled memories, compaction scoring); Laya is fast enough for everything but misses more of the hard judgements.
+
+You install and start the model's server yourself; Kiro Crew only sends it requests. Use a separate Python 3.12 virtual environment for each.
+
+**Plumb-4B.** Its serving package assumes a GPU, so it is started through a short launcher:
+
+```bash
+python3.12 -m venv ~/plumb && source ~/plumb/bin/activate
+pip install "jevk5 @ git+https://github.com/allebee/jevk5@85238d7be5527370c43206fe54cd752eb3134c1b"
+cat > plumb_serve_cpu.py <<'PY'
+import argparse
+from http.server import ThreadingHTTPServer
+
+import torch
+from huggingface_hub import snapshot_download
+from jevk5.runtime import JevK5
+from jevk5.server import make_handler
+
+p = argparse.ArgumentParser()
+p.add_argument("--port", type=int, default=8102)
+a = p.parse_args()
+weights = snapshot_download(
+    "crh225/plumb-4b", revision="24f7bf77e7ee258a2d158c61ea2dce2b60321010"
+)
+model = JevK5(weights, device="cpu", dtype=torch.bfloat16, graphs=False)
+ThreadingHTTPServer(("127.0.0.1", a.port), make_handler(model, "crh225/plumb-4b")).serve_forever()
+PY
+python plumb_serve_cpu.py --port 8102
+```
+
+The first start downloads about 8 GB of weights. Both the package and the weights are pinned to the exact commits the card's figures were measured with (`v0.2.0` of `jevk5`; the weights are unchanged since the `Plumb-4B v5` commit), so a later push to either repository cannot change what runs. Laya is pinned to its PyPI release.
+
+**Laya.**
+
+```bash
+python3.12 -m venv ~/laya && source ~/laya/bin/activate
+pip install "laya[serve]==0.3.22"
+LAYA_HOST=127.0.0.1 LAYA_PORT=8104 LAYA_DEVICE=cpu laya-serve
+```
+
+Keep the server bound to `127.0.0.1`. Then choose the model on the card and press **Use this model**; change the port there if you started the server on another one.
+
+What changes when you switch:
+
+- The card writes `provider.endpoint` as `http://127.0.0.1:<port>/v1/systemone`, together with the model and a longer `timeout_ms`. It never takes an address from you, so the dashboard cannot be used to send decisions somewhere else.
+- **Your Jev API key is not sent** to a local address. Only a literal loopback address counts as local: an address written with the name `localhost` is treated like any other server and gets the key.
+- If the Decisions switch was on, it stays on for the local address. Switching back to Jev does the opposite: nothing is sent until you turn the switch off and on again, because that is the direction that starts sending to TypeSafe.
+
+Your other settings, including the recorded scopes, are unchanged.
+
 ## Letting Jev pick the model
 
 Open the model picker under the chat box and choose **Auto (Jev)**. The entry appears only when the Decisions switch is on and your organisation allows the feature, so if you do not see it, turn the switch on first.

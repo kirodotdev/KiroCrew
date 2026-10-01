@@ -500,6 +500,100 @@ class TestChannelEndpoint:
         assert resp.status == 500
 
 
+class TestUpdateRevalidate:
+    """``POST /api/update/revalidate`` — the CLI's post-update badge reconcile.
+
+    Authenticated over loopback + the local secret (the CLI path), NOT the
+    browser owner gate — a raw ``X-Local-Secret`` request carries no owner
+    identity, so an owner-gated endpoint would 403 the CLI and the fix would be
+    inert. These rows pin that the auth the CLI actually sends is accepted and
+    that a wrong/absent secret or a non-loopback origin is refused.
+    """
+
+    @staticmethod
+    def _cli_request(secret: str, *, remote: str = "127.0.0.1", header: str | None = None):
+        """A request stub carrying the CLI's loopback origin + local-secret header."""
+        req = MagicMock()
+        req.remote = remote
+        req.headers = {"X-Local-Secret": header if header is not None else secret}
+        state = MagicMock()
+        req.app = {"state": state, "local_secret": secret}
+        return req
+
+    def test_invalidates_then_rechecks_in_order(self, _isolated_channel_home):
+        """On valid CLI auth the endpoint drops the cache, THEN re-runs the check.
+
+        Order matters: a re-check that ran before the invalidation would just
+        re-pin the stale verdict. The check re-derives against the channel this
+        install follows, so the invalidation is passed that same channel.
+        """
+        update_layout.set_release_channel("stable")
+        calls: list[str] = []
+
+        def _fake_invalidate(channel: str) -> None:
+            calls.append(f"invalidate:{channel}")
+
+        async def _fake_check() -> None:
+            calls.append("recheck")
+            updates._set_update_info(
+                channel="stable",
+                update_available=False,
+                latest_version="",
+                check_status="succeeded",
+            )
+
+        with (
+            patch.object(updates, "_invalidate_update_check", _fake_invalidate),
+            patch.object(updates, "_do_update_check", _fake_check),
+        ):
+            resp = asyncio.run(updates.api_update_revalidate(self._cli_request("s3cret")))
+
+        assert resp.status == 200
+        assert calls == ["invalidate:stable", "recheck"]
+        payload = json.loads(resp.body.decode())
+        assert payload == {"ok": True}
+
+    def test_wrong_secret_is_refused_without_rechecking(self, _isolated_channel_home):
+        called: list[str] = []
+
+        async def _fake_check() -> None:
+            called.append("recheck")
+
+        with (
+            patch.object(updates, "_invalidate_update_check", lambda ch: called.append("inv")),
+            patch.object(updates, "_do_update_check", _fake_check),
+        ):
+            resp = asyncio.run(
+                updates.api_update_revalidate(self._cli_request("s3cret", header="wrong"))
+            )
+        assert resp.status == 403
+        assert called == [], "a refused caller still reached the cache"
+
+    def test_non_loopback_is_refused(self, _isolated_channel_home):
+        called: list[str] = []
+        with patch.object(updates, "_invalidate_update_check", lambda ch: called.append("inv")):
+            resp = asyncio.run(
+                updates.api_update_revalidate(self._cli_request("s3cret", remote="10.0.0.5"))
+            )
+        assert resp.status == 403
+        assert called == []
+
+    def test_non_ascii_secret_is_refused_not_crashed(self, _isolated_channel_home):
+        """A non-ASCII X-Local-Secret must be an audited 403, never a TypeError/500.
+
+        hmac.compare_digest raises TypeError on a str carrying a non-ASCII char,
+        and this header is attacker-controllable on the tokenless bypass path, so
+        a str compare would turn the auditable denial into an unaudited 500.
+        """
+        called: list[str] = []
+        with patch.object(updates, "_invalidate_update_check", lambda ch: called.append("inv")):
+            resp = asyncio.run(
+                updates.api_update_revalidate(self._cli_request("s3cret", header="wröng"))
+            )
+        assert resp.status == 403
+        assert called == [], "a refused non-ASCII secret still reached the cache"
+
+
 class TestRestartEndpoint:
     """``POST /api/restart``."""
 

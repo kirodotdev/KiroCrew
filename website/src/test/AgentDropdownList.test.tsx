@@ -76,7 +76,7 @@ describe('AgentDropdownList namespaces (member vs template)', () => {
   it('groups by kind and keeps a same-name member and template as two rows', () => {
     render(<AgentDropdownList agents={both} activeAgent="" defaultAgent="" onSelect={() => {}} />)
     const groups = screen.getAllByRole('group')
-    expect(groups.map(g => g.getAttribute('aria-label'))).toEqual(['Crewmates', 'Agent templates'])
+    expect(groups.map(g => g.getAttribute('aria-label'))).toEqual(['Crewmates', 'Custom agents'])
     expect(screen.getAllByRole('option')).toHaveLength(3)
     expect(screen.getAllByText('reviewer')).toHaveLength(2)
   })
@@ -100,8 +100,8 @@ describe('AgentDropdownList namespaces (member vs template)', () => {
     // badge) so the flag flips nothing but the chrome.
     const templatesOnly = both.filter(a => a.selection_kind === 'template')
     render(<AgentDropdownList agents={templatesOnly} activeAgent="" defaultAgent="" onSelect={() => {}} />)
-    expect(screen.getByRole('group', { name: 'Agent templates' })).toBeInTheDocument()
-    expect(screen.queryByText('Agent templates')).toBeNull()
+    expect(screen.getByRole('group', { name: 'Custom agents' })).toBeInTheDocument()
+    expect(screen.queryByText('Custom agents')).toBeNull()
     expect(screen.queryByText(/default crewmate's workspace and memory/i)).toBeNull()
     expect(screen.queryByText('package')).toBeNull()
     expect(screen.getAllByRole('option')).toHaveLength(2)
@@ -206,7 +206,7 @@ describe('AgentDropdownList default-agent affordance', () => {
 
   it('explains the two same-row markers rather than relying on colour alone', () => {
     render(<AgentDropdownList agents={agents} activeAgent="kirocrew" defaultAgent="kirocrew" onSelect={() => {}} />)
-    expect(screen.getByTitle('New sessions start with this agent')).toBeInTheDocument()
+    expect(screen.getByTitle('New sessions start with this crewmate')).toBeInTheDocument()
     expect(screen.getByTitle('Active in this session')).toBeInTheDocument()
   })
 })
@@ -217,7 +217,7 @@ describe('DefaultAgentRow', () => {
     // job is switching the agent for this session, and a bare icon can only put the
     // scope in a tooltip.
     render(<DefaultAgentRow agentName="reviewer" isDefault={false} onSetDefault={() => {}} />)
-    expect(screen.getByRole('button', { name: 'Set reviewer as default agent for new sessions' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Set reviewer as the default for new sessions' })).toBeInTheDocument()
   })
 
   it('writes the default when activated', () => {
@@ -232,7 +232,7 @@ describe('DefaultAgentRow', () => {
     // hide behind the same gesture that sets one. Only the Templates page clears it.
     const onSetDefault = vi.fn()
     render(<DefaultAgentRow agentName="reviewer" isDefault onSetDefault={onSetDefault} />)
-    const row = screen.getByRole('button', { name: 'Default agent for new sessions' })
+    const row = screen.getByRole('button', { name: 'Default for new sessions' })
     expect(row).toBeDisabled()
     expect(row).toHaveAttribute('aria-pressed', 'true')
     fireEvent.click(row)
@@ -260,7 +260,7 @@ describe('ManageAgentsFooter', () => {
   it('calls onManage when the link is activated', () => {
     const onManage = vi.fn()
     render(<ManageAgentsFooter onManage={onManage} />)
-    fireEvent.click(screen.getByText('Manage agents…'))
+    fireEvent.click(screen.getByText('Manage crewmates…'))
     expect(onManage).toHaveBeenCalledTimes(1)
   })
 
@@ -273,6 +273,6 @@ describe('ManageAgentsFooter', () => {
     // The write is fire-and-forget, so without this a rejected request looks exactly
     // like a successful one.
     render(<ManageAgentsFooter onManage={() => {}} error />)
-    expect(screen.getByRole('alert')).toHaveTextContent('Could not change the default agent')
+    expect(screen.getByRole('alert')).toHaveTextContent('Could not change the default crewmate')
   })
 })

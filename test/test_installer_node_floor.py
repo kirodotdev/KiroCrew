@@ -38,9 +38,7 @@ def _helper_source() -> str:
     definition -- a copy would keep passing after the real helper regressed.
     """
     text = INSTALL_SH.read_text(encoding="utf-8")
-    floor = next(
-        line for line in text.splitlines() if line.startswith("NODE_MIN_MAJOR=")
-    )
+    floor = next(line for line in text.splitlines() if line.startswith("NODE_MIN_VERSION="))
     has_start = text.index("has() {")
     fn_start = text.index("node_supported() {")
     fn_end = text.index("\n}", fn_start) + len("\n}")
@@ -84,15 +82,17 @@ def _run_with_node(tmp_path: Path, version: str | None) -> int:
 
 
 class TestNodeFloorIsAuthoritative:
-    @pytest.mark.parametrize("version", ["v18.20.8", "v20.11.0", "v16.0.0"])
+    @pytest.mark.parametrize(
+        "version", ["v18.20.8", "v20.11.0", "v16.0.0", "v22.0.0", "v22.9.0", "v22.11.1"]
+    )
     def test_an_under_floor_node_is_refused(self, tmp_path: Path, version: str) -> None:
         """The AL2023 case: node exists, so the old `has node` gate accepted it
         and skipped every install branch."""
-        assert _run_with_node(tmp_path, version) != 0, (
-            f"{version} was accepted; the installer would build against it"
-        )
+        assert (
+            _run_with_node(tmp_path, version) != 0
+        ), f"{version} was accepted; the installer would build against it"
 
-    @pytest.mark.parametrize("version", ["v22.0.0", "v24.5.1", "v25.0.0"])
+    @pytest.mark.parametrize("version", ["v22.12.0", "v22.20.1", "v24.5.1", "v25.0.0"])
     def test_a_supported_node_is_accepted(self, tmp_path: Path, version: str) -> None:
         """Equally important: a usable node must NOT trigger a reinstall."""
         assert _run_with_node(tmp_path, version) == 0, f"{version} was rejected"
@@ -100,9 +100,7 @@ class TestNodeFloorIsAuthoritative:
     def test_no_node_at_all_is_refused(self, tmp_path: Path) -> None:
         assert _run_with_node(tmp_path, None) != 0
 
-    def test_a_broken_node_binary_is_refused_not_crashed_on(
-        self, tmp_path: Path
-    ) -> None:
+    def test_a_broken_node_binary_is_refused_not_crashed_on(self, tmp_path: Path) -> None:
         """A node that errors instead of printing a version reports v0 and
         fails the comparison -- it must not abort the installer."""
         binbox = tmp_path / "bin"
@@ -135,4 +133,5 @@ class TestFrontendBuildHeadroom:
         """The constant is consulted by both detection and the post-install
         check; two definitions could disagree."""
         text = INSTALL_SH.read_text(encoding="utf-8")
-        assert text.count("NODE_MIN_MAJOR=") == 1
+        assert text.count("NODE_MIN_VERSION=") == 1
+        assert "NODE_MIN_MAJOR" not in text

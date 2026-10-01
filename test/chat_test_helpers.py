@@ -194,6 +194,21 @@ def _make_state(tmp_path, **kwargs):
     sessions.slack_link_nonce = MagicMock(side_effect=_slack_link_nonce)
     sessions.clear_slack_link_if = MagicMock(side_effect=_clear_slack_link_if)
 
+    # Real in-memory INBOUND channel-link store (``get_origin_link``/``set_origin_link``, the SessionManager surface), for
+    # the same reason: a bare MagicMock return is unconditionally truthy, so a
+    # reader asking "does this session have a channel link" would see one on
+    # every key. Parity with SessionStore: absent -> None.
+    _channel_links: dict[str, object] = {}
+
+    def _set_link(key, link):
+        _channel_links[key] = link
+
+    def _get_link(key):
+        return _channel_links.get(key)
+
+    sessions.set_origin_link = MagicMock(side_effect=_set_link)
+    sessions.get_origin_link = MagicMock(side_effect=_get_link)
+
     # Real in-memory mirror-link store, for the same reason as the Slack one and
     # with a sharper failure mode: callers branch on whether a mirror is PRESENT,
     # and a bare MagicMock is unconditionally truthy, so every session reads as
@@ -217,6 +232,9 @@ def _make_state(tmp_path, **kwargs):
         if isinstance(channel_id, ChannelLink):
             if _mirror_links.get(key) != channel_id or key not in _mirror_nonces:
                 _mirror_nonces[key] = _mint_nonce()
+            # Parity with ``SessionMap.set_mirror_link``: the link is stored as
+            # handed over, admission included when the caller signed it, and the
+            # store never mints one -- only the two authorized creation paths do.
             _mirror_links[key] = channel_id
             if accepts_inbound:
                 _inbound_keys.add(key)
@@ -284,7 +302,6 @@ def _make_app(state: DashboardState) -> web.Application:
     from kiro_crew.dashboard.chat import (
         api_chat,
         api_chat_mode,
-        api_chat_plan_action,
         api_chat_slot_approve,
         api_chat_slot_color,
         api_chat_slot_delete,
@@ -331,7 +348,6 @@ def _make_app(state: DashboardState) -> web.Application:
     app.router.add_post("/api/chat/slots/{slot}/rewind", api_chat_slot_rewind)
     app.router.add_post("/api/chat/slots/{slot}/switch-variant", api_chat_slot_switch_variant)
     app.router.add_post("/api/chat/mode", api_chat_mode)
-    app.router.add_post("/api/chat/slots/{slot}/plan-action", api_chat_plan_action)
     return app
 
 

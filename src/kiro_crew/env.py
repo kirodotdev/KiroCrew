@@ -6,6 +6,7 @@ import functools
 import getpass
 import json
 import logging
+import ntpath
 import os
 import shutil
 import stat
@@ -18,6 +19,17 @@ from pathlib import Path
 from kiro_crew import platform_compat
 from kiro_crew.config.paths import data_home, peek_data_home
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
+
+# ``uv`` is a declared dependency shipped as a wheel (``setup.cfg``), so this
+# import normally succeeds. An install repackaged without the wheel must still
+# import this module — a missing uv is something :func:`resolve_uv` REPORTS, never
+# an ImportError at load — so it is the optional-dependency form of
+# `top-level-imports`. Tests patch this name to model the wheel being present,
+# absent, or broken.
+try:
+    import uv as _uv_package
+except ImportError:  # pragma: no cover - only on a repackaged install
+    _uv_package = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -560,6 +572,53 @@ def find_node_tool(name: str, base_path: str | None = None) -> str | None:
     return shutil.which(name, path=node_augmented_path(base))
 
 
+def resolve_uv() -> str | None:
+    """Absolute path to a usable ``uv``, or ``None`` when genuinely absent.
+
+    ``uv`` is a DECLARED dependency (``setup.cfg``) shipped as a wheel, so a
+    stock ``pip install kirocrew`` always has the binary — but not necessarily
+    on ``PATH``: the wheel puts it in the venv's scripts dir, and an installed
+    systemd/launchd gateway runs with a minimal ``PATH``. So it is resolved
+    through the installed package first and looked up by name second:
+
+    1. ``uv.find_uv_bin()`` — the wheel's own locator. It raises ``UvNotFound``
+       (a ``FileNotFoundError`` subclass) on an install repackaged without the
+       binary, and a path it returns is only trusted when the file exists;
+    2. ``shutil.which("uv")`` — a user's own, possibly newer, uv still works;
+    3. ``None``.
+
+    Never raises: an absent uv is a reportable condition for the caller (the
+    pptx-maker engine reports "unavailable", pod provisioning falls back to
+    pip). This is the ONE spelling of the ladder — pod provisioning and the
+    pptx-maker engine both consume it, so the minimal-``PATH`` case cannot be
+    handled two different ways.
+
+    The result is always absolute. ``shutil.which`` returns a RELATIVE path when
+    the ``PATH`` entry it matched is relative (``.``, ``bin``), and pod
+    provisioning runs uv with ``cwd=<checkout>``, where that relative path no
+    longer resolves: ``Popen`` raises ``FileNotFoundError`` before the pip
+    fallback can run. A relative hit is SKIPPED rather than absolutized against
+    the caller's cwd: a binary found through a relative ``PATH`` entry is
+    whatever happens to sit in the current directory, which is not the trust
+    level the rest of the ladder has, and the caller's fallback (pip) is the
+    right answer for it. The wheel locator's answer is trusted and only
+    normalised.
+    """
+    if _uv_package is not None:
+        try:
+            found = _uv_package.find_uv_bin()
+        except (FileNotFoundError, OSError) as exc:
+            logger.debug("uv.find_uv_bin() did not resolve: %s", exc)
+            found = None
+        if found and os.path.isfile(found):
+            return os.path.abspath(found)
+    on_path = shutil.which("uv")
+    if on_path and not os.path.isabs(on_path):
+        logger.debug("ignoring uv found through a relative PATH entry: %s", on_path)
+        return None
+    return on_path
+
+
 def _ensure_node_script() -> Path | None:
     """Locate the bundled ``ensure-node.sh``, or ``None`` on a wheel install.
 
@@ -928,6 +987,55 @@ def mcp_search_path(env_path: str) -> str:
     return dedup_path(os.pathsep.join(filter(None, parts)))
 
 
+def resolved_command_casing(path: str | None) -> str:
+    """Restore a PATH-resolved Windows basename without resolving aliases.
+
+    ``shutil.which`` spells the extension it appends exactly as ``PATHEXT``
+    spells it, upper case on a stock install, so a bare ``demo-mcp`` resolves
+    to ``...\\demo-mcp.EXE`` while the file on disk is ``demo-mcp.exe``. A
+    launcher that dispatches on its own ``argv[0]`` basename case-sensitively
+    (a tool manager's multiplexer shim) then refuses to run under the
+    synthesized spelling. The three MCP server command resolvers -- the
+    agent-config resolver, the dashboard probe and gatewayd's rewriter -- route
+    their ``shutil.which`` result through this one helper, next to
+    :func:`mcp_search_path`, so they agree on WHAT they emit as well as on where
+    they look. Resolvers of Kiro Crew's own binaries are not MCP server
+    commands and stay outside it: the ``kirocrew`` lookup in
+    ``agent._resolve_kirocrew_bin``, and the kiro-cli launch path in
+    ``acp.client``, which keeps its own ``_normalize_exe_casing``.
+
+    Looking up the matching parent-directory entry repairs the spelling while
+    retaining the lexical parent route and a file symlink's own name;
+    ``os.path.realpath`` would follow the alias to its target instead, which is
+    why it is not used here. ``None`` becomes ``""``. POSIX paths stay
+    untouched: the filesystem is case-sensitive there and the extension is
+    part of the name.
+    """
+    if not path:
+        return ""
+    if not platform_compat.IS_WINDOWS:
+        return path
+    parent, name = os.path.split(path)
+    if not name:
+        return path
+    folded = ntpath.normcase(name)
+    matches: list[str] = []
+    try:
+        with os.scandir(parent or os.curdir) as entries:
+            for entry in entries:
+                if entry.name == name:
+                    return path
+                if ntpath.normcase(entry.name) == folded:
+                    matches.append(entry.name)
+    except OSError:
+        return path
+    # A case-sensitive Windows directory may legally contain ambiguous names.
+    # Never turn the requested launcher into a different directory entry.
+    if len(matches) != 1:
+        return path
+    return path[: -len(name)] + matches[0]
+
+
 def mcp_runtime_path(base_path: str = "") -> str:
     """Contributed MCP directories, then :func:`augmented_path` unchanged.
 
@@ -1281,6 +1389,11 @@ def _mise_bin() -> str | None:
     inherited ``$PATH``. Try ``$PATH`` first, then the default install dir,
     then macOS Homebrew locations. Discovery must work before mise activation
     adds the user's toolchain directories to the gateway environment.
+
+    A candidate whose probe raises ``OSError`` is skipped like a missing one:
+    ``Path.is_file`` swallows only not-found errors, so a ``stat`` refused with
+    EACCES (a restricted ``/usr/local/bin`` or a sandboxed gateway) would
+    otherwise abort gateway boot from a lookup that is meant to be optional.
     """
     found = shutil.which("mise")
     if found:
@@ -1289,7 +1402,12 @@ def _mise_bin() -> str | None:
     if sys.platform == "darwin":
         candidates.extend([Path("/opt/homebrew/bin/mise"), Path("/usr/local/bin/mise")])
     for candidate in candidates:
-        if candidate.is_file() and os.access(candidate, os.X_OK):
+        try:
+            usable = candidate.is_file() and os.access(candidate, os.X_OK)
+        except OSError as exc:
+            logger.debug("mise candidate %s skipped: %s", candidate, type(exc).__name__)
+            continue
+        if usable:
             return str(candidate)
     return None
 

@@ -3,11 +3,17 @@
  *
  * Every surface that floats over the transcript in the composer dock (the
  * composer itself, an approval bar, the follow-up chips, a tip or suggestion
- * card, the queue, the memory chip, the jump-to-bottom button), the mobile
- * Settings search capsule, the notification panes (the in-app banner, the
- * bell popover's rows and controls card) and the list panels' search field
- * (Sessions sidebar, Crew Members roster; components/SearchFilterBar.tsx) wear
- * the SAME material, from the SAME primitive:
+ * card, the queue cards, the memory chip, the jump-to-bottom button, and the
+ * status stack above the box: the task, sub-agent and workflow progress bars,
+ * the Command Center card, the held-delivery line, the quote bubble in flight),
+ * the mobile Settings search capsule, the notification panes (the in-app banner, the
+ * bell popover's rows and controls card), the list panels' search field
+ * (Sessions sidebar, Crew Members roster; components/SearchFilterBar.tsx) and
+ * the crewmate DM header's centred identity pill (face + name, itself the
+ * "Edit crewmate" button; pages/members/MembersPage.tsx) and the top bar's
+ * three pills (the search trigger, the readout capsule and the Request a
+ * Feature pill; App.tsx, components/FeedbackPill.tsx) wear the SAME
+ * material, from the SAME primitive:
  * `--glass-tint` over a blurred backdrop, an even top/bottom light band in
  * `--glass-band`, a 1px `--glass-edge` line down each side and a half-pixel
  * `--glass-hairline` just outside the top and bottom edges. No ring: the
@@ -16,12 +22,20 @@
  * they are (`variant`), how round they are (`radius`) and which element they
  * ARE (`as`); they never restate the optics.
  *
- * Two variants, one recipe: `panel` and `chip` now share the same optics
- * (frost 4, light 25) -- the maintainer wants one blur across every pane and the
- * light band reaching full white on every edge, chips included -- and differ
- * only in name, kept so a call site still says which kind of box it is; the
- * chip used to run lighter (frost 4, light 18) for the small pills and cards, where
- * the panel numbers read heavy at 30px tall.
+ * Three variants, differing ONLY in blur: `composer`, `panel` and `chip` all
+ * share the light band (25, full white on every edge). `composer` is the ONE
+ * surface that floats over the transcript scroller with the conversation
+ * scrolling UNDER it and no opaque fade band, so its tint (~40-45% opaque) plus
+ * blur are the only thing hiding the covered strip. At frost 4 a tall message
+ * mid-scroll read straight THROUGH it (#15225): a 4px blur leaves ~13px body
+ * glyphs legible and 55-60% of the backdrop shows past the tint. `composer`
+ * therefore runs a heavier blur (12) to smear that strip past reading. `panel`
+ * (notification cards / banner / feed, the side-panel float, tip and suggestion
+ * cards) and `chip` (the small pills) both stay light (4): they do not float
+ * over a scrolling transcript, and a heavy blur reads foggy on a short surface
+ * -- the NotificationFeed stub is 12px tall. `panel` and `chip` are kept as
+ * separate names so a call site still says which kind of box it is (they ran
+ * different light once, chip at 18, before the bands were unified).
  *
  * The pane IS the host element — there is no wrapper box. A follow-up chip is
  * `<Glass as="button" …>`: the button is the flex item, carries the width cap,
@@ -32,8 +46,9 @@
  * session composer included), plus `approval-glow` stacked on it while a
  * decision is pending — because which shadow a pane wears at this instant is
  * the caller's state, not the material's. A hue is mixed INTO the tint with `glass-accent`
- * (picked chip, tip card) or `glass-warn` (incognito chip), and `glass-hover`
- * brightens an interactive pane a step on hover — all three swap `--glass-tint`
+ * (picked chip, tip card), `glass-warn` (incognito chip) or `glass-danger` (the
+ * offline readout capsule), and `glass-hover`
+ * brightens an interactive pane a step on hover — all four swap `--glass-tint`
  * on the host (index.css), so the pane stays the same material. Focus changes
  * NOTHING on the pane — no theme colour, no brighter tint, no darker side
  * lines, no deeper shadow (maintainer decision): a focused pane is the same
@@ -44,9 +59,10 @@
 import { forwardRef, type ReactElement, type Ref } from 'react'
 import { LiquidGlass, type GlassHostTag, type LiquidGlassOwnProps, type LiquidGlassProps } from './ui/liquid-glass'
 
-export type GlassVariant = 'panel' | 'chip'
+export type GlassVariant = 'composer' | 'panel' | 'chip'
 
 const RECIPE: Record<GlassVariant, Pick<LiquidGlassOwnProps, 'frost' | 'lightIntensity'>> = {
+  composer: { frost: 12, lightIntensity: 25 },
   panel: { frost: 4, lightIntensity: 25 },
   chip: { frost: 4, lightIntensity: 25 },
 }

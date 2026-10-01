@@ -530,3 +530,77 @@ class TestSavePathRefusesAnUnusablePin:
                 json={"name": "inherits", "kiro_agent": "kirocrew", "model": "auto"},
             )
             assert resp.status == 200
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method", ["post", "put"])
+    async def test_a_stale_snapshot_is_revalidated_before_the_pin_is_judged(
+        self, seeded_agent, method: str
+    ) -> None:
+        """The crew save path heals the live snapshot before the locked check."""
+        rows = [{"modelId": "auto"}]
+        asked: list[list[str]] = []
+
+        async def _heal(catalog_ids: list[str]) -> list[dict[str, str]]:
+            asked.append(catalog_ids)
+            rows.append({"modelId": "healed-model"})
+            return list(rows)
+
+        provider = SimpleNamespace(
+            client=SimpleNamespace(backend=ACP_BACKEND_KIRO),
+            available_models=lambda: list(rows),
+            maybe_refresh_available_models=_heal,
+        )
+        app = _crud_app()
+        app["state"] = SimpleNamespace(
+            sessions=SimpleNamespace(active_providers=lambda: [provider])
+        )
+        body = {"model": "healed-model"}
+        if method == "post":
+            body.update({"name": "healed", "kiro_agent": "kirocrew"})
+
+        async with TestClient(TestServer(app)) as client:
+            response = await getattr(client, method)(
+                "/api/agents" if method == "post" else f"/api/agents/{seeded_agent}",
+                json=body,
+            )
+
+        assert response.status == 200
+        assert asked and asked[0][0] == "healed-model"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method", ["post", "put"])
+    async def test_an_in_flight_revalidation_refuses_the_save(
+        self, seeded_agent, method: str
+    ) -> None:
+        from kiro_crew.agent_sdk.drivers.acp import EntitlementRevalidating
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.dashboard.handlers.core import _ROLE_PIN_REVALIDATING
+
+        async def _pending(_catalog_ids: list[str]) -> list[dict[str, str]]:
+            raise EntitlementRevalidating
+
+        provider = SimpleNamespace(
+            client=SimpleNamespace(backend=ACP_BACKEND_KIRO),
+            available_models=lambda: [{"modelId": "auto"}],
+            maybe_refresh_available_models=_pending,
+        )
+        app = _crud_app()
+        app["state"] = SimpleNamespace(
+            sessions=SimpleNamespace(active_providers=lambda: [provider])
+        )
+        body = {"model": "pending-model"}
+        if method == "post":
+            body.update({"name": "pending", "kiro_agent": "kirocrew"})
+
+        async with TestClient(TestServer(app)) as client:
+            response = await getattr(client, method)(
+                "/api/agents" if method == "post" else f"/api/agents/{seeded_agent}",
+                json=body,
+            )
+            assert response.status == 400
+            payload = await response.json()
+            assert payload == {"error": _ROLE_PIN_REVALIDATING, "code": "invalid_model"}
+
+        cfg = KiroCrewConfig.load()
+        assert "pending" not in cfg.agents
+        assert cfg.agents[seeded_agent].model != "pending-model"

@@ -1390,6 +1390,56 @@ class TestReadNewToolResults:
         assert [r.tool_call_id for r in second] == ["t2"]
         assert client._jsonl_pos > pos_after_first
 
+    def test_non_ascii_output_decodes_as_utf8_under_a_cp1252_locale(self, tmp_path, monkeypatch):
+        """kiro-cli writes the transcript as UTF-8, so the reader must decode it as UTF-8.
+
+        A default Windows interpreter resolves a text-mode ``open()`` with no
+        ``encoding=`` to the ANSI code page. The wrapper below reproduces that on
+        any host: an omitted encoding becomes cp1252. "café — 你好" then decodes
+        to mojibake, and "Ё" carries the byte 0x81, which cp1252 leaves undefined,
+        so the read would raise, leave the offset in place and drop the later line.
+        """
+        real_open = open
+
+        def _locale_default_open(file, mode="r", *args, **kwargs):
+            if "b" not in mode and not (len(args) >= 2 and args[1]) and not kwargs.get("encoding"):
+                kwargs["encoding"] = "cp1252"
+            return real_open(file, mode, *args, **kwargs)
+
+        def _result(tool_use_id: str, stdout: str) -> str:
+            return json.dumps(
+                {
+                    "kind": "ToolResults",
+                    "data": {
+                        "content": [
+                            {
+                                "kind": "toolResult",
+                                "data": {
+                                    "toolUseId": tool_use_id,
+                                    "content": [{"kind": "json", "data": {"stdout": stdout}}],
+                                },
+                            }
+                        ]
+                    },
+                },
+                ensure_ascii=False,
+            )
+
+        body = _result("t-accents", "café — 你好") + "\n"
+        body += _result("t-undefined-byte", "Ё") + "\n"
+        body += _result("t-after", "later") + "\n"
+        client = self._write(tmp_path, monkeypatch, body)
+        monkeypatch.setattr(acp_client, "open", _locale_default_open, raising=False)
+
+        results = client._read_new_tool_results_sync()
+
+        assert [(r.tool_call_id, r.tool_output) for r in results] == [
+            ("t-accents", "café — 你好"),
+            ("t-undefined-byte", "Ё"),
+            ("t-after", "later"),
+        ]
+        assert client._jsonl_pos == len(body.encode("utf-8"))
+
     def test_unreadable_file_is_swallowed(self, tmp_path, monkeypatch):
         client = self._write(tmp_path, monkeypatch, "")
 

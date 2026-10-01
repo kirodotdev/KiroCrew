@@ -75,7 +75,27 @@ export default function PendingQuestionCard({ slotKey, onFallbackSend, onDirectS
      the reason above. */
   const lockKey = askId ?? pending.serverCardId ?? cardSlot
   const busy = busyFor === lockKey
-  const asText = (answers: Record<string, string>) => Object.values(answers).join('\n')
+  /* Q/A pairs, never bare answers. The map is keyed by QUESTION TEXT, and for a
+     stateless card (what the MCP `ask_question` tool posts -- see
+     `api.answerQuestion`) this string IS the message the agent reads, not just
+     what the transcript shows. `Object.values` dropped the keys, so a
+     multi-question card handed the agent N unlabelled lines and left it to pair
+     them back up by position -- and a question whose answer is itself a list
+     ("a, b, c") is indistinguishable from two answers. The key is the only
+     thing on either side that says which question an answer settled.
+
+     One question is the exception, and the common case: the agent asked a single
+     thing, so the answer alone already says what it settled, and wrapping it
+     would quote the whole question back at the user in their own chat bubble. */
+  const asText = (answers: Record<string, string>) => {
+    const pairs = Object.entries(answers)
+    if (pairs.length === 1) return pairs[0][1]
+    return pairs
+      .map(([question, answer]) =>
+        i18nT('components.pendingQuestionCard.qa_pair', { question, answer }),
+      )
+      .join('\n\n')
+  }
 
   /* Clearing by ask_id, never by slot: a slow response for ask A must not erase
      a newer ask B that already replaced it in the same slot, which would leave

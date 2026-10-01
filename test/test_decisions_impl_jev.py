@@ -108,13 +108,20 @@ async def _run(
     api_key=VAULT_REF,
     state="hi",
     model="jev-latest",
+    host="localhost",
 ):
-    """Serve *recorder* on loopback and ask *questions* through a real socket."""
-    server = TestServer(recorder.app())
+    """Serve *recorder* on loopback and ask *questions* through a real socket.
+
+    *host* defaults to the NAME ``localhost``, which reaches the same socket but is
+    not a literal loopback address, so the client treats it as a remote provider and
+    sends the key. Pass ``127.0.0.1`` to exercise the local-model path, which sends
+    none.
+    """
+    server = TestServer(recorder.app(), host="127.0.0.1")
     await server.start_server()
     try:
         provider = DecisionProviderConfig(
-            endpoint=str(server.make_url("/v1/systemone")),
+            endpoint=f"http://{host}:{server.port}/v1/systemone",
             api_key=api_key,
             model=model,
             timeout_ms=timeout_ms,
@@ -263,6 +270,80 @@ class TestSuccessfulParse:
 # ---------------------------------------------------------------------------
 # Failures: each raises, so the gate can convert it into None + a logged reason
 # ---------------------------------------------------------------------------
+
+
+class TestLocalModelServer:
+    """A literal loopback endpoint is a local model server: it gets no credential."""
+
+    def test_no_authorization_header_is_sent(self, fake_vault):
+        fake_vault("sk-live-abc")
+        rec = _Recorder(body=_ok_body({"is_urgent": _yes()}))
+        answers = asyncio.run(_run(rec, [URGENT], host="127.0.0.1"))
+        assert answers["is_urgent"].value == "yes"
+        assert "Authorization" not in rec.headers[0]
+
+    def test_the_vault_is_never_read(self, monkeypatch):
+        """Not merely left out of the header: the key is never fetched at all."""
+        import kiro_crew.decisions.impl_jev as mod
+
+        def _boom(_raw):
+            raise AssertionError("the vault was read for a local server")
+
+        monkeypatch.setattr(mod, "resolve_api_key", _boom)
+        rec = _Recorder(body=_ok_body({"is_urgent": _yes()}))
+        asyncio.run(_run(rec, [URGENT], host="127.0.0.1"))
+        assert rec.requests, "the request still went out"
+
+    def test_no_key_is_not_a_refusal_locally(self):
+        rec = _Recorder(body=_ok_body({"is_urgent": _yes()}))
+        asyncio.run(_run(rec, [URGENT], host="127.0.0.1", api_key=""))
+        assert rec.requests
+
+    def test_the_name_localhost_still_needs_the_key(self):
+        """A name can resolve anywhere, so it is treated as a remote provider."""
+        rec = _Recorder(body=_ok_body({"is_urgent": _yes()}))
+        with pytest.raises(JevProtocolError, match="no api key"):
+            asyncio.run(_run(rec, [URGENT], host="localhost", api_key=""))
+        assert rec.requests == []
+
+    def test_a_hand_written_loopback_address_says_once_that_no_key_is_sent(
+        self, monkeypatch, caplog
+    ):
+        """A tunnel to hosted Jev would get 401s; the log names the withheld key, once."""
+        import kiro_crew.decisions.impl_jev as mod
+
+        monkeypatch.setattr(mod, "_keyless_loopback_warned", set())
+        mod._warn_keyless_custom_loopback("http://127.0.0.1:9001/v1/systemone", "jev-latest")
+        mod._warn_keyless_custom_loopback("http://127.0.0.1:9001/v1/systemone", "jev-latest")
+        hits = [r for r in caplog.records if "no Jev API key is sent" in r.getMessage()]
+        assert len(hits) == 1
+
+    def test_query_variants_of_one_address_warn_once_and_the_set_stays_bounded(
+        self, monkeypatch, caplog
+    ):
+        import kiro_crew.decisions.impl_jev as mod
+
+        monkeypatch.setattr(mod, "_keyless_loopback_warned", set())
+        for n in range(200):
+            mod._warn_keyless_custom_loopback(
+                f"http://127.0.0.1:9001/v1/systemone?n={n}", "jev-latest"
+            )
+        hits = [r for r in caplog.records if "no Jev API key is sent" in r.getMessage()]
+        assert len(hits) == 1
+        for port in range(9002, 9200):
+            mod._warn_keyless_custom_loopback(f"http://127.0.0.1:{port}/v1/systemone", "jev-latest")
+        assert len(mod._keyless_loopback_warned) <= mod._KEYLESS_WARNED_MAX
+
+    def test_a_local_preset_is_not_warned_about(self, monkeypatch, caplog):
+        import kiro_crew.decisions.impl_jev as mod
+        from kiro_crew.decisions import local_models
+
+        monkeypatch.setattr(mod, "_keyless_loopback_warned", set())
+        preset = local_models.LOCAL_MODELS[0]
+        mod._warn_keyless_custom_loopback(
+            local_models.endpoint_for(preset.default_port), preset.model
+        )
+        assert not [r for r in caplog.records if "no Jev API key is sent" in r.getMessage()]
 
 
 class TestFailures:

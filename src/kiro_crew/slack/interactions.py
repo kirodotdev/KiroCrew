@@ -47,6 +47,12 @@ from kiro_crew.security import (
     redact_exfiltration_urls,
 )
 from kiro_crew.sel import sel
+from kiro_crew.session_lifecycle import (
+    STOP_DECLINED_COMPACTING_TEXT,
+    compaction_in_flight,
+    consume_stop_declined,
+    decline_stop,
+)
 from kiro_crew.slack.allowlist import (
     ACTION_ALLOWLIST_APPROVE,
     ACTION_ALLOWLIST_DENY,
@@ -2493,21 +2499,35 @@ async def _handle_stop_confirm(payload: dict, channel: str, msg_ts: str, user_id
     # Find the active session in this channel/thread
     thread_ts = payload.get("message", {}).get("thread_ts") or msg_ts
     has_session = _orch.sessions.has_session(thread_ts)
-    active_task = _orch._session_tasks.pop(thread_ts, None)
+    # READ, not popped: removed below only once the cancel went through.
+    active_task = _orch._session_tasks.get(thread_ts)
 
     if has_session or active_task:
         response_url = payload.get("response_url", "")
 
-        async def _update_ephemeral(blocks: list[dict], text: str) -> None:
-            if response_url:
-                try:
-                    async with aiohttp.ClientSession() as sess:
-                        await sess.post(
-                            response_url,
-                            json={"replace_original": True, "text": text, "blocks": blocks},
-                        )
-                except Exception:
-                    pass
+        async def _update_ephemeral(blocks: list[dict], text: str) -> bool:
+            """Replace the ephemeral card; did the replacement land?
+
+            Reported rather than swallowed because one caller GATES a destructive
+            escalation on this text having reached the presser: there is no
+            response url on every route, and the post's own error is caught here,
+            so "nothing raised" is not the same as "the presser was told".
+
+            The status is read for the same reason. A response url expires, and
+            an expired one answers 4xx with a body rather than raising, so the
+            send returns normally having delivered nothing.
+            """
+            if not response_url:
+                return False
+            try:
+                async with aiohttp.ClientSession() as sess:
+                    resp = await sess.post(
+                        response_url,
+                        json={"replace_original": True, "text": text, "blocks": blocks},
+                    )
+                    return 200 <= int(resp.status) < 300
+            except Exception:
+                return False
 
         async def _on_soft() -> None:
             from kiro_crew.slack.blocks import build_stopped_blocks
@@ -2525,9 +2545,53 @@ async def _handle_stop_confirm(payload: dict, channel: str, msg_ts: str, user_id
                     channel, "⛔ Execution stopped — session reset.", thread_ts
                 )
 
-        outcome = await _orch.sessions.stop_turn(thread_ts, on_soft=_on_soft, on_hard=_on_hard)
-        if active_task and not active_task.done():
-            active_task.cancel()
+        # A repeat press within the window by the same presser, while the
+        # compaction still holds the session, is the forcing second press the
+        # decline reply promised; the marker is spent either way.
+        _force = consume_stop_declined(thread_ts, user_id) and compaction_in_flight(
+            _orch.sessions, thread_ts
+        )
+        # ``preserve_queue`` with the force: the hard reset pops the session and
+        # its queue, which in a shared thread holds co-tenants' messages;
+        # ``stop_turn`` parks them for the successor instead.
+        _kw = {"force": True, "preserve_queue": True} if _force else {}
+        outcome = await _orch.sessions.stop_turn(
+            thread_ts, on_soft=_on_soft, on_hard=_on_hard, **_kw
+        )
+        if outcome == "compacting":
+            # Nothing was stopped: the task stays tracked and nothing is cancelled.
+            # The reply promises that a repeat forces, so arm the marker for this
+            # presser -- after the reply landed, since an escalation they were
+            # never warned about is a silent reset. Kill Now stays the other route.
+            async def _say_declined() -> bool:
+                if await _update_ephemeral([], STOP_DECLINED_COMPACTING_TEXT):
+                    return True
+                # The ephemeral card needs a response url this route does not
+                # always carry. The presser still has to be told, because the
+                # marker below is what turns their next press into a reset, so
+                # fall back to a thread message and report what landed.
+                if not (_orch and _orch.slack and channel):
+                    return False
+                try:
+                    return bool(
+                        await _orch.slack.post_message(
+                            channel, STOP_DECLINED_COMPACTING_TEXT, thread_ts
+                        )
+                    )
+                except Exception:
+                    return False
+
+            await decline_stop(thread_ts, user_id, _say_declined)
+        else:
+            # Pop only the task this Stop ended; a successor dispatched during
+            # the await from pending work is cancelled with it (see the same
+            # guard on the !stop command path in slack/events.py).
+            # A successor dispatched from a message admitted mid-await is the
+            # user's newer intent: left running and tracked.
+            if _orch._session_tasks.get(thread_ts) is active_task:
+                _orch._session_tasks.pop(thread_ts, None)
+            if active_task and not active_task.done():
+                active_task.cancel()
         # If stop_turn returned "idle" (no active turn), neither callback
         # fired — dismiss the stale ephemeral with a "Nothing running" message.
         if outcome == "idle":
@@ -3223,8 +3287,33 @@ async def _handle_inline_stop(
             except Exception:
                 pass
 
-    outcome = await _orch.sessions.stop_turn(session_key, on_soft=_on_soft, on_hard=_on_hard)
-    if outcome == "idle" and _orch.slack and channel and msg_ts:
+    # A repeat press within the window by the same presser, while the compaction
+    # still holds the session, is the forcing second press the decline promised.
+    _force = consume_stop_declined(session_key, user_id) and compaction_in_flight(
+        _orch.sessions, session_key
+    )
+    # ``preserve_queue`` with the force, for the reason the confirm button gives.
+    _kw = {"force": True, "preserve_queue": True} if _force else {}
+    outcome = await _orch.sessions.stop_turn(session_key, on_soft=_on_soft, on_hard=_on_hard, **_kw)
+    if outcome == "compacting":
+        # The reply promises that a repeat forces, so arm the marker -- and only
+        # once the reply landed. This update is conditional on a client and a
+        # message id and swallows its own transport error, so arming first would
+        # leave the escalation live with the presser never warned, and their
+        # retry would hard-reset the session silently.
+        async def _say_declined() -> bool:
+            if not (_orch.slack and channel and msg_ts):
+                return False
+            try:
+                await _orch.slack.update_message(
+                    channel, msg_ts, text=STOP_DECLINED_COMPACTING_TEXT
+                )
+            except Exception:
+                return False
+            return True
+
+        await decline_stop(session_key, user_id, _say_declined)
+    elif outcome == "idle" and _orch.slack and channel and msg_ts:
         try:
             await _orch.slack.update_message(channel, msg_ts, text="⏹ Nothing running.")
         except Exception:

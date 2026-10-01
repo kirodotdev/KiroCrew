@@ -99,8 +99,9 @@ class InProcessEmbedder:
         TTL so we don't probe every call; positives are re-validated after
         the TTL too (a broken backend must not report available forever).
         """
-        if self._available is not None and (time.time() - self._last_check) < NEGATIVE_CACHE_TTL:
-            return self._available
+        cached = self._fresh_cached_availability()
+        if cached is not None:
+            return cached
         embedder = self._get_embedder()
         if embedder.is_ready():
             self._available = True
@@ -140,9 +141,24 @@ class InProcessEmbedder:
         embed still burns CPU — keep it on the ``mc-embed`` bulkhead pool.
         """
         # Fast path: cached result within TTL needs no thread hop.
-        if self._available is not None and (time.time() - self._last_check) < NEGATIVE_CACHE_TTL:
-            return self._available
+        cached = self._fresh_cached_availability()
+        if cached is not None:
+            return cached
         return await run_in_embed_pool(self.is_available)
+
+    def _fresh_cached_availability(self) -> bool | None:
+        """The cached verdict while it is inside the TTL, else ``None``.
+
+        A cached ``False`` is checked against the backend's non-blocking
+        ``is_ready()`` first, so a model that finishes loading inside the TTL
+        is used at once instead of after the TTL runs out.
+        """
+        if self._available is None or (time.time() - self._last_check) >= NEGATIVE_CACHE_TTL:
+            return None
+        if not self._available and self._get_embedder().is_ready():
+            self._available = True
+            self._last_check = time.time()
+        return self._available
 
     def embed(self, text: str, *, priority: int = PRIORITY_NORMAL) -> list[float] | None:
         """Embed a single text. Returns float list or None on failure.

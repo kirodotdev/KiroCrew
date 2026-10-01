@@ -43,9 +43,7 @@ API. ``src/kiro_crew/docs/*.md`` is packaged and read at runtime, and specific
 filenames are hardcoded in Python and TypeScript. Renaming one of those without
 updating its consumers breaks a shipped feature rather than a link.
 
-The seventh keeps bare invariant IDs honest. An Autopilot source comment such as
-``# S4:`` or ``(S2)`` must name a row in
-``docs/system-specs/modules/autopilot.md``; a harness comment such as ``# H6:``
+The seventh keeps bare invariant IDs honest. A harness comment such as ``# H6:``
 or ``(H13)`` must name a row in ``docs/system-specs/modules/harness-parity.md``.
 Otherwise a comment can claim an enforcement contract its owning spec never
 defines.
@@ -439,11 +437,6 @@ _CITATION_MARKER_RE = re.compile(
     r"(?:^\s*[#*]|//|/\*|\"\"\"|'''|`|\bSee\b|\bSpec\b|\bDesign\b|\bdocs?:)",
 )
 
-_AUTOPILOT_INVARIANT_DOC = "docs/system-specs/modules/autopilot.md"
-_AUTOPILOT_INVARIANT_ROW_RE = re.compile(r"^\s*\|\s*(S[1-9][0-9]*)\s*\|", re.MULTILINE)
-_AUTOPILOT_INVARIANT_CITE_RE = re.compile(
-    r"(?:^\s*(?:#|//|/\*)\s*(S[1-9][0-9]*)\s*:" r"|(?:#|//|/\*|\"\"\"|''').*?\((S[1-9][0-9]*)\))"
-)
 _HARNESS_INVARIANT_DOC = "docs/system-specs/modules/harness-parity.md"
 _HARNESS_INVARIANT_ROW_RE = re.compile(r"^\s*\|\s*(H[1-9][0-9]*)\s*\|", re.MULTILINE)
 _HARNESS_INVARIANT_CITE_RE = re.compile(
@@ -704,7 +697,6 @@ class Findings:
     missing_index: list[str] = field(default_factory=list)
     changelog_preamble: list[str] = field(default_factory=list)
     conflict_markers: list[str] = field(default_factory=list)
-    unknown_autopilot_invariants: list[str] = field(default_factory=list)
     unknown_harness_invariants: list[str] = field(default_factory=list)
     # Fact checks, behind the baseline. ``facts`` fails the run; ``advisories``
     # is the report-only half (dead identifiers, unless --strict-identifiers).
@@ -722,7 +714,6 @@ class Findings:
             + len(self.missing_index)
             + len(self.changelog_preamble)
             + len(self.conflict_markers)
-            + len(self.unknown_autopilot_invariants)
             + len(self.unknown_harness_invariants)
             + len(self.facts)
         )
@@ -1212,14 +1203,7 @@ def _check_invariant_citations(
 
 
 def check_invariant_citations(root: Path, findings: Findings) -> None:
-    """Every bare S/H source-comment ID must exist in its owning table."""
-    _check_invariant_citations(
-        root,
-        invariant_doc_path=_AUTOPILOT_INVARIANT_DOC,
-        row_pattern=_AUTOPILOT_INVARIANT_ROW_RE,
-        cite_pattern=_AUTOPILOT_INVARIANT_CITE_RE,
-        target=findings.unknown_autopilot_invariants,
-    )
+    """Every bare H source-comment ID must exist in its owning table."""
     _check_invariant_citations(
         root,
         invariant_doc_path=_HARNESS_INVARIANT_DOC,
@@ -1842,11 +1826,6 @@ def _report(findings: Findings, doc_count: int, stale_baseline: list[tuple[str, 
         "write the missing doc, or correct the citation",
     )
     _emit(
-        "Autopilot invariant IDs cited from source but absent from its table",
-        findings.unknown_autopilot_invariants,
-        f"add the invariant to {_AUTOPILOT_INVARIANT_DOC}, or correct the bare S-id",
-    )
-    _emit(
         "Harness invariant IDs cited from source but absent from its table",
         findings.unknown_harness_invariants,
         f"add the invariant to {_HARNESS_INVARIANT_DOC}, or correct the bare H-id",
@@ -2031,15 +2010,6 @@ def _self_test() -> int:
             '"""Spec: ``docs/system-specs/modules/ghost.md``."""\n', encoding="utf-8"
         )
         return "phantom_refs"
-
-    def plant_unknown_autopilot_invariant(root: Path) -> str:
-        spec = root / _AUTOPILOT_INVARIANT_DOC
-        spec.parent.mkdir(parents=True)
-        spec.write_text("| ID | Rule |\n|---|---|\n| S1 | One |\n", encoding="utf-8")
-        source = root / "src" / "kiro_crew"
-        source.mkdir(parents=True)
-        (source / "worker.py").write_text("# S9: missing invariant\n", encoding="utf-8")
-        return "unknown_autopilot_invariants"
 
     def plant_unknown_harness_invariant(root: Path) -> str:
         spec = root / _HARNESS_INVARIANT_DOC
@@ -2509,7 +2479,6 @@ def _self_test() -> int:
     probe("line zero", plant_line_zero)
     probe("line RANGE ending past EOF", plant_stale_line_range)
     probe("phantom spec citation", plant_phantom_ref)
-    probe("unknown Autopilot invariant citation", plant_unknown_autopilot_invariant)
     probe("unknown harness invariant citation", plant_unknown_harness_invariant)
     probe("code-coupled doc missing", plant_coupling)
 

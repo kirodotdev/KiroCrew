@@ -38,6 +38,7 @@ from kiro_crew.apps.builtins.design_tweak.backend import (
 )
 from kiro_crew.apps.proxy_auth import verify_proxy_request
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
+from kiro_crew.platform.context import redact_via_context
 from kiro_crew.platform_compat import (
     CREATE_NEW_PROCESS_GROUP,
     IS_MACOS,
@@ -279,6 +280,24 @@ _HEADER_NAME_RE = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
 _LSOF_TIMEOUT = 4
 _PROBE_TIMEOUT = 1.5
 _START_TIMEOUT = 45
+_DEV_LOG_TAIL_CHARS = 800
+# Read at most this many bytes from the END of the log into one buffer, then
+# redact that whole buffer in a single pass. The window bounds memory yet is far
+# wider than the retained tail, so a credential whose opening anchor (e.g. a PEM
+# ``-----BEGIN ... PRIVATE KEY-----`` header) sits above the tail is still in the
+# buffer the redactor sees. A single-pass redaction has no chunk seam a secret
+# could straddle to escape scrubbing.
+_DEV_LOG_READ_WINDOW = 64 * 1024
+# PEM private-key markers for detecting a key body bisected by the window
+# start (an END with no preceding BEGIN inside the window). Mirrors the header
+# shape the redaction floor anchors on: any "-----BEGIN/END ... PRIVATE KEY-----".
+_PEM_BEGIN_RE = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")
+_PEM_END_RE = re.compile(r"-----END [A-Z ]*PRIVATE KEY-----")
+# A line that is nothing but PEM/base64 key-body material: the base64 charset
+# ([A-Za-z0-9+/=]) with no spaces. Matches the anchorless body of a key whose
+# BEGIN header sat above a mid-file window start, when no END marker falls
+# inside the window for the END-masking to catch.
+_PEM_BODY_LINE_RE = re.compile(r"[A-Za-z0-9+/=]+")
 _STOP_GRACE = 3
 _RELAY_TIMEOUT = 30
 _WS_IDLE = 3600
@@ -683,6 +702,104 @@ class _DevProxyHandler(dev_preview.DevProxyHandlerBase):
     timeout = _CLIENT_READ_TIMEOUT
 
 
+def _read_dev_log_tail(log: Path) -> str:
+    """Return the bounded, redacted diagnostic tail of a failed dev-server launch.
+
+    Read at most ``_DEV_LOG_READ_WINDOW`` bytes from the END of the log into one
+    buffer, redact that whole buffer in a single ``redact_via_context`` pass so a
+    loaded companion's credential policy applies, then keep the last
+    ``_DEV_LOG_TAIL_CHARS`` characters. The window bounds memory while
+    staying far wider than the retained tail.
+
+    When the log is larger than the window the read starts mid-file, so the
+    window's own start is UNTRUSTED: it can slice through a credential, orphaning
+    a secret's body from the opening anchor the redactor keys on. A ``-----BEGIN
+    ... PRIVATE KEY-----`` header that sat before the window leaves an anchorless
+    key body at the window start that the header-anchored redactor would miss.
+    So on a truncated read the partial first line is dropped and, if a
+    ``-----END ... PRIVATE KEY-----`` marker appears with no preceding ``BEGIN``
+    inside the window, everything up to and including that END (the bisected key
+    body) is masked before redaction. Redacting in one pass over what remains
+    leaves no boundary a secret could straddle to escape scrubbing.
+    """
+
+    try:
+        with log.open("rb") as handle:
+            size = handle.seek(0, os.SEEK_END)
+            start = max(0, size - _DEV_LOG_READ_WINDOW)
+            handle.seek(start)
+            # Cap the read LENGTH, not just its start: a descendant that
+            # inherited the log fd can keep appending after the parent exits, so
+            # an unsized read() would follow the file to its live EOF and defeat
+            # the bound. Reading at most _DEV_LOG_READ_WINDOW bytes keeps memory
+            # bounded regardless.
+            window = handle.read(_DEV_LOG_READ_WINDOW).decode("utf-8", errors="replace")
+    except OSError:
+        return ""
+    if start > 0:
+        window = _drop_truncated_window_head(window)
+    return redact_via_context(window)[-_DEV_LOG_TAIL_CHARS:]
+
+
+def _drop_truncated_window_head(window: str) -> str:
+    """Discard the untrusted head of a window that began mid-file.
+
+    The first line is partial (the read cut into it). Beyond it, a key whose
+    ``BEGIN`` header sat above the window start leaves an anchorless body the
+    header-anchored redactor cannot scrub. Two guards remove it: drop through
+    the partial first line and every leading PEM/base64 body line, then mask
+    through the first ``-----END ... PRIVATE KEY-----`` marker. The leading-body
+    drop is what closes the case where NO END marker falls inside the window (so
+    the END-mask never fires); the END-mask additionally covers a later full PEM.
+    No orphaned key body survives into the redacted tail in either case.
+    """
+
+    # Drop the whole first line unconditionally. On a mid-file read the first
+    # line is normally a fragment the seek bisected, so it is discarded. When the
+    # seek happens to land exactly on a line boundary this drops one intact line
+    # too — that is deliberate and cheap: at worst one non-secret diagnostic line
+    # is lost from a bounded tail, and paying it always keeps this guard simple
+    # rather than reconstructing whether the preceding byte was a newline.
+    newline = window.find("\n")
+    if newline != -1:
+        window = window[newline + 1 :]
+    # Then drop the LEADING run of PEM/base64 key-body lines — only the base64
+    # charset ([A-Za-z0-9+/=]), no spaces — but ONLY when that run is TWO OR MORE
+    # consecutive such lines. A wrapped PEM key body is always multi-line (PEM
+    # wraps base64 at 64 chars), so a run of ≥2 base64-only lines at the head of a
+    # mid-file window is the anchorless body of a key whose ``BEGIN`` header sat
+    # above the window start — and when NO ``-----END ... PRIVATE KEY-----`` marker
+    # falls inside the window the END-masking below never fires, so those body
+    # lines would otherwise reach the redactor and a later labeled secret shrinking
+    # under redaction could leave them in the retained tail. Requiring ≥2 lines is
+    # what keeps a single legitimate base64-charset diagnostic line (a hash, an id,
+    # a long token) from being discarded. Dropping the run closes the no-END case
+    # regardless of any END; it costs at most a run of non-secret base64-shaped
+    # diagnostic lines from a bounded tail.
+    lines = window.split("\n")
+    run = 0
+    for line in lines:
+        stripped = line.strip()
+        if stripped and _PEM_BODY_LINE_RE.fullmatch(stripped):
+            run += 1
+            continue
+        break
+    if run >= 2:
+        window = "\n".join(lines[run:])
+    # Mask through the first END marker in the window. On a mid-file read the
+    # region before that END is untrusted: it is either the anchorless body of a
+    # key whose BEGIN header sat above the window start, or a self-contained PEM
+    # the redactor would scrub anyway — so discarding it never loses legitimate
+    # content, while keeping it can leak an orphaned key body. Masking through
+    # the FIRST END unconditionally is why a later ``BEGIN`` cannot re-expose the
+    # bisected body: a preceding-BEGIN test would skip the mask exactly when an
+    # orphan body is followed by a fresh full PEM.
+    end = _PEM_END_RE.search(window)
+    if end is not None:
+        window = window[end.end() :]
+    return window
+
+
 def _start_dev_proc(project_id: str, root: Path) -> dict:
     """Start an owned project dev server and discover the port it selected."""
 
@@ -763,11 +880,7 @@ def _start_dev_proc(project_id: str, root: Path) -> dict:
     deadline = time.time() + _START_TIMEOUT
     while time.time() < deadline:
         if proc.poll() is not None:
-            tail = ""
-            try:
-                tail = log.read_text("utf-8", errors="replace")[-800:]
-            except OSError:
-                pass
+            tail = _read_dev_log_tail(log)
             _DEV_PROCS.pop(project_id, None)
             return {
                 "ok": False,

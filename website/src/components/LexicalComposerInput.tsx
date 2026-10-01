@@ -42,7 +42,9 @@ import {
 import { INPUT_TYPO } from './PasteHighlightLayer'
 import { MacLineEdgePlugin } from './composerLineEdge'
 import { createImeLatch } from '../hooks/useImeGuard'
+import { IS_MAC } from '../hooks/useKeyboardShortcuts'
 import type { ComposerControl, ComposerSelection } from './composerControl'
+import { livePromptHistoryCursor, stepPromptHistory, type PromptHistoryCursor, type PromptHistoryItem } from './composerPromptHistory'
 import {
   isRawPasteChord,
   clipboardFiles,
@@ -91,7 +93,13 @@ interface LexicalComposerInputProps {
   onReady?: () => void
   onSelectionChange?: (selection: ComposerSelection) => void
   onUploadFiles?: (files: File[]) => void
-  sentMessages?: string[]
+  sentMessages?: PromptHistoryItem[]
+  /** Owner of `sentMessages` (the slot); a change ends prompt-history browsing. */
+  historyScope?: string | null
+  /** ⌘↑ (macOS) / Ctrl+↑ elsewhere — edit the last user message.
+   *  Fired by the editor only from an EMPTY composer, so it cannot shadow
+   *  ordinary caret movement or the ↑/↓ history recall below. */
+  onEditLastRequest?: () => void
 }
 
 function appendPlainText(text: string, append: (node: ReturnType<typeof $createTextNode> | ReturnType<typeof $createLineBreakNode>) => void) {
@@ -324,16 +332,20 @@ function InteractionPlugin({
   onSend,
   onUploadFiles,
   sentMessages,
+  historyScope,
+  onEditLastRequest,
   disabled,
   readOnly,
   sendOnEnter,
   showFullPastes,
-}: Pick<LexicalComposerInputProps, 'blocks' | 'onBlocksChange' | 'onChange' | 'onSend' | 'onUploadFiles' | 'sentMessages' | 'disabled' | 'readOnly' | 'sendOnEnter' | 'showFullPastes'>) {
+}: Pick<LexicalComposerInputProps, 'blocks' | 'onBlocksChange' | 'onChange' | 'onSend' | 'onUploadFiles' | 'sentMessages' | 'historyScope' | 'onEditLastRequest' | 'disabled' | 'readOnly' | 'sendOnEnter' | 'showFullPastes'>) {
   const [editor] = useLexicalComposerContext()
   const blocksRef = useRef(blocks)
   const rawPasteRef = useRef(false)
-  const historyIndexRef = useRef(-1)
-  const historyDraftRef = useRef('')
+  const historyCursorRef = useRef<PromptHistoryCursor | null>(null)
+  // Browsing belongs to the list it started in; another slot's list must not
+  // resolve this cursor or restore this slot's saved draft.
+  useEffect(() => { historyCursorRef.current = null }, [historyScope])
   // Shared IME latch (see useImeGuard.ts, ImeEnterClaimRatchet): on WebKit the
   // Enter that COMMITS a candidate arrives after `compositionend` with
   // `isComposing` already false, so the native flags alone cannot identify it.
@@ -476,7 +488,9 @@ function InteractionPlugin({
           : !event.shiftKey
         if (!shouldSend) return false
         event.preventDefault()
-        if (!disabled && !readOnly) onSend()
+        // Auto-repeat of a held key is not a second send (it would confirm an
+        // over-limit prompt the user never chose to send).
+        if (!disabled && !readOnly && !event.repeat) onSend()
         return true
       },
       COMMAND_PRIORITY_HIGH,
@@ -511,42 +525,32 @@ function InteractionPlugin({
       })
     }
     const navigateHistory = (event: KeyboardEvent, direction: 'up' | 'down') => {
+      // ⌘↑ / Ctrl+↑: edit the last user message. Claimed only from an
+      // empty composer — with content present the chord falls through so it
+      // can never shadow multi-line caret movement (the same gate the plain
+      // ↑ recall below enforces).
+      if (direction === 'up' && (IS_MAC ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey) &&
+        !event.altKey && !event.shiftKey && !event.isComposing) {
+        if (!onEditLastRequest || $getRoot().getTextContent() !== '') return false
+        event.preventDefault()
+        onEditLastRequest()
+        return true
+      }
       if (!sentMessages?.length || event.isComposing || event.metaKey || event.ctrlKey ||
         event.altKey || event.shiftKey) return false
       const selection = $canonicalSelection()
       if (!selection || selection.start !== selection.end) return false
       const current = $getRoot().getTextContent()
-      const last = sentMessages.length - 1
-      if (direction === 'up') {
-        if (current !== '' && selection.start !== 0) return false
-        const index = historyIndexRef.current
-        if (index === -1) {
-          historyDraftRef.current = current
-          historyIndexRef.current = last
-        } else if (index > 0) {
-          historyIndexRef.current = index - 1
-        }
-        const recalled = sentMessages[historyIndexRef.current]
-        event.preventDefault()
-        onChange(recalled)
-        moveAfterRecall(recalled, 'start')
-        return true
-      }
-      const index = historyIndexRef.current
-      if (index === -1 || selection.end !== current.length) return false
+      const cursor = livePromptHistoryCursor(historyCursorRef.current, current)
+      historyCursorRef.current = cursor
+      if (direction === 'up' && current !== '' && selection.start !== 0) return false
+      if (direction === 'down' && selection.end !== current.length) return false
+      const step = stepPromptHistory(sentMessages, cursor, direction === 'up' ? 'older' : 'newer', current)
+      if (!step) return false
       event.preventDefault()
-      if (index < last) {
-        historyIndexRef.current = index + 1
-        const recalled = sentMessages[historyIndexRef.current]
-        onChange(recalled)
-        moveAfterRecall(recalled, 'end')
-      } else {
-        historyIndexRef.current = -1
-        const draft = historyDraftRef.current
-        historyDraftRef.current = ''
-        onChange(draft)
-        moveAfterRecall(draft, 'end')
-      }
+      historyCursorRef.current = step.cursor
+      onChange(step.text)
+      moveAfterRecall(step.text, direction === 'up' ? 'start' : 'end')
       return true
     }
     const unregisterArrowUp = editor.registerCommand(
@@ -577,7 +581,7 @@ function InteractionPlugin({
       // timer cannot write to the latch after teardown (useImeGuard contract).
       latch.reset()
     }
-  }, [disabled, editor, onBlocksChange, onChange, onSend, onUploadFiles, readOnly, sendOnEnter, sentMessages, showFullPastes])
+  }, [disabled, editor, onBlocksChange, onChange, onEditLastRequest, onSend, onUploadFiles, readOnly, sendOnEnter, sentMessages, showFullPastes])
 
   return null
 }
@@ -602,6 +606,8 @@ export default function LexicalComposerInput({
   onSelectionChange,
   onUploadFiles,
   sentMessages,
+  historyScope,
+  onEditLastRequest,
 }: LexicalComposerInputProps) {
   const initialValueRef = useRef({ value, blocks })
   const lastEmittedRef = useRef({ value, blocks })
@@ -668,6 +674,8 @@ export default function LexicalComposerInput({
           onSend={onSend}
           onUploadFiles={onUploadFiles}
           sentMessages={sentMessages}
+          historyScope={historyScope}
+          onEditLastRequest={onEditLastRequest}
           disabled={disabled}
           readOnly={readOnly}
           sendOnEnter={sendOnEnter}

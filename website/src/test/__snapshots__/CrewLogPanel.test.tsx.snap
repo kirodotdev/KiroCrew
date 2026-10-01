@@ -1,0 +1,215 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`CrewLogTab > draws the subagents table 1`] = `
+<table
+  class="w-full border-collapse mt-2.5"
+>
+  <thead>
+    <tr>
+      <th
+        class="text-left font-normal text-muted text-[10.5px] py-[3px] border-b border-border"
+      >
+        subagent
+      </th>
+      <th
+        class="text-left font-normal text-muted text-[10.5px] py-[3px] border-b border-border"
+      >
+        model
+      </th>
+      <th
+        class="text-left font-normal text-muted text-[10.5px] py-[3px] border-b border-border"
+      >
+        outcome
+      </th>
+      <th
+        class="text-right font-normal text-muted text-[10.5px] py-[3px] border-b border-border"
+      >
+        elapsed
+      </th>
+      <th
+        class="text-right font-normal text-muted text-[10.5px] py-[3px] border-b border-border underline decoration-dotted decoration-from-font cursor-help"
+        title="Already counted in this session’s credits total, not a charge on top of it. A child that failed or was stopped still bills for what it used."
+      >
+        credits
+      </th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td
+        class="py-[3px] border-b border-border text-text truncate max-w-[110px]"
+        title="kirocrew-worker"
+      >
+        kirocrew-worker
+      </td>
+      <td
+        class="py-[3px] border-b border-border text-muted truncate max-w-[80px]"
+        title="a-model"
+      >
+        a-model
+      </td>
+      <td
+        class="py-[3px] border-b border-border"
+      >
+        <span
+          class="inline-flex items-center px-2 py-px rounded-full text-[10.5px] font-semibold bg-accent-subtle text-accent"
+        >
+          finished
+        </span>
+      </td>
+      <td
+        class="py-[3px] border-b border-border text-right tabular-nums"
+      >
+        41s
+      </td>
+      <td
+        class="py-[3px] border-b border-border text-right tabular-nums text-muted"
+      >
+        1.75
+      </td>
+    </tr>
+    <tr>
+      <td
+        class="py-[3px] border-b border-border text-text truncate max-w-[110px]"
+        title="kirocrew-worker"
+      >
+        kirocrew-worker
+      </td>
+      <td
+        class="py-[3px] border-b border-border text-muted truncate max-w-[80px]"
+        title="a-model"
+      >
+        a-model
+      </td>
+      <td
+        class="py-[3px] border-b border-border"
+      >
+        <span
+          class="inline-flex items-center px-2 py-px rounded-full text-[10.5px] font-semibold bg-bg-hover text-muted"
+        >
+          stopped
+        </span>
+      </td>
+      <td
+        class="py-[3px] border-b border-border text-right tabular-nums"
+      >
+        0.9s
+      </td>
+      <td
+        class="py-[3px] border-b border-border text-right tabular-nums text-muted"
+      >
+        not reported
+      </td>
+    </tr>
+    <tr>
+      <td
+        class="pb-[3px] border-b border-border"
+        colspan="5"
+      >
+        <span
+          class="inline-flex items-center gap-1.5 text-[12px] text-danger  "
+          role="alert"
+        >
+          <svg
+            aria-hidden="true"
+            class="lucide lucide-triangle-alert shrink-0"
+            fill="none"
+            height="14"
+            stroke="currentColor"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            stroke-width="2"
+            viewBox="0 0 24 24"
+            width="14"
+            xmlns="http://www.w3.org/2000/svg"
+          >
+            <path
+              d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"
+            />
+            <path
+              d="M12 9v4"
+            />
+            <path
+              d="M12 17h.01"
+            />
+          </svg>
+          <span
+            class="min-w-0  "
+            style="overflow-wrap: anywhere;"
+          >
+            kill failed: pid 8821 still alive
+          </span>
+          <button
+            class="inline-flex items-center gap-1 shrink-0 cursor-pointer transition-colors text-[12px] font-medium text-danger/80 hover:text-danger bg-transparent border-none p-0 underline decoration-danger/30 hover:decoration-danger underline-offset-2 "
+            title="Open a chat with this error's full context attached"
+            type="button"
+          >
+            <svg
+              aria-hidden="true"
+              class="lucide lucide-sparkles"
+              fill="none"
+              height="13"
+              stroke="currentColor"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              viewBox="0 0 24 24"
+              width="13"
+              xmlns="http://www.w3.org/2000/svg"
+            >
+              <path
+                d="M11.017 2.814a1 1 0 0 1 1.966 0l1.051 5.558a2 2 0 0 0 1.594 1.594l5.558 1.051a1 1 0 0 1 0 1.966l-5.558 1.051a2 2 0 0 0-1.594 1.594l-1.051 5.558a1 1 0 0 1-1.966 0l-1.051-5.558a2 2 0 0 0-1.594-1.594l-5.558-1.051a1 1 0 0 1 0-1.966l5.558-1.051a2 2 0 0 0 1.594-1.594z"
+              />
+              <path
+                d="M20 2v4"
+              />
+              <path
+                d="M22 4h-4"
+              />
+              <circle
+                cx="4"
+                cy="20"
+                r="2"
+              />
+            </svg>
+            Ask the agent
+          </button>
+        </span>
+      </td>
+    </tr>
+    <tr>
+      <td
+        class="py-[3px] border-b border-border text-text truncate max-w-[110px]"
+        title="kirocrew-knowledge"
+      >
+        kirocrew-knowledge
+      </td>
+      <td
+        class="py-[3px] border-b border-border text-muted truncate max-w-[80px]"
+        title="a-model"
+      >
+        a-model
+      </td>
+      <td
+        class="py-[3px] border-b border-border"
+      >
+        <span
+          class="inline-flex items-center px-2 py-px rounded-full text-[10.5px] font-semibold bg-warn-subtle text-warn"
+        >
+          running
+        </span>
+      </td>
+      <td
+        class="py-[3px] border-b border-border text-right tabular-nums"
+      >
+        —
+      </td>
+      <td
+        class="py-[3px] border-b border-border text-right tabular-nums text-muted"
+      >
+        —
+      </td>
+    </tr>
+  </tbody>
+</table>
+`;

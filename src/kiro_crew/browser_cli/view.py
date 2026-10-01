@@ -57,6 +57,7 @@ from kiro_crew.browser_cli.install import (
     cli_env,
     cli_path,
     installed_cli_version,
+    kill_cli_process_tree,
 )
 from kiro_crew.browser_cli.launch import ui_socket_env
 
@@ -1375,8 +1376,7 @@ def _reap(proc: subprocess.Popen[bytes]) -> None:
     The CLI spawns a browser and helper processes, so signalling only the direct
     child leaves the tree behind holding the port.
     """
-    with contextlib.suppress(Exception):
-        platform_compat.kill_process_tree(proc.pid)
+    kill_cli_process_tree(proc.pid)
     try:
         proc.wait(timeout=_TERMINATE_GRACE_S)
         return

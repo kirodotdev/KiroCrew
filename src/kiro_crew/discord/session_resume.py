@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 from kiro_crew.messaging.driver import sanitize_channel_replay_text
 from kiro_crew.messaging.link import ChannelLink
+from kiro_crew.messaging.renderer import _default_redactor
 from kiro_crew.messaging.session_resume import ResumeReleaseError  # noqa: F401  (re-export)
 from kiro_crew.messaging.session_resume import (
     PICKER_LIMIT,
@@ -103,7 +104,9 @@ async def _replay_preview(text: str, limit: int, *, reserve: int) -> str:
     redacted = _redact_discord_text(text)
     probe = redacted[: max(1, limit) * 2]
     probe_left_content = len(probe) < len(redacted)
-    chunks = await asyncio.to_thread(split_markdown_safe, probe, limit, reserve=reserve)
+    chunks = await asyncio.to_thread(
+        split_markdown_safe, probe, limit, reserve=reserve, redactor=_default_redactor
+    )
     if not chunks:
         return ""
 
@@ -333,7 +336,23 @@ class DiscordSessionResume:
         native_key: str = "",
     ) -> None:
         nonce, index = self._parse_choice(custom_id)
-        link = self.link_for(interaction.channel_id)
+        # The binding this press creates records the presser as the peer the DM
+        # was admitted for. A picker press is only honoured in a DM, and the
+        # controller refuses everyone but the single configured owner before it
+        # writes, so the peer recorded is the owner whose own DM this is. The
+        # dashboard session being resumed has a ``chat-*`` key that names no
+        # principal, and a Discord DM channel id cannot be tested against the user
+        # roster, so the per-send recipient check reads this record -- signed for
+        # the chosen session by the controller's pick commit, under a MAC only the
+        # gateway can mint, and checked against the pairing the dispatcher stored
+        # from this very press on its authorized interaction path -- to admit the
+        # dashboard's later replies into this DM. Equality ignores it, so the
+        # occupancy and rollback comparisons the controller makes are unchanged.
+        link = ChannelLink(
+            channel_type="discord",
+            channel_id=interaction.channel_id,
+            principal=interaction.user_id or None,
+        )
         choice = await self._controller.choose(
             _DiscordResumeSurface(client, interaction.channel_id),
             caller=interaction.user_id,

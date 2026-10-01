@@ -59,10 +59,12 @@ from kiro_crew.mcp_gateway.backend import (
     _inject_client_extensions,
     _inject_tenant_meta,
     _is_heartbeat_id,
+    _log_safe_identifier,
     _mcp_apps_enabled,
     _PendingRequest,
     _pump_stderr,
     _strip_caller_meta,
+    _tool_call_error_text,
     _write_json_line,
     send_initialize,
     spawn_backend,
@@ -2115,6 +2117,233 @@ class TestRouteBackendLine:
         inbox = await backend.attach_stub("s1")
         await backend._route_backend_line(_line({"jsonrpc": "2.0"}))
         assert inbox.empty()
+
+
+class TestToolCallFailureLogging:
+    """A failed MCP tool call leaves a greppable trace.
+
+    The metric scores a ``result`` with ``isError: true`` as a failure
+    (``ok: false``), and a WARNING line goes to the gateway log naming the
+    server, tool, session and a truncated error so an operator searching the
+    log for an MCP outage finds the failing call, not just the session's
+    lifecycle lines.
+    """
+
+    @pytest.mark.parametrize(
+        "msg, expected",
+        [
+            # JSON-RPC error: message string is used.
+            ({"error": {"code": -32000, "message": "boom"}}, "boom"),
+            # JSON-RPC error with no message: compact JSON of the error object.
+            ({"error": {"code": -32000}}, '{"code":-32000}'),
+            # String error (some servers send a bare string).
+            ({"error": "nope"}, "nope"),
+            # isError result: text content parts are joined.
+            (
+                {"result": {"isError": True, "content": [
+                    {"type": "text", "text": "IAM role not found"},
+                ]}},
+                "IAM role not found",
+            ),
+            # isError result with no text part: compact JSON fallback.
+            (
+                {"result": {"isError": True, "content": [{"type": "image"}]}},
+                '{"isError":true,"content":[{"type":"image"}]}',
+            ),
+        ],
+    )
+    def test_detects_both_failure_shapes(self, msg, expected) -> None:
+        assert _tool_call_error_text(msg) == expected
+
+    def test_success_and_malformed_return_none(self) -> None:
+        # A settled success.
+        assert _tool_call_error_text({"result": {"content": []}}) is None
+        # isError explicitly false.
+        assert _tool_call_error_text({"result": {"isError": False}}) is None
+        # Malformed frame carrying neither error nor result.
+        assert _tool_call_error_text({"id": 1}) is None
+
+    def test_long_error_is_truncated_and_single_line(self) -> None:
+        text = _tool_call_error_text(
+            {"error": {"message": "x\ny\n" + "A" * 1000}}
+        )
+        assert text is not None
+        assert len(text) <= backend_mod._TOOL_ERROR_LOG_MAX
+        assert "\n" not in text  # newlines collapsed so the log line stays one line
+        assert text.endswith("\u2026")  # ellipsis marks the truncation
+
+    def test_credential_in_error_is_redacted(self) -> None:
+        # A secret in the untrusted server error must not survive into the
+        # breadcrumb (credentials and exfil URLs are redacted before logging).
+        text = _tool_call_error_text(
+            {"error": {"message": "auth failed with key AKIAIOSFODNN7EXAMPLE"}}
+        )
+        assert text is not None
+        assert "AKIAIOSFODNN7EXAMPLE" not in text
+
+    @pytest.mark.asyncio
+    async def test_iserror_result_scored_not_ok_and_warned(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        metrics = tmp_path / "metrics.jsonl"
+        monkeypatch.setattr(backend_mod, "_METRICS_PATH", str(metrics))
+        backend = _make_backend()
+        caller = CallerContext(session_key="cron:f3933807", session_type="cron")
+        await backend.forward_from_stub(
+            "s1", {"method": "tools/call", "id": 1,
+                   "params": {"name": "get_aws_creds"}},
+            caller=caller,
+        )
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.mcp_gateway.backend"):
+            await backend._route_backend_line(_line({
+                "id": "gw-4242-1",
+                "result": {"isError": True, "content": [
+                    {"type": "text", "text": "IAM role not found: ReadOnly"},
+                ]},
+            }))
+            await _settle(backend)
+
+        # Metric scored the tool failure as not ok.
+        record = json.loads(metrics.read_text().splitlines()[-1])
+        assert record["ok"] is False
+        assert record["method"] == "tools/call"
+
+        # One greppable WARNING naming server, tool, session, error.
+        assert "mcp tool call failed" in caplog.text
+        assert "tool=get_aws_creds" in caplog.text
+        assert "session=cron:f3933807" in caplog.text
+        assert "IAM role not found: ReadOnly" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_jsonrpc_error_scored_not_ok_and_warned(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        metrics = tmp_path / "metrics.jsonl"
+        monkeypatch.setattr(backend_mod, "_METRICS_PATH", str(metrics))
+        backend = _make_backend()
+        await backend.forward_from_stub(
+            "s1", {"method": "tools/call", "id": 1, "params": {"name": "search"}})
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.mcp_gateway.backend"):
+            await backend._route_backend_line(_line({
+                "id": "gw-4242-1",
+                "error": {"code": -32000, "message": "r5 status: 429"},
+            }))
+            await _settle(backend)
+
+        record = json.loads(metrics.read_text().splitlines()[-1])
+        assert record["ok"] is False
+        assert "mcp tool call failed" in caplog.text
+        assert "r5 status: 429" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_newline_in_tool_name_cannot_forge_a_log_line(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A tool name is caller input; a newline in it must not split the
+        WARNING into a second forged log record."""
+        monkeypatch.setattr(backend_mod, "_METRICS_PATH", None)
+        backend = _make_backend()
+        await backend.forward_from_stub(
+            "s1", {"method": "tools/call", "id": 1,
+                   "params": {"name": "evil\nWARNING forged line"}})
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.mcp_gateway.backend"):
+            await backend._route_backend_line(_line({
+                "id": "gw-4242-1", "error": {"code": -32000, "message": "x"},
+            }))
+            await _settle(backend)
+
+        (rec,) = [r for r in caplog.records if "mcp tool call failed" in r.getMessage()]
+        assert "\n" not in rec.getMessage()
+        assert "tool=evil WARNING forged line" in rec.getMessage()
+
+    @pytest.mark.asyncio
+    async def test_success_scored_ok_and_not_warned(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        metrics = tmp_path / "metrics.jsonl"
+        monkeypatch.setattr(backend_mod, "_METRICS_PATH", str(metrics))
+        backend = _make_backend()
+        await backend.forward_from_stub(
+            "s1", {"method": "tools/call", "id": 1, "params": {"name": "ok_tool"}})
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.mcp_gateway.backend"):
+            await backend._route_backend_line(_line({
+                "id": "gw-4242-1", "result": {"content": [{"type": "text", "text": "fine"}]},
+            }))
+            await _settle(backend)
+
+        record = json.loads(metrics.read_text().splitlines()[-1])
+        assert record["ok"] is True
+        assert "mcp tool call failed" not in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_non_tools_call_error_scored_not_ok_but_not_warned(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A JSON-RPC error on a non-tools/call method still scores ok:false
+        (unchanged metric behaviour) but does NOT emit the tool-failure
+        WARNING — the breadcrumb is scoped to tool calls."""
+        metrics = tmp_path / "metrics.jsonl"
+        monkeypatch.setattr(backend_mod, "_METRICS_PATH", str(metrics))
+        backend = _make_backend()
+        await backend.forward_from_stub("s1", {"method": "tools/list", "id": 1})
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.mcp_gateway.backend"):
+            await backend._route_backend_line(_line({
+                "id": "gw-4242-1", "error": {"code": -32601, "message": "no"},
+            }))
+            await _settle(backend)
+
+        record = json.loads(metrics.read_text().splitlines()[-1])
+        assert record["ok"] is False
+        assert "mcp tool call failed" not in caplog.text
+
+    def test_stringy_iserror_is_not_a_failure(self) -> None:
+        """``isError`` is scored by strict identity, not truthiness: a server
+        that stringifies the flag (``"isError": "false"``) must not turn a
+        successful call into a logged failure whose own content is dumped."""
+        # Truthy string "false" would pass a bare ``get("isError")`` check.
+        assert _tool_call_error_text(
+            {"result": {"isError": "false", "content": [
+                {"type": "text", "text": "secret-looking body"},
+            ]}}
+        ) is None
+        # Only a real boolean True is a failure.
+        assert _tool_call_error_text(
+            {"result": {"isError": True, "content": [
+                {"type": "text", "text": "real failure"},
+            ]}}
+        ) == "real failure"
+
+    def test_control_characters_are_collapsed_in_error_text(self) -> None:
+        """A terminal escape / NUL / BEL in the untrusted error must not reach
+        the log raw — ``str.split()`` only strips whitespace, so these are
+        filtered by ``isprintable``."""
+        text = _tool_call_error_text(
+            {"error": {"message": "red\x1b[31mtext\x00\x07 end"}}
+        )
+        assert text is not None
+        for ch in ("\x1b", "\x00", "\x07"):
+            assert ch not in text
+        # The non-printable bytes are gone; the printable remainder survives.
+        assert "red" in text and "text" in text and "end" in text
+
+    def test_log_safe_identifier_redacts_and_caps(self) -> None:
+        """A server/tool name is redacted (a credential-shaped name cannot leak)
+        and capped (a long name cannot push structured fields off the line);
+        control characters are collapsed."""
+        # Credential-shaped identifier is redacted.
+        redacted = _log_safe_identifier("tool-AKIAIOSFODNN7EXAMPLE")
+        assert "AKIAIOSFODNN7EXAMPLE" not in redacted
+        # Over-long identifier is capped with an ellipsis.
+        capped = _log_safe_identifier("x" * 500)
+        assert len(capped) <= backend_mod._MCP_IDENT_LOG_MAX
+        assert capped.endswith("\u2026")
+        # Control characters collapsed; empty-after-clean falls back.
+        assert "\n" not in _log_safe_identifier("a\nb")
+        assert _log_safe_identifier("\x00\x1b", fallback="?") == "?"
 
 
 # --- subscription response hardening ----------------------------------------

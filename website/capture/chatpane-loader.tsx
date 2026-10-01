@@ -23,7 +23,8 @@ import { sseSlots } from '../src/store/dashboardSlice'
 import { hydrateSlotMessages, sseChatMessage } from '../src/store/chatSlice'
 import '../src/index.css'
 
-/** Mirrors chatSlice's (unexported) SlotState — the capture drives two of them. */
+/** Mirrors SlotState from state.ts in store/chat (the chatSlice facade does
+ *  not re-export it) — the capture drives two of them. */
 type PaneState = 'idle' | 'tool_running'
 
 const params = new URLSearchParams(location.search)

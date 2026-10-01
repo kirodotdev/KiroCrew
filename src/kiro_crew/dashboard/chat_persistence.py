@@ -13,8 +13,9 @@ import time
 import uuid
 from collections import OrderedDict, deque
 from collections.abc import Iterable, Iterator, Mapping
-from itertools import islice
+from itertools import chain, islice
 from pathlib import Path
+from typing import Any
 
 from kiro_crew import mcp_apps_render, model_registry
 from kiro_crew.agent import kiro_agents_dir_path
@@ -61,6 +62,7 @@ from kiro_crew.dashboard.slot_queue_repository import (
     sanitize_restored_queue,
 )
 from kiro_crew.dashboard.state import (
+    _MAX_DISMISSED_SOURCE_LINKS,
     _TRANSIENT_ROLES,
     DashboardState,
     _ChatSlot,
@@ -81,6 +83,7 @@ from kiro_crew.execution_context import (
     stricter_memory_mode,
 )
 from kiro_crew.history import (
+    HUMAN_TURN_META_KEY,
     METADATA_LINE_CORRUPT,
     ROWS_ONLY_DEFERRED_META_KEYS,
     ROWS_ONLY_OWNED_META_KEYS,
@@ -103,6 +106,76 @@ from kiro_crew.session_agent_selection import session_agent_selection_name
 from kiro_crew.validation import ARTIFACT_SLUG_RE
 
 logger = logging.getLogger(__name__)
+
+#: Metadata-line field holding the instant of a session's newest HUMAN turn.
+#: Deliberately absent from :data:`SLOT_OWNED_META_KEYS`: the window this save
+#: serializes is BOUNDED, so a save whose window has scrolled past the last user
+#: row derives nothing, and an owned key's absence would erase a valid stamp.
+#: Unowned means ``carry_unowned_metadata`` keeps the stored value instead.
+_META_LAST_USER_AT = "last_user_at"
+
+
+def _latest_stamp(*candidates: str) -> str:
+    """The latest usable transcript stamp among *candidates*, or ``""``.
+
+    :func:`latest_transcript_ts` compares through ``transcript_sort_key``, which
+    resolves a NAIVE value with ``astimezone()`` -- and that raises at the
+    representable boundary, measured: ``ValueError: year 0 is out of range`` for
+    ``0001-01-01T00:00:00``, and ``year 10000`` for ``9999-12-31T23:59:59``. Such
+    a stamp PARSES, so the unparseable path does not catch it, and the raise would
+    abort the whole slot save rather than cost one row its stamp.
+
+    Folded one candidate at a time so a single unusable value costs only itself
+    instead of discarding every stamp passed beside it.
+    """
+    best = ""
+    for candidate in candidates:
+        if not candidate:
+            continue
+        try:
+            best = latest_transcript_ts(best, candidate) or best
+        except (ValueError, OverflowError, OSError):
+            continue
+    return best
+
+
+def _newest_human_turn_ts(rows: "list[dict] | tuple[dict, ...]") -> str:
+    """The ``ts`` of the newest row a PERSON authored in *rows*, or ``""``.
+
+    Gated on :data:`~kiro_crew.history.HUMAN_TURN_META_KEY`, which the send paths
+    a human reaches set on the row. ``role == "user"`` is NOT enough on its own:
+    the gateway drives agent turns through the same shape, and
+    ``_ChatSlot.enqueue_or_run_prompt`` appends ``("user", prompt, "msg msg-u")``
+    for an Issue Radar wake -- identical in role and in presentation class to a
+    typed message. Requiring the marker rather than excluding the machine callers
+    we happen to know about is what keeps the NEXT such caller from silently
+    advancing a session's human-activity stamp.
+
+    An unmarked row therefore does not count, which is the safe direction: a
+    session whose human turns predate the marker keeps ranking by ``st_mtime``,
+    exactly as it does today.
+
+    The marker is the WHOLE gate. There is deliberately no ``role == "user"``
+    check beside it: only a human send path sets the marker, so the role is
+    implied, and a second condition no input can distinguish is dead weight that
+    reads as defence.
+
+    Ordering goes through :func:`_latest_stamp`, never string comparison: rows
+    carry both naive and offset-aware stamps, so ``"a" > "b"`` on the raw text
+    compares two different domains and can pick the earlier row.
+    """
+    stamps: list[str] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        row_meta = row.get("meta")
+        if not isinstance(row_meta, dict) or row_meta.get(HUMAN_TURN_META_KEY) is not True:
+            continue
+        ts = row.get("ts")
+        if isinstance(ts, str) and ts:
+            stamps.append(ts)
+    return _latest_stamp(*stamps)
+
 
 # Custom session color contract: lowercase-normalized #rrggbb only. Canonical
 # home of the regex (chat_handlers imports it from here to avoid an import
@@ -144,7 +217,7 @@ def _local_turn_generation(meta: Mapping[str, object]) -> int:
     return stored if type(stored) is int and stored > 0 else 0
 
 
-_LOCAL_TURN_PROMPT_ROLES = frozenset({"user", "nudge", "inject"})
+_LOCAL_TURN_PROMPT_ROLES = frozenset({"user", "nudge", "subagent", "inject"})
 _LOCAL_TURN_PROMPT_META_KEYS = ("mid", "files", "dirs", "injectKind")
 #: Bounds on the opening-row copy the marker retains. The attachment bounds are
 #: the send path's own (``chat_delivery.ATTACHMENT_LIST_MAX_ITEMS`` entries of
@@ -761,7 +834,25 @@ def _validate_reasoning_effort(raw: object, *, persisted_marker: bool = False) -
 #: retired in favour of the Crew Members page. Its durable store under
 #: ``<data home>/crew/`` is neither read nor deleted here; the transcript is
 #: the user's record and the store held only routing state.
-_RETIRED_MODES: frozenset[str] = frozenset({"crew"})
+#:
+#: ``orchestrator`` — chat Autopilot mode (a planned, staged run), retired
+#: without a replacement. Its stage result files are neither read nor deleted.
+_RETIRED_MODES: frozenset[str] = frozenset({"crew", "orchestrator"})
+
+#: Retired modes a client may still SEND. An older dashboard build can still
+#: ask for one on create, switch or fork, so the request runs as plain chat
+#: instead of failing. ``crew`` is not here: its refusal predates this set.
+_COERCED_REQUEST_MODES: frozenset[str] = frozenset({"orchestrator"})
+
+
+def _coerce_requested_mode(raw: Any) -> Any:
+    """Map a retired mode a request still names to "" (plain chat).
+
+    Anything else is returned unchanged for the caller's own allowlist check.
+    """
+    if isinstance(raw, str) and raw in _COERCED_REQUEST_MODES:
+        return ""
+    return raw
 
 
 def _restored_mode(raw: object) -> str:
@@ -803,6 +894,113 @@ def _validate_autocompact_pct(raw: object) -> float | None:
     if raw is not None:
         logger.warning("Discarding invalid persisted autocompact_pct: %r", raw)
     return None
+
+
+def _restore_dismissed_source_links(slot: "_ChatSlot", raw: object) -> None:
+    """Rehydrate the per-slot dismissed source-link identity set from metadata.
+
+    History JSONL is a file an attacker with disk access could tamper, and these
+    keys feed the derivation filter that decides which chips a client sees, so
+    each entry is re-validated against the canonical serialized-identity grammar
+    before it is trusted. A malformed entry is dropped rather than aborting the
+    restore -- a corrupt suppression key can only ever fail to match a real
+    identity, so dropping it is safe and fails toward showing the chip.
+    """
+    if not isinstance(raw, list):
+        # The transcript being loaded records no dismissals, so the slot has
+        # none: clear rather than return, or a set left over from a previous
+        # binding of a reused slot object would survive a rebind and suppress
+        # unrelated links on the new transcript. Hydration is authoritative —
+        # the slot's dismissed set always reflects the transcript it now shows.
+        slot._dismissed_source_links = set()
+        slot._dismissed_hydrated = True
+        slot.invalidate_source_links()
+        return
+    # Function-local to avoid a circular import: source_providers imports from the
+    # dashboard state/handler layer this module also serves. Same lazy-import
+    # convention the handlers use for source_providers.
+    from kiro_crew.dashboard.source_providers.contract import is_valid_source_identity_key
+
+    # Enforce the same named ceiling the add site does, DURING iteration, so a
+    # tampered or oversized on-disk line cannot make us materialize an unbounded
+    # valid-key list before slicing. Stop retaining once the cap is reached, but
+    # keep COUNTING the valid keys past it so the drop is said out loud once per
+    # restore -- the ``a-bound-bounds-every-field-it-retains`` contract requires
+    # a bounded retention to report its overflow, exactly as
+    # ``_capped_dismissed_line`` does on the write side. Keeping the first
+    # _MAX_DISMISSED_SOURCE_LINKS valid keys and dropping the rest only ever
+    # fails toward SHOWING a chip, never toward hiding an unrelated one.
+    bounded: set[str] = set()
+    dropped = 0
+    for key in raw:
+        if not is_valid_source_identity_key(key):
+            continue
+        if len(bounded) < _MAX_DISMISSED_SOURCE_LINKS:
+            bounded.add(key)
+        else:
+            dropped += 1
+    if dropped:
+        logger.warning(
+            "dismissed_source_links restore truncated by %d to the %d cap",
+            dropped,
+            _MAX_DISMISSED_SOURCE_LINKS,
+        )
+    slot._dismissed_source_links = bounded
+    slot._dismissed_hydrated = True
+
+
+def _capped_dismissed_line(keys: Iterable[str]) -> list[str]:
+    """The bounded, sorted ``dismissed_source_links`` value for a metadata write.
+
+    A bound must be applied at the point a field is RETAINED, not only where it
+    is read back: the restore path already caps the in-memory set, but the
+    save/merge paths union the slot's set with the on-disk line and write the
+    result, so an oversized on-disk line (tampered, or grown by an older build)
+    would round-trip an unbounded set straight back to disk. Re-validate each key
+    against the canonical serialized-identity grammar (the carry-forward callers
+    pass the raw on-disk list, so a single tampered/oversized string must be
+    dropped here, matching the union paths' filter), sort for a stable line, then
+    keep only the first ``_MAX_DISMISSED_SOURCE_LINKS`` — dropping the tail only
+    ever fails toward SHOWING a chip, never toward hiding an unrelated one — and
+    log when a write is truncated so the drop is observable.
+    """
+    from kiro_crew.dashboard.source_providers.contract import is_valid_source_identity_key
+
+    # Bound RETENTION during iteration: never hold more than the cap. Keep a
+    # bounded ``kept`` set of the cap-smallest unique valid keys seen so far —
+    # once it is at capacity, a newly-seen key replaces the current largest kept
+    # key (found via ``max(kept)``) only when it sorts before it, so ``kept``
+    # converges to the cap-smallest keys. At most _MAX_DISMISSED_SOURCE_LINKS
+    # keys are ever resident regardless of how oversized/tampered the input is.
+    # The result is the deterministic sorted prefix — identical to
+    # ``sorted(unique)[:cap]`` — so the written line is stable and matches what a
+    # smaller input would produce. Dropping the tail only ever fails toward
+    # SHOWING a chip, never toward hiding an unrelated one.
+    cap = _MAX_DISMISSED_SOURCE_LINKS
+    kept: set[str] = set()
+    truncated = 0
+    for key in keys:
+        if not is_valid_source_identity_key(key) or key in kept:
+            continue
+        if len(kept) < cap:
+            kept.add(key)
+        else:
+            # At capacity: keep this key only if it sorts BEFORE the current
+            # largest kept key, so ``kept`` converges to the cap-smallest unique
+            # keys — the same set ``sorted(all_unique)[:cap]`` would select — while
+            # never holding more than cap keys resident.
+            largest = max(kept)
+            if key < largest:
+                kept.discard(largest)
+                kept.add(key)
+            truncated += 1
+    if truncated:
+        logger.warning(
+            "dismissed_source_links write truncated by %d to the %d cap",
+            truncated,
+            cap,
+        )
+    return sorted(kept)
 
 
 def save_all_slots_to_history(state: DashboardState) -> None:
@@ -1937,6 +2135,7 @@ def _rehydrate_slot_from_history(
             )
         if meta.get("autocompact_pct") is not None:
             slot.autocompact_pct = _validate_autocompact_pct(meta["autocompact_pct"])
+        _restore_dismissed_source_links(slot, meta.get("dismissed_source_links"))
         if meta.get("workspace"):
             slot.workspace = meta["workspace"]
         if meta.get("memory_store"):
@@ -2619,6 +2818,7 @@ def _apply_recent_session(
         )
     if meta.get("autocompact_pct") is not None:
         slot.autocompact_pct = _validate_autocompact_pct(meta["autocompact_pct"])
+    _restore_dismissed_source_links(slot, meta.get("dismissed_source_links"))
     if meta.get("workspace"):
         slot.workspace = meta["workspace"]
     if meta.get("memory_store"):
@@ -4405,6 +4605,39 @@ def _save_slot_to_history(
                     return False
                 merged_fields.clear()
                 merged_fields.update(_fresh_fields(meta))
+                # Serialized dismissed source-link identities, decided under the
+                # lock from the on-disk ``meta``. When the slot's set is HYDRATED
+                # (reflects disk) write it (sorted, deterministic; empty = nothing
+                # dismissed). When it is UNHYDRATED (bound while the set could not
+                # be read) the in-memory empty set does not reflect disk, so carry
+                # the on-disk line forward rather than erase the real tombstones.
+                # And while an unlink transaction holds an uncommitted TENTATIVE
+                # dismissal (``_dismissed_txn_depth`` > 0), carry the on-disk line
+                # forward too: the tentative set may be rolled back by a failed
+                # guarded write, and this provisional flush must not outlive it.
+                if slot._dismissed_hydrated and slot._dismissed_txn_depth == 0:
+                    # UNION with the on-disk line (available here as ``meta``)
+                    # rather than replacing: a stale off-loop prefetch can bind a
+                    # hydrated set that predates a concurrent unlink's committed
+                    # tombstone, and a bare replacement would erase it. Dismissals
+                    # only grow, so the union can only ADD.
+                    _disk_prev = meta.get("dismissed_source_links")
+                    if isinstance(_disk_prev, list):
+                        # Pass the in-memory set and the raw (untrusted) on-disk
+                        # list as ONE chained iterable: _capped_dismissed_line
+                        # validates, dedups and bounds during iteration, so no
+                        # unbounded merged set is built here before the cap.
+                        merged_fields["dismissed_source_links"] = _capped_dismissed_line(
+                            chain(slot._dismissed_source_links, _disk_prev)
+                        )
+                    else:
+                        merged_fields["dismissed_source_links"] = _capped_dismissed_line(
+                            slot._dismissed_source_links
+                        )
+                else:
+                    _carry = meta.get("dismissed_source_links")
+                    if isinstance(_carry, list) and _carry:
+                        merged_fields["dismissed_source_links"] = _capped_dismissed_line(_carry)
                 # Held /note lines: a MERGE writer, so it unions
                 # with the on-disk hold and never shrinks it. A live-state
                 # mirror here could race a turn-end flush that just delivered
@@ -4763,6 +4996,55 @@ def _save_slot_to_history(
             # Unconditional, matching the empty-window merge mirror: None is
             # the cleared "follow the global" value, not an absent field.
             meta_line["autocompact_pct"] = slot.autocompact_pct
+            # Serialized dismissed source-link identities. This path rebuilds the
+            # metadata line from scratch, so an omitted key means "no dismissals"
+            # on restore -- write it only when non-empty (sorted for a
+            # deterministic line). A dismissal is permanent (there is no unlink-
+            # undo), so the set only ever grows within a session; the empty case
+            # is simply a session that has never dismissed a chip.
+            #
+            # A slot bound to a transcript whose dismissed set could NOT be read
+            # (``_dismissed_hydrated is False``) holds an EMPTY in-memory set that
+            # does NOT reflect disk, so serializing it would erase the real
+            # tombstones. Carry the on-disk line forward verbatim instead until a
+            # readable hydration replaces it.
+            #
+            # Likewise, while an unlink transaction holds an uncommitted TENTATIVE
+            # dismissal (``_dismissed_txn_depth`` > 0), the in-memory set is ahead
+            # of the authoritative guarded write and may be rolled back. Carrying
+            # the on-disk line forward keeps this provisional flush from
+            # persisting a tombstone that a failed DELETE would then be unable to
+            # take back (the 409-then-restart-hides-the-chip corruption).
+            if not slot._dismissed_hydrated or slot._dismissed_txn_depth > 0:
+                _carry = existing_meta.get("dismissed_source_links")
+                if isinstance(_carry, list) and _carry:
+                    meta_line["dismissed_source_links"] = _capped_dismissed_line(_carry)
+            elif slot._dismissed_source_links or isinstance(
+                existing_meta.get("dismissed_source_links"), list
+            ):
+                # UNION the in-memory set with the existing on-disk line rather
+                # than replacing disk with memory. ``_dismissed_hydrated`` means
+                # the set was readable AT BIND, but a stale off-loop prefetch
+                # (workflow/cron fallback) can bind a set that predates a
+                # concurrent unlink's committed tombstone; a bare replacement
+                # would then SHRINK the on-disk set and erase that tombstone
+                # (chip reappears after restart). Dismissals are permanent and
+                # only grow, so a union can only ADD — it can never drop a
+                # committed tombstone, whichever side is momentarily stale, while
+                # still persisting a genuinely new in-memory dismissal.
+                _disk_prev = existing_meta.get("dismissed_source_links")
+                if isinstance(_disk_prev, list):
+                    # Pass the in-memory set and the raw (untrusted) on-disk list
+                    # as ONE chained iterable: _capped_dismissed_line validates,
+                    # dedups and bounds during iteration, so no unbounded merged
+                    # set is built here before the cap.
+                    meta_line["dismissed_source_links"] = _capped_dismissed_line(
+                        chain(slot._dismissed_source_links, _disk_prev)
+                    )
+                elif slot._dismissed_source_links:
+                    meta_line["dismissed_source_links"] = _capped_dismissed_line(
+                        slot._dismissed_source_links
+                    )
             if slot.mode:
                 meta_line["mode"] = slot.mode
             if slot.workspace and slot.workspace != "default":
@@ -4873,6 +5155,25 @@ def _save_slot_to_history(
             # entry to the save that actually writes its row. Row and
             # retirement land in one atomic file replace; a crash on either
             # side re-delivers rather than loses.
+            # Ranking signal for every "recent sessions" list: the instant of
+            # this session's newest HUMAN turn. Derived here because this save
+            # already rebuilds the metadata line and already holds the window,
+            # so it costs no extra I/O and reads no transcript.
+            #
+            # MONOTONIC, via the later of the derived value and the one on disk.
+            # The window is BOUNDED, so a save can legitimately see no user row
+            # (the last one has scrolled out of it) or an older one than the
+            # stamp already stored (a rewind, a fork). Folding the stored value
+            # in means a save can only move this forward, which is what makes
+            # the field safe to leave unowned: nothing here can retract a turn
+            # that really happened.
+            _stored_human_ts = existing_meta.get(_META_LAST_USER_AT)
+            _latest_human_ts = _latest_stamp(
+                _stored_human_ts if isinstance(_stored_human_ts, str) else "",
+                _newest_human_turn_ts(window),
+            )
+            if _latest_human_ts:
+                meta_line[_META_LAST_USER_AT] = _latest_human_ts
             window_note_ids: set[str] = set()
             for row in window:
                 row_meta = row.get("meta")

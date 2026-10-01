@@ -158,13 +158,22 @@ class TestModelRouteIsWritable:
 
         loop_thread = threading.current_thread()
         seen: list[threading.Thread] = []
-        real = _core._active_provider_name
+        real_provider = _core._active_provider_name
+        real_both = _core._active_provider_and_pin_backend
 
-        def _spy() -> str:
+        def _spy_provider() -> str:
             seen.append(threading.current_thread())
-            return real()
+            return real_provider()
 
-        monkeypatch.setattr(_core, "_active_provider_name", _spy)
+        def _spy_both() -> tuple[str, str]:
+            seen.append(threading.current_thread())
+            return real_both()
+
+        # The role-pin keys resolve the provider together with the harness scope
+        # (one read); every other validated key resolves the provider alone. Both
+        # are the same hop and both must stay off the loop.
+        monkeypatch.setattr(_core, "_active_provider_name", _spy_provider)
+        monkeypatch.setattr(_core, "_active_provider_and_pin_backend", _spy_both)
         async with TestClient(TestServer(_app())) as client:
             resp = await _patch(client, "decisions.model_route.simple", "")
             assert resp.status == 200, await resp.text()

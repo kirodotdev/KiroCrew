@@ -16,7 +16,7 @@ with every test here green.
 from typing import Any
 
 from kiro_crew.acp._dispatch import parse_session_update, parse_todo_snapshot
-from kiro_crew.acp.types import EVENT_TODO_UPDATE, TODO_TASKS_MAX, TODO_TEXT_MAX
+from kiro_crew.acp.types import EVENT_TODO_UPDATE, TODO_ID_MAX, TODO_TASKS_MAX, TODO_TEXT_MAX
 from kiro_crew.dashboard.state import _ChatSlot
 
 _CALL_ID = "toolu_bdrk_01JEZ"
@@ -184,6 +184,30 @@ class TestParseTodoSnapshot:
         )
         assert snap is not None
         assert len(snap["tasks"][0]["text"]) == TODO_TEXT_MAX
+
+    def test_task_id_is_redacted_before_the_cap(self) -> None:
+        """A secret in a provider-authored id is redacted like one in the text,
+        and before the bound so the cut cannot leave the secret's head behind."""
+        secret = "AKIAIOSFODNN7EXAMPLE"
+        snap = parse_todo_snapshot(
+            _update([{"id": f"task {secret}", "task_description": "x", "completed": False}]),
+            _name_cache(),
+        )
+        assert snap is not None
+        assert secret not in snap["tasks"][0]["id"]
+        assert "AKIA" not in snap["tasks"][0]["id"]
+
+    def test_task_id_is_capped(self) -> None:
+        """The id is provider-authored and retained per row (snapshot, override,
+        pin), so it is bounded like the text."""
+        snap = parse_todo_snapshot(
+            _update(
+                [{"id": "i" * (TODO_ID_MAX + 500), "task_description": "x", "completed": False}]
+            ),
+            _name_cache(),
+        )
+        assert snap is not None
+        assert len(snap["tasks"][0]["id"]) == TODO_ID_MAX
 
     def test_credentials_in_task_text_are_redacted(self) -> None:
         """Task text is agent-authored free text that reaches the browser."""

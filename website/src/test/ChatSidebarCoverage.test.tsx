@@ -49,7 +49,7 @@ vi.mock('../components/ProjectPicker', () => ({ default: () => null }))
 
 const cfg = vi.hoisted(() => ({
   saveChatConfig: vi.fn(),
-  value: { tagColumnsEnabled: false, confirmCloseSession: false, defaultAutopilot: false } as Record<string, unknown>,
+  value: { tagColumnsEnabled: false, confirmCloseSession: false } as Record<string, unknown>,
 }))
 vi.mock('../pages/chat/ChatSettings', () => ({
   loadChatConfig: () => cfg.value,
@@ -219,7 +219,7 @@ function openHistory() {
 
 beforeEach(() => {
   localStorage.clear()
-  cfg.value = { tagColumnsEnabled: false, confirmCloseSession: false, defaultAutopilot: false }
+  cfg.value = { tagColumnsEnabled: false, confirmCloseSession: false }
   mocks.cleanupSessions.mockResolvedValue({ ok: true, archived: 0, keys: [], failed: [] })
   mocks.chatSlotsModel.mockResolvedValue({ ok: true, failed: [] })
   mocks.clearSessions.mockResolvedValue({ ok: true })
@@ -414,7 +414,7 @@ describe('ChatSidebar — header menu view + tag entries', () => {
     // shape the view toggle once created, so no predicate can tell a disposable
     // placeholder from a bare column the user added. Seeding therefore deletes
     // nothing at all -- including when the board is nothing BUT bare columns.
-    cfg.value = { tagColumnsEnabled: true, confirmCloseSession: false, defaultAutopilot: false }
+    cfg.value = { tagColumnsEnabled: true, confirmCloseSession: false }
     mocks.tagColumns.mockResolvedValue([
       { id: 'c-bare-1', name: '', tag_ids: [], mode: 'any', order: 0 },
       { id: 'c-bare-2', name: '', tag_ids: [], mode: 'any', order: 1 },
@@ -430,7 +430,7 @@ describe('ChatSidebar — header menu view + tag entries', () => {
     // Idempotence plus a real recovery path: with two lanes already present the
     // menu still offers to add lanes, and doing so creates only the other two --
     // never a duplicate set. This is what a partial failure recovers through.
-    cfg.value = { tagColumnsEnabled: true, confirmCloseSession: false, defaultAutopilot: false }
+    cfg.value = { tagColumnsEnabled: true, confirmCloseSession: false }
     mocks.tagColumns.mockResolvedValue([
       { id: 'l-1', name: '', tag_ids: [], mode: 'any', order: 0, source: 'state', state_key: 'needs_approval' },
       { id: 'l-2', name: '', tag_ids: [], mode: 'any', order: 1, source: 'state', state_key: 'working' },
@@ -448,7 +448,7 @@ describe('ChatSidebar — header menu view + tag entries', () => {
   it('surfaces a failed seed instead of leaving an empty board', async () => {
     // The toggle flips tagColumnsEnabled BEFORE the mutation runs, so a failure
     // with no feedback looks identical to a board that is simply empty.
-    cfg.value = { tagColumnsEnabled: false, confirmCloseSession: false, defaultAutopilot: false }
+    cfg.value = { tagColumnsEnabled: false, confirmCloseSession: false }
     mocks.tagColumns.mockResolvedValue([])
     mocks.createTagColumn.mockRejectedValue(new Error('persist failed'))
     renderSidebar({ slots: [{ key: 'k-a', title: 'A', running: false }] })
@@ -468,7 +468,7 @@ describe('ChatSidebar — header menu view + tag entries', () => {
     // the width the user chose and strands a wide sidebar in list view.
     localStorage.setItem('mc-sidebar-width', '300')
     localStorage.setItem('mc-sidebar-width-pre-board', '300')
-    cfg.value = { tagColumnsEnabled: true, confirmCloseSession: false, defaultAutopilot: false }
+    cfg.value = { tagColumnsEnabled: true, confirmCloseSession: false }
     mocks.tagColumns.mockResolvedValue(
       ['needs_approval', 'waiting', 'working', 'idle'].map((k, i) => (
         { id: `l-${i}`, name: '', tag_ids: [], mode: 'any', order: i, source: 'state', state_key: k }
@@ -483,7 +483,7 @@ describe('ChatSidebar — header menu view + tag entries', () => {
   it('labels a legacy bare column as showing every session once lanes exist', async () => {
     // Seeding does not delete it (indistinguishable from a user's own column), so
     // the duplicate-cards effect has to be named rather than left to be guessed.
-    cfg.value = { tagColumnsEnabled: true, confirmCloseSession: false, defaultAutopilot: false }
+    cfg.value = { tagColumnsEnabled: true, confirmCloseSession: false }
     mocks.tagColumns.mockResolvedValue([
       { id: 'c-bare', name: '', tag_ids: [], mode: 'any', order: 0 },
       { id: 'l-0', name: '', tag_ids: [], mode: 'any', order: 1, source: 'state', state_key: 'idle' },
@@ -494,7 +494,7 @@ describe('ChatSidebar — header menu view + tag entries', () => {
   })
 
   it('does not label a bare column when there are no lanes', async () => {
-    cfg.value = { tagColumnsEnabled: true, confirmCloseSession: false, defaultAutopilot: false }
+    cfg.value = { tagColumnsEnabled: true, confirmCloseSession: false }
     mocks.tagColumns.mockResolvedValue([
       { id: 'c-bare', name: '', tag_ids: [], mode: 'any', order: 0 },
     ])
@@ -506,7 +506,7 @@ describe('ChatSidebar — header menu view + tag entries', () => {
   it('hides the add-lanes entry once all four lanes exist', async () => {
     // The affordance is keyed on there being something to add, so a complete
     // board does not offer a no-op action.
-    cfg.value = { tagColumnsEnabled: true, confirmCloseSession: false, defaultAutopilot: false }
+    cfg.value = { tagColumnsEnabled: true, confirmCloseSession: false }
     mocks.tagColumns.mockResolvedValue(
       ['needs_approval', 'waiting', 'working', 'idle'].map((k, i) => (
         { id: `l-${i}`, name: '', tag_ids: [], mode: 'any', order: i, source: 'state', state_key: k }
@@ -522,7 +522,7 @@ describe('ChatSidebar — header menu view + tag entries', () => {
     // No rollback and no deletion: a partial failure just means fewer lanes.
     // The bare column survives, so the board still renders and the next seed
     // fills the gap rather than starting from an empty strip.
-    cfg.value = { tagColumnsEnabled: false, confirmCloseSession: false, defaultAutopilot: false }
+    cfg.value = { tagColumnsEnabled: false, confirmCloseSession: false }
     mocks.tagColumns.mockResolvedValue([
       { id: 'c-bare', name: '', tag_ids: [], mode: 'any', order: 0 },
     ])
@@ -538,7 +538,7 @@ describe('ChatSidebar — header menu view + tag entries', () => {
   })
 
   it('offers the way back to list view once board view is on', async () => {
-    cfg.value = { tagColumnsEnabled: true, confirmCloseSession: false, defaultAutopilot: false }
+    cfg.value = { tagColumnsEnabled: true, confirmCloseSession: false }
     mocks.tagColumns.mockResolvedValue([{ id: 'c1', name: 'Doing', tag_ids: [], mode: 'any', order: 0 }])
     const view = renderSidebar({ slots: [{ key: 'k-a', title: 'A', running: false }] })
     view.rerender(<div />)

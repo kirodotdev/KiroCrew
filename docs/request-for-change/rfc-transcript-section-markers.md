@@ -59,10 +59,10 @@ is to scroll past everything or open a new session.
   (`pages/chat/ChatNavPanel.tsx:76`, `SidePanel`, `SubagentCompletionCard`), not
   to a message row.
 - There **are** collapse affordances, but all are *intra-turn*:
-  `pages/chat/CollapsibleToolGroup.tsx`, `pages/chat/TurnBlock.tsx` (used at
-  `pages/ChatPage.tsx:7554`), `pages/chat/ToolCallLine.tsx`. None can express
+  `pages/chat/CollapsibleToolGroup.tsx`, `pages/chat/TurnBlock.tsx` (used by
+  `pages/ChatPage.tsx`'s virtualized rows), `pages/chat/ToolCallLine.tsx`. None can express
   "collapse everything before this point".
-- `pages/chat/EarlierMessagesBar.tsx` (rendered at `pages/ChatPage.tsx:7528`,
+- `pages/chat/EarlierMessagesBar.tsx` (rendered at the top of `pages/ChatPage.tsx`'s transcript,
   gated on `slotHasMore`) looks like the wanted control but is a **server-side
   pager** for history not yet in the client, not a fold of loaded rows.
 
@@ -160,7 +160,7 @@ label belongs.
 **Why not `role="system"`** (the one role whose `cls` survives) — it is in the
 SDK's `undrawn` set (`app-sdk/messageRenderers.tsx:349`) and so renders nothing
 there, while `ChatPage` has no `system` branch and would drop it into the
-assistant-bubble fallback (`pages/ChatPage.tsx:6564`). Reusing it means
+assistant-bubble fallback (`bubbleRenderer` in `pages/ChatPage.tsx`). Reusing it means
 un-picking a deliberate "carries state, not something to read" classification.
 
 **Why not `role="inject"`** (what `/note` writes) — two concrete harms. It is in
@@ -360,8 +360,8 @@ not one per marker — a walk of thirty items must not produce thirty stacked ba
 ### 5.8 Collapse state: derive, do not store
 
 Every existing disclosure affordance is ephemeral React state held above the row
-so it survives virtualizer remount: `turnDisclosure` (`pages/ChatPage.tsx:996`)
-and `toolDisclosure` (`:1003`), both reset on slot switch (`:1009`). Nothing per-row
+so it survives virtualizer remount: `turnDisclosure` (`pages/ChatPage.tsx`)
+and `toolDisclosure` (same file), both reset on slot switch (the `activeSlot` effect beside them). Nothing per-row
 is persisted. The one persisted knob nearby is `collapseAllSteps`, a global
 setting in `pages/chat/ChatSettings.tsx:30` (default at `:61`).
 
@@ -381,11 +381,11 @@ See §11 open question 2.
 **On reload**, markers arrive with the transcript through both existing doors —
 the HTTP slot-detail rebuild (`fetchSlotDetail` in `store/chat/wire.ts`, reducers
 `hydrateSlotMessages` / `replaceMessages` in `store/chat/messages.ts`) and the live
-`chat_message` websocket frame (`hooks/useWebSocket.ts:1229`) — and the default
+`chat_message` websocket frame (the `chat_message` arm of the `/api/ws` router in `hooks/useWebSocket.ts`) — and the default
 viewport is recomputed. No new transport.
 
 **One interaction to resolve.** `EarlierMessagesBar` already occupies the top of
-the transcript when there is unloaded server history (`pages/ChatPage.tsx:7528`).
+the transcript when there is unloaded server history (`pages/ChatPage.tsx`, gated on `slotHasMore`).
 A "show earlier sections" bar would sit in the same place with a similar label and
 a different meaning. Both can be true at once. Merge them into one progressive
 control or differentiate the wording sharply; do not ship two similar bars
@@ -412,8 +412,8 @@ What changes, at a glance:
 | Append path | reuse `/note`'s deferral (`dashboard/state.py:3953` flush, existing seams) |
 | Persistence | none — `meta` already persists for all roles |
 | Recall | none — the role stays out of `RECALL_ROLES` (`context.py:61`) |
-| Frontend | renderer in `app-sdk/messageRenderers.tsx` **and** `pages/ChatPage.tsx:6432` |
-| Frontend | collapse default derived in the turn grouper (`createTurnGrouper`, `pages/chat/groupDisplayItems.ts:244`) or in `displayItems` (`pages/ChatPage.tsx:5740`) |
+| Frontend | renderer in `app-sdk/messageRenderers.tsx` **and** the `mergeRenderers` list in `pages/ChatPage.tsx` |
+| Frontend | collapse default derived in the turn grouper (`createTurnGrouper`, `pages/chat/groupDisplayItems.ts:244`) or in `displayItems` (`useTranscriptRows`, `pages/chat/page/transcriptRows.ts`) |
 | Frontend | summary bar component, sibling to `pages/chat/EarlierMessagesBar.tsx` |
 
 Each phase is independently shippable and independently abandonable. Exit criteria
@@ -490,7 +490,7 @@ and nothing was deleted to achieve it.
 
 **Old frontend, new transcript.** Neither path throws. The SDK path draws nothing
 (`app-sdk/ChatMessageList.tsx:181`); `ChatPage` draws the row's `content` as an
-assistant bubble (`pages/ChatPage.tsx:6564`). The second is cosmetically wrong but
+assistant bubble (`bubbleRenderer` in `pages/ChatPage.tsx`). The second is cosmetically wrong but
 not broken — and it is why §5.2 puts a human-readable string in `content` rather
 than leaving it empty or stuffing JSON there. An old client shows
 `— Section: second-item —` as a stray line, which is a legible degradation.
@@ -568,7 +568,7 @@ of *what happened in the tab* rather than *what the model was told*. A
 render paths (§5.7) and two delivery doors (§5.8). Ephemeral client state is
 invisible to a second window, to the other surface, and to a reload — the
 disclosure state that already works this way is reset on slot switch
-(`pages/ChatPage.tsx:1009`) and lost on refresh. For a walk that runs for hours the
+(the `activeSlot` effect in `pages/ChatPage.tsx`) and lost on refresh. For a walk that runs for hours the
 boundary must survive all three.
 
 *4. A parallel store is strictly worse.* A sidecar keyed to transcript positions
@@ -651,7 +651,8 @@ marker would vanish on one of the two write paths.
    useful structural hint for a summarizer. Not determined from the code whether
    those readers need an explicit skip or would benefit from seeing them.
 5. **Virtualizer measurement.** The turn grouper → `displayItems` →
-   `useVirtualChat` (`pages/ChatPage.tsx:5738`, `:5740`, `:5832`) measures rows
+   `useVirtualChat` (`displayItems` in `pages/chat/page/transcriptRows.ts`, the
+   `useVirtualChat` call in `pages/ChatPage.tsx`) measures rows
    for the scroll window.
    Hiding a large prefix changes the measured set substantially. Not traced
    whether the virtualizer needs more than a shorter `items` array, or whether

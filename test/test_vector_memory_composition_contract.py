@@ -8,9 +8,13 @@ the store observe independently of where each rule lives:
 * the class keeps every member it had, with the same kind and signature, and the
   module keeps every name it bound, moved names by identity with their owner;
 * a patch applied to the facade -- a module seam such as ``np`` or ``_now_iso``, or a
-  class-level method patch -- still reaches the moved code that consumes it;
+  class-level method patch -- still reaches the moved code that consumes it, the seams
+  being the facade names the tests themselves rebind;
 * the runtime modules follow the placement rules that make that true: no module-level
-  facade import, no bare seam read, store calls routed through the store, one logger;
+  facade import, no bare seam read, no runtime binding of a name tests rebind on the
+  facade, store calls routed through the store, one logger;
+* a name two modules read has one binding, its owner's: siblings and the facade read
+  it through the owner module, so one patch of the owner reaches every caller;
 * the read-only source guards that scan ``vector_memory.py`` by name
   (``test_memory_lineage_drift``, ``test_memory_v2_schema``,
   ``test_core_path_redact_before_bound``, ``test_cse_2026_08_05_fixes`` and the
@@ -23,6 +27,7 @@ the store observe independently of where each rule lives:
 from __future__ import annotations
 
 import ast
+import functools
 import hashlib
 import importlib
 import importlib.util
@@ -42,6 +47,7 @@ import numpy as np
 import pytest
 import test_memory_lineage_drift as drift
 import test_memory_v2_schema as v2_schema
+from source_corpus import repo_files_named, repo_root
 from test_core_path_redact_before_bound import _find_slice_inside_redact_call
 from test_security_posture import _REDACTOR_CALL_RE
 
@@ -70,9 +76,55 @@ RUNTIME_MODULES = frozenset(
     }
 )
 
-#: Facade bindings that tests and callers REBIND to change what the store does.
-#: Runtime code must read each through ``kiro_crew.vector_memory`` at call time.
-FACADE_SEAMS = frozenset(
+#: A test module that rebinds a facade name names the facade in one of these spellings.
+_MENTIONS_THE_FACADE = re.compile(
+    r"kiro_crew\.vector_memory\b|from kiro_crew import [^\n]*\bvector_memory\b"
+)
+
+
+def _facade_patch_targets(source: str) -> set[str]:
+    """Names one test module rebinds on ``kiro_crew.vector_memory`` itself.
+
+    A rebinding is ``setattr`` or ``patch.object`` on a facade alias with a literal
+    name, or a ``"kiro_crew.vector_memory.<name>"`` string target. An alias is
+    ``import kiro_crew.vector_memory as x``, ``from kiro_crew import vector_memory
+    as x`` or ``x = importlib.import_module("kiro_crew.vector_memory")``.
+    """
+    tree = ast.parse(source)
+    aliases = {"kiro_crew.vector_memory"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "kiro_crew":
+            aliases |= {a.asname or a.name for a in node.names if a.name == "vector_memory"}
+        elif isinstance(node, ast.Import):
+            aliases |= {
+                a.asname for a in node.names if a.name == "kiro_crew.vector_memory" and a.asname
+            }
+        elif (
+            isinstance(node, ast.Assign)
+            and isinstance(node.value, ast.Call)
+            and ast.unparse(node.value.func).endswith("import_module")
+            and [ast.unparse(arg) for arg in node.value.args] == ["'kiro_crew.vector_memory'"]
+        ):
+            aliases |= {target.id for target in node.targets if isinstance(target, ast.Name)}
+    found = set(re.findall(r"""["']kiro_crew\.vector_memory\.(\w+)["']""", source))
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or len(node.args) < 2:
+            continue
+        target, name = node.args[0], node.args[1]
+        if (
+            ast.unparse(target) in aliases
+            and isinstance(name, ast.Constant)
+            and isinstance(name.value, str)
+            and ast.unparse(node.func).endswith(("setattr", "patch.object"))
+        ):
+            found.add(name.value)
+    return found
+
+
+#: The seams the store had when it was split into runtime modules. The derived set
+#: always contains them, so it never drops below what the split pinned when a test
+#: stops patching one.
+_BASE_FACADE_SEAMS = frozenset(
     {
         "np",
         "faiss",
@@ -94,6 +146,48 @@ FACADE_SEAMS = frozenset(
         "_MAX_SQL_PARAMS",
     }
 )
+
+
+@functools.lru_cache(maxsize=1)
+def _corpus_facade_patches() -> frozenset[str]:
+    """Every name a ``test_*.py`` under ``test/`` or ``src/**/tests`` rebinds on the facade."""
+    root = repo_root()
+    tests, src = root / "test", root / "src"
+    found: set[str] = set()
+    for path in repo_files_named(".py"):
+        in_tests = path.is_relative_to(tests) or (
+            path.is_relative_to(src) and "tests" in path.relative_to(src).parts
+        )
+        if not (in_tests and path.name.startswith("test_")):
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        if _MENTIONS_THE_FACADE.search(text):
+            found |= _facade_patch_targets(text)
+    return frozenset(found)
+
+
+def _facade_seams() -> frozenset[str]:
+    """Facade bindings tests REBIND to change what the store does: the base seams plus
+    every name the test corpus rebinds on the facade.
+
+    Runtime code reads each through ``kiro_crew.vector_memory`` at call time. Beyond
+    the base, the set is derived, not listed, so a test that starts patching another
+    facade name puts that name under the placement rules below instead of passing
+    silently against an owner's own binding.
+    """
+    return _BASE_FACADE_SEAMS | _corpus_facade_patches()
+
+
+def _module_aliases(tree: ast.Module) -> dict[str, str]:
+    """``local name -> runtime module`` for each owner a module imports as a module."""
+    return {
+        alias.asname or alias.name: alias.name
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom) and node.module == RUNTIME_PACKAGE
+        for alias in node.names
+        if alias.name in RUNTIME_MODULES
+    }
+
 
 # ── The frozen surface ────────────────────────────────────────────────────────
 
@@ -136,8 +230,8 @@ _STORE_MEMBERS = {
         recorded_embedding_space recorded_rebuild_generation replace_today_history
         restore_episodic rotate_events save_faiss_index search_episodic search_memory
         search_semantic seed_item_if_absent set_embedding_dim set_semantic
-        set_semantic_if_absent validate_semantic with_record_metadata write_episodic
-        write_episodic_outcome write_lesson""",
+        set_semantic_if_absent turn_lessons validate_semantic with_record_metadata
+        write_episodic write_episodic_outcome write_lesson""",
 }
 
 #: ``str(inspect.signature(...))`` of every member above as it stood before the
@@ -287,6 +381,7 @@ _STORE_SIGNATURES = {
     "set_semantic": "(self, key: 'str', value: 'object', confidence: 'float', source: 'str', *, facets: \"'memory_schema.MemoryFacets | None'\" = None, metadata: 'dict | None' = None, expected_revision: 'int | None' = None, correction: 'record_meta.CorrectionEvidence | None' = None, defer_embedding: 'bool' = False, embedding: 'list[float] | None' = None, embedding_resolved: 'bool' = False, embedding_generation: 'int | None' = None, retirement_embedding: 'list[float] | None' = None, retirement_embedding_resolved: 'bool' = False, retirement_value_json: 'str | None' = None) -> 'tuple[SemanticRejectCode, str] | None'",
     "set_semantic_if_absent": "(self, key: 'str', value: 'object', confidence: 'float', source: 'str', *, facets: \"'memory_schema.MemoryFacets | None'\" = None) -> 'str'",
     "space_generation": "(self) -> 'int'",
+    "turn_lessons": "(self, query_text: 'str', *, shown: 'Callable[[str], bool]', project_dir: 'str | Path | None' = None, max_rows: 'int', max_chars: 'int', render_lesson: 'Callable[[str], str] | None' = None) -> 'list[tuple[str, str]]'",
     "validate_semantic": "(self, key: 'str', value: 'object', confidence: 'float', source: 'str', *, value_json: 'str | None' = None) -> 'tuple[SemanticRejectCode, str] | None'",
     "with_record_metadata": "(self, rows: 'list[dict]') -> 'list[dict]'",
     "write_episodic": "(self, text: 'str', embedding: 'list[float] | None' = None, conversation_id: 'str' = '', tags: 'list[str] | None' = None, importance: 'float' = 0.5, source: 'str' = 'consolidation', *, preserve_existing: 'bool' = False, defer_embedding: 'bool' = False, embedding_resolved: 'bool' = False, embedding_generation: 'int | None' = None, facets: \"'memory_schema.MemoryFacets | None'\" = None, metadata: 'dict | None' = None) -> 'bool'",
@@ -412,7 +507,7 @@ class TestSurface:
             module = _runtime_module(stem)
             for name in _MODULE_NAMES:
                 if name in vars(module) and not inspect.ismodule(vars(module)[name]):
-                    if name in FACADE_SEAMS:
+                    if name in _facade_seams():
                         continue  # the facade's binding is the seam, by design
                     assert getattr(vm, name) is vars(module)[name], (stem, name)
                     moved.append(name)
@@ -487,13 +582,16 @@ class TestPlacement:
     def test_runtime_imports_form_a_dag(self) -> None:
         graph: dict[str, set[str]] = {}
         for stem, source in _runtime_sources().items():
-            deps = set()
-            for node in self._module_level_imports(ast.parse(source)):
+            tree = ast.parse(source)
+            deps = set(_module_aliases(tree).values())
+            for node in self._module_level_imports(tree):
                 if isinstance(node, ast.ImportFrom) and (node.module or "").startswith(
                     RUNTIME_PACKAGE + "."
                 ):
                     deps.add(node.module.rsplit(".", 1)[-1])
             graph[stem] = deps
+        # Non-vacuous: owners reach each other through module imports too.
+        assert "text_scoring" in graph["episodic_search"] and "lessons" in graph["semantic"]
         done: set[str] = set()
 
         def visit(stem: str, path: tuple[str, ...]) -> None:
@@ -536,16 +634,19 @@ class TestPlacement:
         """Seam reads inside a function that a patch of the facade would miss.
 
         A runtime function reads a seam as ``vm.<name>`` (or binds a local from it).
-        Two spellings bypass that: a bare global ``np`` or ``_now_iso``, which is the
-        module's own binding, and a function-local import of a seam, under its own
-        name or an alias (``import time``, ``from datetime import datetime as when``),
-        which reads the real object. Every function counts, class methods and nested
-        classes included;
+        Three spellings bypass that: a bare global ``np`` or ``_now_iso``, which is the
+        module's own binding; a function-local import of a seam, under its own name or
+        an alias (``import time``, ``from datetime import datetime as when``), which
+        reads the real object; and a seam read through a sibling owner module
+        (``_text_scoring._ROW_STEM_CACHE_SIZE``), which reads that owner's copy. Every
+        function counts, class methods and nested classes included;
         the one allowed import is the facade itself (``from kiro_crew import
         vector_memory``). Module-level code runs once, at import, and is out of
         scope here.
         """
+        seams = _facade_seams()
         tree = ast.parse(source)
+        siblings = _module_aliases(tree)
         annotations: set[int] = set()
         for node in ast.walk(tree):
             for field in ("annotation", "returns"):
@@ -576,17 +677,25 @@ class TestPlacement:
                         facade = isinstance(node, ast.ImportFrom) and (
                             node.module == "kiro_crew" and alias.name == "vector_memory"
                         )
-                        if {bound, imported} & FACADE_SEAMS and not facade:
+                        if {bound, imported} & seams and not facade:
                             hits.append(f"{node.lineno}: import binds {imported}")
             for node in ast.walk(function):
                 if (
                     isinstance(node, ast.Name)
                     and isinstance(node.ctx, ast.Load)
-                    and node.id in FACADE_SEAMS
+                    and node.id in seams
                     and node.id not in local
                     and id(node) not in annotations
                 ):
                     hits.append(f"{node.lineno}: {node.id}")
+                elif (
+                    isinstance(node, ast.Attribute)
+                    and isinstance(node.value, ast.Name)
+                    and node.value.id in siblings
+                    and node.value.id not in local
+                    and node.attr in seams
+                ):
+                    hits.append(f"{node.lineno}: {node.value.id}.{node.attr}")
         return sorted(hits, key=lambda hit: (int(hit.split(":")[0]), hit))
 
     def test_no_runtime_module_reads_a_seam_as_a_bare_global(self) -> None:
@@ -649,6 +758,110 @@ class TestPlacement:
                 n for n in ast.walk(ast.parse(source)) if isinstance(n, ast.AsyncFunctionDef)
             ], stem
 
+    def test_the_seam_scan_catches_a_seam_read_through_a_sibling_module(self) -> None:
+        planted = (
+            "from kiro_crew.vector_memory_runtime import text_scoring as _text_scoring\n"
+            "def f(width):\n"
+            "    return width > _text_scoring._ROW_STEM_CACHE_SIZE, _text_scoring._MMR_MAX_POOL\n"
+        )
+        assert self._bare_seam_loads(planted) == ["3: _text_scoring._ROW_STEM_CACHE_SIZE"]
+
+    def test_the_seams_are_the_names_tests_rebind_on_the_facade(self) -> None:
+        """Non-vacuous: the scan reads other test modules, in the spellings they rebind
+        with. No test here patches these three: ``sqlite3`` is set through a local
+        ``from kiro_crew import vector_memory``, ``_MAX_PROMOTION_REFUSED`` through
+        ``patch.object`` on an ``import ... as`` alias, and
+        ``read_member_database_identity`` through a dotted string."""
+        assert {"sqlite3", "_MAX_PROMOTION_REFUSED", "read_member_database_identity"} <= (
+            _corpus_facade_patches()
+        )
+
+    def test_the_patch_scan_reads_every_rebinding_spelling(self) -> None:
+        # The corpus scan reads this file's text too, so the dotted target names a
+        # facade-only function that no runtime module binds.
+        planted = (
+            "import importlib\n"
+            "import kiro_crew.vector_memory as memory\n"
+            "from unittest import mock\n"
+            "from kiro_crew import vector_memory as vm\n"
+            "from kiro_crew.vector_memory_runtime import semantic\n"
+            "def test_it(monkeypatch, name):\n"
+            "    store = importlib.import_module('kiro_crew.vector_memory')\n"
+            "    monkeypatch.setattr(vm, '_MAX_VALUE_BYTES', 16)\n"
+            "    monkeypatch.setattr(memory, '_KEY_PATTERN', None)\n"
+            "    monkeypatch.setattr(store, '_MMR_MAX_POOL', 8)\n"
+            "    mock.patch.object(vm, '_json_value_equal')\n"
+            "    mock.patch('kiro_crew.vector_memory.open_member_database')\n"
+            "    monkeypatch.setattr(vm, name, 1)\n"
+            "    monkeypatch.setattr(vm.VectorMemoryStore, 'recall', None)\n"
+            "    monkeypatch.setattr(semantic, '_MAX_KEY_LEN', 1)\n"
+            "    mock.patch('kiro_crew.vector_memory_runtime.semantic._EMPTY_VALUE_JSON')\n"
+        )
+        assert _facade_patch_targets(planted) == {
+            "_MAX_VALUE_BYTES",
+            "_KEY_PATTERN",
+            "_MMR_MAX_POOL",
+            "_json_value_equal",
+            "open_member_database",
+        }
+
+    @staticmethod
+    def _reads_through_the_facade(source: str) -> set[str]:
+        """Names a module's functions read as ``vector_memory.<name>``."""
+        names: set[str] = set()
+        for function in ast.walk(ast.parse(source)):
+            if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            facade = {
+                alias.asname or alias.name
+                for node in ast.walk(function)
+                if isinstance(node, ast.ImportFrom) and node.module == "kiro_crew"
+                for alias in node.names
+                if alias.name == "vector_memory"
+            }
+            names |= {
+                node.attr
+                for node in ast.walk(function)
+                if isinstance(node, ast.Attribute)
+                and isinstance(node.value, ast.Name)
+                and node.value.id in facade
+            }
+        return names
+
+    @classmethod
+    def _runtime_rebinds(cls, patched: frozenset[str] | set[str]) -> dict[str, list[str]]:
+        """Runtime modules holding their own binding of a facade-patched name.
+
+        A module may keep one only when it reads the name back through the facade at
+        call time, as ``text_scoring`` does for the memo width its ``lru_cache`` takes
+        at import; ``_bare_seam_loads`` keeps every other read of it off the copy.
+        """
+        sources = _runtime_sources()
+        found = {}
+        for stem in sorted(RUNTIME_MODULES):
+            bound = {
+                name
+                for name, value in vars(_runtime_module(stem)).items()
+                if not inspect.ismodule(value)
+            }
+            if rebound := sorted(
+                bound & set(patched) - cls._reads_through_the_facade(sources[stem])
+            ):
+                found[stem] = rebound
+        return found
+
+    def test_no_runtime_module_binds_a_name_tests_rebind_on_the_facade(self) -> None:
+        """A runtime module that defined or imported a rebound name would keep using
+        its own binding, and the facade patch would silently stop applying there."""
+        assert self._runtime_rebinds(_facade_seams()) == {}
+
+    def test_the_rebinding_check_names_the_owner_a_facade_patch_would_miss(self) -> None:
+        planted = {"_MAX_VALUE_BYTES", "_MMR_MAX_POOL", "_ROW_STEM_CACHE_SIZE", "_now_iso"}
+        assert self._runtime_rebinds(planted) == {
+            "semantic": ["_MAX_VALUE_BYTES"],
+            "text_scoring": ["_MMR_MAX_POOL"],
+        }
+
     @staticmethod
     def _delegation_map() -> dict[tuple[str, str], str]:
         """``(runtime module, function) -> store method`` for every delegate.
@@ -661,6 +874,15 @@ class TestPlacement:
             alias.asname or alias.name: alias.name
             for node in tree.body
             if isinstance(node, ast.ImportFrom) and node.module == RUNTIME_PACKAGE
+            for alias in node.names
+        }
+        # A module-level helper the facade also re-exports by name (``_json_value_equal``)
+        # is shared code a store method calls, not the implementation it forwards to.
+        helpers = {
+            alias.asname or alias.name
+            for node in tree.body
+            if isinstance(node, ast.ImportFrom)
+            and (node.module or "").startswith(RUNTIME_PACKAGE + ".")
             for alias in node.names
         }
         klass = next(
@@ -678,6 +900,7 @@ class TestPlacement:
                     and isinstance(node.func, ast.Attribute)
                     and isinstance(node.func.value, ast.Name)
                     and node.func.value.id in aliases
+                    and node.func.attr not in helpers
                 ):
                     mapping.setdefault((aliases[node.func.value.id], node.func.attr), method.name)
         return mapping
@@ -721,6 +944,180 @@ class TestPlacement:
                 if target in delegated:
                     offenders.append(f"{stem}:{node.lineno} calls {target} for {delegated[target]}")
         assert offenders == []
+
+
+# ── One binding per shared name ───────────────────────────────────────────────
+
+
+def _owned_names(sources: dict[str, str]) -> dict[str, str]:
+    """``name -> runtime module`` for each module-level function or value exactly one
+    runtime module defines. Classes are left out: a class is patched on the class
+    object, which every binding of its name shares."""
+    defined: dict[str, list[str]] = {}
+    for stem, source in sources.items():
+        for node in ast.parse(source).body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                defined.setdefault(node.name, []).append(stem)
+            elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                for target in targets:
+                    if isinstance(target, ast.Name):
+                        defined.setdefault(target.id, []).append(stem)
+    return {name: stems[0] for name, stems in defined.items() if len(stems) == 1}
+
+
+def _split_reads(sources: dict[str, str]) -> set[tuple[str, str]]:
+    """``(module, name)`` for each module that reads a SHARED runtime name from its
+    own binding instead of its owner's.
+
+    *sources* maps each scanned module -- the facade and the runtime modules -- to its
+    source. A name is shared when two or more of them read it: as a bare global
+    (``_MMR_MAX_POOL``) or through an owner module alias
+    (``_text_scoring._MMR_MAX_POOL``). Only the owner may read a shared name bare;
+    any other bare read is a by-name copy that a patch of the owner never reaches.
+    """
+    owners = _owned_names({stem: src for stem, src in sources.items() if stem in RUNTIME_MODULES})
+    readers: dict[str, set[str]] = {}
+    bare: set[tuple[str, str]] = set()
+    for stem, source in sources.items():
+        tree = ast.parse(source)
+        aliases = _module_aliases(tree)
+        skipped = {
+            id(sub)
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.Import, ast.ImportFrom))
+            for sub in ast.walk(node)
+        }
+        for node in ast.walk(tree):
+            for field in ("annotation", "returns"):
+                sub = getattr(node, field, None)
+                if sub is not None:
+                    skipped.update(id(part) for part in ast.walk(sub))
+        for node in ast.walk(tree):
+            if id(node) in skipped:
+                continue
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) and node.id in owners:
+                readers.setdefault(node.id, set()).add(stem)
+                bare.add((stem, node.id))
+            elif (
+                isinstance(node, ast.Attribute)
+                and isinstance(node.value, ast.Name)
+                and node.attr in owners
+                and aliases.get(node.value.id) == owners[node.attr]
+            ):
+                readers.setdefault(node.attr, set()).add(stem)
+    return {(stem, name) for stem, name in bare if stem != owners[name] and len(readers[name]) > 1}
+
+
+#: The one split the owners keep on purpose. ``test_lesson_keyword_scoring`` patches
+#: ``lessons._stem_one`` and ``text_scoring._stem_one`` separately to count stemmer
+#: calls on each side of a lesson ranking, so ``lessons`` keeps its own binding.
+_SPLIT_BY_A_PATCHING_TEST = {("lessons", "_stem_one")}
+
+
+def _sibling_name_imports(source: str) -> set[str]:
+    """Every import, at any depth, that binds a runtime owner's function or value
+    rather than the owner module. Classes are exempt (see ``_owned_names``)."""
+    hits = set()
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.ImportFrom):
+            continue
+        module = node.module or ""
+        if node.level:
+            module = RUNTIME_PACKAGE + (f".{module}" if module else "")
+        if module.startswith(RUNTIME_PACKAGE + "."):
+            owner = sys.modules.get(module)
+            for alias in node.names:
+                if not isinstance(getattr(owner, alias.name, None), type):
+                    hits.add(f"{module}.{alias.name}")
+        elif module == RUNTIME_PACKAGE:
+            hits |= {
+                f"{module}.{alias.name}"
+                for alias in node.names
+                if alias.name not in RUNTIME_MODULES
+            }
+    return hits
+
+
+class TestOneBindingPerSharedName:
+    """A name two modules read has one binding: its owner's. Every other reader goes
+    through the owner module, so one patch of the owner reaches every caller."""
+
+    @staticmethod
+    def _scanned_sources() -> dict[str, str]:
+        return {"vector_memory": FACADE_PATH.read_text(encoding="utf-8"), **_runtime_sources()}
+
+    def test_every_shared_name_is_read_through_its_owner(self) -> None:
+        assert _split_reads(self._scanned_sources()) == _SPLIT_BY_A_PATCHING_TEST
+
+    def test_shared_names_are_found_across_the_facade_and_the_owners(self) -> None:
+        """Non-vacuous: names read through an owner alias count as shared."""
+        sources = self._scanned_sources()
+        owners = _owned_names({s: src for s, src in sources.items() if s in RUNTIME_MODULES})
+        assert owners["_MMR_MAX_POOL"] == "text_scoring"
+        assert owners["_json_value_equal"] == "semantic"
+        planted = dict(sources)
+        planted["episodic_search"] = sources["episodic_search"].replace(
+            "_text_scoring._MMR_MAX_POOL", "_MMR_MAX_POOL"
+        )
+        planted["vector_memory"] = sources["vector_memory"].replace(
+            "_semantic._json_value_equal(", "_json_value_equal("
+        )
+        assert _split_reads(planted) == _SPLIT_BY_A_PATCHING_TEST | {
+            ("episodic_search", "_MMR_MAX_POOL"),
+            ("vector_memory", "_json_value_equal"),
+        }
+
+    def test_no_runtime_module_imports_a_value_from_a_sibling(self) -> None:
+        """Siblings read each other's helpers and constants as module attributes."""
+        found = {
+            (stem, hit)
+            for stem, source in _runtime_sources().items()
+            for hit in _sibling_name_imports(source)
+        }
+        owners = _owned_names(_runtime_sources())
+        assert found == {
+            (stem, f"{RUNTIME_PACKAGE}.{owners[name]}.{name}")
+            for stem, name in _SPLIT_BY_A_PATCHING_TEST
+        }
+
+    @pytest.mark.parametrize(
+        "planted",
+        [
+            "from kiro_crew.vector_memory_runtime.text_scoring import _MMR_MAX_POOL\n",
+            "from kiro_crew.vector_memory_runtime.lessons import _lesson_fields as fields\n",
+            "def f():\n    from kiro_crew.vector_memory_runtime.semantic import _json_value_equal\n",
+            "from kiro_crew.vector_memory_runtime import _hybrid_score\n",
+            "from .text_scoring import _stem_words\n",
+        ],
+    )
+    def test_the_sibling_import_scan_catches_a_planted_import(self, planted: str) -> None:
+        assert _sibling_name_imports(planted)
+
+    @pytest.mark.parametrize(
+        "allowed",
+        [
+            "from kiro_crew.vector_memory_runtime import text_scoring as _text_scoring\n",
+            "from . import lessons\n",
+            "from kiro_crew.vector_memory_runtime.embedding import _RecallQuery\n",
+        ],
+    )
+    def test_the_sibling_import_scan_allows_a_module_or_a_class(self, allowed: str) -> None:
+        assert _sibling_name_imports(allowed) == set()
+
+    def test_the_split_read_scan_catches_a_planted_copy(self) -> None:
+        sources = {
+            "text_scoring": "LIMIT = 3\ndef cap(rows):\n    return rows[:LIMIT]\n",
+            "episodic_search": (
+                "from kiro_crew.vector_memory_runtime.text_scoring import LIMIT\n"
+                "def head(rows):\n    return rows[:LIMIT]\n"
+            ),
+            "semantic": (
+                "from kiro_crew.vector_memory_runtime import text_scoring as _ts\n"
+                "def head(rows):\n    return rows[: _ts.LIMIT]\n"
+            ),
+        }
+        assert _split_reads(sources) == {("episodic_search", "LIMIT")}
 
 
 # ── Seams: a facade patch reaches the moved code ──────────────────────────────

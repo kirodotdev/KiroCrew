@@ -24,6 +24,7 @@ from pathlib import Path
 
 from kiro_crew import cli_help, platform_compat
 from kiro_crew.hooks import safe_read_file
+from kiro_crew.instances import tunnel_keeper
 from kiro_crew.perf_sampler import gate_refusal_message, profiling_enabled
 
 # Kept in sync with ARTIFACT_NAME in website/electron/perf-metrics.js. A rename on
@@ -201,7 +202,9 @@ def _num(value: object) -> float:
     if isinstance(value, bool):
         return 0.0
     if isinstance(value, (int, float)):
-        return float(value) if value == value and value not in (float("inf"), float("-inf")) else 0.0
+        return (
+            float(value) if value == value and value not in (float("inf"), float("-inf")) else 0.0
+        )
     return 0.0
 
 
@@ -301,10 +304,16 @@ def _desktop_metrics(args: argparse.Namespace) -> int:
     return 0
 
 
+def _desktop_tunnel(args: argparse.Namespace) -> int:
+    return tunnel_keeper.run(args.host, args.local_port, args.remote_port)
+
+
 def desktop_cmd(args: argparse.Namespace) -> int:
     """Dispatch a ``kirocrew desktop`` subcommand."""
     if args.desktop_cmd == "metrics":
         return _desktop_metrics(args)
+    if args.desktop_cmd == "tunnel":
+        return _desktop_tunnel(args)
     print(f"Unknown desktop subcommand: {args.desktop_cmd}", file=sys.stderr)
     return 2
 
@@ -330,4 +339,16 @@ def register_desktop_parser(sub: argparse._SubParsersAction) -> None:
     metrics.add_argument("--json", action="store_true", help="Emit the raw artifact as JSON")
     metrics.add_argument(
         "--top", type=int, default=5, help="How many processes to list (default: 5)"
+    )
+
+    tunnel = desktop_sub.add_parser(
+        "tunnel",
+        help="Keep the desktop app's SSH forward to a remote crew alive (client-only mode)",
+    )
+    tunnel.add_argument("--host", required=True, help="ssh host or ssh-config alias of the crew")
+    tunnel.add_argument(
+        "--local-port", type=int, required=True, help="Loopback port the app connects to"
+    )
+    tunnel.add_argument(
+        "--remote-port", type=int, required=True, help="Port the crew listens on over there"
     )

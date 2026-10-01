@@ -31,7 +31,7 @@ const OUT = process.argv[3] || '../temp-screenshots/tool-output-clamp'
 // (`84,080`). Anchored to the line so a source row that merely mentions the
 // word cannot count as a marker.
 const MARKER_RE = /^…\(([\d,]+) characters truncated — reopen the session to see the full output\)$/m
-// Mirrors TOOL_OUTPUT_MAX_CHARS in store/chatSlice.ts; the marker line fits
+// Mirrors TOOL_OUTPUT_MAX_CHARS in store/chat/wire.ts; the marker line fits
 // inside the 4 000-character slack the head + tail slices leave under it.
 const CEILING = 64_000
 

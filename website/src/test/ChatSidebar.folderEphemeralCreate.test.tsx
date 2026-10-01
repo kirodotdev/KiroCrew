@@ -9,8 +9,8 @@
  * Load-bearing assertions:
  *   (1) incognito / temporary create with their memory_mode, and every one
  *       rides the CREATE call with the folder id;
- *   (2) none of them smuggle the `defaultAutopilot` preference in as
- *       'orchestrator' — they name a memory type, not a run mode;
+ *   (2) they create in the default run mode ('') — they name a memory type,
+ *       not a run mode;
  *   (3) at phone width the rows are listed inline under a caption (a Radix
  *       submenu pins to the trigger's side and opens off-screen at 390px), and
  *       the inline row still creates with its mode and folder id.
@@ -58,9 +58,9 @@ vi.mock('framer-motion', async () => {
 
 vi.mock('../components/ProjectPicker', () => ({ default: () => null }))
 
-// `defaultAutopilot` is load-bearing for assertion (2); list view (not board) so
-// the single list-view folder header renders. Mutable box, flipped per test.
-const cfg = vi.hoisted(() => ({ value: { tagColumnsEnabled: false, confirmCloseSession: false, defaultAutopilot: false } as Record<string, unknown> }))
+// List view (not board) so the single list-view folder header renders.
+// Mutable box, flipped per test.
+const cfg = vi.hoisted(() => ({ value: { tagColumnsEnabled: false, confirmCloseSession: false } as Record<string, unknown> }))
 vi.mock('../pages/chat/ChatSettings', () => ({
   loadChatConfig: () => cfg.value,
   saveChatConfig: vi.fn(),
@@ -149,7 +149,7 @@ function openEphemeralSubmenu() {
 beforeEach(() => {
   localStorage.clear()
   mobile.value = false
-  cfg.value = { tagColumnsEnabled: false, confirmCloseSession: false, defaultAutopilot: false }
+  cfg.value = { tagColumnsEnabled: false, confirmCloseSession: false }
   mocks.createChatSlot.mockImplementation((...args: unknown[]) =>
     Promise.resolve({ key: 'chat-new-1', folder_id: (args[ARG_FOLDER_ID] as string) || '' }),
   )
@@ -158,9 +158,6 @@ afterEach(() => vi.clearAllMocks())
 
 describe('folder menu: ephemeral chat creation', () => {
   it('incognito creates with memory_mode "incognito" in the folder', async () => {
-    // Preference ON to prove the entry pins the run mode rather than smuggling
-    // an autopilot session onto a choice that named a memory mode.
-    cfg.value = { tagColumnsEnabled: false, confirmCloseSession: false, defaultAutopilot: true }
     renderSidebar()
     openFolderMenu()
     openEphemeralSubmenu()
@@ -169,7 +166,7 @@ describe('folder menu: ephemeral chat creation', () => {
     const call = mocks.createChatSlot.mock.calls[0]
     expect(call[ARG_MEMORY_MODE]).toBe('incognito')
     expect(call[ARG_FOLDER_ID]).toBe(FOLDER_ID)
-    expect(call[ARG_MODE]).not.toBe('orchestrator')
+    expect(call[ARG_MODE]).toBe('')
     expect(call[ARG_AGENT]).toBe(DEFAULT_AGENT)
   })
 

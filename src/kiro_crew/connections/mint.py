@@ -58,6 +58,7 @@ from uuid import uuid4
 # path) can substitute them. ``from ... import f`` would freeze this module's own
 # binding.
 from kiro_crew import agent as _agent
+from kiro_crew import platform_compat
 from kiro_crew.acp.client import AcpClient
 from kiro_crew.agent_discovery import _read_agent_spec
 from kiro_crew.agent_files import AGENT_FILENAME, OWNED_KIRO_AGENT_FILES
@@ -246,8 +247,13 @@ def _is_reapable_spec(recorded: str) -> bool:
         return False
     # 3: never follow a link. A symlink's name and its target disagree by
     # construction, so there is no way to check one and act on the other safely.
+    # ``is_link_or_junction``, not ``Path.is_symlink()``: a Windows directory
+    # JUNCTION is a reparse point ``is_symlink()`` answers False for, and it is
+    # the only link an unprivileged Windows writer can plant at this name. An
+    # ``is_symlink()`` guard read a junction here as our own spec and unlinked
+    # it, removing a directory link into a target this module does not own.
     try:
-        if lexical.is_symlink():
+        if platform_compat.is_link_or_junction(lexical):
             return False
     except OSError:
         return False

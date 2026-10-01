@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
 import { Provider } from 'react-redux'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -24,10 +24,8 @@ vi.mock('../utils/terminalRegistry', () => ({
 }))
 vi.mock('../hooks/useDevMode', () => ({ useDevMode: () => false }))
 vi.mock('../hooks/useIsMobile', () => ({ useIsMobile: () => false }))
-vi.mock('../pages/chat/FileBrowserRail', () => ({
-  default: () => <div data-testid="file-browser-rail" />,
-  useTreeAvailable: () => true,
-  useTreeState: () => 'ready',
+vi.mock('../pierre/tree', () => ({
+  PierreWorkspaceTree: () => <div data-testid="file-browser-tree" />,
 }))
 vi.mock('../components/MarkdownPanel', async () => {
   const React = await vi.importActual<typeof import('react')>('react')
@@ -39,7 +37,7 @@ vi.mock('../components/MarkdownPanel', async () => {
     }, _ref) {
       return (
         <div data-testid="markdown-panel" data-rail-open={String(railOpen)}>
-          <button onClick={onRailToggle}>Toggle file browser</button>
+          {onRailToggle && <button onClick={onRailToggle}>Toggle file browser</button>}
           {railOpen && browserRail}
         </div>
       )
@@ -50,6 +48,8 @@ vi.mock('../components/MarkdownPanel', async () => {
 globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} } as never
 
 import SidePanel from '../pages/chat/SidePanel'
+import { api } from '../api/client'
+import { ApiError } from '../api/apiError'
 import { __resetPanelTabs, usePanelTabs } from '../hooks/usePanelTabs'
 
 function Harness() {
@@ -87,22 +87,42 @@ describe('file tab project tree rail', () => {
   beforeEach(() => {
     localStorage.clear()
     __resetPanelTabs()
+    vi.spyOn(api, 'projectTree').mockResolvedValue({ root: '/repo', paths: [], repo: true })
+    vi.spyOn(api, 'projectGitStatus').mockResolvedValue({ repo: true, files: [] })
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
   })
 
   it('starts hidden and remains available through the file toolbar toggle', async () => {
     renderPanel()
     const panel = await screen.findByTestId('markdown-panel')
     expect(panel).toHaveAttribute('data-rail-open', 'false')
-    expect(screen.queryByTestId('file-browser-rail')).toBeNull()
+    expect(screen.queryByTestId('file-browser-tree')).toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: 'Toggle file browser' }))
     expect(panel).toHaveAttribute('data-rail-open', 'true')
-    expect(screen.getByTestId('file-browser-rail')).toBeInTheDocument()
+    expect(screen.getByTestId('file-browser-tree')).toBeInTheDocument()
   })
 
   it('honours an explicit saved preference to show the rail', async () => {
     localStorage.setItem('mc-files-rail-open', '1')
     renderPanel()
-    expect(await screen.findByTestId('file-browser-rail')).toBeInTheDocument()
+    expect(await screen.findByTestId('file-browser-tree')).toBeInTheDocument()
   })
+
+  it('keeps the toggle and denied notice reachable when the tree read is refused', async () => {
+    localStorage.setItem('mc-files-rail-open', '1')
+    vi.mocked(api.projectTree).mockRejectedValue(
+      new ApiError(403, 'denied', JSON.stringify({ code: 'access_denied' })),
+    )
+    renderPanel()
+
+    expect(await screen.findByText('No access to this folder')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Toggle file browser' })).toBeInTheDocument()
+    expect(screen.getByLabelText('Refresh')).toBeInTheDocument()
+    expect(screen.queryByTestId('file-browser-tree')).toBeNull()
+  })
+
 })

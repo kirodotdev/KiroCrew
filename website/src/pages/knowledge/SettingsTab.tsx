@@ -14,7 +14,8 @@ const EMBED_RATE_MAX = 10000
 const EMBED_RATE_DEFAULT = 120
 
 // Mirrors EXTRACTION_POOL_SIZE_MIN/MAX + the default on the backend
-// (config/loader.py clamp and handlers/core.py _EDITABLE_CONFIG bounds).
+// (config/section_builders.py clamp and handlers/core.py
+// _EDITABLE_CONFIG bounds).
 const POOL_SIZE_MIN = 1
 const POOL_SIZE_MAX = 10
 const POOL_SIZE_DEFAULT = 3

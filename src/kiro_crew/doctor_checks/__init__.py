@@ -28,4 +28,8 @@ renders the verdict and exit code. The families here hold the rest:
 
 The orchestrator imports these when a health report runs (``--bundle`` prints no
 report and imports none of them), so ``import kiro_crew.cli`` never pays for them.
+Because a family loads on that first use, it binds no project module by name but the
+facade and its sibling families: it reads every other one through the facade at call
+time (``cli_doctor.sandbox``), so the moment it loads cannot capture a module a test
+has rebound, and a patch of the facade's binding reaches it.
 """

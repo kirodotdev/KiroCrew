@@ -20,7 +20,13 @@ import pytest
 from kiro_crew.config import loader as loader_mod
 from kiro_crew.config.loader import DiscordConfig, KiroCrewConfig, SlackConfig
 from kiro_crew.discord import renderer as renderer_mod
-from kiro_crew.discord.client import DISCORD_OK, DISCORD_TRANSIENT, DiscordApiResult
+from kiro_crew.discord.client import (
+    DISCORD_OK,
+    DISCORD_TRANSIENT,
+    EDIT_FAILED,
+    EDIT_OK,
+    DiscordApiResult,
+)
 from kiro_crew.discord.renderer import DiscordRenderer
 from kiro_crew.discord.transport import DISCORD_CAPABILITIES
 from kiro_crew.messaging.status_reactions import LadderTimings, PhaseReactionLadder
@@ -80,6 +86,21 @@ class FakeClient:
     ) -> bool:
         self.sealed.append(text)
         return True
+
+    async def edit_message_with_files_outcome(
+        self,
+        channel_id: str,
+        message_id: str,
+        text: str,
+        files: Any,
+        *,
+        components: Any = None,
+    ) -> str:
+        # Mirror the production client: delegate to the bool edit and classify.
+        ok = await self.edit_message_with_files(
+            channel_id, message_id, text, files, components=components
+        )
+        return EDIT_OK if ok else EDIT_FAILED
 
     async def send_message_with_files(
         self, channel_id: str, text: str, files: Any, *, components: Any = None

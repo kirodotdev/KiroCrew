@@ -33,18 +33,38 @@ that the destination is public.
 
 ## Settings → Browser
 
-Three things live there:
+The page has three sections, one per way the agent can get a browser. They are
+separate setup paths, not a switch: downloading a browser does not select it for
+a session, and nothing attaches to your own browser on its own.
 
-- **Use the built-in browser.** On by default in the desktop app, and only
-  settable there — in a plain browser or on a remote gateway it reads off and is
-  not editable. Off, the agent browses through `playwright-cli` rather than
-  driving the panel.
-- **Install the browser engine.** Driving a page needs a browser binary. The panel
-  installs it for you and shows whether it is present.
-- **Attach to your own browser.** Attach mode drives your everyday browser, with
-  your live logins and your open tabs, instead of a fresh one. It needs a browser
-  extension that only you can install — the panel links it — and an optional token
-  stored here removes the per-attach approval prompt.
+- **Managed browsers on the Kiro Crew host.** Playwright downloads its own
+  Chromium, Firefox and WebKit builds onto the machine the gateway runs on, which
+  is not always the machine you are looking at: a Mac viewing a Fedora gateway
+  downloads Linux builds onto Fedora. These builds keep their own browsing session
+  and do not share your personal browser's logins. Chromium is the default for
+  automation. It is not Google Chrome, and WebKit is not your Safari. The page
+  installs the `playwright-cli` command first, then lists each browser as
+  Downloaded, offers a Download button when it is missing, and says Unknown when it
+  cannot read the cache. Downloaded means the files are on disk, not that a launch
+  was tested.
+- **Connect your existing browser.** Attach mode drives a browser you already run,
+  with your live logins and your open tabs. It needs the Playwright extension,
+  which only you can install — the page links it — in a browser on the same
+  machine as the gateway. Installing it in the browser on your laptop does not let
+  a gateway on another machine reach that browser. An optional token stored here
+  removes the per-attach approval prompt. Neither the extension nor the token
+  means a browser is connected.
+- **Built-in browser in the desktop app.** On by default in the desktop app, and
+  only settable there. In a plain browser or on a remote gateway it reads off and
+  is not editable, and the agent browses through `playwright-cli` instead.
+
+Only one download runs at a time. While one runs, the page names it, shows its
+current step and how long it has taken, and says why the other download buttons
+are unavailable. Every tab and a refreshed page show the same progress, because
+the gateway keeps it rather than the page. A failed download shows the step that
+failed, and on Linux the command that installs any missing system libraries. On
+Debian and Ubuntu the download first asks Playwright to install those libraries
+itself (`--with-deps`), and retries without that step when the host refuses it.
 
 Treat an attached browser as borrowed. The agent should not navigate a tab away
 from what you were doing, and closing it would take your own windows with it.

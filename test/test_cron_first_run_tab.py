@@ -82,6 +82,14 @@ def _make_state(history_messages=None):
     state.has_slot = lambda name: name in slots
     state.conversation_log = MagicMock()
     state.conversation_log.read_messages.return_value = history_messages or []
+    # Readable metadata line (no dismissals) — the fresh-cron-slot bind proceeds
+    # only when the dismissed set was read readably off-loop; an unreadable read
+    # deliberately leaves the slot unbound (see _bind_cron_slot). Production
+    # transcripts are readable, so the first-run tab flow binds as expected.
+    state.conversation_log.get_metadata_status.return_value = (
+        {"_type": "metadata"},
+        True,
+    )
     state.push_slots_update = MagicMock()
     return state
 

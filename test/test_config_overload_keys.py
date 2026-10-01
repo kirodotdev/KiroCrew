@@ -1,8 +1,10 @@
 """Every scalar ``agent.*`` / ``mcp_gateway.*`` key declared in ``sections.py``
-must be READ by the loader with the bounds its ``_meta`` help text declares.
+(``agent``) or ``integration_sections.py`` (``mcp_gateway``) must be READ by the
+loader with the bounds its ``_meta`` help text declares.
 
 The overload-resilience work added ~45 keys to these two sections from eight
-different areas, each parsed by hand in ``config/loader.py``. A key that is
+different areas, each parsed by hand in ``config/loader.py`` (``agent``) or
+``config/section_builders.py`` (``mcp_gateway``). A key that is
 declared but never read loads as its dataclass default no matter what the file
 says -- a silent no-op that no other test notices, because the schema, the
 baseline and the dashboard all read the declaration, not the loader. This

@@ -136,6 +136,8 @@ Options / env:
                                        prebuilt wheel for this host (needs a C
                                        toolchain and -dev headers); by default
                                        the install refuses instead of building
+  KIROCREW_INSTALL_PLAIN=1             plain one-line-per-step output on a
+                                       terminal (no redrawn progress line)
 EOF
       exit 0 ;;
     *) echo "kirocrew-install: unknown argument '$1'" >&2; exit 2 ;;
@@ -145,6 +147,162 @@ FEED_BASE="${FEED_BASE%/}"
 ARTIFACT_BASE="${ARTIFACT_BASE%/}"
 
 err() { echo "kirocrew-install: $*" >&2; exit 1; }
+
+# ── Progress output ──────────────────────────────────────────────────────────
+# The slow steps (the wheel download, pip resolving and fetching every
+# dependency, `python -m venv` running ensurepip) take a minute or more; a
+# single static line in front of that silence reads as a hang. Under
+# `curl ... | sh` only STDIN is the pipe; stdout is still the terminal, so the
+# script can tell an interactive run from a logged one and draw accordingly.
+#
+#   _tty            1 when stdout is a terminal that can take a redrawn line.
+#   CURL_PROGRESS   curl's progress flag for artifact downloads: a progress bar
+#                   on a terminal, silent (as before) in a log.
+#   _run_step LOG MSG CMD...
+#                   runs CMD with stdout+stderr captured to LOG. On a terminal
+#                   it redraws one line: spinner, MSG, elapsed seconds and the
+#                   last line CMD wrote (pip's "Collecting ..." / "Downloading
+#                   ..." lines, so the user sees which package it is on).
+#                   Otherwise it prints one heartbeat line every 30 s so a CI
+#                   log still shows the step is alive. Ends with a "done"/
+#                   "FAILED" line and returns CMD's exit status; the caller
+#                   reads LOG for the failure report, exactly as before.
+#                   Ctrl-C (or TERM) during the step terminates CMD and
+#                   everything CMD forked first (CMD runs in its own process
+#                   group): CMD runs asynchronously, and POSIX starts an async
+#                   child of a non-interactive shell with SIGINT ignored, so
+#                   without this the keypress would stop the spinner while
+#                   pip kept writing the venv. CMD then exits by signal
+#                   (status 128+N), the same status a foreground pip returns
+#                   for the keypress, so the caller's restore-then-err path
+#                   runs unchanged.
+#   _rs_optional=1  set before a _run_step whose failure the caller
+#                   tolerates ("Updating pip"): the closing line reads as a
+#                   warning instead of FAILED. Consumed by the call.
+#   _tolerate RC    for such a step: swallow an ordinary failure, but an
+#                   interrupt (RC > 128) still ends the install, after
+#                   putting a moved-aside venv back.
+_tty=0
+if [ -t 1 ] && [ "${TERM:-dumb}" != "dumb" ] && [ -z "${KIROCREW_INSTALL_PLAIN:-}" ]; then
+  _tty=1
+fi
+CURL_PROGRESS="-s"
+if [ "$_tty" = 1 ]; then CURL_PROGRESS="--progress-bar"; fi
+_rs_optional=0
+
+_rs_interrupt() {
+  # Runs from the INT/TERM trap while the step's child is alive: stop the
+  # whole step and let the wait below collect its signal status. The child
+  # was started as its own process group (see _run_step), so the negative
+  # pid reaches its descendants too -- `python -m venv` forks ensurepip and
+  # pip forks build helpers, and a survivor would keep writing into the tree
+  # the caller is about to replace.
+  _rs_sig="$1"
+  # `kill -s SIG -- -PGID`: the one spelling both bash and dash accept for a
+  # process group. Fall back to the pid alone if the group is refused.
+  kill -s TERM -- "-$_rs_pid" 2>/dev/null || kill -s TERM "$_rs_pid" 2>/dev/null || true
+}
+
+_tolerate() {
+  [ "$1" -le 128 ] && return 0
+  # An interrupt in a tolerated step still has to leave the previous install
+  # working: this is the one exit after the venv move-aside that would
+  # otherwise skip the restore.
+  if [ -n "${_VENV_BACKUP:-}" ] && [ -d "$_VENV_BACKUP" ]; then
+    if _restore_tree "$_VENV_BACKUP" "$VENV"; then
+      echo "interrupted; the previous install was restored and keeps working." >&2
+    else
+      echo "interrupted, and the previous install could not be restored from $_VENV_BACKUP." >&2
+    fi
+  fi
+  exit "$1"
+}
+
+_run_step() {
+  _rs_log="$1"; _rs_msg="$2"; shift 2
+  _rs_opt=$_rs_optional; _rs_optional=0
+  : > "$_rs_log"
+  # The command gets its own process group, so an interrupt can terminate it
+  # together with everything it forked (`python -m venv` forks ensurepip,
+  # pip forks build helpers). setsid(1) does that on any Linux userland,
+  # tty or not; where it is missing (macOS) job control does the same, and
+  # it is switched off again straight away because the rest of the script
+  # wants the default foreground-group behaviour. dash off a tty cannot
+  # enable job control and says so on stderr; that message is dropped and
+  # the pid-only kill fallback in _rs_interrupt covers the step.
+  if command -v setsid >/dev/null 2>&1; then
+    setsid "$@" > "$_rs_log" 2>&1 < /dev/null &
+  else
+    set -m 2>/dev/null || true
+    "$@" > "$_rs_log" 2>&1 < /dev/null &
+    set +m 2>/dev/null || true
+  fi
+  _rs_pid=$!
+  # Own INT/TERM for the life of the step; the caller's traps come back
+  # afterwards (the EXIT trap that removes $TMP is untouched throughout).
+  # The trap list goes through a file: dash prints nothing for `trap`
+  # inside a command substitution, so `$(trap)` would restore nothing.
+  _rs_sig=""
+  _rs_traps="$TMP/.traps.$$"
+  trap > "$_rs_traps"
+  trap '_rs_interrupt INT' INT
+  trap '_rs_interrupt TERM' TERM
+  _rs_start="$(date +%s)"
+  _rs_cols="$(tput cols 2>/dev/null || echo "${COLUMNS:-80}")"
+  case $_rs_cols in ''|*[!0-9]*) _rs_cols=80 ;; esac
+  _rs_i=0
+  _rs_beat=0
+  while kill -0 "$_rs_pid" 2>/dev/null; do
+    _rs_el=$(( $(date +%s) - _rs_start ))
+    if [ "$_tty" = 1 ]; then
+      case $((_rs_i % 4)) in
+        0) _rs_f='|' ;; 1) _rs_f='/' ;; 2) _rs_f='-' ;; *) _rs_f='\' ;;
+      esac
+      # Everything on the redrawn line is trimmed to the terminal: a line
+      # that wraps is not replaced by the next \r, it stacks up a new row
+      # per redraw. Width comes from tput, then $COLUMNS, then 80. The
+      # prefix is cut to fit first (a very narrow terminal), and the tail
+      # gets whatever room the prefix leaves.
+      _rs_head="$(printf "%.$((_rs_cols - 1))s" "$_rs_f $_rs_msg (${_rs_el}s)")"
+      _rs_room=$(( _rs_cols - 1 - ${#_rs_head} - 2 ))
+      _rs_last=""
+      if [ "$_rs_room" -ge 8 ]; then
+        _rs_last="$(tail -n 1 "$_rs_log" 2>/dev/null | tr -d '\r' \
+          | sed 's/^[[:space:]]*//' | cut -c1-"$_rs_room")"
+      fi
+      printf '\r\033[K%s%s' "$_rs_head" "${_rs_last:+  $_rs_last}"
+      _rs_i=$((_rs_i + 1))
+      # Fractional sleep is not POSIX; sleep 1 when this sleep lacks it.
+      sleep 0.25 2>/dev/null || sleep 1
+    else
+      if [ $((_rs_el - _rs_beat)) -ge 30 ]; then
+        _rs_beat=$_rs_el
+        echo "$_rs_msg ... still running (${_rs_el}s)"
+      fi
+      sleep 1
+    fi
+  done
+  _rs_rc=0
+  wait "$_rs_pid" || _rs_rc=$?
+  trap - INT TERM
+  . "$_rs_traps"
+  rm -f "$_rs_traps"
+  _rs_el=$(( $(date +%s) - _rs_start ))
+  if [ "$_tty" = 1 ]; then printf '\r\033[K'; fi
+  if [ -n "$_rs_sig" ]; then
+    echo "$_rs_msg ... interrupted (SIG$_rs_sig) after ${_rs_el}s" >&2
+    # A child that exited by signal reports 128+N; make sure an interrupt
+    # never reads as success even if the child swallowed the TERM.
+    [ "$_rs_rc" -gt 128 ] || _rs_rc=130
+  elif [ "$_rs_rc" -eq 0 ]; then
+    echo "$_rs_msg ... done (${_rs_el}s)"
+  elif [ "$_rs_opt" = 1 ]; then
+    echo "$_rs_msg ... skipped (exit $_rs_rc after ${_rs_el}s; continuing)" >&2
+  else
+    echo "$_rs_msg ... FAILED after ${_rs_el}s (exit $_rs_rc)" >&2
+  fi
+  return "$_rs_rc"
+}
 
 # Dependencies come from prebuilt wheels only. Left to itself, pip treats a
 # dependency with no wheel for this host as something to BUILD from its
@@ -410,7 +568,8 @@ _provision_python_via_uv() {
   # the bytes but never substitute them. (uv's own python-build-standalone
   # download honors UV_PYTHON_INSTALL_MIRROR, which inherits through env.)
   _uv_base="${KIROCREW_UV_URL:-https://github.com/astral-sh/uv/releases/download}"
-  curl -fsSL --proto '=https' --proto-redir '=https' \
+  # shellcheck disable=SC2086
+  curl -f $CURL_PROGRESS -S -L --proto '=https' --proto-redir '=https' \
     "${_uv_base%/}/$UV_VERSION/uv-$_uv_target.tar.gz" \
     -o "$TMP/uv.tar.gz" || return 1
   _uv_got="$($SHA_CMD "$TMP/uv.tar.gz" | awk '{print $1}')"
@@ -424,6 +583,9 @@ _provision_python_via_uv() {
   # reach the interpreter that the venv's shebangs point at.
   _uv_data_home="${KIROCREW_HOME:-$HOME/.kiro/crew}"
   _uv_py_dir="${KIROCREW_PYTHON_DIR:-${_uv_data_home%/}-python}"
+  # uv draws its own download progress on a terminal and reuses an already
+  # installed interpreter without a download, so it is not wrapped in _run_step.
+  echo "Installing Python ($UV_PYTHON_SERIES) into $_uv_py_dir via uv ..."
   UV_PYTHON_INSTALL_DIR="$_uv_py_dir" "$_uv_bin" python install "$UV_PYTHON_SERIES" \
     || return 1
   # only-managed: resolve the interpreter just installed, never a system one
@@ -701,7 +863,11 @@ WHEEL_NAME="kirocrew-${VER}-py3-none-any.whl"
 WHL="$TMP/$WHEEL_NAME"
 
 echo "Downloading kirocrew $VER ..."
-curl -fsS --proto '=https' "$WHEEL_URL" -o "$WHL" || err "failed to download wheel from $WHEEL_URL"
+# $CURL_PROGRESS is one word (-s or --progress-bar), unquoted on purpose.
+# shellcheck disable=SC2086
+curl -f $CURL_PROGRESS -S --proto '=https' "$WHEEL_URL" -o "$WHL" || err "failed to download wheel from $WHEEL_URL"
+_whl_kb=$(( $(wc -c < "$WHL") / 1024 ))
+echo "Downloaded $WHEEL_NAME (${_whl_kb} KB); verifying SHA-256 ..."
 
 GOT="$($SHA_CMD "$WHL" | awk '{print $1}')"
 [ "$GOT" = "$SHA" ] || err "SHA-256 mismatch (expected $SHA, got $GOT) — refusing to install"
@@ -788,9 +954,10 @@ if command -v pipx >/dev/null 2>&1; then
   # is on and nothing at all when it is off (no empty argument for pipx to
   # trip on). The output is captured so a failure can be explained; pipx's
   # own words are replayed by _report_pip_failure.
-  if ! pipx install --force --python "$PY" \
-      ${PIP_BINARY_ONLY:+"--pip-args=$PIP_BINARY_ONLY"} "$WHL" \
-      > "$TMP/pip-install.log" 2>&1; then
+  # shellcheck disable=SC2086
+  if ! _run_step "$TMP/pip-install.log" "Installing kirocrew $VER and its dependencies with pipx" \
+      pipx install --force --python "$PY" \
+      ${PIP_BINARY_ONLY:+"--pip-args=$PIP_BINARY_ONLY"} "$WHL"; then
     _report_pip_failure "$TMP/pip-install.log"
     if [ -n "$_PIPX_VENV_BACKUP" ] && [ -d "$_PIPX_VENV_BACKUP" ]; then
       _restore_tree "$_PIPX_VENV_BACKUP" "$_PIPX_VENV" \
@@ -866,7 +1033,8 @@ else
   # EVERY failure after the move-aside must restore the backup -- under
   # `set -eu` an unguarded command would exit past the restore and leave the
   # working install orphaned at the backup path.
-  if ! "$PY" -m venv "$VENV"; then
+  if ! _run_step "$TMP/venv-create.log" "Creating virtual environment" "$PY" -m venv "$VENV"; then
+    if [ -s "$TMP/venv-create.log" ]; then tail -n 20 "$TMP/venv-create.log" >&2; fi
     if [ -n "$_VENV_BACKUP" ] && [ -d "$_VENV_BACKUP" ]; then
       _restore_tree "$_VENV_BACKUP" "$VENV" \
         && err "creating the venv at $VENV failed (disk full?). The previous install was restored and keeps working; re-run this installer to retry." \
@@ -874,13 +1042,16 @@ else
     fi
     err "creating the venv at $VENV failed."
   fi
-  "$VENV/bin/pip" install --quiet --upgrade pip >/dev/null 2>&1 || true
+  _rs_optional=1
+  _run_step "$TMP/pip-upgrade.log" "Updating pip" "$VENV/bin/pip" install --quiet --upgrade pip || _tolerate $?
   # On failure, put the pre-rebuild venv back so the previous install keeps
   # working -- then name the retry instead of dying with a raw pip trace. The
-  # binary-only flag is unquoted on purpose: it is one word or nothing.
+  # binary-only flag is unquoted on purpose: it is one word or nothing. Not
+  # --quiet: pip's "Collecting"/"Downloading" lines are what _run_step shows
+  # on the progress line, and they are the context _report_pip_failure needs.
   # shellcheck disable=SC2086
-  if ! "$VENV/bin/pip" install --quiet $PIP_BINARY_ONLY "$WHL" \
-      > "$TMP/pip-install.log" 2>&1; then
+  if ! _run_step "$TMP/pip-install.log" "Installing kirocrew $VER and its dependencies" \
+      "$VENV/bin/pip" install --progress-bar off $PIP_BINARY_ONLY "$WHL"; then
     _report_pip_failure "$TMP/pip-install.log"
     if [ -n "$_VENV_BACKUP" ] && [ -d "$_VENV_BACKUP" ]; then
       _restore_tree "$_VENV_BACKUP" "$VENV" \

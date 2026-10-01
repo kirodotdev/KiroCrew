@@ -76,7 +76,7 @@ async function main() {
     await stubDashboardApi(page, {
       folders, slots, extra,
       localStorageEntries: {
-        'mc-chat-config': JSON.stringify({ tagColumnsEnabled: boardView, confirmCloseSession: false, defaultAutopilot: false }),
+        'mc-chat-config': JSON.stringify({ tagColumnsEnabled: boardView, confirmCloseSession: false }),
         // One 220px lane + padding: keep the whole strip in frame.
         ...(boardView ? { 'mc-sidebar-width': '480' } : {}),
       },

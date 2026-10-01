@@ -990,6 +990,23 @@ class TestTheRoutesRequireTheInternalSecret:
         assert resp.status == 500
         assert self._body(resp)["code"] == "history_save_failed"
 
+    @pytest.mark.parametrize("code", ["reopen_failed", "reopen_rollback_failed"])
+    def test_revive_keeps_its_503_instead_of_degrading_to_400(self, tmp_path, monkeypatch, code):
+        """`revive_session` promises 503 for a reopen write that could not land and
+        for a refused resume whose closed marker could not be confirmed restored;
+        the route must forward that status, since 400 would tell the caller it
+        sent a bad request when the remedy is to retry or re-close."""
+        req = self._request(tmp_path, internal=True, path="/api/session-control/revive")
+
+        async def _boom(*_a, **_kw):
+            raise sc.SessionControlError("try again", status=503, code=code)
+
+        monkeypatch.setattr(sc, "revive_session", _boom)
+        resp = asyncio.run(handlers_sc.api_session_control_revive(req))
+
+        assert resp.status == 503
+        assert self._body(resp)["code"] == code
+
     def test_send_without_the_secret_is_forbidden(self, tmp_path):
         req = self._request(tmp_path, internal=False, path="/api/session-control/send")
         resp = asyncio.run(handlers_sc.api_session_control_send(req))
@@ -3866,13 +3883,13 @@ def test_metadata_mutations_on_an_empty_newborn_survive_a_restart(tmp_path):
     # The user tags, pins, mode-switches, and binds it before any message lands.
     child.tags = ["tag00000001"]
     child.pinned = True
-    child.mode = "orchestrator"
+    child.mode = "design-critique"
     child._artifact = "my-artifact"
     asyncio.run(save_slot_off_loop(state, child, force=True))
     meta = state.conversation_log.get_metadata(slot_history_key(child))
     assert meta.get("tags") == ["tag00000001"], "an acknowledged tag must reach disk"
     assert meta.get("pinned") is True, "an acknowledged pin must reach disk"
-    assert meta.get("mode") == "orchestrator", "an acknowledged mode switch must reach disk"
+    assert meta.get("mode") == "design-critique", "an acknowledged mode switch must reach disk"
     assert meta.get("artifact") == "my-artifact", "an acknowledged binding must reach disk"
     assert meta.get("folder_id") == "fold00000001", "the merge must not drop the birth filing"
 
@@ -3914,7 +3931,7 @@ def test_the_empty_window_merge_mirrors_the_full_saves_slot_owned_fields(tmp_pat
 
     child.tags = ["tag00000001"]
     child.pinned = True
-    child.mode = "orchestrator"
+    child.mode = "design-critique"
     child._artifact = "my-artifact"
     child.reasoning_effort = "high"
     child.color_index = 3

@@ -413,6 +413,31 @@ async def test_app_call_rejects_unknown_spool_id(apps_flag_on, spool_tmp):
         await live.aclose()
 
 
+@pytest.mark.parametrize(
+    "forged",
+    ["\u00e9" * 8, "\u4e2d\u6587", chr(0xDCFF), "x" + chr(0xD800)],
+    ids=["non_ascii", "cjk", "lone_surrogate", "high_surrogate"],
+)
+async def test_app_call_non_ascii_secret_takes_the_audited_deny(apps_flag_on, spool_tmp, forged):
+    """`hmac.compare_digest` raises TypeError on non-ASCII str; the bytes
+    comparison keeps a forged capability carrying one non-ASCII character on the
+    audited deny path instead of an unaudited dropped connection.
+
+    The capability gate runs before any backend work, so no live server is
+    needed — a spare pool is enough, exactly as for the other pre-forward deny
+    tests. The sibling endpoint (``/api/mcp-apps/message``) pins the same shape
+    at ``test_mcp_apps_message_endpoint.py``.
+    """
+    pool = BackendPool(max_backends=2)
+    spool_id = _spool_record()
+    reply = await handle_app_call(pool, {
+        "type": "app-call", "spool_id": spool_id, "callback_secret": forged,
+        "tool": "save_state", "arguments": {},
+    })
+    assert reply["type"] == "app-call-rejected"
+    assert reply["reason"] == "invalid app callback capability"
+
+
 async def test_app_call_rejects_when_no_backend(apps_flag_on, spool_tmp):
     """A valid token whose PRODUCING backend is gone is refused — no fallback
     to another backend for the same server."""

@@ -197,7 +197,7 @@ describe('automation transport normalizer', () => {
   it.each([
     { cadence_secs: 86_401 },
     { budgets: { max_runtime_secs: 2_592_001, max_agent_turns: 8, max_tokens: 250_000, max_provider_errors: 3 } },
-    { budgets: { max_runtime_secs: 14_400, max_agent_turns: 9, max_tokens: 250_000, max_provider_errors: 3 } },
+    { budgets: { max_runtime_secs: 14_400, max_agent_turns: 1_001, max_tokens: 250_000, max_provider_errors: 3 } },
     { budgets: { max_runtime_secs: 14_400, max_agent_turns: 8, max_tokens: 1_000_001, max_provider_errors: 3 } },
     { budgets: { max_runtime_secs: 14_400, max_agent_turns: 8, max_tokens: 250_000, max_provider_errors: 21 } },
     { wake_instructions: 'x'.repeat(1001) },
@@ -205,6 +205,17 @@ describe('automation transport normalizer', () => {
     const record = normalizeAutomationRecord(structuredLoop(patch))
 
     expect(record).toMatchObject({ kind: 'structured_monitor', actionable: false })
+  })
+
+  // 0 is this budget's unlimited sentinel, so it is IN bounds where its siblings
+  // reject it -- a record carrying it must stay usable rather than fail closed.
+  it('accepts an unlimited wake budget', () => {
+    const record = normalizeAutomationRecord(structuredLoop({
+      budgets: { max_runtime_secs: 14_400, max_agent_turns: 0, max_tokens: 250_000, max_provider_errors: 3 },
+    }))
+
+    expect(record).toMatchObject({ kind: 'structured_monitor' })
+    expect((record as { budgets: { maxAgentTurns: number } }).budgets.maxAgentTurns).toBe(0)
   })
 
   it.each([

@@ -220,15 +220,24 @@ async def _pr_action_preamble(
     request: web.Request,
     op: str,
 ) -> tuple[dict, provider.RepoKey, web.Response | None]:
-    """The checks EVERY pull-request action shares: JSON body, owner/repo,
-    connected-repo gate, and the triage/push permission gate.
+    """The checks EVERY pull-request action shares: the dashboard-owner gate,
+    JSON body, owner/repo, connected-repo gate, and the triage/push permission gate.
 
     Factored out because it is the security-relevant part and it is identical for
     all of them — a per-handler copy is how one of them eventually ships without
     the permission check. Returns the parsed body and key, or a response to
     return immediately.
     """
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
     from .. import routes  # circular import: backend.routes imports this module
+
+    # Every action here writes to the forge as the OWNER's gh/glab login, so
+    # only the dashboard owner may call it: a non-owner subject and every app
+    # token, this app's own included, are refused before the body is read.
+    owner_denied = await require_owner_dashboard_request(request, f"issue_radar.{op}")
+    if owner_denied is not None:
+        return {}, provider.RepoKey(), owner_denied
 
     try:
         raw = await request.json()

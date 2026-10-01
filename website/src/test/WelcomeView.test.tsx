@@ -28,7 +28,7 @@ describe('WelcomeView', () => {
     const { rerender } = renderWithProviders(<WelcomeView {...defaultProps} />)
     const first = screen.getByRole('heading', { level: 2 }).textContent
     random.mockReturnValue(0.99)
-    rerender(<WelcomeView {...defaultProps} memoryMode="persistent" />)
+    rerender(<WelcomeView {...defaultProps} />)
     rerender(<WelcomeView setInput={vi.fn()} />)
     expect(screen.getByRole('heading', { level: 2 }).textContent).toBe(first)
   })
@@ -41,26 +41,9 @@ describe('WelcomeView', () => {
     expect(last(18)).toBe('Good evening. Where should we start?')
   })
 
-  it('renders Autopilot heading in orchestrator mode', () => {
-    renderWithProviders(<WelcomeView {...defaultProps} mode="orchestrator" />)
-    expect(screen.getByText('Autopilot')).toBeInTheDocument()
-  })
-
-  it('shows the orchestrator try button only in orchestrator mode', () => {
-    const { rerender } = renderWithProviders(<WelcomeView {...defaultProps} />)
-    expect(screen.queryByText(/Try:/)).not.toBeInTheDocument()
-    rerender(<WelcomeView {...defaultProps} mode="orchestrator" />)
-    expect(screen.getByText(/Try:/)).toBeInTheDocument()
-  })
-
-  it('keeps the memory chip out of the non-orchestrator body (ChatPage puts it above the composer)', () => {
-    renderWithProviders(<WelcomeView {...defaultProps} onSwitchMode={vi.fn()} />)
+  it('keeps the memory chip out of the welcome body (ChatPage puts it above the composer)', () => {
+    renderWithProviders(<WelcomeView {...defaultProps} />)
     expect(screen.queryByText('Choose memory mode')).not.toBeInTheDocument()
-  })
-
-  it('still shows the memory chip inside the orchestrator view', () => {
-    renderWithProviders(<WelcomeView {...defaultProps} mode="orchestrator" onSwitchMode={vi.fn()} />)
-    expect(screen.getByText('Choose memory mode')).toBeInTheDocument()
   })
 
   it('MemoryModeChip shows the chooser label in persistent mode', () => {
@@ -127,11 +110,6 @@ describe('WelcomeView', () => {
       expect(rows).toHaveLength(3)
       expect(rows[0].querySelector('h2')).toBeTruthy()
       expect(rows[1].contains(screen.getByRole('button', { name: FALLBACK_PILL }))).toBe(true)
-    })
-
-    it('orchestrator mode does not use the spread layout', () => {
-      renderWithProviders(<WelcomeView {...defaultProps} mode="orchestrator" />)
-      expect(screen.queryByTestId('welcome-layout')).not.toBeInTheDocument()
     })
 
     it('cards sit in fixed-height cells and expose their full text as the accessible name', () => {

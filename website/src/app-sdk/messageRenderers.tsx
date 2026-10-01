@@ -372,6 +372,22 @@ export interface AssistantBubbleOptions {
    *  or the policy-block marker is never found and a system-forced
    *  continuation is credited to the user. */
   policyBlockTranscript?: { messages: ChatMessage[]; index: number }
+  /** Session routing for the reply's markdown: open a session chip, plus the
+   *  roster and the active key the chip resolver needs. All three or none — the
+   *  renderer gates on (`onSessionOpen` AND `sessions`), so a half-wired host
+   *  gets today's plain link rather than a dead affordance. Absent on a host
+   *  that cannot switch sessions, where a `/chat?sid=…` link stays an ordinary
+   *  navigating link. */
+  onSessionOpen?: (key: string) => void
+  sessions?: ReadonlyMap<string, string>
+  activeSession?: string
+  /** When this row was written, ISO — the fourth member of the session bundle
+   *  above, not an independent knob. Only the SHORT-name form (`chat-1380`) uses
+   *  it, to refuse a slot minted after the text naming it; without it the full
+   *  key and a `?sid=` link still resolve. It reaches `MarkdownRenderer`'s
+   *  `messageTs`, which also versions this row's local image URLs, so a host
+   *  passes it with the triple rather than on its own. */
+  messageTs?: string
 }
 
 /**
@@ -425,6 +441,13 @@ export function renderAssistantBubble(
       onFileOpen={ctx.onFileOpen}
       onQuote={ctx.onQuote}
       onAsk={ctx.onAsk}
+      // Session routing, from the host or absent. `MarkdownRenderer` gates on
+      // (`onSessionOpen` AND `sessions`), so a host that wires neither keeps the
+      // plain navigating link it has today.
+      onSessionOpen={opts.onSessionOpen}
+      sessions={opts.sessions}
+      activeSession={opts.activeSession}
+      messageTs={opts.messageTs}
       variants={m.variants}
       variantIdx={m.variant_idx}
       turnStats={(m.meta as Record<string, unknown> | undefined)?.turn_stats as TurnStats | undefined}

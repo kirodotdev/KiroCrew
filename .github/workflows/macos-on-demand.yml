@@ -121,6 +121,8 @@ jobs:
               - "src/kiro_crew/mcp_gateway/socketsec.py"
               - "src/kiro_crew/peer_resolve.py"
               - "src/kiro_crew/platform_compat.py"
+              - "src/kiro_crew/platform_lock_compat.py"
+              - "src/kiro_crew/platform_owner_compat.py"
               # Descriptor identity and containment depend on native APFS spelling.
               - "src/kiro_crew/hooks.py"
               - "src/kiro_crew/pinned_fs.py"
@@ -136,6 +138,8 @@ jobs:
               - "test/test_gateway_lock_diagnosis.py"
               # The Seatbelt profile the private-memory boundary compiles.
               - "src/kiro_crew/sandbox.py"
+              - "src/kiro_crew/sandbox_seatbelt.py"
+              - "src/kiro_crew/sandbox_mount_sweep.py"
               # launchd is the macOS pod backend.
               - "src/kiro_crew/pod/**"
               # darwin PTY behaviour.

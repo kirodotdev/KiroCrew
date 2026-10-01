@@ -425,29 +425,45 @@ describe('ChatPage error handoff', { timeout: 15_000 }, () => {
 describe('ChatPage composerSlotRef effect ordering', () => {
   it('declares all three composer-persist effects before advancing composerSlotRef', () => {
     // Deliberately brittle: this matches exact code substrings from ChatPage.tsx
-    // to lock a load-bearing effect-declaration order. An innocuous rename/reformat
-    // will trip it. The fix is to UPDATE the substrings below to the new form,
-    // never to delete the guard (the ordering invariant it protects is real).
+    // and its draft owner (pages/chat/page/composerDrafts.ts) to lock a
+    // load-bearing effect-declaration order. An innocuous rename/reformat will
+    // trip it. The fix is to UPDATE the substrings below to the new form, never
+    // to delete the guard (the ordering invariant it protects is real).
     const here = dirname(fileURLToPath(import.meta.url))
     const src = readFileSync(resolve(here, '../pages/ChatPage.tsx'), 'utf8')
+    const owner = readFileSync(resolve(here, '../pages/chat/page/composerDrafts.ts'), 'utf8')
     // The text draft persists from `onComposerDraftCommit`, which the
     // `ComposerDraftSync` CHILD calls from its effect: a child's effects run
     // before its parent's in the same commit, so the text write lands ahead
     // of the advance whatever the declaration order. The declaration-order
-    // check still applies to the file and paste effects below.
-    const textIdx = src.indexOf('setDraft(drafts.current, s, text)')
+    // check still applies to the file, paste and session-ref effects below.
     expect(src, 'ComposerDraftSync must stay a child of the page').toContain('<ComposerDraftSync store={composerDraft}')
-    const fileIdx = src.indexOf('setFileDraft(fileDrafts.current, s, pendingFiles)')
-    const pasteIdx = src.indexOf('setPasteDraft(pasteDrafts.current, s, pasteBlocks)')
-    const advanceIdx = src.indexOf('composerSlotRef.current = activeSlot')
-    expect(textIdx, 'text-persist effect (setDraft off composerSlotRef) not found').toBeGreaterThan(-1)
+    // The page runs the slot-change restore, then the persistence hook that
+    // ends with the advance; the advance itself lives only in that hook.
+    const lifecycleCall = src.indexOf('useComposerDraftLifecycle({')
+    const persistCall = src.indexOf('useStagedDraftPersistence({')
+    expect(lifecycleCall, 'the draft lifecycle hook call not found').toBeGreaterThan(-1)
+    expect(persistCall, 'the staged persistence hook must be called AFTER the draft lifecycle hook').toBeGreaterThan(lifecycleCall)
+    expect(src, 'the page must not advance composerSlotRef itself').not.toContain('composerSlotRef.current = activeSlot')
+    expect(owner.split('composerSlotRef.current = activeSlot').length - 1, 'exactly one composerSlotRef advance').toBe(1)
+    const persistStart = owner.indexOf('export function useStagedDraftPersistence(')
+    expect(persistStart, 'useStagedDraftPersistence not found').toBeGreaterThan(-1)
+    const persist = owner.slice(persistStart)
+    const textIdx = owner.indexOf('setDraft(drafts.current, s, text)')
+    const fileIdx = persist.indexOf('setFileDraft(fileDrafts.current, s, pendingFiles)')
+    const pasteIdx = persist.indexOf('setPasteDraft(pasteDrafts.current, s, pasteBlocks)')
+    const refsIdx = persist.indexOf('setSessionRefDraft(sessionRefDrafts.current, s, pendingSessions)')
+    const advanceIdx = persist.indexOf('composerSlotRef.current = activeSlot')
+    expect(textIdx, 'text-persist (setDraft off composerSlotRef) not found').toBeGreaterThan(-1)
+    expect(textIdx, 'the text-persist sink belongs to the lifecycle hook, ahead of the persistence hook').toBeLessThan(persistStart)
     expect(fileIdx, 'file-persist effect (setFileDraft off composerSlotRef) not found').toBeGreaterThan(-1)
     expect(pasteIdx, 'paste-persist effect (setPasteDraft off composerSlotRef) not found').toBeGreaterThan(-1)
+    expect(refsIdx, 'session-ref-persist effect (setSessionRefDraft off composerSlotRef) not found').toBeGreaterThan(-1)
     expect(advanceIdx, 'composerSlotRef advance not found').toBeGreaterThan(-1)
     const order = 'persist effect must be declared BEFORE the composerSlotRef advance (draft-smear guard). If effects moved, UPDATE the substrings; do not delete this guard.'
-    expect(textIdx, order).toBeLessThan(advanceIdx)
     expect(fileIdx, order).toBeLessThan(advanceIdx)
     expect(pasteIdx, order).toBeLessThan(advanceIdx)
+    expect(refsIdx, order).toBeLessThan(advanceIdx)
   })
 
   // Symptom B (send routing to the slot the user already left) can't be covered

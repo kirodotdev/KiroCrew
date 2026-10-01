@@ -1898,7 +1898,8 @@ function GovernancePolicyViewer() {
                 inert here. Rendered so a reader auditing a profile file can
                 account for every key it declares, not just the ones this build
                 enforces. Reachable even with no policy and no host profile: the
-                payload aggregates EVERY loaded profile (see client.ts), so the
+                payload aggregates EVERY loaded profile (see
+                `unknown_profile_scopes` in api/client/security.ts), so the
                 no-policy branch above yields to this block when rows exist. */}
             {unknownScopeRows.length > 0 && (
               <div className="border-t border-border pt-2 mt-2">

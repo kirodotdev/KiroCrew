@@ -161,7 +161,9 @@ def allocate_run_id(floor: int = 0) -> str:
         counter = root / ".run-id.json"
         _allocator_path(lock, anchor)
         # Never truncate/replace/unlink the lock inode, including during init.
-        fd = os.open(lock, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        fd = platform_compat.open_create_or_existing(
+            lock, os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600
+        )
         try:
             with platform_compat.file_lock(fd, exclusive=True, required=True):
                 _allocator_file(lock, fd, anchor)

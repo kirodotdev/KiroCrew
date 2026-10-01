@@ -993,7 +993,7 @@ dashboard, app, or internal credential; a bare `curl` request is not authenticat
 | POST | `/api/apps/{name}/dev` | Toggle dev mode (live reload) — body `{"enabled": bool}` |
 | POST | `/api/apps/{name}/open` | Launch app via openCommand |
 | GET | `/apps/{name}/ui/{path}` | Serve app UI bundle files |
-| * | `/apps/{name}/api/{path}` | Reverse proxy to app backend (HMAC-signed) |
+| * | `/apps/{name}/api/{path}` | Reverse proxy to app backend (HMAC-signed). An ordinary response is bounded at 30s total. A `text/event-stream` response has no total, but must emit an event or a `:` comment at least every 60s, or it is cut |
 
 ### Reverse Proxy Authentication
 

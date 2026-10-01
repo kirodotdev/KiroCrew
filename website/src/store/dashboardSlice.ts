@@ -7,6 +7,7 @@ import { ApiError } from '../api/apiError'
 import { sanitizeLlmOutput, isUnsafeKey } from '../utils/sanitize'
 import type { StatusData, ChatSlot, TodoList, McpSessionReport } from '../types'
 import type { SessionColorMode, PaletteName, DefaultColorSetting, IntensityName } from '../utils/sessionColors'
+import { isChatPageSurface } from '../utils/channelOrigin'
 
 export interface SubagentDetail {
   id: string; task: string; agent: string; turns: number; last_tool: string; startedAt: number
@@ -824,7 +825,7 @@ const dashboardSlice = createSlice({
     },
     // Bump a slot's recency timestamps on live message activity so the sidebar
     // re-ranks immediately off the finer-grained chat_message stream (vs waiting
-    // for the next full sseSlots push). `last_ts` is the last message of any role,
+    // for the next full sseSlots push). `last_ts` is the last saved message of any role,
     // so it moves for agent output too. `last_turn_ts` — the key the list is
     // ORDERED by — moves only when `settled` is set (an inbound prompt), because a
     // list that re-ranks on every streamed tool call swaps rows under the pointer
@@ -1076,9 +1077,10 @@ const dashboardSlice = createSlice({
      *  arrival: records a clearable watermark. Passing a bare string for an
      *  arrival creates a badge no remote read can retire — arrival call
      *  sites must always use the object form. */
-    markSlotUnread(state, action: PayloadAction<string | { slot: string; ts?: string }>) {
+    markSlotUnread(state, action: PayloadAction<string | { slot: string; ts?: string; localTs?: string }>) {
       const slot = typeof action.payload === 'string' ? action.payload : action.payload.slot
       const ts = typeof action.payload === 'string' ? undefined : action.payload.ts
+      const localTs = typeof action.payload === 'string' ? undefined : action.payload.localTs
       if (!state.unreadSlots.includes(slot)) state.unreadSlots.push(slot)
       if (!state.unreadSince) state.unreadSince = {}  // partial preloaded state
       // Watermarks carry only ACTUAL server-minted message timestamps: a
@@ -1096,10 +1098,17 @@ const dashboardSlice = createSlice({
         // arrival converges.
         persistSharedUnread({ [slot]: effectiveTs ?? '' }, [])
         const prev = state.unreadSince[slot]
+        // `localTs` is the row's own server ts and guards THIS window only.
+        // A row the gateway never saves (a permission row) publishes the
+        // slot's saved-row watermark above, which a gateway restart cannot
+        // strand; this window still keeps the row's own ts, so a trailing
+        // read relayed from a window that saw only the rows before it cannot
+        // clear the badge. A local Mark as read clears it regardless.
+        const localWatermark = newerTs(effectiveTs, localTs)
         // A manual sentinel is never demoted by a message arrival; otherwise
         // the chronologically newest parseable instant wins.
-        if (effectiveTs !== undefined && prev !== MANUAL_UNREAD) {
-          const next = newerTs(prev, effectiveTs)
+        if (localWatermark !== undefined && prev !== MANUAL_UNREAD) {
+          const next = newerTs(prev, localWatermark)
           if (next !== undefined && next !== prev) state.unreadSince[slot] = next
         }
       } else {
@@ -1419,13 +1428,13 @@ export function slotIsRemoteBound(slot: { executor?: string } | null | undefined
 function countUnreadByMode(slots: ChatSlot[], unread: string[], mode: string): number {
   if (unread.length === 0) return 0
   const surfaceByKey = new Map(slots.map(s => [s.key, slotSurfaceKey(s)]))
-  // Unified chat: when counting for the chat surface (''), include orchestrator
-  // slots too since they now live in the same sidebar.
+  // The chat surface ('') counts every slot the chat page renders, legacy
+  // Autopilot slots included (see `isChatPageSurface`).
   const isChatSurface = mode === ''
   let count = 0
   for (const k of unread) {
     const sk = surfaceByKey.get(k) ?? ''
-    if (isChatSurface ? (sk === '' || sk === 'orchestrator') : sk === mode) count++
+    if (isChatSurface ? isChatPageSurface(sk) : sk === mode) count++
   }
   return count
 }

@@ -17,9 +17,80 @@
  * dockClearance geometry stays with the page, which supplies the floating
  * dock's clearance padding via `scrollerStyle`.
  */
-import React from 'react'
+import React, { useCallback, useLayoutEffect, useState } from 'react'
 import { Loader } from 'lucide-react'
 import { i18nT } from '../../i18n/t'
+
+/** Inherited custom property carrying the scroller's usable width in px, so a
+ *  descendant that may outgrow the reading column (a top-level assistant table,
+ *  see `.markdown-table` in index.css) can size against the pane it is in.
+ *
+ *  Invariant: publish the width WITHOUT making the scroller a containing block
+ *  that can trap `position: fixed` descendants — so no query container or
+ *  `contain` on it. McpAppFrame promotes its full-screen sheet IN PLACE (it
+ *  must not portal: reparenting the iframe reloads the app), and a scroller
+ *  that contained it would centre the sheet on itself and clip its backdrop. */
+export const PANE_WIDTH_PROPERTY = '--chat-pane-width'
+
+/** Publish the scroller's `clientWidth` as PANE_WIDTH_PROPERTY on itself.
+ *  `clientWidth` nets out the reserved scrollbar gutter, so it is the width a
+ *  child can actually paint into. The measure farm renders inside this same
+ *  element, so off-screen rows inherit the identical width. Undebounced: the
+ *  tables must reflow with the pane, like the prose column does; the hosts'
+ *  own 200ms-settled width buckets scope the height cache, not layout. */
+function usePaneWidthProperty(scrollerRef: React.RefObject<HTMLDivElement | null>): void {
+  useLayoutEffect(() => {
+    const el = scrollerRef.current
+    if (!el) return
+    const publish = () => { el.style.setProperty(PANE_WIDTH_PROPERTY, `${el.clientWidth}px`) }
+    publish()
+    if (typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(publish)
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [scrollerRef])
+}
+
+const WIDTH_BUCKET_STEP = 16
+const WIDTH_SETTLE_MS = 200
+const bucketWidth = (px: number) => Math.round(px / WIDTH_BUCKET_STEP) * WIDTH_BUCKET_STEP
+
+/** One width scope for both transcript hosts. Layout stays live during a drag,
+ * but a height may enter the settled cache only when BOTH the pane and its
+ * published table width belong to that scope. Reading both at write time makes
+ * this independent of which ResizeObserver callback the browser delivers first.
+ *
+ * Element-bound, not ref-bound: a host can mount before its shell (the main
+ * page's welcome hero) and replace the shell on the same stable ref, so the
+ * shell binds its live element here on mount and unbinds on unmount. */
+export function useTranscriptWidth() {
+  const [scroller, bindScroller] = useState<HTMLDivElement | null>(null)
+  const [widthBucket, setWidthBucket] = useState(() =>
+    bucketWidth(typeof window !== 'undefined' ? window.innerWidth : 944))
+  useLayoutEffect(() => {
+    if (!scroller) return
+    const measure = () => setWidthBucket(bucketWidth(scroller.clientWidth))
+    measure()
+    if (typeof ResizeObserver === 'undefined') return
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const observer = new ResizeObserver(() => {
+      clearTimeout(timer)
+      timer = setTimeout(measure, WIDTH_SETTLE_MS)
+    })
+    observer.observe(scroller)
+    return () => {
+      observer.disconnect()
+      clearTimeout(timer)
+    }
+  }, [scroller])
+  // No bound element means no settled scope to measure against.
+  const canMeasure = useCallback(() => {
+    if (!scroller || scroller.clientWidth <= 0) return false
+    const published = Number.parseFloat(scroller.style.getPropertyValue(PANE_WIDTH_PROPERTY))
+    return bucketWidth(scroller.clientWidth) === widthBucket && bucketWidth(published) === widthBucket
+  }, [scroller, widthBucket])
+  return { widthBucket, canMeasure, bindScroller }
+}
 
 export interface TranscriptVirtWiring {
   topSentinelRef: React.MutableRefObject<HTMLDivElement | null>
@@ -44,6 +115,7 @@ export default function TranscriptScrollShell({
   headerSpacer = true,
   aboveRows,
   belowRows,
+  onScrollerElement,
   children,
 }: {
   /** The single scroll controller's element ref (owned by the host's virtualizer). */
@@ -67,8 +139,17 @@ export default function TranscriptScrollShell({
   aboveRows?: React.ReactNode
   /** Page content below the rows (footer, survey, tail spacer). */
   belowRows?: React.ReactNode
+  /** Receives this shell's scroller element on mount and `null` on unmount
+   *  (`useTranscriptWidth`'s `bindScroller`), after the pane width is published. */
+  onScrollerElement?: (el: HTMLDivElement | null) => void
   children: React.ReactNode
 }) {
+  usePaneWidthProperty(scrollerRef)
+  useLayoutEffect(() => {
+    if (!onScrollerElement) return
+    onScrollerElement(scrollerRef.current)
+    return () => onScrollerElement(null)
+  }, [scrollerRef, onScrollerElement])
   return (
     <div
       ref={scrollerRef}

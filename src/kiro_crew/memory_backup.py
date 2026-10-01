@@ -32,6 +32,7 @@ import hashlib
 import json
 import logging
 import re
+import time
 from collections.abc import Callable
 from contextlib import closing
 from datetime import datetime, timezone
@@ -39,7 +40,7 @@ from itertools import islice
 from pathlib import Path
 from uuid import uuid4
 
-from kiro_crew import platform_compat
+from kiro_crew import member_memory_backup, platform_compat
 from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.atomic_write import atomic_write, replace_with_retry
 from kiro_crew.memory_stores import (
@@ -80,6 +81,12 @@ MIN_BACKUP_INTERVAL_HOURS = 20
 
 _V1_PENDING = "pending-v1-restore.json"
 _V1_SIDECARS = ("", "-wal", "-shm")
+_STAGE_SIDECARS = ("-wal", "-shm", "-journal")
+
+#: Age past which a ``.partial`` stage belongs to a run that died before its cleanup.
+#: The age is read from the stage's mtime, which moves while the copy writes, and a
+#: copy finishes in seconds, so no live stage is this old.
+STALE_STAGE_SECONDS = 6 * 60 * 60
 
 
 class MemoryBackupFailed(RuntimeError):
@@ -94,8 +101,6 @@ class MemoryBackupFailed(RuntimeError):
 
 def backup_dir_for(db_path: Path) -> Path:
     """Where *db_path*'s backups live. Does not create anything."""
-    from kiro_crew import member_memory_backup
-
     if member_memory_backup.is_member_store(db_path):
         return member_memory_backup.backup_directory(db_path)
     return db_path.parent / BACKUP_DIR_NAME
@@ -147,7 +152,6 @@ def backup_store(db_path: Path, *, now: datetime | None = None) -> Path | None:
     directory, which is why the temporary sits beside the target rather than in a temp
     root on another filesystem.
     """
-    from kiro_crew import member_memory_backup
     from kiro_crew.memory_startup import require_memory_ready
 
     require_memory_ready(named_store_of_db(db_path))
@@ -173,6 +177,12 @@ def backup_store(db_path: Path, *, now: datetime | None = None) -> Path | None:
         src = sqlite3.connect(_read_only_uri(db_path), uri=True)
         dst = sqlite3.connect(str(partial))
         src.backup(dst)
+        # The copy inherits the live store's WAL header, so every later open of it --
+        # the probe below, a restore, an operator's sqlite3 -- would create
+        # `-wal`/`-shm` siblings named after whatever the file is called at the time.
+        # A rollback-journal file pairs with nothing, so the rename moves the whole
+        # backup and the probe leaves no residue.
+        dst.execute("PRAGMA journal_mode=DELETE").fetchone()
         dst.close()
         dst = None
         # Verify the STAGED copy before it becomes a backup. Without this an unsound
@@ -197,10 +207,41 @@ def backup_store(db_path: Path, *, now: datetime | None = None) -> Path | None:
                     conn.close()
                 except Exception:
                     logger.debug("closing a backup connection failed", exc_info=True)
+        # Sidecars before the main file: `prune_backups` treats a sidecar whose
+        # `.partial` is gone as an orphan, so it must never see a live run that way.
+        for suffix in _STAGE_SIDECARS + ("",):
+            try:
+                Path(f"{partial}{suffix}").unlink(missing_ok=True)
+            except OSError:
+                logger.debug("removing a partial backup failed", exc_info=True)
+
+
+def _prune_orphaned_stages(db_path: Path, out_dir: Path, *, now: float | None = None) -> None:
+    """Remove staging files left by backup runs that have ended.
+
+    A run removes its own sidecars before its ``.partial``, so a sidecar with no
+    ``.partial`` beside it belongs to an ended run. A run killed before its
+    ``finally`` leaves the ``.partial`` too; once that stage is older than
+    :data:`STALE_STAGE_SECONDS` no run can still be writing it, so it goes with its
+    sidecars. A live run's stage is always younger than that.
+    """
+    cutoff = (time.time() if now is None else now) - STALE_STAGE_SECONDS
+    for stage in out_dir.glob(f".{db_path.stem}.*.partial"):
         try:
-            partial.unlink(missing_ok=True)
+            if stage.stat().st_mtime >= cutoff:
+                continue
+            for suffix in _STAGE_SIDECARS + ("",):
+                Path(f"{stage}{suffix}").unlink(missing_ok=True)
         except OSError:
-            logger.debug("removing a partial backup failed", exc_info=True)
+            logger.debug("removing a stale backup stage failed", exc_info=True)
+    for suffix in _STAGE_SIDECARS:
+        for sidecar in out_dir.glob(f".{db_path.stem}.*.partial{suffix}"):
+            if Path(str(sidecar)[: -len(suffix)]).exists():
+                continue
+            try:
+                sidecar.unlink(missing_ok=True)
+            except OSError:
+                logger.debug("removing an orphaned backup sidecar failed", exc_info=True)
 
 
 def list_backups(db_path: Path) -> list[Path]:
@@ -213,8 +254,6 @@ def list_backups(db_path: Path) -> list[Path]:
     out_dir = backup_dir_for(db_path)
     if not out_dir.is_dir():
         return []
-    from kiro_crew import member_memory_backup
-
     if member_memory_backup.is_member_store(db_path):
 
         def stamp_key(path: Path) -> tuple[float, str]:
@@ -244,6 +283,10 @@ def prune_backups(db_path: Path, keep: int = DEFAULT_KEEP) -> int:
     of the point.
     """
     keep = max(1, keep)
+    out_dir = backup_dir_for(db_path)
+    # Member V2 stages ZIP snapshots under their own lifecycle; only V1 stages here.
+    if not member_memory_backup.is_member_store(db_path) and out_dir.is_dir():
+        _prune_orphaned_stages(db_path, out_dir)
     victims = list_backups(db_path)[keep:]
     removed = 0
     for old in victims:
@@ -252,6 +295,14 @@ def prune_backups(db_path: Path, keep: int = DEFAULT_KEEP) -> int:
             removed += 1
         except OSError:
             logger.warning("could not remove old memory backup %s", old, exc_info=True)
+            continue
+        # A WAL-header backup taken before rollback-journal publishing gains
+        # `-wal`/`-shm` whenever it is read; they go with the file they belong to.
+        for suffix in _V1_SIDECARS[1:]:
+            try:
+                Path(f"{old}{suffix}").unlink(missing_ok=True)
+            except OSError:
+                logger.debug("removing an old backup's sidecar failed", exc_info=True)
     return removed
 
 
@@ -391,8 +442,6 @@ def restore_from_backup(backup: Path, store: str = DEFAULT_MEMORY_STORE) -> Path
     require_memory_ready(store, allow_failed=True)
     if not backup.is_file():
         raise FileNotFoundError(f"backup {backup} does not exist")
-    from kiro_crew import member_memory_backup
-
     if store != DEFAULT_MEMORY_STORE:
         member_target = resolve_store_path(store)
         if member_memory_backup.is_member_store(member_target):
@@ -416,6 +465,10 @@ def restore_from_backup(backup: Path, store: str = DEFAULT_MEMORY_STORE) -> Path
                         raise ValueError("Backup fails its integrity check; refusing to restore")
                     _require_v1_restore_database(src, store)
                     src.backup(dst)
+                    # A backup taken before rollback-journal publishing carries a WAL
+                    # header; left that way, the probe below would leave
+                    # `restore-*.db-wal`/`-shm` behind once activation renames the stage.
+                    dst.execute("PRAGMA journal_mode=DELETE").fetchone()
                 with closing(sqlite3.connect(_read_only_uri(stage), uri=True)) as probe:
                     if probe.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
                         raise ValueError("Staged backup fails its integrity check")
@@ -484,7 +537,6 @@ def _v1_journal(db_path: Path) -> tuple[Path, dict | None]:
 
 def pending_restore_status(db_path: Path) -> dict:
     """Report staged recovery for either lineage without opening live memory."""
-    from kiro_crew import member_memory_backup
     from kiro_crew.memory_startup import memory_restore_startup_status
 
     if member_memory_backup.is_member_store(db_path):
@@ -564,8 +616,6 @@ def _quarantine_invalid_v1_pending(db_path: Path, out: Path) -> bool:
 
 def cancel_pending_restore(db_path: Path) -> bool:
     """Cancel an unpublished restore, retaining current memory and source backup."""
-    from kiro_crew import member_memory_backup
-
     if member_memory_backup.is_member_store(db_path):
         return member_memory_backup.cancel_pending_restore(db_path)
     out = backup_dir_for(db_path)
@@ -678,7 +728,6 @@ def apply_pending_member_restores(
     raises its first error after visiting the remaining stores. The external
     journals remain authoritative across crashes and gateway restarts.
     """
-    from kiro_crew import member_memory_backup
     from kiro_crew.config.loader import KiroCrewConfig
     from kiro_crew.memory_stores import memory_stores_root, validate_memory_store_name
 

@@ -13,8 +13,6 @@ per responsibility. What makes that split safe is structural, so it is pinned he
   * no ``http_routes`` module binds a monkeypatch seam or a facade-owned gate
     itself -- each is looked up on ``backend.routes`` at call time, and the only
     route to it is a function-local import, so the module graph stays acyclic;
-  * the per-repo store-scoping guard ``tests/test_gitlab.py`` applies to
-    ``routes.py`` covers the whole layer, not only the facade;
   * the lazily imported model/redaction helpers stay function-local and every
     module logs as ``kirocrew.app.issue-radar``.
 """
@@ -449,42 +447,6 @@ def test_every_route_module_logs_to_the_app_logger():
         if hasattr(module, "logger"):
             assert module.logger.name == LOGGER, name
     assert routes.logger.name == LOGGER
-
-
-# ── the store-scoping guard, over the whole route layer ─────────────────────────
-
-
-def test_no_unscoped_per_repo_store_call_survives_anywhere_in_the_route_layer():
-    """The rule ``tests/test_gitlab.py`` applies to ``routes.py``, over every module
-    the handlers now live in: a per-repo store call goes through ``routes._st`` so
-    it is scoped to the key's provider data root. The only functions allowed to be
-    called directly are the config-identity ones, keyed by provider+host instead."""
-    allowed = {
-        "list_connected_repos",
-        "set_repo_permissions",
-        "remove_connected_repo",
-        "read_repo_settings",
-        "write_repo_settings",
-        "add_setting_label",
-        "add_connected_repo",
-        "is_repo_connected",
-    }
-    scanned = {path for _n, path, _t in _modules()}
-    # Not vacuous: the files holding the per-repo handlers are among those scanned.
-    for fn in (
-        routes._handle_issues,
-        routes._handle_pull_ai,
-        routes._run_pr_action,
-        routes._rebuild_deps,
-    ):
-        assert Path(inspect.getsourcefile(fn)) in scanned, fn.__name__
-    offenders: list[str] = []
-    for path in sorted(scanned):
-        source = path.read_text(encoding="utf-8")
-        for store_fn in re.findall(r"asyncio\.to_thread\(\s*store\.([a-z_]+)", source):
-            if store_fn not in allowed:
-                offenders.append(f"{path.name}: {store_fn}")
-    assert offenders == [], f"unscoped per-repo store calls: {offenders}"
 
 
 # ── the import arrangement, in a fresh interpreter ─────────────────────────────

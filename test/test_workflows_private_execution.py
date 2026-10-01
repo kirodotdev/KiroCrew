@@ -64,7 +64,11 @@ class Model:
 
 
 @pytest.fixture
-def world(monkeypatch, event_loop, tmp_path):
+def world(monkeypatch, event_loop, tmp_path, close_skills_loaders):
+    # ``close_skills_loaders`` (conftest) closes the builder's ``SkillsLoader``
+    # and joins its ``skill-catalog-refresh`` worker at teardown; the first
+    # ``WorkflowService.start`` here starts that worker, and without the join
+    # every importer of ``world`` left one thread parked for the worker's life.
     from pathlib import Path
 
     from kiro_crew import context

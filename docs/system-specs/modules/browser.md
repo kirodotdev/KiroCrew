@@ -153,8 +153,8 @@ once, at install, so registry auth applies at install time only.
    The CLI downloads Chromium on first use regardless, so the explicit step exists
    to give the operator a progress surface and a visible failure rather than a
    stall inside the first browse. `--with-deps` is appended only on an apt host,
-   and a refusal there is retried without it — see
-   [OS dependencies](#os-dependencies).
+   and a refusal there is retried without it; OS libraries on every other host
+   are a separate operator action — see [OS dependencies](#os-dependencies).
 4. `playwright-cli install --skills agents --global` so the command reference is
    discoverable from the skill file rather than occupying the system prompt.
    `--skills` accepts `claude` (default) or `agents`; `--global` targets the home
@@ -164,6 +164,49 @@ once, at install, so registry auth applies at install time only.
 The next install writes the vetted managed copy. A launcher left by an older
 release at `~/.local/bin/playwright-cli` is left untouched and ignored; no cleanup
 or fallback executes it.
+
+### Install jobs
+
+The gateway owns one install slot. The CLI setup above and a single-engine
+download (`POST /api/browser/engine`) both run in it as a **job**, and the job,
+not the page that clicked, is what the settings panel renders. A refreshed page or
+a second tab therefore sees the same operation, engine, stage and elapsed time.
+
+| Field | Meaning |
+|---|---|
+| `kind` | `cli_setup` or `engine_download` |
+| `engine` | the engine an `engine_download` fetches; `null` for `cli_setup` |
+| `status` | `running`, `succeeded`, `failed`, `interrupted` |
+| `stage` | `preparing`, `installing_cli`, `downloading_browser`, `installing_skills`, `finishing` |
+| `error_code` | `step_failed`, `timeout`, `exception`, `interrupted`, or `null` |
+| `error_detail` | the decisive step's output, redacted in full and then cut to 2000 characters |
+
+- The job is published (`running`, `preparing`) before its worker starts, so no
+  poll can observe the slot busy with nothing to show.
+- Stages come from a callback the installer calls between steps, never from
+  parsing its stdout. The worker thread marshals each one onto the event loop,
+  and an update carrying another job's id is dropped, so a late callback cannot
+  overwrite a newer job.
+- The last step decides the outcome, as before: a recovered attempt stays in the
+  step list without failing the job.
+- The latest terminal job is kept until the next one replaces it, so a poll that
+  arrives after completion still sees the result.
+- `POST /api/browser/install` joins a running `cli_setup` job. Any other running
+  job answers **409** `install_already_running` with that job's snapshot, from
+  either endpoint; the owner check and the 400s for a malformed body run first.
+- `installing` and `last_error` are kept for older clients and are derived from
+  the job.
+- Job state is in memory. A restarted gateway reports `install_job: null`, never
+  a stale running job, and nothing resumes on its own.
+- Installer children run in their own process group. A timeout kills the whole
+  tree rather than only the direct child. Both the dashboard and API-only
+  lifecycles register `_register_browser_install_cleanup` before runner setup;
+  cancelling the job task at shutdown kills the tree and marks the job
+  `interrupted`.
+- **Accepted residual:** a restart path that ends the process with `os._exit`
+  skips that cancellation, so an installer running at that moment finishes on its
+  own. Playwright's registry directory lock serializes a duplicate browser
+  download; a concurrent `npm install -g` into the managed prefix is not guarded.
 
 ### Readiness
 
@@ -195,9 +238,39 @@ is probed by path because that installer generates a **wrapper script** rather
 than a symlink, so its package tree is not an ancestor of the launcher at all.
 
 When no manifest can be attributed, the revision is unknown and readiness falls
-back to the older presence-only answer. Absent metadata is an unknown, not
-evidence of a stale cache, so it must not turn a working browser into a reported
-broken one.
+back to the older presence-only answer: any complete `<engine>-*` build counts,
+and so does a complete `<engine>_<host>_special-*` build, since without a required
+revision there is nothing to hold either directory against.
+Absent metadata is an unknown, not evidence of a stale cache, so it must not turn
+a working browser into a reported broken one.
+
+**A directory is not a download.** The installer creates the revision directory
+before it finishes, so a build counts only when that directory holds Playwright's
+`INSTALLATION_COMPLETE` marker. Checking the marker is a file read; readiness
+never launches the build.
+
+Per-engine readiness is reported as `browser_status`:
+
+| Value | Meaning |
+|---|---|
+| `downloaded` | the required-revision directory (or its platform `_special` override) holds the completion marker |
+| `missing` | the cache was read and holds no complete build, including one an interrupted download left behind |
+| `unknown` | the cache or marker could not be read, the platform has no known cache location, or the expected directory is absent or incomplete while a complete build the ported host-platform key did not predict exists: a `<engine>_*_special-*` build when the plain one was expected, or the plain required-revision build when a `_special` one was (only playwright-core's own platform logic picks the directory, so the ported key may be stale against the installed CLI) |
+
+`browsers[engine]` is true only for `downloaded`, and `browser_ok` is
+`browser_status.chromium == "downloaded"`. "Downloaded" is filesystem evidence;
+whether the build launches is a separate fact the panel does not claim.
+
+The cache location follows playwright-core's registry, so detection looks where
+the installer writes:
+
+| Setting | Cache |
+|---|---|
+| `PLAYWRIGHT_BROWSERS_PATH` (also `npm_config_…` / `npm_package_config_…`) | that path; a relative value resolves against `INIT_CWD`, else the gateway's working directory |
+| `PLAYWRIGHT_BROWSERS_PATH=0` | `.local-browsers` inside the CLI's own `playwright-core` package |
+| Linux | `$XDG_CACHE_HOME/ms-playwright`, else `~/.cache/ms-playwright` |
+| macOS | `~/Library/Caches/ms-playwright` |
+| Windows | `%LOCALAPPDATA%\ms-playwright`, else `~\AppData\Local\ms-playwright` |
 
 ### Command surface
 
@@ -861,36 +934,37 @@ this path exists to fix.
 |---|---|
 | Node.js | 20 or newer |
 | Install | `npm install -g --prefix <data-home>/playwright-cli @playwright/cli@latest` |
-| Browser binary | `install-browser`; `--with-deps` on an apt host only |
+| Browser binary | `install-browser <engine>`, user-local; `--with-deps` on an apt host only |
 | Attach | Chromium-family only, since Playwright ships an attach extension for that family alone |
 
 ### OS dependencies
 
-Playwright's `--with-deps` implementation is **apt-only**. On a distribution it
-does not recognize it does not decline — it selects its nearest Ubuntu package
-set and runs `apt-get` as root anyway. On an rpm host that is wrong twice: the
-package names do not exist, and the command needs a privilege a managed
-workstation withholds. Because the flag and the browser download are one CLI
-invocation, that refusal also took the download down, which is what made a
-missing OS library present as a sudo policy error quoting a 60-package `apt-get`
-line the user never typed.
+Playwright's `--with-deps` implementation is **apt-only**: on a distribution it
+does not recognize it selects its nearest Ubuntu package set and runs `apt-get` as
+root anyway, and because the flag and the download are one CLI invocation, a
+refusal takes the download down with it. So the flag is passed only on an apt host
+(`os_deps.with_deps_supported`), and a failed attempt there is retried without it,
+because the download itself needs no privilege. Every other host downloads with
+`install-browser <engine>` alone. Either way a missing library is reported as a
+missing library, with a command the operator runs deliberately; the remedy rides
+on the attempt without the flag, since that is the one a human acts on.
 
 `browser_cli/os_deps.py` resolves the host family from `/etc/os-release`
-(`ID` plus `ID_LIKE`, so derivatives resolve through their base) and the browser
-step adapts:
+(`ID` plus `ID_LIKE`, so derivatives resolve through their base) and composes the
+remedy for the engine that failed:
 
-| Family | `--with-deps` | On failure |
+| Family | `--with-deps` | Remedy appended to a failing download |
 |---|---|---|
-| debian / ubuntu | passed | retried without the flag, so the download still lands |
-| rpm (rhel, fedora, centos, amzn, rocky, alma, suse) | never passed | failure detail carries an install line for whichever supported manager the host actually has — `dnf`, else `yum`, else `microdnf`, probed not assumed — naming the rpm packages. A SUSE host gets no remedy by lineage, even if `dnf`/`yum` is installed there: `zypper`-world package names differ, so a completed line would fail on its package list |
-| unrecognized Linux | never passed | no remedy offered — a guessed package manager fails on its own first argument and reads as the product being broken |
-| macOS / Windows | not applicable | the browser download alone is sufficient |
+| debian / ubuntu | passed, retried without on failure | `npx playwright install-deps <engine>`, with `sudo` when the host has it |
+| rpm (rhel, fedora, centos, amzn, rocky, alma, suse), Chromium | never passed | an install line for whichever supported manager the host actually has — `dnf`, else `yum`, else `microdnf`, probed not assumed — naming the rpm packages. A SUSE host gets no remedy by lineage, even if `dnf`/`yum` is installed there: `zypper`-world package names differ, so a completed line would fail on its package list |
+| rpm, Firefox / WebKit | never passed | a line naming the engine and pointing at the libraries Playwright printed; no package list is offered, because the verified one covers Chromium alone |
+| unrecognized Linux | never passed | none — a guessed package manager fails on its own first argument and reads as the product being broken |
+| macOS / Windows | not applicable | none — the browser download alone is sufficient |
 
 The remedy is a command for a human to run, appended to the failing step's
-`stderr` (which the settings panel already renders verbatim) rather than a new UI
-state. Nothing in this path elevates or runs a package manager. The rpm list
-covers Chromium alone: it is the engine `attach` supports and the one `browser_ok`
-gates on, so it is what "browsing works" means.
+detail (which the settings panel renders verbatim) rather than a new UI state.
+Nothing in the remedy path elevates or runs a package manager; the only elevation
+is Playwright's own `--with-deps` attempt on an apt host.
 
 **A zero exit is not a verdict.** MEASURED on Amazon Linux 2023: with libraries
 missing, `install-browser` prints

@@ -47,7 +47,6 @@ from kiro_crew.agent_sdk import backend_cards as cards_mod
 from kiro_crew.agent_sdk import backends as sdk_backends
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_DEEPSEEK,
-    ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
@@ -580,11 +579,11 @@ def test_no_declared_unmeasured_entry_names_a_member() -> None:
 
 
 def test_the_compact_capture_gap_is_the_only_unmeasured_thing_on_any_card() -> None:
-    """The two cells, named, and every other cell on every card measured.
+    """The one cell, named, and every other cell on every card measured.
 
-    pi and goose both dispatch ``/compact`` before a model turn in their own source
-    and neither has been driven, which ``ACP_BACKENDS_COMPACT`` records as
-    "unclassified". A plain cross means something else: deepseek has no compaction on
+    pi dispatches ``/compact`` before a model turn in its own source and has not
+    been driven, which ``ACP_BACKENDS_COMPACT`` records as "unclassified". goose was
+    driven, so its cell is measured. A plain cross means something else: deepseek has no compaction on
     its ACP surface at all -- in the set's own words it emits no
     ``available_commands_update`` and answers ``session/load`` with "Method not
     found". Those two answers are not the same answer, and this test is where the
@@ -598,7 +597,6 @@ def test_the_compact_capture_gap_is_the_only_unmeasured_thing_on_any_card() -> N
     }
     assert unmeasured == {
         (ACP_BACKEND_PI, cards_mod.LINE_MANUAL_COMPACT),
-        (ACP_BACKEND_GOOSE, cards_mod.LINE_MANUAL_COMPACT),
     }
     # The harness with no compaction surface keeps the cross: its answer is known.
     deepseek = cards_mod.card_for(ACP_BACKEND_DEEPSEEK)

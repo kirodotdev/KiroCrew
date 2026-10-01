@@ -210,6 +210,13 @@ def _refusal(exc: sc.SessionControlError) -> web.Response:
         # history save), each of which left the tab open with every partial step
         # rolled back. It is not a client error, so it must not degrade to 400.
         return web.json_response({"error": exc.message, "code": exc.code}, status=500)
+    if exc.status == 503:
+        # A retryable server-side failure -- `revive_session` raises this when the
+        # reopen write could not land (`reopen_failed`) or a refused resume could
+        # not confirm its `closed` marker restored (`reopen_rollback_failed`).
+        # The distinction from 500 is the remedy: try again, or close from the
+        # History tab. Neither is a client error, so neither degrades to 400.
+        return web.json_response({"error": exc.message, "code": exc.code}, status=503)
     return web.json_response({"error": exc.message, "code": exc.code}, status=400)
 
 
@@ -238,6 +245,11 @@ async def api_session_control_create(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     try:
         body = await _body(request)
+        # Strictly typed, never truthiness: the string "false" is truthy, and a
+        # caller asking for a real create must never get a silent preview.
+        dry_run = body.get("dry_run", False)
+        if not isinstance(dry_run, bool):
+            raise sc.SessionControlError("dry_run must be a boolean", code="invalid_field_type")
         # Warmed AFTER the body read, which suspends: a config edit landing in that
         # window would change the fingerprint and leave `create_session`'s own
         # synchronous gate re-reading the file on the loop. Nothing suspends between
@@ -250,6 +262,7 @@ async def api_session_control_create(request: web.Request) -> web.Response:
             agent=str(body.get("agent") or ""),
             folder_id=str(body.get("folder_id") or ""),
             model=str(body.get("model") or ""),
+            dry_run=dry_run,
             # The fence verdict this request's admission already settled, for the
             # same reason every other route forwards it as
             # `precomputed_ownership_fenced`: `create_session` consults it after
@@ -320,6 +333,26 @@ async def api_session_control_stop(request: web.Request) -> web.Response:
     return web.json_response(result)
 
 
+async def api_session_control_end_wait(request: web.Request) -> web.Response:
+    """POST /api/session-control/end-wait — wake another session from `wait` early."""
+    refused = await _require_internal(request)
+    if refused is not None:
+        return refused
+    # No prewarm here, for the reason `api_session_control_stop` gives.
+    state: DashboardState = request.app["state"]
+    try:
+        body = await _body(request)
+        result = await sc.end_wait_target(
+            state,
+            caller_session_key=_read_session_key(request),
+            target=_target(body),
+            caller_fenced=_carried_fence(request),
+        )
+    except sc.SessionControlError as exc:
+        return _refusal(exc)
+    return web.json_response(result)
+
+
 async def api_session_control_set_model(request: web.Request) -> web.Response:
     """POST /api/session-control/set-model — change an idle session's model."""
     refused = await _require_internal(request)
@@ -359,6 +392,28 @@ async def api_session_control_close(request: web.Request) -> web.Response:
             state,
             caller_session_key=_read_session_key(request),
             target=_target(body),
+            caller_fenced=_carried_fence(request),
+        )
+    except sc.SessionControlError as exc:
+        return _refusal(exc)
+    return web.json_response(result)
+
+
+async def api_session_control_revive(request: web.Request) -> web.Response:
+    """POST /api/session-control/revive — bring an archived session back (mirror of close)."""
+    refused = await _require_internal(request)
+    if refused is not None:
+        return refused
+    # No prewarm here either: `revive_session` warms the SEL logger and the
+    # config after its own SEL prewarm, the same ordering `close_target` uses.
+    state: DashboardState = request.app["state"]
+    try:
+        body = await _body(request)
+        result = await sc.revive_session(
+            state,
+            caller_session_key=_read_session_key(request),
+            target=_target(body),
+            folder_id=str(body.get("folder_id") or ""),
             caller_fenced=_carried_fence(request),
         )
     except sc.SessionControlError as exc:
@@ -560,6 +615,30 @@ async def api_session_control_read(request: web.Request) -> web.Response:
             target=target,
             limit=limit,
             since=since,
+            caller_fenced=_carried_fence(request),
+        )
+    except sc.SessionControlError as exc:
+        return _refusal(exc)
+    return web.json_response(result)
+
+
+async def api_session_control_summary(request: web.Request) -> web.Response:
+    """GET /api/session-control/summary — read another session's cached intent summary."""
+    refused = await _require_internal(request)
+    if refused is not None:
+        return refused
+    # Same placement as `read`: query parsing is synchronous, and `read_summary`
+    # runs its gate before its first await.
+    await sc.prewarm_enabled_check()
+    state: DashboardState = request.app["state"]
+    try:
+        target = (request.query.get("target") or "").strip()
+        if not target:
+            raise sc.SessionControlError("target is required", code="target_required")
+        result = await sc.read_summary(
+            state,
+            caller_session_key=_read_session_key(request),
+            target=target,
             caller_fenced=_carried_fence(request),
         )
     except sc.SessionControlError as exc:

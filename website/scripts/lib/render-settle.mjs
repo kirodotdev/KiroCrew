@@ -106,3 +106,36 @@ export function createSettleTracker({ stableSamples = SETTLE_STABLE_SAMPLES } = 
     get last() { return previous },
   }
 }
+
+/**
+ * The URLs of the requests still open right now.
+ *
+ * `sampleIsQuiet` answers whether the page owes the network anything as a single
+ * number, which is all the settle loop needs. The failure path needs more: a
+ * surface that times out with one request in flight is diagnosable only if the run
+ * can say WHICH request, so a maintainer can add the fixture that settles it rather
+ * than guess from a count.
+ *
+ * The three Playwright network events each carry the same `Request` object, so the
+ * request itself is the key: `start` records its URL, `finish` drops it whether it
+ * resolved or failed. Keying on the request rather than the URL keeps two
+ * concurrent fetches of the same URL honest -- each is tracked and cleared on its
+ * own completion. Insertion order is preserved, so `urls()` lists the oldest open
+ * request first, which is the one most likely to be stuck.
+ */
+export function createInflightUrls() {
+  const open = new Map()
+
+  return {
+    start(request) {
+      open.set(request, typeof request.url === 'function' ? request.url() : String(request.url))
+    },
+    finish(request) {
+      open.delete(request)
+    },
+    urls() {
+      return [...open.values()]
+    },
+    get size() { return open.size },
+  }
+}

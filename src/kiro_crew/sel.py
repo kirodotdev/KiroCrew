@@ -760,16 +760,8 @@ class SecurityEventLog:
             # inside: a ``trust`` replaced after that screen cannot redirect this
             # open into another tree, where both writers' screens would pass while
             # they locked different inodes.
-            flags = (
-                (os.O_CREAT if lock_may_create else 0)
-                | os.O_RDWR
-                | getattr(os, "O_NOFOLLOW", 0)
-                | getattr(os, "O_BINARY", 0)
-            )
-            if lock_dir_fd is not None:
-                fd = os.open(lock_path.name, flags, 0o600, dir_fd=lock_dir_fd)
-            else:
-                fd = os.open(lock_path, flags, 0o600)
+            flags = os.O_RDWR | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+            fd = _open_lock_sidecar(lock_path, flags, create=lock_may_create, dir_fd=lock_dir_fd)
         finally:
             if lock_dir_fd is not None:
                 # The descriptor's whole job was to anchor the open above; the
@@ -3634,6 +3626,30 @@ def sel_is_warm() -> bool:
     """
     inst = SecurityEventLog._instance
     return inst is not None and bool(getattr(inst, "_initialized", False))
+
+
+def _open_lock_sidecar(path: Path, flags: int, *, create: bool, dir_fd: int | None) -> int:
+    """Open (creating when *create*) the chain-lock sidecar, race-safe on Darwin.
+
+    The first two writers on a fresh log directory (the background writer's first
+    flush and a ``prune``) race to create this sidecar, and a nonexclusive
+    ``O_CREAT`` can hand one of them a bare ``ENOENT`` -- the prune is then
+    skipped. :func:`platform_compat.open_create_or_existing` is the shared
+    answer (the decision log and the app-deps lock hit the same race);
+    descriptor-relative when *dir_fd* is given, so the pin taken in
+    ``_chain_lock_target`` still anchors the open.
+    """
+    if dir_fd is None:
+        # By-name open, spelled without ``dir_fd=``: the link-screen ratchet reads
+        # a ``dir_fd=`` keyword as "anchored to a descriptor", so this branch --
+        # the one that really does resolve the screened name by name -- must
+        # not carry one, or the ratchet would stop counting it as a resolve.
+        if not create:
+            return os.open(path, flags, 0o600)
+        return platform_compat.open_create_or_existing(path, flags, 0o600)
+    if not create:
+        return os.open(path.name, flags, 0o600, dir_fd=dir_fd)
+    return platform_compat.open_create_or_existing(path.name, flags, 0o600, dir_fd=dir_fd)
 
 
 def _pin_lock_dir(path: Path) -> int | None:

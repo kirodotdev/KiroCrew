@@ -838,6 +838,17 @@ def _forget_unpersisted(account: str, kind: str, persisted: dict[str, Any]) -> N
             _unpersisted_runs.pop(key, None)
 
 
+def _held_runs(account: str) -> dict[str, dict[str, Any]]:
+    """Per kind, the run this process completed for ``account`` and could not persist."""
+    path = _state_key()
+    with _unpersisted_lock:
+        return {
+            kind: record
+            for (state_path, acct, kind), record in _unpersisted_runs.items()
+            if state_path == path and acct == account
+        }
+
+
 def _merge_unpersisted(account: str, runs: dict[str, Any]) -> dict[str, Any]:
     """Overlay this process's unpersisted runs onto what the state file holds.
 
@@ -845,14 +856,7 @@ def _merge_unpersisted(account: str, runs: dict[str, Any]) -> dict[str, Any]:
     Other processes and legacy records retain the wall-time fallback; this is
     not proof of global order when their state updates were unobservable.
     """
-    path = _state_key()
-    with _unpersisted_lock:
-        remembered = {
-            kind: record
-            for (state_path, acct, kind), record in _unpersisted_runs.items()
-            if state_path == path and acct == account
-        }
-    for kind, record in remembered.items():
+    for kind, record in _held_runs(account).items():
         if _run_is_newer(record, runs.get(kind)):
             runs[kind] = record
     return runs

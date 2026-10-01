@@ -169,7 +169,8 @@ const MAX_SPAN = { colSpan: 1000, rowSpan: 65534 } as const
 
 /** A cell's `colspan` as a positive integer; anything else is 1. hast keeps
  *  the camelCase names react expects (`colSpan`), and the sanitizer admits
- *  both span attributes on raw-HTML cells (`TAG_ATTRS` in MarkdownRenderer). */
+ *  both span attributes on raw-HTML cells (`TAG_ATTRS` in
+ *  components/markdown/sanitize.ts). */
 function colSpanOf(cell: HastElement): number {
   const v = cell.properties?.colSpan
   const n = typeof v === 'number' ? v : typeof v === 'string' ? parseInt(v, 10) : 1

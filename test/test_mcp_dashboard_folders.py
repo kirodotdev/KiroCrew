@@ -1860,8 +1860,9 @@ class TestSessionCreateFolder:
             patch("kiro_crew.mcp_dashboard._post", side_effect=_post_route) as post,
         ):
             _call_tool_inner("session_create", {"title": "worker", "folder": "kirocrew/fresh"})
-        folder_call = post.call_args_list[0]
-        assert folder_call.args[0] == "/api/chat/folders"
+        # The create's dry run comes first (it refuses before any folder
+        # exists); the folder write is the first call to the folder route.
+        folder_call = next(c for c in post.call_args_list if c.args[0] == "/api/chat/folders")
         assert folder_call.kwargs["session_key"] == "dashboard:gate-key"
 
 
@@ -1884,16 +1885,22 @@ class TestAdvertisedSet:
             "chat_tag_create",
             "chat_tag_update",
             "chat_tag_assign",
+            "chat_tag_column_list",
+            "chat_tag_column_create",
+            "chat_tag_column_move",
             "chat_session_pin",
             "session_create",
             "session_fork",
             "session_stop",
+            "session_end_wait",
             "session_set_model",
             "session_close",
+            "session_revive",
             "session_send",
             "session_broadcast",
             "session_status",
             "session_read_message",
+            "session_summary",
             "session_adopt",
             "session_release",
         }
@@ -2083,6 +2090,33 @@ class TestFolderPosition:
         }
         mock_patch.assert_not_called()
         assert "before `Bravo`" in out
+
+    def test_the_renumber_states_its_container_to_the_endpoint(self) -> None:
+        """The reorder POST carries ``expected_parent`` naming the destination.
+
+        The batch is computed from a snapshot of the tree, so the claim is what
+        lets the endpoint refuse the renumber (409) when a concurrent reparent
+        moves a sibling between that read and the write. The destination here is
+        the root lane, and the claim for it is the empty string -- a real value,
+        present in the body, not an omitted key.
+        """
+        with (
+            patch("kiro_crew.mcp_dashboard._get", side_effect=_ordered_rows),
+            patch("kiro_crew.mcp_dashboard._patch"),
+            patch(
+                "kiro_crew.mcp_dashboard._post",
+                return_value={"ok": True},
+            ) as mock_post,
+        ):
+            out = _call_tool_inner("chat_folder_move", {"folder": "Delta", "after": "Alpha"})
+        assert not out.startswith("Error:")
+        reorder_bodies = [
+            call.args[1]
+            for call in mock_post.call_args_list
+            if call.args[0] == "/api/chat/folders/reorder"
+        ]
+        assert len(reorder_bodies) == 1
+        assert reorder_bodies[0]["expected_parent"] == ""
 
     def test_an_anchor_alone_reorders_without_moving(self) -> None:
         """The reason an anchor may stand in for ``new_parent``.

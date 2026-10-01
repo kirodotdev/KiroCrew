@@ -215,3 +215,32 @@ async def test_the_payload_projects_every_contract_field(monkeypatch) -> None:
     assert issue["commentCount"] == 3
     assert issue["partialSections"] == []
     assert (issue["createdAt"], issue["updatedAt"], issue["closedAt"]) == ("c", "u", "r")
+
+
+@pytest.mark.asyncio
+async def test_cloud_without_an_email_names_the_missing_field(monkeypatch) -> None:
+    # Bearer to Jira Cloud gets a bare 403, so refuse before sending it.
+    seen = _serve(monkeypatch, _Response(403, b""))
+    monkeypatch.setattr(sp, "_get_jira_auth", lambda host: ("", "tok"))
+
+    with pytest.raises(ValueError) as raised:
+        await _fetch()
+
+    assert str(raised.value).startswith("jira_config_error: jira_auth.email (or user) is required")
+    assert len(seen) == 1  # no request went out
+
+
+@pytest.mark.parametrize(
+    ("entry", "email"),
+    [
+        ({"host": "acme.atlassian.net", "user": "u@example.com"}, "u@example.com"),
+        ({"host": "acme.atlassian.net", "email": "e@example.com", "user": "u@x"}, "e@example.com"),
+        ({"host": "jira.corp.example"}, ""),
+    ],
+)
+def test_jira_auth_reads_user_as_an_alias_of_email(entry, email) -> None:
+    from kiro_crew.config.loader import _build_dashboard_config
+
+    dashboard = _build_dashboard_config(set(), {"jira_auth": [entry]})
+
+    assert [e.email for e in dashboard.jira_auth] == [email]

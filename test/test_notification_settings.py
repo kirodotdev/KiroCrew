@@ -14,6 +14,7 @@ from kiro_crew.dashboard.handlers.messaging import (
     api_notification_channels,
 )
 from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.notifications.bus import MONITOR_CHANNEL
 from kiro_crew.notifications.settings import (
     PROTECTED_CHANNELS,
     ChannelSettings,
@@ -256,7 +257,12 @@ class TestChannelSettingsApi:
                 json={"channel": "a.b", "muted": True},
             )
         data = json.loads((tmp_path / "notification_settings.json").read_text(encoding="utf-8"))
-        assert data == {"channel_settings": {"a.b": {"muted": True}}}
+        assert data == {
+            "channel_settings": {
+                "a.b": {"muted": True},
+                MONITOR_CHANNEL: {},
+            }
+        }
 
 
 class TestProtectedConstant:
@@ -331,3 +337,133 @@ class TestReviewRegressions:
             note = {"channel": "a.b", "priority": "default"}
             settings.apply(note)
             assert note["silenced"] is True
+
+
+def _write_settings(tmp_path, channel_settings) -> None:
+    data = {"channel_settings": channel_settings}
+    (tmp_path / "notification_settings.json").write_text(
+        json.dumps(data), encoding="utf-8"
+    )
+
+
+def _read_settings(tmp_path) -> dict:
+    return json.loads(
+        (tmp_path / "notification_settings.json").read_text(encoding="utf-8")
+    )
+
+
+class TestSeedMonitorFromAgent:
+    """One-time seed of system.monitor from a stored system.agent entry."""
+
+    @pytest.fixture(autouse=True)
+    def _config_dir(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(
+            "kiro_crew.notifications.settings.config_dir", lambda: tmp_path
+        )
+
+    def test_agent_mute_seeds_monitor_without_writing_at_load(self, tmp_path):
+        _write_settings(tmp_path, {"system.agent": {"muted": True}})
+        before = _read_settings(tmp_path)
+        settings = ChannelSettings()
+        assert settings.get(MONITOR_CHANNEL) == {"muted": True}
+        # The load never writes; a second load derives the same seed.
+        assert _read_settings(tmp_path) == before
+        assert ChannelSettings().get(MONITOR_CHANNEL) == {"muted": True}
+
+    def test_seed_persists_with_the_next_update(self, tmp_path):
+        _write_settings(tmp_path, {"system.agent": {"muted": True}})
+        ChannelSettings().update("a.b", muted=True)
+        data = _read_settings(tmp_path)
+        assert data == {
+            "channel_settings": {
+                "system.agent": {"muted": True},
+                MONITOR_CHANNEL: {"muted": True},
+                "a.b": {"muted": True},
+            }
+        }
+        assert "monitor_seeded_from_agent" not in data
+
+    def test_unmuting_agent_after_seed_keeps_monitor_muted(self, tmp_path):
+        _write_settings(tmp_path, {"system.agent": {"muted": True}})
+        ChannelSettings().update("system.agent", muted=False)
+        reloaded = ChannelSettings()
+        assert reloaded.get("system.agent") == {}
+        assert reloaded.get(MONITOR_CHANNEL) == {"muted": True}
+
+    def test_agent_priority_override_is_copied(self, tmp_path):
+        _write_settings(tmp_path, {"system.agent": {"priority": "passive"}})
+        settings = ChannelSettings()
+        assert settings.get(MONITOR_CHANNEL) == {"priority": "passive"}
+        assert settings.get("system.agent") == {"priority": "passive"}
+
+    def test_unmuting_monitor_persists_empty_entry_and_hides_it(self, tmp_path):
+        _write_settings(tmp_path, {"system.agent": {"muted": True}})
+        settings = ChannelSettings()
+        settings.update(MONITOR_CHANNEL, muted=False)
+        assert _read_settings(tmp_path)["channel_settings"][MONITOR_CHANNEL] == {}
+
+        reloaded = ChannelSettings()
+        assert reloaded.get(MONITOR_CHANNEL) == {}
+        assert MONITOR_CHANNEL not in reloaded.all_settings()
+        assert reloaded.get("system.agent") == {"muted": True}
+
+    def test_unmuted_monitor_survives_downgrade_rewrite(self, tmp_path):
+        _write_settings(tmp_path, {"system.agent": {"muted": True}})
+        ChannelSettings().update(MONITOR_CHANNEL, muted=False)
+
+        # A build that preserves only channel_settings keeps the empty sentinel.
+        downgraded = {"channel_settings": _read_settings(tmp_path)["channel_settings"]}
+        (tmp_path / "notification_settings.json").write_text(
+            json.dumps(downgraded), encoding="utf-8"
+        )
+
+        reloaded = ChannelSettings()
+        assert reloaded.get(MONITOR_CHANNEL) == {}
+        assert MONITOR_CHANNEL not in reloaded.all_settings()
+        assert reloaded.get("system.agent") == {"muted": True}
+
+    def test_fresh_install_agent_mute_does_not_seed_monitor(self, tmp_path):
+        settings = ChannelSettings()
+        assert settings.all_settings() == {}
+        assert not (tmp_path / "notification_settings.json").exists()
+
+        settings.update("system.agent", muted=True)
+        data = _read_settings(tmp_path)
+        assert data["channel_settings"] == {
+            "system.agent": {"muted": True},
+            MONITOR_CHANNEL: {},
+        }
+
+        reloaded = ChannelSettings()
+        assert reloaded.get(MONITOR_CHANNEL) == {}
+        assert MONITOR_CHANNEL not in reloaded.all_settings()
+        assert reloaded.get("system.agent") == {"muted": True}
+
+    def test_existing_monitor_entry_is_untouched(self, tmp_path):
+        _write_settings(
+            tmp_path,
+            {
+                "system.agent": {"muted": True},
+                MONITOR_CHANNEL: {"priority": "critical"},
+            },
+        )
+        before = _read_settings(tmp_path)
+        settings = ChannelSettings()
+        assert settings.get(MONITOR_CHANNEL) == {"priority": "critical"}
+        assert _read_settings(tmp_path) == before
+
+    def test_empty_monitor_entry_blocks_seed(self, tmp_path):
+        _write_settings(
+            tmp_path,
+            {"system.agent": {"muted": True}, MONITOR_CHANNEL: {}},
+        )
+        settings = ChannelSettings()
+        assert settings.get(MONITOR_CHANNEL) == {}
+        assert MONITOR_CHANNEL not in settings.all_settings()
+
+    def test_corrupt_file_still_falls_back_and_seeds_nothing(self, tmp_path):
+        path = tmp_path / "notification_settings.json"
+        path.write_text("{not json", encoding="utf-8")
+        settings = ChannelSettings()
+        assert settings.all_settings() == {}
+        assert path.read_text(encoding="utf-8") == "{not json"

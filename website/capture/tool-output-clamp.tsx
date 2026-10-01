@@ -3,7 +3,7 @@
  *
  * The live tool log clamps each result to head + tail with both cuts snapped
  * to a line break and records the seam as `output_cut` (`clampToolOutput` in
- * store/chatSlice.ts); the details panel renders the localized
+ * wire.ts under store/chat); the details panel renders the localized
  * `…(N characters truncated — …)` marker at that seam. This entry does NOT
  * preload a clamped string: it seeds
  * the row with `output: null` and then dispatches the real `sseToolResult`

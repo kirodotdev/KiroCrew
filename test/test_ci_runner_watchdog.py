@@ -673,6 +673,9 @@ def test_a_same_queue_prompt_start_does_not_lift_the_partial_evidence_hold(
     """
     monkeypatch.setattr(wd, "LIVE_CLASSIFY_READS", 2)
     monkeypatch.setattr(wd, "LIVE_EVIDENCE_RESERVE", 1)
+    # The unread run is affordable to read, and a tick with an orphan reads it
+    # (`top_up_unread_evidence`); this pins the hold itself, so the top-up is priced out.
+    monkeypatch.setattr(wd, "LIVE_EVIDENCE_TOPUP_READS", 0)
     older = _run(500, minutes_ago=30, status="queued", branch="older")
 
     same_queue = _job(
@@ -4192,6 +4195,9 @@ def test_the_summary_reports_a_partial_evidence_hold(monkeypatch: pytest.MonkeyP
     """
     monkeypatch.setattr(wd, "LIVE_CLASSIFY_READS", 2)
     monkeypatch.setattr(wd, "LIVE_EVIDENCE_RESERVE", 1)
+    # The unread run is affordable to read, and a tick with an orphan reads it
+    # (`top_up_unread_evidence`); this pins the hold itself, so the top-up is priced out.
+    monkeypatch.setattr(wd, "LIVE_EVIDENCE_TOPUP_READS", 0)
     # On another fleet (`instance-size:large`): this test pins the label-blind path, and
     # a prompt start on the orphan's OWN queue would take the saturation question
     # (though not this hold) down the own-queue path instead.
@@ -5417,6 +5423,9 @@ def test_the_partial_hold_turns_on_unread_saturation_capable_runs_not_on_the_bou
     )
     monkeypatch.setattr(wd, "LIVE_CLASSIFY_READS", 2)
     monkeypatch.setattr(wd, "LIVE_EVIDENCE_RESERVE", 1)
+    # The unread run is affordable to read, and a tick with an orphan reads it
+    # (`top_up_unread_evidence`); this pins the hold itself, so the top-up is priced out.
+    monkeypatch.setattr(wd, "LIVE_EVIDENCE_TOPUP_READS", 0)
 
     # Unread: two runs of 3 and 2 minutes. Neither can hold a 15-minute wait.
     young = [_run(400 + i, minutes_ago=3 - i, status="queued", branch=f"y{i}") for i in range(2)]
@@ -5438,6 +5447,193 @@ def test_the_partial_hold_turns_on_unread_saturation_capable_runs_not_on_the_bou
     assert _verdict_of(held_verdicts, 1).verdict == wd.SKIPPED_PARTIAL_EVIDENCE
     assert held_outcomes == {}
     assert held.posts == []
+
+
+def test_a_tick_with_an_orphan_reads_the_unread_capable_runs_and_heals(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The partial-evidence hold is a read that was not spent, and an orphan is what
+    makes spending it worth the quota.
+
+    Same listing as the partial-hold pin: a 30-minute unread run holds the heal
+    because it could carry a slow start. With the top-up affordable, the sweep reads
+    that run's jobs, finds no slow start, and heals -- its jobs listing is among the
+    reads, and the orphan is cancelled and re-run.
+
+    Negative control: the top-up priced out (bound 0) leaves the same run unread and
+    the same tick held, so the heal is the top-up's and not the listing's.
+    """
+    monkeypatch.setattr(wd, "LIVE_CLASSIFY_READS", 2)
+    monkeypatch.setattr(wd, "LIVE_EVIDENCE_RESERVE", 1)
+    prompt = _job(
+        21,
+        status="in_progress",
+        minutes_ago=20,
+        started_minutes_ago=19,
+        runner_name="r",
+        run_id=2,
+        large=True,
+    )
+
+    def listing() -> FakeApi:
+        return FakeApi(
+            {
+                "in_progress": [
+                    _run(1),
+                    _run(500, minutes_ago=30, status="queued", branch="older"),
+                    _run(2, minutes_ago=20, branch="other"),
+                ]
+            },
+            {1: [_job(11)], 2: [prompt], 500: []},
+        )
+
+    api = listing()
+    verdicts, outcomes = _sweep(api)
+    assert _verdict_of(verdicts, 1).verdict == wd.ORPHANED
+    assert outcomes == {1: wd.OUTCOME_HEALED}
+    job_reads = [path for path in api.gets if "/jobs?" in path]
+    assert any("/runs/500/jobs?" in path for path in job_reads), job_reads
+
+    monkeypatch.setattr(wd, "LIVE_EVIDENCE_TOPUP_READS", 0)
+    priced_out = listing()
+    held_verdicts, held_outcomes = _sweep(priced_out)
+    assert _verdict_of(held_verdicts, 1).verdict == wd.SKIPPED_PARTIAL_EVIDENCE
+    assert held_outcomes == {} and priced_out.posts == []
+    assert not any("/runs/500/jobs?" in path for path in priced_out.gets)
+
+
+def test_a_slow_start_found_by_the_top_up_is_saturation_not_a_heal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The top-up exists to find the slow start the hold feared; when it is there, the
+    verdict is the saturation the hold stood in for, and nothing is cancelled.
+
+    The unread 30-minute run holds a CodeBuild job that waited 12 minutes for a
+    runner -- past the 5-minute line -- and started after the orphan queued. Reading
+    it turns the hold into SKIPPED_SATURATED, the verdict a fully read sweep gives,
+    and the orphan is left alone.
+    """
+    monkeypatch.setattr(wd, "LIVE_CLASSIFY_READS", 2)
+    monkeypatch.setattr(wd, "LIVE_EVIDENCE_RESERVE", 1)
+    prompt = _job(
+        21,
+        status="in_progress",
+        minutes_ago=20,
+        started_minutes_ago=19,
+        runner_name="r",
+        run_id=2,
+        large=True,
+    )
+    slow = _job(
+        51,
+        status="in_progress",
+        minutes_ago=30,
+        started_minutes_ago=18,
+        runner_name="r",
+        run_id=500,
+        large=True,
+    )
+    api = FakeApi(
+        {
+            "in_progress": [
+                _run(1),
+                _run(500, minutes_ago=30, status="queued", branch="older"),
+                _run(2, minutes_ago=20, branch="other"),
+            ]
+        },
+        {1: [_job(11)], 2: [prompt], 500: [slow]},
+    )
+    verdicts, outcomes = _sweep(api)
+    assert _verdict_of(verdicts, 1).verdict == wd.SKIPPED_SATURATED
+    assert outcomes == {} and api.posts == []
+
+
+def test_a_tick_without_an_orphan_does_not_spend_the_top_up(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The top-up is priced against the heal it buys; a tick with nothing to heal buys
+    nothing and reads nothing past the per-tick bound.
+
+    Every run here is healthy or too young to be an orphan. The 40-minute run takes
+    the classify slot and the 20-minute run the reserve, so the 30-minute run is
+    unread and capable; it would be read on a tick with an orphan. On this one its
+    jobs are never listed, and the job reads stay within LIVE_CLASSIFY_READS.
+    """
+    monkeypatch.setattr(wd, "LIVE_CLASSIFY_READS", 2)
+    monkeypatch.setattr(wd, "LIVE_EVIDENCE_RESERVE", 1)
+    served = _job(
+        21,
+        status="in_progress",
+        minutes_ago=20,
+        started_minutes_ago=19,
+        runner_name="r",
+        run_id=2,
+    )
+    served_older = _job(
+        41,
+        status="in_progress",
+        minutes_ago=40,
+        started_minutes_ago=39,
+        runner_name="r",
+        run_id=4,
+    )
+    api = FakeApi(
+        {
+            "in_progress": [
+                _run(4, minutes_ago=40, branch="oldest"),
+                _run(3, minutes_ago=2),
+                _run(500, minutes_ago=30, status="queued", branch="older"),
+                _run(2, minutes_ago=20, branch="other"),
+            ]
+        },
+        {4: [served_older], 3: [_job(31, minutes_ago=2)], 2: [served], 500: []},
+    )
+    verdicts, outcomes = _sweep(api)
+    assert not any(v.verdict == wd.ORPHANED for v in verdicts)
+    assert outcomes == {}
+    job_reads = [path for path in api.gets if "/jobs?" in path]
+    assert not any("/runs/500/jobs?" in path for path in job_reads), job_reads
+    assert len(job_reads) <= wd.LIVE_CLASSIFY_READS
+
+
+def test_a_capable_set_past_the_top_up_bound_is_not_read_at_all() -> None:
+    """All or nothing: a partial read cannot lift the hold, so it is not spent.
+
+    Three capable unread runs against a top-up bound of 2. Reading two of them leaves
+    one unread, which holds the heal exactly as three did, so the top-up reads none,
+    reports the set, and every candidate stays retained for the hold to count.
+    """
+    policy = _policy()
+    now = policy.now
+    evidence = wd.DispatchEvidence(
+        unread_candidates={900 + i: now - timedelta(minutes=30 + i) for i in range(3)}
+    )
+    reads: list[int] = []
+
+    def read_jobs(run_id: int) -> list[dict[str, Any]]:
+        reads.append(run_id)
+        return []
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(wd, "LIVE_EVIDENCE_TOPUP_READS", 2)
+        read, unread = wd.top_up_unread_evidence(
+            None, policy, evidence, lambda _line: None, read_jobs=read_jobs  # type: ignore[arg-type]
+        )
+    assert (read, unread) == (0, 3)
+    assert reads == []
+    assert evidence.unread_saturation_capable(policy) == 3
+
+    # Within the bound: every capable run is read, oldest first, and leaves the set; a
+    # run under the age line is neither read nor removed.
+    evidence.unread_candidates[950] = now - timedelta(minutes=1)
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(wd, "LIVE_EVIDENCE_TOPUP_READS", 3)
+        read, unread = wd.top_up_unread_evidence(
+            None, policy, evidence, lambda _line: None, read_jobs=read_jobs  # type: ignore[arg-type]
+        )
+    assert (read, unread) == (3, 0)
+    assert reads == [902, 901, 900]
+    assert set(evidence.unread_candidates) == {950}
 
 
 def test_the_reserve_takes_the_age_band_not_this_minutes_pushes(

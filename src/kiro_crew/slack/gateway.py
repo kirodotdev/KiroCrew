@@ -144,6 +144,7 @@ from kiro_crew.dashboard.handlers.autonudge import (
     compose_nudge_body,
     render_nudge_message,
 )
+from kiro_crew.dashboard.handlers.updates import _update_info
 from kiro_crew.dashboard.handlers.updates import remediation_command as _remediation_command
 from kiro_crew.dashboard.handlers.usage import (
     persist_token_record_async,
@@ -214,6 +215,8 @@ from kiro_crew.llm_helpers import (
     configured_fallback_chain,
     provider_fallback_active,
     provider_last_turn_usage,
+    provider_model_pin_partial,
+    provider_model_pin_refused,
     save_conversation_turn_off_loop,
     stream_and_collect,
     transient_retry_delay,
@@ -282,6 +285,7 @@ from kiro_crew.monitoring.models import (
     MonitorOutcome,
     monitor_state_public_dict,
 )
+from kiro_crew.notifications.bus import MONITOR_CHANNEL
 from kiro_crew.platform import boot_platform
 from kiro_crew.platform.context import (
     PlatformCompositionError,
@@ -300,6 +304,7 @@ from kiro_crew.platform.update_capability import (
     CHECK_SUCCEEDED,
     CHECK_UNCHECKED,
     EXTERNALLY_MANAGED_STAMPS,
+    MANAGED_BY_COMMAND,
 )
 from kiro_crew.platform.update_governance import (
     commits_ahead,
@@ -1215,7 +1220,7 @@ async def _await_cron_fire_time_gate(
         reason = await run_in_cron_gate_pool(vet_job_at_fire_time, job, timeout=budget)
     except CronQueueTimeout as exc:
         # Scoped exactly as _run_job_isolated's own result-less clear
-        # (cron.py:2852). For an agent/message job ``last_result`` is the
+        # (close_run, cron_service/execution.py). For an agent/message job ``last_result`` is the
         # cross-run dedup context build_cron_session_context prepends as "do
         # NOT repeat", and a run starved here produced no result to replace it
         # -- clearing it would make the NEXT run repeat content it had already
@@ -1520,7 +1525,9 @@ def _vet_at_claim_then(
     occupying a cron worker for the queue's duration, and it leaves the gate's
     starvation/retention plumbing (``gate_starved`` ->
     ``run_never_started``) untouched.  The cost is one extra governance
-    evaluation, and for scripts one extra capped body read, per EXECUTED run.
+    evaluation per EXECUTED run, plus for a command one extra composition scan of
+    its body (length-capped by ``mcp_cron._CRON_MAX_COMMAND_SCAN``) and for a
+    script one extra capped body read.
     That work runs inside a worker this job already holds, so unlike gating on
     this pool it puts no policy check behind other jobs' queue -- the property
     the governance-pool split at the call sites protects.  It does count against
@@ -3985,7 +3992,17 @@ class GatewayOrchestrator:
             # sub-agent's diff or log dump is exactly that shape. The shared
             # splitter seals each chunk with a synthetic closer and reopens the
             # next with the original opener line.
-            parts = chunk_for_transport(safe_text, transport.capabilities)
+            # ``redactor=redact_via_context``: the seam check must grade with the
+            # SAME context-aware pair the display pass above uses, not the shared
+            # sink's default -- a companion-contributed credential split across a
+            # transport seam is invisible to the narrower default pair and would
+            # ship whole across two adjacent messages.
+            parts = await asyncio.to_thread(
+                chunk_for_transport,
+                safe_text,
+                transport.capabilities,
+                redactor=redact_via_context,
+            )
             for part in parts:
                 # Stop on the first UNCONFIRMED part rather than pressing on: the
                 # remaining chunks of a message whose head never landed would arrive
@@ -4510,6 +4527,79 @@ class GatewayOrchestrator:
 
             # Snapshot the job before yielding; reloading a cron cannot rebind it.
             cron_agents = list(job.agent_sequence)
+            # ── Default-agent fallback (LLM jobs) ──
+            # A job with no explicit agent_id must run the configured default
+            # agent (config.agent.default_agent), matching the chat transports'
+            # fallback (transport_dispatch: `self.agent or cfg.agent.default_agent`).
+            # Without it the empty selector reaches dispatch as AcpClient's
+            # "kirocrew" floor -- an agent whose config carries none of the
+            # default agent's MCP servers, so agent-less cron sessions silently
+            # run without the expected toolset.
+            #
+            # Resolved ABOVE the branch and applied BELOW it, to the dispatched
+            # agent only -- never to the captured execution identity -- and only
+            # where the resolved agent is still the bare "kirocrew" floor. All
+            # three halves are load-bearing:
+            #   * Above the branch, because every record created since the
+            #     execution-context migration carries `execution_context` and so
+            #     takes the other arm. Resolving inside `else:` reaches only
+            #     pre-migration jobs and leaves the reported symptom in place for
+            #     everything created since.
+            #   * Not into the capture, because `cron_execution` is what
+            #     `bind_session_execution` publishes under the session key, and a
+            #     persistent_session job (the default) reuses the stable key
+            #     `cron:{job.id}` on every fire. That binder is called
+            #     positionally, so `replace_existing` is False, and it refuses a
+            #     candidate that differs from what is already recorded. A job that
+            #     has already run holds `template_id="kirocrew"`; folding the
+            #     default into the captured identity changes that field, so every
+            #     later fire raises "session already belongs to another execution"
+            #     before get_or_create -- not transient, caught nowhere in this
+            #     callback, one recorded failure per fire until the job
+            #     auto-pauses. Leaving the captured identity alone is also what
+            #     keeps the resolved name out of the durable store.
+            #   * Floor-gated, because a captured `template_id` that names a real
+            #     template is a deliberate selection and must survive; see the
+            #     gate below.
+            # job.agent_id is never mutated: the snapshot is deliberately immune
+            # to later mutation ("captured selectors, never the scheduler's
+            # mutable job"), and a declared agent_sequence owns its own dispatch
+            # and is left untouched. agent_sequence_dispatches is the ONE spelling
+            # of "the sequence owns dispatch": a lone entry is dormant and
+            # dispatch falls through to agent_id, which must still get the default.
+            # Typed deliberately: a malformed or non-str configured default must
+            # not reach the dispatched agent kwarg, so it degrades to the existing
+            # "kirocrew" floor instead of failing the dispatch.
+            _default_agent = ""
+            # True once the dispatched agent came from ``agent.default_agent``.
+            # That field is the TEMPLATE namespace (config/sections.py, free-form
+            # str, no alias validation) -- unlike the alias-namespaced default,
+            # which has its own `default_agent_not_alias` guard. The collapse in
+            # _resolve_cron_agent treats ANY name that keys ``cfg.agents`` as a
+            # crew alias, so without this flag a default that merely shares a
+            # name with a crew member would hand an agent-less cron that crew's
+            # workspace and capability MCP servers -- a silent capability and
+            # identity widening, announced at DEBUG only.
+            _default_substituted = False
+            _agentless_job = not (job.agent_id or "").strip() and not agent_sequence_dispatches(
+                job.agent_sequence
+            )
+            if _agentless_job:
+                try:
+                    # Prefer the last APPLIED reload over the boot snapshot.
+                    # agent.default_agent carries no restart=True mark, so the
+                    # config watcher adopts a dashboard/CLI change live, while
+                    # self._cfg is rebuilt only by unrelated MCP handlers. A
+                    # boot-only read would keep dispatching the "kirocrew" floor
+                    # after an operator sets a default -- the exact symptom this
+                    # hunk removes -- until a gateway restart or an incidental
+                    # reload. Same one-liner the sibling resolver below uses.
+                    _cfg_now = live.snapshot() or self._cfg
+                    _configured = _cfg_now.agent.default_agent
+                    if isinstance(_configured, str):
+                        _default_agent = _configured.strip()
+                except Exception:
+                    _default_agent = ""
             if job.execution_context is not None:
                 cron_execution = execution_from_record({"execution_context": job.execution_context})
             else:
@@ -4536,9 +4626,141 @@ class GatewayOrchestrator:
                 cron_execution.store.legacy_name,
                 cron_execution.template_id,
             )
+            # The configured default lands HERE and nowhere else: cron_agent is
+            # read only by _resolve_cron_agent and the `agent=` kwargs below, none
+            # of which any durable record compares.
+            #
+            # Gated on the resolved agent still being the bare "kirocrew" floor,
+            # which is the whole of what this change replaces. A record whose
+            # captured template_id names a REAL template keeps it: a schedule
+            # created from a template chat with no `agent` argument names its
+            # template ONLY there, `agent_id` staying empty: bind_cron_memory
+            # (cron_service/identity.py:143-152) captures the CREATOR session's
+            # execution, and overwrites template_id only `if job.agent_id`. So
+            # an agent_id-only gate reads that job as agent-less. Overriding it
+            # would re-point the job onto the default on every fire while its
+            # captured execution and memory store stayed the original template's,
+            # and dispatched_agents_from_disk -- the delete guard's ONE walk of
+            # the dispatch-mirroring rule -- still reported the old agent: guard
+            # and dispatch would drift, which is the same silent wrong-agent class
+            # this change removes, reintroduced on the other arm. Compared after
+            # .strip() so a whitespace-only capture counts as the floor, which is
+            # where whitespace agent_id handling lives now that the capture itself
+            # is left byte-for-byte alone.
+            # Also gated on the capture carrying no member_id. A cron created
+            # from a crew member's chat is captured by resolve_member_execution
+            # as a MEMBER execution whose template_id is
+            # `agent.kiro_agent or "kirocrew"` -- so a member whose agent names
+            # no kiro_agent captures the floor spelling with agent_id empty, and
+            # a floor-only gate reads it as "selected nothing". Substituting
+            # there makes build_message inject the substituted template's system
+            # prompt and documents into that member's envelope while
+            # _resolve_cron_agent still dispatches the member's own kiro_agent,
+            # and attributes the usage row to the substituted name. Requiring
+            # member_id to be unset narrows the override to a capture that
+            # really did select nothing.
+            #
+            # member_id ALONE does not narrow it far enough. A member predating
+            # the identity migration persists no member_id at all, and
+            # `with_template` states the rule that admits it: such a record "is
+            # named by ``selection_kind == \"member\"`` and ``selection_name``
+            # alone" (execution_context.py). ExecutionContext.__post_init__
+            # constrains selection_kind to exactly "member" or "template", so
+            # the namespace is the authoritative answer to "did this capture
+            # select a member?" and member_id is only its persisted form.
+            # Requiring BOTH keeps a legacy member on an unmigrated store out of
+            # the override, which a member_id-only gate admitted.
+            #
+            # And BOTH capture gates together are still not enough, because on
+            # the `job.execution_context is None` arm cron_execution is
+            # RECONSTRUCTED, not loaded: resolve_legacy_execution calls
+            # execution_for_store, which for a V1 store returns
+            # `ExecutionContext(None, MemoryStoreRef(name), "template", ...)` --
+            # hardcoding a null member_id and the "template" namespace whatever
+            # the schedule actually selected. A member cron predating the
+            # migration therefore passes both capture gates while job.member_id
+            # still names the member, and resolve_cron_memory deliberately keeps
+            # that record dispatching rather than raising
+            # (cron_service/identity.py: "Older V1 schedules may still carry the
+            # historical member selector beside their explicit legacy store"),
+            # with nothing backfilling execution_context on load. So the JOB is
+            # asked as well: on that arm it is the only surviving evidence of the
+            # selection. A truthy non-str also declines, which is the safe
+            # direction -- declining leaves the pre-change floor behaviour.
+            if (
+                _default_agent
+                and (cron_agent or "").strip() in ("", "kirocrew")
+                and not job.member_id
+                and not cron_execution.member_id
+                and cron_execution.selection_kind != "member"
+            ):
+                # ── Spawn-allowlist divergence gate ──
+                # The substitution reaches the dispatched `agent=` only, while
+                # bind_session_execution publishes the UNSUBSTITUTED capture
+                # under `cron:{job.id}` -- which it must, for the auto-pause
+                # reason above. Both spawn entry points derive the parent's
+                # declaration from that record alone: read_session_execution(
+                # parent) -> parent_spawn_allowlists(execution.template_id), in
+                # dashboard/handlers/messaging.py and the off-loop twin in
+                # subagent.py. The floor spelling resolves to `()`, which
+                # _vet_parent_available_agents admits as "no declaration to
+                # honour" -- so a toolsSettings.subagent.availableAgents list on
+                # the substituted template is never consulted and a child it
+                # forbids starts.
+                #
+                # Honouring it properly means a NON-DURABLE parent execution the
+                # spawn gate reads, in two files this change does not touch and
+                # whose reviewers are scoped to spawn admission, not cron. So
+                # this change narrows itself instead: a default that declares an
+                # allowlist is not substituted, and the job keeps the floor it
+                # already had before this change. Nothing an operator has today
+                # regresses; the capability simply waits for that CR.
+                #
+                # DENY BY DEFAULT. A non-empty tuple declines, and so does the
+                # reader's `None`. Only `()` -- "no readable spec declares this
+                # name, and every spec file parsed" -- permits the substitution.
+                #
+                # An earlier revision substituted on `None`, arguing the spawn
+                # gate would refuse anyway because it asks about the CAPTURE's
+                # floor spelling. That premise is false: `agent.py` generates and
+                # installs `kirocrew.json` into the agents directory and
+                # `config/defaults.json` declares `"name": "kirocrew"`, so a
+                # readable spec DOES declare the floor name -- and
+                # `parent_spawn_allowlists` answers `None` only when NO readable
+                # spec declares the name while some file could not be read. For
+                # the floor it therefore returns `()`, "no declaration to
+                # honour", and the gate ADMITS. `None` is exactly the state where
+                # a restrictive declaration may be sitting in the spec file the
+                # hardened reader refused, in a shared user-writable directory,
+                # so letting a falsy value skip the check is the deny-by-default
+                # violation this clause exists to avoid.
+                from kiro_crew.subagent import parent_spawn_allowlists as _spawn_allowlists
+
+                _declared = await asyncio.to_thread(_spawn_allowlists, _default_agent)
+                if _declared or _declared is None:
+                    logger.warning(
+                        "Cron '%s': default agent %r %s, and the captured "
+                        "execution's floor template cannot carry that declaration to "
+                        "the spawn gate; keeping the floor for this fire rather than "
+                        "dispatching a restricted agent whose allowlist would not be "
+                        "honoured",
+                        job.name,
+                        _default_agent,
+                        (
+                            "declares toolsSettings.subagent.availableAgents"
+                            if _declared
+                            else "has an unreadable agent spec, so its "
+                            "toolsSettings.subagent.availableAgents is unknown"
+                        ),
+                    )
+                else:
+                    cron_agent = _default_agent
+                    _default_substituted = True
 
             def _resolve_cron_agent(
                 alias: str | None,
+                *,
+                template_namespace: bool = False,
             ) -> "tuple[str | None, str | None, str | None]":
                 """Resolve a cron agent alias to (kiro_agent, cwd, crew_alias).
 
@@ -4568,6 +4790,31 @@ class GatewayOrchestrator:
                 """
                 if not alias:
                     return None, None, None
+                # A template-namespace name is NOT a crew alias, even when it
+                # happens to key ``cfg.agents``. ``agent.default_agent`` is a
+                # free-form str in the template namespace with no alias
+                # validation (config/sections.py), so an operator naming a crew
+                # member there is ordinary input -- and the collapse below keys
+                # only on membership in ``cfg.agents``, then returns the alias as
+                # ``crew_agent``, which ``resolve_crew_identity`` honours
+                # verbatim. That would give an agent-less cron the named crew's
+                # workspace, pinned model and capability MCP servers, silently
+                # apart from a DEBUG line. Return the EXPLICIT no-crew spelling
+                # rather than the miss tuple the other early returns use: `""`
+                # is what `resolve_crew_identity` documents as opting out of the
+                # fallback ("an explicit crew_agent wins verbatim -- including
+                # \"\""), while `None` is the fallback-ENABLED spelling, so a
+                # `None` here would still let `if agent and agent in
+                # config.agents` reselect the colliding crew (loader.py) and the
+                # bypass would be a no-op. `kiro_agent`/`cwd` stay None so the
+                # name dispatches as the TEMPLATE it was configured as, in the
+                # default workspace.
+                # Consequence to expect, and the intended one: a default that is
+                # really only a crew alias now fails closed and loudly with
+                # "Agent mode '<name>' is not available", instead of quietly
+                # inheriting that crew's identity.
+                if template_namespace:
+                    return None, None, ""
                 try:
                     from kiro_crew.config.loader import (
                         resolve_agent_bindings,
@@ -5591,7 +5838,15 @@ class GatewayOrchestrator:
                         extra_env=_cron_extra_env(),
                         cwd=cwd,
                     )
-                    return client, is_new, resumed, False
+                    # A config-option backend refuses a pin without raising and
+                    # stays on its default: the same downgrade as the except
+                    # below, so report it the same way.
+                    return (
+                        client,
+                        is_new,
+                        resumed,
+                        bool(job.model) and provider_model_pin_refused(client),
+                    )
                 except Exception as model_exc:
                     if not job.model:
                         raise
@@ -5750,10 +6005,16 @@ class GatewayOrchestrator:
                                 # requested id would attribute spend to a model
                                 # that never executed. Blank defers to
                                 # model_source, which reports what actually ran.
+                                # A half-applied pair pin bills the bare
+                                # model that ran, not the suffixed pin.
                                 (
                                     ""
                                     if (_seq_downgraded or provider_fallback_active(client))
-                                    else (job.model or "")
+                                    else (
+                                        (job.model and provider_model_pin_partial(client))
+                                        or job.model
+                                        or ""
+                                    )
                                 ),
                                 _turn_usage,
                                 provider=(
@@ -5855,9 +6116,99 @@ class GatewayOrchestrator:
                 # Collapse an alias (channel-bound agent) to its real kiro mode
                 # + workspace before dispatch; falls back to the raw value when
                 # it is already a real mode or unset.
-                _single_kagent, _single_cwd, _single_crew = _resolve_cron_agent(cron_agent or None)
+                _single_kagent, _single_cwd, _single_crew = _resolve_cron_agent(
+                    cron_agent or None, template_namespace=_default_substituted
+                )
+                _dispatch_agent = _single_kagent or cron_agent or None
+                # ── Retained-session agent guard (substituted default only) ──
+                # The cron key is the stable f"cron:{job.id}", and the run's
+                # `finally` DEFERS the reset while sub-agents are pending or an
+                # injection is in flight, so a session can outlive its fire. The
+                # claim path then returns that live `session.provider` by key
+                # WITHOUT comparing the `agent` kwarg (session_allocation.py's
+                # `existing is not None and not recycling` arm), so a default
+                # narrowed between fires would build the NEW agent's context and
+                # run it on the OLD agent's process -- keeping MCP servers, a
+                # workspace and a pinned model the operator has just taken away.
+                #
+                # This window is opened by THIS change and by nothing else:
+                # before it an agent-less cron dispatched the constant
+                # "kirocrew" floor on every fire, so no two fires could differ.
+                # Hence the gate on `_agentless_job` -- the predicate that
+                # defines the window -- and NOT on `_default_substituted`, which
+                # failed open in exactly the case this guard exists for: fire N
+                # substitutes and defers its reset, the operator then CLEARS
+                # `agent.default_agent`, and fire N+1 resolves an empty default,
+                # so that flag is False, the guard is skipped, and the fire runs
+                # the FLOOR's context on the process still holding the previous
+                # default's runtime. Every other reason for declining the
+                # substitution below reaches the same hole. Keying on the
+                # mismatch itself costs nothing elsewhere: a job pinning its own
+                # agent_id dispatches one name forever, and a dispatching
+                # sequence runs on per-agent keys (f"cron:{job.id}:{agent}") that
+                # already separate the sessions -- both are excluded by this
+                # predicate, so no fire this change does not touch is deferred.
+                #
+                # DEFER, never reset: a retained session implies pending
+                # sub-agent work -- the no-pending case already reset in the
+                # prior fire's `finally` -- so resetting to get a correct agent
+                # would destroy work in flight, which is strictly worse than
+                # skipping one fire. The retention is temporary by construction
+                # (`_subagent_done` resets after the last one lands) and the
+                # reaper still targets this key if that reset hangs, so the
+                # deferral cannot become permanent. `_defer_cron_before_dispatch`
+                # is the established spelling: the run counts as neither success
+                # nor failure, so a skipped fire cannot walk a job toward
+                # auto-pause, and `run_never_started` keeps a delete_after_run
+                # job from being consumed by a fire that ran no line.
+                #
+                # The active-session-key registration above is deliberately
+                # LEFT in place: a session really is still live under this key,
+                # which is the same reason the deferred-reset arm leaves it.
+                #
+                # POSITIVE EVIDENCE ONLY. A non-empty `str` from the reader that
+                # differs from the name about to be dispatched is a mismatch; a
+                # manager without the reader, an unreadable answer, a non-`str`,
+                # or "" (no session under the key) all leave this dispatch
+                # exactly as it was. Fail-closed here means refusing the unsafe
+                # REUSE, not treating an unanswerable question as a mismatch --
+                # deferring on a silent reader would stall every agent-less cron
+                # on such a host forever, which is a much larger failure than
+                # the widening being closed. `session.agent` is stored as the
+                # `agent` kwarg verbatim (`agent=agent or ""`), so the two sides
+                # of this comparison are the same spelling by construction.
+                if _agentless_job:
+                    _live_agent = None
+                    try:
+                        _reader = getattr(self.sessions, "_get_session_agent", None)
+                        if callable(_reader):
+                            _live_agent = _reader(session_key)
+                    except Exception:
+                        logger.debug(
+                            "cron '%s': live session agent unreadable", job.name, exc_info=True
+                        )
+                        _live_agent = None
+                    if (
+                        isinstance(_live_agent, str)
+                        and _live_agent
+                        and _live_agent != (_dispatch_agent or "")
+                    ):
+                        logger.info(
+                            "Cron '%s': session retained under agent %r but this fire "
+                            "dispatches %r; deferring rather than reusing its runtime",
+                            job.name,
+                            _live_agent,
+                            _dispatch_agent or "",
+                        )
+                        _defer_cron_before_dispatch(
+                            job,
+                            f"session retained under agent {_live_agent!r} with work "
+                            f"pending; this fire dispatches "
+                            f"{_dispatch_agent or ''!r} and will not reuse it",
+                        )
+                        return None
                 client, is_new, _resumed, _model_downgraded = await _acquire_with_model_fallback(
-                    session_key, _single_kagent or cron_agent or None, _single_cwd, _single_crew
+                    session_key, _dispatch_agent, _single_cwd, _single_crew
                 )
                 _acquired = True
                 _run_provider = client
@@ -5955,11 +6306,16 @@ class GatewayOrchestrator:
                     await persist_token_record_async(
                         session_key,
                         # Blank on a downgrade or an active fallback — see the
-                        # sequential site above / provider_fallback_active.
+                        # sequential site above / provider_fallback_active. A
+                        # half-applied pair pin bills the bare model that ran.
                         (
                             ""
                             if (_model_downgraded or provider_fallback_active(client))
-                            else (job.model or "")
+                            else (
+                                (job.model and provider_model_pin_partial(client))
+                                or job.model
+                                or ""
+                            )
                         ),
                         _turn_usage,
                         provider=_provider,
@@ -8727,7 +9083,9 @@ class GatewayOrchestrator:
                 body = f"{body}\n\n{monitor.target}"
                 body, _ = redact_exfiltration_urls(body)
                 body, _ = redact_credentials(body)
-                self.dashboard_state.notify("agent", title, body, meta=meta)
+                self.dashboard_state.notify(
+                    "agent", title, body, meta=meta, channel=MONITOR_CHANNEL
+                )
                 return True
             capped_out = loop.max_cycles and loop.cycle_count >= loop.max_cycles
             # Every branch below except the terminal one explains why the loop stopped
@@ -8812,7 +9170,7 @@ class GatewayOrchestrator:
                     "goal may still be unmet. Reopen the goal popover to raise "
                     "the cap or restart it."
                 )
-            self.dashboard_state.notify("agent", title, body, meta=meta)
+            self.dashboard_state.notify("agent", title, body, meta=meta, channel=MONITOR_CHANNEL)
             return True
         except Exception:
             logger.debug("AutoNudge expiry notification failed", exc_info=True)
@@ -9510,89 +9868,10 @@ class GatewayOrchestrator:
                 status, emoji, single_outcome = "completed", "✅", OUTCOME_OK
             title = f"Subagent `{info.id}` {emoji}"
 
-            # ── Orchestration guard: track failures (only in orchestrator mode) ──
-            guard_msg = ""
-            try:
-                # Stage limits are a property of the selected tab the
-                # orchestrator runs in, not of its canonical parent name.
-                _is_orchestrator = (
-                    _injection_slot is not None
-                    and getattr(_injection_slot, "mode", "") == "orchestrator"
-                )
-                if _injection_slot is not None and _is_orchestrator:
-                    from kiro_crew.context_management import (
-                        MAX_STAGE_ESCALATIONS,
-                        MAX_STAGE_ROUNDS,
-                        OrchestrationTracker,
-                    )
-
-                    # Deliberately NOT latch-based (slot._plan_cancelled):
-                    # the latch outlives the cancelled plan into the NEXT
-                    # planning turn (it clears only when the new plan is
-                    # armed), so a latch-based drop here would silently
-                    # discard subagent completions belonging to that new
-                    # turn — data loss. tracker.stopped scopes the drop to
-                    # a live-but-stopped orchestration; a stale completion
-                    # landing on a cancelled slot whose tracker is absent
-                    # is bounded accounting noise (the stage loop itself
-                    # stays latched and cannot advance).
-                    if not getattr(_injection_slot, "_orch_tracker", None):
-                        _injection_slot._orch_tracker = OrchestrationTracker()
-                    tracker = _injection_slot._orch_tracker
-                    if tracker.stopped:
-                        logger.info("Orchestration stopped, ignoring subagent result %s", info.id)
-                        if not _boundary_completion_cancelled():
-                            return
-                    task_key = info.task[:80]
-                    if _flush_only:
-                        # No task ran — nothing to record. Recording it as a
-                        # success would credit a stage round to a timer.
-                        pass
-                    elif info.user_stopped:
-                        # User stop: neither success nor failure. Recording it
-                        # as success would let orchestration/synthesis advance
-                        # on work the user explicitly killed and permanently
-                        # skew success stats; recording it as failure would
-                        # trigger retry-guidance guards for a deliberate act.
-                        pass
-                    elif info.error:
-                        if tracker.record_failure(task_key):
-                            guard_msg = (
-                                f"\n\n⚠️ [SYSTEM] Task '{task_key}' has failed "
-                                f"{tracker.failure_count(task_key)} times. "
-                                "You MUST ask the user for guidance before retrying."
-                            )
-                    else:
-                        tracker.record_success(task_key)
-                    # Track spawn rounds — count each completed batch as a round
-                    pending = (
-                        self.subagent_mgr.running_agents_for(parent_key)
-                        if self.subagent_mgr
-                        else []
-                    )
-                    if not pending and not _flush_only:
-                        # All agents done → one round completed
-                        stage = tracker.current_stage
-                        if tracker.record_round(stage):
-                            if tracker.is_force_failed(stage):
-                                guard_msg += (
-                                    f"\n\n🛑 [SYSTEM] Stage {stage} has failed after "
-                                    f"{MAX_STAGE_ESCALATIONS} escalations ({tracker.round_count(stage)} rounds). "
-                                    "You MUST stop this stage and report the failure to the user. "
-                                    "Do NOT retry or spawn more agents."
-                                )
-                            else:
-                                guard_msg += (
-                                    f"\n\n⚠️ [SYSTEM] Stage {stage} has used "
-                                    f"{tracker.round_count(stage)}/{MAX_STAGE_ROUNDS} spawn rounds. "
-                                    "You MUST ask the user for guidance before spawning more."
-                                )
-            except Exception:
-                logger.warning("Orchestration guard failed for %s", info.id, exc_info=True)
             # Chat mode: inline info.result (subagent.py already trimmed it to
             # agent.completion_keep + completion_keep_chars) when it fits. When the
-            # completion copy dropped content (result_truncated) or in orchestrator
-            # mode, emit a summary + result_path pointer so the parent reads the full
+            # completion copy dropped content (result_truncated), emit a summary +
+            # result_path pointer so the parent reads the full
             # transcript on demand (read / grep / spawn_status) instead of re-running
             # the subagent.
             result_path = info.result_path or ""
@@ -9623,7 +9902,7 @@ class GatewayOrchestrator:
                         "\n\nPartial output (the run did NOT finish — do not treat "
                         f"this as a completed result):\n{info.result}"
                     )
-            elif result_path and (info.result_truncated or _is_orchestrator):
+            elif result_path and info.result_truncated:
                 detail = summarize_result(info.result, result_path)
             else:
                 detail = info.result or "_No response._"
@@ -9645,7 +9924,6 @@ class GatewayOrchestrator:
                 f"Task: {task_text}\n\n"
                 f"Usage: {usage}\n\n"
                 f"{detail}"
-                f"{guard_msg}"
             )
             # Structured header facts for the dashboard card, stamped on the row
             # so a reword of the prose above cannot silently break rendering.
@@ -9713,7 +9991,6 @@ class GatewayOrchestrator:
                             "stopped": 0,
                             "fail_lines": [],
                             "ok_lines": [],
-                            "guard_msgs": [],
                             "held_ok_deliveries": [],
                             # Members whose delivery is currently held, so the
                             # hold-deadline sweep's timestamps can be cleared
@@ -9728,13 +10005,6 @@ class GatewayOrchestrator:
                     )
             if _batch_id and not _flush_only:
                 bp["done"] += 1
-                # Fold EVERY member's orchestration escalation into the wave
-                # digest — held members return before the announce is sent, so
-                # without accumulation only the last member's guard_msg would
-                # survive and a mid-wave "you MUST ask the user" ceiling would
-                # be silently dropped.
-                if guard_msg:
-                    bp["guard_msgs"].append(guard_msg)
                 _oc = info.outcome
                 if _oc == "stopped":
                     bp["stopped"] += 1
@@ -9895,9 +10165,6 @@ class GatewayOrchestrator:
                     _digest_body = "\n".join(_failures + _oks)
                     if len(_digest_body) > 60_000:
                         _digest_body = _digest_body[:60_000] + "\n…(digest truncated)"
-                    # Deduped union of this chunk's members' escalation
-                    # guards — not just the flushing member's.
-                    _guards = "".join(dict.fromkeys(bp.get("guard_msgs", [])))
                     bp["chunks"] += 1
                     bp["flushed"] = bp["done"]
                     _chunk_k = bp["chunks"]
@@ -9965,7 +10232,7 @@ class GatewayOrchestrator:
                             f"{SUBAGENT_BATCH_COMPLETION_PREFIX}\n"
                             f"Batch results {_chunk_k}/{_chunk_j} — "
                             f"{_completion_line}"
-                            f"{_footer}\n\n{_digest_body}{_guards}"
+                            f"{_footer}\n\n{_digest_body}"
                         )
                         # This member's completion is delivered as the wave-close
                         # digest, not a per-agent row — stamp the digest's facts
@@ -10010,7 +10277,7 @@ class GatewayOrchestrator:
                             f"sub-agents yet — more result batches from this "
                             f"run are still arriving, and spawning now will "
                             f"interleave with them.\n"
-                            f"{_footer}\n\n{_digest_body}{_guards}"
+                            f"{_footer}\n\n{_digest_body}"
                         )
                         # Mid-wave chunk: progress facts (delivered/running), no
                         # tallies — mirrors the CHUNK regex the frontend demotes.
@@ -10026,7 +10293,6 @@ class GatewayOrchestrator:
                         # _batch_progress above — nothing to reset.)
                         bp["fail_lines"] = []
                         bp["ok_lines"] = []
-                        bp["guard_msgs"] = []
                         bp["held_ok_deliveries"] = []
 
             # ── Route completion back to the originating session ──
@@ -10056,17 +10322,16 @@ class GatewayOrchestrator:
                     # dedicated synthesis turn (see chat_runner drain/idle branch).
                     # Ordering guarantees running_agents_for == [] here on the last
                     # agent (info.done set + _running_count decremented first).
-                    if not _is_orchestrator:
-                        try:
-                            _still_running = (
-                                self.subagent_mgr.running_agents_for(parent_key)
-                                if self.subagent_mgr
-                                else None
-                            )
-                        except Exception:
-                            _still_running = None  # error → don't arm (fail safe)
-                        if _still_running == []:
-                            _injection_slot._pending_synthesis = True
+                    try:
+                        _still_running = (
+                            self.subagent_mgr.running_agents_for(parent_key)
+                            if self.subagent_mgr
+                            else None
+                        )
+                    except Exception:
+                        _still_running = None  # error → don't arm (fail safe)
+                    if _still_running == []:
+                        _injection_slot._pending_synthesis = True
 
                     # ── Skip injection for blocking-tool-collected results ──
                     # spawn_sub_agents (blocking MCP tool) already delivered
@@ -12329,6 +12594,9 @@ class GatewayOrchestrator:
         self.dashboard_state._mcp_gateway_apply = self._apply_mcp_gateway_enabled
         self.dashboard_state._mcp_gateway_apply_stub = self._apply_mcp_stub
         self.dashboard_state._mcp_resolve_refresh = self._refresh_mcp_resolutions
+        # Read by the dashboard restart handler, which execs without running
+        # ``_shutdown``: the broker this process owns must still die with it.
+        self.dashboard_state._mcp_gateway_stop = self._stop_mcp_broker
 
     # ------------------------------------------------------------------
     # Shutdown
@@ -12622,6 +12890,9 @@ class GatewayOrchestrator:
 
         assert isinstance(provider, UpdateProvider)
 
+        # Say who owns updates on every path, "already latest" included, so the
+        # dashboard need not run its own check to learn it.
+        _update_info["managed_by"] = MANAGED_BY_COMMAND
         result = await provider.check()
 
         # The mandatory floor is an enterprise ceiling and is evaluated FIRST,
@@ -12806,6 +13077,19 @@ class GatewayOrchestrator:
                 logger.warning("Update restart fence lost to real shutdown; deferring restart")
                 return
             await sessions.close_all()
+
+        # The broker this gateway spawned dies with it, the same as ``_shutdown``
+        # does on a clean exit; an adopted daemon belongs to its own owner and is
+        # left alone, as ``GatewayManager.shutdown`` already does. The exec below
+        # skips that shutdown, and the successor can only replace a survivor whose
+        # owner pid is its own (an exec that kept the pid) or gone. Through a
+        # launcher that runs the new gateway as a child, this pid lives on as its
+        # supervisor: the daemon's owner-liveness check keeps passing, and the
+        # successor refuses a broker "owned by another live gateway" for its whole
+        # lifetime. Sessions are closed, so nothing is mid-call. The stop never
+        # raises and is bounded: the daemon's own drain budget on SIGTERM, then a
+        # SIGKILL and a reap of its pooled backends if the drain does not finish.
+        await self._stop_mcp_broker()
 
         # Any callback that ran while close_all awaited used the synchronous
         # fenced refusal path. Drain pre-fence workers and registered handlers

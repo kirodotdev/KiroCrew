@@ -214,6 +214,9 @@ function stubGateway(
   // and never holds the credential. Stubbed in every case so no test reaches the
   // network for a field most of them do not open.
   vi.spyOn(api, 'secretsList').mockResolvedValue({ names: [] } as never)
+  // The provider picker's own read answers "no such route" unless a case stubs a
+  // provider, so the cases below see the card as an older gateway draws it.
+  vi.spyOn(api, 'getDecisionsProvider').mockRejectedValue(Object.assign(new Error('not found'), { status: 404 }))
   if (consent instanceof Error) {
     vi.spyOn(api, 'getDecisionsConsent').mockRejectedValue(consent)
   } else {
@@ -404,6 +407,46 @@ describe('Decisions (Jev) preview card', () => {
       expect(screen.getByText(/sent over the internet to Jev/i)).toBeInTheDocument()
     })
     expect(screen.getByText(/falls back to the same rule/i)).toBeInTheDocument()
+  })
+
+  it('says the text stays on this machine while a local preset answers', async () => {
+    // Any address on this machine -- a preset or a hand-written loopback address --
+    // makes "over the internet" false. Only a remote address keeps that sentence.
+    stubGateway({ enabled: true })
+    const preset = {
+      id: 'laya', name: 'Laya', model: 'english', default_port: 8104, jev_relative_pct: 67,
+      hard_relative_pct: 47, peak_ram_gb: 6, recommended_total_ram_gb: 12, p50_secs: 0.17,
+      p95_secs: 0.51, timeout_ms: 2000, setup_doc: 'https://example.invalid/doc', serve_command: 'laya-serve',
+    }
+    const provider = (active: string, loopback = true) => ({
+      presets: [preset], active, loopback,
+      configured_endpoint: loopback ? 'http://127.0.0.1:8104/v1/systemone' : 'https://proxy.example/v1/systemone',
+    })
+    vi.spyOn(api, 'system').mockResolvedValue({ mem_total_gb: 16 } as never)
+    const read = vi.spyOn(api, 'getDecisionsProvider').mockResolvedValue(provider('laya'))
+    renderSection()
+    await waitFor(() => {
+      expect(screen.getByText(/sent to the model server at the address below, on this machine/i)).toBeInTheDocument()
+    })
+    expect(screen.queryByText(/sent over the internet to Jev/i)).toBeNull()
+    expect(screen.queryByText(/no Jev API key is sent to it/i)).toBeNull()
+
+    cleanup()
+    read.mockResolvedValue(provider('custom'))
+    renderSection()
+    await waitFor(() => {
+      expect(screen.getByText(/sent to the model server at the address below, on this machine/i)).toBeInTheDocument()
+    })
+    expect(screen.queryByText(/sent over the internet to Jev/i)).toBeNull()
+    // A hand-written loopback address gets no key; the card says so, not only the log.
+    expect(screen.getByText(/no Jev API key is sent to it/i)).toBeInTheDocument()
+
+    cleanup()
+    read.mockResolvedValue(provider('custom', false))
+    renderSection()
+    await waitFor(() => {
+      expect(screen.getByText(/sent over the internet to Jev/i)).toBeInTheDocument()
+    })
   })
 
   it('lists one row per point the GATEWAY projects, never a list of its own', async () => {

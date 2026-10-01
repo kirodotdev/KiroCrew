@@ -74,7 +74,7 @@ from kiro_crew.dashboard.state import (
     note_crew_log_class,
     row_mid,
 )
-from kiro_crew.history import carry_provenance, is_incognito_transcript
+from kiro_crew.history import HUMAN_TURN_META_KEY, carry_provenance, is_incognito_transcript
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.messaging.link import channel_namespace_of, is_channel_session_key
 from kiro_crew.messaging.upload_gate import live_dashboard_slot
@@ -186,6 +186,9 @@ def project_channel_turn_live(
                     user_text,
                     "msg msg-u",
                     broadcast_user=broadcast_user,
+                    # A PERSON sent this into the channel. See
+                    # history.HUMAN_TURN_META_KEY for why the marker is explicit.
+                    meta={HUMAN_TURN_META_KEY: True},
                 )
             )
             or ""
@@ -610,6 +613,15 @@ def surface_channel_session(
         slot.autocompact_pct = _validate_autocompact_pct(meta["autocompact_pct"])
         if slot.autocompact_pct is not None and state.sessions:
             state.sessions.set_autocompact_pct(effective_session_key(slot), slot.autocompact_pct)
+    # Restore the dismissed source-link tombstones, mirroring the persistence
+    # loaders: this surfacing path applies metadata by hand rather than going
+    # through _rehydrate_slot_from_history, so without it an unlinked chip
+    # reappears when the channel session is re-surfaced and the next save erases
+    # the persisted tombstone. Local import for the same circular-import reason
+    # as _validate_autocompact_pct above.
+    from kiro_crew.dashboard.chat_persistence import _restore_dismissed_source_links
+
+    _restore_dismissed_source_links(slot, meta.get("dismissed_source_links"))
     if meta.get("workspace"):
         slot.workspace = meta["workspace"]
     if meta.get("memory_store"):

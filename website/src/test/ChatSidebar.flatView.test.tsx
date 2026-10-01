@@ -229,6 +229,26 @@ describe('chat sidebar — flat view (explode chats out of folders)', () => {
     expect(seq).toEqual(['k-pin', 'H:Today', 'k-today', 'H:Last 7 Days', 'k-week'])
   })
 
+  it('pads the date header 2px LEFT of the root-lane session titles', () => {
+    safeSetItem('mc-sidebar-flat-view', '1')
+    const iso = pinClock()
+    const slots = [
+      { key: 'k-today', title: 'Fresh one', messages: 1, running: false, folder_id: 'f1', last_ts: iso(0) },
+    ]
+    const { getByTestId } = renderSidebar(slots)
+    const lane = getByTestId('flat-view-lane')
+    const header = lane.querySelector('[data-testid="date-segment-header"]') as HTMLElement
+    const row = lane.querySelector('[data-slot-key="k-today"] .session-row, .session-row') as HTMLElement
+    // Root-lane rows carry `ROW_BOX_CLS` `pl-2.5` (10px); the segment label sits
+    // at `pl-2` (8px) so it reads as a heading over the titles, 2px outdented —
+    // the same relation main had with `pl-3.5` rows and a `px-3` header. A
+    // symmetric `px-3` would now land the label 2px RIGHT of the titles.
+    expect(row.classList.contains('pl-2.5')).toBe(true)
+    expect(header.classList.contains('pl-2')).toBe(true)
+    expect(header.classList.contains('pr-3')).toBe(true)
+    expect(header.classList.contains('px-3')).toBe(false)
+  })
+
   it('hides date segment headers on non-date sorts', () => {
     safeSetItem('mc-sidebar-flat-view', '1')
     safeSetItem('mc-session-sort', 'name-asc')

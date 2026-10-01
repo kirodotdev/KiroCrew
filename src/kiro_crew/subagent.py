@@ -56,6 +56,7 @@ from kiro_crew.agent_discovery import (
     _kiro_agents_dir,
     _read_agent_spec,
     cached_project_agent_names,
+    is_internal_agent_spec,
     list_agents,
     plain_markdown_document,
 )
@@ -91,6 +92,7 @@ from kiro_crew.context_management import (
     cap_result_file,
     evict_completed_agents,
 )
+from kiro_crew.dashboard.side_readonly_spec import readonly_base_name
 from kiro_crew.effort import effort_settings_key, model_supports_effort
 from kiro_crew.executors import maintenance_executor, subprocess_executor
 from kiro_crew.hooks import (
@@ -168,15 +170,9 @@ from kiro_crew.subagent_completion_meta import (
     single_completion_meta,
 )
 from kiro_crew.subagent_cost import (
-    _SAMPLE_MAX_AGE_SECS,
     append_cost_sample,
-    cap_buckets,
     compact_cost_log,
-    cost_log_identity,
-    learned_cost_for,
     read_learned_cost,
-    read_learned_costs,
-    read_learned_costs_checked,
 )
 from kiro_crew.subagent_manager import (
     CancellationCoordinator,
@@ -294,6 +290,36 @@ AGENT_NOT_FOUND_CODE = "agent_not_found"
 #: short-circuit, and the gateway handler forwards the field without naming it.
 AGENT_NOT_AVAILABLE_CODE = "agent_not_available"
 
+#: Wire code for the refusal ``_validate_agent`` returns when the named agent is
+#: one of Kiro Crew's own generated specs (:func:`is_internal_agent_spec`): the
+#: file exists, but it is machinery, not a sub-agent. A third refusal kind, so it
+#: carries its own identifier: ``agent_not_found`` would send the caller looking
+#: for a typo in a name it can see on disk. Same single-definition rule as the
+#: two codes above.
+AGENT_INTERNAL_CODE = "agent_internal"
+
+
+def _internal_agent_refusal(requested: str, available: list[str]) -> str:
+    """Refusal prose for a spawn that names a generated spec (see :func:`is_internal_agent_spec`).
+
+    Names the base agent a read-only spec was derived from when that base is on
+    offer -- it is the agent the caller most likely meant -- and otherwise leaves
+    the roster to say what can be named. A base that is not offered (the host
+    default, reached by omitting ``agent``) is not suggested by name.
+    """
+    base = readonly_base_name(requested)
+    what = (
+        f"the read-only spec Kiro Crew derives from {base!r} for side replies"
+        if base
+        else "a spec Kiro Crew generates for its own use"
+    )
+    suggestion = f"; name {base!r} to spawn that agent" if base in available else ""
+    return (
+        f"agent {requested!r} is {what}, not a sub-agent"
+        f"{suggestion}{_available_agents_hint(available)}"
+    )
+
+
 #: Grammar an ``availableAgents`` glob must satisfy to be RENDERED into a refusal:
 #: the agent-name alphabet plus the fnmatch metacharacters. Matching never
 #: consults this; it only keeps instruction-shaped text out of a caller's context,
@@ -398,7 +424,11 @@ def _validate_app_agent_ownership(agent: str, app: str) -> str:
     or ``""`` when the agent is the app's own."""
     prefix = f"{app}--"
     try:
-        known = {a.name for a in list_agents() if a.filename.startswith(prefix)}
+        known = {
+            a.name
+            for a in list_agents()
+            if a.filename.startswith(prefix) and not is_internal_agent_spec(a)
+        }
     except Exception as exc:  # noqa: BLE001 - cannot confirm -> refuse
         return f"cannot verify agent {agent!r} for app {app!r}: {exc}"
     if agent not in known:
@@ -438,12 +468,20 @@ def _validate_agent(requested: str, project_dir: str = "") -> tuple[str, str, st
     """
     if not requested:
         return "", "", ""
-    known = {a.name for a in list_agents()}
+    agents = list_agents()
+    # Kiro Crew's own generated specs are on disk but are not sub-agents (see
+    # ``is_internal_agent_spec``): they are neither accepted nor offered. A
+    # project agent that declares the same name is the user's own and still wins.
+    internal = {a.name for a in agents if is_internal_agent_spec(a)}
+    known = {a.name for a in agents} - internal
     if project_dir:
         known |= set(cached_project_agent_names(project_dir) or frozenset())
     if requested in known:
         return requested, "", ""
     available = sorted(known - UNADVERTISED_AGENTS)
+    if requested in internal:
+        logger.warning("Agent %r is a generated internal spec; refusing spawn", requested)
+        return "", _internal_agent_refusal(requested, available), AGENT_INTERNAL_CODE
     # REFUSE a named-but-unknown agent rather than silently falling back to the
     # host default: that fallback runs the full default agent (frequently at
     # approval_mode="auto"), so a typo'd — or malicious — agent name was a silent
@@ -1973,10 +2011,11 @@ def _host_mem_term(cfg: KiroCrewConfig) -> int | None:
     return math.floor((avail_gb * buf - pool_size * mem_cost) / mem_cost)
 
 
-# Sweeps that must have measured a dedicated worker before the guard trusts its
-# own reading over the learned per-start price. One reading can land mid-growth
-# (a runtime started just before a sweep reads at a fraction of its size); two
-# readings an interval apart bound that exposure to one ``_REAPER_INTERVAL``.
+# Sweeps that must have measured a dedicated worker before it counts as settled
+# (its RSS already inside the free-memory reading) rather than warming (still
+# owing the configured start price). One reading can land mid-growth (a runtime
+# started just before a sweep reads at a fraction of its size); two readings an
+# interval apart bound that exposure to one ``_REAPER_INTERVAL``.
 _RSS_SAMPLES_TO_SETTLE = 2
 
 
@@ -1985,28 +2024,11 @@ def _live_dedicated(agents: list[SubagentInfo]) -> tuple[list[SubagentInfo], lis
     return live, [info for info in live if not info._session_sharing]
 
 
-def _effective_next_start_gb(
-    agents: list[SubagentInfo], *, cost_gb: float, next_start_gb: float | None
-) -> float:
-    """What the NEXT dedicated start is actually priced at.
-
-    The larger of the configured cost, the caller's learned figure and every
-    live dedicated peak: a worker observed above the learned p90 is evidence
-    that starts on this host can cost that much. Shared by the reserve and by
-    the gate's deferral record, so the price an operator is shown is the price
-    the arithmetic used.
-    """
-    _live, dedicated = _live_dedicated(agents)
-    expected = max([0.0, cost_gb, *(info.peak_rss_gb for info in dedicated)])
-    return max([expected, next_start_gb if next_start_gb is not None else 0.0])
-
-
 def _startup_memory_reserve_gb(
     agents: list[SubagentInfo],
     *,
     running_count: int,
     cost_gb: float,
-    next_start_gb: float | None = None,
 ) -> float:
     """Memory promised to cold dedicated starts but not observed in RSS yet.
 
@@ -2016,82 +2038,40 @@ def _startup_memory_reserve_gb(
     reservation. Until sharing is known, a row is priced as a warming
     dedicated start, since it may yet become one.
 
-    Two prices, because two kinds of worker are live at once:
+    Every start is priced at ``cost_gb`` (``agent.subagent_cost_gb``): what a
+    runtime needs to START, not what the work it later runs may grow to. A
+    run's peak RSS is its whole process subtree -- test suites, builds and MCP
+    servers it launched included -- so pricing the next start at a learned p90
+    or a live peak held ordinary spawns at 10 GB+ on a laptop while the start
+    itself needs a fraction of that.
 
-    * A start that is not SETTLED yet -- the next one, a claim awaiting
-      registration, and a dedicated worker fewer than ``_RSS_SAMPLES_TO_SETTLE``
-      sweeps have measured -- owes ``next_start_gb`` (default ``cost_gb``; see
-      :func:`_effective_next_start_gb`) less whatever RSS it already holds. A
-      single reading can land mid-growth, so one sample does not yet say what
-      the worker will weigh; what it holds is subtracted so nothing is counted
-      twice, but the remainder stays reserved at the learned figure.
-    * A SETTLED dedicated worker owes only the gap between the larger of
-      ``cost_gb`` and its OWN peak and what it holds now. Its reservation retires
-      as its RSS is observed: a learned p90 far above what this particular
-      worker turned out to need must not become a phantom reserve that no later
-      sample can close -- and the phantom a warming worker can hold is bounded
-      to the sweeps before it settles.
+    A dedicated worker fewer than ``_RSS_SAMPLES_TO_SETTLE`` sweeps have
+    measured owes ``cost_gb`` less whatever RSS it already holds; a settled one
+    owes nothing, since its memory is already inside the free-memory reading.
     """
     live, dedicated = _live_dedicated(agents)
-    next_start = _effective_next_start_gb(agents, cost_gb=cost_gb, next_start_gb=next_start_gb)
+    cost = max(0.0, cost_gb)
     unregistered = max(0, running_count - sum(not info._slot_released for info in live))
-    gaps = 0.0
-    for info in dedicated:
-        if info._rss_samples < _RSS_SAMPLES_TO_SETTLE:
-            gaps += max(0.0, next_start - info.last_rss_gb)
-        else:
-            gaps += max(0.0, max(cost_gb, info.peak_rss_gb) - info.last_rss_gb)
-    return next_start * (1 + unregistered) + gaps
+    gaps = sum(
+        max(0.0, cost - info.last_rss_gb)
+        for info in dedicated
+        if info._rss_samples < _RSS_SAMPLES_TO_SETTLE
+    )
+    return cost * (1 + unregistered) + gaps
 
 
 def _cost_bucket(agent: str, execution: Any) -> str:
-    """The cost-store key one run's samples are written under and priced from.
+    """The cost-store key one run's samples are written under.
 
     The explicit ``agent`` when the spawn named one, else the template the run
     actually executes (``execution.template_id`` -- an agent-less spawn inherits
-    its parent's), so an inherited heavy template builds and reads its OWN
-    bucket instead of mixing into the default one. ONE function for the write
-    (``_record_cost``) and the read (the spawn guard), because a key that
-    differs between the two never converges. Empty when neither is known; the
-    store normalizes that to its default agent.
+    its parent's), so an inherited heavy template builds its OWN bucket instead
+    of mixing into the default one. ``_record_cost`` is the only caller. Empty
+    when neither is known; the store normalizes that to its default agent.
     """
     if agent:
         return agent
     return str(getattr(execution, "template_id", "") or "")
-
-
-def _startup_cost_gb(agent: Any, learned_gb: float | None) -> float:
-    """What one unmeasured dedicated start is priced at by the spawn guard.
-
-    The larger of the configured first-boot fallback (``subagent_cost_gb``) and
-    *learned_gb*, this run's own bucket's dedicated p90
-    (:func:`~kiro_crew.subagent_cost.read_learned_costs` with ``dedicated_only``,
-    refreshed off-loop by the reaper sweep and held on the manager, so this is
-    arithmetic only; ``None`` when the bucket has no such history). The
-    reserve is the ONLY thing that prices a start between admission and the
-    reaper's first RSS sample (60 s), and a dedicated runtime takes tens of
-    seconds to reach its resident size, so a burst of starts inside that window
-    is bounded by this number alone. Pricing it at the 0.5 GB fallback while the
-    store already knew a ~6 GB p90 let four starts each clear a raw free-memory
-    check and then grow into the same headroom together.
-
-    ``max`` rather than the cap's learned-over-configured
-    (:func:`_host_mem_term`), deliberately: the cap is a COUNT, and a learned
-    cost below the configured one should raise it -- that is what learning is
-    for -- while the reserve is a safety floor against an unrecoverable OOM, so
-    an operator's higher pin must never be lowered by a learned figure.
-    Over-reserving here only defers a start until the next sample; under-reserving
-    is the failure being guarded against.
-    """
-    try:
-        configured = float(agent.subagent_cost_gb)
-    except (AttributeError, TypeError, ValueError):
-        configured = 0.5
-    try:
-        learned = float(learned_gb) if learned_gb is not None else 0.0
-    except (TypeError, ValueError):
-        learned = 0.0
-    return max(configured, learned)
 
 
 def resolve_max_subagents(cfg: KiroCrewConfig) -> int:
@@ -3202,19 +3182,6 @@ class SubagentManager:
         self._completion_keep = completion_keep
         self._completion_keep_chars = completion_keep_chars
         self._running_count = 0
-        # The learned per-run memory p90s (``read_learned_costs("mem_gb")``,
-        # keyed by cost bucket) the spawn guard prices a warming start from
-        # (``learned_cost_for`` → ``_startup_cost_gb``; a bucket with no
-        # dedicated history answers None and the configured cost plus live
-        # peaks prices it). Empty until the first off-loop
-        # refresh: the reaper sweep reads the cost log on the maintenance
-        # executor and publishes here, so the gate -- which runs on the event
-        # loop -- never opens the file itself. Stale by at most one sweep, far
-        # below the rate a 50-sample p90 can move at.
-        self._learned_costs_gb: dict[str, float] = {}
-        # The log identity the map was last merged from (``cost_log_identity``),
-        # so a replaced log -- new inode or shrunk -- is read fresh, not merged.
-        self._learned_costs_source: tuple[object, ...] | None = None
         # Strong refs to in-flight shielded terminal reports (see
         # `_spawn_terminal_report`); drained in `cancel_all`.
         self._report_tasks: set[asyncio.Task] = set()  # type: ignore[type-arg]
@@ -3861,9 +3828,6 @@ class SubagentManager:
     def _sample_live_costs(self) -> None:
         return self._monitor._sample_live_costs_impl()
 
-    def _refresh_learned_cost(self) -> None:
-        return self._monitor._refresh_learned_cost_impl()
-
     def _record_cost(self, info: SubagentInfo) -> None:
         return self._monitor._record_cost_impl(info)
 
@@ -3913,6 +3877,13 @@ class SubagentManager:
             dispatch_parked_secs=0.0,
             is_shell=bool(getattr(event, "is_shell", False)),
             tool_name=getattr(event, "tool_name", "") or "",
+            # Only a provenance-verified identity names the server, so a frame
+            # without one cannot select the trusted wait contract.
+            mcp_server_name=(
+                getattr(event, "mcp_server_name", "") or ""
+                if getattr(event, "mcp_identity_trusted", False) is True
+                else ""
+            ),
         )
         oracle = info._stall_oracle
         info._stall_oracle = oracle.fresh() if oracle is not None else None
@@ -5867,7 +5838,6 @@ _COMPONENT_GLOBAL_BINDINGS = (
     VERDICT_UNKNOWN,
     VERDICT_WORKING,
     _AGENT_NAME_RE,
-    _SAMPLE_MAX_AGE_SECS,
     _agent_dir,
     _cleanup_session_files_sync,
     _subagents_dir,
@@ -5878,7 +5848,6 @@ _COMPONENT_GLOBAL_BINDINGS = (
     annotate_model_fallback,
     append_cost_sample,
     append_fallback_story,
-    cap_buckets,
     apply_completion_keep,
     asyncio,
     cached_admission_check,
@@ -5888,11 +5857,7 @@ _COMPONENT_GLOBAL_BINDINGS = (
     configured_fallback_chain,
     _cost_bucket,
     consult_offloaded,
-    cost_log_identity,
     create_agent_folder,
-    learned_cost_for,
-    read_learned_costs,
-    read_learned_costs_checked,
     evict_completed_agents,
     extract_options,
     fire_tool_hooks,

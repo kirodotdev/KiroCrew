@@ -310,6 +310,12 @@ async def _fetch_jira_issue(ref: SourceRef) -> dict[str, Any]:
         )
     email, token = auth_pair
     is_cloud = _jira_is_cloud(ref.host)
+    if is_cloud and not email:
+        # Cloud API tokens need Basic auth (email:token); Bearer gets a bare 403.
+        raise ValueError(
+            f"jira_config_error: jira_auth.email (or user) is required for Jira Cloud "
+            f"host {ref.host}. Add the Atlassian account email to its jira_auth entry."
+        )
     # Cloud uses API v3 (ADF description); Server/DC uses v2 (wiki/text).
     api_version = "3" if is_cloud else "2"
     issue_key = f"{ref.owner}-{ref.number}" if ref.owner else f"{ref.repo}-{ref.number}"

@@ -563,7 +563,7 @@ def test_an_ordinary_dotted_identifier_is_not_a_false_vendor_token() -> None:
 
 # ---------------------------------------------------------------------------
 # The ``already_resolved=True`` pinned open at the _inline_prompt anchor site
-# (build.py:3013) refuses a component swapped for a symlink between the caller's
+# (pipeline/prompt.py) refuses a component swapped for a symlink between the caller's
 # resolve and this open.
 #
 # ``already_resolved=True`` skips only the re-resolution -- it does NOT skip the

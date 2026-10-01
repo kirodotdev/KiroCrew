@@ -47,7 +47,6 @@ vi.mock('../api/client', () => ({
     fileSearch: vi.fn().mockResolvedValue({ root: '/repo', results: [] }),
     chatSlotAgent: vi.fn().mockResolvedValue(undefined),
     dashboardConfig: vi.fn().mockResolvedValue({ quick_send: false }),
-    planAction: vi.fn().mockResolvedValue({ ok: true }),
     sttConfig: vi.fn().mockResolvedValue({ enabled: true, available: true, streaming: false, dictation_panel: true, provider: 'local' }),
   },
   SEARCH_MIN_CHARS: 2,

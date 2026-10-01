@@ -204,6 +204,18 @@ class TestList:
             assert word in snip
 
     @pytest.mark.asyncio
+    async def test_snippet_drops_a_link_url_holding_a_balanced_pair(
+        self, isolated_store, patch_restricted
+    ) -> None:
+        isolated_store.create(
+            name="Doc",
+            kind="markdown",
+            content="See [Python](https://en.wikipedia.org/wiki/Python_(programming_language)) docs",
+        )
+        resp = await api_artifacts_list(_request(query={"snippet": "1"}))
+        assert _json_body(resp)["artifacts"][0]["snippet"] == "See Python docs"
+
+    @pytest.mark.asyncio
     async def test_content_match_finds_by_content(self, isolated_store, patch_restricted) -> None:
         isolated_store.create(name="Alpha", content="the quick brown fox")
         isolated_store.create(name="Beta", content="nothing here")

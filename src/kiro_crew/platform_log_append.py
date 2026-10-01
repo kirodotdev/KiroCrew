@@ -189,15 +189,12 @@ def _pin_and_open_leaf(path: Path, anchor: Path, stack: ExitStack) -> int:
     parent_fd = _pin_log_dir(directory, stack, create=True, anchor=anchor)
     if parent_fd is not None:
         flags = os.O_RDWR | os.O_APPEND | os.O_NOFOLLOW | os.O_NONBLOCK
-        # Darwin can return ENOENT when nonexclusive O_CREAT loses a race.
-        # Create exclusively, then open the winner under the same pin. If the
-        # winner's leaf is gone again by then, that ENOENT reaches
-        # :func:`_create_and_open` like any other lost interleaving and the
-        # bounded retry creates a fresh log the same exclusive, pinned way.
-        try:
-            fd = os.open(path.name, flags | os.O_CREAT | os.O_EXCL, _FILE_MODE, dir_fd=parent_fd)
-        except FileExistsError:
-            fd = os.open(path.name, flags, dir_fd=parent_fd)
+        # Darwin can return ENOENT when nonexclusive O_CREAT loses a race, so
+        # the shared helper creates exclusively, then opens the winner under
+        # the same pin. If the winner's leaf is gone again by then, that ENOENT
+        # reaches :func:`_create_and_open` like any other lost interleaving and
+        # the bounded retry creates a fresh log the same exclusive, pinned way.
+        fd = platform_compat.open_create_or_existing(path.name, flags, _FILE_MODE, dir_fd=parent_fd)
         stack.callback(os.close, fd)
         return fd
     # pragma: no cover - Windows; exercised by the Windows test lane

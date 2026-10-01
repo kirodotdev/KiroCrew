@@ -294,8 +294,10 @@ class TestCronTriggerCLI:
         args = argparse.Namespace(cron_action="trigger", job_id="abc12345")
         # Will fail with connection error (no gateway) but proves the action is recognized
         from unittest.mock import patch as _patch
-        with _patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path / "nonexistent"):
+        with _patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path / "nonexistent"), \
+             pytest.raises(SystemExit) as exc:
             _cron(args)
+        assert exc.value.code == 1
         # If we get here without "Usage:" being printed, the action was recognized
 
     def test_cli_trigger_success(self, mock_dashboard, capsys):
@@ -320,6 +322,25 @@ class TestCronTriggerCLI:
         assert "Triggered job:" in captured.out
         assert "abc12345" in captured.out
 
+    def test_cli_trigger_not_found_exits_nonzero(self, mock_dashboard, capsys):
+        """A failed trigger exits 1 so scripts can tell it from success."""
+        import argparse
+
+        from kiro_crew.cli_commands import _cron
+
+        port, cfg_dir = mock_dashboard
+        args = argparse.Namespace(cron_action="trigger", job_id="aabbccddee")
+
+        with patch("kiro_crew.cli_commands.config_dir", return_value=cfg_dir), \
+             patch(
+                 "kiro_crew.cli_commands.resolve_client_port_ex",
+                 lambda _cli: (port, True),
+             ):
+            with pytest.raises(SystemExit) as exc:
+                _cron(args)
+        assert exc.value.code == 1
+        assert "Job not found" in capsys.readouterr().out
+
     def test_cli_trigger_invalid_id(self, capsys, tmp_path):
         """CLI rejects malformed job IDs."""
         import argparse
@@ -335,13 +356,30 @@ class TestCronTriggerCLI:
         orig_port = loader.DASHBOARD_PORT
         loader.DASHBOARD_PORT = 19999
         try:
-            with _patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path):
+            with _patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path), \
+                 pytest.raises(SystemExit) as exc:
                 _cron(args)
         finally:
             loader.DASHBOARD_PORT = orig_port
 
+        assert exc.value.code == 1
         captured = capsys.readouterr()
         assert "Invalid job ID format" in captured.out
+
+    @pytest.mark.parametrize("action", ["pause", "resume"])
+    def test_cli_unknown_job_exits_nonzero(self, action, capsys, tmp_path):
+        """pause and resume exit 1 on an unknown job id."""
+        import argparse
+
+        from kiro_crew.cli_commands import _cron
+
+        args = argparse.Namespace(cron_action=action, job_id="abc12345")
+
+        with patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path), \
+             pytest.raises(SystemExit) as exc:
+            _cron(args)
+        assert exc.value.code == 1
+        assert "Job not found: abc12345" in capsys.readouterr().out
 
 
 # ── Tool Definition Tests ──

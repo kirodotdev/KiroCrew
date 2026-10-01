@@ -157,7 +157,10 @@ def test_the_handshake_is_the_spec_dialect():
     table = acp_client._PROTOCOL_VERSION_BY_BACKEND
     assert table[ACP_BACKEND_OPENCODE] == PROTOCOL_VERSION_OPENCODE
     assert table.get("", acp_client.PROTOCOL_VERSION) == acp_client.PROTOCOL_VERSION
-    body = inspect.getsource(AcpClient._initialize_session)
+    # The params are spelled once, in _initialize_params, which both the session
+    # handshake and the entitlement probe's handshake read.
+    assert "self._initialize_params()" in inspect.getsource(AcpClient._initialize_session)
+    body = inspect.getsource(AcpClient._initialize_params)
     assert "_PROTOCOL_VERSION_BY_BACKEND.get(" in body
     assert "PROTOCOL_VERSION_OPENCODE if" not in body
 

@@ -59,13 +59,13 @@ class TestCompactCapabilitySet:
                 ACP_BACKEND_CLAUDE,
                 ACP_BACKEND_CODEX,
                 ACP_BACKEND_OPENCODE,
+                ACP_BACKEND_GOOSE,
             }
         )
-        # pi and goose are absent on the evidence CLASS, not on the feature: their
-        # source says inline and no capture confirms it. See
+        # pi is absent on the evidence CLASS, not on the feature: its source says
+        # inline and no capture confirms it. goose joined on a driven capture. See
         # ``test_compaction_other_backends``.
         assert ACP_BACKEND_PI not in ACP_BACKENDS_COMPACT
-        assert ACP_BACKEND_GOOSE not in ACP_BACKENDS_COMPACT
         assert ACP_BACKEND_KAS not in ACP_BACKENDS_COMPACT
 
     def test_subset_of_known_backends(self) -> None:

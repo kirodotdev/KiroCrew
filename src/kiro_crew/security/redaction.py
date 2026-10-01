@@ -941,6 +941,73 @@ def _text_contains_bare_secret(text: str) -> bool:
     return any(_contains_bare_secret(match.group()) for match in _BARE_SECRET_RUN_RE.finditer(text))
 
 
+# ── Document links the bare-secret pass leaves alone ──
+# `/` is in the run alphabet, so in `https://docs.google.com/document/d/<id>/edit`
+# the whole of `com/document/d/<id>/edit` is ONE run, and a Google document id is
+# ~44 uniformly random base64url characters: a 40-char window inside it clears
+# every gate of `_looks_like_secret_key`. No entropy or structural gate can tell
+# that id from a key, so the decision is made on the link instead. Pass 3 skips a
+# run only when the run lies wholly inside a match of `_DOCUMENT_LINK_RE`, which
+# admits nothing but a fixed route on a fixed host:
+#   * HTTPS, a lowercase literal host right after the scheme (no userinfo, no
+#     port), `docs.google.com`, `drive.google.com` or `<tenant>.atlassian.net`;
+#   * every path segment fixed or drawn from a closed class: a Google id is
+#     25-72 chars of `[A-Za-z0-9_-]`, a Confluence space key is alphanumeric, a
+#     page id is digits;
+#   * no piece of the link is a whole key: a piece exactly 40 characters long
+#     voids the match when `_looks_like_secret_key` accepts it. Pieces are cut
+#     twice, once at every non-run character (`/`, `-`, `_`, `%`, `.`, `~`)
+#     and once also at `+`, the space of a Confluence title slug, so a key
+#     pasted in as the id or as a title word is still redacted;
+#   * the link ends where the route ends, with one optional trailing `/`: a
+#     further base64-alphabet character (a glued key, another `/segment`)
+#     fails the match.
+# The query and fragment are outside the match, so a key there, a `?token=`
+# value and every pass-1 and pass-2 hit are judged exactly as before.
+#
+# ACCEPTED RESIDUAL: a markerless key without `/` glued to more letters or
+# digits inside the id or the page title, or carrying its own `+` inside a
+# title, is indistinguishable from the text it sits in and is not redacted.
+# About 2% of real Google ids carry a key-shaped 40-char piece between their
+# random `-`/`_` and stay redacted. That placement is not an accidental leak,
+# and pass 3 is no control against a deliberate one: a single `-` already
+# splits any run.
+_DOCUMENT_ID = r"[A-Za-z0-9_-]{25,72}"
+_GOOGLE_USER = r"(?:u/[0-9]{1,2}/)?"
+_RUN_PIECE_RES = (re.compile(r"[A-Za-z0-9+]+"), re.compile(r"[A-Za-z0-9]+"))
+_DOCUMENT_LINK_RE = re.compile(
+    r"(?<![A-Za-z0-9+.-])https://(?:"
+    r"docs\.google\.com/(?:document|spreadsheets|presentation|drawings|forms)/"
+    + _GOOGLE_USER
+    + r"d/(?:e/)?"
+    + _DOCUMENT_ID
+    + r"(?:/(?:edit|view|preview|copy|viewform|pub|pubhtml|htmlview))?"
+    r"|drive\.google\.com/"
+    + _GOOGLE_USER
+    + r"(?:file/d/"
+    + _DOCUMENT_ID
+    + r"(?:/(?:view|edit|preview))?"
+    r"|drive/" + _GOOGLE_USER + r"folders/" + _DOCUMENT_ID + r")"
+    r"|[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.atlassian\.net/wiki/spaces/~?[A-Za-z0-9]{1,64}/"
+    r"(?:overview|pages/(?:edit-v2/)?[0-9]{1,20}"
+    r"(?:/[A-Za-z0-9+%._~-]{1,255})?)"
+    r")/?(?![A-Za-z0-9+/_-])"
+)
+
+
+def _document_link_spans(text: str) -> list[tuple[int, int]]:
+    """Return the spans of the :data:`_DOCUMENT_LINK_RE` matches that hold no key."""
+    return [
+        m.span()
+        for m in _DOCUMENT_LINK_RE.finditer(text)
+        if not any(
+            len(piece) == _SECRET_KEY_LEN and _looks_like_secret_key(piece)
+            for piece_re in _RUN_PIECE_RES
+            for piece in piece_re.findall(m.group())
+        )
+    ]
+
+
 #: Code-point ranges of the printable-ASCII tail of the standard baseline JPEG AC
 #: Huffman symbol table -- the ``HUFFVAL`` list of ITU-T T.81 Annex K, Table K.5 --
 #: in the order the table writes them. Everything before and after this tail is
@@ -1637,6 +1704,7 @@ def _credential_redaction_plan(
     # plaintext redacted, because the run as a whole was judged to hold a key
     # and the earlier pass consumed only its label.
     pass3: list[_RedactionSpan] = []
+    link_spans: list[tuple[int, int]] | None = None
     for m in b64_matches:
         run = m.group().rstrip("=")
         # Slide a 40-char window across the run rather than gating the whole run
@@ -1645,6 +1713,14 @@ def _credential_redaction_plan(
         # miss, leaking the key verbatim. Redact the whole run if ANY window is a
         # secret.
         if not _contains_bare_secret(run):
+            continue
+        # A run wholly inside a validated document link is its host and route,
+        # not a key (see `_DOCUMENT_LINK_RE`). Scanned only after a run fires,
+        # so text with no key-shaped run never pays for it.
+        if link_spans is None:
+            link_spans = _document_link_spans(text)
+        run_end = m.start() + len(run)
+        if any(start <= m.start() and run_end <= end for start, end in link_spans):
             continue
         gaps = _uncovered(m.start(), m.start() + len(run), taken)
         if not gaps:

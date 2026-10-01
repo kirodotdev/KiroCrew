@@ -32,19 +32,19 @@ function openList() {
   return screen.getByRole('listbox')
 }
 
-describe('cron JobForm agent picker — crews and templates in two groups', () => {
-  it('lists crewmates and agent templates as two labelled groups, every row still an option', () => {
+describe('cron JobForm agent picker — crewmates and custom agents in two groups', () => {
+  it('lists crewmates and custom agents as two labelled groups, every row still an option', () => {
     renderWithProviders(
       <JobForm agents={catalog} defaultAgent="kirocrew" onSaved={() => {}} layout="vertical" />,
     )
     const listbox = openList()
     const crews = within(listbox).getByRole('group', { name: 'Crewmates' })
-    const templates = within(listbox).getByRole('group', { name: 'Agent templates' })
+    const customAgents = within(listbox).getByRole('group', { name: 'Custom agents' })
     expect(within(crews).getAllByRole('option').map(o => o.textContent)).toEqual([
       expect.stringContaining('kirocrew'),
       expect.stringContaining('radar'),
     ])
-    expect(within(templates).getAllByRole('option').map(o => o.textContent)).toEqual([
+    expect(within(customAgents).getAllByRole('option').map(o => o.textContent)).toEqual([
       expect.stringContaining('kiro-review'),
       expect.stringContaining('kiro-lite'),
     ])
@@ -54,10 +54,10 @@ describe('cron JobForm agent picker — crews and templates in two groups', () =
     const headers = within(listbox).getAllByTestId('panel-section-header')
     expect(headers.map(h => h.textContent)).toEqual([
       expect.stringContaining('Crewmates'),
-      expect.stringContaining('Agent templates'),
+      expect.stringContaining('Custom agents'),
     ])
-    // The template group says what a template pick means for the job.
-    expect(within(templates).getByText(/default crewmate's workspace and memory/)).toBeInTheDocument()
+    // The custom-agent group says what a custom-agent pick means for the job.
+    expect(within(customAgents).getByText(/default crewmate's workspace and memory/)).toBeInTheDocument()
   })
 
   it('picking a template stores its bare name, exactly as picking a crew does', () => {
@@ -94,8 +94,8 @@ describe('cron JobForm agent picker — crews and templates in two groups', () =
       <JobForm agents={catalog} defaultAgent="kiro-review" onSaved={() => {}} layout="vertical" />,
     )
     const listbox = openList()
-    const templates = within(listbox).getByRole('group', { name: 'Agent templates' })
-    const opt = within(templates).getAllByRole('option').find(o => o.querySelector('.font-mono')?.textContent === 'kiro-review')!
+    const customAgents = within(listbox).getByRole('group', { name: 'Custom agents' })
+    const opt = within(customAgents).getAllByRole('option').find(o => o.querySelector('.font-mono')?.textContent === 'kiro-review')!
     expect(opt).toBeDefined()
     expect(within(opt).getByText('default')).toBeInTheDocument()
     expect(within(listbox).getAllByText('default')).toHaveLength(1)
@@ -108,8 +108,8 @@ describe('cron JobForm agent picker — crews and templates in two groups', () =
     const listbox = openList()
     fireEvent.change(screen.getByLabelText('Filter agents'), { target: { value: 'kiro-' } })
     expect(within(listbox).queryByRole('group', { name: 'Crewmates' })).toBeNull()
-    const templates = within(listbox).getByRole('group', { name: 'Agent templates' })
-    expect(within(templates).getAllByRole('option')).toHaveLength(2)
+    const customAgents = within(listbox).getByRole('group', { name: 'Custom agents' })
+    expect(within(customAgents).getAllByRole('option')).toHaveLength(2)
     expect(within(listbox).getAllByTestId('panel-section-header')).toHaveLength(1)
   })
 

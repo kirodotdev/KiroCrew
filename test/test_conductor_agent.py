@@ -467,7 +467,7 @@ class TestConductorInstaller:
         filter, because the agent copies whichever it read last.
         """
         prompt = self._install(tmp_path, monkeypatch)["prompt"]
-        assert "Filter the returned" in prompt
+        assert "Filter the `accept_batch`" in prompt
         assert "whose status is `done`" in prompt
         body = " ".join((SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
         assert "keep only the entries whose item is currently `status: done`" in body
@@ -518,7 +518,7 @@ class TestConductorInstaller:
         body = " ".join((SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
         assert "Bind BEFORE you seed" in body
         assert "Never leave `agent` unset" in body
-        assert "work_ledger_read` first, every cycle" in body
+        assert "work_ledger_read` with `compact=true` first, every cycle" in body
         assert "action=accept" in body
 
     def test_prompt_and_skill_close_a_child_once_its_item_is_terminal(self, tmp_path, monkeypatch):

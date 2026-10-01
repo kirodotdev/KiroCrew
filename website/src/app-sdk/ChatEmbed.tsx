@@ -197,30 +197,7 @@ function ChatEmbed({
   /** Derived from the same helper the main chat and side panel use, so "options only
    *  after the answer settles" and "a later user message clears them" behave identically
    *  here too — an agent's follow-up choices should never be silently dropped just
-   *  because the surface embedding them is thinner.
-   *
-   *  `followUpIsPlan` is DELIBERATELY dropped here (#6057): this embed is not a
-   *  plan-capable host, so a plan-shaped chip stays on the composer-draft path
-   *  instead of dispatching POST /api/chat/slots/{slot}/plan-action. Why that is
-   *  a recorded exclusion rather than a live mis-dispatch:
-   *  - The slot-detail payload this embed polls carries no `mode` field, so the
-   *    embed structurally lacks the orchestrator-mode gate the dispatch path
-   *    requires (ChatPane/ChatPage read the slot record's mode before
-   *    dispatching; there is no equivalent source here).
-   *  - Exposure is narrow: `api_chat_slot_detail` runs
-   *    `_deny_cross_app_slot_access`, so an app-token embed 404s on any foreign
-   *    or unscoped slot. That proves "not another surface's slot", not "never a
-   *    plan-bearing slot" — an app could create and embed its own
-   *    orchestrator-mode slot, which is exactly why the missing mode field
-   *    above, not the ownership guard, carries the exclusion.
-   *  - On hosts that DO dispatch, the `isPlanAction` allowlist keeps
-   *    non-protocol plan-shaped labels on the composer path; this file never
-   *    consults it because it never dispatches.
-   *  SideChat makes the same exclusion, silently — it also destructures only
-   *  `followUpOptions`, with no record there. If dashboard-token embeds ever
-   *  need working plan chips, the parity option is wiring `usePlanActionMutation`
-   *  plus a mode source into this file — a product decision, not an oversight.
-   *  Pinned by the plan-exclusion test in src/test/ChatEmbed.test.tsx. */
+   *  because the surface embedding them is thinner. */
   const { followUpOptions } = useMemo(
     () => deriveFollowUpOptions(messages, running),
     [messages, running]

@@ -168,7 +168,8 @@ const BASE_CSS =
  *   injects a temp `<div id="dmermaid-*">` into `document.body` that render()
  *   only cleans up on SUCCESS, so failing blocks accumulate orphaned 512px error
  *   SVGs (see src/test/MarkdownRenderer.mermaid.test.tsx — this is a real
- *   regression, kept in sync with MarkdownRenderer's `initMermaid`). Being
+ *   regression, kept in sync with `initMermaid` in
+ *   src/components/markdown/MermaidBlock.tsx). Being
  *   explicit is the only way to guarantee that setting is applied.
  * - `suppressErrors: true` on `run()` because `run()` rethrows the first error
  *   otherwise, so one malformed diagram would abort every later one. Combined

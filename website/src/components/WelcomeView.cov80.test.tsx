@@ -1,6 +1,7 @@
 import { screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { renderWithProviders } from '../test/helpers'
 import WelcomeView from './WelcomeView'
+import { MemoryModeChip } from './MemoryModeChip'
 import { api } from '../api/client'
 import { getThemeBranding } from '../themeBranding'
 import { i18nT } from '../i18n/t'
@@ -118,45 +119,25 @@ describe('WelcomeView', () => {
     expect(screen.getByRole('button', { name: 'zzq kept' })).toBeInTheDocument()
   })
 
-  it('orchestrator mode swaps the heading and drops the pills', () => {
-    const setInput = vi.fn()
-    renderWithProviders(<WelcomeView mode="orchestrator" setInput={setInput} />)
-
-    expect(screen.getByText(i18nT('components.welcomeView.autopilot'))).toBeInTheDocument()
-    expect(
-      screen.queryByRole('button', {
-        name: i18nT('components.welcomeView.refresh_suggestions'),
-      }),
-    ).not.toBeInTheDocument()
-
-    fireEvent.click(
-      screen.getByRole('button', {
-        name: i18nT('components.welcomeView.try_create_a_plan_to_analyze_kirocrew_code_packa'),
-      }),
-    )
-    expect(setInput).toHaveBeenCalledWith(expect.stringContaining('Create a plan'))
-    expect(suggestions).not.toHaveBeenCalled()
-  })
-
   it('renders the theme logo instead of the stock ghost when one is registered', () => {
     branding.mockReturnValue({ logo: '/zzq-logo.png' })
-    const { container } = renderWithProviders(
-      <WelcomeView mode="orchestrator" setInput={vi.fn()} />,
-    )
+    const { container } = renderWithProviders(<WelcomeView setInput={vi.fn()} />)
     expect(container.querySelector('img[src="/zzq-logo.png"]')).toBeTruthy()
   })
 
-  it('hides the ephemeral affordance entirely when neither handler is passed', () => {
-    renderWithProviders(<WelcomeView mode="orchestrator" setInput={vi.fn()} />)
+  it('never renders the memory chooser (ChatPage puts it above the composer)', () => {
+    renderWithProviders(<WelcomeView setInput={vi.fn()} />)
     expect(
       screen.queryByText(i18nT('components.welcomeView.choose_memory_mode')),
     ).not.toBeInTheDocument()
   })
+})
 
+describe('MemoryModeChip', () => {
   it('picks a memory mode from the popover and closes it', () => {
     const onSwitchMode = vi.fn()
     renderWithProviders(
-      <WelcomeView mode="orchestrator" setInput={vi.fn()} onSwitchMode={onSwitchMode} />,
+      <MemoryModeChip onSwitchMode={onSwitchMode} />,
     )
     fireEvent.click(chooserTrigger())
 
@@ -170,7 +151,7 @@ describe('WelcomeView', () => {
 
   it('offers exactly the two memory modes and nothing else', () => {
     renderWithProviders(
-      <WelcomeView mode="orchestrator" setInput={vi.fn()} onSwitchMode={vi.fn()} />,
+      <MemoryModeChip onSwitchMode={vi.fn()} />,
     )
     fireEvent.click(chooserTrigger())
     const popover = screen
@@ -190,7 +171,7 @@ describe('WelcomeView', () => {
 
   it('an outside mousedown closes the popover, one inside keeps it', () => {
     renderWithProviders(
-      <WelcomeView mode="orchestrator" setInput={vi.fn()} onSwitchMode={vi.fn()} />,
+      <MemoryModeChip onSwitchMode={vi.fn()} />,
     )
     fireEvent.click(chooserTrigger())
 
@@ -206,12 +187,7 @@ describe('WelcomeView', () => {
   it('resets the memory mode from the ephemeral trigger', () => {
     const onSwitchMode = vi.fn()
     renderWithProviders(
-      <WelcomeView
-        mode="orchestrator"
-        setInput={vi.fn()}
-        memoryMode="temporary"
-        onSwitchMode={onSwitchMode}
-      />,
+      <MemoryModeChip memoryMode="temporary" onSwitchMode={onSwitchMode} />,
     )
     fireEvent.click(temporaryUndoTrigger())
     expect(onSwitchMode).toHaveBeenCalledWith('persistent')

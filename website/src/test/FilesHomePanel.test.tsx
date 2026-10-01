@@ -41,6 +41,7 @@ vi.mock('../pierre/tree', () => ({
 }))
 
 import FilesHomePanel from '../pages/chat/FilesHomePanel'
+import { consumeChatHandoff, recordError, __resetErrorJournalForTests } from '../utils/errorReport'
 
 const DIR = '/repo/my-project'
 
@@ -240,6 +241,91 @@ describe('FilesHomePanel tree availability', () => {
     mount()
     await screen.findByText("Couldn't load the file tree")
     expect(screen.getAllByRole('button', { name: 'Refresh' })).toHaveLength(1)
+  })
+
+  it.each([
+    ['a deadline', Object.assign(new Error('deadline'), { name: 'TimeoutError' }), "Couldn't load the file tree"],
+    ['a refused root', { code: 'unknown_project_dir' }, 'Folder not found'],
+  ])('takes the same error arm on %s as on any other failed read', async (_label, failure, copy) => {
+    // `useTreeState` splits failures into `recoverable` and `error` for FolderPanel's
+    // tree notice over its listing; this panel must not inherit that split. Whatever the cause, the directory IS set,
+    // so the answer is the fetch notice with its Refresh -- never the no-directory hint, and
+    // never a rail with nothing to show. Only the COPY follows the cause (see the next test).
+    const err = failure instanceof Error
+      ? failure
+      : new (await import('../api/apiError')).ApiError(404, 'nope', JSON.stringify(failure))
+    H.api.projectTree.mockRejectedValue(err)
+    const { qc } = mount()
+    await waitFor(() =>
+      expect(qc.getQueryState(['project-tree', DIR])?.status).toBe('error'))
+
+    expect(await screen.findByText(copy)).toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: 'Refresh' })).toHaveLength(1)
+    expect(screen.queryByText('No project directory is set for this chat')).toBeNull()
+    expect(screen.queryByText('Select a file from the tree to open it in a new tab')).toBeNull()
+    expect(screen.queryByTestId('tree')).toBeNull()
+  })
+
+  it.each([
+    ['a missing root', 'unknown_project_dir', 404, 'Folder not found'],
+    ['a refusal', 'access_denied', 403, 'No access to this folder'],
+  ])('names %s in the notice, not just by withholding the remedy', async (_l, code, status, copy) => {
+    // Every cause wore the one generic line here, so a refused or missing root read as an outage
+    // -- the reason had to be inferred from the rail's absence. The copy now comes from the cause
+    // map the rail and the folder panel share, so one failed read is named the same way on every
+    // surface. The labelled Refresh stays: this surface's remedy is its own control, not a clause.
+    const { ApiError: RealApiError } = await import('../api/apiError')
+    H.api.projectTree.mockRejectedValue(new RealApiError(status, 'nope', JSON.stringify({ code })))
+    mount()
+
+    // Re-queried each attempt: the settling query re-renders and detaches an earlier reference.
+    await waitFor(() => expect(screen.getByText(copy)).toBeInTheDocument())
+    expect(screen.queryByText(/Couldn't load the file tree/)).toBeNull()
+    expect(screen.getAllByRole('button', { name: 'Refresh' })).toHaveLength(1)
+  })
+
+  it('keeps the generic line for a failure that names no cause, the control for the map above', async () => {
+    // Without this a map answering `root_missing` for EVERY failure would pass the cases above
+    // while destroying the generic arm.
+    const { ApiError: RealApiError } = await import('../api/apiError')
+    H.api.projectTree.mockRejectedValue(new RealApiError(500, 'boom', JSON.stringify({ error: 'boom' })))
+    mount()
+
+    await waitFor(() => expect(screen.getByText("Couldn't load the file tree")).toBeInTheDocument())
+    expect(screen.queryByText('Folder not found')).toBeNull()
+    expect(screen.queryByText('No access to this folder')).toBeNull()
+  })
+
+  it('hands the agent the refused tree read\'s journaled report, not the translated line', async () => {
+    // The notice's text is catalog copy, which is NOT the journal key: the API layer journals
+    // the failure under the error's own message with the endpoint, status and backend code.
+    // The rail and the folder tab already pass the read's report; without it here the hand-off
+    // carried a sentence that named nothing.
+    __resetErrorJournalForTests()
+    sessionStorage.clear()
+    recordError({
+      source: 'api',
+      message: 'nope',
+      status: 403,
+      code: 'access_denied',
+      endpoint: '/api/project/tree',
+    })
+    const { ApiError: RealApiError } = await import('../api/apiError')
+    H.api.projectTree.mockRejectedValue(new RealApiError(403, 'nope', JSON.stringify({ code: 'access_denied' })))
+    mount()
+
+    // The file rail shows this same bare permanent-cause copy before FilesHome switches to
+    // its own error arm. Target the settled FilesHome notice through its labelled Refresh sibling
+    // so a detached transient rail notice cannot receive the click.
+    const refresh = await screen.findByText('Refresh')
+    const notice = refresh.previousElementSibling as HTMLElement
+    expect(notice).toHaveAttribute('role', 'alert')
+    fireEvent.click(within(notice).getByRole('button', { name: /ask the agent/i }))
+    const prompt = consumeChatHandoff() ?? ''
+    expect(prompt).toContain('/api/project/tree')
+    expect(prompt).toContain('403')
+    expect(prompt).toContain('access_denied')
+    expect(prompt).not.toContain('No access to this folder')
   })
 
   it('shows no rail at all without a project directory', async () => {

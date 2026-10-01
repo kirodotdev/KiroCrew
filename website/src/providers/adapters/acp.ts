@@ -210,7 +210,6 @@ export class AcpAdapter implements ProviderAdapter {
 
   readonly labels: ProviderLabels = {
     sessionProcess: 'ACP subprocess',
-    agentTemplateField: 'Agent Template',
     processCountLabel: 'acp_cli',
     configFile: 'kirocrew.json',
     pluginRegistryName: 'Packages',
@@ -293,6 +292,7 @@ export class AcpAdapter implements ProviderAdapter {
     if (s?.error) throw new Error(String(s.error))
     const b = data.billing || {}
     return {
+      refreshing: data.refreshing === true,
       sessions: {
         total: s.total_sessions,
         today: { sessions: s.today.sessions, messages: s.today.messages, toolCalls: s.today.tool_calls },

@@ -2,8 +2,14 @@ import { Lightbulb, Bug } from 'lucide-react'
 
 import { useAppSelector } from '../store'
 import { i18nT } from '../i18n/t'
+import { Glass } from './Glass'
 import { InstantTip, useInstantTip } from './InstantTip'
 import { bytesAreTheStableRelease as followedLanePublishesRunningBytes } from '../utils/laneMembership'
+
+/** Corner radius of the pill, in px: the `rounded-xl` every other top-bar
+ *  pill (readout capsule, update pill) already wears, so the row reads as one
+ *  family of boxes. */
+const PILL_RADIUS = 12
 
 /**
  * Top-bar feedback control: "Request a Feature" on the left, and — only on a
@@ -101,9 +107,15 @@ export default function FeedbackPill({
   const { tip, tipHandlers, tipId } = useInstantTip({ placement: 'below' })
 
   return (
-    <div
+    // The pill IS a Liquid Glass pane (components/Glass.tsx, chip recipe): the
+    // same material as the readout capsule and the search trigger beside it,
+    // and as the composer dock below. The two buttons sit transparent on it,
+    // so the pane carries the whole edge -- no border, no fill of its own.
+    <Glass
+      variant="chip"
+      radius={PILL_RADIUS}
       data-testid="feedback-pill"
-      className="feedback-pill flex items-center h-7 rounded-xl bg-card shrink-0 overflow-hidden"
+      className="glass-shadow flex items-center h-7 shrink-0"
     >
       <button
         type="button"
@@ -150,6 +162,6 @@ export default function FeedbackPill({
           </button>
         </>
       )}
-    </div>
+    </Glass>
   )
 }

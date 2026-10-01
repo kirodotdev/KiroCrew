@@ -288,7 +288,11 @@ def test_the_kernel_definition_folds_to_what_advance_folds(name):
         state = definition.apply(state, entry)
 
     assert definition.view(state) == crew_log.fold(name, entries)
-    assert definition.state_version == crew_log.FOLD_STATE_VERSION
+    # The version the kernel is handed is THIS fold's, not the module maximum: a bump
+    # to one fold must retire that fold's savepoints and leave the others standing, and
+    # comparing against the maximum here would pass while the wrapper published the
+    # wrong number for every fold below it.
+    assert definition.state_version == crew_log.fold_state_version(name)
 
 
 @pytest.mark.parametrize("name", crew_log.SESSION_FOLD_NAMES)
@@ -811,6 +815,56 @@ def test_timeline_moments_are_oldest_first_and_carry_their_seq():
         "turn/started",
         "turn/completed",
     ]
+
+
+def test_timeline_folds_one_session_unaffected_by_the_single_unit_guard():
+    """The reachable path -- one session's log -- renders every moment as before.
+
+    One session holds exactly one succession unit, so a seq that only ever climbs is
+    the normal case the guard leaves untouched.
+    """
+    handle = _log()
+    _opened(handle)
+    _turn(handle, 1)
+    _turn(handle, 2)
+    value = crew_log.fold_timeline(_entries(handle))
+    assert [moment["type"] for moment in value["moments"]] == [
+        "session/opened",
+        "turn/started",
+        "turn/completed",
+        "turn/started",
+        "turn/completed",
+    ]
+    seqs = [moment["seq"] for moment in value["moments"]]
+    assert seqs == sorted(seqs)
+    assert value["first_seq"] == seqs[0]
+    assert value["last_seq"] == seqs[-1]
+
+
+def test_timeline_refuses_rows_from_a_second_succession_unit():
+    """A slot-wide fold of two units crosses a seq restart, and the guard names it.
+
+    ``fold_slot_checkpoint`` folds the units a slot ran under back to back, re-basing
+    the seq per unit so the second starts at 1 again. Nothing reads ``timeline`` over a
+    slot today; this pins that the day one does, it fails loudly at the unit boundary
+    rather than concatenating two units into one timestamp-scrambled timeline.
+    """
+    first = _log("u-first", slot="chat-tl")
+    _opened(first)
+    _turn(first, 1)
+    second = _log("u-second", slot="chat-tl")
+    _opened(second)
+    _turn(second, 1)
+
+    # One unit folds cleanly, the hazard is only the join of a second.
+    one = crew_log.fold_slot_checkpoint("timeline", ["u-first"], slot="chat-tl")
+    one_seqs = [moment["seq"] for moment in one.state["moments"]]
+    assert one_seqs == sorted(one_seqs) and len(one_seqs) == 3
+
+    with pytest.raises(crew_log.CrewLogError) as excinfo:
+        crew_log.fold_slot_checkpoint("timeline", ["u-first", "u-second"], slot="chat-tl")
+    assert excinfo.value.field == "seq"
+    assert "one succession unit" in str(excinfo.value)
 
 
 # --- tools ----------------------------------------------------------------

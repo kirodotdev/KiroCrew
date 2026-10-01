@@ -1,8 +1,8 @@
 """Compact shipped prompts retain standalone operational contracts.
 
 Text guards cannot prove model compliance. They protect the instructions most
-likely to disappear during compression; the worked plan also uses the real
-parser, and the size ceiling applies to each selectable prompt independently.
+likely to disappear during compression, and the size ceiling applies to each
+selectable prompt independently.
 """
 
 from __future__ import annotations
@@ -18,9 +18,7 @@ CONFIG = ROOT / "src" / "kiro_crew" / "config"
 # A maintainer may raise a budget in a reviewed change when a new rule earns
 # its space. Preserve the operational clauses below rather than cutting them
 # to fit; their tests, not a size limit, check the retained text contracts.
-# The execution section includes reason evidence and the capability-dependent
-# parent-work boundary without removing Autopilot's approval/stage contracts.
-PROMPT_BYTE_CEILINGS = {"prompt.md": 40_725, "prompt-orchestrator.md": 23_448}
+PROMPT_BYTE_CEILINGS = {"prompt.md": 40_725}
 
 
 def _read(name: str = "prompt.md") -> str:
@@ -82,13 +80,9 @@ def test_single_task_default_survives_prompt_compaction() -> None:
     model read the vocabulary as a menu of passing tokens and spawned one child
     per task. The concrete default, the fan-out threshold and the yield rule
     must survive every rewrite, and no reason vocabulary may come back."""
-    for name in ("prompt.md", "prompt-orchestrator.md"):
+    for name in ("prompt.md",):
         text = _read(name)
-        section = (
-            _section(text, "### Subagent Orchestration")
-            if name == "prompt.md"
-            else _section(text, "### Step 2: Execute")
-        )
+        section = _section(text, "### Subagent Orchestration")
         _require(
             section,
             r"END YOUR TURN",
@@ -179,8 +173,11 @@ def test_monitor_modes_have_distinct_stop_paths_and_real_exit_conditions() -> No
         r"typed provider facts.*whole objective.*lifecycle.*checks.*mergeability.*review decision.*review threads",
         r"only for unsupported targets.*evidence the structured provider cannot see",
         r"final report or notification.*finite legacy path with `gate=false`",
-        r"positive runtime/turn/token/provider-error budgets",
-        r"Token caps depend on reported usage.*token_usage_known.*hard fallbacks",
+        r"positive runtime/token/provider-error budgets",
+        r"`max_agent_turns` also accepts 0.*no wake ceiling",
+        r"Token caps depend on reported usage.*token_usage_known",
+        r"runtime cap is the hard fallback that always applies",
+        r"completed-turn cap is a fallback only when you name a positive value",
         r"positive `max_cycles` and `max_runtime_secs`; never use zero",
         r"REQUESTED and END YOUR TURN.*after the turn.*cannot prove arming",
         r"On a later turn verify session-bound state",
@@ -258,48 +255,4 @@ def test_computer_use_keeps_opt_in_and_cursor_password_refusals() -> None:
         r'click_method: "global".*ask for it BY NAME.*auto.*never picks it',
         r"Password fields.*<secure>.*never captured",
         r"own dashboard is refused, for reading as well as typing",
-    )
-
-
-def test_orchestrator_example_round_trips_through_real_plan_parser() -> None:
-    from kiro_crew.context_management import extract_plan_metadata, validate_plan_format
-
-    plans = [
-        block
-        for block in re.findall(
-            r"^```[^\n]*\n(.*?)^```[ \t]*$", _read("prompt-orchestrator.md"), re.S | re.M
-        )
-        if block.startswith("📋 Plan for:")
-    ]
-    assert len(plans) == 1
-    plan = plans[0]
-    assert validate_plan_format(plan) == (True, True, [])
-    titles, goal, tasks = extract_plan_metadata(plan)
-    assert goal and all(tasks) and titles[-1] == "Verification"
-    assert plan.splitlines()[-1] == "[OPTION: Go | Go All | Cancel]"
-    assert plan.count("[OPTION:") == 1 and "[OPTIONS:" not in plan
-    assert not validate_plan_format(plan.replace("Stage 2:", "Stage 9:"))[1]
-    assert not validate_plan_format(plan.replace("[OPTION:", "[OPTIONS:"))[1]
-
-
-def test_orchestrator_keeps_approval_scope_budgets_and_direct_work_exceptions() -> None:
-    text = _read("prompt-orchestrator.md")
-    _require(
-        text,
-        r"explicit plan request ALWAYS wins.*any language",
-        r"plan only when ALL hold.*dependent phases.*multiple files/systems.*checkpoints",
-        r"Go.*next stage.*pause for approval",
-        r"Go All.*all remaining stages.*Stops on failure",
-        r"Cancel.*abort the plan",
-        r"once approved.*do not re-plan",
-        r"END YOUR TURN immediately.*no tools.*until the user's Go / Go All",
-        r"single indivisible unit stays in the parent",
-        r"never dispatch work needing a still-running result",
-        r"stage_timeout_seconds.*turn may START.*rather than hard-bounding",
-        r"HALF that budget, capped at fifteen minutes",
-        r"Max 3 rounds per stage.*checkpoint.*ask the user",
-        r"3 failed attempts.*ask for guidance",
-        r"Destructive/irreversible.*not already sanctioned",
-        r"conflicting subagent results with no safe default",
-        r"Do not invent new business requirements",
     )

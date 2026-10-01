@@ -1,10 +1,28 @@
 import type { CronJob } from '../../types'
 
 /** Private schedules use durable member_id. Legacy V1 schedules retain their
- * existing display attribution; showing one here never grants V2 memory. */
-export function wakesCrew(job: CronJob, crew: string, isDefaultCrew: boolean): boolean {
+ * existing display attribution; showing one here never grants V2 memory.
+ *
+ * TWO identities, and they are not interchangeable. `memberId` is the crew's
+ * immutable id — the slug the server allocated with its member memory — and it is
+ * what a private schedule's `member_id` holds: the client's value is rewritten to
+ * the canonical id before the record is persisted (`bind_cron_memory` →
+ * `derive_execution`, whose `member_id` is `validate_slug`-constrained). `crew` is
+ * the mutable DISPLAY name, and it is what the legacy branches below compare,
+ * because `agent` and `agent_sequence` hold template and crew NAMES.
+ *
+ * Passing the name for both is the bug this signature exists to prevent: for any
+ * crewmate whose name is not already its own slug ("Radar" → `radar`), every
+ * private schedule fails the first comparison and the crewmate reads as having
+ * none — including a job just created from the surface doing the asking. */
+export function wakesCrew(
+  job: CronJob,
+  crew: string,
+  isDefaultCrew: boolean,
+  memberId: string,
+): boolean {
   if (job.script || job.command) return false
-  if (job.member_id) return job.member_id === crew
+  if (job.member_id) return job.member_id === memberId
   const seq = (job.agent_sequence || []).map(a => (a || '').trim()).filter(Boolean)
   if (seq.length > 1) return seq.includes(crew)
   const bound = (job.agent || '').trim()

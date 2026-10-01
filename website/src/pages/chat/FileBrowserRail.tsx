@@ -6,8 +6,6 @@ import { Files, Diff, Search, X, RefreshCw, FileText } from 'lucide-react'
 import { api } from '../../api/client'
 import { fileGrep, type FileGrepHit } from '../../api/fileGrep'
 import ErrorNotice from '../../components/ErrorNotice'
-import { findReport } from '../../utils/errorReport'
-import { errMessage } from '../../utils/thunkError'
 import {
   gitFilterRefusalCause,
   gitFilterRefusalCopyKey,
@@ -15,9 +13,17 @@ import {
 } from '../../utils/gitStatusError'
 import { EmptyState } from '../../components/ui'
 import Clickable from '../../components/Clickable'
+import {
+  failureMessage,
+  RETRYABLE_SEARCH_CAUSES,
+  searchErrorCause,
+  TREE_FAILURE_KEYS,
+} from '../../lib/searchErrorCause'
 import { cn } from '../../lib/utils'
 import { useColumnResize } from '../../hooks/useColumnResize'
 import { PierreWorkspaceTree } from '../../pierre/tree'
+import { findReport, reportForError } from '../../utils/errorReport'
+import { errMessage } from '../../utils/thunkError'
 
 /** Rail width bounds; the grip clamps between them. */
 const RAIL_MIN_W = 300
@@ -73,33 +79,40 @@ function rememberQuery(projectDir: string, value: string): void {
   }
 }
 
-/** Whether the tree APIs answer for this directory. Shares the tree
- *  component's query key, so the probe costs no extra request. */
 /**
- * Why the tree is or is not usable, which is NOT a boolean: a fetch that failed
- * and a chat with no project directory need different words and different
- * remedies. Collapsing them sends the user to fix a setting that is already
- * correct — the header is naming the directory while the body denies it exists.
+ * Why the tree read is not ready, which is NOT a boolean: a fetch that failed
+ * and a chat with no project directory need different words and remedies.
  *
  * `ready` covers the in-flight case on purpose: the tree renders its own loading
- * state, so the rail should mount rather than flashing an error first.
+ * state, so the rail mounts without flashing an error first. `recoverable` and
+ * `error` keep the cause split FolderPanel needs: over its listing fallback it
+ * names the tree, and re-reads it on Refresh, only for a recoverable failure.
+ * The rail itself stays mounted and renders either failure through its notice.
  */
-export type TreeState = 'no-dir' | 'error' | 'ready'
+export type TreeState = 'no-dir' | 'error' | 'recoverable' | 'ready'
 
-export function useTreeState(projectDir: string | null | undefined): TreeState {
-  const q = useQuery({
+/** The `['project-tree']` read itself. Exported for the surfaces that need the failed read's OWN
+ *  error beside `useTreeState`'s verdict -- the hand-off on a tree notice is keyed on the server's
+ *  message, which the verdict does not carry. Same key, so react-query dedupes a second observer
+ *  into the one request. */
+export function useTreeQuery(projectDir: string | null | undefined) {
+  return useQuery({
     queryKey: ['project-tree', projectDir ?? ''],
     queryFn: () => api.projectTree(projectDir ?? ''),
     enabled: !!projectDir,
     retry: false,
     staleTime: 10_000,
   })
-  if (!projectDir) return 'no-dir'
-  return q.isError ? 'error' : 'ready'
 }
 
-export function useTreeAvailable(projectDir: string | null | undefined): boolean {
-  return useTreeState(projectDir) === 'ready'
+export function useTreeState(projectDir: string | null | undefined): TreeState {
+  const q = useTreeQuery(projectDir)
+  if (!projectDir) return 'no-dir'
+  if (!q.isError) return 'ready'
+  // A deadline or codeless failure can answer differently on Refresh. A refusal or missing
+  // root cannot, which is why FolderPanel names and re-reads the tree only in the first case.
+  const cause = searchErrorCause(q.error)
+  return cause === 'timed_out' || cause === 'failed' ? 'recoverable' : 'error'
 }
 
 /** A hit's path as the rail shows it: relative to the searched root, because the
@@ -317,7 +330,7 @@ function ContentResults({ query, projectDir, onOpen }: {
  * Both tree modes render the SAME Pierre tree; Changed feeds it the git-status
  * path set and its opens land in diff mode (`onFileOpen`'s second argument).
  */
-export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext, selectedPath }: {
+export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext, selectedPath, active = true }: {
   projectDir: string
   /** `opts.line` opens the file scrolled to that line — a content-search hit. */
   onFileOpen: (absPath: string, diff: boolean, opts?: { line?: number }) => void
@@ -326,6 +339,9 @@ export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext
   onAddToContext?: (absPath: string, kind: 'file' | 'dir') => void
   /** Currently-open file, echoed as the tree selection. */
   selectedPath?: string | null
+  /** False while the rail is kept mounted but hidden: its tree state survives
+   *  and the git-status poll pauses. */
+  active?: boolean
 }) {
   const { t } = useTranslation()
   const [changedMode, _setChangedMode] = useState(() => sessionChangedMode)
@@ -353,12 +369,13 @@ export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext
     _setQuery(v)
   }
 
+  const { isError: treeError, error: treeErr, data: treeData } = useTreeQuery(projectDir)
   const { data: status, error: statusError } = useQuery({
     queryKey: ['git-status', projectDir],
     queryFn: () => api.projectGitStatus(projectDir),
     enabled: !!projectDir,
-    refetchInterval: 5_000,
-    refetchOnWindowFocus: true,
+    refetchInterval: active ? 5_000 : false,
+    refetchOnWindowFocus: active,
   })
   const changedCount = status?.files?.length ?? 0
   // The server caps the listing at 500 and says so. Unless the badge reads that
@@ -384,6 +401,11 @@ export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext
   const qc = useQueryClient()
   const [refreshing, setRefreshing] = useState(false)
   const refresh = async () => {
+    // A second press mid-flight is a no-op, not a restart: `refetchQueries` cancels and
+    // re-runs an in-flight fetch, so it would throw away the round trip under way and the
+    // first press's `finally` would then clear the flag under the second's work. This guard
+    // is what makes the button inert -- see `aria-disabled` on it below.
+    if (refreshing) return
     setRefreshing(true)
     try {
       await Promise.all([
@@ -419,6 +441,16 @@ export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext
        on ? 'bg-bg text-text shadow-[0_0_0_1px_var(--border)]' : 'bg-transparent text-muted hover:text-text')
 
   const contentMode = searchMode === 'content'
+  // The tree notice belongs only to the body the `['project-tree']` read backs. Changed
+  // mode lists `['git-status']` (PierreWorkspaceTreeImpl: `ready = mode === 'changed'
+  // ? status != null : tree != null`) and Content mode lists grep hits, so a failed
+  // tree read there would paint a failure banner above a fully populated list.
+  const treeCause = searchErrorCause(treeErr)
+  const treeNotice = treeError && !changedMode && !contentMode
+  // Reveal the word only when the notice names Refresh as a real remedy. Permanent causes keep
+  // the icon button available for a later external permissions/folder repair without promising
+  // that re-reading the unchanged state can fix it.
+  const treeNoticeNamesRefresh = treeNotice && RETRYABLE_SEARCH_CAUSES.has(treeCause)
 
   return (
     <>
@@ -499,12 +531,29 @@ export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext
           </div>
           <button
             onClick={refresh}
-            disabled={refreshing}
-            className="flex flex-none items-center justify-center w-[26px] h-[26px] rounded-[7px] bg-bg-elevated border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-colors disabled:opacity-40 disabled:cursor-default"
+            // Inert-but-focusable while busy, like FolderPanel's header Refresh and
+            // WorkspacePicker's Retry: `aria-disabled` plus the in-handler guard, NOT
+            // `disabled`, which leaves the tab order and so blurs the focused element in
+            // real browsers -- a keyboard press would drop focus to <body> for the whole
+            // bounded wait, and the tree notice below names this button as the remedy
+            // for exactly that failing read.
+            aria-disabled={refreshing || undefined}
+            className={cn(
+              'flex flex-none items-center justify-center h-[26px] rounded-[7px] bg-bg-elevated border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-colors aria-disabled:opacity-40 aria-disabled:cursor-default',
+              treeNoticeNamesRefresh ? 'gap-1 px-1.5' : 'w-[26px]',
+            )}
             title={t('pages.chat.fileBrowserRail.refresh')}
             aria-label={t('pages.chat.fileBrowserRail.refresh')}
           >
             <RefreshCw size={12} className={refreshing ? 'animate-spin' : ''} />
+            {/* When the notice names "Refresh" as the remedy, the control it names has to
+                show that word. Permanent failures keep the icon-only escape hatch without
+                claiming the same request can repair permissions or restore a missing root. */}
+            {treeNoticeNamesRefresh && (
+              <span aria-hidden className="text-[11px] leading-none">
+                {t('pages.chat.fileBrowserRail.refresh')}
+              </span>
+            )}
           </button>
         </div>
         {/* The Name/Content toggle has its own row, in words, both always
@@ -571,6 +620,27 @@ export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext
             />
           </div>
         )}
+        {/* A bounded tree read that rejects used to paint an empty tree, which reads as
+            an empty project. File rail, no draft -> hand-off on. Mode-gated like the
+            status notice above: see `treeNotice`. */}
+        {treeNotice && (
+          <div className="px-2 pt-1.5 shrink-0 flex items-center gap-2">
+            <ErrorNotice
+              variant="inline"
+              // Names the TREE, and the same way FolderPanel's root notice names it: this is one
+              // failed `['project-tree']` read, so two surfaces must not call it two things --
+              // the shared cause map picks the copy on both.
+              // The shared policy names Refresh only for a read that can answer differently. A
+              // refusal or missing root states only the permanent cause, while the icon button
+              // remains available after the user repairs that cause outside the app.
+              message={failureMessage(t, TREE_FAILURE_KEYS, treeCause)}
+              // The read's OWN report first: this is a bounded read, and every bounded read
+              // journals the same message, so a message match could hand off another read's entry.
+              report={reportForError(treeErr)}
+              askAgent
+            />
+          </div>
+        )}
         <div className="flex-1 min-h-0 flex flex-col py-1.5 pl-1">
           {contentMode ? (
             <ContentResults
@@ -584,6 +654,15 @@ export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext
                 onFileOpen(hit.file, false, line !== undefined ? { line } : undefined)
               }}
             />
+          ) : treeNotice && !treeData ? (
+            // Nothing has loaded yet, so the tree could only show its Suspense/loading
+            // skeleton shimmering under a notice that says the read failed -- two claims
+            // about one read. The notice speaks for the body alone. Once rows exist they
+            // stay: react-query keeps the last listing through a failed refetch (a poll, a
+            // window focus, the header Refresh), so the tree the user is browsing stays
+            // usable under the notice instead of vanishing until a Refresh succeeds. The
+            // header Refresh refetches the same key, and a success clears `treeError`.
+            null
           ) : (
             <PierreWorkspaceTree
               mode={changedMode ? 'changed' : 'all'}

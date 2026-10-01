@@ -39,7 +39,7 @@ processes owned by a stub connection, sandbox shim wrappers owned by the spawn
 in progress. Killing on first sight would take a user's live browser out from
 under them and call it a leak fixed.
 
-So a kill needs four independent things to line up, and any one of them missing
+So a kill needs five independent things to line up, and any one of them missing
 leaves the process alone and merely counted:
 
 1. the process carries this install's own spawn marker, so it is ours to end;
@@ -48,12 +48,54 @@ leaves the process alone and merely counted:
    spawn -- the window every registration has;
 3. it is older than :data:`DEFAULT_MIN_AGE_SECS`, for the same window seen from
    the other side;
-4. :func:`~kiro_crew.runtime_ownership.authorize_runtime_kill` allows it, so a
+4. its argv names a harness this gateway manages, which is the kill seam's own
+   recycle guard asked HERE, at the decision point, rather than only inside the
+   seam. A sandbox shim, an ``mcp start-server`` broker and a sibling install's
+   python interpreter all reach this point carrying our inherited marker, and the
+   seam declines every one of them. Asked here, they are withheld by name; asked
+   only inside the seam, each one first collects an ownership-gate allow and the
+   kill attribution that allow writes -- 3151 attribution lines for 181 pids
+   against 4 real kills, measured over 6.5 hours on one host;
+5. :func:`~kiro_crew.runtime_ownership.authorize_runtime_kill` allows it, so a
    pid that turns out to be leased after all is refused at the last moment and
    the refusal is logged.
 
 A pass also spends at most :data:`DEFAULT_MAX_KILLS` kills, so a reconciler that
 is wrong about a whole population is wrong slowly enough to be noticed.
+
+Why the budget can be turned down to zero
+-----------------------------------------
+``session.reconcile_max_kills`` bounds the kills one pass may perform, and its
+ceiling is :data:`DEFAULT_MAX_KILLS` -- so it can only ever lower the shipped
+budget, never raise it. At 0 the kill arm OBSERVES: the four local conditions are
+still evaluated, a candidate that satisfies them all is audited as ``would_kill``,
+published in :attr:`ReconcileReading.would_kill`, and never signalled. Nothing
+above the budget check changes, so the leak reading an operator acts on is the
+same reading either way.
+
+An operator needs that setting because the evidence of abandonment here is "no
+record on this data home claims this pid", and that evidence is only as wide as
+the records THIS process can read. The agent slice is named from a hash of the
+config directory, so every install sharing a data home shares the slice -- and a
+runtime owned by a different process (a sibling gateway built from another
+checkout, a long-lived CLI) is claimed by records that process holds. Its pid-file
+row is the one thing bridging the two, and a row that was never written reads here
+as an abandoned process carrying our marker. On such a host the unowned population
+ran 250-504 per pass against 4 genuine strays in 6.5 hours.
+
+Membership is narrower than the slice even for this install's own spawns, and one
+such spawn answers by identity rather than by a record. A sandboxed tool subprocess
+-- a build, an ``npx`` install, a provisioning run routed through
+:func:`sandbox.sandboxed_spawn_argv` -- lands in this slice carrying our inherited
+marker and is in no membership source, so it would read as unowned on every pass and
+its argv0 basename would be all that stood between it and a signal once it outlives
+the age floor. The chokepoint stamps ``KIROCREW_SANDBOX_TOOL`` on its whole tree and
+:func:`process_is_sandbox_tool` reads that back, which takes such a tree out of the
+candidate population on exec-time evidence -- paired with the managed-argv test,
+because the marker is inherited and a harness that ends up inside a tool tree must
+stay a candidate. An app backend's pid record is the other narrowing. Turning the
+budget to 0 is how an operator on a shared-data-home host takes the reading without
+the signal.
 
 Why the dead direction acts immediately
 ---------------------------------------
@@ -73,11 +115,14 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
+import threading
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
 from kiro_crew import platform_compat, session_pid
+from kiro_crew.config.paths import data_home
 from kiro_crew.mcp_gateway.daemon_control import configured_socket_path
 from kiro_crew.process_identity import audit_kill_decision
 from kiro_crew.runtime_ownership import (
@@ -102,9 +147,16 @@ logger = logging.getLogger(__name__)
 #: registration in flight.
 DEFAULT_MIN_AGE_SECS = 300.0
 
-#: Kills one pass may perform. A reconciler that has misjudged an entire
-#: population reaches this ceiling and stops, leaving the rest counted and the
-#: operator a reading to act on.
+#: Kills one pass may perform when nothing configures a budget. A reconciler that
+#: has misjudged an entire population reaches this ceiling and stops, leaving the
+#: rest counted and the operator a reading to act on.
+#:
+#: ``session.reconcile_max_kills`` can only lower it: that field's ceiling equals
+#: this value, so every configured budget is at or below the shipped one and the
+#: knob withholds signals rather than authorizing new ones. Its default is spelled
+#: in ``config.sections`` and pinned equal to this one by
+#: ``test_the_config_default_matches_the_module_default``, because config is a leaf
+#: package and importing this module into it would be a cycle.
 DEFAULT_MAX_KILLS = 5
 
 #: Entries the "already announced this death" memory may hold. The per-pass prune
@@ -124,12 +176,35 @@ class ReconcileReading:
     owned_alive: int = 0
     #: Pids a record claims that are gone, or that now name a stranger.
     owned_dead: int = 0
-    #: Live pids inside our own agent slice that no record claims.
+    #: Live pids inside our own agent slice that no record claims, EXCEPT those
+    #: :meth:`RuntimeReconciler._unowned` excludes: a pid marked as sandboxed tool
+    #: work whose argv0 is not a managed harness. So this is the unclaimed population
+    #: this arm can act on, which is what makes it the number to read beside
+    #: ``would_kill``. ``resource_status.slice_ownership`` publishes a field of the
+    #: same name computed as every unclaimed slice pid, so on a host doing long-lived
+    #: tool work the two disagree BY DESIGN and the larger one is not a fault.
     unowned_alive: int = 0
-    #: Unowned pids that met all four conditions and were signalled.
+    #: Unowned pids that met every condition and whose tree was signalled.
     killed: int = 0
+    #: Unowned pids that met every local condition and were NOT signalled because
+    #: the pass had no kill budget, which happens only where an operator has turned
+    #: ``session.reconcile_max_kills`` down to 0. The number they read to decide
+    #: whether restoring the budget would take anything they still want: it is 0 on
+    #: a host with nothing to reclaim and non-zero on a host with a real stray, and
+    #: neither says so through ``unowned_alive``, which counts the whole population
+    #: this arm can act on.
+    would_kill: int = 0
     #: Dead pids whose records were retracted.
     forgotten: int = 0
+    #: Runtimes the untracked-runtime report found (``session_pid``'s report-only
+    #: arm): reparented to init, our marker, in neither pid file. Linux only. No arm
+    #: here acts on them; :meth:`RuntimeReconciler.reclaim_untracked` is the one
+    #: path that may, and only on an explicit user confirm.
+    leaked_untracked: int = 0
+    #: Resident memory of those runtimes, each counted with its descendants.
+    leaked_rss_bytes: int = 0
+    #: ``(pid, tree rss bytes)`` per leaked runtime, lowest pid first.
+    leaked: tuple[tuple[int, int], ...] = ()
 
     def as_counter_fields(self) -> dict[str, str | int | bool | float]:
         """The reading as metric fields, named to match the liveness SLI."""
@@ -138,8 +213,82 @@ class ReconcileReading:
             "owned_dead": self.owned_dead,
             "owned_alive": self.owned_alive,
             "killed": self.killed,
+            "would_kill": self.would_kill,
             "forgotten": self.forgotten,
+            "leaked_untracked": self.leaked_untracked,
+            "leaked_rss_bytes": self.leaked_rss_bytes,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class ReclaimResult:
+    """What one user-confirmed reclaim did. ``supported`` false means it did not look."""
+
+    supported: bool = True
+    reason: str = ""
+    killed: tuple[int, ...] = ()
+    #: ``(pid, why)`` for every leaked runtime left alone.
+    refused: tuple[tuple[int, str], ...] = ()
+
+
+#: Whether the reclaim and the leak reading can run here. Both read ``/proc``
+#: environ and stat, and the report they extend fails closed elsewhere.
+RECLAIM_PLATFORM = sys.platform == "linux"
+
+
+def same_uid_process_table() -> dict[int, tuple[int, int]]:
+    """``{pid: (ppid, rss bytes)}`` for every process this uid owns, from ``/proc/<pid>/stat``."""
+    page = os.sysconf("SC_PAGE_SIZE")
+    uid = os.getuid()
+    table: dict[int, tuple[int, int]] = {}
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            if entry.stat().st_uid != uid:
+                continue
+            fields = (entry / "stat").read_text().rsplit(")", 1)[1].split()
+            table[int(entry.name)] = (int(fields[1]), int(fields[21]) * page)
+        except (OSError, ValueError, IndexError):
+            continue
+    return table
+
+
+def _descends_from(pid: int, root: int, table: dict[int, tuple[int, int]]) -> bool:
+    """Whether *root* is *pid* or one of its ancestors in *table*."""
+    seen: set[int] = set()
+    while pid > 1 and pid not in seen:
+        if pid == root:
+            return True
+        seen.add(pid)
+        pid = table.get(pid, (0, 0))[0]
+    return False
+
+
+def _tree_rss(root: int, table: dict[int, tuple[int, int]]) -> int:
+    return sum(rss for pid, (_pp, rss) in table.items() if _descends_from(pid, root, table))
+
+
+def _own_data_home() -> str:
+    """This gateway's data home, resolved per call (never at import)."""
+    return str(data_home())
+
+
+def _session_leader_alive(pid: int) -> bool:
+    """True when *pid*'s session leader is another live session leader, or unreadable."""
+    sid = session_pid._linux_pid_sid(pid)
+    if sid <= 0:
+        return True
+    return sid != pid and session_pid._linux_pid_sid(sid) == sid
+
+
+def _group_leader_alive(pid: int) -> bool:
+    """True when *pid*'s process-group leader is another live process, or unreadable."""
+    try:
+        pgid = os.getpgid(pid)
+    except OSError:
+        return True
+    return pgid != pid and platform_compat.pid_liveness(pgid) != platform_compat.PID_DEAD
 
 
 def _sel_reconcile_kill(pid: int, outcome: str, reason: str) -> None:
@@ -369,6 +518,32 @@ def _claims_on_pid(pid: int) -> int:
     return RUNTIME_TENANCY.claims_on_pid(pid)
 
 
+def process_is_a_managed_agent(pid: int) -> bool:
+    """Whether *pid*'s argv names a harness this gateway manages.
+
+    The kill seam's own recycle guard, asked at the DECISION point. It is the same
+    predicate :func:`session_pid._is_managed_agent_process` applies immediately
+    before it signals, and asking it twice is deliberate: the seam must keep asking,
+    because a pid can change hands between this answer and that signal.
+
+    What asking it HERE changes is who gets recorded. The unowned population is
+    dominated by processes that carry our inherited spawn marker and are not
+    harnesses at all -- a Playwright chromium tree, an ``mcp start-server`` broker, a
+    sandbox shim, another install's python interpreter. Every one of them satisfies
+    the other four local conditions, so without this one each would collect an
+    ownership-gate allow and have the gate write a kill attribution naming a process
+    the seam declines to touch.
+    The gate's allow log is the record a maintainer reads to answer "did we signal
+    somebody else's process", and at that volume it cannot answer.
+
+    Answers from argv, so it says a pid is the KIND of process we manage and never
+    that it is a particular one. That is why it is a condition and not an
+    authorization: identity is re-read after it, the gate is asked after that, and
+    the seam re-applies this same test last.
+    """
+    return session_pid._is_managed_agent_process(pid)
+
+
 def process_is_ours(pid: int, *, proc_root: Path | None = None) -> bool:
     """Whether *pid* carries this install's spawn marker.
 
@@ -386,6 +561,41 @@ def process_is_ours(pid: int, *, proc_root: Path | None = None) -> bool:
     no-op there rather than a guess.
     """
     return _read_env_has_kirocrew_marker(pid, proc_root) is True
+
+
+def process_is_sandbox_tool(pid: int, *, proc_root: Path | None = None) -> bool:
+    """Whether *pid* is a sandboxed tool subprocess this install spawned.
+
+    A tree spawned through :func:`sandbox.sandboxed_spawn_argv` -- a build, an ``npx``
+    install, a ``git``/``gh`` read, a provisioning run -- runs inside the slice this
+    module reads, carries the inherited spawn marker, and is recorded nowhere, so the
+    argv0 basename test is all that holds it back from a signal once it is older than
+    the age floor. The chokepoint stamps ``KIROCREW_SANDBOX_TOOL`` on the whole tree,
+    so this answers for a descendant no spawn recorded, and it answers out of the
+    kernel's exec-time copy: a same-uid process can set its own argv or write any
+    file, and cannot alter a running process's environment. That is the difference
+    between a name and evidence.
+
+    The marker means TOOL, not OWNERSHIP, which is why it is a separate variable from
+    the one :func:`process_is_ours` reads. That one enables a kill and this one
+    withholds it, so the two must be able to disagree.
+
+    FAILS OPEN, the opposite of every other test here, because its answer is an extra
+    sparing rather than a permission: only a positive read excludes. An unreadable
+    environment and a platform with no environ oracle both leave *pid* in the
+    candidate population, where the ownership, argv, two-pass and age conditions
+    still govern it. Failing closed would widen what escapes those conditions on
+    doubt, which is the one thing this module must never do.
+
+    This answer alone NEVER excludes a pid, because the marker describes a TREE. The
+    chokepoint accepts harness argv by design -- its ``is_kiro_cli`` parameter exists
+    so a delegating spawn can route through it, and a pod child probe and an
+    unattended fix-authoring agent both do -- and the marker is inherited, so a
+    harness can carry it without being tool work.
+    :meth:`RuntimeReconciler._unowned` therefore requires this answer AND a
+    non-harness argv0 before it drops a pid.
+    """
+    return session_pid._env_is_sandbox_tool(pid, proc_root) is True
 
 
 def process_age_secs(pid: int, *, proc_root: Path = Path("/proc")) -> float:
@@ -426,6 +636,8 @@ class RuntimeReconciler:
         identity_of: Callable[[int], str | None] = _pid_identity,
         was_recycled: Callable[[int], bool] = lambda _pid: False,
         is_ours: Callable[[int], bool] = process_is_ours,
+        is_managed: Callable[[int], bool] = process_is_a_managed_agent,
+        is_sandbox_tool: Callable[[int], bool] = process_is_sandbox_tool,
         leases_on: Callable[[int], int] = _leases_on_pid,
         claims_on: Callable[[int], int] = _claims_on_pid,
         authorize: Callable[[int, str], bool] | None = None,
@@ -439,13 +651,38 @@ class RuntimeReconciler:
         age_secs: Callable[[int], float] = process_age_secs,
         min_age_secs: float = DEFAULT_MIN_AGE_SECS,
         max_kills: int = DEFAULT_MAX_KILLS,
+        untracked_pids: Callable[[], set[int]] = set,
+        confirm_untracked: Callable[[], set[int]] = set,
+        process_table: Callable[[], dict[int, tuple[int, int]]] = same_uid_process_table,
+        spawn_instance_of: Callable[[int], str | None] = session_pid._env_spawn_instance,
+        spawn_home_of: Callable[[int], str | None] = session_pid._env_spawn_home,
+        own_home: Callable[[], str] = _own_data_home,
+        protected_pids: Callable[[], set[int]] = session_pid._protected_pids,
+        session_leader_alive: Callable[[int], bool] = _session_leader_alive,
+        group_leader_alive: Callable[[int], bool] = _group_leader_alive,
+        reclaim_platform: bool = RECLAIM_PLATFORM,
     ) -> None:
+        self._untracked_pids = untracked_pids
+        self._confirm_untracked = confirm_untracked
+        self._process_table = process_table
+        self._spawn_instance_of = spawn_instance_of
+        self._spawn_home_of = spawn_home_of
+        self._own_home = own_home
+        self._protected_pids = protected_pids
+        self._session_leader_alive = session_leader_alive
+        self._group_leader_alive = group_leader_alive
+        self._reclaim_platform = reclaim_platform
+        #: One pass or one reclaim at a time: both read and signal the same pids.
+        self._lock = threading.Lock()
+        self._last_reading: ReconcileReading | None = None
         self._slice_pids = slice_pids
         self._recorded_pids = recorded_pids
         self._is_alive = is_alive
         self._identity_of = identity_of
         self._was_recycled = was_recycled
         self._is_ours = is_ours
+        self._is_managed = is_managed
+        self._is_sandbox_tool = is_sandbox_tool
         self._leases_on = leases_on
         self._claims_on = claims_on
         self._authorize = authorize or _default_authorize
@@ -493,8 +730,50 @@ class RuntimeReconciler:
         #: recorded" state, and the replacement's first refusal would go unaudited.
         self._withheld_reason: dict[tuple[int, str | None], str] = {}
 
+    def set_max_kills(self, budget: int) -> None:
+        """Adopt *budget* as the per-pass kill ceiling for the passes that follow.
+
+        A setter rather than a constructor value that outlives the process, because
+        the instance is retained for the life of the gateway -- the two-pass
+        confirmation IS its state -- while ``session.reconcile_max_kills`` is live
+        config any writer can change. Frozen at construction, turning the budget down
+        to observe-only or back up would need a gateway restart, which is the one
+        thing an operator reading a leak should not have to do.
+
+        Called by the cleanup tick before every pass, the same schedule
+        ``_adopt_idle_policy`` re-reads the idle sweep's own knobs on. A negative
+        value is taken as zero: the loader clamps it there already, and the
+        fail-closed reading of an unexpected number is the one that does not kill.
+        """
+        self._max_kills = max(0, budget)
+
+    @property
+    def last_reading(self) -> ReconcileReading | None:
+        """The most recent pass's reading, or ``None`` before the first pass."""
+        return self._last_reading
+
     def run_once(self) -> ReconcileReading:
         """Compare both truths, act on what only one of them knows, and report."""
+        with self._lock:
+            reading = self._run_once()
+        self._last_reading = reading
+        return reading
+
+    def _leak_reading(self) -> tuple[tuple[int, int], ...]:
+        """The untracked-runtime report's current hits, each with its tree RSS."""
+        if not self._reclaim_platform:
+            return ()
+        try:
+            pids = self._untracked_pids()
+            if not pids:
+                return ()
+            table = self._process_table()
+        except Exception:
+            logger.debug("runtime_reconcile: leak reading failed", exc_info=True)
+            return ()
+        return tuple((pid, _tree_rss(pid, table)) for pid in sorted(pids))
+
+    def _run_once(self) -> ReconcileReading:
         try:
             kernel = self._slice_pids()
         except Exception as exc:
@@ -519,19 +798,140 @@ class RuntimeReconciler:
             except Exception:
                 logger.debug("runtime_reconcile: identity read failed pid=%s", pid, exc_info=True)
                 self._identities[pid] = None
-        killed = self._reconcile_unowned(unowned)
+        killed, would_kill = self._reconcile_unowned(unowned)
         # The two-pass memory is keyed on pid AND identity. Keyed on the number
         # alone, a pid that exited and was reused between passes would inherit the
         # previous pass's confirmation and be eligible immediately -- a
         # confirmation about a process that has since gone.
         self._unowned_last_pass = dict(self._identities)
+        leaked = self._leak_reading()
         return ReconcileReading(
             owned_alive=len(recorded) - owned_dead,
             owned_dead=owned_dead,
             unowned_alive=len(unowned),
             killed=killed,
+            would_kill=would_kill,
             forgotten=forgotten,
+            leaked_untracked=len(leaked),
+            leaked_rss_bytes=sum(rss for _pid, rss in leaked),
+            leaked=leaked,
         )
+
+    # -- the user-confirmed reclaim of the untracked-runtime report's hits --
+
+    def reclaim_untracked(self) -> ReclaimResult:
+        """End leaked runtimes once, on an explicit user confirm, through the kill arm's own gates.
+
+        Not scheduled and not default-on: the dashboard's owner-only, confirmed route
+        is its only caller. A candidate must have been reported by a sweep AND be
+        detected again on a fresh, complete read now. Every condition below can only
+        withhold; the start identity is re-read before the gate and pinned into the
+        kill seam, so a match never authorizes and a mismatch or unreadable one vetoes.
+        At most the configured per-pass budget (``session.reconcile_max_kills``, whose
+        ceiling is :data:`DEFAULT_MAX_KILLS`) trees per call, so a budget of 0 refuses
+        every candidate here exactly as it withholds the scheduled arm.
+        """
+        if not self._reclaim_platform:
+            return ReclaimResult(
+                supported=False, reason="reclaim reads /proc and runs on Linux only"
+            )
+        with self._lock:
+            try:
+                reported = self._untracked_pids()
+                candidates = reported & self._confirm_untracked()
+                recorded = self._recorded_pids()
+                protected = self._protected_pids()
+                table = self._process_table()
+            except Exception as exc:
+                return ReclaimResult(supported=False, reason=f"cannot read the records: {exc}")
+            killed: list[int] = []
+            refused = [(pid, "no longer detected") for pid in sorted(reported - candidates)]
+            for pid, why in refused:
+                self._audit(pid, "refused", f"reclaim: {why}")
+            for pid in sorted(candidates):
+                if len(killed) >= min(self._max_kills, DEFAULT_MAX_KILLS):
+                    why = "kill budget spent"
+                else:
+                    identity = self._safe(self._identity_of, pid)
+                    why = self._why_not_reclaimable(pid, recorded | protected, table)
+                    if not why and (
+                        identity is None or self._safe(self._identity_of, pid) != identity
+                    ):
+                        why = "process identity changed or unreadable"
+                    if not why and not self._authorize(
+                        pid, "user-confirmed reclaim of a leaked runtime"
+                    ):
+                        why = "refused by the ownership gate"
+                    if not why:
+                        why = self._reclaim_one(pid, identity)
+                if why:
+                    refused.append((pid, why))
+                    self._audit(pid, "refused", f"reclaim: {why}")
+                else:
+                    killed.append(pid)
+                    self._audit(pid, "killed", "user-confirmed reclaim of a leaked runtime")
+            return ReclaimResult(killed=tuple(killed), refused=tuple(refused))
+
+    @staticmethod
+    def _safe(probe: Callable[[int], str | None], pid: int) -> str | None:
+        try:
+            return probe(pid)
+        except Exception:
+            return None
+
+    def _why_not_reclaimable(
+        self, pid: int, tracked: set[int], table: dict[int, tuple[int, int]]
+    ) -> str:
+        """Empty when every live-owner check passes; any doubt is a refusal."""
+        try:
+            if pid <= 1 or pid == os.getpid() or pid in tracked:
+                return "tracked or protected"
+            if self._leases_on(pid) or self._claims_on(pid):
+                return "leased or claimed"
+            if not self._is_managed(pid):
+                return "not a managed agent process"
+            if not self._is_ours(pid):
+                return "no spawn marker"
+            if self._age_secs(pid) < self._min_age_secs:
+                return "younger than the age floor"
+            if self._spawn_home_of(pid) != self._own_home():
+                # The marker is shared by every install on this uid, and a sibling's
+                # runtime is tracked only in ITS pid files, so it reads as untracked
+                # here. An absent home (a runtime spawned before the stamp) is not ours.
+                return "spawned by another data home, or home unreadable"
+            if self._session_leader_alive(pid):
+                return "its session leader is alive"
+            if self._group_leader_alive(pid):
+                return "its group leader is alive"
+            instance = self._spawn_instance_of(pid)
+            if not instance:
+                return "no readable spawn instance"
+            for other in table:
+                # The stamps are inherited, so a live runtime's descendant carries the
+                # same instance as that runtime. Any holder outside this tree means
+                # the spawn still has a live member, so the candidate may be its child.
+                if other == pid or _descends_from(other, pid, table):
+                    continue
+                if self._spawn_instance_of(other) == instance:
+                    return "another live process shares its spawn instance"
+        except Exception:
+            return "a liveness check could not be read"
+        return ""
+
+    def _reclaim_one(self, pid: int, identity: str | None) -> str:
+        """Signal *pid*'s tree under the tenancy barrier; empty on success, else why not."""
+        epoch = self._epoch_of(pid)
+        if not self._commit_teardown(pid, epoch):
+            return "a tenant claimed the process after the gate allowed it"
+        try:
+            if not self._kill_tree(pid, identity):
+                return "kill signalled nothing"
+        except Exception:
+            logger.debug("runtime_reconcile: reclaim kill failed pid=%s", pid, exc_info=True)
+            return "kill failed"
+        finally:
+            self._release_teardown(pid)
+        return ""
 
     # -- direction one: a record with no process --
 
@@ -684,34 +1084,85 @@ class RuntimeReconciler:
                 # unreadable one means claimed: this list decides a kill, so the
                 # fail-closed answer is the only safe one.
                 continue
+            try:
+                if self._is_sandbox_tool(pid) and not self._is_managed(pid):
+                    # A tool subprocess from the sandbox chokepoint. It is in the
+                    # slice and in no record, but it is not an agent runtime, so it
+                    # leaves the population HERE rather than at a later condition:
+                    # excluded before the list is built it is never counted in
+                    # ``unowned_alive``, never reaches ``_why_not_yet``, and never
+                    # collects a gate allow or a kill attribution naming it.
+                    #
+                    # BOTH tests, because the marker describes a TREE and the argv
+                    # test is per process. A harness can carry the marker two ways:
+                    # the chokepoint is called with harness argv directly (a pod
+                    # child probe, an unattended fix-authoring agent -- that is what
+                    # its ``is_kiro_cli`` parameter is for), or a marked tool tree
+                    # spawns one, since an agent's terminal command routes through
+                    # the same chokepoint and a shell can launch a runtime. Either
+                    # way that process is the one stray class this arm can reach --
+                    # an orphaned harness in the slice, in no record, past the floor
+                    # -- so requiring "marked AND not a harness" keeps it a candidate.
+                    #
+                    # So the population that leaves here is exactly the population
+                    # ``_why_not_yet`` would withhold by name anyway: the kill arm's
+                    # behaviour is unchanged, and what changes is that these pids
+                    # stop being counted, gated and attributed every pass. Both
+                    # error directions land on that same pre-existing behaviour -- a
+                    # wider basename set excludes FEWER pids, and a tool named like
+                    # a harness is not excluded at all.
+                    continue
+            except Exception:
+                # The opposite posture to the claimed check above, because the
+                # answers mean opposite things. Claimed WITHHOLDS a kill, so doubt
+                # must withhold; this exclusion also withholds, so doubt must NOT
+                # exclude -- a pid whose marker cannot be read stays a candidate
+                # under the ownership, argv, two-pass and age conditions, which is
+                # exactly where it sits with no marker at all.
+                logger.debug(
+                    "runtime_reconcile: sandbox-tool check failed pid=%s", pid, exc_info=True
+                )
             out.append(pid)
         return out
 
-    def _reconcile_unowned(self, unowned: Iterable[int]) -> int:
+    def _reconcile_unowned(self, unowned: Iterable[int]) -> tuple[int, int]:
         killed = 0
+        would_kill = 0
         withheld: list[tuple[int, str]] = []
         reasons_now: dict[tuple[int, str | None], str] = {}
 
-        def hold(pid: int, why: str) -> None:
+        def hold(pid: int, why: str, outcome: str = "refused") -> None:
             """Record a withheld pid, auditing only a CHANGE of reason.
 
             Most of the unowned population is permanently withheld -- every MCP
-            server and sandbox helper in the slice sits at "kill signalled
-            nothing" forever -- so one event per pid per pass would write
+            server and sandbox helper in the slice sits at "not a managed agent
+            process" forever -- so one event per pid per pass would write
             thousands of identical rows a day into a log with a finite rotation
             ceiling, evicting the tool-invocation history an operator actually
             needs. A transition is the event; a steady state is not.
+
+            *outcome* is the audit's verdict word. It is ``refused`` for a pid some
+            condition withheld and ``would_kill`` for one that satisfied every
+            condition and was withheld only because the pass had no budget: the
+            second is the row an operator greps for before arming the budget, and
+            collapsing it into the first would leave "nothing to reclaim" and "four
+            strays sitting here" indistinguishable. Both are transition-audited, for
+            the reason above -- a stray that stays a stray writes one row, not one
+            per pass.
             """
             withheld.append((pid, why))
             key = (pid, self._identities.get(pid))
             reasons_now[key] = why
             if self._withheld_reason.get(key) != why:
-                self._audit(pid, "refused", why)
+                self._audit(pid, outcome, why)
 
         for pid in unowned:
-            if killed >= self._max_kills:
-                hold(pid, "kill budget spent")
-                continue
+            # The conditions are evaluated BEFORE the budget is consulted, so a pass
+            # with no budget still classifies its candidates -- that is what makes
+            # a zero-budget pass informative instead of merely quiet. It also
+            # gives a pid held past an exhausted budget its real reason rather than
+            # the budget's, and costs nothing on the common path: the argv test that
+            # withholds most of the population is one cmdline read.
             reason = self._why_not_yet(pid)
             if reason:
                 hold(pid, reason)
@@ -726,6 +1177,19 @@ class RuntimeReconciler:
             # replacement that is not one of ours is never signalled at all.
             if self._identity_changed(pid):
                 hold(pid, "process identity changed since classification")
+                continue
+            if self._max_kills <= 0:
+                # Observe-only, which an operator selects by setting the budget to
+                # 0. Recorded as a candidate and left alone, and the ownership gate
+                # is deliberately NOT asked: its
+                # allow path writes "runtime kill pid=N caller=runtime_reconcile",
+                # which is a statement that a kill was authorized, and on this path
+                # none is. A reader of that log must be able to take it literally.
+                would_kill += 1
+                hold(pid, "observing only: the kill budget is zero", outcome="would_kill")
+                continue
+            if killed >= self._max_kills:
+                hold(pid, "kill budget spent")
                 continue
             # The gate LAST, because its allow path writes the kill attribution:
             # asked any earlier, every pid the checks above still withhold would
@@ -772,10 +1236,23 @@ class RuntimeReconciler:
                 hold(pid, "kill signalled nothing")
                 continue
             killed += 1
-            self._audit(pid, "killed", "unowned on two passes, our marker, past the age floor")
+            # The seam's answer is a COUNT over the tree it walked, not a verdict on
+            # the root: it signals every managed descendant it discovered and can
+            # withhold the root's own signal after that, when the root stops being
+            # the process this pass verified. So the line names the tree and the
+            # count. Naming the root alone reported one long-lived pid as killed
+            # twice an hour apart -- it was never signalled either time, and the
+            # count came from a descendant -- and a reader chasing that had no way to
+            # tell it from a process that survived a kill.
+            self._audit(
+                pid,
+                "killed",
+                f"unowned on two passes, our marker, past the age floor; {signalled} signalled",
+            )
             logger.warning(
-                "runtime_reconcile killed pid=%s: unowned on two consecutive passes, "
-                "carries our spawn marker, older than %.0fs",
+                "runtime_reconcile signalled %d process(es) in the tree at pid=%s: unowned on "
+                "two consecutive passes, carries our spawn marker, older than %.0fs",
+                signalled,
                 pid,
                 self._min_age_secs,
             )
@@ -789,7 +1266,7 @@ class RuntimeReconciler:
         # population and comes back is a transition again rather than inheriting a
         # reason nothing recorded.
         self._withheld_reason = reasons_now
-        return killed
+        return killed, would_kill
 
     def _identity_changed(self, pid: int) -> bool:
         """Whether *pid* names a different process now than at classification.
@@ -810,13 +1287,27 @@ class RuntimeReconciler:
             return True
 
     def _why_not_yet(self, pid: int) -> str:
-        """Empty when every precondition for killing *pid* holds."""
+        """Empty when every local precondition for killing *pid* holds.
+
+        Ordered cheapest-first, and the argv test sits ahead of the marker read for
+        a second reason beyond cost: it is the one that withholds most of this
+        population, so putting it first is what makes the reason an operator reads
+        the true one rather than whichever check happened to run earliest. It
+        answers from one ``/proc/<pid>/cmdline`` read where the marker test reads
+        ``/proc/<pid>/environ``, so the ordering also spends fewer reads per pass
+        than the reverse.
+        """
         if pid not in self._unowned_last_pass:
             return "first pass unowned"
         if self._unowned_last_pass[pid] != self._identities.get(pid):
             # Same number, different process: the confirmation the previous pass
             # earned belongs to a process that has since exited.
             return "first pass unowned"
+        try:
+            if not self._is_managed(pid):
+                return "not a managed agent process"
+        except Exception:
+            return "not a managed agent process"
         try:
             if not self._is_ours(pid):
                 return "no spawn marker"
@@ -892,6 +1383,10 @@ def build_reconciler(
     reaching for a kill primitive is deliberate twice over: the recycle guard is
     a different question from ownership and both must be answered, and it adds no
     new unattributed primitive call site to the repo.
+
+    *max_kills* defaults to :data:`DEFAULT_MAX_KILLS`, so a caller that does not
+    thread ``session.reconcile_max_kills`` through gets the shipped budget, which
+    is the behaviour every existing caller already had.
     """
 
     def entry_index() -> dict[int, tuple[int, str | None, str]]:
@@ -1087,4 +1582,6 @@ def build_reconciler(
         notify_dead=notify_dead,
         min_age_secs=min_age_secs,
         max_kills=max_kills,
+        untracked_pids=session_pid.reported_untracked_agent_pids,
+        confirm_untracked=session_pid.confirm_untracked_agent_runtimes,
     )

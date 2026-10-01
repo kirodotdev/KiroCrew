@@ -1,6 +1,6 @@
 # Steering Viewer
 
-The Steering tab under Agent Capabilities lists the standard user and workspace steering roots and reads, creates, edits, and deletes their Markdown files; `POST` / `PUT` / `DELETE` are filesystem mutations, not a read-only viewer. `handlers/steering.py:api_steering`, `api_steering_create`, and `api_steering_detail` enforce the surface. It also lets an author set the `inclusion` mode each document declares.
+The Steering tab under Customize lists the standard user and workspace steering roots and reads, creates, edits, and deletes their Markdown files; `POST` / `PUT` / `DELETE` are filesystem mutations, not a read-only viewer. `handlers/steering.py:api_steering`, `api_steering_create`, and `api_steering_detail` enforce the surface. It also lets an author set the `inclusion` mode each document declares.
 
 **Kiro Crew reports and edits the declaration; it does not act on it.** What a mode causes is the harness's own behaviour, it moves between kiro-cli releases (see [kiro-cli steering](../../reference/kiro-cli/steering.md)), and a client that reimplemented any part of it would duplicate whatever the harness does next.
 

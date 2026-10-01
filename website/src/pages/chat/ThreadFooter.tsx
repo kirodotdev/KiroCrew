@@ -31,7 +31,12 @@ export default function ThreadFooter({ summary, crewmateName, onOpen, align = 's
   summary: ThreadSummary
   crewmateName: string
   onOpen: () => void
-  /** `end` under the user's right-aligned bubble. */
+  /** `end` under the user's right-aligned bubble. Rendered as `align-self`, so
+   *  a mode that re-aligns the ROW must re-state it here too: CLI mode moves
+   *  the user's bubble to the left and re-aligns this footer in
+   *  `styles/cli-mode.css`. Do not drop `self-start` from the `start` branch —
+   *  the assistant footer's column is `align-items: stretch`, and that class is
+   *  what keeps the button shrink-wrapped instead of full-width. */
   align?: 'start' | 'end'
 }) {
   const { t } = useTranslation()

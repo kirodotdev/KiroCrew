@@ -55,8 +55,16 @@ from kiro_crew.messaging.dispatch import (
 from kiro_crew.messaging.driver import APPROVAL_INTERACTIVE
 from kiro_crew.messaging.inbound_spool import InboundRoute
 from kiro_crew.messaging.link import build_dm_session_key, seed_generation
+from kiro_crew.messaging.queue_drain import entries_queued_by, owner_token
 from kiro_crew.messaging.transport import InboundMessage
 from kiro_crew.safety_override import safety_override
+from kiro_crew.session_lifecycle import (
+    STOP_DECLINED_COMPACTING_TEXT,
+    compaction_in_flight,
+    consume_stop_declined,
+    decline_stop,
+    force_stop_keeping_others,
+)
 from kiro_crew.weixin.attachments import process_weixin_attachments
 from kiro_crew.weixin.commands import ConversationState, build_help, parse_command
 from kiro_crew.weixin.transport import WEIXIN_CAPABILITIES
@@ -470,6 +478,40 @@ class WeixinDispatcher:
         the session while its turn is still unwinding.
         """
         session_key = self._session_key(user_id)
+        # Before the Stop record and the queue clear: a Stop the session's own
+        # automatic compaction declines ends nothing and must destroy nothing.
+        if compaction_in_flight(self.sessions, session_key):
+            # A repeat within the window is the second press and forces. Keyed
+            # by the presser too: under a unified ``dm_scope`` one session key
+            # is every user's, and another user's declined Stop must not arm
+            # this user's first press.
+            if not consume_stop_declined(session_key, user_id):
+                # Sent before the marker is armed: an undelivered warning plus an
+                # armed escalation is a retry that hard-resets the session with
+                # this user never told that it would.
+                await decline_stop(
+                    session_key,
+                    user_id,
+                    lambda: self._say(user_id, STOP_DECLINED_COMPACTING_TEXT),
+                )
+                return
+            note_user_stop(self.sessions, session_key)
+            try:
+                # Through the queue-keeping helper: this channel queues nothing
+                # itself, but under a unified ``dm_scope`` the key is shared
+                # with channels that do, and the hard reset would pop their
+                # queued messages and unlink their attachments. The presser's
+                # own token matches none of those entries, so all are carried.
+                forced = await force_stop_keeping_others(
+                    self.sessions,
+                    session_key,
+                    entries_queued_by(owner_token("weixin", (user_id,))),
+                )
+            except Exception:
+                logger.warning("weixin /stop: force stop failed for %s", session_key, exc_info=True)
+                forced = False
+            await self._say(user_id, _STOPPING if forced else _STOP_FAILED)
+            return
         # Recorded before the busy check, so a Stop landing while the session is
         # between an abandoned attempt and its replay still counts (see
         # ``note_user_stop``).
@@ -510,8 +552,15 @@ class WeixinDispatcher:
                         )
         await self._say(user_id, ack)
 
-    async def _say(self, user_id: str, text: str) -> None:
-        """One-shot out-of-band message (command ack / notice)."""
+    async def _say(self, user_id: str, text: str) -> bool:
+        """One-shot out-of-band message (command ack / notice); did it land?
+
+        Most callers ignore the answer -- an ack is cosmetic beside the command's
+        effect. One does not: the compaction decline arms an escalation that
+        resets the session on the next press, and this text is the only thing
+        that makes that press informed, so a send whose error is logged here
+        returns ``False`` and arms nothing.
+        """
         assert self.client is not None
         try:
             await self.client.send_message(
@@ -522,6 +571,8 @@ class WeixinDispatcher:
             )
         except Exception:
             logger.warning("weixin: out-of-band send failed", exc_info=True)
+            return False
+        return True
 
     def _resolve_agent(self) -> str:
         return self.agent or self.cfg.agent.default_agent or _DEFAULT_KIROCREW_AGENT

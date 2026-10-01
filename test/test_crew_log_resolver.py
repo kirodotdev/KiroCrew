@@ -668,6 +668,9 @@ async def test_a_claim_the_store_cannot_take_is_pinned_before_the_row_is_left_qu
         ), "the row was left queued, so only this pass could pin the turn that asked"
     finally:
         await mgr.cancel_all()
+        # ``cancel_all`` leaves the durable task queue the constructor opened
+        # (``tasks.db`` + ``-wal`` + ``-shm``) live; release it here.
+        mgr.close()
 
 
 @pytest.mark.asyncio
@@ -716,6 +719,9 @@ async def test_a_run_whose_memory_binding_cannot_be_persisted_records_no_spawn(m
         assert [e["agent_id"] for e in _of("subagent/spawned")] == ["folder-ok-1"]
     finally:
         await mgr.cancel_all()
+        # ``cancel_all`` leaves the durable task queue the constructor opened
+        # (``tasks.db`` + ``-wal`` + ``-shm``) live; release it here.
+        mgr.close()
 
 
 def test_a_plan_id_is_redacted_like_every_other_field_the_agent_authored(monkeypatch):

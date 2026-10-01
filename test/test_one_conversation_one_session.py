@@ -446,7 +446,7 @@ class TestA6NoLostOrOutOfOrderTurn:
             assert mgr.is_busy(SLACK_KEY) is True
             assert mgr.is_busy("1785370133.085469") is True
 
-        asyncio.new_event_loop().run_until_complete(_check())
+        asyncio.run(_check())
 
     def test_no_steer_primitive_is_exposed(self):
         """Withdrawn deliberately: an unaccounted steer can drop a message."""

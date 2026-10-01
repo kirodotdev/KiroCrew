@@ -26,7 +26,14 @@ from kiro_crew import name_grant, permission_floor
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config import live
 from kiro_crew.config.paths import config_dir
-from kiro_crew.llm_helpers import is_prompt_busy
+from kiro_crew.constants import (
+    DENY_CAUSE_APPROVAL_OVERSIZE,
+    DENY_CAUSE_APPROVAL_TIMEOUT,
+    DENY_CAUSE_POLICY,
+    DENY_CAUSE_SURFACE_POLICY,
+)
+from kiro_crew.llm_helpers import _steer_host_deny, is_prompt_busy
+from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.trust_patterns import extract_bash_command
 
 logger = logging.getLogger(__name__)
@@ -42,6 +49,9 @@ _MAX_MESSAGES = 200
 # sees the whole command, and a cut title beside a live Approve button is an
 # approval of a suffix nobody read. The refusal notice is itself bounded.
 _APPROVAL_FIELD_MAX_CHARS = 500
+# How long a posted approval card waits for a reader before the HOST declines
+# it. Named so the in-band notice can quote the same figure the wait used.
+_APPROVAL_TIMEOUT_SECS = 3600
 # The card title of a grantable shell command is this prefix plus the command;
 # the exact tier sends the title back (minus the prefix) as its consent proof.
 _APPROVAL_SHELL_TITLE_PREFIX = "Running: "
@@ -136,11 +146,17 @@ CHANNEL_AGENT_BLOCKED_TOOLS: tuple[str, ...] = (
     "send_message",
     "send_notification",
     "session_stop",
+    # Ending another session's wait moves that turn forward on a schedule the
+    # channel's thread text would then be choosing; same containment reason.
+    "session_end_wait",
     # Changing a session's model decides what the user's next turn there runs
     # on and spends; same containment reason as stop.
     "session_set_model",
     "session_send",
     "session_read_message",
+    # A digest of the same transcript `session_read_message` returns, so it is
+    # blocked for the same exfiltration reason.
+    "session_summary",
     # The fan-out verb, blocked for the reason `session_send` is and then some: one
     # call reaches every session the caller created, so a channel agent acting on
     # words from a thread other people are in would relay them into the user's
@@ -166,6 +182,13 @@ CHANNEL_AGENT_BLOCKED_TOOLS: tuple[str, ...] = (
     # prompt; the chat_session_pin handler in mcp_dashboard.py refuses a
     # ``channel:`` caller at dispatch, which is what holds for auto-approval.
     "chat_session_pin",
+    # The board-column writes, on the same reason as pinning: they rearrange
+    # the person's own sidebar board. The handlers in mcp_dashboard.py also
+    # refuse a ``channel:`` caller at dispatch, for auto-approved calls.
+    # ``chat_tag_column_list`` stays available: the layout names no session.
+    "chat_tag_column_create",
+    "chat_tag_column_move",
+    "session_revive",
     # The four work-ledger tools, blocked for the same containment reason and not
     # for a new one: a channel agent has no dispatch relationship, so it is
     # neither a conductor nor a bound worker and has no business holding one.
@@ -1186,11 +1209,7 @@ async def _stream_task(
         EVENT_TEXT_CHUNK,
         EVENT_TOOL_CALL,
     )
-    from kiro_crew.security import (
-        redact_and_truncate,
-        redact_credentials,
-        redact_exfiltration_urls,
-    )
+    from kiro_crew.security import redact_and_truncate
     from kiro_crew.sel import sel
 
     chunks: list[str] = []
@@ -1229,6 +1248,21 @@ async def _stream_task(
                         tool_name=event.text or event.title or "",
                         outcome="rejected_blocked_tool",
                     )
+                    # Steer FIRST, reject SECOND: the containment boundary is
+                    # the SURFACE refusing the tool, not a verdict on the
+                    # action, and the model's way forward is a channel post.
+                    # ``_steer_host_deny`` is ``llm_helpers``' (redact, forward
+                    # to the shared notice, answer the wire if cancelled
+                    # mid-steer); every deny site in this stream names its
+                    # cause, and the reader's own Deny below never calls it.
+                    await _steer_host_deny(
+                        client,
+                        event,
+                        "channel agents reach people only through channel posts; "
+                        "direct-to-user messaging tools do not run here",
+                        cause=DENY_CAUSE_SURFACE_POLICY,
+                        title=event.text or event.title or "",
+                    )
                     await client.reject_tool(event.request_id)
                     continue
                 # The PreToolUse gate outranks every approval tier below: YOLO,
@@ -1254,6 +1288,16 @@ async def _stream_task(
                         tool_name=event.text or event.title,
                         outcome="rejected_hook_deny",
                         metadata={"reason": _gate_reason},
+                    )
+                    # The gate judged the call itself: a policy verdict, with
+                    # the gate's own reason so the class remediation can key
+                    # off it (audit above, steer, then reject).
+                    await _steer_host_deny(
+                        client,
+                        event,
+                        _gate_reason,
+                        cause=DENY_CAUSE_POLICY,
+                        title=event.text or event.title or "",
                     )
                     await client.reject_tool(event.request_id)
                     continue
@@ -1435,8 +1479,9 @@ async def _stream_task(
                     # field obeys. Neither is a decision a channel reader can
                     # make, so the request is refused here and the notice says
                     # why, in the reader's terms, with the bounded excerpt the
-                    # card would have shown. The agent sees an ordinary
-                    # rejection and can split the command.
+                    # card would have shown. Both notices quote the length the
+                    # guard measured (the redacted title -- redaction can grow a
+                    # string), so a split that lands under the limit is accepted.
                     sel().log_tool_invocation(
                         session_key=agent.session_key,
                         agent=agent.agent_name,
@@ -1447,7 +1492,7 @@ async def _stream_task(
                     _what = "command" if _cmd else "request"
                     await channel.post(
                         agent.id,
-                        f"\u26d4 Approval refused: this {_what} is {len(_card_name)} characters and "
+                        f"\u26d4 Approval refused: this {_what} is {len(sanitized_name)} characters and "
                         f"a channel approval can show at most {_APPROVAL_FIELD_MAX_CHARS}. "
                         "Nothing was run. A request the reader cannot read in full is not "
                         "approved here; the agent can split it into shorter steps. "
@@ -1456,6 +1501,17 @@ async def _stream_task(
                         from_role=agent.role,
                         msg_type="system",
                         thread_id=thread_id,
+                    )
+                    # The reader's notice above says why in the reader's terms;
+                    # the model needs the same fact in its own turn, or it
+                    # reads a "user denied" and never learns to split the call.
+                    await _steer_host_deny(
+                        client,
+                        event,
+                        f"this {_what} is {len(sanitized_name)} characters and a channel "
+                        f"approval can show at most {_APPROVAL_FIELD_MAX_CHARS}",
+                        cause=DENY_CAUSE_APPROVAL_OVERSIZE,
+                        title=event.text or event.title or "",
                     )
                     await client.reject_tool(event.request_id)
                     continue
@@ -1491,6 +1547,7 @@ async def _stream_task(
                     "base_derivable": "1" if _base_binary else "",
                     "base_command": _base_binary or "",
                 }
+                _approval_timed_out = False
                 try:
                     # Posting and waiting are one ownership scope. If the post
                     # itself fails, neither the Future nor its command authority
@@ -1503,9 +1560,15 @@ async def _stream_task(
                         thread_id=thread_id,
                         meta=approval_meta,
                     )
-                    decision = await asyncio.wait_for(approval_future, timeout=3600)
+                    decision = await asyncio.wait_for(
+                        approval_future, timeout=_APPROVAL_TIMEOUT_SECS
+                    )
                 except asyncio.TimeoutError:
+                    # Nobody answered: the HOST declines, not the reader.
+                    # Recorded apart from the decision so the reject below can
+                    # tell the model an expired card from a human's Deny.
                     decision = "rejected"
+                    _approval_timed_out = True
                 finally:
                     if agent._approval_future is approval_future:
                         agent._approval_future = None
@@ -1551,6 +1614,20 @@ async def _stream_task(
                         tool_name=event.text or event.title or "",
                         outcome=decision,
                     )
+                    # One reject line, two provenances. A card that expired
+                    # unanswered is a HOST decline and the model is told so
+                    # before the reject; a reader's Deny is a real decision
+                    # kiro-cli's generic result already describes correctly,
+                    # so it gets no notice.
+                    if _approval_timed_out:
+                        await _steer_host_deny(
+                            client,
+                            event,
+                            "the channel approval card went unanswered for "
+                            f"{_APPROVAL_TIMEOUT_SECS}s",
+                            cause=DENY_CAUSE_APPROVAL_TIMEOUT,
+                            title=event.text or event.title or "",
+                        )
                     await client.reject_tool(event.request_id)
                     continue
                 if approval_sent is False:

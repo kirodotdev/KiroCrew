@@ -1,8 +1,8 @@
 /**
  * The typed API error, its message extraction, and a Response -> error factory.
  *
- * Split out of `api/client.ts` so an APP can import it. `client.ts` is ~3.5k
- * lines and its module graph pulls in `queryClient`, `installApiTransport`,
+ * Split out of `api/client.ts` so an APP can import it. `client.ts` owns the
+ * transport, and its module graph pulls in `queryClient`, `installApiTransport`,
  * artifact-write bookkeeping and the error journal — side effects a standalone
  * app has no business importing just to name an error type. Apps that already
  * import `client.ts` for other reasons are unaffected; the three that do not

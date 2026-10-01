@@ -153,9 +153,9 @@ describe('AppDetailPage — auto-action deep links', () => {
 
   it('dispatches update when there is no installed record and a catalog row supplies a non-string source', async () => {
     // With no installed record, the page spreads the CATALOG row into its app
-    // object. registry.py copies index keys verbatim for a row it has not
-    // installed, so `source` can be an object; an unguarded startsWith throws
-    // inside this effect and Sync never dispatches at all.
+    // object. registry_pipeline/ copies index keys verbatim for a row it has
+    // not installed, so `source` can be an object; an unguarded startsWith
+    // throws inside this effect and Sync never dispatches at all.
     getApp.mockRejectedValue(Object.assign(new Error('not installed'), { status: 404 }))
     listRegistry.mockResolvedValue({
       apps: [{

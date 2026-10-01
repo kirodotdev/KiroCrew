@@ -31,7 +31,7 @@ delete process.env.LD_LIBRARY_PATH
 const OUT = process.argv[2] || '../temp-screenshots/folder-suggestion-expiry'
 const SLOT = 'chat-foldersug'
 const PROJECT = '/home/user/workspace/KiroCrew'
-const MAX_TURNS = 3 // mirrors FOLDER_SUGGESTION_MAX_TURNS in chatSlice.ts
+const MAX_TURNS = 3 // mirrors FOLDER_SUGGESTION_MAX_TURNS in store/chat/composerCards.ts
 
 mkdirSync(OUT, { recursive: true })
 // THE video-artifact invariant (this file's history: three review rounds hit

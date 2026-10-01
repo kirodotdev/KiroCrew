@@ -74,7 +74,7 @@ const SLOTS = [
   // runs-elsewhere marker is seen competing for the same strip.
   slot('s-local', 'Wire the settings search', { last_ts: '2026-09-03T20:20:00Z' }),
   slot('s-local-chips', 'Draft the migration note',
-    { memory_mode: 'incognito', mode: 'orchestrator', last_ts: '2026-09-03T19:00:00Z' }),
+    { memory_mode: 'incognito', last_ts: '2026-09-03T19:00:00Z' }),
   slot('s-local-2', 'Fix the lockfile floor', { last_ts: '2026-09-03T18:00:00Z' }),
 ]
 

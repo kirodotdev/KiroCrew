@@ -2,12 +2,11 @@
 
 Registered from ``routes.register_routes`` (one import, one call) rather than by
 the app manifest, so this app still has exactly ONE place that lists its routes.
-It lives in its own module because ``routes.py`` is already 200KB and the crew
-surface is a separate feature with its own store; the shared request plumbing
-(``_key_from_request``, ``_str_field``, ``_st``, ``_require_enabled``,
-``_pr_action_preamble``, ``_audit``) is imported from ``routes`` rather than
-re-derived, because a second copy of a gate is how one of them eventually ships
-without the check.
+It lives in its own module because the crew surface is a separate feature with
+its own store; the shared request plumbing (``_key_from_request``,
+``_str_field``, ``_st``, ``_require_enabled``, ``_pr_action_preamble``,
+``_audit``) is imported from ``routes`` rather than re-derived, because a second
+copy of a gate is how one of them eventually ships without the check.
 
 Routes, all under ``/api/apps/issue-radar``:
 

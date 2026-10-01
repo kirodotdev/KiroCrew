@@ -18,9 +18,9 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { useWebSocket } from '../hooks/useWebSocket'
 import { store as globalStore } from '../store'
 import { setActiveSlot, clearMessages, resolveQuestionCard } from '../store/chatSlice'
-import { markSlotRead } from '../store/dashboardSlice'
-import { _resetSlotReadRelayForTest } from '../lib/slotReadRelay'
-import { UNREAD_ON_ATTENTION_KEY, chatMessageMarksUnread, loadUnreadOnAttention } from '../hooks/unreadOnAttention'
+import { markSlotRead, remoteSlotRead, sseSlots } from '../store/dashboardSlice'
+import { _resetSlotReadRelayForTest, emitSlotRead } from '../lib/slotReadRelay'
+import { UNREAD_ON_ATTENTION_KEY, chatMessageMarksUnread, loadUnreadOnAttention, unreadWatermarkTs } from '../hooks/unreadOnAttention'
 import { NotificationsPanel } from '../pages/settings/NotificationsPanel'
 import en from '../i18n/locales/en.manual.json'
 
@@ -162,6 +162,65 @@ describe('unread badge over the dashboard socket', () => {
     const ws = mount()
     send(ws, { type: 'question_card', data: { slot: ACTIVE, ask_id: 'a2', questions: [{ question: 'Ship?', options: [{ label: 'Yes' }] }] } })
     expect(unread()).not.toContain(ACTIVE)
+  })
+
+  // The gateway never saves a permission row, so after a restart no slot
+  // last_ts reaches its ts. A watermark taken from it could never be covered.
+  const sharedWatermark = () => (JSON.parse(localStorage.getItem('mc-unread-shared') ?? '{}') as Record<string, string>)[BACKGROUND]
+
+  it.each([false, true])('a permission row records no watermark of its own (opt-in %s)', (optIn) => {
+    if (optIn) localStorage.setItem(UNREAD_ON_ATTENTION_KEY, '1')
+    const ws = mount()
+    send(ws, row('permission'))
+    expect(unread()).toContain(BACKGROUND)
+    expect(sharedWatermark()).toBe('')
+    globalStore.dispatch(markSlotRead(BACKGROUND))
+    expect(sharedWatermark()).toBeUndefined()
+  })
+
+  it('a read relayed at the saved last_ts cannot clear a newer permission badge', () => {
+    // Another window watching the slot relays its read at the saved last_ts
+    // (t1), after the permission row (t2) badged this one. The shared record
+    // holds t1, but this window keeps t2, so the stale relay leaves the badge.
+    const ws = mount()
+    globalStore.dispatch(sseSlots([{ key: BACKGROUND, messages: 2, running: true, last_ts: '2026-09-27T23:59:59Z' }]))
+    send(ws, row('permission'))
+    expect(sharedWatermark()).toBe('2026-09-27T23:59:59Z')
+    globalStore.dispatch(remoteSlotRead({ slot: BACKGROUND, readTs: '2026-09-27T23:59:59Z' }))
+    expect(unread()).toContain(BACKGROUND)
+    expect(sharedWatermark()).toBe('2026-09-27T23:59:59Z')
+    globalStore.dispatch(remoteSlotRead({ slot: BACKGROUND, readTs: '2026-09-28T00:00:00Z' }))
+    expect(unread()).not.toContain(BACKGROUND)
+    expect(sharedWatermark()).toBeUndefined()
+  })
+
+  it('a read this window relays at the saved last_ts carries the permission row ts it saw', () => {
+    const ws = mount()
+    globalStore.dispatch(sseSlots([{ key: BACKGROUND, messages: 2, running: true, last_ts: '2026-09-27T23:59:59Z' }]))
+    send(ws, row('permission'))
+    ws.send.mockClear()
+    emitSlotRead(BACKGROUND, '2026-09-27T23:59:59Z')
+    const reads = ws.send.mock.calls.map(c => JSON.parse(c[0] as string)).filter(f => f.type === 'slot_read')
+    expect(reads).toEqual([{ type: 'slot_read', slot: BACKGROUND, read_ts: '2026-09-28T00:00:00Z' }])
+  })
+
+  it('a saved row still records its own ts as the watermark', () => {
+    const ws = mount()
+    send(ws, row('tool_call'))
+    expect(sharedWatermark()).toBe('2026-09-28T00:00:00Z')
+  })
+})
+
+describe('unreadWatermarkTs', () => {
+  it('keeps the ts of a saved row and drops the ts of an unsaved one', () => {
+    for (const role of ['assistant', 'tool_call', 'tool_result', 'user', 'inject']) {
+      expect(unreadWatermarkTs(role, 't1')).toBe('t1')
+    }
+    for (const role of ['chunk', 'done', 'streaming', 'queued', 'permission']) {
+      expect(unreadWatermarkTs(role, 't1')).toBeUndefined()
+    }
+    expect(unreadWatermarkTs('assistant', '')).toBeUndefined()
+    expect(unreadWatermarkTs(undefined, 't1')).toBe('t1')
   })
 })
 

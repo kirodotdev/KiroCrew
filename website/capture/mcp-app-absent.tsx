@@ -165,11 +165,11 @@ const store = configureStore({
       mcpApps: { [`${SLOT}\u001Ft_live`]: PAYLOAD },
       toolLog: [
         // The LIVE row only. `toolLog` is runtime-only and starts empty on a
-        // reload (`chatSlice.ts`: "bucket's toolLog/subagents are runtime-only
-        // and start empty"), so giving a reloaded row a log entry would have
-        // been unfaithful -- and it masked the branch under test, because the
-        // log entry supplies the server identity when it is present and the
-        // row's persisted meta supplies it when it is not.
+        // reload (`state.ts` in `store/chat`: "bucket's toolLog/subagents are
+        // runtime-only and start empty"), so giving a reloaded row a log entry
+        // would have been unfaithful -- and it masked the branch under test,
+        // because the log entry supplies the server identity when it is
+        // present and the row's persisted meta supplies it when it is not.
         entry('t_live', 'create_view', { purpose: 'Draw the two-box diagram', input: '{"elements":2}', output: DREW }),
         entry('t_plain', 'fs_read', { purpose: 'Read the tool row', input: '{"path":"website/src/pages/chat/ToolCallLine.tsx"}', output: 'export default memo(function ToolCallLine(...)' }),
       ],
@@ -184,9 +184,10 @@ initI18n('en')
 /** Drive the REAL eviction, for the capture that photographs the live swap.
  *
  *  Rendering a new app into the same slot is what drops the oldest payload
- *  (`chatSlice.sseMcpAppRender` trims to a per-slot cap), so the notice that
- *  appears here arrives the way it does in a real session -- through the shipped
- *  reducer -- rather than through a delete written for the photograph.
+ *  (`sseMcpAppRender` in `mcpApps.ts` under `store/chat` trims to a per-slot
+ *  cap), so the notice that appears here arrives the way it does in a real
+ *  session -- through the shipped reducer -- rather than through a delete
+ *  written for the photograph.
  *
  *  The cap is module-private, so this dispatches until the live row's payload is
  *  gone instead of repeating the number and drifting from it. Returns how many

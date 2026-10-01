@@ -67,7 +67,8 @@ Two facts about this table decide several rows below.
 
 **There is no app-declarable agent hook.** `backend.hooks` are Python callables inside
 the app's own process; they are not agent lifecycle hooks. The agent hook surface is
-`agent.kiro_hooks` plus autoimport from the kiro hooks dir (`kiro_crew.agent`), it
+`agent.kiro_hooks` plus autoimport from the kiro hooks dir
+(`kiro_crew.agent_materialization.kiro_hooks`, reached through `kiro_crew.agent`), it
 accepts five events -- `preToolUse`, `postToolUse`, `userPromptSubmit`, `agentSpawn`,
 `stop` -- and each entry is `{command, matcher}` where `command` must be an absolute
 path to an existing file with no shell metacharacters. It is operator config, not an

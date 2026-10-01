@@ -10,7 +10,11 @@ from typing import TYPE_CHECKING, Any, Callable
 from aiohttp import web
 
 from kiro_crew.config.loader import KiroCrewConfig
-from kiro_crew.dashboard.chat_persistence import save_slot_off_loop, session_was_deleted
+from kiro_crew.dashboard.chat_persistence import (
+    _coerce_requested_mode,
+    save_slot_off_loop,
+    session_was_deleted,
+)
 from kiro_crew.dashboard.chat_utils import (
     _sync_dashboard_slots,
     drained_to_thread,
@@ -292,11 +296,11 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
             status=400,
         )
     prompt = body.get("prompt")
-    mode_override = body.get("mode")
-    if mode_override is not None and mode_override not in ("", "orchestrator"):
+    mode_override = _coerce_requested_mode(body.get("mode"))
+    if mode_override is not None and mode_override != "":
         return web.json_response(
             {
-                "error": "mode must be '' or 'orchestrator'",
+                "error": "mode must be ''",
                 "code": "invalid_mode",
             },
             status=400,

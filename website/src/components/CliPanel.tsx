@@ -148,6 +148,19 @@ function ensureTerminalFontSync(): void {
   subscribeTerminalFont(scheduleTerminalFontApply)
 }
 
+/**
+ * Open a clicked terminal URL in a new window, passing the URL to `window.open`.
+ *
+ * The addon's default handler opens a blank window and navigates it afterwards.
+ * The desktop shell's window-open handler only sees that `about:blank` target,
+ * classifies it as unsupported and denies it, so the click does nothing there.
+ * Passing the URL up front lets the shell classify it and hand it to the OS
+ * browser, and a browser tab opens it as before.
+ */
+function openTerminalLink(_event: MouseEvent, uri: string): void {
+  window.open(uri, '_blank', 'noopener,noreferrer')
+}
+
 function getOrCreateTerm(id: string): { term: Terminal; fit: FitAddon } {
   let entry = termCache.get(id)
   if (!entry) {
@@ -160,7 +173,7 @@ function getOrCreateTerm(id: string): { term: Terminal; fit: FitAddon } {
     })
     const fit = new FitAddon()
     term.loadAddon(fit)
-    term.loadAddon(new WebLinksAddon())
+    term.loadAddon(new WebLinksAddon(openTerminalLink))
     entry = { term, fit }
     termCache.set(id, entry)
   }

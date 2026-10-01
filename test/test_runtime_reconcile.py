@@ -59,6 +59,14 @@ import pytest
 from kiro_crew import runtime_ownership as ro
 from kiro_crew import runtime_reconcile as rr
 
+# The rootdir conftest wipes runtime_ownership's tables on both sides of every
+# test. This file does its own intra-file isolation with explicit
+# ``ro._reset_for_tests()`` calls, and its positive control at the end reads the
+# table to prove the earlier tests left it clean -- a wipe at ANY test's teardown
+# would empty it first and make that read vacuous. Module-wide, not per test,
+# because the predecessor's teardown is the wipe that matters.
+pytestmark = pytest.mark.keep_runtime_ownership_tables
+
 # ── the reconciler core ───────────────────────────────────────────────────────
 
 
@@ -69,9 +77,14 @@ def _reconciler(
     alive: set[int] | None = None,
     recycled: set[int] | None = None,
     ours: set[int] | None = None,
+    managed: set[int] | None = None,
     leased: set[int] | None = None,
     authorize: bool = True,
     age: float = 10_000.0,
+    # The shipped budget, which is what these tests exercise: the conditions under
+    # test only mean something when the arm is allowed to signal. The observe-only
+    # behaviour an operator selects by setting 0 has its own tests, which pass 0
+    # explicitly.
     max_kills: int = rr.DEFAULT_MAX_KILLS,
     killed: list[int] | None = None,
     forgotten: list[int] | None = None,
@@ -94,6 +107,11 @@ def _reconciler(
         is_alive=lambda pid: pid in live,
         was_recycled=lambda pid: pid in (recycled or set()),
         is_ours=lambda pid: pid in (kernel if ours is None else ours),
+        # Faked for the reason the identity seam is: left at its default it reads the
+        # HOST's argv for these invented numbers, so every kill test would depend on
+        # whether the box happens to run a harness at pid 100. Tests about the argv
+        # condition pass their own set.
+        is_managed=lambda pid: pid in (kernel if managed is None else managed),
         leases_on=lambda pid: 1 if pid in (leased or set()) else 0,
         authorize=lambda pid, reason: authorize,
         identity_of=lambda pid: f"id-{pid}",
@@ -486,6 +504,7 @@ def test_a_kill_that_signalled_nothing_is_not_counted_as_one() -> None:
         recorded_pids=lambda: set(),
         is_alive=lambda pid: True,
         is_ours=lambda pid: True,
+        is_managed=lambda pid: True,  # host-independent: these pids are invented
         leases_on=lambda pid: 0,
         authorize=lambda pid, reason: True,
         identity_of=lambda pid: f"id-{pid}",  # host-independent: these pids are invented
@@ -567,6 +586,7 @@ def test_a_recycled_pid_does_not_inherit_the_previous_passs_confirmation() -> No
         is_alive=lambda pid: True,
         identity_of=lambda pid: identities[pid],
         is_ours=lambda pid: True,
+        is_managed=lambda pid: True,  # host-independent: these pids are invented
         leases_on=lambda pid: 0,
         authorize=lambda pid, reason: True,
         kill_tree=lambda pid, expected=None: killed.append(pid) or 1,
@@ -615,6 +635,7 @@ def test_an_identity_that_changes_before_the_signal_withholds_the_kill() -> None
         is_alive=lambda pid: True,
         identity_of=identity_of,
         is_ours=lambda pid: True,
+        is_managed=lambda pid: True,  # host-independent: these pids are invented
         leases_on=lambda pid: 0,
         authorize=lambda pid, reason: True,
         kill_tree=lambda pid, expected=None: killed.append(pid) or 1,
@@ -647,6 +668,7 @@ def test_an_unreadable_identity_withholds_the_kill() -> None:
         is_alive=lambda pid: True,
         identity_of=no_identity,
         is_ours=lambda pid: True,
+        is_managed=lambda pid: True,  # host-independent: these pids are invented
         leases_on=lambda pid: 0,
         authorize=lambda pid, reason: True,
         kill_tree=lambda pid, expected=None: killed.append(pid) or 1,
@@ -686,6 +708,7 @@ def test_an_identity_unreadable_at_the_last_moment_withholds_the_kill() -> None:
         is_alive=lambda pid: True,
         identity_of=identity_of,
         is_ours=lambda pid: True,
+        is_managed=lambda pid: True,  # host-independent: these pids are invented
         leases_on=lambda pid: 0,
         authorize=lambda pid, reason: True,
         kill_tree=lambda pid, expected=None: killed.append(pid) or 1,
@@ -781,6 +804,7 @@ def test_every_kill_decision_is_audited(tmp_path: Path) -> None:
         is_alive=lambda pid: True,
         identity_of=lambda pid: "stable",
         is_ours=lambda pid: pid == 200,  # 300 lacks the marker and is withheld
+        is_managed=lambda pid: True,  # host-independent: these pids are invented
         leases_on=lambda pid: 0,
         authorize=lambda pid, reason: True,
         audit=audit,
@@ -846,6 +870,7 @@ def test_a_withheld_pid_is_audited_on_a_reason_change_not_every_pass() -> None:
         is_alive=lambda pid: True,
         identity_of=lambda pid: "stable",
         is_ours=lambda pid: pid in ours,
+        is_managed=lambda pid: True,  # host-independent: these pids are invented
         leases_on=lambda pid: 0,
         authorize=lambda pid, reason: False,  # always withheld, same reason
         audit=lambda pid, outcome, why: events.append((pid, why)),
@@ -887,6 +912,7 @@ def test_the_gate_is_not_asked_for_a_pid_the_earlier_checks_withhold() -> None:
         is_alive=lambda pid: True,
         identity_of=identity_of,
         is_ours=lambda pid: True,
+        is_managed=lambda pid: True,  # host-independent: these pids are invented
         leases_on=lambda pid: 0,
         authorize=lambda pid, reason: asked.append(pid) is None,
         kill_tree=lambda pid, expected=None: 1,
@@ -897,6 +923,263 @@ def test_the_gate_is_not_asked_for_a_pid_the_earlier_checks_withhold() -> None:
     rec.run_once()
     rec.run_once()
     assert asked == [], "a pid withheld on identity never reaches the attributing gate"
+
+
+# ── the argv condition, and the kill budget ───────────────────────────────────
+
+
+def _armed(
+    *,
+    kernel: set[int],
+    managed: set[int],
+    asked: list[int],
+    killed: list[int] | None = None,
+    audited: list[tuple[int, str, str]] | None = None,
+    max_kills: int = rr.DEFAULT_MAX_KILLS,
+) -> rr.RuntimeReconciler:
+    """A reconciler past every condition except the argv one, recording gate calls."""
+    return rr.RuntimeReconciler(
+        slice_pids=lambda: set(kernel),
+        recorded_pids=lambda: set(),
+        is_alive=lambda pid: True,
+        identity_of=lambda pid: f"id-{pid}",
+        is_ours=lambda pid: True,
+        is_managed=lambda pid: pid in managed,
+        leases_on=lambda pid: 0,
+        claims_on=lambda pid: 0,
+        authorize=lambda pid, reason: asked.append(pid) is None,
+        kill_tree=lambda pid, expected=None: (killed if killed is not None else []).append(pid)
+        or 1,
+        forget=lambda pid: "retracted",
+        notify_dead=lambda pid: None,
+        age_secs=lambda pid: 10_000.0,
+        max_kills=max_kills,
+        audit=lambda pid, outcome, why: (audited if audited is not None else []).append(
+            (pid, outcome, why)
+        ),
+    )
+
+
+def test_a_process_whose_argv_is_not_a_harness_never_reaches_the_gate() -> None:
+    """MUTATION TARGET: the argv condition sits BEFORE the attributing gate.
+
+    The gate's allow path writes ``runtime kill pid=N caller=runtime_reconcile``, and
+    that line is the record a maintainer reads to answer "did we signal somebody
+    else's process". The unowned population is dominated by processes that inherited
+    our spawn marker and are not harnesses -- a chromium tree, an ``mcp
+    start-server`` broker, a sibling install's interpreter -- and the kill seam
+    declines every one of them. Asked after the gate, each first collects an
+    attribution for a kill that never happens: 3151 such lines for 181 pids against
+    4 real kills over 6.5 hours on one host.
+    """
+    asked: list[int] = []
+    killed: list[int] = []
+    audited: list[tuple[int, str, str]] = []
+    rec = _armed(
+        kernel={200, 300, 400},
+        managed={300},
+        asked=asked,
+        killed=killed,
+        audited=audited,
+    )
+    rec.run_once()
+    audited.clear()
+    reading = rec.run_once()
+
+    assert asked == [300], f"only the harness reaches the gate; got {asked}"
+    assert killed == [300], f"and only it is signalled; got {killed}"
+    assert reading.killed == 1
+    assert sorted(_refusals(audited)) == [
+        "not a managed agent process",
+        "not a managed agent process",
+    ], f"the other two are withheld by name; got {_refusals(audited)}"
+
+
+def test_an_unreadable_argv_withholds_the_kill() -> None:
+    """The fail-closed half: a process whose argv cannot be read is not shown to be
+    a harness, so it is withheld and never attributed."""
+    asked: list[int] = []
+    killed: list[int] = []
+    audited: list[tuple[int, str, str]] = []
+
+    def no_argv(pid: int) -> bool:
+        raise OSError("cannot read the command line")
+
+    rec = _armed(kernel={200}, managed=set(), asked=asked, killed=killed, audited=audited)
+    rec._is_managed = no_argv  # type: ignore[method-assign]
+    rec.run_once()
+    audited.clear()
+    rec.run_once()
+
+    assert killed == [] and asked == []
+    assert _refusals(audited) == ("not a managed agent process",)
+
+
+def test_the_configured_ceiling_cannot_exceed_the_shipped_budget() -> None:
+    """MUTATION TARGET: the field is SUBTRACTIVE.
+
+    ``config.json`` is agent-writable and never passes the dashboard's write gate,
+    and this value governs host-side signals. With the ceiling equal to the shipped
+    budget every reachable setting is at or below what the product already does, so
+    a write can withhold signals and cannot authorize one the arm would not already
+    send. A ceiling above the default would make the field an arming surface.
+    """
+    from kiro_crew.config import sections
+
+    assert sections.RECONCILE_MAX_KILLS_MAX == rr.DEFAULT_MAX_KILLS
+    assert rr.DEFAULT_MAX_KILLS > 0, "and the shipped budget is a real one"
+
+
+def test_the_config_default_matches_the_module_default() -> None:
+    """The two spellings of the shipped default are pinned equal.
+
+    ``config.sections`` cannot import this module -- config is a leaf package and the
+    import would be a cycle -- so the value is written in both places. A test is the
+    only place they can be held together.
+    """
+    from kiro_crew.config import sections
+
+    assert sections.DEFAULT_RECONCILE_MAX_KILLS == rr.DEFAULT_MAX_KILLS
+    assert sections.SessionConfig().reconcile_max_kills == rr.DEFAULT_MAX_KILLS
+
+
+@pytest.mark.parametrize(
+    ("stored", "loaded"),
+    [
+        (0, 0),
+        (5, 5),
+        # The ceiling equals the shipped budget, so a hand-edited value above it
+        # cannot raise the arm past what the product already does.
+        (999, 5),
+        # A numeric STRING reaches the coercion rather than the raw-dict clamp
+        # sweep, so the clamp has to live at the coercion site too.
+        ("999", 5),
+        # Negative clamps DOWN to the floor, which disables the arm rather than
+        # enabling it -- the safe direction for a value that authorizes signals.
+        (-1, 0),
+        # Not a number at all reads as unset, so it takes the shipped default. That
+        # is the same budget an unconfigured host runs, never more.
+        ("plenty", 5),
+        (True, 5),
+    ],
+)
+def test_the_configured_budget_is_clamped_on_load(stored: object, loaded: int) -> None:
+    """MUTATION TARGET: the loader's bounds on ``session.reconcile_max_kills``.
+
+    ``config.json`` is agent-writable and never passes the dashboard's write gate, so
+    the load path is the only place a hand-edited kill budget is bounded.
+    """
+    from kiro_crew.config import loader
+
+    cfg = loader._build_session_config({"reconcile_max_kills": stored})
+    assert cfg.reconcile_max_kills == loaded
+
+
+def test_a_zero_budget_signals_nothing_and_audits_what_it_would_have_killed() -> None:
+    """MUTATION TARGET: the observe-only arm.
+
+    Zero budget must not mean zero information. A candidate that satisfied every
+    local condition is counted in ``would_kill`` and audited under that outcome, so
+    an operator who turned the budget down can see what turning it back up would
+    take -- which ``unowned_alive`` cannot tell them, because it counts the whole
+    unclaimed population.
+    """
+    asked: list[int] = []
+    killed: list[int] = []
+    audited: list[tuple[int, str, str]] = []
+    rec = _armed(
+        kernel={200, 300},
+        managed={300},
+        asked=asked,
+        killed=killed,
+        audited=audited,
+        max_kills=0,  # observe-only, as an operator sets it
+    )
+    rec.run_once()
+    audited.clear()
+    reading = rec.run_once()
+
+    assert killed == [], "nothing is signalled"
+    assert asked == [], "and the gate is never asked, so no kill is attributed"
+    assert reading.killed == 0
+    assert reading.would_kill == 1, f"the candidate is counted; {reading.as_counter_fields()}"
+    assert (
+        300,
+        "would_kill",
+        "observing only: the kill budget is zero",
+    ) in audited, f"and audited under its own outcome; got {audited}"
+    assert reading.as_counter_fields()["would_kill"] == 1
+
+
+def test_an_armed_budget_kills() -> None:
+    """CONTROL for the test above: without this, an arm incapable of killing at all
+    would satisfy it. An armed budget signals, attributes and counts."""
+    asked: list[int] = []
+    killed: list[int] = []
+    rec = _armed(kernel={200, 300}, managed={200, 300}, asked=asked, killed=killed)
+    rec.run_once()
+    reading = rec.run_once()
+
+    assert killed == [200, 300]
+    assert asked == [200, 300], "and each one is attributed, because each one is signalled"
+    assert reading.killed == 2 and reading.would_kill == 0
+
+
+def test_the_budget_is_adopted_before_every_pass_not_frozen_at_construction() -> None:
+    """MUTATION TARGET: :meth:`set_max_kills`.
+
+    The instance is retained for the gateway's life -- the two-pass confirmation is
+    its state -- while the budget is live config. Frozen at construction, turning it
+    down and back up would need a restart.
+    """
+    asked: list[int] = []
+    killed: list[int] = []
+    rec = _armed(kernel={200}, managed={200}, asked=asked, killed=killed, max_kills=0)
+    rec.run_once()
+    observed = rec.run_once()
+    assert killed == [] and observed.would_kill == 1
+
+    rec.set_max_kills(rr.DEFAULT_MAX_KILLS)
+    armed = rec.run_once()
+    assert killed == [200], "the same retained instance kills once the budget is restored"
+    assert armed.killed == 1 and armed.would_kill == 0
+
+    rec.set_max_kills(-5)
+    assert rec._max_kills == 0, "a negative budget reads as observe-only, never as unbounded"
+
+
+def test_the_kill_line_names_the_count_signalled_not_the_root_alone(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """MUTATION TARGET: the kill log reports what the seam actually did.
+
+    The seam's answer is a COUNT over the tree it walked: it signals every managed
+    descendant it discovered and can still withhold the root's own signal. A line
+    naming only the root reported one pid as killed twice an hour apart on a live
+    host -- it was never signalled either time, and both counts came from a
+    descendant -- and a reader chasing that could not tell it from a process that
+    survived a kill.
+    """
+    asked: list[int] = []
+    audited: list[tuple[int, str, str]] = []
+    rec = _armed(kernel={200}, managed={200}, asked=asked, audited=audited)
+    rec._kill_tree = lambda pid, expected=None: 3  # type: ignore[method-assign]
+    rec.run_once()
+    audited.clear()
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.runtime_reconcile"):
+        rec.run_once()
+
+    lines = [r.getMessage() for r in caplog.records]
+    assert any(
+        "signalled 3 process(es) in the tree at pid=200" in line for line in lines
+    ), f"the line names the count and the tree; got {lines}"
+    assert not any(
+        "killed pid=200" in line for line in lines
+    ), "and never claims the root itself was killed"
+    killed_rows = [why for pid, outcome, why in audited if outcome == "killed"]
+    assert (
+        killed_rows and "3 signalled" in killed_rows[0]
+    ), f"the audit carries the count too; got {killed_rows}"
 
 
 def test_the_wiring_claims_pids_tracked_by_any_gateway_on_this_data_home(
@@ -1069,6 +1352,9 @@ def test_the_reconcile_pass_reads_the_pid_union_on_the_loop_not_in_the_worker(
         def __init__(self, active_pids: Any) -> None:
             self._active_pids = active_pids
 
+        def set_max_kills(self, budget: int) -> None:
+            return None
+
         def run_once(self) -> rr.ReconcileReading:
             pass_threads.append(threading.get_ident())
             seen.append(self._active_pids())
@@ -1105,6 +1391,9 @@ def test_an_incomplete_pid_union_skips_the_reconcile_pass(
         def __init__(self, active_pids: Any) -> None:
             self._active_pids = active_pids
 
+        def set_max_kills(self, budget: int) -> None:
+            return None
+
         def run_once(self) -> rr.ReconcileReading:
             ran.append(1)
             return rr.ReconcileReading(supported=True)
@@ -1115,6 +1404,95 @@ def test_an_incomplete_pid_union_skips_the_reconcile_pass(
     asyncio.run(cleanup._reconcile_runtimes_hook())
 
     assert ran == [], "an incomplete union defers the whole pass to the next tick"
+
+
+@pytest.mark.parametrize(
+    ("configured", "expected"),
+    [
+        (0, 0),
+        (5, 5),
+        # config.json is agent-writable and this value authorizes signals, so
+        # anything that is not a plain non-negative int reads as observe-only.
+        (-3, 0),
+        (True, 0),
+        ("5", 0),
+        (None, 0),
+    ],
+)
+def test_the_hook_hands_the_configured_kill_budget_to_every_pass(
+    monkeypatch: pytest.MonkeyPatch, configured: object, expected: int
+) -> None:
+    """MUTATION TARGET: ``session.reconcile_max_kills`` reaches the pass.
+
+    Without this the field is inert: the reconciler would keep whatever budget it was
+    built with, and an operator arming it would see nothing change.
+    """
+    from kiro_crew import session_cleanup as sc
+
+    budgets: list[int] = []
+
+    class _Fake:
+        def __init__(self, active_pids: Any) -> None:
+            self._active_pids = active_pids
+
+        def set_max_kills(self, budget: int) -> None:
+            budgets.append(budget)
+
+        def run_once(self) -> rr.ReconcileReading:
+            return rr.ReconcileReading(supported=True)
+
+    monkeypatch.setattr(sc, "build_reconciler", lambda active_pids, notify_dead: _Fake(active_pids))
+    cleanup, _recorded = _cleanup(candidates=[], active={4242}, reconcile_max_kills=configured)
+
+    asyncio.run(cleanup._reconcile_runtimes_hook())
+    asyncio.run(cleanup._reconcile_runtimes_hook())
+
+    assert budgets == [
+        expected,
+        expected,
+    ], f"every pass adopts the current value, not just the first; got {budgets}"
+
+
+def test_the_configured_budget_is_re_read_on_the_next_tick(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A write between two ticks reaches the second one.
+
+    The reconciler instance is built once and kept, so this is the only thing that
+    makes arming the budget take effect without a gateway restart.
+    """
+    from kiro_crew import session_cleanup as sc
+
+    budgets: list[int] = []
+
+    class _Fake:
+        def __init__(self, active_pids: Any) -> None:
+            self._active_pids = active_pids
+
+        def set_max_kills(self, budget: int) -> None:
+            budgets.append(budget)
+
+        def run_once(self) -> rr.ReconcileReading:
+            return rr.ReconcileReading(supported=True)
+
+    monkeypatch.setattr(sc, "build_reconciler", lambda active_pids, notify_dead: _Fake(active_pids))
+    cleanup, _recorded = _cleanup(candidates=[], active={4242}, reconcile_max_kills=0)
+
+    asyncio.run(cleanup._reconcile_runtimes_hook())
+    cleanup._owner._cfg.session.reconcile_max_kills = rr.DEFAULT_MAX_KILLS
+    asyncio.run(cleanup._reconcile_runtimes_hook())
+
+    assert budgets == [0, rr.DEFAULT_MAX_KILLS], f"the second tick sees the write; got {budgets}"
+
+
+def test_the_real_wiring_defaults_to_the_shipped_budget() -> None:
+    """POSITIVE CONTROL on :func:`build_reconciler`'s own default.
+
+    A caller that does not thread the config through gets the budget the arm already
+    shipped with, so adding the field changes no construction path's behaviour.
+    """
+    reconciler = rr.build_reconciler(active_pids=lambda: set(), notify_dead=lambda pid: None)
+    assert reconciler._max_kills == rr.DEFAULT_MAX_KILLS == 5
 
 
 def test_a_record_in_neither_tracking_file_is_counted_dead_but_not_claimed_retracted(
@@ -1409,10 +1787,17 @@ class _Owner:
 class _SessionCfg:
     timeout_secs = 0
     watchdog_rss_max_mb = 0
+    #: 0, not the shipped default: these fixtures assert what the HOOK hands over,
+    #: so the value has to be one no default could produce by accident.
+    reconcile_max_kills = 0
 
 
 class _Cfg:
-    session = _SessionCfg()
+    def __init__(self) -> None:
+        # Per instance, not a shared class attribute: the fixture writes
+        # ``reconcile_max_kills`` on it, and one shared object would carry a test's
+        # kill budget into every test that ran after it.
+        self.session = _SessionCfg()
 
 
 def _cleanup(
@@ -1422,11 +1807,16 @@ def _cleanup(
     active: set[int] | None = None,
     union_complete: bool = True,
     union_threads: list[int] | None = None,
+    reconcile_max_kills: object = 0,
 ) -> tuple[Any, dict[str, list[int]]]:
     """A ``SessionCleanup`` whose sweeps report *candidates* and record kills.
 
     *union_threads* records the thread each active-pid read ran on, which is how
     the reconcile hook's snapshot-on-the-loop rule is checked.
+
+    *reconcile_max_kills* is what ``session.reconcile_max_kills`` holds for this
+    service, as a raw object rather than an int: the hook reads it off a config file
+    an agent can write, so the tests need to hand it the values a hand edit produces.
     """
     from kiro_crew.session_cleanup import CleanupDeps, CleanupState, SessionCleanup
     from kiro_crew.watchdog import SessionWatchdog
@@ -1491,7 +1881,9 @@ def _cleanup(
         get_session_idle_expired_event=lambda: "idle",
     )
     state = CleanupState(watchdog=SessionWatchdog([]))
-    return SessionCleanup(_Owner(), deps, state=state), recorded
+    owner = _Owner()
+    owner._cfg.session.reconcile_max_kills = reconcile_max_kills
+    return SessionCleanup(owner, deps, state=state), recorded
 
 
 class _Stats:
@@ -2980,6 +3372,7 @@ def test_a_pid_holding_only_a_tenancy_is_never_counted_unowned() -> None:
             is_alive=lambda p: True,
             identity_of=lambda p: "id",
             is_ours=lambda p: True,
+            is_managed=lambda p: True,  # host-independent: this pid is invented
             kill_tree=lambda p, expected=None: (killed.append(p), 1)[1],
             forget=lambda p: "not-mine",
             notify_dead=lambda p: None,
@@ -3537,6 +3930,11 @@ def test_every_tenancy_claim_in_this_file_is_bound_and_released() -> None:
 async def test_the_tenancy_table_is_empty_for_this_files_pids_at_the_end() -> None:
     """POSITIVE CONTROL for the scan: the pids this file claims are free afterwards.
 
+    Reads the table as the earlier tests in this file left it (the module-level
+    ``keep_runtime_ownership_tables`` mark keeps the rootdir conftest from wiping it
+    at every test boundary); wiped, the assertion below would hold against an empty
+    table and prove nothing.
+
     The scan reads text; this reads the table, so a scan that matched nothing -- a
     renamed accessor, a typo in the needle -- cannot pass while every claim leaks.
 
@@ -3552,3 +3950,209 @@ async def test_the_tenancy_table_is_empty_for_this_files_pids_at_the_end() -> No
             f"pid {pid} still carries a claim from an earlier test in this file, which "
             "refuses every later barrier on it"
         )
+
+
+def _cleanup_with_clock(
+    clock: list[float],
+    *,
+    logger: logging.Logger,
+) -> Any:
+    """A reconcile hook harness whose ``build_reconciler`` and clock the caller drives.
+
+    Returns the ``SessionCleanup`` with a mutable ``clock`` (its ``monotonic``
+    reads ``clock[0]``) and a named ``logger`` a ``caplog`` fixture can capture,
+    so the warn-once ledger for a refused pass can be exercised across ticks.
+    """
+    import dataclasses
+
+    cleanup, _recorded = _cleanup(candidates=[], active={4242})
+    cleanup._deps = dataclasses.replace(cleanup._deps, monotonic=lambda: clock[0], logger=logger)
+    return cleanup
+
+
+def _drive_reconcile(cleanup: Any, monkeypatch: pytest.MonkeyPatch, reading: Any) -> None:
+    """Run one reconcile hook tick whose pass returns *reading*."""
+    from kiro_crew import session_cleanup as sc
+
+    class _Fake:
+        def __init__(self, active_pids: Any) -> None:
+            self._active_pids = active_pids
+
+        def set_max_kills(self, budget: int) -> None:
+            return None
+
+        def run_once(self) -> Any:
+            return reading
+
+    monkeypatch.setattr(sc, "build_reconciler", lambda active_pids, notify_dead: _Fake(active_pids))
+    # The hook retains its reconciler across ticks (its two-pass memory). Each
+    # driven tick wants its OWN reading, so drop the retained one first.
+    cleanup.state.runtime_reconciler = None
+    asyncio.run(cleanup._reconcile_runtimes_hook())
+
+
+def test_a_refused_pass_is_reported_at_warning_not_only_debug(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """MUTATION TARGET: a refused reconcile pass surfaces above debug.
+
+    ``supported=False`` reclaims nothing and publishes no counts. Reported only at
+    debug, the reconciler goes silently inert while its source stays unreadable --
+    the defect this fixes. The fact must reach WARNING.
+    """
+    logger = logging.getLogger("test.reconcile.refusal.warn")
+    clock = [100.0]
+    cleanup = _cleanup_with_clock(clock, logger=logger)
+
+    with caplog.at_level(logging.WARNING, logger=logger.name):
+        _drive_reconcile(
+            cleanup,
+            monkeypatch,
+            rr.ReconcileReading(supported=False, reason="cannot read the registry: boom"),
+        )
+
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert warnings, "a refused pass must warn, not stay at debug"
+    assert "cannot read the registry: boom" in warnings[0].getMessage()
+    assert cleanup.state.reconcile_refusal_reason == "cannot read the registry: boom"
+
+
+def test_a_persistent_refusal_warns_once_not_every_tick(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """MUTATION TARGET: the re-warn floor is honored while the reason is unchanged.
+
+    The reconciler ticks on the cleanup cadence, so a condition that persists for
+    minutes must not write one WARNING per tick -- that is the noise the floor
+    exists to prevent.
+    """
+    logger = logging.getLogger("test.reconcile.refusal.once")
+    clock = [0.0]
+    cleanup = _cleanup_with_clock(clock, logger=logger)
+    same = rr.ReconcileReading(supported=False, reason="the tracked-pid snapshot is incomplete")
+
+    with caplog.at_level(logging.WARNING, logger=logger.name):
+        _drive_reconcile(cleanup, monkeypatch, same)
+        clock[0] = 60.0  # well within RECONCILE_REFUSAL_WARN_INTERVAL_SECS
+        _drive_reconcile(cleanup, monkeypatch, same)
+
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1, f"a steady refusal warns once, not per tick; {warnings}"
+
+
+def test_a_new_refusal_reason_re_warns_at_once(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """MUTATION TARGET: a CHANGE of reason bypasses the re-warn floor.
+
+    A different unreadable source is a different event and must not be swallowed by
+    a floor armed for the previous one.
+    """
+    logger = logging.getLogger("test.reconcile.refusal.newreason")
+    clock = [0.0]
+    cleanup = _cleanup_with_clock(clock, logger=logger)
+
+    with caplog.at_level(logging.WARNING, logger=logger.name):
+        _drive_reconcile(
+            cleanup, monkeypatch, rr.ReconcileReading(supported=False, reason="reason A")
+        )
+        clock[0] = 1.0  # far inside the floor
+        _drive_reconcile(
+            cleanup, monkeypatch, rr.ReconcileReading(supported=False, reason="reason B")
+        )
+
+    messages = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(messages) == 2, f"a new reason warns immediately; {messages}"
+    assert any("reason A" in m for m in messages) and any("reason B" in m for m in messages)
+
+
+def test_a_recovered_pass_logs_recovery_and_re_arms(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """MUTATION TARGET: a supported pass after a refusal clears the ledger and re-arms.
+
+    Without the clear the first outage after boot consumes the only WARNING, and a
+    later outage inside the floor is silent -- the original defect in a subtler
+    form.
+    """
+    logger = logging.getLogger("test.reconcile.refusal.recover")
+    clock = [0.0]
+    cleanup = _cleanup_with_clock(clock, logger=logger)
+
+    with caplog.at_level(logging.WARNING, logger=logger.name):
+        _drive_reconcile(
+            cleanup, monkeypatch, rr.ReconcileReading(supported=False, reason="reason A")
+        )
+        clock[0] = 1.0
+        # A supported pass: recovery logged, ledger cleared.
+        _drive_reconcile(cleanup, monkeypatch, rr.ReconcileReading(supported=True))
+        assert cleanup.state.reconcile_refusal_reason is None, "the ledger is cleared on recovery"
+        clock[0] = 2.0
+        # A fresh outage inside the old floor window re-warns immediately.
+        _drive_reconcile(
+            cleanup, monkeypatch, rr.ReconcileReading(supported=False, reason="reason A")
+        )
+
+    messages = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("resumed reclaiming" in m for m in messages), f"recovery is announced; {messages}"
+    # First refusal + recovery + second refusal = 3 WARNING lines despite the floor.
+    assert len(messages) == 3, f"the re-arm lets the next outage warn at once; {messages}"
+
+
+def test_a_supported_pass_with_no_prior_refusal_logs_no_recovery(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A steady healthy reconciler is silent: recovery fires only after a refusal."""
+    logger = logging.getLogger("test.reconcile.refusal.quiet")
+    clock = [0.0]
+    cleanup = _cleanup_with_clock(clock, logger=logger)
+
+    with caplog.at_level(logging.WARNING, logger=logger.name):
+        _drive_reconcile(cleanup, monkeypatch, rr.ReconcileReading(supported=True))
+
+    messages = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert messages == [], f"a healthy pass says nothing; {messages}"
+
+
+def test_an_incomplete_union_skip_surfaces_through_the_same_warn_once_ledger(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """MUTATION TARGET: the hook's OTHER silent-inert skip is not left at debug.
+
+    The incomplete-active-pid-union skip produces no reading and publishes no
+    counts, exactly as a ``run_once`` refusal does, so it must go through the same
+    warn-once ledger rather than a bare debug line -- otherwise the boundary covers
+    only ``run_once`` refusals, not every path that leaves the reconciler inert. It
+    is its own reason, so a distinct transition, and it recovers on the next
+    complete pass.
+    """
+    import dataclasses
+
+    from kiro_crew import session_cleanup as sc
+
+    logger = logging.getLogger("test.reconcile.refusal.union")
+    clock = [0.0]
+    # union_complete=False makes the hook take the incomplete-union skip before it
+    # ever builds or calls a reconciler.
+    cleanup, _recorded = _cleanup(candidates=[], active={4242}, union_complete=False)
+    cleanup._deps = dataclasses.replace(cleanup._deps, monotonic=lambda: clock[0], logger=logger)
+
+    class _Fake:
+        def __init__(self, active_pids: Any) -> None:
+            self._active_pids = active_pids
+
+        def set_max_kills(self, budget: int) -> None:
+            return None
+
+        def run_once(self) -> rr.ReconcileReading:
+            raise AssertionError("the pass must not run while the union is incomplete")
+
+    monkeypatch.setattr(sc, "build_reconciler", lambda active_pids, notify_dead: _Fake(active_pids))
+
+    with caplog.at_level(logging.WARNING, logger=logger.name):
+        asyncio.run(cleanup._reconcile_runtimes_hook())
+
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert warnings, "the incomplete-union skip must warn, not stay at debug"
+    assert "incomplete" in warnings[0].getMessage()
+    assert cleanup.state.reconcile_refusal_reason == "the active-pid union is incomplete"

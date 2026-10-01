@@ -1129,8 +1129,9 @@ one.
 `github` (headers, GraphQL `errors[]`, `gh` stderr wording), `http` (status
 codes, `Retry-After` delay-seconds or HTTP-date, `X-RateLimit-Reset` epoch,
 duck-typed over `urllib`/`aiohttp`/`httpx` error shapes) and `acp_provider`
-(reuses `acp.client`'s own throttle / usage-limit / auth / 5xx patterns and
-`_is_transient_raw_error`, so a third copy cannot drift) — and returns the
+(reuses the ACP layer's own throttle / usage-limit / auth / 5xx patterns and
+`_is_transient_raw_error`, defined in `acp.transport_errors` and read through
+`acp.client`, so a third copy cannot drift) — and returns the
 first match, or `None` when the error is not a dependency error at all. An
 exception carrying a pre-attached `dependency_signal` wins outright.
 `register_adapter(name, fn, first=False)` adds one; an adapter that raises is

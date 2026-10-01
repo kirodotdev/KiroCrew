@@ -22,7 +22,10 @@ import time
 
 import pytest
 
+from kiro_crew import preview_text, voice_reply
 from kiro_crew.constants import md_link_destination
+from kiro_crew.dashboard.handlers import artifacts as artifact_handlers
+from kiro_crew.deploy import render as deploy_render
 from kiro_crew.discord.renderer import _redact_transformed as discord_redact_transformed
 from kiro_crew.imessage import plaintext as imessage_plaintext
 from kiro_crew.imessage.plaintext import to_plaintext
@@ -197,8 +200,9 @@ class TestAnEscapedParenthesisLeavesTheLinkAsWritten:
 _UNIT_CHAR_CLASS = r"[^()\s]"
 _UNIT_RE = re.compile(rf"\(({md_link_destination(_UNIT_CHAR_CLASS)}*)\)")
 
-#: Every distinct character class a caller passes to the unit: Slack; Telegram,
-#: WhatsApp and iMessage; the display-safety screen.
+#: Every distinct character class a caller passes to the unit, in order: Slack;
+#: the session preview, voice reply and artifact snippet; Telegram, WhatsApp,
+#: iMessage and the artifact-deploy page; the display-safety screen.
 _CALLER_CLASSES = ["[^()|>]", "[^()]", r"[^()\s]", r"[^()\n]"]
 
 
@@ -978,6 +982,49 @@ class TestRendererLabelsAreNoWiderThanTheScreens:
         small, large = elapsed(5_000), elapsed(20_000)
         assert large < 0.5, (renderer, large)
         assert large <= max(8 * small, 0.05), (renderer, small, large)
+
+
+#: The link patterns outside chat that read a destination with ``md_link_destination``:
+#: the session preview, the voice reply, the artifact snippet and the deploy page.
+#: Their label stops at the next ``[`` and, as CommonMark link text may, can span a
+#: line break.
+_OUTSIDE_CHAT_LINK_PATTERNS = {
+    "preview": preview_text._LINK_RE,
+    "preview-image": preview_text._IMAGE_RE,
+    "voice": voice_reply._MARKDOWN_LINK_RE,
+    "artifact-snippet": artifact_handlers._MD_LINK_RE,
+    "deploy-page": deploy_render._LINK_RE,
+}
+
+
+class TestLinkPatternsOutsideChatStayLinear:
+    """A label or destination that runs on past the next opener is rescanned to the
+    end of the text from every ``[``, which is quadratic in the length of a message."""
+
+    @pytest.mark.parametrize("opener", ["[b", "![b", "[b\n", "[b](x"])
+    @pytest.mark.parametrize("site", sorted(_OUTSIDE_CHAT_LINK_PATTERNS))
+    def test_a_run_of_openers_stays_fast(self, site, opener):
+        pattern = _OUTSIDE_CHAT_LINK_PATTERNS[site]
+
+        def elapsed(repeats: int) -> float:
+            text = opener * repeats
+            started = time.perf_counter()
+            assert pattern.sub("", text) == text
+            return time.perf_counter() - started
+
+        small, large = elapsed(5_000), elapsed(20_000)
+        assert large < 0.5, (site, opener, large)
+        assert large <= max(8 * small, 0.05), (site, opener, small, large)
+
+    @pytest.mark.parametrize("site", sorted(_OUTSIDE_CHAT_LINK_PATTERNS))
+    def test_a_hard_wrapped_label_is_still_a_link(self, site):
+        """CommonMark link text may span a line break, and these patterns read
+        documents whose labels are hard-wrapped, so the label keeps the break."""
+        text = "[two\nlines](https://u)"
+        if site == "preview-image":
+            text = "!" + text
+        match = _OUTSIDE_CHAT_LINK_PATTERNS[site].search(text)
+        assert match is not None and match.group(1) == "two\nlines", site
 
 
 def _recording_redactor(warnings: list[str]):

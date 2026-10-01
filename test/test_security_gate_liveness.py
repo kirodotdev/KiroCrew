@@ -115,13 +115,39 @@ def _url_payload_command(n: int) -> str:
 #: control logic and no new matching pass. This branch's raise and the ones above it
 #: are independent additions to the same ratchet, so the number below is re-MEASURED
 #: off the tree rather than being the arithmetic sum of the deltas.
+#: Raised again, from 27,863, for the own-address startup warm in ``argv_floor``:
+#: the gateway starts the netlink read at boot, the worker reads and publishes that
+#: table before any DNS lookup, and the publish merges the addresses and opens the
+#: IP-literal window in one lock hold while each check reads the window flag before
+#: the names, so the first ssh after a restart is not refused as this machine and a
+#: secondary own IP is never admitted mid-publish. A dump that ends without
+#: NLMSG_DONE, or that the kernel flags NLM_F_DUMP_INTR, counts as unread, so a
+#: partial table never opens the window. So does an NLMSG_DONE whose errno is not 0.
+#: Three incomplete dumps in a row log one warning, so a host whose table never
+#: reads can be told apart from a target that is really this machine.
+#:
+#: Re-pinned from 27,942 for the NUL blanking in ``inline_payload._lex``: one line
+#: that swaps each NUL for a space before tokenizing, plus the docstring saying why.
+#: CPython 3.12 raises ``SystemError`` for a NUL after an indented block, which
+#: escaped the lexer and crashed the gate on an ordinary ``b'\0'`` in a payload.
+#: No new rule and no new matching pass.
+#: Raised again, from 27,948, by one line: the ``vouched-executions`` entry in
+#: ``_SENSITIVE_HOME_DIRS``. Each file there is the gateway's restart-surviving
+#: word that a session may reach its member's private store, so no file tool may
+#: write it. The fuller reason lives beside its ``sandbox._CREW_HIDDEN_LEAVES`` mask.
+#:
+#: Re-pinned from 27,949 for ``redaction._DOCUMENT_LINK_RE``: pass 3 skips a run
+#: wholly inside a Google Docs, Drive or Confluence link of a fixed route, because a
+#: document id is the same random base64 a key is and no gate can split the two.
+#: One route regex, one span helper, a four-line check in pass 3, and the comment
+#: naming the residual. No pass widened and no threshold moved.
 #:
 #: The number IS the package's measured total, carrying no spare room: a ratchet with
 #: headroom admits exactly the unreviewed growth it exists to catch, so the next line
 #: added here fails this gate and has to be re-pinned deliberately, with its reason
 #: written above. The guards that detect a monolith growing back are the per-file cap
 #: and the facade's share below, and both must stay untouched.
-_PACKAGE_LINE_BUDGET = 27_863
+_PACKAGE_LINE_BUDGET = 28_025
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

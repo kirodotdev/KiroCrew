@@ -50,6 +50,7 @@ from kiro_crew.acp.types import (
     OPTION_ALLOW_ONCE,
     STOP_REASON_CONTENT_FILTERED_WIRE,
     TERMINAL_TOOL_STATUSES,
+    TODO_ID_MAX,
     TODO_TASKS_MAX,
     TODO_TEXT_MAX,
     TOOL_PURPOSE_KEYS,
@@ -1682,6 +1683,15 @@ def build_permission_event(
     # then describes the dialog, not the call the envelope names.
     _harness_tool_id = _permission_tool_id(params) if envelope is None else ""
 
+    # The agent's stated reason for the call, shown beside the approval. The
+    # same agent-authored display text a tool_call frame carries, read the same
+    # way: from the params the preceding tool_call cached, else the frame's own.
+    _purpose = extract_tool_purpose(_resolved_raw_params) or extract_tool_purpose(
+        tool_call.get("rawInput")
+    )
+    if _purpose:
+        _purpose = _redact(_purpose)
+
     event = AcpEvent(
         kind=EVENT_PERMISSION_REQUEST,
         request_id=request_id,
@@ -1701,6 +1711,7 @@ def build_permission_event(
         diff_path=_diff_path,
         spawn_target=_spawn_target,
         harness_tool_id=_harness_tool_id,
+        tool_purpose=_purpose,
     )
     return event, recorded
 
@@ -2572,7 +2583,9 @@ def parse_todo_snapshot(
         task_id = raw.get("id")
         tasks.append(
             {
-                "id": str(task_id) if task_id is not None else str(idx + 1),
+                # Provider-authored like the text: redacted BEFORE the bound, so
+                # the cut cannot sever a secret and leak its head.
+                "id": _redact(str(task_id) if task_id is not None else str(idx + 1))[:TODO_ID_MAX],
                 "text": text,
                 # `completed` is a plain bool in kiro-cli 2.14.0 — there is no
                 # in-progress state. bool() keeps a stray truthy string from

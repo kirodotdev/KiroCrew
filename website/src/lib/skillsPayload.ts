@@ -1,4 +1,4 @@
-// Payload contract for GET /api/skills (api.skills in api/client.ts).
+// Payload contract for GET /api/skills (api.skills in api/client/skills.ts).
 //
 // The endpoint answers with the bare array (legacy, every unscoped caller) OR
 // — only when the server actually applied the agent's skill:// mapping — the

@@ -38,7 +38,9 @@ import { i18nT } from '../../i18n/t'
 import { ThemeDroppedRulesNotice } from './ThemeDroppedRulesNotice'
 import ErrorNotice from '../../components/ErrorNotice'
 import { useImeGuard } from '../../hooks/useImeGuard'
-import { useReduceTransparency } from '../../hooks/useReduceTransparency'
+import { useBranding } from '../../hooks/useBranding'
+import { useLiquidGlass } from '../../hooks/useLiquidGlass'
+import { TranslucentPanelsPreview } from './TranslucentPanelsPreview'
 /**
  * Lightweight inline spinner (no modal / progress bar — matches the "status,
  * not ceremony" preference). Colors come from theme CSS vars via Tailwind
@@ -103,7 +105,8 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
   const isInstalledTheme = allThemes.find((t) => t.value === colorTheme)?.installed === true
   const { uiMode, setUIMode } = useUIMode()
   const editor = useThemeEditor()
-  const { reduceTransparency, setReduceTransparency } = useReduceTransparency()
+  const { liquidGlass, setLiquidGlass } = useLiquidGlass()
+  const { botName } = useBranding()
   const termFont = useTerminalFont()
   // Probed families become picker rows previewed in their own family, so the
   // Powerline sample answers "will my prompt theme render" before the choice is
@@ -206,7 +209,7 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
   type KirocrewCfg = {
     dashboard?: {
       recent_tint_count?: number
-      terminal?: { shell?: string; completion?: { enabled?: boolean } }
+      terminal?: { shell?: string; completion?: { enabled?: boolean }; reuse_current?: boolean }
     }
   }
   const mcQ = useQuery<KirocrewCfg>({
@@ -314,6 +317,26 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
       setConfigPathValue(cached as KirocrewCfg, 'dashboard.terminal.completion.enabled', value),
     onFailure: () => setCompletionError(i18nT('pages.settings.displayPanel.terminal_completion_save_failed')),
     onSupersede: () => setCompletionError(null),
+  }))
+
+  // Run-in-terminal tab reuse (dashboard.terminal.reuse_current). Server-side
+  // and off by default — the run-in-terminal handler reads it on each click, so
+  // a flip takes effect with no restart. Only a literal `true` reads as on, the
+  // same rule the backend applies, so a hand-edited non-boolean cannot show as
+  // on here while the handler still opens a fresh tab. Same per-path overlay as
+  // the shell and completion fields, so a slow save cannot roll back a sibling.
+  const serverReuseCurrent = mcQ.data?.dashboard?.terminal?.reuse_current === true
+  const shownReuseCurrent = overlay.shown('dashboard.terminal.reuse_current', serverReuseCurrent)
+  const [reuseCurrentError, setReuseCurrentError] = useState<string | null>(null)
+  const reuseCurrentMut = useMutation(overlay.mutationOpts<boolean>({
+    queryKey: ['kirocrewConfig'],
+    mutationFn: (value: boolean) => api.patchConfig('dashboard.terminal.reuse_current', value),
+    path: () => 'dashboard.terminal.reuse_current',
+    displayValue: v => v,
+    applyToCache: (cached, value) =>
+      setConfigPathValue(cached as KirocrewCfg, 'dashboard.terminal.reuse_current', value),
+    onFailure: () => setReuseCurrentError(i18nT('pages.settings.displayPanel.terminal_reuse_current_save_failed')),
+    onSupersede: () => setReuseCurrentError(null),
   }))
 
   // ── Install theme (Level 0) from a local folder or a GitHub repo ──
@@ -496,6 +519,26 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
               { value: 'cli', label: 'CLI' },
             ]}
             onChange={v => setUIMode(v as 'chat' | 'cli')} />
+          {/* The translucent panels (the Liquid Glass primitive: the message
+              box, the chips, the Settings search capsule, the list search
+              fields, the notification panes) are opt-in. Off (the default)
+              they are solid cards -- the same rules the app applies under the
+              OS's own reduced-transparency setting, so the two paths cannot
+              look different. On, they render as frosted glass over whatever
+              scrolls under them. Browser-local, like the font family: it is
+              about how this screen renders, so it sits with the other
+              how-the-UI-draws choices (interface style) rather than with the
+              theme catalog. The preview under the row is the real Glass
+              primitive over a skeleton transcript, so it follows the switch
+              live and shows what the setting changes before the user leaves
+              Settings. */}
+          <SettingsToggle
+            label={i18nT('pages.settings.displayPanel.translucent_panels')}
+            description={i18nT('pages.settings.displayPanel.translucent_panels_desc')}
+            checked={liquidGlass}
+            onChange={setLiquidGlass}
+          />
+          <TranslucentPanelsPreview placeholder={i18nT('components.chatInput.message_placeholder', { bot: botName })} />
         </SettingsCard>
       </SettingsSection>
           )
@@ -661,6 +704,18 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
               are unsaved local state, and the hand-off's navigation unmounts
               the whole panel with them. Same rule as the language notice. */}
           <ErrorNotice message={completionError} variant="inline" />
+          <SettingsToggle
+            label={i18nT('pages.settings.displayPanel.terminal_reuse_current')}
+            description={i18nT('pages.settings.displayPanel.terminal_reuse_current_desc')}
+            checked={shownReuseCurrent}
+            onChange={v => reuseCurrentMut.mutate(v)}
+            disabled={reuseCurrentMut.isPending || !mcQ.isSuccess}
+            configKey="dashboard.terminal.reuse_current"
+          />
+          {/* No hand-off: same unsaved-draft reason as the completion toggle
+              above — `shellDraft` and `installValue` on this panel would be
+              discarded by the hand-off's navigation. */}
+          <ErrorNotice message={reuseCurrentError} variant="inline" />
         </SettingsCard>
       </SettingsSection>
           )
@@ -805,18 +860,6 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
                 and navigating to the chat would discard it. */}
             <ErrorNotice message={installError} variant="inline" />
           </div>
-          {/* The Liquid Glass panes (message box, chips, the Settings search
-              capsule) are translucent over whatever scrolls under them. This
-              switch renders them as solid cards instead -- the same rules the
-              app applies under the OS's own reduced-transparency setting, so
-              the two paths cannot look different. Browser-local, like the font
-              family: it is about how this screen renders. */}
-          <SettingsToggle
-            label={i18nT('pages.settings.displayPanel.reduce_transparency')}
-            description={i18nT('pages.settings.displayPanel.reduce_transparency_desc')}
-            checked={reduceTransparency}
-            onChange={setReduceTransparency}
-          />
         </SettingsCard>
       </SettingsSection>
 

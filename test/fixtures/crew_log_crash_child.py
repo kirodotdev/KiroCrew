@@ -75,7 +75,7 @@ def main() -> int:
         )
         _park(marker_path, "chunks-orphaned")
 
-    else:  # pragma: no cover - a typo in the test, not a code path
+    else:  # a typo in a test; the fail-fast test exercises it on purpose
         raise SystemExit(f"unknown failpoint {failpoint!r}")
 
     return 0  # pragma: no cover - unreachable, the child is killed

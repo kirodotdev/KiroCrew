@@ -121,6 +121,36 @@ function populatedBundle(overrides: Record<string, unknown> = {}) {
         last: null,
       },
     },
+    subagents: {
+      name: 'subagents',
+      seq: 1842,
+      value: {
+        by_id: {
+          'sub-1': {
+            agent_id: 'sub-1', seq_spawned: 1200,
+            agent: 'kirocrew-worker', model: 'a-model',
+            outcome: 'completed', ms: 41000, credits: 1.75, reason: '',
+          },
+          'sub-2': {
+            agent_id: 'sub-2', seq_spawned: 1400,
+            agent: 'kirocrew-worker', model: 'a-model',
+            outcome: 'stopped', ms: 900, credits: null, reason: 'kill failed: pid 8821 still alive',
+          },
+          'sub-3': {
+            agent_id: 'sub-3', seq_spawned: 1830,
+            agent: 'kirocrew-knowledge', model: 'a-model',
+            outcome: null, ms: null, credits: null, reason: '',
+          },
+        },
+        running: 1,
+        running_exact: true,
+        omitted: 0,
+        totals: {
+          spawned: 3, completed: 1, failed: 0, stopped: 1, unknown: 0,
+          closed_unmatched: 0,
+        },
+      },
+    },
     ...overrides,
   }
 }
@@ -137,13 +167,14 @@ describe('CrewLogTab', () => {
     renderWithProviders(<CrewLogTab slot={SLOT} />)
     await waitFor(() => expect(screen.getByText('Status')).toBeInTheDocument())
     // Every fold has a header, whether or not its body is open.
-    for (const title of ['Status', 'Usage', 'Timeline', 'Tools', 'Approvals']) {
+    for (const title of ['Status', 'Usage', 'Timeline', 'Tools', 'Approvals', 'Subagents']) {
       expect(screen.getByText(title)).toBeInTheDocument()
     }
     // The collapsed list folds still say how much they hold.
     expect(screen.getByText('moments: 3')).toBeInTheDocument()
     expect(screen.getByText('calls: 96 · unfinished: 2')).toBeInTheDocument()
     expect(screen.getByText('asked: 4 · pending: 1')).toBeInTheDocument()
+    expect(screen.getByText('dispatched: 3 · running: 1')).toBeInTheDocument()
   })
 
   it('reports the highest fold seq as the version it folded through', async () => {
@@ -291,11 +322,11 @@ describe('CrewLogTab', () => {
   })
 
   it('re-reads when the turn ends even while a subagent is still running', async () => {
-    // `selectComposerBusy` stays true while spawned work runs (chatSlice.ts:3923),
-    // so watching only that signal meant a turn which finished alongside a
-    // long-running subagent kept showing its PRE-turn fold for as long as the
-    // subagent lived -- minutes, not a moment. The session's own turn edge has to
-    // be watched as well.
+    // `selectComposerBusy` stays true while spawned work runs (selectors.ts in
+    // store/chat), so watching only that signal meant a turn which finished
+    // alongside a long-running subagent kept showing its PRE-turn fold for as long
+    // as the subagent lived -- minutes, not a moment. The session's own turn edge
+    // has to be watched as well.
     const store = createTestStore()
     store.dispatch(setActiveSlot(SLOT))
     renderWithProviders(<CrewLogTab slot={SLOT} />, { store })
@@ -538,5 +569,297 @@ describe('CrewLogTab', () => {
     await waitFor(() => expect(button).not.toBeDisabled())
     fireEvent.click(button)
     await waitFor(() => expect(api.sessionCrewLogProjections).toHaveBeenCalledTimes(2))
+  })
+
+  it('draws the subagents table', async () => {
+    renderWithProviders(<CrewLogTab slot={SLOT} />)
+    await waitFor(() => expect(screen.getByText('Subagents')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Subagents'))
+    const table = screen.getByText('subagent').closest('table')
+    expect(table).toMatchSnapshot()
+  })
+
+  it('tells a reported charge, an unreported one and a running child apart', async () => {
+    // THREE states, and the middle one is the one a panel gets wrong: a child that
+    // reported no charge must not be drawn as having cost 0.
+    renderWithProviders(<CrewLogTab slot={SLOT} />)
+    await waitFor(() => expect(screen.getByText('Subagents')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Subagents'))
+    // Addressed by POSITION, which also pins the order: the fold renders rows in the
+    // order the children were dispatched, and two of these share an agent name. Filtered
+    // to the CHILD rows -- a child that did not finish also emits a full-width reason row,
+    // which has one cell rather than five.
+    const all = [...screen.getByText('subagent').closest('table')!.querySelectorAll('tbody tr')]
+    const rows = all.filter(tr => tr.querySelectorAll('td').length === 5)
+    expect(rows).toHaveLength(3)
+    // sub-2 was stopped, so its reason row is the one extra.
+    expect(all).toHaveLength(4)
+    expect(all[2].textContent).toContain('kill failed: pid 8821 still alive')
+    const text = (n: number) => rows[n].textContent ?? ''
+    // sub-1 finished and reported 1.75.
+    expect(text(0)).toContain('finished')
+    expect(text(0)).toContain('1.75')
+    // sub-2 was stopped and reported nothing: said so, not zeroed.
+    expect(text(1)).toContain('stopped')
+    expect(text(1)).toContain('not reported')
+    expect(text(1)).not.toMatch(/\b0\b/)
+    // sub-3 has not closed, so it has neither an outcome nor a duration to draw --
+    // and "0.0s" would read as a child that finished instantly.
+    expect(text(2)).toContain('running')
+    // A dash, NOT "not said": its cost is not knowable yet rather than withheld, and the
+    // same words for both collapsed two of the three states back into one.
+    expect(text(2)).not.toContain('not reported')
+    expect(text(2)).not.toContain('0.0s')
+  })
+
+  it('routes every reason through the error surface, whatever the outcome says', async () => {
+    // The container follows the OUTCOME, not whether a reason exists. A run the owner
+    // stopped did not fail, and dressing it in a red triangle plus "Ask the agent"
+    // contradicted the neutral pill one line above it.
+    const bundle = populatedBundle()
+    const byId = (bundle.subagents.value as Record<string, unknown>).by_id as Record<string, Record<string, unknown>>
+    byId['sub-1'].outcome = 'failed'
+    byId['sub-1'].reason = 'the child crashed'
+    vi.spyOn(api, 'sessionCrewLogProjections').mockResolvedValue(read(bundle))
+    renderWithProviders(<CrewLogTab slot={SLOT} />)
+    await waitFor(() => expect(screen.getByText('Subagents')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Subagents'))
+    // BOTH reach the hand-off, because both values came from an error field.
+    const failedRow = screen.getByText('the child crashed').closest('tr')
+    expect(failedRow?.querySelector('[role="alert"]')).not.toBeNull()
+    const stoppedRow = screen.getByText('kill failed: pid 8821 still alive').closest('tr')
+    expect(stoppedRow?.querySelector('[role="alert"]')).not.toBeNull()
+    // And the outcome still owns the PILL, which is the distinction it is actually for.
+    expect(screen.getByText('stopped')).toBeInTheDocument()
+  })
+
+  it('says the list cannot show children the fold never kept', async () => {
+    const bundle = populatedBundle()
+    const value = bundle.subagents.value as Record<string, unknown>
+    // A session past the retention cap: `spawned` exceeds the rows by `omitted`, on
+    // purpose, and a closer landed with no row to put it on.
+    Object.assign(value, { omitted: 11, running: 12 })
+    Object.assign(value.totals as object, { spawned: 14 })
+    vi.spyOn(api, 'sessionCrewLogProjections').mockResolvedValue(read(bundle))
+    renderWithProviders(<CrewLogTab slot={SLOT} />)
+    await waitFor(() => expect(screen.getByText('Subagents')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Subagents'))
+    // Every unlisted child here is one the FOLD dropped, so the line closes rather than
+    // pointing anywhere: a reader who counted 11 and went looking found nothing, which is
+    // the dead end this wording exists to remove.
+    // All three reconciliation sentences now open with the SAME clause, so the opener cannot
+    // tell them apart -- the tail does. And the `gone` tail is a PREFIX of the `dropped`
+    // one, so this discriminates on what `gone` must NOT say instead: it offers nothing to
+    // ask for, because there is nothing left to ask for.
+    const line = screen.getByText(/11 more counted above/)
+    expect(line.textContent).toContain(
+      '11 more counted above, not listed here. The record kept no row for them.',
+    )
+    expect(line.textContent).toContain('11 of them are still running.')
+    // "ask the agent for", not the bare phrase: the bare one is the `AskAgentButton` label
+    // and appears legitimately elsewhere on this panel.
+    expect(line.textContent!.toLowerCase()).not.toContain('ask the agent for')
+    // And the header reports every dispatch, not the row count.
+    expect(screen.getByText('dispatched: 14 · running: 12')).toBeInTheDocument()
+  })
+
+  it('points at the agent for children this table trimmed, and names the rest separately', async () => {
+    // The OTHER half of the split. A row past `TABLE_ROWS` is still in the projection the
+    // panel already fetched, so it is reachable -- reporting it with the same sentence as
+    // a dropped dispatch would either strand the reader or over-promise.
+    const bundle = populatedBundle()
+    const value = bundle.subagents.value as Record<string, unknown>
+    const byId = value.by_id as Record<string, Record<string, unknown>>
+    for (let i = 4; i <= 17; i += 1) {
+      byId[`sub-${i}`] = {
+        agent_id: `sub-${i}`, seq_spawned: 1830 + i,
+        agent: 'kirocrew-worker', model: 'a-model',
+        outcome: 'completed', ms: 1000, credits: 0.5, reason: '',
+      }
+    }
+    Object.assign(value, { omitted: 2, running: 1 })
+    Object.assign(value.totals as object, { spawned: 19, completed: 15 })
+    vi.spyOn(api, 'sessionCrewLogProjections').mockResolvedValue(read(bundle))
+    renderWithProviders(<CrewLogTab slot={SLOT} />)
+    await waitFor(() => expect(screen.getByText('Subagents')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Subagents'))
+    // 17 children held, 12 drawn, 2 never retained.
+    const line = screen.getByText(/7 more counted above/)
+    // ONE sentence for the mixed case: a promised "full list" cannot include children the
+    // record dropped, and "these" had nothing a reader could bind it to.
+    expect(line.textContent).toContain(
+      '7 more counted above, not listed here. Ask the agent for 5 of them. '
+      + 'The record kept no row for the other 2.',
+    )
+    expect(line.textContent).not.toContain('see the full list')
+    // A routine retention cap read as an incident to the reader UX sat with. The sentence
+    // states what the record keeps, not that something was lost beyond recovery.
+    expect(line.textContent).not.toContain('cannot be recovered')
+  })
+
+  it('orders rows by the dispatch seq, not by how an agent id happens to be spelled', async () => {
+    // JSON revives an integer-like key ahead of every other key regardless of where it sat
+    // in the document, so a runtime that spells an agent id as digits would silently
+    // reorder a table that trusted object-key order.
+    const bundle = populatedBundle()
+    const value = bundle.subagents.value as Record<string, unknown>
+    const byId = value.by_id as Record<string, Record<string, unknown>>
+    byId['900'] = {
+      agent_id: '900', seq_spawned: 1900,
+      agent: 'last-dispatched', model: 'a-model',
+      outcome: 'completed', ms: 1000, credits: 0.5, reason: '',
+    }
+    Object.assign(value.totals as object, { spawned: 4, completed: 2 })
+    vi.spyOn(api, 'sessionCrewLogProjections').mockResolvedValue(read(JSON.parse(JSON.stringify(bundle))))
+    renderWithProviders(<CrewLogTab slot={SLOT} />)
+    await waitFor(() => expect(screen.getByText('Subagents')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Subagents'))
+    const all = [...screen.getByText('subagent').closest('table')!.querySelectorAll('tbody tr')]
+    const rows = all.filter(tr => tr.querySelectorAll('td').length === 5)
+    // Highest seq, so LAST -- even though its key sorts first across the JSON boundary.
+    expect(rows[rows.length - 1].textContent).toContain('last-dispatched')
+  })
+
+  it('draws its own copy, not an empty table, for a session that dispatched nobody', async () => {
+    // The state most sessions show on first expand.
+    const bundle = populatedBundle()
+    bundle.subagents.value = {
+      by_id: {}, running: 0, running_exact: true, omitted: 0,
+      totals: {
+        spawned: 0, completed: 0, failed: 0, stopped: 0, unknown: 0,
+        closed_unmatched: 0,
+      },
+    }
+    vi.spyOn(api, 'sessionCrewLogProjections').mockResolvedValue(read(bundle))
+    renderWithProviders(<CrewLogTab slot={SLOT} />)
+    await waitFor(() => expect(screen.getByText('Subagents')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Subagents'))
+    expect(screen.getByText('No subagents dispatched.')).toBeInTheDocument()
+    // No header row over an empty body, which reads as a list that failed to load.
+    expect(screen.queryByText('subagent')).toBeNull()
+    expect(screen.queryByText('subagents dispatched')).toBeNull()
+  })
+
+  it('says "at least" wherever the fold reports its running count as a floor', async () => {
+    // Both truncations at once: a dispatch dropped past the cap AND a closer that matched no
+    // row. The fold subtracts that closer without being able to tell whether it belongs to
+    // the dropped dispatch, so the count can be short -- and drawing it as exact states a
+    // measurement the record cannot support.
+    const bundle = populatedBundle()
+    const value = bundle.subagents.value as Record<string, unknown>
+    Object.assign(value, { omitted: 11, running: 12, running_exact: false })
+    Object.assign(value.totals as object, { spawned: 14, closed_unmatched: 2 })
+    vi.spyOn(api, 'sessionCrewLogProjections').mockResolvedValue(read(bundle))
+    renderWithProviders(<CrewLogTab slot={SLOT} />)
+    await waitFor(() => expect(screen.getByText('Subagents')).toBeInTheDocument())
+    // The collapsed header, which is where a reader meets the number first.
+    expect(screen.getByText('dispatched: 14 \u00b7 running: at least 12')).toBeInTheDocument()
+    fireEvent.click(screen.getByText('Subagents'))
+    expect(screen.getByText(/11 more counted above/).textContent)
+      .toContain('At least 11 of them are still running.')
+  })
+
+  it('states the running count plainly when the fold reports it as exact', async () => {
+    // One truncation is not enough: with nothing omitted, every open child has a visible row,
+    // so the count cannot be short and hedging it would understate what the record knows.
+    const bundle = populatedBundle()
+    const value = bundle.subagents.value as Record<string, unknown>
+    Object.assign(value, { omitted: 11, running: 12, running_exact: true })
+    Object.assign(value.totals as object, { spawned: 14 })
+    vi.spyOn(api, 'sessionCrewLogProjections').mockResolvedValue(read(bundle))
+    renderWithProviders(<CrewLogTab slot={SLOT} />)
+    await waitFor(() => expect(screen.getByText('Subagents')).toBeInTheDocument())
+    expect(screen.getByText('dispatched: 14 \u00b7 running: 12')).toBeInTheDocument()
+    fireEvent.click(screen.getByText('Subagents'))
+    expect(screen.getByText(/11 more counted above/).textContent)
+      .toContain('11 of them are still running.')
+  })
+
+  it('keeps a truncated agent and model name readable', async () => {
+    // Both cells clip at a `max-w`, and these names differ in their TAILS, so an ellipsis
+    // can hide the only part that identifies the row.
+    renderWithProviders(<CrewLogTab slot={SLOT} />)
+    await waitFor(() => expect(screen.getByText('Subagents')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Subagents'))
+    const all = [...screen.getByText('subagent').closest('table')!.querySelectorAll('tbody tr')]
+    const cells = all.filter(tr => tr.querySelectorAll('td').length === 5)[2].querySelectorAll('td')
+    expect(cells[0].getAttribute('title')).toBe('kirocrew-knowledge')
+    expect(cells[1].getAttribute('title')).toBe('a-model')
+  })
+
+  it('does not claim nothing was dispatched when only closers reached the log', async () => {
+    // `spawned` at 0 is not "nothing happened": a child whose `subagent/spawned` append was
+    // abandoned in a `write/dropped` marker still gets closed, so the fold bills
+    // `closed_unmatched`, `ms` and `credits` against a child that genuinely ran.
+    const bundle = populatedBundle()
+    bundle.subagents.value = {
+      by_id: {}, running: 0, running_exact: true, omitted: 0, limit: 512,
+      totals: {
+        spawned: 0, completed: 0, failed: 1, stopped: 0, unknown: 0,
+        closed_unmatched: 1,
+      },
+    }
+    vi.spyOn(api, 'sessionCrewLogProjections').mockResolvedValue(read(bundle))
+    renderWithProviders(<CrewLogTab slot={SLOT} />)
+    await waitFor(() => expect(screen.getByText('Subagents')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Subagents'))
+    expect(screen.queryByText('No subagents dispatched.')).toBeNull()
+    // And no `0` tile. A count of 0 an inch above "1 subagent finished" is a contradiction
+    // on its face; the true-empty state already hides the tile and this state needs the
+    // same treatment, so the sentence stands alone and says why the count would be 0.
+    expect(screen.queryByText('subagents dispatched')).toBeNull()
+    // And the header stays quiet. Both its counts would read 0 -- truthfully, since nothing
+    // was recorded as dispatched and nothing is running -- an inch above a sentence saying
+    // one child finished, which is the same contradiction the tile made one line down.
+    expect(screen.queryByText(/dispatched: 0/)).toBeNull()
+    // And it draws no table either. Declining the empty state leaves `by_id` empty, so the
+    // child table would be a `thead` over an empty `tbody` -- the same "list that failed to
+    // load" shape the sibling empty-state test forbids, reached by the other route. The
+    // table is gated on having a row rather than on which escape fired above it.
+    expect(screen.queryByText('subagent')).toBeNull()
+    expect(screen.queryByText('outcome')).toBeNull()
+    // What it says INSTEAD. A `0` tile alone leaves the reader with a cost the totals hold
+    // and nothing naming it, and the SINGULAR form is the one this state produces most
+    // often -- one lost `subagent/spawned` append is one child.
+    expect(screen.getByText(
+      '1 subagent finished with no start in the record, so it has no row here. '
+      + 'Its credits are in this session\u2019s total.',
+    )).toBeInTheDocument()
+  })
+
+  it('pluralises the unmatched-closer sentence rather than formatting its count', async () => {
+    // Two closers, so the `other` form. The count goes through i18next as a raw number: a
+    // pre-formatted string would pick the plural category for a STRING, which is `other`
+    // whatever the number is, and the singular above would never render.
+    const bundle = populatedBundle()
+    bundle.subagents.value = {
+      by_id: {}, running: 0, running_exact: true, omitted: 0,
+      totals: {
+        spawned: 0, completed: 1, failed: 1, stopped: 0, unknown: 0,
+        closed_unmatched: 2,
+      },
+    }
+    vi.spyOn(api, 'sessionCrewLogProjections').mockResolvedValue(read(bundle))
+    renderWithProviders(<CrewLogTab slot={SLOT} />)
+    await waitFor(() => expect(screen.getByText('Subagents')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Subagents'))
+    expect(screen.getByText(
+      '2 subagents finished with no start in the record, so they have no rows here. '
+      + 'Their credits are in this session\u2019s total.',
+    )).toBeInTheDocument()
+  })
+
+  it('states on the credits column whether a child charge is inside the session total', async () => {
+    // Two money figures on one panel with no stated relationship is what a reader hit:
+    // they could not tell whether the children's cost was already in Usage's credits.
+    renderWithProviders(<CrewLogTab slot={SLOT} />)
+    await waitFor(() => expect(screen.getByText('Subagents')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Subagents'))
+    const header = screen.getByText('subagent').closest('table')!
+      .querySelector('thead tr th:last-child')
+    expect(header?.textContent).toBe('credits')
+    expect(header?.getAttribute('title'))
+      .toBe('Already counted in this session’s credits total, not a charge on top of it. '
+        + 'A child that failed or was stopped still bills for what it used.')
   })
 })

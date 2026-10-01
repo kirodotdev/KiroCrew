@@ -73,6 +73,19 @@ export function createChatEndpoints({ post, put, del, patch, j, sessionKeyHeader
      *  this is called. */
     chatSlotSourceLinks: (slot: string): Promise<{ links: NonNullable<ChatSlot['source_links']>; total: number }> =>
       fetch('/api/chat/slots/' + encodeURIComponent(slot) + '/source-links').then(j),
+    /** Unlink one PR/issue/Jira chip from a session. The chip is derived by
+     *  scanning the transcript, so this records the link's serialized `identity`
+     *  in a per-slot dismissed set the derivation filters against — a local UI
+     *  action that never touches the remote provider. `identity` is the opaque key
+     *  the slots payload sends on each chip; it is passed straight back.
+     *  `expect` is the session identity the chip was rendered under
+     *  (`<row_identity>|<created_at>|<linked_session_key>`, the transcript binding
+     *  being the part a rebind changes); it is REQUIRED — the backend rejects an
+     *  absent one (400) and a mismatched one (409, a same-key recreation stands in
+     *  its place), so the dismissal can never land on the wrong session. */
+    unlinkSourceLink: (slot: string, identity: string, expect: string): Promise<{ ok?: boolean; dismissed?: boolean; source_links_total?: number; error?: string; code?: string }> =>
+      del('/api/chat/slots/' + encodeURIComponent(slot) + '/source-links/' + encodeURIComponent(identity)
+        + '?expect=' + encodeURIComponent(expect)).then(j),
     chatSlotDetail: (slot: string, limit?: number, before?: number, signal?: AbortSignal) => {
       const p = new URLSearchParams()
       if (limit) p.set('limit', String(limit))
@@ -137,7 +150,6 @@ export function createChatEndpoints({ post, put, del, patch, j, sessionKeyHeader
      *  a click on a leftover countdown is rejected rather than ending a later wait. */
     endWait: (slot: string, waitId: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/end-wait', { wait_id: waitId }).then(j),
     approveChatSlot: (slot: string, action: string, extra?: Record<string, string>) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/approve', { action, ...extra }).then(j),
-    planAction: (slot: string, action: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/plan-action', { action }).then(j),
     resumeChatSlot: (key: string, title?: string) => post('/api/chat/slots/' + encodeURIComponent(key) + '/resume', { name: key, key, title: title || key }).then(j),
     forkChatSlot: (slot: string, atIndex?: number, prompt?: string, mode?: string, direction?: string, messageId?: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/fork', { ...(atIndex !== undefined ? { at_message_index: atIndex } : {}), ...(messageId ? { at_message_id: messageId } : {}), ...(prompt ? { prompt } : {}), ...(mode ? { mode } : {}), ...(direction ? { direction } : {}) }).then(j),
     sideOpen: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/side/open', {}).then(j) as Promise<{ ok: boolean; open: boolean; messages: number; last_run_id: string; created_at: string }>,
@@ -149,6 +161,8 @@ export function createChatEndpoints({ post, put, del, patch, j, sessionKeyHeader
     generateTitle: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/generate-title').then(j),
     resolveNavLinks: (links: { url: string; context: string }[]) => post('/api/chat/nav/resolve-links', { links }).then(j) as Promise<{ summaries: string[] }>,
     renameSlot: (slot: string, title: string) => patch('/api/chat/slots/' + encodeURIComponent(slot) + '/title', { title }).then(j),
+    /** Tick or untick one row of the agent's checklist pill. Writes the dashboard's copy; the agent re-syncs on its next fresh session. */
+    setTodoTask: (slot: string, id: string, text: string, completed: boolean) => patch('/api/chat/slots/' + encodeURIComponent(slot) + '/todo', { id, text, completed }).then(j),
     regenerateSlot: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/regenerate').then(j),
     /** Pick an interrupted turn back up. NOT `/resume` — that path opens a history session into a tab. */
     continueSlot: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/continue').then(j),

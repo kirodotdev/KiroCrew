@@ -8,12 +8,12 @@
  *
  * This module is the single reader/writer for the theme-consent token, so its
  * format cannot drift across call sites: if the persona side wrote a
- * sha256/`consented-v2` token while the chat side (client.ts's sendChat)
- * checked for a legacy `'1'` token, the wire flag would be permanently false
- * and installed personas would never activate.
+ * sha256/`consented-v2` token while the chat side (api/client/chat.ts's
+ * sendChat) checked for a legacy `'1'` token, the wire flag would be
+ * permanently false and installed personas would never activate.
  *
- * Wire contract (two-tier consent): the chat wire does not send a trust
- * boolean. client.ts transmits the RAW stored grant (getStoredConsent) as
+ * Wire contract (two-tier consent): the chat wire does not send a trust boolean.
+ * api/client/chat.ts transmits the RAW stored grant (getStoredConsent) as
  * `theme_consent_sha`, and the backend verifies content-binding — it injects
  * the persona only if that token equals sha256 of the persona.md it reads. So a
  * re-installed/changed persona (new sha) does not match the stored grant and

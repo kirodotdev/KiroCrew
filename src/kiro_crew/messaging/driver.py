@@ -44,6 +44,8 @@ from kiro_crew.acp.types import (
 from kiro_crew.constants import (
     _STEERING_TAIL_PREFIX_RE,
     DENY_CAUSE_APPROVAL_TIMEOUT,
+    DENY_CAUSE_POLICY,
+    DENY_CAUSE_SURFACE_POLICY,
     STEER_NOTICE_BOUND_SECS,
 )
 from kiro_crew.deny_notice import steer_refusal_notice
@@ -589,7 +591,7 @@ class TurnDriver:
         seen_tool_identity: dict[str, tuple[str, str]] = {}
         # Purpose text from each tool_call, keyed by its tool_call_id, so a
         # permission request can be paired with the purpose of the tool IT asks
-        # about. The permission payload carries the title but no purpose, and the
+        # about. A permission payload may carry the title but no purpose, and the
         # two events are not necessarily adjacent, so a renderer remembering "the
         # last purpose" can pair one tool's name with another's purpose. Turn-local
         # and bounded by the turn's tool-call count.
@@ -759,7 +761,10 @@ class TurnDriver:
                 # A channel that admits senders other than its operator needs one
                 # switch that means "deny every tool", and this is it.
                 if self.deny_all_tools:
-                    await self.provider.reject_tool(event.request_id)
+                    # Audit FIRST, then steer, then reject: the steer and the
+                    # reject both await the ACP pipe, and a backend that stops
+                    # reading stdin cancels this coroutine at the turn deadline
+                    # -- an SEL row sequenced after them never runs.
                     sel().log_api_access(
                         caller="turn_driver",
                         operation="tool_permission",
@@ -770,6 +775,16 @@ class TurnDriver:
                             f"mode={self.approval_mode} reason=untrusted_sender"
                         ),
                     )
+                    # The SURFACE refuses every tool for this sender; nothing
+                    # about the call was judged, so no remediation is offered.
+                    await self._steer_host_deny(
+                        event,
+                        "this channel denies every tool call for a sender other "
+                        "than its operator; no tool runs on this turn",
+                        cause=DENY_CAUSE_SURFACE_POLICY,
+                        audited=True,
+                    )
+                    await self.provider.reject_tool(event.request_id)
                     continue
                 # PreToolUse security gate — sensitive-path keystone +
                 # governance ceiling + deny-list. Runs FIRST, before the
@@ -779,7 +794,6 @@ class TurnDriver:
                 if self.tool_gate is not None:
                     _gate = self.tool_gate(event)
                     if _gate == "deny":
-                        await self.provider.reject_tool(event.request_id)
                         sel().log_api_access(
                             caller="turn_driver",
                             operation="tool_permission",
@@ -790,6 +804,19 @@ class TurnDriver:
                                 f"mode={self.approval_mode} reason=hook_deny"
                             ),
                         )
+                        # The gate judged the call itself: a policy verdict.
+                        # A gate built by ``dispatch.build_tool_gate`` leaves
+                        # the hook's reason on itself (``last_deny_reason``); a
+                        # plain callable has none, and the notice then names
+                        # the gate rather than inventing a rule.
+                        await self._steer_host_deny(
+                            event,
+                            getattr(self.tool_gate, "last_deny_reason", "")
+                            or "blocked by the PreToolUse security gate",
+                            cause=DENY_CAUSE_POLICY,
+                            audited=True,
+                        )
+                        await self.provider.reject_tool(event.request_id)
                         continue
                     if _gate == "auto_approve":
                         # The gate's hook granted this by NAME (the
@@ -1145,11 +1172,55 @@ class TurnDriver:
         cause = getattr(self.decider, "last_deny_cause", "") if self.decider is not None else ""
         if cause != DENY_CAUSE_APPROVAL_TIMEOUT:
             return
+        await self._steer_host_deny(
+            event,
+            "the tool-approval prompt went unanswered until its window closed",
+            cause=cause,
+            # The caller audits this outcome after the wire is answered; a
+            # cancellation here would skip that row, so the orphan reject
+            # writes it.
+            audited=False,
+        )
+
+    async def _steer_host_deny(self, event: Any, reason: str, *, cause: str, audited: bool) -> None:
+        """Tell the model, in-band, that the HOST denied this call -- not the person.
+
+        The one steer spelling for every host deny in this driver, awaited
+        immediately BEFORE the site's ``reject_tool``: the deny-every-tool
+        switch for an untrusted sender (``DENY_CAUSE_SURFACE_POLICY``), the
+        PreToolUse gate's deny (``DENY_CAUSE_POLICY``) and the expired approval
+        prompt (``DENY_CAUSE_APPROVAL_TIMEOUT``, via :meth:`_steer_deny_cause`).
+        *cause* is REQUIRED because the wrong noun sends the model the wrong way.
+        A human's Deny through the decider must NOT reach this: there kiro-cli's
+        wording is the truth. ``test_messaging_deny_notice`` walks the file to
+        keep both halves honest.
+
+        *reason* may echo agent-authored text (a hook's reason quotes the
+        matched path), so it is redacted here; the shared helper redacts the
+        title. Best-effort and bounded through
+        :func:`kiro_crew.deny_notice.steer_refusal_notice`; a failure there
+        never blocks the reject that follows.
+
+        Cancellation mid-steer (turn teardown) must still answer the wire: a
+        stranded ``session/request_permission`` blocks the subprocess forever and
+        wedges every later turn behind it. The reject is scheduled as a strongly
+        referenced task and awaited through ``asyncio.shield`` so it is stepped
+        while this coroutine unwinds, and the cancellation re-raises. *audited*
+        is REQUIRED and says whether the caller wrote the decision's SEL row
+        BEFORE this await (the deny-all and gate sites do) or writes it after
+        the wire (the decider path, whose caller audits both outcomes once the
+        request is answered). Only in the second case does the orphan reject
+        audit the denial itself -- the re-raise skips that caller's row, and a
+        rejection that reached the wire but not the SEL trail is a gap in a
+        security control. In the first case it must not: the ledger is
+        append-only, and a decision already on it would gain a second row
+        nothing reconciles.
+        """
         try:
             await steer_refusal_notice(
                 self.provider,
                 str(getattr(event, "title", "") or ""),
-                "the tool-approval prompt went unanswered until its window closed",
+                _redact(reason),
                 cause=cause,
                 bound_secs=STEER_NOTICE_BOUND_SECS,
             )
@@ -1161,7 +1232,7 @@ class TurnDriver:
             with contextlib.suppress(BaseException):
                 await asyncio.shield(reject)
                 rejected = True
-            if rejected:
+            if rejected and not audited:
                 with contextlib.suppress(Exception):
                     sel().log_api_access(
                         caller="turn_driver",
@@ -1170,12 +1241,12 @@ class TurnDriver:
                         source="messaging",
                         resources=(
                             f"request_id={event.request_id} mode={self.approval_mode} "
-                            "reason=approval_timeout_cancelled_mid_steer"
+                            f"reason={cause}_cancelled_mid_steer"
                         ),
                     )
             raise
         except Exception:
-            logger.debug("approval-timeout steer notice failed; rejecting anyway", exc_info=True)
+            logger.debug("host-deny steer notice failed; rejecting anyway", exc_info=True)
 
     async def _approve(self, event: Any) -> bool:
         """Apply the approval ladder to a permission-request event."""

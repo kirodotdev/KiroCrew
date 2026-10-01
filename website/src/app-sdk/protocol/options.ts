@@ -5,11 +5,6 @@ import { isRetryNotice } from '../../lib/retryNotice'
 import { isNoteRow } from '../../lib/noteContract'
 import { findLastOptionMarker, stripOptionMarkers } from './optionMarker'
 
-// A plan is recognised by BOTH its header and at least one stage line, so ordinary
-// prose that happens to mention a plan is not mistaken for one.
-const PLAN_HEADER_RE = /📋\s*Plan for:/i
-const STAGE_RE = /^Stage\s+\d+\s*:/m
-
 /** A message split into the prose the user reads and the choices offered alongside it. */
 export interface ParsedOptions {
   /** `content` with every marker removed, trimmed — what a transcript should render. */
@@ -18,8 +13,6 @@ export interface ParsedOptions {
   options: string[]
   /** `[OPTIONS:]` allows several picks; `[OPTION:]` is a single choice. */
   multi: boolean
-  /** The message is a plan (header plus at least one stage line), not a plain question. */
-  isPlan: boolean
 }
 
 export function parseOptions(content: string): ParsedOptions {
@@ -29,7 +22,7 @@ export function parseOptions(content: string): ParsedOptions {
   // this cannot be done by halves. It also clones the regex per call, so the g-flag
   // `lastIndex` hazard is no longer a caller's problem to remember.
   const last = findLastOptionMarker(content)
-  if (!last || last.index === undefined) return { text: content, options: [], multi: true, isPlan: false }
+  if (!last || last.index === undefined) return { text: content, options: [], multi: true }
   // The marker pattern is a two-branch alternation (line-anchored-with-wrappers
   // vs mid-line): groups 1/2 belong to the first branch, 3/4 to the second, and
   // exactly one pair is defined per match. `??` (not `||`) so an empty label
@@ -38,30 +31,26 @@ export function parseOptions(content: string): ParsedOptions {
   const labels = (last[2] ?? last[4]) ?? ''
   const sep = labels.includes('|') ? '|' : ','
   const options = labels.split(sep).map(o => o.trim()).filter(Boolean)
-  const isPlan = PLAN_HEADER_RE.test(content) && STAGE_RE.test(content)
   // Strip ALL accepted markers from the displayed text (not just the last) so a stray
   // earlier marker can't leak as raw "[OPTION: …]" syntax to the user; options still
   // come from the LAST marker (computed above). A REFUSED candidate is deliberately
   // left in place — it is prose the user should still see, and removing it is the
   // defect the check exists to prevent.
   const text = stripOptionMarkers(content).trim()
-  return { text, options, multi, isPlan }
+  return { text, options, multi }
 }
 
 export interface FollowUpDerivation {
   followUpOptions: string[]
-  followUpIsPlan: boolean
   /**
    * Identity of the row the options were derived from — `meta.mid` when
    * present, else the row's `ts`, else an index fallback. `null` when no
    * options are on offer (streaming, question pending, user boundary, none).
    *
    * Consumers that must know whether the CHIPS THEMSELVES changed — not just
-   * their labels — compare this instead of the option labels: consecutive
-   * plan footers are byte-identical (`[OPTION: Go | Go All | Cancel]`), so a
-   * label key cannot distinguish stage 2's fresh offer from stage 1's stale
-   * one after a single-write transcript hydration. The plan-dispatch latch
-   * (usePlanActionMutation) is acknowledgement-gated on exactly this value.
+   * their labels — compare this instead of the option labels: two consecutive
+   * turns can end on byte-identical footers, so a label key cannot tell a
+   * fresh offer from a stale one after a single-write transcript hydration.
    */
   followUpSourceKey: string | null
 }
@@ -74,16 +63,14 @@ export interface FollowUpDerivation {
  * because it is the only component guaranteed stable for the whole life of a
  * row. The store stamps it on any row lacking a server `ts` and then
  * deliberately CARRIES it onto the reloaded server copy (see
- * `chatSlice.ts` — "the renderer keys virtual rows by `clientTs ?? ts`, so
- * without this the row's key flips bornKey -> serverTs"), so this helper
- * matches the store's own keying convention rather than inventing a second,
- * conflicting one.
+ * `transcript.ts` in `store/chat` — "the renderer keys virtual rows by
+ * `clientTs ?? ts`, so without this the row's key flips bornKey -> serverTs"),
+ * so this helper matches the store's own keying convention rather than
+ * inventing a second, conflicting one.
  *
  * Checking `mid` first would break that: a reconnect refresh preserves
- * `clientTs` but ADDS a server `mid`, so the same row would re-key mid-flight,
- * the acknowledgement effect would read it as a different row and free the
- * duplicate-action latch, and a stale second click could queue an unintended
- * extra `Go`. `mid` and `ts` remain as fallbacks for rows that never carried a
+ * `clientTs` but ADDS a server `mid`, so the same row would re-key mid-flight and
+ * a byte-identical footer would read as a fresh offer. `mid` and `ts` remain as fallbacks for rows that never carried a
  * client stamp; the index fallback is a last resort for fixture-grade rows, and
  * a history prepend cannot re-key a real row.
  */
@@ -134,19 +121,7 @@ const rowIdentity = (m: ChatMessage, i: number): string =>
  * crossed too — otherwise a partial answer shadows the question that is still
  * open. The trade is deliberate: nothing on the row marks it partial rather
  * than complete, so an error arriving after a genuinely finished option-less
- * reply reads the same way and can re-offer the previous turn's choices. A
- * PLAN row reached that way is therefore offered NOTHING: the plan may already
- * have advanced, and demoting to the composer path would not help because
- * Quick Send sends a pill in one click regardless of `followUpIsPlan`. Cost:
- * a plan turn that flushed a partial before failing gets no chips back.
- *
- * The same suppression covers a plan row reached across a failed `user` row.
- * That row records a click already DISPATCHED, and `usePlanActionMutation`
- * treats any 5xx, 408/429 or transport rejection as possibly-committed, so the
- * stage may have advanced before the turn failed. Its go-latch blocks the
- * second Go only within one page load — the latch is a module-level Map — so it
- * cannot cover the rehydrated transcript this exception creates. Plan chips are
- * the narrow case: a Go advances server state by itself, a text pill does not.
+ * reply reads the same way and can re-offer the previous turn's choices.
  *
  * `questionPending` suppresses the pills while an `ask_question` card is on
  * screen for the same slot, so the user is never offered the same choice twice
@@ -162,29 +137,26 @@ export function deriveFollowUpOptions(
   isStreaming: boolean,
   questionPending = false,
 ): FollowUpDerivation {
-  if (isStreaming || questionPending) return { followUpOptions: [], followUpIsPlan: false, followUpSourceKey: null }
+  if (isStreaming || questionPending) return { followUpOptions: [], followUpSourceKey: null }
   // Errors were already transparent here (no branch matched them); the flag is
   // what makes that transparency mean something.
   let sawError = false
-  // Set by EITHER crossing: both leave a plan row that may already have advanced (see above).
-  let crossedFailedTurn = false
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i]
     // A deliberate Stop ENDS the turn rather than interrupting it, so the choice is closed
     // by the user's own cancellation — the error licence below must not reach back past it.
-    if (isStopEvent(m)) return { followUpOptions: [], followUpIsPlan: false, followUpSourceKey: null }
+    if (isStopEvent(m)) return { followUpOptions: [], followUpSourceKey: null }
     // Only a TERMINAL error licenses a crossing. A retry notice means the recovery is
     // already queued, so re-offering the pill would run the same choice a second time.
     if (m.role === 'error') { if (!isRetryNotice(m)) sawError = true; continue }
     // `queued` is an UNCONDITIONAL stop: its queue entry OUTLIVES the error (only a hard
     // kill clears the queue), so re-offering the pill would run the choice a second time.
-    if (m.role === 'queued') return { followUpOptions: [], followUpIsPlan: false, followUpSourceKey: null }
+    if (m.role === 'queued') return { followUpOptions: [], followUpSourceKey: null }
     if (m.role === 'user') {
-      if (!sawError) return { followUpOptions: [], followUpIsPlan: false, followUpSourceKey: null }
+      if (!sawError) return { followUpOptions: [], followUpSourceKey: null }
       // Cross this failed turn and keep looking. Re-armed only by another error,
       // so a SUCCESSFUL turn further back still stops the scan.
       sawError = false
-      crossedFailedTurn = true
       continue
     }
     if (isSystemNoticeKind(m.kind ?? (m.meta?.kind as string | undefined))) continue
@@ -193,26 +165,21 @@ export function deriveFollowUpOptions(
     if (m.role === 'inject' && isNoteRow(m) && m.content) {
       const parsed = parseOptions(m.content)
       if (parsed.options.length) {
-        // NEVER isPlan: a note is not the orchestrator's plan turn, and `followUpIsPlan` is read
-        // only to dispatch /plan-action — so plan-shaped note text would let `Cancel` kill a plan.
         // A note row still gets an identity: the bar keys its render off it, and a note whose
         // options never re-key would let a later identical note reuse the earlier row's key.
-        return { followUpOptions: parsed.options, followUpIsPlan: false, followUpSourceKey: rowIdentity(m, i) }
+        return { followUpOptions: parsed.options, followUpSourceKey: rowIdentity(m, i) }
       }
       continue
     }
     if (m.role === 'assistant' && m.content) {
-      const { options, isPlan } = parseOptions(m.content)
+      const { options } = parseOptions(m.content)
       // A failed turn can flush the text it streamed as a real assistant row before the
       // error, and that option-less row shadowed the question exactly as the `user` row did.
       // Crossing does NOT consume the error licence: the `user` row below still needs it.
-      if (!options.length && sawError) { crossedFailedTurn = true; continue }
-      // Offer NOTHING for a plan row reached that way. Demoting to the composer path is not
-      // enough: with Quick Send on, one click still sends `Go All` as orchestrator-run text.
-      if (isPlan && crossedFailedTurn) return { followUpOptions: [], followUpIsPlan: false, followUpSourceKey: null }
+      if (!options.length && sawError) continue
       const followUpSourceKey = options.length > 0 ? rowIdentity(m, i) : null
-      return { followUpOptions: options, followUpIsPlan: isPlan, followUpSourceKey }
+      return { followUpOptions: options, followUpSourceKey }
     }
   }
-  return { followUpOptions: [], followUpIsPlan: false, followUpSourceKey: null }
+  return { followUpOptions: [], followUpSourceKey: null }
 }

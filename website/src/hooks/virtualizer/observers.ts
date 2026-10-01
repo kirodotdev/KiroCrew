@@ -135,12 +135,14 @@ export function useScrollListener<T>(ctx: {
   follow: Pick<FollowState, 'smoothPinActiveRef' | 'lastWriteTopRef' | 'lastObservedTopRef' | 'noteHardInput'>
   pinning: Pick<Pinning, 'onFollowScroll' | 'cancelHeldPinRetry'>
   reading: Pick<ReadingPositionEntry<T>, 'lastScrollCtxRef' | 'sessionIdRef' | 'scheduleAnchorSave'>
+  measurement: Pick<RowMeasurement, 'noteRowTops'>
   ops: Pick<WindowOperations, 'recomputeWindow'>
 }): void {
   const { scrollerEl, bottomThreshold, setIsAtBottom, itemsRef, getKeyRef } = ctx
   const { smoothPinActiveRef, lastWriteTopRef, lastObservedTopRef, noteHardInput } = ctx.follow
   const { onFollowScroll, cancelHeldPinRetry } = ctx.pinning
   const { lastScrollCtxRef, sessionIdRef, scheduleAnchorSave } = ctx.reading
+  const { noteRowTops } = ctx.measurement
   const { recomputeWindow } = ctx.ops
 
   // ---- Passive scroll listener: isAtBottom + user-scroll stick update ----
@@ -177,6 +179,11 @@ export function useScrollListener<T>(ctx: {
         getKey: getKeyRef.current,
       }
       scheduleAnchorSave()
+      // Every scroll -- the reader's, the engine's anchoring adjustment, our
+      // own write -- moves every mounted row in the viewport; record where
+      // they now sit so the next resize fire measures the reader's row's
+      // displacement from THIS frame (see measurement.ts, noteRowTops).
+      noteRowTops(el)
       if (!scrollRafScheduledRef.current) {
         scrollRafScheduledRef.current = true
         rafId = requestAnimationFrame(() => {
@@ -214,7 +221,7 @@ export function useScrollListener<T>(ctx: {
       scrollRafScheduledRef.current = false
     }
   }, [
-    scrollerEl, bottomThreshold, onFollowScroll, cancelHeldPinRetry, noteHardInput, recomputeWindow, scheduleAnchorSave,
+    scrollerEl, bottomThreshold, onFollowScroll, cancelHeldPinRetry, noteHardInput, recomputeWindow, scheduleAnchorSave, noteRowTops,
     smoothPinActiveRef, lastWriteTopRef, lastObservedTopRef, lastScrollCtxRef, sessionIdRef, itemsRef, getKeyRef,
     setIsAtBottom,
   ])
@@ -226,14 +233,14 @@ export function useResizeObserver(ctx: {
   elIndexRef: Ref<Map<Element, number>>
   trailingRef: RefObject<HTMLDivElement>
   resizeObserverRef: Ref<ResizeObserver | null>
-  measurement: Pick<RowMeasurement, 'measureResizeEntries'>
+  measurement: Pick<RowMeasurement, 'measureResizeEntries' | 'shiftRowTops'>
   compensation: Pick<ShiftCompensation, 'compensateAboveFold'>
   sync: Pick<GeometrySync, 'deferForRailSettle' | 'scheduleResizeSync' | 'cancelRailSettle'>
   pinning: Pick<Pinning, 'followResizeBatch'>
   ops: Pick<WindowOperations, 'recomputeWindow'>
 }): void {
   const { scrollerRef, scrollerEl, elIndexRef, trailingRef, resizeObserverRef } = ctx
-  const { measureResizeEntries } = ctx.measurement
+  const { measureResizeEntries, shiftRowTops } = ctx.measurement
   const { compensateAboveFold } = ctx.compensation
   const { deferForRailSettle, scheduleResizeSync, cancelRailSettle } = ctx.sync
   const { followResizeBatch } = ctx.pinning
@@ -257,7 +264,9 @@ export function useResizeObserver(ctx: {
       // rail-collapse window take the fire whole; follow tail growth; schedule
       // the height sync the measurements owe.
       const batch = measureResizeEntries(entries, el)
-      compensateAboveFold(el, batch.aboveFoldReprice)
+      // A write here moves every row; the last seen positions move with it,
+      // so a further callback of this same layout measures only what it adds.
+      if (compensateAboveFold(el, batch.aboveFoldReprice)) shiftRowTops(batch.aboveFoldReprice)
       if (deferForRailSettle(batch)) return
       followResizeBatch(batch)
       scheduleResizeSync(batch)
@@ -307,7 +316,7 @@ export function useResizeObserver(ctx: {
       resizeObserverRef.current = null
     }
   }, [
-    scrollerRef, measureResizeEntries, compensateAboveFold, deferForRailSettle, followResizeBatch,
+    scrollerRef, measureResizeEntries, shiftRowTops, compensateAboveFold, deferForRailSettle, followResizeBatch,
     scheduleResizeSync, cancelRailSettle, recomputeWindow, elIndexRef, trailingRef, resizeObserverRef,
   ])
 

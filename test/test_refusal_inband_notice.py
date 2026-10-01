@@ -794,7 +794,7 @@ class TestEveryHostDenyCallSiteIsWired:
         # the original 3500-char window would fall short of the reject.
         block = src.split(anchor, 1)[1][:5200]
         steer_at = block.find("_steer_policy_notice")
-        reject_at = block.find("reject_tool(")
+        reject_at = block.find("await _reject_attributed(")
         assert steer_at != -1, "host-caused cascade no longer steers a notice"
         assert reject_at != -1, "the cascade site no longer answers the rejection"
         # Steer while the permission request is still unanswered: that is what
@@ -810,7 +810,7 @@ class TestEveryHostDenyCallSiteIsWired:
             "_batch_rejected_cause" in block[:steer_at]
         ), "the cascade steer is no longer gated on rejection provenance"
         assert (
-            "deny-notice-exempt:" in block[:reject_at]
+            'attribution="exempt: user-originated cascade"' in block[reject_at:][:300]
         ), "the user-originated cascade lost its exemption marker"
 
     def test_every_host_decline_arm_records_provenance(self):
@@ -885,9 +885,9 @@ class TestEveryHostDenyCallSiteIsWired:
         # level because the branch lives inside the turn coroutine, where the
         # direct unit fixtures of this file cannot reach it.
         src = self._src()
-        anchor = "# deny-notice-exempt: interactive user denial."
-        assert src.count(anchor) == 1, "the interactive exemption marker moved -- guard is stale"
-        before = src.split(anchor, 1)[0][-1400:]
+        anchor = 'attribution="exempt: interactive user denial"'
+        assert src.count(anchor) == 1, "the interactive exemption moved -- guard is stale"
+        before = src.split(anchor, 1)[0][-2400:]
         gate = "if _host_deny_cause:"
         assert gate in before, (
             "the shared reject branch no longer gates a steer on the " "host-decline provenance"
@@ -900,9 +900,8 @@ class TestEveryHostDenyCallSiteIsWired:
         assert (
             "_host_deny_reason" in gated
         ), "the shared steer no longer carries the arm's recorded reason"
-        after = src.split(anchor, 1)[1][:1200]
         assert (
-            "await client.reject_tool(event.request_id)" in after
+            "await _reject_attributed(" in before[-200:]
         ), "the steer must precede the rejection going on the wire"
 
     def test_flag_and_provenance_clear_together(self):
@@ -930,28 +929,20 @@ class TestEveryHostDenyCallSiteIsWired:
     # ------------------------------------------------------------------
     # Every ``client.reject_tool`` answer site, not just the three helpers.
     #
-    # The helpers above are chokepoints, but nothing forces a deny path to go
-    # THROUGH one: a site that answers the permission request directly (as the
-    # policy-deny, batch-cascade, and interactive branches do) never appears in
-    # the helper scan, and a host-side auto-decline added at such a site hands
-    # the model kiro-cli's "User denied tool execution" -- the wrong-attribution
-    # class fixed for policy/hook/invalid-name via the steer helpers and still
-    # being paid down branch by branch (other approval auto-decline paths are not yet covered).
-    # This scan closes the enumeration for chat_runner.py -- the module that
-    # answers the dashboard's ``session/request_permission`` -- other modules
-    # answer their own surfaces and are out of this guard's scope. Every
-    # ``await <anything>.reject_tool(`` here must either be preceded by a
-    # ``_steer_policy_notice`` call in its own suite, or carry a
-    # ``deny-notice-exempt:`` comment naming why the generic message is the
-    # TRUE attribution there (the user-denial branches). A site whose steer is
-    # GATED on provenance carries both: the steer corrects the cause it can
-    # identify, and the marker states why the generic message is TRUE on the
-    # branch it deliberately leaves alone. Only an UNCONDITIONAL steer makes a
-    # surviving marker stale, because then no path reaches the generic message.
+    # kiro-cli hands the model "User denied tool execution" for every rejection,
+    # which is false for a host deny. The chokepoints make attribution
+    # non-optional: the three ``_reject_*`` helpers take ``refusal_notices``, and
+    # every other answer site goes through ``_reject_attributed``, whose
+    # keyword-only ``attribution`` is required (an omission is a mypy error). So
+    # this half only has to be textual: no ``.reject_tool(`` outside those four
+    # functions, and every ``_reject_attributed`` call states a real value.
+    # chat_runner.py answers the dashboard's ``session/request_permission``;
+    # other modules answer their own surfaces and are out of this guard's scope.
     # ------------------------------------------------------------------
 
     REJECT_TXT = ".reject_tool("
-    EXEMPT_MARKER = "deny-notice-exempt:"
+    CHOKEPOINTS = HELPERS + ("_reject_attributed",)
+    ATTRIBUTED = "await _reject_attributed("
     STEER = "_steer_policy_notice"
     LEDGER_NAMES = ("_refusal_notices", "refusal_notices")
 
@@ -977,20 +968,6 @@ class TestEveryHostDenyCallSiteIsWired:
             and node.func.id == func_name
         ]
 
-    def _reject_awaits(self, tree: ast.Module) -> list[ast.Await]:
-        # Receiver-agnostic on purpose: keying both locators on the literal name
-        # ``client`` would give them a SHARED blind spot (an aliased receiver
-        # drops out of both while the cross-check still balances). Any awaited
-        # ``.reject_tool(`` is an answer site; the steer/exempt rules judge it.
-        return [
-            node
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Await)
-            and isinstance(node.value, ast.Call)
-            and isinstance(node.value.func, ast.Attribute)
-            and node.value.func.attr == "reject_tool"
-        ]
-
     def _suite_chain(self, tree: ast.Module, target: ast.AST) -> list[tuple[list, int]]:
         """Every (suite, index) whose statement contains *target*, innermost first.
 
@@ -1007,121 +984,73 @@ class TestEveryHostDenyCallSiteIsWired:
         chain.sort(key=lambda pair: (pair[0][pair[1]].end_lineno or 0) - pair[0][pair[1]].lineno)
         return chain
 
-    def _is_steered(self, tree: ast.Module, reject: ast.Await) -> bool:
-        """True when a ``_steer_policy_notice`` call precedes the reject in its
-        own suite -- the steer-before-answer ordering every wired site uses,
-        including the helpers (whose steer sits in a preceding ``if
-        refusal_notices is not None:`` guard statement)."""
-        return self._steer_stmt(tree, reject) is not None
+    def test_no_reject_tool_answer_outside_the_chokepoints(self):
+        # Each occurrence is attributed to the top-level function it sits in.
+        # Count-pinned to exactly one per chokepoint: a new bare site anywhere
+        # else -- or a second one inside a chokepoint -- fails here.
+        src = self._src()
+        owners = []
+        at = src.find(self.REJECT_TXT)
+        while at != -1:
+            head = src[:at]
+            defs = [head.rfind("\nasync def "), head.rfind("\ndef ")]
+            name = re.match(r"\n(?:async )?def (\w+)", head[max(defs) :])
+            owners.append(name.group(1) if name else "<module>")
+            at = src.find(self.REJECT_TXT, at + 1)
+        assert sorted(owners) == sorted(self.CHOKEPOINTS), (
+            f"reject_tool is answered in {owners} -- route a new answer site through "
+            "_reject_attributed (or a _reject_* helper) so its attribution is "
+            "required, never a bare client.reject_tool"
+        )
 
-    def _steer_stmt(self, tree: ast.Module, reject: ast.Await):
-        """The preceding statement in the reject's own suite that carries the
-        steer, or None. Returning the STATEMENT (not a bool) is what lets the
-        caller tell an unconditional steer from a gated one."""
-        chain = self._suite_chain(tree, reject)
-        assert chain, f"reject_tool at line {reject.lineno} sits in no statement suite"
-        stmts, idx = chain[0]
-        for prev in stmts[:idx]:
-            for sub in ast.walk(prev):
-                if (
+    def test_every_attributed_reject_states_its_attribution(self):
+        src = self._src()
+        tree = self._tree()
+        calls = self._calls(tree, "_reject_attributed")
+        # Cross-checked against a plain count: a call the AST walk misses
+        # would otherwise drop out of every assertion below.
+        assert len(calls) == src.count(self.ATTRIBUTED) >= 3, (
+            f"the AST walk found {len(calls)} of {src.count(self.ATTRIBUTED)} "
+            "_reject_attributed calls"
+        )
+        bad = []
+        for call in calls:
+            value = next((kw.value for kw in call.keywords if kw.arg == "attribution"), None)
+            text = value.value if isinstance(value, ast.Constant) else None
+            stmts, idx = self._suite_chain(tree, call)[0]
+            if text == "steered":
+                # "steered" must be true on every path: the statement right
+                # before the answer, in its own suite, is the steer await. Read
+                # from the AST, so a commented-out or neighbouring steer is not it.
+                prev = stmts[idx - 1] if idx else None
+                if not (
+                    isinstance(prev, ast.Expr)
+                    and isinstance(prev.value, ast.Await)
+                    and isinstance(prev.value.value, ast.Call)
+                    and isinstance(prev.value.value.func, ast.Name)
+                    and prev.value.value.func.id == self.STEER
+                ):
+                    bad.append(call.lineno)
+            elif not (isinstance(text, str) and re.fullmatch(r"exempt: \S.*", text)):
+                bad.append(call.lineno)
+            elif any(
+                not isinstance(prev, (ast.If, ast.Try, ast.While, ast.For, ast.AsyncFor))
+                and any(
                     isinstance(sub, ast.Call)
                     and isinstance(sub.func, ast.Name)
                     and sub.func.id == self.STEER
-                ):
-                    return prev
-        return None
-
-    def _steer_is_gated(self, stmt: ast.stmt) -> bool:
-        """True when the steer only runs on some paths through *stmt*.
-
-        A steer nested under a branch (``if``/``try``/loop) covers one cause and
-        leaves the complement to the generic message, so such a site can be BOTH
-        wired and exempt without either claim being false -- the provenance-gated
-        cascade is exactly that shape. A steer reached unconditionally covers
-        every path, which is what makes a surviving exemption marker stale.
-        """
-        branching = (ast.If, ast.Try, ast.While, ast.For, ast.AsyncFor, ast.IfExp)
-        # Walk down from *stmt* carrying whether a branch was crossed, so the
-        # question is "is this call under a branch" rather than "does this
-        # statement contain a branch anywhere" -- a statement can hold both an
-        # unconditional steer and an unrelated conditional.
-        stack: list[tuple[ast.AST, bool]] = [(stmt, False)]
-        while stack:
-            node, gated = stack.pop()
-            if (
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Name)
-                and node.func.id == self.STEER
+                    for sub in ast.walk(prev)
+                )
+                for prev in stmts[:idx]
             ):
-                if not gated:
-                    return False  # reached on every path -- unconditional
-                continue
-            for child in ast.iter_child_nodes(node):
-                stack.append((child, gated or isinstance(node, branching)))
-        return True
-
-    def _is_exempt(self, lines: list[str], lineno: int) -> bool:
-        """True when the contiguous comment block directly above *lineno* carries
-        the exemption marker WITH a stated reason. Directly-above placement is
-        deliberate: a marker allowed anywhere nearby would keep excusing the site
-        after the code it argued about moved."""
-        i = lineno - 2  # line above the reject, 0-based
-        while i >= 0 and lines[i].lstrip().startswith("#"):
-            comment = lines[i].lstrip().lstrip("#").strip()
-            if comment.startswith(self.EXEMPT_MARKER):
-                return bool(comment[len(self.EXEMPT_MARKER) :].strip())
-            i -= 1
-        return False
-
-    def test_the_reject_scan_finds_every_answer_site_the_source_contains(self):
-        # Same cross-check discipline as the helper scan above, with a stronger
-        # independent locator: the AST walker cannot be fooled by a comment or a
-        # string, and the textual count sees any ``.reject_tool(`` spelling
-        # regardless of what the walker requires around it. A divergence means
-        # one locator stopped seeing a site the other still sees -- including a
-        # call that lost its ``await`` -- and every assertion below would be
-        # vacuous for that site.
-        src = self._src()
-        textual = src.count(self.REJECT_TXT)
-        assert textual >= 6, f"expected the known deny-answer sites, textual count {textual}"
-        found = self._reject_awaits(self._tree())
-        assert len(found) == textual, (
-            f"the AST walk found {len(found)} of {textual} reject_tool sites -- "
-            "one locator no longer sees every answer shape, so the steer-or-exempt "
-            "assertion below is vacuous for the ones it missed"
-        )
-
-    def test_every_reject_tool_site_is_steered_or_exempt(self):
-        tree = self._tree()
-        lines = self._src().splitlines()
-        unwired: list[int] = []
-        double: list[int] = []
-        for reject in self._reject_awaits(tree):
-            steer_stmt = self._steer_stmt(tree, reject)
-            steered = steer_stmt is not None
-            exempt = self._is_exempt(lines, reject.lineno)
-            if steered and exempt and not self._steer_is_gated(steer_stmt):
-                # An UNCONDITIONAL steer covers every path, so a surviving
-                # exemption marker is lying to one audience; the marker must not
-                # outlive the wiring it excused. A GATED steer is the legitimate
-                # third shape: it corrects the cause it can identify and the
-                # marker states why the generic message is TRUE on the branch it
-                # deliberately leaves alone (the provenance-gated cascade --
-                # host-caused steers, user-originated stays exempt).
-                double.append(reject.lineno)
-            elif not steered and not exempt:
-                unwired.append(reject.lineno)
-        assert not double, (
-            f"reject_tool sites at lines {double} steer on EVERY path and still "
-            f"carry '{self.EXEMPT_MARKER}' -- drop the stale exemption comment"
-        )
-        assert not unwired, (
-            f"reject_tool sites at lines {unwired} answer the permission request "
-            "with no in-band notice and no stated exemption -- the model reads "
-            "kiro-cli's 'User denied tool execution' there. Steer first via "
-            "_steer_policy_notice (see the _reject_* helpers), or add a "
-            f"'# {self.EXEMPT_MARKER} <why the generic message is TRUE here>' "
-            "comment directly above the call"
+                # "exempt" claims a path is left unsteered; a steer reached on
+                # every path (not under a branch) in the same suite makes it stale.
+                bad.append(call.lineno)
+        assert not bad, (
+            f"_reject_attributed calls at lines {bad} state no true attribution -- "
+            'pass attribution="steered" right after an await _steer_policy_notice, '
+            'or attribution="exempt: <why the generic '
+            'message is TRUE here>"'
         )
 
     def test_every_turn_ledger_steer_is_paired_with_a_reason(self):

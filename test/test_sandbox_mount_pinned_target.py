@@ -55,7 +55,9 @@ pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX launcher 
 #: A LINK at a protected name can only be pinned no-follow with ``O_PATH``, which
 #: only Linux has; elsewhere the pin refuses it outright (asserted below), so the
 #: cases whose subject IS a tolerated link exercise Linux behaviour only. The
-#: namespace launcher itself runs nowhere else.
+#: private-window walk opens every component with ``os.O_PATH`` outright, so a case
+#: that binds a window is Linux-only too. The namespace launcher itself runs nowhere
+#: else.
 _LINUX_LINK_PIN = pytest.mark.skipif(
     not sys.platform.startswith("linux"),
     reason="pinning a link no-follow needs O_PATH; the namespace launcher is Linux-only",
@@ -140,6 +142,11 @@ class _FakeLibc:
 
     def mount(self, source, target, fstype, flags, data):  # noqa: ANN001
         self.calls.append(_Call(source, target, flags))
+        return 0
+
+    def umount2(self, target, flags):  # noqa: ANN001
+        """A private window's stage is retired through this; nothing was mounted, so succeed."""
+        self.detached = getattr(self, "detached", []) + [os.fsdecode(target)]
         return 0
 
 
@@ -260,6 +267,11 @@ def _run(
     verify=None,  # noqa: ANN001
     required: tuple[str, ...] = (),
     occupants: dict[str, list[int]] | None = None,
+    globals_out: dict | None = None,
+    private_dirs: tuple[str, ...] = (),
+    sensitive_dirs: list[str] | None = None,
+    sensitive_files: list[str] | None = None,
+    libc: _FakeLibc | None = None,
 ) -> tuple[_FakeLibc, _Bed, str | None]:
     """Run the extracted region. Returns ``(fake_libc, bed, refusal_or_None)``.
 
@@ -272,17 +284,23 @@ def _run(
     true after a REAL mount; with a stand-in ``mount`` that records instead of
     mounting it would refuse every run and every assertion here would become a
     statement about the harness. Its own verdict is tested directly.
+
+    *globals_out*, when given, receives the region's globals after the run --
+    ``runpy`` copies ``init_globals`` into a fresh namespace, so launcher-local
+    state such as ``_MASKED_NAMES`` is otherwise unreachable from a test.
     """
     import ctypes
 
     bed = bed or _Bed(tmp_path)
-    libc = _FakeLibc()
+    libc = libc or _FakeLibc()
 
     def _no_op_verify(name, stand_in, what):  # noqa: ANN001, ANN202
         return None
 
     namespace = {
         "_libc": libc,
+        # Set in Step 2, above the extracted region.
+        "_launcher_nondumpable": False,
         "_HARNESS_VERIFY": verify or _no_op_verify,
         "_MS_BIND": 4096,
         "_MS_REC": 16384,
@@ -292,6 +310,7 @@ def _run(
         "_MS_NOSUID": 2,
         "_MS_NODEV": 4,
         "_MS_NOEXEC": 8,
+        "_MNT_DETACH": 2,
         "ctypes": ctypes,
         "os": os,
         "stat": stat,
@@ -301,15 +320,17 @@ def _run(
         "_src_prefix": "kirocrew_sb_%d_" % os.getpid(),
         "expose_data": {},
         "EXPOSE_FILES": [],
-        "SENSITIVE_DIRS": [str(bed.aws)],
+        "SENSITIVE_DIRS": [str(bed.aws)] if sensitive_dirs is None else list(sensitive_dirs),
         # Empty: these cases vouch for no mask-root or window identity, so the child
         # pins by name, which is the arm under test here.
         "SENSITIVE_DIR_IDS": {},
-        "PRIVATE_DIRS": [],
+        "PRIVATE_DIRS": list(private_dirs),
         "PRIVATE_DIR_IDS": {},
         "READONLY_DIRS": [str(bed.cache)],
         "WRITABLE_DIRS": [],
-        "SENSITIVE_FILES": [str(bed.secret)],
+        "SENSITIVE_FILES": (
+            [str(bed.secret)] if sensitive_files is None else list(sensitive_files)
+        ),
         "REQUIRED_MASK_TARGETS": frozenset(required),
         # Empty by default: these tests are about which OBJECT a mount received, and
         # a hard-link alias entry here would refuse before the pinned-mount loop runs.
@@ -328,9 +349,11 @@ def _run(
         _region(script if script is not None else _build_launcher_script("strict"))
     )
     try:
-        runpy.run_path(str(region_file), init_globals=namespace)
+        result = runpy.run_path(str(region_file), init_globals=namespace)
     except SystemExit as exc:
         return libc, bed, str(exc.code)
+    if globals_out is not None:
+        globals_out.update(result)
     return libc, bed, None
 
 
@@ -434,6 +457,8 @@ def _run_with_libc(tmp_path: Path, bed: _Bed, libc: _FakeLibc) -> str | None:
 
     namespace = {
         "_libc": libc,
+        # Set in Step 2, above the extracted region.
+        "_launcher_nondumpable": False,
         "_MS_BIND": 4096,
         "_MS_REC": 16384,
         "_MS_PRIVATE": 1 << 18,
@@ -756,14 +781,24 @@ def _pin_from_builder(tmp_path: Path, occupants: dict[str, tuple[int, ...]]):  #
     ``MASK_OCCUPANTS`` line out of the script it produced. ``runpy``, not ``exec``,
     for the reason the sibling harness gives.
     """
+    namespace = _pin_namespace_from_builder(tmp_path, occupants)
+    return namespace["_pin_mount_path"], namespace["MASK_OCCUPANTS"]
+
+
+def _pin_namespace_from_builder(
+    tmp_path: Path, occupants: dict[str, tuple[int, ...]]
+):  # noqa: ANN202
+    """The whole lifted pin namespace, for tests that also need its launcher-local state."""
     script = _build_launcher_script("strict", mask_occupants=occupants)
-    helpers = script[script.index("_O_PATH = ") : script.index("def _mask_required(")]
+    # Through ``_stand_in_identity``, which shares launcher-local state with the pin.
+    helpers = script[script.index("_O_PATH = ") : script.index("def _verify_masked_name(")]
     emitted = [line for line in script.splitlines() if line.startswith("MASK_OCCUPANTS")]
     assert len(emitted) == 1, "the carried map is not emitted exactly once"
     module = tmp_path / "pin_helpers.py"
-    module.write_text(textwrap.dedent(helpers) + "\n" + emitted[0] + "\n")
-    namespace = runpy.run_path(str(module), init_globals={"os": os, "stat": stat, "sys": sys})
-    return namespace["_pin_mount_path"], namespace["MASK_OCCUPANTS"]
+    module.write_text(
+        textwrap.dedent(helpers) + "\nREQUIRED_MASK_TARGETS = frozenset()\n" + emitted[0] + "\n"
+    )
+    return runpy.run_path(str(module), init_globals={"os": os, "stat": stat, "sys": sys})
 
 
 def test_the_builder_forwards_the_referent_kind(tmp_path: Path) -> None:
@@ -848,6 +883,486 @@ def test_the_other_loop_meeting_a_masked_directory_still_skips(tmp_path: Path) -
     with pytest.raises(SystemExit) as refused:
         pin(str(seen_dir).encode(), stat.S_ISREG)
     assert "DIFFERENT object" in str(refused.value)
+
+
+# --------------------------------------------------------------------------
+# One object, two spellings: the second spelling reaches the first one's mask
+# --------------------------------------------------------------------------
+#
+# A symlinked ``$HOME`` (``/home/u -> /data/home/u``) makes the data home read as
+# relocated, so every crew hidden leaf is listed under both spellings while the
+# pre-spawn pass, which deduplicates by inode, records an expectation for the
+# resolved spelling only. The launcher masks the first spelling by binding a
+# stand-in over it; the second spelling then resolves to that stand-in, whose
+# identity is not the recorded one. Before the own-stand-in check, that read as
+# a swapped object and refused EVERY spawn on such a host. No real mount happens
+# in these tests, so the mount is simulated the way a bind presents itself: the
+# stand-in's own identity answers at the name.
+
+
+def _masked_by_own_stand_in(
+    tmp_path: Path, namespace: dict, leaf: Path, *, masking: Path | None = None
+) -> None:
+    """Simulate the directory loop masking *masking* (default *leaf*) with a stand-in.
+
+    What the loop does for every directory mask: pin the stand-in, register it
+    against the object it is about to be bound over, mount. A bind mount presents
+    its source's identity at the target name; without a real mount, moving the
+    stand-in onto *leaf* is the closest a test can get.
+    """
+    stand_in = tmp_path / "stand-in"
+    stand_in.mkdir()
+    stand_in_id = namespace["_stand_in_identity"](str(stand_in).encode())
+    masked_fd = os.open(str(masking or leaf), os.O_RDONLY)
+    try:
+        namespace["_register_stand_in"](stand_in_id, masked_fd)
+    finally:
+        os.close(masked_fd)
+    leaf.rename(tmp_path / "leaf.covered")
+    stand_in.rename(leaf)
+
+
+def test_a_second_spelling_that_reaches_this_launchers_own_stand_in_skips(
+    tmp_path: Path,
+) -> None:
+    """The carried expectation names the object; the stand-in is where it went.
+
+    The pass saw a directory (kind ``1``) at this name and recorded it. Another
+    spelling of the same name has already been masked, so the entry now holds the
+    stand-in this launcher created. That is the mask in place, not a substitution:
+    the pin must skip, exactly as it skips a name that is absent.
+    """
+    leaf = tmp_path / "diag"
+    leaf.mkdir()
+    seen = os.lstat(leaf)
+    namespace = _pin_namespace_from_builder(
+        tmp_path, {str(leaf): (seen.st_dev, seen.st_ino, 0, 1, seen.st_dev, seen.st_ino)}
+    )
+    _masked_by_own_stand_in(tmp_path, namespace, leaf)
+
+    assert namespace["_pin_mount_path"](str(leaf).encode(), stat.S_ISDIR) == (
+        None,
+        None,
+    ), "the second spelling of an already-masked leaf was refused"
+    # And it now covers the leaves listed under it, exactly as the first spelling does.
+    assert namespace["_MASKED_NAMES"].get(str(leaf)) == namespace["_stand_in_identity"](
+        str(leaf).encode()
+    ), "the covered second spelling was not recorded as masked"
+
+
+def test_a_stand_in_this_launcher_did_not_create_still_refuses(tmp_path: Path) -> None:
+    """The skip is for THIS launcher's stand-ins only; any other new directory is a swap.
+
+    The control for the case above. A directory with the same shape as a stand-in
+    -- fresh, empty, of the right kind -- that this launcher did not register
+    is exactly the decoy the identity check exists to refuse.
+    """
+    leaf = tmp_path / "diag"
+    leaf.mkdir()
+    seen = os.lstat(leaf)
+    namespace = _pin_namespace_from_builder(
+        tmp_path, {str(leaf): (seen.st_dev, seen.st_ino, 0, 1, seen.st_dev, seen.st_ino)}
+    )
+    leaf.rename(tmp_path / "diag.moved")
+    (tmp_path / "decoy").mkdir()
+    (tmp_path / "decoy").rename(leaf)
+    assert not namespace["_OWN_STAND_INS"], "a stand-in was registered without a mask"
+
+    with pytest.raises(SystemExit) as refused:
+        namespace["_pin_mount_path"](str(leaf).encode(), stat.S_ISDIR)
+    assert "DIFFERENT object" in str(refused.value)
+
+
+def test_a_stand_in_that_masks_a_different_object_still_refuses(tmp_path: Path) -> None:
+    """Being this launcher's stand-in is not enough; it must be THIS object's stand-in.
+
+    The stand-in source falls back to the system tempdir when no tmpfs is on a
+    separate filesystem, and there a same-UID writer can rename an enumerable
+    stand-in onto a protected name. That stand-in was bound over some OTHER
+    object, so the identity it is registered against is not the one this name's
+    expectation carries, and the pin refuses it like any swapped-in directory.
+    """
+    leaf = tmp_path / "diag"
+    leaf.mkdir()
+    other = tmp_path / "other-leaf"
+    other.mkdir()
+    seen = os.lstat(leaf)
+    namespace = _pin_namespace_from_builder(
+        tmp_path, {str(leaf): (seen.st_dev, seen.st_ino, 0, 1, seen.st_dev, seen.st_ino)}
+    )
+    _masked_by_own_stand_in(tmp_path, namespace, leaf, masking=other)
+    assert namespace["_OWN_STAND_INS"], "the stand-in was not registered"
+
+    with pytest.raises(SystemExit) as refused:
+        namespace["_pin_mount_path"](str(leaf).encode(), stat.S_ISDIR)
+    assert "DIFFERENT object" in str(refused.value)
+
+
+def test_an_established_name_that_is_absent_refuses(tmp_path: Path) -> None:
+    """A pass recorded an object here; nothing is here now. That object moved.
+
+    Skipping would exec with the moved object readable at its new name, and the
+    module's own dangling-link branch already refuses the same vanished object
+    when a link is what remains. The absent name is the same case with nothing
+    remaining. The control: an absent name no pass recorded still skips, since
+    an operator who never created that store has nothing to mask.
+    """
+    leaf = tmp_path / "ssh"
+    leaf.mkdir()
+    seen = os.lstat(leaf)
+    carried = (seen.st_dev, seen.st_ino, 0, 1, seen.st_dev, seen.st_ino)
+    leaf.rename(tmp_path / "ssh.moved")
+
+    pin, _ = _pin_from_builder(tmp_path, {str(leaf): carried})
+    with pytest.raises(SystemExit) as refused:
+        pin(str(leaf).encode(), stat.S_ISDIR)
+    assert "has vanished" in str(refused.value)
+
+    # The parent gone too is the same vanished object.
+    nested = tmp_path / "gone-parent" / "ssh"
+    pin, _ = _pin_from_builder(tmp_path, {str(nested): carried})
+    with pytest.raises(SystemExit) as refused:
+        pin(str(nested).encode(), stat.S_ISDIR)
+    assert "has vanished" in str(refused.value)
+
+    pin, _ = _pin_from_builder(tmp_path, {})
+    assert pin(str(leaf).encode(), stat.S_ISDIR) == (None, None)
+    assert pin(str(nested).encode(), stat.S_ISDIR) == (None, None)
+
+
+def test_the_ssh_block_is_entered_for_a_carried_identity_with_nothing_at_the_name() -> None:
+    """The ``lexists`` gate alone skips the whole ssh block on an empty name.
+
+    The strict tier records ``~/.ssh`` and nothing marks it required, so an
+    empty name after the gateway looked would have skipped the mask silently.
+    The gate must also enter on a carried identity, where the pin then refuses
+    the absence. Asserted on the shipped source, as the block needs a real mount.
+    """
+    script = _build_launcher_script("strict")
+    gate = script[script.index("if HIDE_SSH and") : script.index('kh_data = b""')]
+    assert "os.path.lexists(SSH_DIR)" in gate
+    assert (
+        "_carried_occupant(SSH_DIR.encode()) is not None" in gate
+    ), "the ssh block skips an established name that is empty"
+
+
+def _ancestor_masked(tmp_path: Path, namespace: dict, ancestor: Path) -> Path:
+    """Simulate the directory loop having masked *ancestor* and read the name back.
+
+    Everything the loop records for a directory mask: the stand-in pinned and
+    registered against the object it covers, then -- after the read-back -- the
+    NAME recorded as reaching that stand-in. Returns the moved-aside real tree.
+    """
+    _masked_by_own_stand_in(tmp_path, namespace, ancestor)
+    namespace["_MASKED_NAMES"][str(ancestor)] = namespace["_stand_in_identity"](
+        str(ancestor).encode()
+    )
+    return tmp_path / "leaf.covered"
+
+
+def test_a_leaf_absent_under_a_directory_this_launcher_masked_skips(tmp_path: Path) -> None:
+    """The leaf is gone because its parent's stand-in covers it; that is the mask working.
+
+    A probe hides the whole data home, and every crew hidden leaf is listed under
+    it too. Once the directory's stand-in is bound, the leaf is absent from every
+    later look -- the file loop is offered every directory entry and always runs
+    after -- and the pass's expectation for it is still carried. Refusing there
+    fails every spawn on an ordinary host (the readiness probe, so ``/api/models``
+    503s and Settings reports ``Failed to load config``). Both absent branches
+    take the skip: the leaf itself, and a leaf whose own parent is gone with it.
+    """
+    crew = tmp_path / "crew"
+    leaf = crew / "diag"
+    deep = crew / "apps" / "aws-control" / "data"
+    deep.mkdir(parents=True)
+    leaf.mkdir()
+    seen, seen_deep = os.lstat(leaf), os.lstat(deep)
+    namespace = _pin_namespace_from_builder(
+        tmp_path,
+        {
+            str(leaf): (seen.st_dev, seen.st_ino, 0, 1, seen.st_dev, seen.st_ino),
+            str(deep): (
+                seen_deep.st_dev,
+                seen_deep.st_ino,
+                0,
+                1,
+                seen_deep.st_dev,
+                seen_deep.st_ino,
+            ),
+        },
+    )
+    _ancestor_masked(tmp_path, namespace, crew)
+    assert not leaf.exists() and not deep.parent.exists(), "the stand-in is not empty"
+
+    pin = namespace["_pin_mount_path"]
+    assert pin(str(leaf).encode(), stat.S_ISDIR) == (None, None), "leaf under a mask refused"
+    assert pin(str(leaf).encode(), stat.S_ISREG) == (None, None), "file loop refused it"
+    assert pin(str(deep).encode(), stat.S_ISDIR) == (None, None), "deep leaf refused"
+    # A required target under the mask is legitimately absent for the same reason.
+    assert pin(str(leaf).encode(), stat.S_ISDIR, require_present=True) == (None, None)
+
+
+def test_an_absent_leaf_skips_only_when_the_ancestor_still_reaches_its_stand_in(
+    tmp_path: Path,
+) -> None:
+    """The record alone is not the answer; the ancestor is resolved again, now.
+
+    Two controls. Without the recorded name, the same absence is a vanished
+    object and refuses. With the name recorded but the ancestor reaching
+    something other than the stand-in the record names, the record and the
+    filesystem disagree about a name this launcher masked, and the leaf
+    refuses too.
+    """
+    crew = tmp_path / "crew"
+    leaf = crew / "diag"
+    leaf.mkdir(parents=True)
+    seen = os.lstat(leaf)
+    carried = {str(leaf): (seen.st_dev, seen.st_ino, 0, 1, seen.st_dev, seen.st_ino)}
+
+    namespace = _pin_namespace_from_builder(tmp_path, carried)
+    _masked_by_own_stand_in(tmp_path, namespace, crew)
+    assert not namespace["_MASKED_NAMES"], "a name was recorded without a read-back"
+    with pytest.raises(SystemExit) as refused:
+        namespace["_pin_mount_path"](str(leaf).encode(), stat.S_ISDIR)
+    assert "has vanished" in str(refused.value)
+
+    (tmp_path / "leaf.covered").rename(crew.parent / "crew.real")
+    shutil.rmtree(crew)
+    (crew.parent / "crew.real").rename(crew)
+    namespace = _pin_namespace_from_builder(tmp_path, carried)
+    _ancestor_masked(tmp_path, namespace, crew)
+    # The stand-in at the ancestor is swapped for another empty directory. The
+    # stand-in is moved aside rather than removed: a freed inode number is
+    # commonly handed to the very next directory created on the same filesystem,
+    # and a decoy wearing the stand-in's identity would make this control pass
+    # for the wrong reason.
+    recorded = namespace["_MASKED_NAMES"][str(crew)]
+    (tmp_path / "decoy").mkdir()
+    crew.rename(tmp_path / "stand-in.aside")
+    (tmp_path / "decoy").rename(crew)
+    swapped = os.lstat(crew)
+    assert (swapped.st_dev, swapped.st_ino) != tuple(recorded), "the decoy reused the identity"
+    with pytest.raises(SystemExit) as refused:
+        namespace["_pin_mount_path"](str(leaf).encode(), stat.S_ISDIR)
+    assert "has vanished" in str(refused.value)
+
+
+def test_the_directory_loop_records_every_name_it_masks(tmp_path: Path) -> None:
+    """What the pin consults is written by the loop, after the read-back, for each mask.
+
+    The skip above is only as good as this record: a directory the loop masks
+    but does not record leaves every leaf under it refusing exactly as before.
+    """
+    bed = _Bed(tmp_path)
+    region: dict = {}
+    _, _, refusal = _run(tmp_path, bed=bed, globals_out=region)
+    assert refusal is None, refusal
+    recorded = region["_MASKED_NAMES"]
+    assert str(bed.aws) in recorded, "the credential directory mask was not recorded"
+    assert str(bed.ssh) in recorded, "the ssh mask was not recorded"
+    for name, stand_in_id in recorded.items():
+        assert stand_in_id in region["_OWN_STAND_INS"], name
+
+
+@_LINUX_LINK_PIN
+def test_the_directory_loop_records_every_window_it_binds(tmp_path: Path) -> None:
+    """The walk's stop condition is written by the loop, for each window it mounts back.
+
+    A window the loop binds but does not record leaves every leaf under it reading
+    as covered by the mask above, which is the exposure the record exists to refuse.
+    """
+    bed = _Bed(tmp_path)
+    window = bed.aws / "sso"
+    window.mkdir()
+    region: dict = {}
+    _, _, refusal = _run(tmp_path, bed=bed, globals_out=region, private_dirs=(str(window),))
+    assert refusal is None, refusal
+    assert region["_BOUND_WINDOWS"] == {str(window)}, "the bound window was not recorded"
+    assert str(bed.aws) in region["_MASKED_NAMES"], "the window's mask root was not recorded"
+
+
+def test_a_leaf_absent_inside_a_bound_window_is_not_covered_by_the_mask_above(
+    tmp_path: Path,
+) -> None:
+    """Below a window the leaf sits in the REAL tree; the ancestor's stand-in is not over it.
+
+    ``apps/meetings/data`` is mounted back over the data home's stand-in, read-write,
+    and the masked ``apps/meetings/data/edits`` inside it is re-hidden afterwards.
+    Renaming ``edits`` between the window bind and that re-hide leaves it absent at
+    its name while its contents sit live inside the window. The recorded data-home
+    mask does not cover that leaf, so the walk must stop at the window and the pin
+    must refuse the vanished object. The control: the same absence with no window
+    bound is covered and skips.
+    """
+    crew = tmp_path / "crew"
+    window = crew / "apps" / "meetings" / "data"
+    leaf = window / "edits"
+    leaf.mkdir(parents=True)
+    seen = os.lstat(leaf)
+    carried = {str(leaf): (seen.st_dev, seen.st_ino, 0, 1, seen.st_dev, seen.st_ino)}
+
+    namespace = _pin_namespace_from_builder(tmp_path, carried)
+    _ancestor_masked(tmp_path, namespace, crew)
+    # What the window bind exposes: the real tree at the window's name, minus the
+    # leaf a racing writer has just renamed away.
+    real_window = tmp_path / "leaf.covered" / "apps" / "meetings" / "data"
+    (real_window / "edits").rename(tmp_path / "edits.moved")
+    window.parent.mkdir(parents=True)
+    real_window.rename(window)
+    namespace["_BOUND_WINDOWS"].add(str(window))
+    assert not leaf.exists() and window.is_dir()
+
+    with pytest.raises(SystemExit) as refused:
+        namespace["_pin_mount_path"](str(leaf).encode(), stat.S_ISDIR)
+    assert "has vanished" in str(refused.value)
+
+    # Control: no window bound, the same absence is under the data-home mask.
+    namespace["_BOUND_WINDOWS"].clear()
+    assert namespace["_pin_mount_path"](str(leaf).encode(), stat.S_ISDIR) == (None, None)
+
+
+@_LINUX_LINK_PIN
+class _CoveringLibc(_FakeLibc):
+    """``_FakeLibc`` whose directory bind HIDES the target, as a real mount does.
+
+    The recording stand-in leaves the filesystem untouched, so a leaf under a
+    masked directory stays visible and the absent branches never run. Here a
+    fresh directory bind moves the target aside and renames the stand-in onto
+    its name -- same filesystem, so the name takes the stand-in's identity,
+    exactly what ``stat`` reports at a real mount point -- and everything that
+    was beneath the name is gone from every later look.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.covered: list[str] = []
+
+    def mount(self, source, target, fstype, flags, data):  # noqa: ANN001
+        super().mount(source, target, fstype, flags, data)
+        src, tgt = os.fsdecode(source), os.fsdecode(target)
+        for prefix in ("/proc/self/fd/",):
+            if src.startswith(prefix):
+                src = os.readlink(src)
+            if tgt.startswith(prefix):
+                tgt = os.readlink(tgt)
+        if flags & 4096 and not flags & 32 and os.path.abspath(src) != os.path.abspath(tgt):
+            os.rename(tgt, tgt + ".under-mask-%d" % len(self.covered))
+            os.rename(src, tgt)
+            self.covered.append(tgt)
+        return 0
+
+
+@_LINUX_LINK_PIN
+def test_a_data_home_handed_to_the_launcher_under_two_spellings_is_refused(tmp_path: Path) -> None:
+    """Two names for one directory break the per-name records; the producer must not hand them over.
+
+    ``/home/u -> /mnt/home/u``: the probe hides the data home under its
+    ``$HOME`` spelling and under the resolved one, and the pass records the
+    crew hidden leaves under the resolved spelling only. The second spelling
+    carries no expectation, so the loop binds a second stand-in over the
+    already-masked directory and moves the resolved name onto a stand-in the
+    record for it does not name; the file loop then finds the leaf absent,
+    ``_covered_by_own_mask`` sees the record and the filesystem disagree, and
+    the spawn is refused as a vanished object. This is the refusal every probe
+    on such a host hit, reproduced with duplicate lists handed straight to the
+    loops, lists the builder never emits. The launcher keeps that refusal: a
+    stand-in reached at a name no pass vouched for is not evidence that the
+    name is a second spelling of anything,
+    so the fix is upstream, where ``_build_launcher_script`` folds the two
+    spellings onto one (``test_sandbox_symlinked_home_launcher.py``).
+    """
+    real_home = tmp_path / "mnt" / "home" / "u"
+    crew = real_home / ".kirocrew"
+    leaf = crew / "diag"
+    leaf.mkdir(parents=True)
+    (tmp_path / "home").mkdir()
+    (tmp_path / "home" / "u").symlink_to(real_home)
+    linked_crew = tmp_path / "home" / "u" / ".kirocrew"
+    seen = os.lstat(leaf)
+    bed = _Bed(tmp_path)
+    libc = _CoveringLibc()
+    region: dict = {}
+    # Duplicate lists in builder order: the leaf under both spellings, then the
+    # data home under the resolved spelling and under ``$HOME``. The file loop is
+    # offered every directory entry too.
+    dirs = [str(linked_crew / "diag"), str(leaf), str(crew), str(linked_crew)]
+    _, _, refusal = _run(
+        tmp_path,
+        bed=bed,
+        libc=libc,
+        globals_out=region,
+        occupants={str(leaf): [seen.st_dev, seen.st_ino, 0, 1, seen.st_dev, seen.st_ino]},
+        sensitive_dirs=dirs,
+        sensitive_files=[str(bed.secret), *dirs],
+    )
+    assert refusal is not None, "two spellings of one directory were accepted"
+    assert "has vanished" in refusal, refusal
+    assert libc.covered.count(str(crew)) == 2, "the second spelling was not masked over the first"
+
+
+@_LINUX_LINK_PIN
+def test_a_link_planted_at_the_name_and_aimed_at_a_stand_in_still_refuses(
+    tmp_path: Path,
+) -> None:
+    """Only the entry AT the name may be the stand-in, never a link's referent.
+
+    The stand-ins live in a shared tmpfs a same-UID writer can enumerate. A link
+    planted at the protected name and aimed at one of them would read as
+    "already masked" if the referent were consulted, while the real tree sits
+    renamed aside. The entry read no-follow is a link, so the own-stand-in skip
+    does not apply and the pin refuses as before.
+    """
+    leaf = tmp_path / "diag"
+    leaf.mkdir()
+    seen = os.lstat(leaf)
+    namespace = _pin_namespace_from_builder(
+        tmp_path, {str(leaf): (seen.st_dev, seen.st_ino, 0, 1, seen.st_dev, seen.st_ino)}
+    )
+    stand_in = tmp_path / "stand-in"
+    stand_in.mkdir()
+    stand_in_id = namespace["_stand_in_identity"](str(stand_in).encode())
+    # Registered against THIS object, so only the entry-at-the-name rule refuses it.
+    masked_fd = os.open(str(leaf), os.O_RDONLY)
+    try:
+        namespace["_register_stand_in"](stand_in_id, masked_fd)
+    finally:
+        os.close(masked_fd)
+    leaf.rename(tmp_path / "diag.moved")
+    leaf.symlink_to(stand_in)
+
+    with pytest.raises(SystemExit) as refused:
+        namespace["_pin_mount_path"](str(leaf).encode(), stat.S_ISDIR)
+    assert "DIFFERENT object" in str(refused.value)
+
+
+def test_the_file_mask_registers_its_stand_in_too(tmp_path: Path) -> None:
+    """Every mask loop registers its stand-in against the object it masks.
+
+    A loop that mounts without registering leaves a second spelling of its
+    target refusing. Each registration is read off the pinned descriptor of the
+    object being masked, never off the name. Asserted on the shipped source,
+    since the loops cannot run without a real mount.
+    """
+    script = _build_launcher_script("strict")
+    dirs = script[
+        script.index("for d in SENSITIVE_DIRS:") : script.index("for f in SENSITIVE_FILES:")
+    ]
+    assert "_register_stand_in(_per_dir_id, _mask_fd)" in dirs
+    assert "_register_stand_in(_nested_id, _nested_fd)" in dirs
+    files = script[script.index("for f in SENSITIVE_FILES:") : script.index("# .ssh: hide keys")]
+    assert "_register_stand_in(_empty_id, _file_fd)" in files
+    ssh = script[script.index("# .ssh: hide keys") :]
+    assert "_register_stand_in(_ssh_tmp_id, _ssh_fd)" in ssh
+    assert ssh.index("_register_stand_in(_ssh_tmp_id, _ssh_fd)") < ssh.index(
+        "_mount_or_die(ssh_tmp, _ssh_target"
+    )
+    # Each registration precedes its mount.
+    assert dirs.index("_register_stand_in(_per_dir_id, _mask_fd)") < dirs.index(
+        '"hiding credential directory %s" % d'
+    )
+    assert files.index("_register_stand_in(_empty_id, _file_fd)") < files.index(
+        '"hiding sensitive file %s" % f'
+    )
 
 
 # --------------------------------------------------------------------------
@@ -1225,6 +1740,9 @@ def test_break_arms_falsify_each_pinned_mask(
     mutant = script.replace(anchor, replacement)
     mutant = mutant.replace("                os.close(_file_fd)\n", "                pass\n")
     mutant = mutant.replace("                os.close(_mask_fd)\n", "                pass\n")
+    # The name-based shape holds no descriptor to register a stand-in against either.
+    mutant = mutant.replace("_register_stand_in(_empty_id, _file_fd)", "pass")
+    mutant = mutant.replace("_register_stand_in(_per_dir_id, _mask_fd)", "pass")
 
     bed = _Bed(tmp_path)
     if arm == "file-mask-by-name":

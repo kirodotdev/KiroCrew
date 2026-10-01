@@ -91,6 +91,7 @@ from kiro_crew.cron import (
     CronStoreUnreadable,
     format_schedule,
     get_local_tz,
+    is_valid_timezone,
     lookup_cron_folder_id,
     parse_time_string,
 )
@@ -1787,17 +1788,19 @@ def _cron_add(svc: CronService, args: argparse.Namespace) -> None:
     ]
     if len(given) != 1:
         _cron_add_fail("provide exactly one of --every, --cron or --at")
-    # --timezone governs how a --cron expression's hour/minute fields are read.
-    # An interval (--every) has no wall clock to interpret, and a time string
-    # given to --at is resolved by parse_time_string in the configured timezone
-    # with its confirmation rendered in that same timezone -- a per-job value
-    # would change only the render. Either pair is refused rather than
+    # --timezone is the zone the job's wall clocks are read in: a --cron
+    # expression's hour/minute fields and a time string given to --at, which
+    # parse_time_string resolves in it (the configured timezone when omitted),
+    # with its confirmation rendered in that same zone. An interval (--every)
+    # has no wall clock to interpret, so that pair is refused rather than
     # persisted as a field the schedule never consults.
-    if tz and not cron_expr:
+    if tz and every:
         _cron_add_fail(
-            "--timezone applies to --cron only; a time string given to --at is read "
-            "in the configured timezone"
+            "--timezone applies to --cron and --at only; an --every interval has no "
+            "wall clock to read in it"
         )
+    if tz and not is_valid_timezone(tz):
+        _cron_add_fail(f"invalid timezone: {tz!r}")
     at_ts: float | None = None
     if at_raw:
         if len(at_raw) > 64:
@@ -1806,7 +1809,7 @@ def _cron_add(svc: CronService, args: argparse.Namespace) -> None:
             try:
                 at_ts = float(at_raw)
             except ValueError:
-                parsed = parse_time_string(at_raw)
+                parsed = parse_time_string(at_raw, tz)
                 if isinstance(parsed, str):
                     _cron_add_fail(parsed)
                 at_ts = parsed
@@ -1819,8 +1822,8 @@ def _cron_add(svc: CronService, args: argparse.Namespace) -> None:
             if at_ts < _time.time():
                 # Render in the zone parse_time_string resolved the value in,
                 # so the refusal echoes a wall clock the operator recognises.
-                _, configured_tz = get_local_tz()
-                local = datetime.fromtimestamp(at_ts, configured_tz)
+                shown_tz = ZoneInfo(tz) if tz else get_local_tz()[1]
+                local = datetime.fromtimestamp(at_ts, shown_tz)
                 _cron_add_fail(
                     f"resolved time {local.strftime('%Y-%m-%d %I:%M %p %Z')} is in the past"
                 )
@@ -2201,12 +2204,14 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
             print(f"Paused job: {args.job_id}")
         else:
             print(f"Job not found: {args.job_id}")
+            sys.exit(1)
 
     elif action == "resume":
         if svc.enable_job(args.job_id, enabled=True):
             print(f"Resumed job: {args.job_id}")
         else:
             print(f"Job not found: {args.job_id}")
+            sys.exit(1)
 
     elif action == "trigger":
         # Instance-aware, for the same reason as the MCP trigger: DASHBOARD_PORT reads
@@ -2223,6 +2228,8 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
             source="cli",
             resources=f"job_id={args.job_id}",
         )
+        if not ok:
+            sys.exit(1)
 
     elif action == "preview":
         _cron_preview(args)
@@ -3093,7 +3100,8 @@ def _learn(args: argparse.Namespace) -> None:
                     "significant words with it can coexist."
                 )
             # The category is echoed ONLY where the store adopted the submitted one.
-            # It is write-once (vector_memory.py builds an enrichment with the STORED
+            # It is write-once (write_lesson's exact-rule pass, `resolve_exact_rule` in
+            # vector_memory_runtime/lessons.py, builds an enrichment with the STORED
             # category, falling back to the submitted one only when the row has none),
             # so an insert is the single outcome where what was typed is what is held.
             # Anything else printing it would show a value the store may not have --

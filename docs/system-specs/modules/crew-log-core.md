@@ -286,7 +286,7 @@ subject -- this entry is that history (`monitor-architecture.md`).
 
 | Type | `data` | Emitter |
 |---|---|---|
-| `background/completed` | `{kind: title \| memory_consolidation \| summary, model?, provider?, tokens?, credits?, ms?}` | yes |
+| `background/completed` | `{kind: title \| memory_consolidation \| summary \| dynamic_card, model?, provider?, tokens?, credits?, ms?}` | yes |
 | `subagent/spawned` | `{turn?, agent_id, agent?, model?, scope:{memory, lessons, project}}` — no `ref` yet, see below | yes |
 | `subagent/steered` | `{agent_id, mode: interrupt \| follow_up}` | yes |
 | `subagent/completed` | `{agent_id, ms?}` — no `tokens`/`credits`, see below | yes |

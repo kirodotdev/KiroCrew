@@ -73,13 +73,13 @@ monitor_watch(kind=<kind>, target=<full PR URL>, objective="review_ready",
               wake_instructions=<actions and exit>)
 ```
 
-Inspect the schema for positive `max_agent_turns`, `max_tokens` and
-`max_provider_errors` budgets. Ordinary unchanged/pending/retry/terminal probes
+Inspect the schema: positive `max_tokens`/`max_provider_errors`, and
+`max_agent_turns` where 0 = no wake cap. Ordinary unchanged/pending/retry/terminal probes
 spend no agent turn; a new actionable fingerprint wakes the owning session at
 most once with a bounded summary. Fetch logs, comments or diffs only when needed
 on that wake. The token cap applies only when usage is reported;
-`token_usage_known` exposes that gap, while runtime and completed-turn caps
-remain hard fallbacks. Provider errors are bounded too. GitLab uses installed
+`token_usage_known` exposes that gap; runtime always caps, turns only if
+set positive. Provider errors are bounded too. GitLab uses installed
 `glab` credentials, Azure DevOps uses `az login` or the protected
 `AZURE_DEVOPS_EXT_PAT`, and Bitbucket may use the protected `BITBUCKET_EMAIL`
 plus `BITBUCKET_API_TOKEN`. A setup or authentication refusal is authoritative;

@@ -86,6 +86,8 @@ async function openPage({ theme = 'dark', viewport = DESKTOP, permission = 'gran
   let ws = null
   await stubDashboardApi(page, {
     theme,
+    // Liquid Glass is opt-in; the notification panes are glass only with it on.
+    localStorageEntries: { 'mc-liquid-glass': 'on' },
     extra: async (path, route) => {
       if (path === '/api/notifications' && route.request().method() === 'GET') {
         await json(route, { notifications: seeded, unread: seeded.filter(n => !n.acked).length })

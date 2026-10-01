@@ -201,5 +201,51 @@ class TestDeckRootResolution(_DeckRootFixture):
                 os.environ["XDG_CONFIG_HOME"] = prev_xdg
 
 
+class TestDeckRootBranchLogging(unittest.TestCase):
+    """Each branch of ``deck_root()`` names itself in the log, so a
+    reader can tell which POSIX-oriented resolution arm produced the root — on
+    Windows especially, where the home default expands differently."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self._prev_env = os.environ.get(paths.DECK_ROOT_ENV)
+        self._prev_xdg = os.environ.get("XDG_CONFIG_HOME")
+        os.environ["XDG_CONFIG_HOME"] = str(self.tmp / "cfg")
+
+    def tearDown(self) -> None:
+        for key, prev in (
+            (paths.DECK_ROOT_ENV, self._prev_env),
+            ("XDG_CONFIG_HOME", self._prev_xdg),
+        ):
+            if prev is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = prev
+
+    def test_override_branch_is_logged(self) -> None:
+        os.environ[paths.DECK_ROOT_ENV] = str(self.tmp / "decks")
+        with self.assertLogs(paths.logger, level="DEBUG") as cm:
+            paths.deck_root()
+        self.assertTrue(any("override ->" in m for m in cm.output), cm.output)
+
+    def test_configured_branch_is_logged(self) -> None:
+        os.environ.pop(paths.DECK_ROOT_ENV, None)
+        config_path = paths.engine_config_path()
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(
+            json.dumps({"output_dir": str(self.tmp / "cfg-decks")}), encoding="utf-8"
+        )
+        with self.assertLogs(paths.logger, level="DEBUG") as cm:
+            paths.deck_root()
+        self.assertTrue(any("engine config output_dir ->" in m for m in cm.output), cm.output)
+
+    def test_home_default_branch_is_logged(self) -> None:
+        os.environ.pop(paths.DECK_ROOT_ENV, None)
+        with self.assertLogs(paths.logger, level="DEBUG") as cm:
+            paths.deck_root()
+        self.assertTrue(any("home default ->" in m for m in cm.output), cm.output)
+
+
 if __name__ == "__main__":
     unittest.main()

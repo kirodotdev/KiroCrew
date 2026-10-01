@@ -63,6 +63,7 @@ from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.history import is_incognito_transcript
 from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.validation import (
+    WORK_LEDGER_READ_SCHEMA,
     WORK_LEDGER_RECORD_SCHEMA,
     WORK_REPORT_SCHEMA,
     ValidationError,
@@ -1068,7 +1069,7 @@ def _report(
 
 
 async def api_work_ledger_get(request: web.Request) -> web.Response:
-    """GET /api/work-ledger — the whole ledger this session owns.
+    """GET /api/work-ledger — the ledger this session owns.
 
     The conductor record, every item with all its fields, the derived
     ``orphaned`` / ``stale`` / ``acceptance_concrete`` flags, each item's newest
@@ -1080,11 +1081,25 @@ async def api_work_ledger_get(request: web.Request) -> web.Response:
     on the item row is why. Each entry carries the item's ``status`` so the conductor
     can apply its own "``done`` only" filter without a second lookup — the filter stays
     the conductor's to apply.
+
+    With no query the answer is the whole board. Every parameter NARROWS it:
+    ``events=<n>`` shortens each tail, ``item_id`` / ``state`` / ``since`` select
+    rows (``accept_batch`` stays built from the WHOLE board, because its contract
+    is the whole bar), and ``compact=true`` returns the status columns alone, the
+    derived flags among them, with no events, acceptance or batch. The route does
+    not size the reply: the MCP tool that carries it to a model fits it to that
+    runtime's cut (``mcp_work._fit_ledger``), measured on the text it delivers.
     """
     key, refusal = await _caller_key(request, "work_ledger_read")
     if refusal is not None:
         return refusal
     assert key is not None
+    options, bad = _read_options(request)
+    if bad is not None:
+        return bad
+    assert options is not None
+    compact = bool(options.get("compact", False))
+    tail = int(options.get("events", _MAX_EVENT_TAIL))
     # Under the board lock for the same reason the brief read is: a write's
     # cache commit and its record append are two steps, and a read between them
     # would publish a mutation the record may yet roll back. The header and the
@@ -1097,11 +1112,13 @@ async def api_work_ledger_get(request: web.Request) -> web.Response:
         if dirty is not None:
             return dirty
         items = await asyncio.to_thread(work_ledger.list_work_items, key)
+        shown = [item for item in items if _passes_filters(item, options)]
         event_tails: dict[str, list[work_ledger.WorkEvent]] = {}
-        for item in items:
-            event_tails[item.item_id] = await asyncio.to_thread(
-                _tail_events, key, item.item_id, _MAX_EVENT_TAIL
-            )
+        if not compact:
+            for item in shown:
+                event_tails[item.item_id] = await asyncio.to_thread(
+                    _tail_events, key, item.item_id, tail
+                )
     assert record is not None
 
     state: DashboardState = request.app["state"]
@@ -1109,10 +1126,12 @@ async def api_work_ledger_get(request: web.Request) -> web.Response:
     # over HTTP: this handler runs in the process that owns it. ``orphaned`` asks
     # whether the CONDUCTOR's slot is still open and ``stale`` whether the
     # WORKER's is — the conjunction with the staleness window is what keeps a
-    # worker in a thirty-minute build from being flagged.
+    # worker in a thirty-minute build from being flagged. Derived for the compact
+    # read too: a patrol that reads only the status columns must still see a dead
+    # worker.
     conductor_alive = _slot_open(state, key)
     rows: list[dict[str, Any]] = []
-    for item in items:
+    for item in shown:
         row = item.to_dict()
         row["orphaned"] = work_ledger.is_orphaned(item, conductor_slot_exists=conductor_alive)
         row["stale"] = work_ledger.is_stale(
@@ -1122,6 +1141,9 @@ async def api_work_ledger_get(request: web.Request) -> web.Response:
         # it a conductor sees an item it dispatched simply missing from the batch and
         # has no way to tell "bar not filled in yet" from "the read dropped it".
         row["acceptance_concrete"] = work_ledger.is_acceptance_concrete(item.acceptance)
+        if compact:
+            rows.append({name: row[name] for name in _COMPACT_ROW_FIELDS})
+            continue
         events = event_tails[item.item_id]
         row["events"] = [event.to_dict() for event in events]
         rows.append(row)
@@ -1141,13 +1163,122 @@ async def api_work_ledger_get(request: web.Request) -> web.Response:
             f"read, so it is no longer one to return it to: {why}.",
         )
     _audit(key, "work_ledger_read", "ok", resources=f"{len(rows)} item(s)")
-    return web.json_response(
-        {
-            "conductor": record.to_dict(),
-            "items": rows,
-            "accept_batch": work_ledger.accept_batch(items),
-        }
-    )
+    payload: dict[str, Any] = {"conductor": record.to_dict(), "items": rows}
+    if compact:
+        payload["compact"] = True
+    else:
+        # The whole board, never the filtered rows.
+        payload["accept_batch"] = work_ledger.accept_batch(items)
+    return web.json_response(payload)
+
+
+#: The fields a ``compact=true`` row carries: what a patrol cycle reads to decide
+#: who moves next, the three derived flags included, and nothing that is a
+#: document in its own right (``acceptance``, ``artifacts``, the events).
+_COMPACT_ROW_FIELDS: tuple[str, ...] = (
+    "item_id",
+    "title",
+    "state",
+    "created_at",
+    "status",
+    "summary",
+    "decision",
+    "verdict",
+    "pr",
+    "worker_session_key",
+    "last_report_at",
+    "orphaned",
+    "stale",
+    "acceptance_concrete",
+)
+
+#: Query-string spellings of ``compact``. ``true`` / ``false`` is what the tool
+#: layer sends.
+_QUERY_TRUE = frozenset({"1", "true", "yes", "on"})
+_QUERY_FALSE = frozenset({"0", "false", "no", "off"})
+
+
+def _read_options(
+    request: web.Request,
+) -> tuple[dict[str, Any], None] | tuple[None, web.Response]:
+    """The read's query parameters, validated against ``WORK_LEDGER_READ_SCHEMA``.
+
+    A query string carries only text, so ``events`` and ``compact`` are coerced to
+    the schema's types first; the rest is the schema's own check, the same one the
+    tool layer applies. An unknown or empty parameter is refused rather than
+    ignored: a filter that silently did not apply would hand back the whole board
+    as if it were the narrowed one.
+    """
+    raw: dict[str, Any] = {}
+    for name in request.query:
+        value = request.query.get(name, "")
+        if value == "":
+            return None, _refuse_400(
+                work_ledger.CODE_INVALID_VALUE, f"{name}: expected a value", name
+            )
+        if name == "events":
+            try:
+                raw[name] = int(value)
+            except ValueError:
+                return None, _refuse_400(
+                    work_ledger.CODE_INVALID_VALUE, "events: expected an integer", "events"
+                )
+        elif name == "compact":
+            lowered = value.strip().lower()
+            if lowered not in _QUERY_TRUE | _QUERY_FALSE:
+                return None, _refuse_400(
+                    work_ledger.CODE_INVALID_VALUE, "compact: expected true or false", "compact"
+                )
+            raw[name] = lowered in _QUERY_TRUE
+        else:
+            raw[name] = value
+    try:
+        cleaned = validate_tool_args(raw, WORK_LEDGER_READ_SCHEMA)
+    except ValidationError as exc:
+        # An unknown key is a wrong VALUE for the query; the store-code mapping
+        # reads the field name and would call a stray ``status=`` an
+        # ``invalid_status``.
+        unknown = "unknown field" in (exc.message or "")
+        code = work_ledger.CODE_INVALID_VALUE if unknown else _validation_code(exc)
+        return None, _refuse_400(code, str(exc), exc.field)
+    since = cleaned.get("since")
+    if since is not None:
+        moment = work_ledger.parse_stamp(since)
+        if moment is None:
+            return None, _refuse_400(
+                work_ledger.CODE_INVALID_VALUE, "since: expected an ISO-8601 timestamp", "since"
+            )
+        cleaned["since"] = moment
+    return cleaned, None
+
+
+def _passes_filters(item: work_ledger.WorkItem, options: dict[str, Any]) -> bool:
+    """Whether *item* survives the read's ``item_id`` / ``state`` / ``since`` filters.
+
+    ``since`` is judged on the newest of ``created_at``, ``last_report_at`` and
+    ``closed_at``, so it answers "what moved since my last cycle" from the item's
+    own fields, without reading any event log.
+    """
+    item_id = options.get("item_id")
+    if item_id is not None and item.item_id != item_id:
+        return False
+    state = options.get("state")
+    if state is not None and item.state != state:
+        return False
+    since = options.get("since")
+    if since is not None:
+        stamps = [
+            parsed
+            for parsed in (
+                work_ledger.parse_stamp(value)
+                for value in (item.created_at, item.last_report_at, item.closed_at)
+                if value
+            )
+            if parsed is not None
+        ]
+        if not stamps or max(stamps) < since:
+            return False
+    return True
 
 
 #: Events returned per item. The log is append-only and capped at 200 per item,

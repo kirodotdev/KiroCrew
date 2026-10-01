@@ -37,7 +37,7 @@ Builds use plain `pip` + `npm`/Vite + `pytest`, driven by the repo-root
 | Requirement | Needed for | Floor |
 |-------------|------------|-------|
 | **Python** | Backend | `>= 3.12` (`requires-python` in `pyproject.toml`; `make build` provisions a 3.12 `.venv` by default) |
-| **Node.js + npm** | Building the dashboard | `>= 22` (`website/package.json` `engines`; Node 24 LTS recommended); on x86_64 Amazon Linux 2, the glibc-217 fallback installs Node 24 because official builds need a newer glibc (no glibc-217 arm64 build is available) |
+| **Node.js + npm** | Building the dashboard | `>= 22.12.0` (`website/package.json` `engines`; Node 24 LTS recommended); on x86_64 Amazon Linux 2, the glibc-217 fallback installs Node 24 because official builds need a newer glibc (no glibc-217 arm64 build is available) |
 | **`kiro-cli`** | Driving the LLM | Required; see below |
 
 Node is only needed to *build* the dashboard. The prebuilt wheel, the DMG, the
@@ -228,7 +228,10 @@ release tree and `UV_PYTHON_INSTALL_MIRROR` at a mirror of the interpreter
 archives — the pinned SHA-256 digests are enforced either way. The signed
 installer never pipes an unsigned third-party script into a shell: uv is
 fetched as a tarball and verified against pinned digests, exactly like the
-wheel itself. When it finishes it prints the next step: `kirocrew gateway` to
+wheel itself. On a terminal the slow steps (wheel download, venv creation,
+pip) draw a single live progress line; `KIROCREW_INSTALL_PLAIN=1` turns that
+off and prints one line per step instead, which is also what a piped or
+logged run gets. When it finishes it prints the next step: `kirocrew gateway` to
 start now, or `kirocrew service install` to run it as a service.
 
 Dependencies are installed from **prebuilt wheels only** (`pip

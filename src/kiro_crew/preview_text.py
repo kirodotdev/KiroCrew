@@ -19,7 +19,7 @@ import re
 import unicodedata
 from typing import Callable
 
-from kiro_crew.constants import OPTIONS_RE_LINE, strip_control_comments
+from kiro_crew.constants import OPTIONS_RE_LINE, md_link_destination, strip_control_comments
 
 # Fenced code blocks — ```lang ... ``` (or unterminated, running to the end
 # of the message). Replaced with a short placeholder; the code body would
@@ -31,8 +31,12 @@ _MCWIDGET_RE = re.compile(r"<mcwidget\b[^>]*>[\s\S]*?(?:</mcwidget>|\Z)", re.IGN
 # (grammar + recognizer split documented on ``constants._TRAILING_CONTROL_LINES_RE``);
 # this module deliberately has no local spelling to drift.
 _INLINE_CODE_RE = re.compile(r"`([^`\n]+)`")
-_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\([^)]*\)")
-_LINK_RE = re.compile(r"\[([^\]]+)\]\([^)]*\)")
+#: A link destination keeps a balanced ``(...)`` pair, as the channel renderers
+#: read it; see :func:`kiro_crew.constants.md_link_destination`. A label stops at
+#: the next ``[``, so a run of ``[`` cannot make every opener rescan the text.
+_LINK_DESTINATION_UNIT = md_link_destination("[^()]")
+_IMAGE_RE = re.compile(rf"!\[([^\[\]]*)\]\({_LINK_DESTINATION_UNIT}*\)")
+_LINK_RE = re.compile(rf"\[([^\[\]]+)\]\({_LINK_DESTINATION_UNIT}*\)")
 # Trailing quick-reply block — rendered as buttons, not text. Reuse the canonical
 # ReDoS-hardened, line-anchored parser (constants.OPTIONS_RE_LINE) so this strip
 # can't drift from the dashboard/Slack copies and handles `]` inside a label.

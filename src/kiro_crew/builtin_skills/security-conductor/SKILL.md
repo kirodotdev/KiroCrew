@@ -225,6 +225,13 @@ and retyped from the wrong directory:
 
 Preparing that text is clerical. Typing it is the gate.
 
+## Field lessons
+
+`lessons.md` beside this file holds the reviewed lessons from past audits:
+how to find a defect, write a proof, grade severity, verify, scope a fix, and
+act on a policy refusal. Read it before the first dispatch, and point each
+seed at the sections that worker needs. It is reference, not scope.
+
 ## Auditor seed template
 
 One auditor per surface. Fill `{...}` from the rules of engagement and the work

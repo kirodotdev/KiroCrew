@@ -3,7 +3,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { api, ApiError } from '../api/client'
 import { store, useAppDispatch } from '../store'
 import { deleteSlot, switchSlot } from '../store/chatSlice'
-import { updateSlotPin, updateSlot, markSlotRead, markSlotUnread, slotWriteStampOf } from '../store/dashboardSlice'
+import { updateSlotPin, markSlotRead, markSlotUnread, slotWriteStampOf } from '../store/dashboardSlice'
 import { emitSlotRead } from '../lib/slotReadRelay'
 import { copySessionLink } from '../utils/shareUrl'
 import { useMoveSlotToFolder } from './useMoveSlotToFolder'
@@ -76,8 +76,6 @@ export interface SessionActions {
   toggleRead: (slotKey: string) => void
   /** Toggle pinned. */
   togglePin: (slotKey: string) => void
-  /** Toggle orchestrator (Autopilot) mode on/off, with a confirm. */
-  toggleMode: (slotKey: string) => void
   /** Copy the session's share link. */
   copyLink: (slotKey: string) => void
   /** Move to a folder (or root for null) — shared optimistic move + rollback. */
@@ -284,22 +282,6 @@ export function useSessionActions(mode?: string): SessionActions {
       : undefined,
   })
 
-  // Orchestrator/Autopilot mode toggle (optimistic, server-persisted).
-  const modeMutation = useMutation({
-    mutationFn: ({ key, newMode }: { key: string; newMode: string }) => api.setSlotMode(key, newMode),
-    onMutate: ({ key, newMode }) => {
-      const prev = store.getState().dashboard.slots.find(s => s.key === key)?.mode ?? ''
-      dispatch(updateSlot({ key, mode: newMode }))
-      return { key, prev, newMode }
-    },
-    onError: (_err, _vars, ctx) => {
-      if (!ctx) return
-      // Guarded rollback: don't clobber a superseding mode toggle.
-      const current = store.getState().dashboard.slots.find(s => s.key === ctx.key)?.mode ?? ''
-      if (current === ctx.newMode) dispatch(updateSlot({ key: ctx.key, mode: ctx.prev }))
-    },
-  })
-
   // Session reload (relaunch the agent process in place). No optimistic state:
   // the success confirmation is the feed notice the backend appends, arriving
   // over the websocket (and lighting the row's unread indicator for a
@@ -323,7 +305,6 @@ export function useSessionActions(mode?: string): SessionActions {
   // recreated on every render (the mutation result objects are new each render).
   const { mutate: forkMutate } = forkMutation
   const { mutate: pinMutate } = pinMutation
-  const { mutate: modeMutate } = modeMutation
   const { mutate: reloadMutate } = reloadMutation
 
   const duplicate = useCallback((slotKey: string) => { forkMutate(slotKey) }, [forkMutate])
@@ -346,16 +327,6 @@ export function useSessionActions(mode?: string): SessionActions {
     pinMutate({ key: slotKey, pinned: !isPinned })
   }, [pinMutate])
 
-  const toggleMode = useCallback((slotKey: string) => {
-    const cur = store.getState().dashboard.slots.find(s => s.key === slotKey)?.mode ?? ''
-    const newMode = cur === 'orchestrator' ? '' : 'orchestrator'
-    if (confirm(newMode === 'orchestrator'
-      ? i18nT('hooks.useSessionActions.switch_to_autopilot_mode_future_messages_will_us')
-      : i18nT('hooks.useSessionActions.switch_to_normal_chat_mode_future_messages_will'))) {
-      modeMutate({ key: slotKey, newMode })
-    }
-  }, [modeMutate])
-
   const copyLink = useCallback((slotKey: string) => {
     const slot = store.getState().dashboard.slots.find(s => s.key === slotKey)
     copySessionLink(slotKey, slot?.title, undefined, mode)
@@ -371,5 +342,5 @@ export function useSessionActions(mode?: string): SessionActions {
     if (!loadChatConfig().confirmCloseSession || confirm(i18nT('hooks.useSessionActions.close_this_session'))) dispatch(deleteSlot(slotKey))
   }, [dispatch])
 
-  return { duplicate, toggleRead, togglePin, toggleMode, copyLink, move, reload, close }
+  return { duplicate, toggleRead, togglePin, copyLink, move, reload, close }
 }

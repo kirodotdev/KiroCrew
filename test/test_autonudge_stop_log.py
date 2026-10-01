@@ -227,7 +227,7 @@ def test_a_failed_removal_leaves_no_reason_for_a_later_stop(tmp_path, monkeypatc
         monkeypatch.setattr(svc, "_write_state", boom)
         with pytest.raises(OSError):
             await svc.remove(loop.id, stop_reason=_an.AUTONUDGE_STOP_REASON, stop_detail="x")
-        assert svc._stop_notes == {}
+        assert svc._store.stop_notes == {}
         monkeypatch.setattr(svc, "_write_state", real)
         await svc.remove(loop.id)
         svc.stop()

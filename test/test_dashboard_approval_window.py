@@ -309,7 +309,7 @@ class TestTimeoutTellsTheAgentInBand:
         gate = "if _host_deny_cause:"
         assert gate in src, "the shared provenance-gated steer is gone"
         block = src.split(gate, 1)[1]
-        end = block.index("await client.reject_tool(")
+        end = block.index("await _reject_attributed(")
         return block[:end]
 
     def test_the_branch_records_the_timeout_cause(self) -> None:
@@ -420,7 +420,7 @@ class TestTimeoutTellsTheAgentInBand:
         steer = src.index("cause=_host_deny_cause")
         reject = src.index('slot.append("tool", _reject_label, "msg msg-tool")')
         assert steer < reject, "the steer must precede the rejection going on the wire"
-        assert "await client.reject_tool(event.request_id)" in src[steer:reject]
+        assert "await _reject_attributed(" in src[steer:reject]
 
 
 class TestResolver:

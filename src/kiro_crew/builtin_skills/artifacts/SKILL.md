@@ -63,7 +63,7 @@ about style when the user delegated that choice.
   name happens to match.
 - Keep the returned slug. Publish subsequent changes with `artifact_update`
   on that slug; retain the tag. Do not make a new artifact per step. The chat and
-  Crew side panels pick up published changes within ten seconds while visible.
+  Crew side panels pick up each published change as it is saved while visible.
 - Use real status/evidence from the task's existing sources. Show what is stuck,
   what needs human input, its context, and the next action. Distinguish a proposed
   default from an authorized action. No invented progress percentages, elapsed

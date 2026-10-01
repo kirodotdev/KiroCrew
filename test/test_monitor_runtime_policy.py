@@ -280,7 +280,7 @@ async def test_low_policy_keeps_over_policy_structured_record_active(tmp_path, m
     assert row.monitor.budgets.max_runtime_secs == 600
     assert row.monitor.created_ts == armed.monitor.created_ts
     assert row.monitor.target == "https://github.com/a/b/pull/1"
-    assert not restored._unparsed_rows
+    assert not restored._store.unparsed_rows
     restored.stop()
 
 

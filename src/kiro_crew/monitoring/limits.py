@@ -54,7 +54,8 @@ def coerce_runtime_ceiling(value: object) -> int:
 
 def runtime_ceiling_secs() -> int:
     """Read the live policy without changing an existing monitor's deadline."""
-    # Local to avoid a cycle: config.sections imports this module.
+    # Local to avoid a cycle: config.service_sections and config.section_builders
+    # import this module.
     from kiro_crew.config import KiroCrewConfig
     from kiro_crew.config.live import snapshot
 

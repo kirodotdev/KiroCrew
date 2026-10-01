@@ -26,6 +26,9 @@ from kiro_crew.agent_sdk.backends import agent_process_markers, node_adapter_ent
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import config_dir
 from kiro_crew.constants import (
+    KIROCREW_SANDBOX_TOOL_ENV,
+    KIROCREW_SANDBOX_TOOL_VALUE,
+    KIROCREW_SPAWN_HOME_ENV,
     KIROCREW_SPAWN_INSTANCE_ENV,
     KIROCREW_SPAWNED_ENV,
     KIROCREW_SPAWNED_VALUE,
@@ -3942,6 +3945,60 @@ def _env_spawn_instance(pid: int, proc_root: Path | None = None) -> str | None:
     return None
 
 
+def _env_spawn_home(pid: int, proc_root: Path | None = None) -> str | None:
+    """*pid*'s ``KIROCREW_SPAWN_HOME``, or ``None`` when absent or unreadable. Linux only."""
+    if sys.platform != "linux" and proc_root is None:
+        return None
+    root = proc_root if proc_root is not None else Path("/proc")
+    prefix = f"{KIROCREW_SPAWN_HOME_ENV}=".encode()
+    try:
+        environ = (root / str(pid) / "environ").read_bytes()
+    except OSError:
+        return None
+    for entry in environ.split(b"\x00"):
+        if entry.startswith(prefix):
+            value = entry[len(prefix) :]
+            return value.decode("utf-8", "replace") if value else None
+    return None
+
+
+def _env_is_sandbox_tool(pid: int, proc_root: Path | None = None) -> bool | None:
+    """Tri-state read of *pid*'s ``KIROCREW_SANDBOX_TOOL`` environment marker.
+
+    The marker ``sandbox.sandboxed_spawn_argv`` stamps on every tree it spawns -- a
+    build, an ``npx`` install, a ``git``/``gh`` read, a provisioning run -- and which
+    that tree inherits, so it answers ``True`` for a descendant no spawn recorded.
+    Same read, same two production arms and the same tri-state contract as
+    :func:`_read_env_has_kirocrew_marker`: ``/proc/<pid>/environ`` on Linux, ``sysctl
+    KERN_PROCARGS2`` on macOS, and ``None`` on every platform with no same-uid environ
+    oracle.
+
+    What ``None`` buys is the same thing it buys there: an unreadable environment is
+    told apart from a readable one lacking the marker, so a caller can decline to act
+    on doubt. The two callers want OPPOSITE things from doubt, which is why this stays
+    tri-state rather than collapsing here. A caller reading this marker to grant a kill
+    would have to treat ``None`` as "not marked"; the reconciler reads it to WITHHOLD
+    one, so ``None`` must not withhold -- a pid whose marker cannot be established
+    stays in the candidate population under the ownership, argv and age conditions.
+
+    *proc_root* is the fixture seam: an explicit value always takes the ``/proc`` path,
+    so a test's verdict never depends on the host it runs on.
+    """
+    needle = f"{KIROCREW_SANDBOX_TOOL_ENV}={KIROCREW_SANDBOX_TOOL_VALUE}".encode()
+    if proc_root is None:
+        if sys.platform == "darwin":
+            entries = platform_compat.darwin_process_environ(pid)
+            return None if entries is None else needle in entries
+        if sys.platform != "linux":
+            return None
+    root = proc_root if proc_root is not None else Path("/proc")
+    try:
+        environ = (root / str(pid) / "environ").read_bytes()
+    except OSError:
+        return None
+    return needle in environ.split(b"\x00")
+
+
 def _env_has_kirocrew_marker(pid: int, proc_root: Path | None = None) -> bool:
     """True if *pid*'s environment carries the ``KIROCREW_SPAWNED`` marker.
 
@@ -4431,12 +4488,13 @@ def _is_untracked_managed_agent_orphan(pid: int, cmdline: bytes, tracked_pids: s
     (:data:`_GATEWAY_MARKERS`) are excluded: they are not agent runtimes and
     are never tracked as such.
 
-    This grants NO kill authority and is wired to nothing that terminates — a
-    hit only logs. Blast radius is therefore zero, which is what makes the
-    detector safe to ship ahead of a maintainer's ruling on whether an
-    untracked runtime may be reaped at all. It also means a cross-data-home
-    false positive (a second install's live runtime, tracked in ITS config dir
-    and so absent from ours) is diagnostic noise rather than a wrong kill.
+    This grants NO kill authority and nothing scheduled terminates on it — a
+    hit only logs. The one consumer that can end such a process is the
+    user-confirmed ``RuntimeReconciler.reclaim_untracked``, which additionally
+    requires the runtime's ``KIROCREW_SPAWN_HOME`` to name this data home.
+    This predicate is uid-wide: a second install's live runtime, tracked in ITS
+    config dir and so absent from ours, is a hit here. In the report that is
+    diagnostic noise; the reclaim's home check is what keeps it from a kill.
     """
     if not cmdline:
         return False  # kernel thread / zombie — no argv to identify
@@ -4449,6 +4507,32 @@ def _is_untracked_managed_agent_orphan(pid: int, cmdline: bytes, tracked_pids: s
     if pid in tracked_pids:
         return False  # a reaper can already reach it
     return _env_has_kirocrew_marker(pid)
+
+
+def reported_untracked_agent_pids() -> set[int]:
+    """The runtimes the last orphan scan reported as untracked -- READ ONLY, grants nothing."""
+    return set(_reported_untracked_agent_pids)
+
+
+def confirm_untracked_agent_runtimes() -> set[int]:
+    """Re-detect untracked runtimes now, for a caller that may act on the answer.
+
+    Unlike the scan's report this requires a COMPLETE tracked snapshot and raises
+    without one, because a dropped row is the input that makes a live runtime look
+    untracked.
+    """
+    tracked, complete = _read_tracked_agent_pids()
+    if not complete:
+        raise RuntimeError("the tracked-pid snapshot is incomplete")
+    found: set[int] = set()
+    for pid in _our_orphan_pids():
+        try:
+            cmdline = Path(f"/proc/{pid}/cmdline").read_bytes()
+        except OSError:
+            continue
+        if _is_untracked_managed_agent_orphan(pid, cmdline, tracked):
+            found.add(pid)
+    return found
 
 
 def _work_orphan_session_leader_alive(pid: int) -> bool:

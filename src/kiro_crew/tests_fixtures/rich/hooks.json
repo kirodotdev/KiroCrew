@@ -2,7 +2,7 @@
   "hooks": [
     {
       "id": "fixture-hook-01",
-      "event": "HOOK_EVENT_STOP",
+      "event": "Stop",
       "matcher": "*",
       "command": "/usr/bin/true"
     }

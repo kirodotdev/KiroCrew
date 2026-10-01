@@ -30,6 +30,8 @@ import { resolve } from 'node:path'
  * attributes, and happy-dom has no layout for a ResizeObserver to fire against.
  */
 const CHAT_PAGE = readFileSync(resolve(__dirname, '../pages/ChatPage.tsx'), 'utf8')
+// The dock's measurement lives in its owner; the page mounts the box.
+const DOCK = readFileSync(resolve(__dirname, '../pages/chat/page/composerDock.tsx'), 'utf8')
 
 const num = (re: RegExp, src: string): number => {
   const m = re.exec(src)
@@ -53,15 +55,16 @@ describe('composer dock clearance', () => {
     // the dock's `right` inset lines its column up with the transcript's and
     // leaves the thumb uncovered — hence `scrollerRef` in the deps.
     const hook = /const dockRef = useCallback\(\(el: HTMLDivElement \| null\) => \{[\s\S]*?if \(!el\) \{ setDockH\(0\); setDockGutter\(0\); return \}[\s\S]*?setDockH\(el\.offsetHeight\)[\s\S]*?setDockGutter\(sc \? Math\.max\(0, sc\.offsetWidth - sc\.clientWidth\) : 0\)[\s\S]*?new ResizeObserver\(measure\)[\s\S]*?ro\.observe\(el\)[\s\S]*?\}, \[scrollerRef\]\)/
-    expect(CHAT_PAGE).toMatch(hook)
+    expect(DOCK).toMatch(hook)
+    expect(CHAT_PAGE, 'the page takes dockRef from the dock owner').toMatch(/const \{ inputAreaRef, dockH, dockGutter, dockRef \} = useComposerDockMetrics\(scrollerRef\)/)
     expect(CHAT_PAGE).toMatch(/<div ref=\{dockRef\} className="[^"]*" style=\{\{ right: dockGutter \}\} data-testid="composer-dock-root">/)
-    expect(CHAT_PAGE).not.toMatch(/useLayoutEffect\(\(\) => \{\s*const el = dockRef\.current/)
+    for (const src of [CHAT_PAGE, DOCK]) expect(src).not.toMatch(/useLayoutEffect\(\(\) => \{\s*const el = dockRef\.current/)
   })
 
   it('states the clearance in px, never in viewport units', () => {
     // A spacer sized in vh/dvh/svh/lvh reads as px to the arithmetic while still
     // shrinking on a phone.
-    expect(CHAT_PAGE).not.toMatch(/height:\s*['"]?\d+(\.\d+)?(vh|dvh|svh|lvh)/)
+    for (const src of [CHAT_PAGE, DOCK]) expect(src).not.toMatch(/height:\s*['"]?\d+(\.\d+)?(vh|dvh|svh|lvh)/)
     expect(CHAT_PAGE).toMatch(/<div style=\{\{ height: TRANSCRIPT_TAIL_SPACER_PX \}\} \/>/)
   })
 
@@ -70,8 +73,10 @@ describe('composer dock clearance', () => {
   })
 
   it('has no opaque fade band between the transcript and the dock', () => {
-    expect(CHAT_PAGE).not.toMatch(/bg-gradient-to-t from-bg from-\[\d+%\] to-transparent/)
-    expect(CHAT_PAGE).not.toMatch(/TRANSCRIPT_MASK_ABOVE_PX|COMPOSER_MASK_OVERSHOOT_PX/)
+    for (const src of [CHAT_PAGE, DOCK]) {
+      expect(src).not.toMatch(/bg-gradient-to-t from-bg from-\[\d+%\] to-transparent/)
+      expect(src).not.toMatch(/TRANSCRIPT_MASK_ABOVE_PX|COMPOSER_MASK_OVERSHOOT_PX/)
+    }
   })
 
   it('keeps the memory chip row transparent, so the conversation shows through the glass', () => {

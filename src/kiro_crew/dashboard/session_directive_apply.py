@@ -1161,8 +1161,15 @@ async def _structured_monitor_update(
     }
     if budget_fields & set(patch):
         values = {field: int(patch[field]) for field in budget_fields if field in patch}
-        if any(value <= 0 for value in values.values()):
-            raise _DirectiveDenied("structured monitor budgets must be positive")
+        # ``max_agent_turns`` alone admits 0, its unlimited sentinel; the other
+        # three budgets are what keep an unlimited wake count affordable, so a
+        # zero there would leave the watch with no cost ceiling.
+        unbounded = {"max_agent_turns"}
+        if any(value < (0 if field in unbounded else 1) for field, value in values.items()):
+            raise _DirectiveDenied(
+                "structured monitor budgets must be positive, "
+                "except max_agent_turns where 0 means unlimited"
+            )
         structured["budget_patch"] = values
     updated, error, _status = await authorize_and_update_monitor(
         svc=svc,

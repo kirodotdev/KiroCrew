@@ -81,6 +81,7 @@ from kiro_crew.acp.client import (
 from kiro_crew.acp.liveness import (
     EVIDENCE_ESTABLISHED_FLAT,
     EVIDENCE_PLATFORM_LIMITED,
+    EVIDENCE_REMOTE_FLAT,
     EVIDENCE_SHELL_CHILD_ABSENT,
     INTERACTIVE_NARROWING_RISKS,
     INTERACTIVE_NONE,
@@ -280,7 +281,7 @@ NATIVE_CHILD_LABEL_CAP = 512
 class WatchdogSettings:
     """Resolved ``watchdog.*`` config values, read ONCE at handle construction
     (never inside the dispatch loop). Defaults mirror ``WatchdogConfig`` in
-    ``config/loader.py`` so a config-less context (tests, early bootstrap)
+    ``config/service_sections.py`` so a config-less context (tests, early bootstrap)
     behaves identically to a default config.
 
     Every idle window must stay strictly inside the turn's own wall-clock
@@ -292,6 +293,7 @@ class WatchdogSettings:
     tool_stall_suspect_secs: float = 5400.0
     tool_stall_hard_cap_secs: float = 7200.0
     model_silent_probe_secs: float = 1800.0
+    remote_flat_probe_secs: float = 0.0
     wellness_sample_secs: float = 3.0
     # Whether a per-agent watchdog_tool_stall_* override was applied to this
     # snapshot. Telemetry-only (the kirocrew.watchdog.action attr): a BOOLEAN,
@@ -327,6 +329,7 @@ _TURN_BOUNDED_WINDOWS = (
     "tool_stall_suspect_secs",
     "tool_stall_hard_cap_secs",
     "model_silent_probe_secs",
+    "remote_flat_probe_secs",
 )
 
 
@@ -482,7 +485,9 @@ def _watchdog_evidence_class(evidence: str) -> str:
     backend socket, flat subtree), ``mcp_flat`` (opaque MCP tool, moving or
     flat), ``shell_absent`` (shell tool in flight with nothing this dispatch
     could have started still running), ``shell`` (other shell-child evidence),
-    ``wait`` (the declared-duration wait tool), ``platform_limited`` (the
+    ``remote_flat`` (opaque MCP tool, flat subtree, a tool-side process
+    holding an established TCP connection — a tool blocked on its own remote
+    call), ``wait`` (the declared-duration wait tool), ``platform_limited`` (the
     oracle had no platform evidence to sharpen the verdict — a live-but-flat
     shell child on macOS, any tree probe on Windows), ``degraded`` (everything
     else: sampling baseline, unreadable /proc, no pid, oracle error — the
@@ -498,6 +503,9 @@ def _watchdog_evidence_class(evidence: str) -> str:
     if e.startswith(EVIDENCE_PLATFORM_LIMITED):
         # Same ordering reason: its text names the shell child / mcp subtree.
         return "platform_limited"
+    if e.startswith(EVIDENCE_REMOTE_FLAT):
+        # Same ordering reason: its text names the mcp subtree.
+        return "remote_flat"
     if "mcp subtree" in e:
         return "mcp_flat"
     if "shell child" in e:
@@ -728,6 +736,37 @@ class AcpRuntimeDead(AcpRuntimeError):
     """Raised when the underlying process has died."""
 
 
+class AcpFrameTooLarge(AcpRuntimeError):
+    """The reply to an awaited request was over the stdout frame limit and dropped.
+
+    Raised in place of the timeout the caller would otherwise hit much later, so
+    the error names the real cause -- the frame's size against the limit --
+    instead of whatever the request was waiting on (a ``session/new`` timeout
+    reads as slow MCP servers). Not ``transient``: the same request gets the same
+    reply. ``session_start_failed`` is set by the session-start arms that catch it,
+    like :class:`AcpRequestTimeout`'s, so a self-driving caller counts the streak.
+    """
+
+    # Read structurally by llm_helpers.acp_error_is_transient, so the verdict never
+    # falls back to matching this message's prose.
+    transient = False
+    session_start_failed = False
+
+
+class AcpModeNotFound(AcpRuntimeError):
+    """kiro-cli answered ``Mode '<mode_id>' not found`` to an awaited request.
+
+    A subclass so every ``except AcpRuntimeError`` keeps catching it, and so the
+    one caller that can recover -- a ``session/set_mode`` naming a skill-view
+    alias the host has not loaded yet -- can tell it apart structurally rather
+    than by matching the user-facing sentence.
+    """
+
+    def __init__(self, message: str, mode_id: str) -> None:
+        super().__init__(message)
+        self.mode_id = mode_id
+
+
 class AcpRequestTimeout(AcpRuntimeError):
     """Raised when a request's response does not arrive within its budget.
 
@@ -864,7 +903,13 @@ class AcpRuntimeProtocol(Protocol):
         """
         ...
 
-    async def send_request(self, method: str, params: dict[str, Any]) -> int: ...
+    async def send_request(
+        self,
+        method: str,
+        params: dict[str, Any],
+        *,
+        on_reserved: Callable[[int], None] | None = None,
+    ) -> int: ...
 
     async def probe_advertised_models(
         self, *, force: bool = False, not_before: float = 0.0
@@ -1013,7 +1058,10 @@ class AcpSessionHandle:
         # load below is only the fallback for direct constructions (tests).
         self._crew_agent = crew_agent
         self._watchdog = watchdog if watchdog is not None else _load_watchdog_settings(crew_agent)
-        self._oracle = LivenessOracle(sample_min_secs=self._watchdog.wellness_sample_secs)
+        self._oracle = LivenessOracle(
+            sample_min_secs=self._watchdog.wellness_sample_secs,
+            socket_tenancy=self._socket_tenancy,
+        )
         # Keep the executor future, not an await-scoped flag: wait_for can time
         # out while the underlying thread continues its /proc walk. A pending
         # future makes the next watchdog tick answer UNKNOWN instead of
@@ -1254,6 +1302,13 @@ class AcpSessionHandle:
         # (mirrors AcpClient._resolved_model_id; avoids the profile-id
         # pinning trap where a resolved profile id poisons slot.model).
         self._resolved_model_id: str = ""
+        # The model a non-strict config-option push was refused on, or ``""``
+        # (mirrors AcpClient.model_pin_refused). The refusal stays on the
+        # backend default without raising, so this is the only trace of it.
+        self.model_pin_refused: str = ""
+        # The bare model a pair pin landed as when its effort was refused
+        # (mirrors AcpClient.model_pin_partial).
+        self.model_pin_partial: str = ""
         self._config_options: list[dict[str, Any]] = []
         self._available_models: list[dict[str, str]] = []
         # Read-path revalidation bookkeeping (see maybe_refresh_available_models).
@@ -2350,7 +2405,17 @@ class AcpSessionHandle:
     # ── Session Configuration ──
 
     async def set_mode(self, agent_name: str) -> None:
-        """Activate an agent via session/set_mode."""
+        """Activate an agent via session/set_mode.
+
+        A stored skill-view name maps back to the agent it was built from first,
+        so the projection sends that agent's CURRENT view, never the stored one.
+        """
+        from kiro_crew.acp.skill_projection import RetiredSkillView, resolve_source_agent
+
+        try:
+            agent_name = await resolve_source_agent(agent_name)
+        except RetiredSkillView as exc:
+            raise AcpRuntimeError(str(exc)) from exc
         # send_request only queues the request; it does not await a mode ACK.
         self.active_agent = ""
         await self._runtime.send_request(
@@ -2387,6 +2452,7 @@ class AcpSessionHandle:
             # backend default", the same answer an unresolvable id gets above.
             applied = await self._push_model_config_option(resolved, strict=False)
             if not applied:
+                self.model_pin_refused = resolved
                 return
             # Record the spelling that actually went on the wire, not the one
             # asked for: the context meter looks the window up by this id, and a
@@ -2409,6 +2475,7 @@ class AcpSessionHandle:
                 set_model_params(self._session_id, resolved),
             )
         self._model = resolved
+        self.model_pin_refused = ""
         # Parity with AcpClient.set_model: keep _resolved_model_id in sync so
         # _backfill_context_window looks up the NEW model's window after a switch
         # (otherwise the context meter converts pct against the stale session/new
@@ -2452,6 +2519,8 @@ class AcpSessionHandle:
         reporting success while running something else is worse than failing.
         ``strict=False`` (a substitute or inherited value) returns ``""``.
         """
+        # Each push describes only itself; the split below sets it again.
+        self.model_pin_partial = ""
         last_exc: AcpError | None = None
         # ONE home for the spelling ladder, imported rather than copied: the
         # order is a fact about how a model id is spelled on the wire, not about
@@ -2990,7 +3059,7 @@ class AcpSessionHandle:
             }
         else:
             payload = {"sessionId": self._session_id, "command": command}
-        req_id = await self._runtime.send_request(METHOD_COMMANDS_EXECUTE, payload)
+        req_id = await self._send_awaited(METHOD_COMMANDS_EXECUTE, payload)
         try:
             msg = await self._wait_for_response(req_id, timeout=60.0)
             result = msg.result or {}
@@ -3015,11 +3084,32 @@ class AcpSessionHandle:
 
         Sends session/set_config_option JSON-RPC request.
         """
-        req_id = await self._runtime.send_request(
+        req_id = await self._send_awaited(
             METHOD_SET_CONFIG_OPTION,
             {"sessionId": self._session_id, "configId": config_id, "value": value},
         )
         await self._wait_for_response(req_id, timeout=10.0)
+
+    async def _send_awaited(self, method: str, params: dict[str, Any]) -> int:
+        """Send a request whose response a following _wait_for_response claims.
+
+        The id joins _awaited_responses before the write: a response that lands
+        on the queue while the write drains would otherwise read as owed to
+        nobody and be dropped. _wait_for_response's finally removes it; a failed
+        send removes it here.
+        """
+        reserved: list[int] = []
+
+        def _reserve(req_id: int) -> None:
+            reserved.append(req_id)
+            self._awaited_responses.add(req_id)
+
+        try:
+            return await self._runtime.send_request(method, params, on_reserved=_reserve)
+        except BaseException:
+            for req_id in reserved:
+                self._awaited_responses.discard(req_id)
+            raise
 
     async def apply_session_permission_routing(self) -> None:
         """Make a ``SESSION_CONFIG`` harness actually ask, or refuse to run it.
@@ -4020,6 +4110,12 @@ class AcpSessionHandle:
         # construction and narrowing its queue term would change nothing.
         last_own_data_ts = last_data_ts
         parked_at_own_data = parked_at_data
+        # When the tool branch last read the in-flight tool's subtree as
+        # WORKING. The remote_flat narrowing measures its quiet stretch from the
+        # later of this and the last own frame, so a remote call that moves bytes
+        # between quiet samples is judged on its longest silence, not on the one
+        # flat reading that happens to land on a probe tick.
+        tool_moved_ts = float("-inf")
 
         _buffered: list[JsonRpcMessage] = []
         _last_yield = time.monotonic()
@@ -4235,6 +4331,10 @@ class AcpSessionHandle:
                             parked_at_own_data = self._parked_total
                             continue
                         if verdict == VERDICT_WORKING:
+                            # Stamped after the consult returns: the probe
+                            # observed the tool at the end of its await, so
+                            # the pre-consult clock would shorten the window.
+                            tool_moved_ts = time.monotonic()
                             self._log_working_deferral(_tool_idle, evidence, timeout)
                             continue
                         # UNKNOWN acts at the suspect window. The suspect
@@ -4258,6 +4358,10 @@ class AcpSessionHandle:
                         # WORKING was already deferred above; the action below
                         # is the existing non-lethal tool-stall recovery.
                         _suspect = wd.tool_stall_suspect_secs
+                        _full_suspect = min(_suspect, wd.tool_stall_hard_cap_secs)
+                        # Idle measure the chosen window is compared against. Only
+                        # the remote_flat narrowing swaps it for a stricter one.
+                        _window_idle = _tool_idle
                         _narrowed = evidence.startswith(EVIDENCE_ESTABLISHED_FLAT)
                         if _narrowed:
                             _suspect = min(wd.model_silent_probe_secs, _suspect)
@@ -4294,9 +4398,28 @@ class AcpSessionHandle:
                             # bounded, just by the standard budget.
                             _narrowed = True
                             _suspect = min(wd.stale_window_secs, _suspect)
+                        elif (
+                            evidence.startswith(EVIDENCE_REMOTE_FLAT)
+                            and wd.remote_flat_probe_secs > 0
+                        ):
+                            # An MCP tool blocked on its own remote call: the
+                            # tree is flat and a tool-side process holds an
+                            # established TCP connection. With no client timeout
+                            # a peer that never answers holds the call until the
+                            # build-scale window, which is the hang users see as
+                            # a tool that runs forever. Narrowed to the
+                            # remote-call budget, measured as the stretch with
+                            # neither an own frame NOR any WORKING reading of the
+                            # tree, so a stream that moves now and then keeps
+                            # the full window. 0 turns the narrowing off.
+                            _narrowed = True
+                            _suspect = min(wd.remote_flat_probe_secs, _suspect)
+                            _window_idle = max(0.0, min(_tool_idle, now - tool_moved_ts))
                         _suspect = min(_suspect, wd.tool_stall_hard_cap_secs)
                         _acting = (
-                            verdict in (VERDICT_DEAD, VERDICT_STUCK_INPUT) or _tool_idle > _suspect
+                            verdict in (VERDICT_DEAD, VERDICT_STUCK_INPUT)
+                            or _window_idle > _suspect
+                            or _tool_idle > _full_suspect
                         )
                         if not _acting:
                             continue  # UNKNOWN, within budget — keep waiting
@@ -5061,6 +5184,37 @@ class AcpSessionHandle:
             executor_factory=subprocess_executor,
             log_label="oracle consultation",
         )
+
+    def _socket_tenancy(self) -> int | None:
+        """The tenancy declared to the oracle's socket scan, or None while the
+        ``remote_flat`` window is off.
+
+        None reads as undeclared, so with ``watchdog.remote_flat_probe_secs`` at
+        0 the oracle never tags ``remote_flat`` and the evidence, the metric
+        bucket and the window all stay as they were. Read per call, so a config
+        reload that turns the key on or off takes effect on the next probe.
+        """
+        if self._watchdog.remote_flat_probe_secs <= 0:
+            return None
+        return self._runtime_tenancy()
+
+    def _runtime_tenancy(self) -> int | None:
+        """Sessions on this handle's runtime, counting ones still initializing.
+
+        Declared to the liveness oracle for the tool-side socket scan only, so
+        the opt-in ``remote_flat`` tag needs the tree to be this session's alone. None when the runtime exposes no
+        session table, which the oracle reads as unreadable, not as exclusive.
+        """
+        queues = getattr(self._runtime, "_session_queues", None)
+        if not isinstance(queues, dict):
+            return None
+        inits = getattr(self._runtime, "_session_inits_in_flight", 0)
+        # A timed-out session/new leaves a StartCollector that may still own a
+        # second session tree after the init scope has closed; count it, since
+        # an over-count only keeps the full window.
+        starts = getattr(self._runtime, "_start_collectors", None)
+        pending = len(starts) if isinstance(starts, dict) else 0
+        return len(queues) + (inits if isinstance(inits, int) else 0) + pending
 
     def _log_working_deferral(self, idle: float, evidence: str, turn_timeout: float) -> None:
         """Evidence trail for a WORKING deferral, rate-limited to one line per
@@ -6363,6 +6517,9 @@ class AcpSessionHandle:
                     dispatch_parked_secs=self._parked_total,
                     is_shell=ev.is_shell,
                     tool_name=ev.tool_name,
+                    # Only a provenance-verified identity names the server, so
+                    # an unverified frame cannot select the wait contract.
+                    mcp_server_name=(ev.mcp_server_name if ev.mcp_identity_trusted else ""),
                     interactive_risk=(interactive.risk if interactive else INTERACTIVE_NONE),
                 )
                 self._active_tool_calls[self._inflight_tool_call_id] = (

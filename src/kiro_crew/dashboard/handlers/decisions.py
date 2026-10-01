@@ -62,6 +62,7 @@ from aiohttp import web
 
 from kiro_crew.dashboard.handlers._shared import _owner_denial_response
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+from kiro_crew.loop_lock import LoopBoundLock
 
 logger = logging.getLogger(__name__)
 
@@ -981,3 +982,210 @@ async def api_decisions_feedback(request: web.Request) -> web.Response:
         resources=f"decisions log verdict={row['verdict']} side={row['side']}",
     )
     return web.json_response({"ok": True})
+
+
+# ── Local models ─────────────────────────────────────────────────────────────
+#
+# ``GET /api/decisions/provider`` lists the local presets and which one the config
+# names; ``PUT`` switches the provider to a preset. The PUT is the ONE dashboard
+# writer of ``decisions.provider.*``: the generic config PATCH excludes that section
+# so a dashboard caller cannot choose where decision state is sent, and this route
+# keeps that true by taking a preset id and a port, never a URL. The endpoint it
+# writes is either the shipped Jev default or ``http://127.0.0.1:<port>/v1/systemone``,
+# built here. Owner-only on both verbs, for the reasons the module docstring gives.
+#
+# Consent is bound to the endpoint, so a switch leaves an existing consent pointing
+# at the old address. Switching TO a local preset carries a standing consent across
+# to the new address, because the owner is choosing it in this request and nothing
+# it sends leaves the machine. Switching back to hosted Jev never does: that is the
+# direction that starts egress, and it waits for the consent switch like any other
+# change of address.
+
+_CODE_PROVIDER_INVALID_BODY = "decisions_provider_invalid_body"
+_CODE_PROVIDER_WRITE_FAILED = "decisions_provider_write_failed"
+
+OP_PROVIDER_GET = "decisions_provider_get"
+OP_PROVIDER_PUT = "decisions_provider_put"
+
+
+def _provider_payload() -> dict:
+    """The presets and the preset the config names now. Filesystem IO."""
+    from kiro_crew.config import live
+    from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.decisions import gate as _gate
+    from kiro_crew.decisions import local_models
+
+    cfg = live.snapshot() or KiroCrewConfig.load()
+    provider = getattr(getattr(cfg, "decisions", None), "provider", None)
+    endpoint = _gate.configured_endpoint(cfg)
+    model = getattr(provider, "model", "")
+    return {
+        "presets": [local_models.as_payload(m) for m in local_models.LOCAL_MODELS],
+        "active": local_models.active_id(endpoint, model),
+        "configured_endpoint": endpoint,
+        # The card needs to say when a hand-written address gets no key; the one
+        # predicate the oracle uses decides it, so the two surfaces cannot disagree.
+        "loopback": local_models.is_loopback_endpoint(endpoint),
+    }
+
+
+async def api_decisions_provider_get(request: web.Request) -> web.Response:
+    """GET /api/decisions/provider -- the local presets and which one is configured."""
+    denied = await _deny_non_owner(request, OP_PROVIDER_GET)
+    if denied is not None:
+        return denied
+    payload = await asyncio.to_thread(_provider_payload)
+    await _audit(
+        request,
+        operation=OP_PROVIDER_GET,
+        outcome="allowed",
+        resources=f"decisions.provider active={payload['active']}",
+    )
+    return web.json_response(payload)
+
+
+def _provider_target(body: object) -> tuple[str, str, int] | None:
+    """``(endpoint, model, timeout_ms)`` for a valid body, else ``None``."""
+    from kiro_crew.config.sections import (
+        DECISION_PROVIDER_ENDPOINT_DEFAULT,
+        DECISION_PROVIDER_MODEL_DEFAULT,
+    )
+    from kiro_crew.decisions import local_models
+
+    if not isinstance(body, dict) or set(body) - {"preset", "port"}:
+        return None
+    preset = body.get("preset")
+    if preset == local_models.PRESET_JEV:
+        if "port" in body:
+            return None
+        return DECISION_PROVIDER_ENDPOINT_DEFAULT, DECISION_PROVIDER_MODEL_DEFAULT, 1000
+    model = local_models.get(preset)
+    if model is None:
+        return None
+    port = body.get("port", model.default_port)
+    try:
+        endpoint = local_models.endpoint_for(port)
+    except ValueError:
+        return None
+    return endpoint, model.model, model.timeout_ms
+
+
+def _write_provider(endpoint: str, model: str, timeout_ms: int) -> None:
+    """Set ``decisions.provider`` endpoint, model and timeout; keep every other key."""
+    from kiro_crew.config.loader import config_path, update_config_locked
+
+    def _mutate(data: dict) -> dict:
+        section = data.setdefault("decisions", {})
+        if not isinstance(section, dict):
+            raise ValueError("config section 'decisions' is not an object")
+        provider = section.setdefault("provider", {})
+        if not isinstance(provider, dict):
+            raise ValueError("config section 'decisions.provider' is not an object")
+        provider.update({"endpoint": endpoint, "model": model, "timeout_ms": timeout_ms})
+        return data
+
+    update_config_locked(config_path(), mutate=_mutate)
+
+
+#: Serialises provider switches: the config write and the consent carry land as
+#: one change.
+_PROVIDER_SWITCH_LOCK = LoopBoundLock()
+
+
+def _carry_consent(endpoint: str) -> bool:
+    """Re-bind a standing consent to local *endpoint*; whether it did. Filesystem IO."""
+    from kiro_crew.decisions import consent
+    from kiro_crew.decisions.capability import is_decisions_denied
+    from kiro_crew.decisions.local_models import is_loopback_endpoint
+
+    if not is_loopback_endpoint(endpoint) or is_decisions_denied():
+        return False
+    # One locked check-and-write: a consent revoked while this PUT ran stays revoked.
+    return consent.rebind_if_enabled(endpoint)
+
+
+async def api_decisions_provider_put(request: web.Request) -> web.Response:
+    """PUT /api/decisions/provider -- ``{"preset": id, "port"?: int}`` switches the provider.
+
+    ``preset`` is ``"jev"`` or a local preset id; ``port`` is accepted only for a
+    local preset and defaults to its own. Anything else is a 400: no field of the
+    body is written verbatim, which is what keeps a URL out of this route.
+    """
+    denied = await _deny_non_owner(request, OP_PROVIDER_PUT)
+    if denied is not None:
+        return denied
+    try:
+        body = await request.json()
+    except Exception:
+        await _audit(
+            request,
+            operation=OP_PROVIDER_PUT,
+            outcome="denied",
+            error="invalid_json",
+            resources="decisions.provider",
+        )
+        return web.json_response({"error": "invalid JSON", "code": _CODE_INVALID_JSON}, status=400)
+    target = _provider_target(body)
+    if target is None:
+        await _audit(
+            request,
+            operation=OP_PROVIDER_PUT,
+            outcome="denied",
+            error="invalid_body",
+            resources="decisions.provider",
+        )
+        return web.json_response(
+            {
+                "error": 'body must be {"preset": "jev"} or {"preset": <local id>, "port"?: int}',
+                "code": _CODE_PROVIDER_INVALID_BODY,
+            },
+            status=400,
+        )
+    endpoint, model, timeout_ms = target
+    from kiro_crew.dashboard.handlers.agents import _get_config_lock
+    from kiro_crew.dashboard.handlers.core import _hot_apply_after_write
+
+    # One switch at a time, end to end: the config write and the consent carry that
+    # follows it are one change, and two PUTs interleaving them would leave the
+    # config naming one address and the keystone the other.
+    async with _PROVIDER_SWITCH_LOCK:
+        try:
+            async with _get_config_lock():
+                await asyncio.to_thread(_write_provider, endpoint, model, timeout_ms)
+            await _hot_apply_after_write()
+        except Exception as exc:
+            # Class only: a config error can carry a path, and the row names what was
+            # being written rather than why the disk refused it.
+            await _audit(
+                request,
+                operation=OP_PROVIDER_PUT,
+                outcome="error",
+                error=type(exc).__name__,
+                resources=f"decisions.provider endpoint={endpoint}",
+            )
+            return web.json_response(
+                {"error": "the provider could not be saved", "code": _CODE_PROVIDER_WRITE_FAILED},
+                status=500,
+            )
+        # The provider is written and applied from here on, so a failure to carry
+        # consent must not read as "nothing changed": it is reported as not carried,
+        # which is also the state the keystone is in -- nothing is sent until the
+        # owner turns the switch off and on again.
+        try:
+            carried = await asyncio.to_thread(_carry_consent, endpoint)
+        except Exception as exc:
+            carried = False
+            await _audit(
+                request,
+                operation=OP_PROVIDER_PUT,
+                outcome="error",
+                error=f"consent_carry:{type(exc).__name__}",
+                resources=f"decisions_consent.json endpoint={endpoint}",
+            )
+    await _audit(
+        request,
+        operation=OP_PROVIDER_PUT,
+        outcome="allowed",
+        resources=f"decisions.provider endpoint={endpoint} model={model} consent_carried={carried}",
+    )
+    return web.json_response(await asyncio.to_thread(_provider_payload))

@@ -1218,10 +1218,23 @@ if TYPE_CHECKING:  # the public surface and what production imports, for type ch
         SourceRef,
     )
     from kiro_crew.dashboard.source_providers.hosts import (  # noqa: F401
+        LoopBoundLock,
         ensure_gitlab_hosts_loaded,
         gitlab_hosts_generation,
         publish_session_card_chips_now,
         session_card_source_links_enabled,
+    )
+    from kiro_crew.dashboard.source_providers.jira import (  # noqa: F401
+        CRED_JIRA_API_TOKEN,
+        KiroCrewConfig,
+        SecretVault,
+        aiohttp,
+        config_dir,
+        jira_global_token_applicable,
+        jira_host_token_name,
+        normalize_jira_host,
+        read_capped_response,
+        read_env_file_credential,
     )
     from kiro_crew.dashboard.source_providers.links import (  # noqa: F401
         parse_repo_url,
@@ -1249,5 +1262,15 @@ if TYPE_CHECKING:  # the public surface and what production imports, for type ch
     )
     from kiro_crew.dashboard.source_providers.runner import (  # noqa: F401
         _validate_provider_executable,
+        create_subprocess_limited,
+        github_runner,
+        gitlab_ambient_token_allowed,
+        platform_compat,
         provider_executable_candidates,
+        sandboxed_spawn_argv,
+        sandboxed_spawn_argv_async,
+    )
+    from kiro_crew.dashboard.source_providers.sanitize import (  # noqa: F401
+        redact_credentials,
+        redact_exfiltration_urls,
     )

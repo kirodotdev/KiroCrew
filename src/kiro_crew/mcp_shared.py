@@ -742,12 +742,22 @@ def _resolve_tool_policy(
                     # call" from "the operator's spec is malformed". Not
                     # negative-cached, for the same reason as the spec case:
                     # the answer is immediate and specific to this caller.
+                    # ``pid``/``ppid`` name WHICH process asked: a server
+                    # launched without the token often lives for one
+                    # ``tools/list`` and is gone before anyone can look, and
+                    # its parent (gatewayd for a pooled backend, the harness
+                    # for a server it launched itself) is what tells the
+                    # launch paths apart afterwards.
                     sel().log_api_access(
                         caller=session_key,
                         operation="tool_policy.unattested",
                         outcome="unresolved",
                         source="mcp_shared",
-                        resources=f"session_key={session_key},token={'present' if _tok else 'absent'}",
+                        resources=(
+                            f"session_key={session_key},"
+                            f"token={'present' if _tok else 'absent'},"
+                            f"pid={os.getpid()},ppid={os.getppid()}"
+                        ),
                     )
                     return ToolPolicy(frozenset(), "identity_unattested")
                 # The gateway read a spec for this session and could not

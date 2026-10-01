@@ -220,7 +220,16 @@ class AcpSessionProvider(LLMProvider):
             if self._owns_runtime:
                 return None
             return claim_runtime_tenancy(
-                self._runtime, holder=f"subagent:{self._session_key or 'unnamed'}"
+                self._runtime,
+                holder=f"subagent:{self._session_key or 'unnamed'}",
+                # The same key this session's stubs declare in ``X-Session-Key``,
+                # and the reason the dashboard's peer check can admit them: a
+                # shared session holds no lease and the session manager never
+                # registers it, so this claim is the only record binding the key
+                # to the process. Passed as itself rather than reused from the
+                # holder label, which carries a prefix for a human reading a
+                # refusal log.
+                session_key=self._session_key or "",
             )
         except RuntimeTeardownCommitted as exc:
             logger.warning("_claim_shared_turn: shared runtime is being torn down: %s", exc)
@@ -846,11 +855,11 @@ class AcpSessionProvider(LLMProvider):
         watchdog: WatchdogSettings | None = None,
     ) -> None:
         """Re-key for a different session on warm-pool claim (parity with
-        AcpClient.rekey). session.py:1309 calls provider.client.rekey(...); when
-        the pooled provider is kiro-shared, provider.client is THIS class, so a
-        missing rekey() would AttributeError on claim. Stores the correlation
-        keys and refreshes runtime activity so the just-claimed process is not
-        idle-reaped.
+        AcpClient.rekey). session_allocation.py calls provider.client.rekey(...)
+        on claim; when the pooled provider is kiro-shared, provider.client is
+        THIS class, so a missing rekey() would AttributeError on claim. Stores
+        the correlation keys and refreshes runtime activity so the just-claimed
+        process is not idle-reaped.
 
         ``crew_agent`` is the claiming session's canonical crew identity: the
         pooled runtime was spawned before any crew claimed it, so both the
@@ -1153,6 +1162,16 @@ class AcpSessionProvider(LLMProvider):
     def _model(self, value: str) -> None:
         """Set model name (AcpClient-compatible attribute)."""
         self._handle._model = value
+
+    @property
+    def model_pin_refused(self) -> str:
+        """The model a non-strict push was refused on — see the handle's field."""
+        return self._handle.model_pin_refused
+
+    @property
+    def model_pin_partial(self) -> str:
+        """The bare model a pair pin landed as — see the handle's field."""
+        return self._handle.model_pin_partial
 
     @property
     def served_model(self) -> str:

@@ -2,11 +2,11 @@
 """Drive a harness through ``/compact`` and MEASURE whether its context shrank.
 
 ``ACP_BACKENDS_COMPACT`` in ``src/kiro_crew/agent_sdk/backends.py`` admits a harness
-on a DRIVEN capture rather than on its source: the bar opencode met is a live session
-whose ``usage_update.used`` was seen to fall below its pre-compact peak. pi and goose
-both finish a compaction inline according to their own code and neither is a member,
-because nobody had driven them -- pi answered ``Authentication required`` and goose
-``Failed to resolve provider: GOOSE_PROVIDER`` where that note was written.
+on a DRIVEN capture rather than on its source: the bar opencode and goose met is a live
+session whose ``usage_update.used`` was seen to fall below its pre-compact peak. pi
+finishes a compaction inline according to its own code and is not a member, because
+nobody had driven it -- it answered ``Authentication required`` where that note was
+written.
 
 This script is that drive, as one command. It spawns the harness the way Crew spawns
 it, sends N ordinary turns, sends ``/compact``, sends one more ordinary turn, and
@@ -703,6 +703,14 @@ def reduce_frames(
             continue
         kept.append(frame)
 
+    kept, cut_selects = _cut_select_catalogs(kept)
+    if cut_selects:
+        notes.append(
+            f"{cut_selects} configOptions select(s) cut to the one option naming its "
+            "currentValue: the full list is the provider and model catalog the recording "
+            "host could reach"
+        )
+
     if dropped_updates:
         notes.append(
             f"{dropped_updates} {'/'.join(DROPPED_UPDATES)} frame(s) dropped: they carry "
@@ -770,6 +778,10 @@ def reduce_frames(
             substitutions.append(
                 (value, f"perm-{index}", "permission id(s) replaced with synthetic perm-N values")
             )
+        for index, value in enumerate(_message_ids(kept), start=1):
+            substitutions.append(
+                (value, f"msg-{index}", "message id(s) replaced with synthetic msg-N values")
+            )
 
     reduced = kept
     applied: list[str] = []
@@ -813,6 +825,64 @@ def _permission_ids(frames: Sequence[Any]) -> list[str]:
     for frame in frames:
         _walk(frame)
     return found
+
+
+def _message_ids(frames: Sequence[Any]) -> list[str]:
+    """Distinct ``messageId`` values carried by *frames*, in first-seen order.
+
+    goose mints one uuid per message and echoes it on every chunk of that message, so
+    the value is a run-scoped id rather than a frame shape.
+    """
+    found: list[str] = []
+
+    def _walk(node: Any) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key == "messageId" and isinstance(value, str) and value:
+                    if value not in found:
+                        found.append(value)
+                _walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                _walk(item)
+
+    for frame in frames:
+        _walk(frame)
+    return found
+
+
+def _cut_select_catalogs(frames: Sequence[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
+    """*frames* with every ``configOptions`` select cut to its current option.
+
+    A select's option list is an inventory of what the recording host could reach --
+    goose lists every provider it knows -- while the parser reads the select's id,
+    type and ``currentValue``. The option naming ``currentValue`` is kept so the select
+    still carries one real option. Returns the frames and how many selects were cut.
+    """
+    cut = 0
+
+    def _cut(node: Any) -> Any:
+        nonlocal cut
+        if isinstance(node, dict):
+            rebuilt = {key: _cut(value) for key, value in node.items()}
+            options = rebuilt.get("configOptions")
+            if isinstance(options, list):
+                trimmed = []
+                for option in options:
+                    choices = option.get("options") if isinstance(option, dict) else None
+                    if option.get("type") == "select" and isinstance(choices, list) and len(choices) > 1:
+                        current = option.get("currentValue")
+                        keep = [c for c in choices if isinstance(c, dict) and c.get("value") == current]
+                        option = {**option, "options": keep or choices[:1]}
+                        cut += 1
+                    trimmed.append(option)
+                rebuilt["configOptions"] = trimmed
+            return rebuilt
+        if isinstance(node, list):
+            return [_cut(item) for item in node]
+        return node
+
+    return [_cut(frame) for frame in frames], cut
 
 
 def _map_strings(node: Any, swap: Any) -> Any:

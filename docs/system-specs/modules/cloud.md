@@ -474,14 +474,15 @@ pointer -- which `kirocrew cloud list` can rediscover from the real stacks anywa
   (fail-closed WaitCondition on a broken install).
 - **Least-privilege, tag-/prefix-scoped IAM.** The RCE-adjacent SSM verbs
   (`ssm:StartSession` / `ssm:SendCommand` on instances) and the EC2 destructive
-  verbs (`DeleteSecurityGroup` / `RevokeSecurityGroupIngress` / `DeleteTags`)
+  verbs (`DeleteSecurityGroup` / `RevokeSecurityGroup{Ingress,Egress}` / `DeleteTags`)
   require `kirocrew:managed=true`; CloudFormation stack mutation/delete is scoped
   to `stack/kirocrew-*/*`, and the change-set verbs (which `aws cloudformation
   deploy` authorizes on the **changeSet ARN**, not just the stack ARN) are a
   separate statement scoped to both `changeSet/kirocrew-*/*` and
   `stack/kirocrew-*/*` (scoping to `stack/*` alone would deny the launch under
   the generated policy); only enumerate/`GetTemplateSummary` stay on `*`.
-  `iam:PassRole` is scoped to `kirocrew-ec2-*`; S3 is scoped to `kirocrew-src-*`.
+  `iam:PassRole` is scoped to `/kirocrew-ec2/kirocrew-ec2-*`; S3 is scoped to `kirocrew-src-*`.
+  EC2 reads are one `ec2:Describe*` on `*`: CloudFormation's EC2 handlers call many Describe actions and none take resource-level scoping. The trade is a broader read of the account's EC2 metadata, with no added write. The reads that return secrets are denied explicitly: `DenyForeignUserData` blocks `DescribeInstanceAttribute` on any instance not tagged `kirocrew:managed=true`, and `DenySecretReads` blocks `DescribeLaunchTemplateVersions`, `DescribeSpot*Requests` and `DescribeVpnConnections`. `test/test_cloud_iam_cfn_schema.py` checks every permission the public CloudFormation schemas list for the template's resource types against the printed policy.
   Command-history
   read is minimal: `ssm:GetCommandInvocation` (needed to poll `send-command`
   results) is granted but `ssm:ListCommandInvocations` is NOT, so a leaked
@@ -553,18 +554,22 @@ pointer -- which `kirocrew cloud list` can rediscover from the real stacks anywa
   on an arbitrary S3 object. `ec2:AuthorizeSecurityGroup{Ingress,Egress}` are
   tag-gated (`aws:ResourceTag/kirocrew:managed=true`) so a leaked credential
   can't open ingress on an unrelated security group.
-- **`PutRolePolicy`/`PassRole` tag-gated (not just name-prefix).** Both
-  `iam:PutRolePolicy` and `iam:PassRole` (to EC2) additionally require
-  `aws:ResourceTag/kirocrew:managed=true` on the target role — not just the
-  `kirocrew-ec2-*` name prefix. Without the tag gate, a leaked launcher credential
-  could target a **pre-existing** `kirocrew-ec2-*` role that a third party created
-  out-of-band **without** our permissions boundary (so `CreateRole`'s boundary gate
-  never applied), inline an admin policy, and pass it to EC2. The tag makes the
+  `ec2:RevokeSecurityGroupEgress` sits in the same tag-gated statement:
+  CloudFormation revokes a new security group's implicit allow-all egress rule
+  before it applies the template's declared `SecurityGroupEgress`, so without it
+  every launch fails at `InstanceSecurityGroup`.
+- **`PassRole` scoped by IAM path and service.** The template puts the instance role under the IAM path `/kirocrew-ec2/` (`cloud/iam.py` `ROLE_PATH`). `iam:CreateRole`, `iam:PutRolePolicy`, `iam:TagRole` and `iam:PassRole` are scoped to `arn:aws:iam::*:role/kirocrew-ec2/kirocrew-ec2-*`, and `PassRole` also requires `iam:PassedToService=ec2.amazonaws.com`. `PassRole` carries no `aws:ResourceTag` or `iam:AssociatedResourceArn` condition: AWS documents that `aws:ResourceTag` does not give reliable results for `iam:PassRole`, and with either key the launch fails at `Instance`. The path does the tag's job: the launcher's only way to put a role there is the boundary-gated `CreateRole`, so a pre-existing root-path `kirocrew-ec2-*` role can be neither passed nor edited. The non-escalating role-management verbs and the SSM-core attach/detach keep the root-path pattern beside the path, so a stack launched before the path existed can still be stopped, started and destroyed. Re-launching such a stack under the same tag fails, because CloudFormation must replace a custom-named role to change its path; destroy it and launch again.
+- **`PutRolePolicy` tag-gated (not just name-prefix).** `iam:PutRolePolicy`
+  additionally requires `aws:ResourceTag/kirocrew:managed=true` on the target
+  role — not just the `kirocrew-ec2-*` name prefix. Without the tag gate, a leaked
+  launcher credential could target a **pre-existing** `kirocrew-ec2-*` role that
+  a third party created out-of-band **without** our permissions boundary (so
+  `CreateRole`'s boundary gate never applied) and inline an admin policy. The tag makes the
   constraint non-spoofable: only a role WE created via the boundary-gated
   `CreateRole` — which applies `Tags` **atomically** at creation (see the
   template's `InstanceRole.Tags`) — carries `kirocrew:managed=true`, and the tag
   lands in the same call, so there is no untagged window before CFN's subsequent
-  `PutRolePolicy`. `aws:ResourceTag` (the global key, honored by both actions —
+  `PutRolePolicy`. `aws:ResourceTag` (the global key, honored by `PutRolePolicy` —
   verified with the IAM policy simulator: allowed with the tag, `implicitDeny`
   without it; and live: role created + tagged + inline-policy'd + SSM Online). No
   `iam:PermissionsBoundary` condition is added to `PutRolePolicy` (that key isn't
@@ -587,7 +592,7 @@ pointer -- which `kirocrew cloud list` can rediscover from the real stacks anywa
   unmanaged pre-existing role finds the key absent and is **DENIED**. So the
   launcher can tag a role it is creating (already carrying the tag in context) but
   cannot add the managed tag to a role that lacks it — closing the full chain
-  (`TagRole`→`PutRolePolicy`→`PassRole`) at the first step. NB: a boundary
+  (`TagRole`→`PutRolePolicy`) at the first step. NB: a boundary
   (`iam:PermissionsBoundary`) condition does **not** work here — AWS does not
   propagate that key into the `CreateRole`-embedded `TagRole` check (it denied the
   legitimate create in the harness); `aws:ResourceTag` is the key that works.

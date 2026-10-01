@@ -88,6 +88,18 @@ self.addEventListener('fetch', e => {
   // ── Skip rules (let the browser handle these natively) ──────────────
   // Cross-origin (CDN scripts, analytics, RUM)
   if (url.origin !== self.location.origin) return
+  // A URL carrying a `token` query parameter is a sign-in link (the owner's
+  // `kirocrew token` link, `/?token=...`). Only the gateway's auth middleware can
+  // honour it: it exchanges the link token for a session cookie and redirects. If
+  // the worker answers instead, the exchange never happens — the cached shell
+  // boots with no session, /api/status answers 403 and the page reads "Session
+  // expired". That is exactly what a phone did when the network-first fetch below
+  // failed and fell back to the cached shell. So the worker never answers such a
+  // request (navigation or otherwise) and, being skipped here, never caches its
+  // response either. Placed before every other rule so no later prefix can
+  // re-claim it. The name is checked by presence, not value: an empty or stale
+  // token is still the gateway's to judge.
+  if (url.searchParams.has('token')) return
   // Core API
   if (url.pathname.startsWith('/api')) return
   // Single-use sandboxed documents for artifact/widget iframes. Two reasons this

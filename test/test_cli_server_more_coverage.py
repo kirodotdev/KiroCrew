@@ -1268,6 +1268,30 @@ class TestRunTask:
             for inst in created
         )
 
+    def test_consolidator_gets_the_configured_migrated_flag(
+        self, taskrunner_env, tmp_path, monkeypatch
+    ) -> None:
+        # The live config watcher only fires on change, so the boot value
+        # must reach the consolidator, or markdown memory is rewritten on a
+        # migrated install.
+        from kiro_crew.config import KiroCrewConfig
+
+        cfg = KiroCrewConfig()
+        cfg.memory.migrated = True
+        monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: cfg))
+        seen: list[dict] = []
+        monkeypatch.setattr(
+            cli_server, "HistoryConsolidator", lambda **kw: seen.append(kw) or object()
+        )
+        taskrunner_env["install_runner"](_Result("completed"))
+        args = argparse.Namespace(
+            spec=str(_spec(tmp_path)), no_test=True, fresh=False, timeout=90, name=""
+        )
+        asyncio.run(cli_server._run_task(args))
+        assert [kw.get("migrated") for kw in seen] == [True]
+        # A migrated consolidator writes only to the vector store, so it must get one.
+        assert seen[0].get("vector_store") is taskrunner_env["vector"]
+
     def test_failed_builtin_sync_does_not_gate_the_task(
         self, taskrunner_env, tmp_path, monkeypatch
     ) -> None:
@@ -1538,6 +1562,11 @@ def git_checkout(monkeypatch, tmp_path):
     # empty answer — read as "cannot be shown to serve this checkout" and refused.
     # dep_sync's own tests own that guard's behaviour.
     monkeypatch.setattr(cli_server.dep_sync, "venv_not_mapped_to", lambda origin, repo: None)
+    # The post-update gateway poke reaches a loopback socket that does not exist
+    # under test; neutralize it here so the branch-coverage tests stay hermetic.
+    # Its own success/best-effort contract is asserted directly in
+    # TestUpdateGatewayPoke.
+    monkeypatch.setattr(cli_server, "_revalidate_gateway_update_check", lambda: None)
     return proj
 
 
@@ -1810,6 +1839,104 @@ class TestUpdateGitPath:
         out = capsys.readouterr().out
         assert "Kiro Crew updated!" in out
         assert "Agent config refresh failed" in out
+
+    def test_success_pokes_the_running_gateway_to_revalidate(
+        self, monkeypatch, git_checkout, capsys
+    ) -> None:
+        """A completed git update reconciles the running gateway's badge.
+
+        The fixture neutralizes the poke by default; this row restores a spy so
+        the success path is shown to reach it.
+        """
+        monkeypatch.setattr(subprocess, "run", _GitStub())
+        poked: list[bool] = []
+        monkeypatch.setattr(
+            cli_server, "_revalidate_gateway_update_check", lambda: poked.append(True)
+        )
+        cli_server._update()
+        assert "Kiro Crew updated!" in capsys.readouterr().out
+        assert poked == [True], "the completed update never poked the gateway"
+
+
+class TestUpdateGatewayPoke:
+    """``_revalidate_gateway_update_check`` — best-effort, never fatal.
+
+    The update has already succeeded by the time this runs, so every branch here
+    proves the same contract from a different angle: it may print, but it must
+    never raise and never change the exit code.
+    """
+
+    def test_success_reports_the_refresh(self, monkeypatch, capsys) -> None:
+        monkeypatch.setattr(cli_server, "resolve_client_port", lambda _p: 8674)
+        monkeypatch.setattr(cli_server, "_gateway_owns_port", lambda port: True)
+        monkeypatch.setattr(cli_server, "read_local_secret", lambda port, dial_host: "s3cret")
+
+        class _Resp:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        captured: dict = {}
+
+        def _urlopen(req, timeout=0):
+            captured["url"] = req.full_url
+            captured["method"] = req.get_method()
+            captured["secret"] = req.headers.get("X-local-secret")
+            return _Resp()
+
+        monkeypatch.setattr(cli_server, "loopback_urlopen", _urlopen)
+        cli_server._revalidate_gateway_update_check()
+        assert "Update badge refreshed" in capsys.readouterr().out
+        # Pin the wire contract: dropping the secret header or retargeting the
+        # URL/method must fail this test, not slip through green.
+        assert captured["url"] == "http://127.0.0.1:8674/api/update/revalidate"
+        assert captured["method"] == "POST"
+        assert captured["secret"] == "s3cret"
+
+    def test_unowned_port_sends_no_secret(self, monkeypatch, capsys) -> None:
+        """A port this gateway does not own must never receive the local secret.
+
+        Guards the escalation where a co-resident listener on a stale configured
+        port would otherwise be handed the shared secret the real gateway accepts.
+        """
+        monkeypatch.setattr(cli_server, "resolve_client_port", lambda _p: 8674)
+        monkeypatch.setattr(cli_server, "_gateway_owns_port", lambda port: False)
+        reached: list[str] = []
+        monkeypatch.setattr(
+            cli_server,
+            "read_local_secret",
+            lambda port, dial_host: reached.append("read") or "s3cret",
+        )
+        monkeypatch.setattr(cli_server, "loopback_urlopen", lambda *a, **k: reached.append("send"))
+        cli_server._revalidate_gateway_update_check()  # must not raise
+        assert reached == [], "read or sent the secret to a port the gateway does not own"
+
+    def test_no_gateway_running_is_silent_success(self, monkeypatch, capsys) -> None:
+        """No secret means no gateway to reach; the next boot re-checks anyway."""
+        monkeypatch.setattr(cli_server, "resolve_client_port", lambda _p: 8674)
+        monkeypatch.setattr(cli_server, "_gateway_owns_port", lambda port: True)
+        monkeypatch.setattr(cli_server, "read_local_secret", lambda port, dial_host: "")
+        called: list[bool] = []
+        monkeypatch.setattr(cli_server, "loopback_urlopen", lambda *a, **k: called.append(True))
+        cli_server._revalidate_gateway_update_check()  # must not raise
+        assert called == [], "attempted a call with no secret to authenticate it"
+
+    def test_transport_failure_is_swallowed(self, monkeypatch, capsys) -> None:
+        """A gateway that refuses the connection must not fail the update."""
+        monkeypatch.setattr(cli_server, "resolve_client_port", lambda _p: 8674)
+        monkeypatch.setattr(cli_server, "_gateway_owns_port", lambda port: True)
+        monkeypatch.setattr(cli_server, "read_local_secret", lambda port, dial_host: "s3cret")
+
+        def _boom(req, timeout=0):
+            raise urllib.error.URLError("connection refused")
+
+        monkeypatch.setattr(cli_server, "loopback_urlopen", _boom)
+        cli_server._revalidate_gateway_update_check()  # must not raise
+        assert "reconciles on next check" in capsys.readouterr().out
 
 
 class TestUpdateSubprocessHardening:

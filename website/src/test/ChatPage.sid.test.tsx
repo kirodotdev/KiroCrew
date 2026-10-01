@@ -54,10 +54,10 @@ vi.mock('../api/client', () => ({
   api: Object.fromEntries(
     ['sessions', 'chatSlotDetail', 'createChatSlot', 'deleteChatSlot', 'resumeChatSlot',
      'deleteSession', 'agentDetail', 'approveChatSlot', 'chatSlotAgent', 'chatSlotModel',
-     'chatSlotWorkspace', 'models', 'planAction', 'planFromChat', 'renameSlot',
+     'chatSlotWorkspace', 'models', 'planFromChat', 'renameSlot',
      'resolveApproval', 'screenshot', 'slackChannels', 'slackLink', 'spawnList',
      'stopChatSlot', 'uploadFiles', 'voiceSynthesize', 'workspaces', 'chatSlots',
-     'notifications', 'status', 'generateTitle'].map(k => [k, vi.fn().mockResolvedValue(
+     'notifications', 'status', 'generateTitle', 'kirocrewConfig', 'agentResolvedModel'].map(k => [k, vi.fn().mockResolvedValue(
       k === 'chatSlotDetail' ? { messages: [], has_more: false, total: 0 } : {}
     )])
   ),
@@ -153,7 +153,6 @@ function renderChatPage(opts: {
           <MemoryRouter initialEntries={entries ?? [route]}>
             <Routes>
               <Route path="/chat/:slug?" element={<ChatPage mode={mode} />} />
-              <Route path="/orchestrated/:slug?" element={<ChatPage mode="orchestrator" />} />
               {/* Stands in for any non-chat dashboard page a session link is
                   followed FROM (System, Telemetry) — it only has to be a
                   distinct history entry. */}
@@ -193,7 +192,9 @@ const slots = [
   slot('chat-3-300'), // no title (title === key)
 ]
 
-const orchSlots = [
+/** Legacy Autopilot slots: still persisted under the retired 'orchestrator'
+ *  mode, rendered as ordinary chats. */
+const legacyAutopilotSlots = [
   slot('orch-1-100', 'Plan migration', 'orchestrator'),
   slot('orch-2-200', 'Review design', 'orchestrator'),
 ]
@@ -648,19 +649,19 @@ describe('ChatPage ?sid= URL parameter', () => {
     })
   })
 
-  describe('orchestrated mode (unified view)', () => {
-    it('uses /chat base path for orchestrator sessions', async () => {
-      const allSlots = [...slots, ...orchSlots]
-      renderChatPage({ route: '/chat', activeSlot: 'orch-1-100', slots: allSlots, mode: 'orchestrator' })
+  describe('legacy Autopilot slots (unified view)', () => {
+    it('uses /chat base path for a legacy Autopilot slot', async () => {
+      const allSlots = [...slots, ...legacyAutopilotSlots]
+      renderChatPage({ route: '/chat', activeSlot: 'orch-1-100', slots: allSlots })
       await waitFor(() => {
         expect(currentUrl).toContain('/chat/plan-migration')
         expect(currentUrl).toContain('sid=orch-1-100')
       })
     })
 
-    it('keeps orchestrator sessions under the unified /chat surface', async () => {
-      const allSlots = [...slots, ...orchSlots]
-      renderChatPage({ route: '/chat?sid=orch-1-100', slots: allSlots, mode: 'orchestrator' })
+    it('keeps a legacy Autopilot slot under the unified /chat surface', async () => {
+      const allSlots = [...slots, ...legacyAutopilotSlots]
+      renderChatPage({ route: '/chat?sid=orch-1-100', slots: allSlots })
       await waitFor(() => {
         expect(currentUrl).toContain('/chat')
         expect(currentUrl).not.toMatch(/^\/orchestrated/)

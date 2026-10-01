@@ -101,6 +101,7 @@ a summary of the dropped turns. That series is recorded in the pull request that
 added this file rather than here, because it is six turns of filler text and carries
 no frame class this corpus needs.
 
-pi and goose have no such capture and are therefore in neither set, even though
-their adapter and harness source both say they compact inline. See
+goose joined both sets on its own capture (`../goose/compact-live.jsonl`). pi has no
+such capture and is therefore in neither set, even though its adapter source says it
+compacts inline. See
 `ACP_BACKENDS_COMPACT` for why source is not the bar this set holds its members to.

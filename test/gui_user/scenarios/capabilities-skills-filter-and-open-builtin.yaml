@@ -1,11 +1,10 @@
-# Smoke: moving between two tabs of the Agent Capabilities panel and reading a
-# skill's files. The panel groups its tabs in a left rail (Agent: Agents,
-# Skills, Connections; Knowledge & instructions; Automation) and remembers the
+# Smoke: moving between two tabs of the Customize panel and reading a
+# skill's files. The panel groups its tabs in a left rail (Agent: Crewmates,
+# Custom agents, Skills, Connections; Knowledge & instructions; Automation) and remembers the
 # last tab per browser session, so the flow names each tab it clicks instead of
 # assuming which one is showing. The backlog record that this scenario ships
-# for named an "Agent Templates" tab; templates now live inside an agent's
-# editor (its "Agent Template" pane), not as a panel tab, so the tab walk here
-# is Agents -> Skills.
+# for named an "Agent Templates" tab; that tab is now "Custom agents", and
+# this walk stays on the roster, so the tab walk here is Crewmates -> Skills.
 #
 # The Skills list is deterministic on the fake target: the gateway copies its
 # packaged built-in skills into the seeded home's skills directory at start
@@ -28,12 +27,12 @@ preconditions:
   start_url: /capabilities
 steps:
   - >-
-    You are on the Agent Capabilities page, which has a rail of tabs on the left grouped under
+    You are on the Customize page, which has a rail of tabs on the left grouped under
     "Agent", "Knowledge & instructions" and "Automation". Under "Agent", click the tab labelled
-    "Agents" (people icon). The pane shows the agent roster (one card, "nova-sky") with an
-    "Add crew member" button.
+    "Crewmates" (people icon). The pane shows the crewmate roster (one card, "nova-sky") with an
+    "Add crewmate" button.
   - >-
-    In the same rail, click the tab labelled "Skills" (book icon, directly under "Agents"). The
+    In the same rail, click the tab labelled "Skills" (book icon, under "Custom agents"). The
     pane header now reads "Skills" followed by a count in parentheses, and below it a card
     holds a filter box whose placeholder reads "Filter skills…", a list of skills on the left
     and a pane on the right that reads "Select a skill to view its files".

@@ -146,9 +146,9 @@ The hook is a facade over composed owners, each holding one responsibility:
 |---|---|
 | `useVirtualChat.ts` | option wiring, row identity (display key, stable id, alt id), and the hook-call order the owners depend on |
 | `windowRange.ts` | the mounted window as the reader scrolls: the scroll recompute and its merge, the near/far jump rule behind `mountIndex`, sentinel expansion, the coverage watchdog, the older-history index trigger. A placement that moves the scroller (follow's tail and jump, a prepend rebase, the reading position's entry, visibility and restore) mounts its own window from its owner, through the same window math |
-| `measurement.ts` | the per-scope `HeightIndex`, the spacer geometry read from it, and every measurement writer (resize observer, row ref seed, measure farm) |
+| `measurement.ts` | the per-scope `HeightIndex`, the spacer geometry read from it, and every measurement writer (resize observer, row ref seed, measure farm), each gated on the caller's `canMeasure` so a width-transition measurement never lands in the old scope, plus the mounted-row reseed a scope change runs after the reading-position restore. Only the cache WRITE stands down for the gate: the observer classifies every fire (first mount vs resize, the above-fold delta the compensation adds to scrollTop) against the height the DOM last showed for that node, tracked per mounted element apart from any scope, so a re-wrap during the transition is compensated once and a repeated fire adds nothing. The write a fire makes is the RESIDUAL for the reader's row — the row seen highest among those reaching below the fold at the last frame the reader saw — between where it is after layout and where it was last seen (moved by its own credited change: a re-wrapped straddler keeps its bottom, an appending or in-place one its top), never the batch's summed growth: Chromium's native scroll anchoring adjusts scrollTop during the reprice layout, before any observer callback, so the summed growth was paid twice there and a row native pushed under the fold read as straddling. Row positions are re-read at scroll events and seeds (the last painted frame), carried arithmetically by a fire's own write, and never re-read at the end of a fire (a layout is delivered over several callbacks). The record cannot be stale against the reader's own input: a user scroll reaches scrollTop at the start of a rendering update and dispatches its scroll event in that update's scroll steps, before layout and the observer, so the record is refreshed before any rect the fire reads; only a row that is no longer mounted stands the write down (a click or key that scrolls nothing leaves the record valid). The scope reseed announces immediately rather than through the debounce, so the cold owner's estimate spacer is replaced in the swap commit's layout phase |
 | `geometryScheduling.ts` | when a measurement becomes geometry: the debounced sync, its deferral while the reader moves, the streaming row's immediate path, the rail-collapse window |
-| `shiftCompensation.ts` | holding a scrolled-up reader still across prepends, splices, window shifts, appends and height syncs, and planning which row measurements a commit retires |
+| `shiftCompensation.ts` | holding a scrolled-up reader still across prepends, splices, window shifts in either direction (rows mounting above the reader are re-priced from the estimate; rows unmounting above them are replaced by a spacer the tree prices, which is short by every re-wrap the tree has not been allowed to learn during a width transition), appends, height syncs and the width-scope swap, and planning which row measurements a commit retires. The swap: the settled bucket's cold owner re-prices the before-spacer from estimates in the render that constructs it, so a same-session swap over an unchanged list captures the reader's row render-phase into the height-sync slot; the consumer is keyed on the owner's identity as well as its announced version (two owners can report equal versions) and stands down on the swap commit itself, leaving the capture for the reseed's announcement in that commit's layout phase, which is where the committed spacer it must be paid against exists. That stand-down also reads the engine's RANGE CLAMP: the cold document prices every unmounted row at the flat estimate, so it can be shorter than the reader's scrollTop, and the engine then drags scrollTop to its ceiling (`scrollHeight - clientHeight`) with no application write anywhere and leaves it there when the reseed grows the document back (Firefox and Chromium alike at a matched depth; a shallower reader never reaches the ceiling). When the pending capture's scrollTop is above that ceiling and the live scrollTop is exactly the ceiling (within `SELF_SCROLL_EPSILON`), the capture is re-based to the clamped value with its candidates' painted geometry kept, so the reseed pays the whole move; a drop that is not the ceiling (native anchoring's spacer-delta move) is left alone, and any movement after the clamp still differs from the re-based value, so the scrollTop freshness guard still drops the capture. A followed reader keeps the tail pin; a true session switch captures nothing |
 | `readingPosition.ts` | the persisted reading position: entry latch, debounced save, leave flush, visibility re-placement, restore and settle |
 | `followPolicy.ts` | follow, pin and reader intent, plus `writeScrollTop`, the one path for the hook's programmatic scroll writes |
 | `observers.ts` | the scroller element, the mounted-row registry, the scroll listener and the resize observer |
@@ -205,6 +205,66 @@ owners behind it are:
 older-page request with it; it reads the page before `slotOldestIndex` and lands
 it only while the slot it was read for is still active. None of these owners filters rows by memory
 mode, so a restricted transcript is cached and paged like any other.
+
+### The Sessions sidebar (frontend)
+
+The dashboard's session list, `website/src/pages/ChatSidebar.tsx`, draws two
+projections of this history. The live list shows the open slots, plus peer rows
+from connected crews when the instance-sessions preview is on. The Older Sessions
+pane shows the `fetchHistory` pages owned by `store/chat/lifecycle.ts`. Once its
+search box holds `SEARCH_MIN_CHARS` characters it shows `search_sessions` results in
+the server's order, federated across connected crews while one is connected. Both lists order, group
+and narrow rows only by what the person chose (sort, lane, filters, folders).
+Neither list's ordering, grouping or filtering reads memory mode, so an incognito or
+temporary session is listed, searched and filtered like any other (see
+[A restricted transcript is kept](#a-restricted-transcript-is-kept-what-is-derived-from-it-is-not)).
+The row reads memory mode only to draw its incognito or temporary glyph, and a
+restricted session cannot be dropped into the composer as a reference.
+
+`ChatSidebar.tsx` is a facade over owners that each hold one responsibility. It
+calls each owner hook where that block used to sit, so React runs the effects in
+the same order as before. `ChatSidebar.ownerComposition.test.ts` pins that call
+order, and pins that no owner imports the facade:
+
+| Owner (`website/src/pages/chat-sidebar/`) | Owns |
+|---|---|
+| `sessionSources.ts` | the rendered row set (local tabs plus live peer rows, deduplicated by row identity, local wins), the peer-list error, and the federated Older Sessions search |
+| `search.ts` | the debounced backend session search, and the folder-name matches the search box adds |
+| `rowIdentity.ts` | origin-qualified identity for live and history rows, and the peer guards on local pin and folder state |
+| `persistence.ts` | the browser-stored view preferences (lane, width, filters, fold sets, pane height): every key except the four status-chip keys, which ride on `SESSION_FILTERS` in `filters.tsx`; and the readers, defaults, validation and migrations of every key except the width and the pre-board width (`resize.ts`), the pane height (`history.ts`), and the status chips and the folders-shelved flag (`filters.tsx`) |
+| `filters.tsx` | the status chips (`SESSION_FILTERS`), the folder and tag filter state, the Recent window, the running, recent and unread sets and chip counts, and the unread auto-drain |
+| `lanes.ts`, `conductor.ts` | the lane preference, the flat-lane projection and the lane cycle; the conductor lane's lineage seed poll, population, lineage tree and open conductors |
+| `folders.ts` | folder sort mode, visibility, the subtree index and ancestor expansion, the filter-menu rows, and folder writes |
+| `board.ts` | the tag-column board: columns, the column popover, column writes, lane seeding (it widens the sidebar through `resize.ts`), per-column collapse and membership |
+| `stale.ts`, `pinnedOrder.ts`, `hoverHold.ts` | the dormant-session collapse, the manual pinned order, and the hover hold |
+| `reveal.ts` | reveal-in-sidebar for a session or a folder |
+| `rename.ts`, `history.ts`, `resize.ts`, `tags.ts`, `shortcuts.ts`, `create.ts` | row and folder rename, the Older Sessions pane state, the sidebar width (including the width saved while the board is open), the tag vocabulary, the chat-jump order, and session creation |
+| `dnd/` | collision geometry (`collision.ts`), drop targets and drag previews (`targets.tsx`), and the drag lifecycle with its folder writes and undo offers (`useSidebarDrag.ts`) |
+
+Some code stays in `ChatSidebar.tsx`: `SessionRow` and its source-link chips, the
+row and folder render closures, the filter-dimension registry, the peer-session
+adopt, the idle-session cleanup, the bulk model switch and the JSX. Source pins
+read them in that file:
+
+- `switchSlotCallsiteClassification.test.ts` counts the four `switchSlot`
+  dispatches there, the row's three and the adopted session's activation.
+- `listShellParity.test.ts` reads the list-shell recipes the row and the card use.
+- `useInteractiveModels.test.ts` reads the bulk model switch.
+- `ChatSidebar.filterDimensions.test.tsx` reads the filter-dimension registry.
+- The restyle ratchet counts this file's flagged sites in the header, the filter
+  and folder menus and the board column.
+
+The idle-session cleanup is state that only the header menu's dialog in this file
+reads. The render closures also stamp rows in paint order, and the row memo depends
+on that order.
+
+New sidebar code goes to the owner whose row above names its responsibility, not
+to `ChatSidebar.tsx`. A responsibility no row names gets a new file under
+`pages/chat-sidebar/` that never imports the facade, and a new owner hook is listed
+at its call position in `CALL_ORDER` in `ChatSidebar.ownerComposition.test.ts`. A
+new browser-storage key is declared in `persistence.ts`, and a view type the owners
+share goes to `types.ts`. The facade grows only in the code listed above as staying
+there.
 
 ## ConversationLog (`history.py` facade)
 
@@ -1521,7 +1581,22 @@ value stands -- never rendered as the flag being off, which would make an
 enabled feature vanish under a config blip. A bubble whose `mid` has replies gets a
 `ThreadFooter` under it (faces of who took part, "N replies" in accent, "Last
 reply 2h ago" muted); every bubble's hover action row gets "Reply in thread"
-(`MessageSquare`), the user's row included. Either opens the thread in the
+(`MessageSquare`), the user's row included. The footer is a SIBLING of its bubble, not a
+child, and states its own side as `align-self` (`self-end` under the user's
+right-aligned bubble, `self-start` under the crewmate's), which beats the row
+wrapper's `align-items`. An appearance that re-aligns or indents the ROW must
+therefore re-state the footer too: CLI UI mode moves the user's bubble
+full-width to the left and indents both bubbles with a bar and padding on the
+message root, so it carries its own footer rules in `styles/cli-mode.css` --
+without them the user's footer stays pinned to the far right of a left-aligned
+bubble and the crewmate's sits 16px left of its own. Those rules are measured in
+a real engine by `scripts/capture-thread-footer-cli-align.mjs`, which asserts
+each footer's first mark against its bubble's edge on both appearances and
+requires the pre-fix state to reproduce; `src/test/cliModeThreadFooter.test.ts`
+pins the rules' source text, since happy-dom resolves neither `:has()` nor the
+`align-self`/`align-items` contest. The assistant-side `self-start` is
+load-bearing on every appearance: that column's `align-items` is the default
+`stretch`, so without it the footer renders as a full-width button. Either opens the thread in the
 right side panel: `pages/members/ThreadPanel` covers the panel's tabs while it
 is on screen (slides in; `prefers-reduced-motion` fades) and hands them back on
 close, so the main chat stays visible beside it. The panel shows the parent

@@ -217,6 +217,16 @@ def clear_session_execution(
             # compare-and-set actually matched has shrunk anything, and a clear
             # whose key was absent must not re-arm on another episode's behalf.
             _withdraw_vouched(key)
+    # The restart-surviving copy follows the same withdrawal, or every withdrawn
+    # key (one per hook request, one per failed fork) leaves a file behind for good
+    # and a later gate-verified re-vouch could restore what was just withdrawn.
+    # Outside the lock: it is file IO, and its own compare keeps it exact.
+    from kiro_crew._durable_vouch import forget_durable_vouch
+
+    if expected is ...:
+        forget_durable_vouch(session_key)
+    elif isinstance(expected, ExecutionContext):
+        forget_durable_vouch(session_key, only_if=expected.to_record())
 
 
 def _unavailable(message: str):
@@ -535,8 +545,10 @@ def revouch_at_verified_admission(
     ``ExecutionContext`` requires just ``store.member_id == member_id``, so a member
     may leave both member-id fields as its own slug while pointing
     ``store.store_id`` at a PEER's store -- and only the config comparison catches
-    that. A session whose key is NOT a member DM key (a forger's ordinary
-    ``chat-`` slot) never enters the branch at all.
+    that. A session whose key is NOT a member DM key takes the durable-record
+    branch instead (:func:`_revouch_from_durable_record`): it is re-vouched only
+    from a copy of its own earlier vouch that no session can write, so a forger's
+    ordinary ``chat-`` slot with no such copy gets nothing.
 
     ``config`` is a ``KiroCrewConfig`` the caller has already loaded OFF the event
     loop and threads in, so this helper performs no blocking config read of its
@@ -550,10 +562,12 @@ def revouch_at_verified_admission(
     """
     from kiro_crew.members import is_member_session_key, slug_from_dm_slot_key
 
-    if not verified_session_key or not is_member_session_key(verified_session_key):
+    if not verified_session_key:
         return False
     if execution.member_id is None or execution.store.member_id != execution.member_id:
         return False
+    if not is_member_session_key(verified_session_key):
+        return _revouch_from_durable_record(verified_session_key, execution, config)
     # The member id the VERIFIED key names, taken from the key's own slug rather
     # than from any field the session writes. `is_member_session_key` accepts the
     # `dashboard_`/`dashboard:` layer prefixes, so strip the same set before the
@@ -594,6 +608,53 @@ def revouch_at_verified_admission(
         return _VOUCHED_EXECUTIONS.get(_live_key(verified_session_key)) is not None
 
 
+def _revouch_from_durable_record(
+    verified_session_key: str, execution: ExecutionContext, config: Any
+) -> bool:
+    """Re-vouch a non-DM session from what this gateway committed before a restart.
+
+    A session a member CREATED (the nested conductor's worker) has an ordinary
+    ``chat-`` key that names no member, so the DM branch above has nothing to
+    check its record against. Its second source is the durable copy of its own
+    vouch, written by ``bind_session_execution`` when the gateway vouched for it
+    and kept in a directory every sandbox masks and no agent file tool opens
+    (see ``kiro_crew._durable_vouch``).
+
+    Three agreements, each failing closed: the durable copy exists for this
+    VERIFIED key; it names the same member and store as the session's record, so
+    a record rewritten to a peer's store is refused; and config still gives that
+    member that store, so a member deleted or re-pointed since is refused too.
+    What is re-vouched is the durable copy, the gateway's own word, never the
+    record.
+    """
+    from kiro_crew._durable_vouch import read_durable_vouch
+
+    record = read_durable_vouch(verified_session_key)
+    if record is None:
+        return False
+    try:
+        durable = execution_from_record({EXECUTION_CONTEXT_KEY: record})
+    except Exception:
+        return False
+    if (
+        durable.member_id is None
+        or durable.member_id != execution.member_id
+        or durable.store != execution.store
+        or durable.memory_mode != execution.memory_mode
+    ):
+        return False
+    try:
+        alias, _ = member_config_for_id(config, durable.member_id)
+        canonical = resolve_member_execution(config, alias)
+    except Exception:
+        return False
+    if canonical.store.store_id != durable.store.store_id:
+        return False
+    with _EXECUTION_LOCK:
+        _vouch(_live_key(verified_session_key), durable)
+        return _VOUCHED_EXECUTIONS.get(_live_key(verified_session_key)) is not None
+
+
 def read_live_session_execution(session_key: str) -> ExecutionContext | None:
     """Snapshot the live carrier for generation-safe restricted-session cleanup."""
     with _EXECUTION_LOCK:
@@ -623,10 +684,16 @@ def tighten_live_session_execution(
         if current is None:
             return None
         tightened = current.with_mode(memory_mode)
-        if tightened != current:
-            _LIVE_EXECUTIONS[key] = tightened
-            _withdraw_vouched(key)
-        return tightened
+        if tightened == current:
+            return tightened
+        _LIVE_EXECUTIONS[key] = tightened
+        _withdraw_vouched(key)
+    # A tightening withdraws authority for good (rollback never re-grants it),
+    # so the restart-surviving copy goes too.
+    from kiro_crew._durable_vouch import forget_durable_vouch
+
+    forget_durable_vouch(session_key)
+    return tightened
 
 
 def rollback_live_session_tightening(
@@ -961,6 +1028,9 @@ def bind_session_execution(
             # persistent-era entry behind would leave this map disagreeing with
             # the record it exists to corroborate.
             _withdraw_vouched(_live_key(session_key))
+        from kiro_crew._durable_vouch import forget_durable_vouch
+
+        forget_durable_vouch(session_key)
         return
     expected = current.to_record() if current is not None else None
     fields = {
@@ -989,6 +1059,23 @@ def bind_session_execution(
     if vouch and execution.member_id:
         with _EXECUTION_LOCK:
             _vouch(_live_key(session_key), execution)
+            held = _VOUCHED_EXECUTIONS.get(_live_key(session_key)) == execution
+        if held:
+            # The restart-surviving copy, written only when the in-memory vouch
+            # took, so the two never disagree about what was committed.
+            from kiro_crew._durable_vouch import record_durable_vouch
+
+            record = execution.to_record()
+            record_durable_vouch(session_key, record)
+            # The write ran outside the lock, so a withdrawal may have landed
+            # between the vouch and the file (its forget then found nothing to
+            # remove). Re-check and take the file back if the vouch is gone.
+            with _EXECUTION_LOCK:
+                still_held = _VOUCHED_EXECUTIONS.get(_live_key(session_key)) == execution
+            if not still_held:
+                from kiro_crew._durable_vouch import forget_durable_vouch
+
+                forget_durable_vouch(session_key, only_if=record)
     # A member-less execution is NOT vouched even when the caller asks. The own-store
     # admission identifies the caller by ``member_id`` and refuses before the store
     # question when there is none, so such an entry could never be admitted -- it
@@ -1000,6 +1087,12 @@ def bind_session_execution(
 
 def restore_live_session_execution(session_key: str, prior, published) -> bool:
     """CAS rollback a restricted admission; False means use the durable owner."""
+    from kiro_crew._durable_vouch import forget_durable_vouch
+
+    # Same compare-and-set as the in-memory withdrawal below, and for the same
+    # reason: a restart-surviving copy of an abandoned vouch would let the
+    # gate-verified re-vouch restore it.
+    forget_durable_vouch(session_key, only_if=published)
     with _EXECUTION_LOCK:
         key = _live_key(session_key)
         # The vouched entry rolls back on its OWN terms, before and regardless of

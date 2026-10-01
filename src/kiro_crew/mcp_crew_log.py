@@ -96,7 +96,14 @@ TOOLS: tuple[str, ...] = ("crew_log_list", "crew_log_read", "crew_log_projection
 #: description lists them without importing the storage package into this process.
 #: A name this list is missing is refused by the ENDPOINT, which reads the real
 #: ``PROJECTION_NAMES``; a test pins the two together.
-PROJECTION_NAMES: tuple[str, ...] = ("status", "usage", "timeline", "tools", "approvals")
+PROJECTION_NAMES: tuple[str, ...] = (
+    "status",
+    "usage",
+    "timeline",
+    "tools",
+    "approvals",
+    "subagents",
+)
 
 #: Entries one ``crew_log_read`` returns, whatever a caller asks for. The endpoint
 #: clamps its own span too; this is the tool's promise to its caller.
@@ -242,7 +249,9 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "the open turn; 'usage' is tokens, credits, injected context and "
                 "compactions; 'timeline' is the recent moments; 'tools' is per-tool "
                 "counts and outcomes; 'approvals' is what was asked and what was "
-                "answered. Prefer this over reading entries when the question is "
+                "answered; 'subagents' is the children this session dispatched with "
+                "each one's outcome, duration and credits. Prefer this over reading "
+                "entries when the question is "
                 "'what did this session spend' or 'is it still running' — one fold "
                 "answers it without paging the file. ``unit`` takes the same forms "
                 "as crew_log_read, including 'self'. READ-ONLY."

@@ -156,6 +156,9 @@ jobs:
             linux_packaging:
               - 'website/electron/package.json'
               - 'website/electron/auto-update.js'
+              # The update lanes auto-update.js composes; the feed lane picks
+              # the per-format feed directory a Linux package install reads.
+              - 'website/electron/runtime/update/**'
               - 'website/electron/bundle-location.js'
               - 'packaging/build-desktop.sh'
               - 'scripts/stamp-distribution.sh'

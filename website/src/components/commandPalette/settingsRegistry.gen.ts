@@ -950,18 +950,6 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
-    "id": "chat.default-to-autopilot-mode",
-    "label": "Default to Autopilot Mode",
-    "labelKey": "pages.settings.chatPanel.default_to_autopilot_mode",
-    "description": "New sessions start in autopilot mode (plan → approve → execute). You can still toggle individual sessions.",
-    "tab": "chat",
-    "type": "toggle",
-    "occurrence": 1,
-    "params": {
-      "sub": "sessions"
-    }
-  },
-  {
     "id": "chat.describe-your-role",
     "label": "Describe your role",
     "labelKey": "pages.settings.chatPanel.describe_your_role",
@@ -1608,6 +1596,15 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "developer.composable-layout",
+    "label": "Composable layout",
+    "labelKey": "pages.developer.featurePreviewsTab.layout_harness",
+    "description": "Turns on an in-development, developer-only harness for a new layout mechanism. Nothing you can see changes yet: the mechanism has no page of its own, so this exists only so it can be built and tested behind a switch.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
     "id": "developer.crewmates",
     "label": "Crewmates",
     "labelKey": "pages.developer.featurePreviewsTab.crew_members",
@@ -1888,16 +1885,17 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
-    "id": "display.reduce-glass-transparency",
-    "label": "Reduce glass transparency",
-    "labelKey": "pages.settings.displayPanel.reduce_transparency",
-    "description": "Show the frosted glass panes (the message box, the suggestion chips, the Settings search) as solid cards. Same look the app uses when your system asks for less transparency.",
+    "id": "display.reuse-the-current-terminal",
+    "label": "Reuse the current terminal",
+    "labelKey": "pages.settings.displayPanel.terminal_reuse_current",
+    "description": "Copies the command instead of running it: Run in terminal focuses the terminal tab you have selected and copies the command, so you can paste it into that shell while keeping its working directory, environment, and any active login session. With no terminal open, it still copies the command for you to paste — it is never run for you.",
     "tab": "display",
     "type": "toggle",
     "occurrence": 1,
     "params": {
-      "sub": "theme"
-    }
+      "sub": "terminal"
+    },
+    "configKey": "dashboard.terminal.reuse_current"
   },
   {
     "id": "display.theme",
@@ -1909,6 +1907,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1,
     "params": {
       "sub": "theme"
+    }
+  },
+  {
+    "id": "display.translucent-panels",
+    "label": "Translucent panels",
+    "labelKey": "pages.settings.displayPanel.translucent_panels",
+    "description": "Show the top bar, the tab bar, the message box, the suggestion chips and the search fields as frosted glass over the content that scrolls under them. Off, they are solid cards.",
+    "tab": "display",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "view"
     }
   },
   {
@@ -2288,7 +2298,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "skills.auto-generate-skills-from-sessions",
     "label": "Auto-generate skills from sessions",
     "labelKey": "pages.settings.skillsPanel.auto_generate_skills_from_sessions",
-    "description": "Analyze each completed session and draft a reusable SKILL.md when the session demonstrates a recurring procedure — one a future session, working on a different target, would run again. Off by default. Drafts are staged to the pending queue on Agent Capabilities → Skills for review — nothing goes live without your approval (see below).",
+    "description": "Analyze each completed session and draft a reusable SKILL.md when the session demonstrates a recurring procedure — one a future session, working on a different target, would run again. Off by default. Drafts are staged to the pending queue on Customize → Skills for review — nothing goes live without your approval (see below).",
     "tab": "skills",
     "type": "toggle",
     "occurrence": 1,

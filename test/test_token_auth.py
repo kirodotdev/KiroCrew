@@ -709,6 +709,41 @@ def test_cli_local_secret_endpoints_are_in_bypass_exact() -> None:
     assert not missing, f"CLI local-secret endpoints missing from _BYPASS_EXACT: {missing}"
 
 
+# -- Property 7-bis: the update-revalidate poke reaches its handler --
+#
+# `kirocrew update` (git checkout) POSTs to /api/update/revalidate over loopback
+# with the local secret and NO dashboard token. The handler re-checks loopback +
+# secret itself, but only if the request gets past this middleware first. It is
+# scoped to POST — the only method routed and the only one the handler's self-
+# auth covers — so a non-POST on the same path stays on the ordinary token gate.
+
+
+@pytest.mark.asyncio
+async def test_update_revalidate_post_bypasses_auth() -> None:
+    mw = token_auth_middleware()
+    req = _make_request(
+        path="/api/update/revalidate",
+        method="POST",
+        headers={"X-Local-Secret": "irrelevant-here"},
+    )
+    resp = await mw(req, _ok_handler)
+    assert resp.status == 200, (
+        "POST /api/update/revalidate was denied by the auth middleware; the CLI "
+        "sends no dashboard token, so the handler's own loopback + local-secret "
+        "check never runs and the post-update badge poke can never succeed. Add "
+        "the path to _BYPASS_EXACT_METHODS (POST) in token_auth.py."
+    )
+
+
+@pytest.mark.asyncio
+async def test_update_revalidate_get_still_requires_auth() -> None:
+    """A non-POST method on the path is NOT in scope, so the token gate holds."""
+    mw = token_auth_middleware()
+    req = _make_request(path="/api/update/revalidate", method="GET")
+    resp = await mw(req, _ok_handler)
+    assert resp.status != 200, "GET on the revalidate path bypassed the token gate"
+
+
 # -- Property 8a-bis: every browser-view relay route form bypasses the gate --
 #
 # The relay authenticates with the capability token in the PATH (its iframe is

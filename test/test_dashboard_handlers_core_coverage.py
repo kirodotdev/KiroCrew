@@ -2261,6 +2261,97 @@ class TestFallbackModelPatch:
             assert resp.status == 400
             assert "invalid value" in (await resp.json())["error"]
 
+    def _app_with_session(self, provider: object) -> web.Application:
+        app = web.Application(middlewares=[_owner_identity])
+        app["state"] = SimpleNamespace(
+            owner_id="", sessions=SimpleNamespace(active_providers=lambda: [provider])
+        )
+        app.router.add_patch("/api/config/kirocrew", core_mod.api_kirocrew_config_patch)
+        return app
+
+    @pytest.mark.asyncio
+    async def test_pin_denied_by_a_stale_snapshot_is_revalidated_first(
+        self, seeded_config, fake_sel
+    ) -> None:
+        """The PATCH revalidates the live snapshot before the synchronous
+        validator reads it, so a startup-race answer cannot deny an entitled pin."""
+        rows = [{"modelId": "auto"}]
+
+        class _Healing:
+            client = SimpleNamespace(backend="")  # the default harness the pin runs on
+
+            async def maybe_refresh_available_models(self, catalog_ids):
+                assert catalog_ids[0] == "claude-opus-5"
+                rows.append({"modelId": "claude-opus-5"})
+                return list(rows)
+
+            def available_models(self):
+                return list(rows)
+
+        async with TestClient(TestServer(self._app_with_session(_Healing()))) as client:
+            resp = await client.patch(
+                "/api/config/kirocrew",
+                json={"path": "agent.fallback_model", "value": "claude-opus-5"},
+            )
+            assert resp.status == 200
+
+    @pytest.mark.asyncio
+    async def test_pin_is_refused_while_its_revalidation_is_in_flight(
+        self, seeded_config, fake_sel
+    ) -> None:
+        from kiro_crew.agent_sdk.drivers.acp import EntitlementRevalidating
+
+        class _Pending:
+            client = SimpleNamespace(backend="")
+
+            async def maybe_refresh_available_models(self, _catalog_ids):
+                raise EntitlementRevalidating
+
+            def available_models(self):
+                return [{"modelId": "auto"}]
+
+        async with TestClient(TestServer(self._app_with_session(_Pending()))) as client:
+            resp = await client.patch(
+                "/api/config/kirocrew",
+                json={"path": "agent.fallback_model", "value": "claude-opus-5"},
+            )
+            assert resp.status == 400
+            assert (await resp.json())["error"] == core_mod._ROLE_PIN_REVALIDATING
+
+    @pytest.mark.asyncio
+    async def test_newer_session_on_another_harness_never_judges_the_pin(
+        self, seeded_config, fake_sel
+    ) -> None:
+        """Newest-first evidence is scoped to the harness the pin runs on (the
+        default backend, kiro): a Claude member DM created later is the newest
+        live session, but its catalog cannot reject a kiro id the account has."""
+
+        class _Session:
+            def __init__(self, backend: str, ids: list[str]) -> None:
+                self.client = SimpleNamespace(backend=backend)
+                self._rows = [{"modelId": m} for m in ids]
+
+            def available_models(self):
+                return list(self._rows)
+
+            async def maybe_refresh_available_models(self, _catalog_ids):
+                return list(self._rows)
+
+        kiro = _Session("", ["auto", "claude-opus-5"])
+        claude_member = _Session("claude", ["claude-opus-4-1", "claude-sonnet-4-5"])
+        app = web.Application(middlewares=[_owner_identity])
+        app["state"] = SimpleNamespace(
+            owner_id="",
+            sessions=SimpleNamespace(active_providers=lambda: [kiro, claude_member]),
+        )
+        app.router.add_patch("/api/config/kirocrew", core_mod.api_kirocrew_config_patch)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.patch(
+                "/api/config/kirocrew",
+                json={"path": "agent.fallback_model", "value": "claude-opus-5"},
+            )
+            assert resp.status == 200, await resp.text()
+
 
 class TestAdvertisedModelGuards:
     def test_unknown_when_no_session_has_initialised(self) -> None:

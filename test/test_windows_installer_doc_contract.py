@@ -89,7 +89,7 @@ def test_the_fake_backend_keeps_readiness_offline() -> None:
 
     Asserted on the SCRIPT, which owns the gateway leg's environment: the ACP
     backend is pointed at the fake one shipping inside the payload under test.
-    A future edit that drops this makes the 30-second ceiling depend on a model
+    A future edit that drops this makes the 50-second ceiling depend on a model
     download and turns a real gate into a flake.
     """
     script = _read(INSTALLER_SCRIPT)

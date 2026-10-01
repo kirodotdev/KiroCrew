@@ -145,3 +145,6 @@ async def test_owner_socket_approves_only_returned_spawn_once(tmp_path, monkeypa
             task.cancel()
         await asyncio.gather(*other_approvals, return_exceptions=True)
         await manager.cancel_all()
+        # ``cancel_all`` leaves the durable task queue the constructor opened
+        # (``tasks.db`` + ``-wal`` + ``-shm``) live; release it here.
+        manager.close()

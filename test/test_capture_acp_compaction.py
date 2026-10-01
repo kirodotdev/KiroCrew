@@ -216,6 +216,60 @@ def test_reduction_drops_host_inventories_and_synthesizes_ids(cap, tmp_path):
     assert "goose-session-1" in joined
 
 
+def test_reduction_cuts_a_select_catalog_to_its_current_option(cap, tmp_path):
+    """goose lists every provider it knows on ``session/new``; the capture keeps one.
+
+    The option list is what the recording host could reach, and the host-data gate
+    refuses it. The select keeps its id, type and ``currentValue``, and the one option
+    that names that value.
+    """
+    frames = [
+        {
+            "id": 2,
+            "result": {
+                "configOptions": [
+                    {
+                        "id": "provider",
+                        "type": "select",
+                        "currentValue": "ollama",
+                        "options": [
+                            {"value": "anthropic", "name": "Anthropic"},
+                            {"value": "ollama", "name": "Ollama"},
+                            {"value": "openai", "name": "OpenAI"},
+                        ],
+                    },
+                    {"id": "flag", "type": "boolean", "currentValue": True},
+                ]
+            },
+        }
+    ]
+    reduced, notes = cap.reduce_frames(
+        frames, backend="goose", session_id="", cwd=tmp_path, keep_ids=False
+    )
+    options = reduced[0]["result"]["configOptions"]
+    assert options[0]["options"] == [{"value": "ollama", "name": "Ollama"}]
+    assert options[0]["currentValue"] == "ollama"
+    assert options[1] == {"id": "flag", "type": "boolean", "currentValue": True}
+    assert "anthropic" not in json.dumps(reduced)
+    assert any("configOptions select" in note for note in notes)
+
+
+def test_reduction_synthesizes_message_ids(cap, tmp_path):
+    """goose stamps each message with a uuid, echoed on every chunk of it."""
+    real = "msg_0f9e1b22-1111-2222-3333-444455556666"
+    frames = [
+        {"params": {"update": {"sessionUpdate": "agent_message_chunk", "messageId": real}}},
+        {"params": {"update": {"sessionUpdate": "agent_message_chunk", "messageId": real}}},
+    ]
+    reduced, notes = cap.reduce_frames(
+        frames, backend="goose", session_id="", cwd=tmp_path, keep_ids=False
+    )
+    blob = json.dumps(reduced)
+    assert "0f9e1b22" not in blob
+    assert blob.count('"msg-1"') == 2
+    assert any("message id" in note for note in notes)
+
+
 def test_keep_ids_leaves_the_real_ids_alone(cap, tmp_path):
     frames = [{"params": {"sessionId": "ses_realid42"}}]
     reduced, _notes = cap.reduce_frames(

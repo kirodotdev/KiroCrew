@@ -20,6 +20,7 @@ import threading
 import time
 from dataclasses import asdict
 from pathlib import Path
+from typing import Any
 
 from aiohttp import web
 
@@ -798,6 +799,66 @@ async def api_system(request: web.Request) -> web.Response:
         _metrics_cache = data
         _metrics_cache_ts = time.monotonic()
     return web.json_response(data)
+
+
+async def _require_owner(request: web.Request, operation: str) -> web.Response | None:
+    """The shared owner gate, imported late: ``handlers`` imports this module."""
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+    return await require_owner_dashboard_request(request, operation)
+
+
+def _reconciler(request: web.Request) -> Any:
+    sessions = getattr(request.app["state"], "sessions", None)
+    return sessions.runtime_reconciler() if sessions is not None else None
+
+
+async def api_leaked_runtimes(request: web.Request) -> web.Response:
+    """Leaked agent runtimes from the reconciler's last reading: count and total RSS."""
+    reconciler = _reconciler(request)
+    reading = reconciler.last_reading if reconciler is not None else None
+    from kiro_crew.runtime_reconcile import RECLAIM_PLATFORM
+
+    # Off Linux the report cannot look at all, which must not read as "none leaked".
+    if reading is None or not reading.supported or not RECLAIM_PLATFORM:
+        return web.json_response({"supported": False, "count": 0, "rss_bytes": 0, "runtimes": []})
+    return web.json_response(
+        {
+            "supported": True,
+            "count": reading.leaked_untracked,
+            "rss_bytes": reading.leaked_rss_bytes,
+            "runtimes": [{"pid": pid, "rss_bytes": rss} for pid, rss in reading.leaked],
+        }
+    )
+
+
+async def api_leaked_runtimes_reclaim(request: web.Request) -> web.Response:
+    """Owner-only, confirm-required: end the leaked runtimes once through the gated kill path."""
+    denied = await _require_owner(request, "leaked_runtimes.reclaim")
+    if denied is not None:
+        return denied
+    try:
+        body = await request.json()
+    except Exception:
+        body = None
+    if not isinstance(body, dict) or body.get("confirm") is not True:
+        return web.json_response(
+            {"error": "confirm required", "code": "confirm_required"}, status=400
+        )
+    reconciler = _reconciler(request)
+    if reconciler is None:
+        return web.json_response(
+            {"error": "no reconcile pass has run yet", "code": "not_ready"}, status=409
+        )
+    result = await asyncio.to_thread(reconciler.reclaim_untracked)
+    if not result.supported:
+        return web.json_response({"error": result.reason, "code": "unsupported"}, status=409)
+    return web.json_response(
+        {
+            "killed": list(result.killed),
+            "refused": [{"pid": pid, "reason": why} for pid, why in result.refused],
+        }
+    )
 
 
 async def api_sso_ttl(request: web.Request) -> web.Response:

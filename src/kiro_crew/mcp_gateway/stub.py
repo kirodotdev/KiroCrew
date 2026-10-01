@@ -203,7 +203,7 @@ _STDIN_QUEUE_MAXSIZE = 256
 _HELD_FRAME_BYTES = READ_BUFFER_LIMIT_BYTES
 _HELD_TOTAL_BYTES = max(_DEFAULT_READ_BUFFER_LIMIT, _HELD_FRAME_BYTES)
 # Coupled to the DEFAULT of ``mcp_gateway.spawn_queue_wait_secs``
-# (``config/sections.py``): the daemon holds a queued stub for about that long
+# (``config/integration_sections.py``): the daemon holds a queued stub for about that long
 # before a capacity refusal, and this budget is how long the stub keeps
 # kiro-cli's transport open meanwhile. The stub reads no config, so the coupling
 # is by value; ``test_stub_reconnect_budget.py`` pins the equality, and
@@ -693,8 +693,8 @@ def build_register_payload(args: argparse.Namespace) -> dict:
         "poolable": bool(args.poolable),
         # Wire-compat ballast, NOT a pool dimension: an adopted daemon that
         # outlived a package upgrade (the manager adopts anything answering
-        # ``pong`` with no version handshake — see gatewayd's capability
-        # comment) still runs a ``PoolKey.from_register`` that hard-requires
+        # ``pong`` with no version handshake — see the capability comment in
+        # ``daemon/connection.py``) still runs a ``PoolKey.from_register`` that hard-requires
         # ``user_identity``. Omitting the key would make that daemon reject
         # every new stub's register as malformed, silently un-pooling the
         # whole install until the daemon restarts. A current daemon ignores

@@ -21,9 +21,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
+import shutil
 
 from kiro_crew.config.paths import CONFIG_DIR_NAME, LEGACY_CONFIG_DIR_NAME
+from kiro_crew.deploy.engine import tool_spawn_env
 from kiro_crew.instances.constants import DEFAULT_MINT_TIMEOUT_SECS, TTL_PATTERN
 from kiro_crew.platform_compat import kill_and_reap
 from kiro_crew.security import redact
@@ -393,6 +396,77 @@ def _build_ssh_argv(
     ]
 
 
+def resolve_ssh_bin() -> str:
+    """Resolve ``ssh`` against the INHERITED ``PATH``, or return the bare name.
+
+    Only the inherited ``PATH`` is searched — the exact set the bare ``"ssh"``
+    argv head already executed from — so this changes WHICH binary runs in no
+    case. Its purpose is to make the head absolute, which is what lets
+    :func:`kiro_crew.deploy.engine.tool_spawn_env` widen the child's ``PATH``
+    for the ``ProxyCommand`` it will run. A miss returns the bare name, which that
+    helper leaves unwidened, so a host with no ``ssh`` on ``PATH`` fails exactly
+    as before rather than exec'ing one found only in the widened dirs.
+
+    Scans the filesystem: call it off the event loop (:func:`ssh_spawn_argv_env`
+    is the sync unit meant for ``asyncio.to_thread``).
+    """
+    env_path = os.environ.get("PATH", "")
+    found = shutil.which("ssh", path=env_path) if env_path else None
+    return found or "ssh"
+
+
+def ssh_spawn_argv_env(argv: list[str]) -> tuple[list[str], dict[str, str]]:
+    """The ``(argv, env)`` to spawn an ``ssh`` argv built by this package with.
+
+    ``ssh`` itself sits in the system bin dir, but a host routed through a
+    ``~/.ssh/config`` ``ProxyCommand`` runs that command under the ssh child's
+    ``PATH`` — and a GUI-launched gateway's is launchd's minimal one, where the
+    ``session-manager-plugin`` an SSM-based proxy looks
+    up by name is not. So the head is resolved absolutely and the env is the
+    same :func:`~kiro_crew.deploy.engine.tool_spawn_env` the SSM transport's
+    ``aws`` child gets: one widening rule for both transports.
+
+    Every ssh spawn site (tunnel, token mint, remote restart, diagnostics probes)
+    goes through this, so none of them can be the one that still fails. Runs a
+    PATH scan; call it via ``asyncio.to_thread`` from async code.
+    """
+    head = resolve_ssh_bin() if argv[0] == "ssh" else argv[0]
+    return [head, *argv[1:]], tool_spawn_env(head)
+
+
+# stderr phrases meaning the ``ProxyCommand`` could not find a program it runs:
+# SSM-based proxies' own "plugin missing" wording, and a POSIX shell's
+# "not found" for a ProxyCommand whose first word is not on the PATH ssh gave it
+# (bash/zsh: "command not found"; dash/bash `exec`: "exec: foo: not found").
+PROXY_TOOL_MISSING_SIGNALS: tuple[str, ...] = (
+    "session-manager-plugin is not installed",
+    "sessionmanagerplugin is not found",
+    "command not found",
+    ": not found",
+)
+
+# The PATH is named in the message so the reader can see what was searched; a
+# very long one keeps its tail, where the widened dirs are appended.
+_PATH_IN_MESSAGE_CHARS = 400
+
+
+def proxy_tool_missing_message(child_path: str) -> str:
+    """Operator-facing cause for a ``ProxyCommand`` whose program was not found.
+
+    Names the ``PATH`` the ssh child actually had, because the failure only
+    happens when that differs from the user's terminal (a GUI-launched gateway),
+    and "run setup again" cannot fix a binary that is installed but not on it.
+    """
+    shown = child_path or "<empty>"
+    if len(shown) > _PATH_IN_MESSAGE_CHARS:
+        shown = "…" + shown[-_PATH_IN_MESSAGE_CHARS:]
+    return (
+        "a program your ssh config's ProxyCommand runs was not found on the PATH "
+        f"the gateway gave ssh ({shown}); install it or make it reachable from that "
+        "PATH (e.g. start the gateway from a terminal), then reconnect"
+    )
+
+
 def _redacted_output_tail(stdout: str, limit: int = _OUTPUT_TAIL_CHARS) -> str:
     """Return a token-stripped, credential-redacted tail of *stdout*.
 
@@ -470,7 +544,10 @@ async def mint_remote_token(
     remote_command = build_remote_token_command(
         remote_bin, ttl=ttl, port=remote_port, embed_parent_port=embed_parent_port
     )
-    argv = _build_ssh_argv(ssh_host, remote_command, connect_timeout_secs=timeout_secs)
+    argv, env = await asyncio.to_thread(
+        ssh_spawn_argv_env,
+        _build_ssh_argv(ssh_host, remote_command, connect_timeout_secs=timeout_secs),
+    )
     logger.info("Minting token on %s (ttl=%s)", ssh_host, ttl)  # no token in logs
 
     try:
@@ -478,6 +555,7 @@ async def mint_remote_token(
             *argv,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=env,
         )
     except OSError as e:
         raise TokenMintError(f"failed to spawn ssh for {ssh_host}: {e}") from e
@@ -504,10 +582,14 @@ async def mint_remote_token(
         # branch, so the "only ever built on a failure path" invariant that
         # _redacted_output_tail documents is enforced by control flow rather than
         # merely asserted — the success path never touches stdout holding a token.
-        raise TokenMintError(
-            f"remote token mint on {ssh_host} exited {proc.returncode}: "
-            f"{_with_stdout_tail(safe_stderr or '<no stderr>', _redacted_output_tail(stdout))}"
-        )
+        detail = _with_stdout_tail(safe_stderr or "<no stderr>", _redacted_output_tail(stdout))
+        # 255 is ssh's OWN failure status. A remote command that is not found
+        # exits 127 with the same "command not found" wording from the REMOTE
+        # shell, which is not a ProxyCommand problem and must not be named one.
+        low = stderr.lower()
+        if proc.returncode == 255 and any(sig in low for sig in PROXY_TOOL_MISSING_SIGNALS):
+            detail = f"{proxy_tool_missing_message(env.get('PATH', ''))}: {detail}"
+        raise TokenMintError(f"remote token mint on {ssh_host} exited {proc.returncode}: {detail}")
 
     token = parse_token_from_stdout(stdout)
     if not token:
@@ -553,13 +635,17 @@ async def run_remote_kirocrew(
     remote_command = build_remote_command(
         remote_bin, subcommand, marker_port=_validate_port(marker_port)
     )
-    argv = _build_ssh_argv(ssh_host, remote_command, connect_timeout_secs=connect_timeout_secs)
+    argv, env = await asyncio.to_thread(
+        ssh_spawn_argv_env,
+        _build_ssh_argv(ssh_host, remote_command, connect_timeout_secs=connect_timeout_secs),
+    )
     logger.info("Running 'kirocrew %s' on %s", subcommand, ssh_host)
     try:
         proc = await asyncio.create_subprocess_exec(
             *argv,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=env,
         )
     except OSError as e:
         return -1, f"failed to spawn ssh: {e}"

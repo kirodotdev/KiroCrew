@@ -44,7 +44,7 @@ cannot disagree with what was sent.
 
 | # | Block | Fed by | Condition |
 |--:|---|---|---|
-| 1 | `[AGENT SYSTEM PROMPT]` | `config/prompt.md`, or `prompt-orchestrator.md` by slot `mode`; `_load_agent_prompt` for a custom agent | skipped on a slim resume |
+| 1 | `[AGENT SYSTEM PROMPT]` | `config/prompt.md`; `_load_agent_prompt` for a custom agent | skipped on a slim resume |
 | 2 | `[CRITICAL RULES]` | `_critical_rules_for` (runtime-conditional) | unless the agent sets `includeCrewContext: false` |
 | 3 | `[CURRENT DATE]` | `get_local_tz` + `KiroCrewConfig.timezone` | always |
 | 4 | `[CURRENT AGENT]` / `[RUNTIME]` | `_runtime_display_name`, trusted `runtime_source` from the dispatcher | when a session key exists |
@@ -59,7 +59,7 @@ cannot disagree with what was sent.
 | 13 | `[THREAD CONVERSATION HISTORY]` | `build_session_replay` (lossless, newest first), else `_recall_rows` truncation | new, non-resumed session |
 | 14 | `[PREVIOUS TURN WAS CANCELLED …]` | `_build_stop_event_notes` | recent user stop |
 | 15 | `[Memory …]` + `[Memory activity index]` + `[Memory activity]` + `[Memory tools]` | `memory.py` → `get_context`, `activity_index`, `get_activity_context` | not temporary, `memory` group; the activity block also needs `memory.inject_activity` |
-| 16 | `[Skills:]` (pinned bodies, then discovery) | `skills.py` → `get_context` | see §4 |
+| 16 | `[Skills:]` (pinned bodies, then discovery) | `skill_runtime/delivery.py` → `get_context` | see §4 |
 | 17 | `[Learned corrections …]` | vector `get_lessons_context`, else `lessons.jsonl` | `lessons` group |
 | 18 | `## Recent Session Context` | `conversation_log.recent_with_provenance` | `memory` group |
 | 19 | `[RESPONSE PREFERENCES]` | `_build_response_preferences_section` | reply-style level set |
@@ -205,6 +205,7 @@ it adds:
 | `[FOLDER]` | sidebar ancestry | once per session, and after a move |
 | `[THEME PERSONA]` / `$skill` bodies | `request_prefix_context` | dashboard-generated |
 | `[Skill: name]` bodies, `[Relevant skills for this message]` | trigger matching | see below |
+| `[Learned corrections — relevant to this message …]` | vector `turn_lessons` | `memory.inject_lessons_per_turn` (off by default), `lessons` group, not temporary or minimal; up to 3 lessons / 2,000 chars the session has not been shown |
 | `[Hook context:]` | `hooks.on_message` returning `HOOK_INJECT_CONTEXT` | matching hook |
 | `[REPLY FORMAT RULES]` + guidance | `_interactive_guidance` | interactive sessions |
 | `[CURRENT USER REQUEST …]` + the user's text | the turn | always last |
@@ -228,12 +229,13 @@ The mechanism, when on:
 - The bar is `MIN_TRIGGER_OVERLAP = 0.7`. `always: true` skills are excluded (already
   pinned) and a `repo_scope` mismatch suppresses mechanically. Matches are then
   truncated to `max_triggered`, highest score first.
-- `skills.py` → `split_triggered` decides delivery. **Full body is the default**:
-  a matched skill's procedure lands in the prompt as `[Skill: name]`. An
-  unconfined skill opts out with `inject_on_trigger: false` and contributes one
-  line to the `[Relevant skills for this message]` block from `skills.py` →
-  `trigger_hint` instead. A confined project skill always takes the body path,
-  because handing out a live path would bypass the descriptor-pinned reader.
+- `skill_runtime/delivery.py` → `split_triggered` decides delivery. **Full body
+  is the default**: a matched skill's procedure lands in the prompt as
+  `[Skill: name]`. An unconfined skill opts out with `inject_on_trigger: false`
+  and contributes one line to the `[Relevant skills for this message]` block from
+  `skill_runtime/delivery.py` → `trigger_hint` instead. A confined project skill
+  always takes the body path, because handing out a live path would bypass the
+  descriptor-pinned reader.
 - One SEL audit row records the matched set, the body/pointer split, and any
   negative-trigger deny.
 - The Jev decision point (`decisions/points/skills_select.py` →
@@ -413,7 +415,7 @@ transport protocol. MCP Tool Search discovers tool schemas, not skill bodies.
 
 ### Consequence for `kirocrew-worker`
 
-`agent.py` → `_write_worker_spec` derives the worker spec as
+`agent_materialization/worker_agent.py` → `_write_worker_spec` derives the worker spec as
 `default + @kirocrew-work − cron scheduling − unassigned opt-in servers`. The
 mirrored keys are `_WORKER_MIRRORED_SHAPES`: `tools`, `allowedTools`,
 `excludedTools`, `mcpServers`, `model`. **`resources` is not mirrored**, so the
@@ -451,26 +453,41 @@ The exception: layer 3's own header claims precedence over the whole section,
 protocol included, so the user's safety boundary is never formally outranked by
 product prose.
 
-Layers 2 and 4 describe how the member runs its own desk, and only a member
-selected BY NAME gets them. When the member's store runs under an explicitly
-selected **template** — the execution record carries the member's `member_id` and
-store with `selection_kind == "template"`, the shape `session_create(agent=…)`
-and `spawn_run(agent=…)` both mint for a member caller — the session is that
-member's *delegate*, sent to do the work: `_template_selected_on_member_store`
-is the one predicate, every builder call site passes its verdict, and the section
-is layers 1 and 3 only. The delegate keeps the member's identity because the
-memory it reads and writes is that member's, and keeps `[PERMANENT RULES]`
-because the user's bounds on a member follow its memory, not its template. It is
-not handed the desk protocol — whose second item hands substantial work to a
-separate session, the loop a delegate must not enter — nor the briefing that
-protocol maintains, and no placeholder stands in for either. A member whose record
-carries no persisted `member_id` is never a delegate in this sense: it is named by
-`selection_kind == "member"` and `selection_name` alone, and no record field can
-carry "this member, under that template". The `session_create` arm keeps that
-selection and changes only the template, so its child keeps all four layers —
-losing the member would lose layer 3 with layer 1 — while the spawn gate's
-`spawn_run(agent=…)` child of such a member is a plain template run on the parent's
-store with no member section.
+Layers 2 and 4 are the member's **desk**: they describe how the member runs its
+own DM thread. The desk follows the SURFACE, not the store and not the selection.
+`_desk_withheld(execution_context, desk_member)` is the one predicate, every
+builder call site passes its verdict, and either of its two reasons makes the
+section layers 1 and 3 only — no placeholder stands in for the desk, the briefing
+is not read, and the identity sentence describing the DM thread is dropped:
+
+- **No caller named the turn as the desk.** `build_message` and
+  `build_session_context` take the desk from their own `member=` argument, which
+  the dashboard passes for a `mode == "member"` slot only, and take the OWNER —
+  whose identity, rules and memory the turn carries — from the execution record.
+  Every plain dashboard chat resolves to the stock `default` crew alias, which
+  the loader classifies `selection_kind == "member"`; that is the right store
+  binding and was the wrong desk trigger, so the two are captured separately.
+  An ordinary chat on a crew alias, a cron turn, a channel turn and every
+  delegate get identity and permanent rules only.
+- **The store runs under an explicitly selected template**
+  (`_template_selected_on_member_store`): the execution record carries the
+  member's `member_id` and store with `selection_kind == "template"`, the shape
+  `session_create(agent=…)` and `spawn_run(agent=…)` both mint for a member
+  caller. The session is that member's *delegate*, sent to do the work, and the
+  desk protocol's second item hands substantial work to a separate session — the
+  loop a delegate must not enter.
+
+The delegate keeps the member's identity because the memory it reads and writes
+is that member's, and keeps `[PERMANENT RULES]` because the user's bounds on a
+member follow its memory, not its surface or template. A member whose record
+carries no persisted `member_id` is never a template-selected delegate in this
+sense: it is named by `selection_kind == "member"` and `selection_name` alone, and
+no record field can carry "this member, under that template". The
+`session_create` arm keeps that selection and changes only the template, so its
+child keeps layers 1 and 3 — losing the member would lose layer 3 with layer 1 —
+and loses the desk through the surface reason, while the spawn gate's
+`spawn_run(agent=…)` child of such a member is a plain template run on the
+parent's store with no member section.
 
 Two failure behaviours are deliberate and opposite. A **missing** rules file reads
 as `""` (the normal unbounded-by-choice state). An **existing but unreadable** one
@@ -525,7 +542,9 @@ work. Pass `agent="kirocrew-worker"` (or the intended implementer) explicitly, a
 a self-contained brief with `session_send`. For a member-bound caller that explicit
 template selects the child's persona, not its memory: the child keeps the caller's
 store and member identity and takes `selection_kind == "template"`, which is what
-makes it the member's delegate of §5 — identity and rules, no desk protocol.
+makes it the member's delegate of §5 — identity and rules, no desk (which no
+created session has: the desk is delivered only where a caller's `member=` names
+the DM thread).
 
 ## 6. Crew-member private files: implemented vs planned
 
@@ -557,8 +576,8 @@ per-member permission control; both exist today, in the forms above.
 | Budgets, caps, the protected ceiling | `src/kiro_crew/context.py` (`_budget`, `_resolve_caps`, `_ResolvedCaps`) |
 | Memory block contents | `src/kiro_crew/memory.py` (`get_context`, `activity_index`, `get_activity_context`) |
 | Lessons | `src/kiro_crew/learn.py`, `src/kiro_crew/vector_memory.py` (`write_lesson`), `src/kiro_crew/vector_memory_runtime/lessons.py` (the lesson readers, ranking and tiered rendering) |
-| Skill index, pinned bodies, discovery | `src/kiro_crew/skills.py` (`get_context`, `load_skill`) |
-| Trigger matching, and its model-picked override | `src/kiro_crew/trigger_match.py`, `src/kiro_crew/skills.py` (`get_triggered_skills`, `split_triggered`, `trigger_hint`), `src/kiro_crew/decisions/points/skills_select.py` |
+| Skill index, pinned bodies, discovery | `src/kiro_crew/skill_runtime/delivery.py` (`get_context`), `src/kiro_crew/skills.py` (`load_skill`) |
+| Trigger matching, and its model-picked override | `src/kiro_crew/trigger_match.py`, `src/kiro_crew/skills.py` (`get_triggered_skills`), `src/kiro_crew/skill_runtime/delivery.py` (`split_triggered`, `trigger_hint`), `src/kiro_crew/decisions/points/skills_select.py` |
 | Which agents get skills | `src/kiro_crew/context.py` (`_skills_injection_plan`), `src/kiro_crew/agent_discovery.py` (`agent_skill_globs`, `expand_skill_uri`) |
 | Steering and hooks | `src/kiro_crew/context.py` (`_load_steering_resources`, `steering_target_admissible`), `src/kiro_crew/hooks.py` |
 | Post-compaction re-injection | `src/kiro_crew/messaging/dispatch.py` (`consume_reinjection`, `rearm_reinjection`) |
@@ -566,7 +585,7 @@ per-member permission control; both exist today, in the forms above.
 | Sub-agent context scope | `src/kiro_crew/subagent.py` (`_context_groups_of`), `src/kiro_crew/mcp_tools/spawn.py` |
 | Sub-agent prompt assembly, shared vs dedicated | `src/kiro_crew/subagent_manager/run.py` |
 | Scratch directories | `src/kiro_crew/agent_scratch.py` (`allocate_scratch`, `scratch_env`) |
-| The worker agent spec | `src/kiro_crew/agent.py` (`_write_worker_spec`) |
+| The worker agent spec | `src/kiro_crew/agent_materialization/worker_agent.py` (`_write_worker_spec`) |
 | Member identity, rules, briefing, activity, V2 essentials | `src/kiro_crew/members.py`, `src/kiro_crew/context.py` (`_build_member_section`), `src/kiro_crew/member_essential_context.py` |
 | Crew records, routing, binding | `src/kiro_crew/config/loader.py`, `src/kiro_crew/mcp_core.py` |
 | Per-member permissions | `src/kiro_crew/agent_capabilities.py`, `src/kiro_crew/agent_state.py` |

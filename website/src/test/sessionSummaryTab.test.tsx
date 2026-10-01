@@ -73,7 +73,7 @@ function payload(over: Partial<SessionSummary> = {}): SessionSummary {
 }
 
 /** SlotState is not exported from chatSlice, so the union is restated here.
- *  Keep it in step with `SlotState` in `website/src/store/chatSlice.ts`. */
+ *  Keep it in step with `SlotState` (`state.ts` in `website/src/store/chat`). */
 type StreamState = 'idle' | 'streaming' | 'tool_running' | 'stopping' | 'compacting'
 
 /** The panel subscribes to the store for the live-turn signal

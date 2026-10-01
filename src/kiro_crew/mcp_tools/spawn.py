@@ -35,10 +35,12 @@ from kiro_crew.mcp_shared import ToolCancelled, is_tool_cancelled
 from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.subagent import (
+    AGENT_INTERNAL_CODE,
     AGENT_NOT_AVAILABLE_CODE,
     AGENT_NOT_FOUND_CODE,
     agent_matches_allowlist,
     format_subagent_usage,
+    is_internal_agent_spec,
     parent_spawn_allowlists,
     resolve_max_subagents,
     visible_agent_names,
@@ -176,9 +178,12 @@ def _agent_roster_hint() -> str:
         # refusal roster's and a credential-shaped name is rewritten in place
         # rather than re-sorted into a different slot. Names the parent agent's
         # spec forbids spawning are dropped FIRST: advertising them would send
-        # the model straight into the gate's refusal.
+        # the model straight into the gate's refusal. So are Kiro Crew's own
+        # generated specs (``is_internal_agent_spec``), which the gate refuses.
         names, restricted = _parent_allowlist_filter(
-            sorted(a.name for a in mcp_core.list_agents() if a.name)
+            sorted(
+                a.name for a in mcp_core.list_agents() if a.name and not is_internal_agent_spec(a)
+            )
         )
         shown, withheld = visible_agent_names(names, limit=_MAX_ROSTER_NAMES)
     except Exception:
@@ -325,8 +330,9 @@ def schemas() -> list[dict[str, Any]]:
                         "description": (
                             "Crew Member name from select_crew or route_crew. "
                             "Selects that member's memory and provider template; agent "
-                            "alone selects a template. The member must have delegated tasks "
-                            "enabled. Omit to inherit the current member. Applies to every task."
+                            "alone selects a template. Naming a member is enough; its "
+                            "Triggers only steer automatic selection. Omit to inherit the "
+                            "current member. Applies to every task."
                         ),
                     },
                     "target_member": {
@@ -620,7 +626,8 @@ def _is_unknown_agent_refusal(resp: Mapping[str, Any], agent: str) -> bool:
 
     Reads the response's machine-readable ``code`` (``AGENT_NOT_FOUND_CODE`` for a
     name it cannot load, ``AGENT_NOT_AVAILABLE_CODE`` for one the parent agent's
-    spec forbids -- both spelled once in ``subagent`` and imported here), not its prose. The
+    spec forbids, ``AGENT_INTERNAL_CODE`` for one of Kiro Crew's own generated
+    specs -- each spelled once in ``subagent`` and imported here), not its prose. The
     refusal text is advisory and free to be reworded; before this it WAS the
     contract, so any rewording silently disabled the wave short-circuit until a
     test caught it.
@@ -636,7 +643,11 @@ def _is_unknown_agent_refusal(resp: Mapping[str, Any], agent: str) -> bool:
     client newer than the gateway simply loses the short-circuit -- while using it
     to REJECT a spawn would not be.
     """
-    return bool(agent) and resp.get("code") in (AGENT_NOT_FOUND_CODE, AGENT_NOT_AVAILABLE_CODE)
+    return bool(agent) and resp.get("code") in (
+        AGENT_NOT_FOUND_CODE,
+        AGENT_NOT_AVAILABLE_CODE,
+        AGENT_INTERNAL_CODE,
+    )
 
 
 def _collapse_effort_verdicts(pairs: list[tuple[str, str]]) -> list[tuple[str, str]]:
@@ -1094,9 +1105,13 @@ def spawn_list(name: str, args: dict[str, Any]) -> str:
     # ("call spawn_list", "which lists them all"), so withholding names from this
     # listing would falsify what they promise. The reserved pair is not suggested
     # elsewhere because it is reached by omitting ``agent`` -- but it is still a
-    # name the gateway accepts, so a full listing shows it.
+    # name the gateway accepts, so a full listing shows it. Kiro Crew's own
+    # generated specs are NOT: the gateway refuses them, so even the full listing
+    # leaves them out (``is_internal_agent_spec``).
     try:
-        names, restricted = _parent_allowlist_filter(a.name or "" for a in mcp_core.list_agents())
+        names, restricted = _parent_allowlist_filter(
+            a.name or "" for a in mcp_core.list_agents() if not is_internal_agent_spec(a)
+        )
         names, _ = visible_agent_names(names, exclude=())
         if names:
             lines.append(f"\nAvailable agents: {', '.join(names)}")

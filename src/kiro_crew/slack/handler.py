@@ -60,6 +60,7 @@ from kiro_crew.config.loader import (
 from kiro_crew.config.paths import kiro_agents_dir, peek_data_home
 from kiro_crew.constants import (
     DENY_CAUSE_APPROVAL_TIMEOUT,
+    DENY_CAUSE_POLICY,
     STEER_NOTICE_BOUND_SECS,
     is_control_tag_tail,
     strip_control_comments,
@@ -83,7 +84,7 @@ from kiro_crew.dashboard.chat_utils import (
 from kiro_crew.dashboard.state import append_and_surface
 from kiro_crew.deny_notice import steer_refusal_notice
 from kiro_crew.executors import run_in_embed_pool
-from kiro_crew.history import ConversationLog, HistoryConsolidator
+from kiro_crew.history import HUMAN_TURN_META_KEY, ConversationLog, HistoryConsolidator
 from kiro_crew.hooks import (
     HOOK_REPLY,
     TOOL_AUTO_APPROVE,
@@ -153,6 +154,12 @@ from kiro_crew.security import (
 )
 from kiro_crew.sel import sel
 from kiro_crew.session import _CIRCUIT_BREAKER_THRESHOLD, SessionClosingError, SessionManager
+from kiro_crew.session_lifecycle import (
+    STOP_DECLINED_COMPACTING_TEXT,
+    compaction_in_flight,
+    consume_stop_declined,
+    decline_stop,
+)
 from kiro_crew.slack.blocks import build_working_blocks, deprecation_warning_block
 from kiro_crew.slack.client import SlackClientOps
 from kiro_crew.slack.format import (
@@ -167,10 +174,10 @@ from kiro_crew.slack.format import (
 )
 from kiro_crew.slack.outbound import PostedOptions
 from kiro_crew.slack.sessions_view import (
-    _SESSIONS_DEFAULT_LIMIT,
     SESSIONS_INCLUDE_ENDED_ARGS,
     _build_sessions_blocks,
     _collect_recent_sessions_off_loop,
+    _message_surface_limit,
     sessions_include_ended,
 )
 from kiro_crew.slack.thread_parent import (
@@ -1852,6 +1859,32 @@ async def _handle_slash_command(
         # Against the thread's OWNING session -- a linked thread's turns run
         # under the dashboard session that owns it, and that is the key the
         # replay reads -- resolved the way the OPTIONS expiry below resolves it.
+        force_stop = False
+        if compaction_in_flight(sessions, session_key):
+            force_stop = consume_stop_declined(session_key, user_id)
+        if compaction_in_flight(sessions, session_key) and not force_stop:
+            # Declined before the Stop is recorded: see slack/events.py. A repeat
+            # within the window by the SAME presser is the second press and forces.
+            sel().log_tool_invocation(
+                session_key=session_key,
+                source="slack",
+                tool_name="!stop",
+                tool_kind="command",
+                outcome="compacting",
+                metadata={"user": user_id, "channel": channel},
+            )
+            # Posted before the marker is armed: an undelivered warning plus an
+            # armed escalation is a retry that hard-resets the session with this
+            # user never told that it would. The post hands back the ts of what
+            # landed, so a falsy one is a reply the user never saw.
+
+            async def _say_declined() -> bool:
+                return bool(
+                    await slack.post_message(channel, STOP_DECLINED_COMPACTING_TEXT, reply_ts)
+                )
+
+            await decline_stop(session_key, user_id, _say_declined)
+            return ""
         note_user_stop(sessions, sessions.get_session_for_thread(reply_ts) or session_key)
         has_session = sessions.has_session(session_key)
         if not has_session:
@@ -1883,11 +1916,27 @@ async def _handle_slash_command(
         async def _on_hard() -> None:
             await slack.post_message(channel, "⛔ Execution stopped — session reset.", reply_ts)
 
-        outcome = await sessions.stop_turn(session_key, on_soft=_on_soft, on_hard=_on_hard)
+        # ``preserve_queue`` with the force: the hard reset pops the session and
+        # its queue, which in a shared thread holds co-tenants' messages;
+        # ``stop_turn`` parks them for the successor instead.
+        _kw = {"force": True, "preserve_queue": True} if force_stop else {}
+        outcome = await sessions.stop_turn(session_key, on_soft=_on_soft, on_hard=_on_hard, **_kw)
         # If stop_turn returned "idle" (no active turn), neither callback
         # fired — dismiss the stale "Stopping…" ephemeral explicitly.
         if outcome == "idle":
             await slack.post_message(channel, "Nothing running.", reply_ts)
+        elif outcome == "compacting":
+            # The race decline arms the marker too: the reply promises that a
+            # repeat forces, so the repeat must find one -- after the reply
+            # landed, never before it, and only when the post returns the ts of
+            # a message that really landed.
+
+            async def _say_declined_race() -> bool:
+                return bool(
+                    await slack.post_message(channel, STOP_DECLINED_COMPACTING_TEXT, reply_ts)
+                )
+
+            await decline_stop(session_key, user_id, _say_declined_race)
         sel().log_tool_invocation(
             session_key=session_key,
             source="slack",
@@ -4434,12 +4483,11 @@ async def handle_message(
                             sel_factory=sel,
                         )
                     if tool_result.action == TOOL_DENY:
-                        await client.reject_tool(event.request_id)
-                        Stats().inc_tool_denial()
-                        # event.title is LLM-authored — redact before posting.
-                        _blocked_title, _ = redact_exfiltration_urls(event.title)
-                        _blocked_title, _ = redact_credentials(_blocked_title)
-                        accumulated += f"\n🚫 _Tool `{_blocked_title}` blocked by hooks._"
+                        # Audit FIRST, then steer, then reject: the steer and
+                        # the reject both await the ACP pipe, and a backend that
+                        # stops reading stdin cancels this coroutine at the
+                        # turn deadline -- an SEL row sequenced after them
+                        # never runs (the chat runner's audit-first rule).
                         sel().log_tool_invocation(
                             session_key=session_key,
                             source="slack",
@@ -4449,6 +4497,22 @@ async def handle_message(
                             request_id=event.request_id,
                             error="hook_deny",
                         )
+                        # A hook deny is a HOST verdict on the call, not the
+                        # person's: tell the model so in-band before the reject
+                        # hands it kiro-cli's "User denied tool execution".
+                        await _steer_host_deny(
+                            client,
+                            event,
+                            tool_result.reason,
+                            cause=DENY_CAUSE_POLICY,
+                            audited=True,
+                        )
+                        await client.reject_tool(event.request_id)
+                        Stats().inc_tool_denial()
+                        # event.title is LLM-authored — redact before posting.
+                        _blocked_title, _ = redact_exfiltration_urls(event.title)
+                        _blocked_title, _ = redact_credentials(_blocked_title)
+                        accumulated += f"\n🚫 _Tool `{_blocked_title}` blocked by hooks._"
                         continue
 
                 # auto_approve_subagent_spawn → auto-approve spawn_run tool calls
@@ -5770,7 +5834,10 @@ async def handle_message(
                 slot_name = linked_session_key.removeprefix("dashboard:")
                 slot = getattr(ds, "_slots", {}).get(slot_name)
                 if slot:
-                    slot.append("user", text, "msg msg-u")
+                    # The person typed this in Slack; mirroring it into the
+                    # linked slot keeps it a human turn (see
+                    # history.HUMAN_TURN_META_KEY).
+                    slot.append("user", text, "msg msg-u", meta={HUMAN_TURN_META_KEY: True})
                     slot.append("assistant", accumulated, "msg msg-a")
                     if slot._on_message:
                         slot._on_message(
@@ -5883,7 +5950,9 @@ async def _maybe_auto_title_slack(
     )
 
 
-async def _reject_orphaned_tool(provider: LLMProvider, request_id: "str | int") -> bool:
+async def _reject_orphaned_tool(
+    provider: LLMProvider, request_id: "str | int", *, audit: bool = True
+) -> bool:
     """Reject a pending ACP permission request that we can no longer surface.
 
     Both the pre-approval stream-prep and the approval-prompt post happen BEFORE
@@ -5891,7 +5960,10 @@ async def _reject_orphaned_tool(provider: LLMProvider, request_id: "str | int") 
     unanswered and the agent subprocess wedges forever (every later turn blocks
     behind it). Callers invoke this on failure, then re-raise. Swallows any
     reject failure, and audit failure after a successful rejection, so the
-    original error still propagates.
+    original error still propagates. ``audit=False`` is for a caller whose
+    decision already has its SEL row (the audit-first deny sites): the wire
+    still gets answered, but the ledger is append-only and a second row for
+    one decision would be a duplicate nothing reconciles.
     """
     try:
         await provider.reject_tool(request_id)
@@ -5901,6 +5973,8 @@ async def _reject_orphaned_tool(provider: LLMProvider, request_id: "str | int") 
     # The fallback arms re-raise past the normal permission audit, so record
     # the denial here: a rejection that reached the wire but never reached the
     # audit trail is a silent gap in a security control.
+    if not audit:
+        return True
     try:
         sel().log_tool_invocation(
             session_key="",
@@ -5913,6 +5987,66 @@ async def _reject_orphaned_tool(provider: LLMProvider, request_id: "str | int") 
     except Exception:
         logger.warning("Failed to audit orphaned tool %s", request_id, exc_info=True)
     return True
+
+
+async def _steer_host_deny(
+    provider: Any, event: Any, reason: str, *, cause: str, audited: bool
+) -> None:
+    """Tell the model, in-band, that the HOST denied this call -- not the person.
+
+    A rejected permission reaches the model as kiro-cli's fixed "User denied
+    tool execution", so without this it reads a refusal that never happened.
+    Awaited immediately BEFORE a host-deny ``reject_tool`` in this module: while
+    the permission request is unanswered the turn is provably in flight, which
+    is what gets the notice queued rather than dropped (``kiro_crew.deny_notice``).
+    The Slack handler has two host denies -- a hook ``deny`` on the message
+    path (``DENY_CAUSE_POLICY``, the hook's reason) and the approval prompt
+    expiring unanswered (``DENY_CAUSE_APPROVAL_TIMEOUT``). *cause* is REQUIRED
+    because the wrong noun sends the model the wrong way. The two genuine USER
+    rejections (a Deny click in ``handle_interaction``) and the teardown-only
+    ``_reject_orphaned_tool`` must NOT call this: there kiro-cli's wording is
+    the truth, and "this was NOT a user action" would be a lie.
+    ``test_messaging_deny_notice`` walks the file to keep both halves honest.
+
+    *reason* may echo agent-authored text (a hook's reason quotes the matched
+    path), so it is redacted here; the shared helper redacts the title.
+    Best-effort by construction: ``steer_refusal_notice`` probes the capability
+    and swallows every failure, so a backend without a steer channel behaves
+    exactly as before and the caller's reject always runs.
+
+    Cancellation mid-steer (teardown) must still answer the wire: a stranded
+    ``session/request_permission`` blocks the subprocess forever and wedges
+    every later turn behind it. The reject is scheduled as a strongly referenced
+    referenced task and awaited through ``asyncio.shield`` so it is stepped
+    while this coroutine unwinds; ``_reject_orphaned_tool`` retrieves its
+    exception so teardown stays quiet. *audited* is REQUIRED and says whether
+    the caller wrote the decision's SEL row BEFORE this await (the hook deny
+    does) or writes it after the wire (the approval-timeout arm, whose
+    caller audits both outcomes once the request is answered). The orphan
+    reject audits only in the second case: the SEL ledger is append-only,
+    and a decision already on it must not gain a second row nothing
+    reconciles.
+    """
+    safe_reason, _ = redact_exfiltration_urls(reason or "")
+    safe_reason, _ = redact_credentials(safe_reason)
+    try:
+        await steer_refusal_notice(
+            provider,
+            str(getattr(event, "title", "") or ""),
+            safe_reason,
+            cause=cause,
+            bound_secs=_STEER_NOTICE_BOUND_SECS,
+        )
+    except asyncio.CancelledError:
+        reject = asyncio.ensure_future(
+            _reject_orphaned_tool(provider, event.request_id, audit=not audited)
+        )
+        _orphan_rejects.add(reject)
+        reject.add_done_callback(_orphan_rejects.discard)
+        with contextlib.suppress(BaseException):
+            if await asyncio.shield(reject):
+                Stats().inc_tool_denial()
+        raise
 
 
 class _LinkedApprovalEvent:
@@ -6160,33 +6294,23 @@ async def _request_approval(
         # dashboard chat runner's host-decline arms. On Slack the driver stops
         # rendering after a rejection, so this corrects the model-side
         # transcript attribution only; the notice's continue-guidance has no
-        # Slack consumer. Best-effort: steer_refusal_notice (capability probe,
-        # redaction, build, bounded send -- the same helper the messaging
-        # TurnDriver uses) swallows every failure, so the reject below still
-        # runs; only cancellation escapes it, handled next.
-        try:
-            if claimed:
-                await steer_refusal_notice(
-                    provider,
-                    event.title,
-                    "the Slack approval prompt went unanswered for "
-                    f"{max(1, round(_APPROVAL_TIMEOUT))}s",
-                    cause=DENY_CAUSE_APPROVAL_TIMEOUT,
-                    bound_secs=_STEER_NOTICE_BOUND_SECS,
-                )
-        except asyncio.CancelledError:
-            # Teardown while steering must still answer the wire: a stranded
-            # session/request_permission blocks the subprocess forever and
-            # wedges every later turn behind it. Shield the reject so it is
-            # stepped even while this coroutine unwinds; _reject_orphaned_tool
-            # retrieves its exception so teardown stays quiet.
-            reject = asyncio.ensure_future(_reject_orphaned_tool(provider, event.request_id))
-            _orphan_rejects.add(reject)
-            reject.add_done_callback(_orphan_rejects.discard)
-            with contextlib.suppress(BaseException):
-                if await asyncio.shield(reject):
-                    Stats().inc_tool_denial()
-            raise
+        # Slack consumer. Best-effort: _steer_host_deny (capability probe,
+        # redaction, build, bounded send -- the same shared helper the
+        # messaging TurnDriver uses) swallows every failure, so the reject
+        # below still runs; a cancellation mid-steer schedules the orphan
+        # reject itself before re-raising, so teardown still answers the wire.
+        if claimed:
+            await _steer_host_deny(
+                provider,
+                event,
+                "the Slack approval prompt went unanswered for "
+                f"{max(1, round(_APPROVAL_TIMEOUT))}s",
+                cause=DENY_CAUSE_APPROVAL_TIMEOUT,
+                # The caller audits this outcome after the wire is answered;
+                # a cancellation here would skip that row, so the orphan
+                # reject writes it.
+                audited=False,
+            )
         if claimed:
             # Only the claim winner answers the wire. A lost claim means a
             # click is answering (or answered) this request itself; a second
@@ -6698,7 +6822,9 @@ async def _handle_sessions_command(
     # Mirrors the slash and Home Tab error-path patterns.
     try:
         rows = await _collect_recent_sessions_off_loop(
-            sessions, limit=_SESSIONS_DEFAULT_LIMIT, include_ended=include_ended
+            sessions,
+            limit=_message_surface_limit(slack_cfg().slack.sessions_limit),
+            include_ended=include_ended,
         )
     except Exception as exc:
         # Redact-then-truncate: redact() first so credential / exfil

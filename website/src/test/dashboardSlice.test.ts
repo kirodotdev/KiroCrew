@@ -348,7 +348,7 @@ describe('dashboardSlice', () => {
   })
 
   describe('selectUnreadByMode', () => {
-    // The bigger surface-level coverage (orchestrator-leaks-into-Chat
+    // The bigger surface-level coverage (cross-surface-leaks-into-Chat
     // regression, orphan-key fallback, appOnly visibility) lives in
     // src/test/surfaces.test.tsx where the registry under test is.
     // Here we pin the underlying factory's contract: surface-key resolution
@@ -359,23 +359,30 @@ describe('dashboardSlice', () => {
     it('honors slot.surface over slot.mode when both are present', () => {
       // Forward-compat: backend now emits an explicit `surface` field that
       // mirrors `mode` today but is allowed to diverge later. A slot whose
-      // `mode === ''` but `surface === 'orchestrator'` counts toward the
-      // unified chat badge (both '' and 'orchestrator' are chat-like).
-      const slot: ChatSlot = { key: 'orch-1', title: 'O', messages: 0, running: false, mode: '', surface: 'orchestrator' }
-      const state = buildState([slot], ['orch-1'])
-      // Unified: chat badge includes orchestrator slots
-      expect(selectUnreadByMode('')(state)).toBe(1)
-      expect(selectUnreadByMode('orchestrator')(state)).toBe(1)
+      // `mode === ''` but `surface === 'dashboard'` belongs to the dashboard
+      // surface, not the chat badge.
+      const slot: ChatSlot = { key: 'dash-1', title: 'D', messages: 0, running: false, mode: '', surface: 'dashboard' }
+      const state = buildState([slot], ['dash-1'])
+      expect(selectUnreadByMode('')(state)).toBe(0)
+      expect(selectUnreadByMode('dashboard')(state)).toBe(1)
     })
 
     it('falls back to slot.mode when slot.surface is absent (back-compat)', () => {
       // Older backend payloads without a `surface` field must still route
       // via `mode` so a `surface`-aware client doesn't require a coupled deploy.
-      const slot: ChatSlot = { key: 'orch-1', title: 'O', messages: 0, running: false, mode: 'orchestrator' }
-      const state = buildState([slot], ['orch-1'])
-      // Unified: chat badge includes orchestrator slots
-      expect(selectUnreadByMode('')(state)).toBe(1)
-      expect(selectUnreadByMode('orchestrator')(state)).toBe(1)
+      const slot: ChatSlot = { key: 'dash-1', title: 'D', messages: 0, running: false, mode: 'dashboard' }
+      const state = buildState([slot], ['dash-1'])
+      expect(selectUnreadByMode('')(state)).toBe(0)
+      expect(selectUnreadByMode('dashboard')(state)).toBe(1)
+    })
+
+    it('counts a legacy Autopilot slot toward the chat badge', () => {
+      // A slot still persisted under the retired 'orchestrator' mode renders
+      // as an ordinary chat, so its unread belongs to the chat surface ('').
+      const bySurface: ChatSlot = { key: 'legacy-1', title: 'L', messages: 0, running: false, mode: '', surface: 'orchestrator' }
+      const byMode: ChatSlot = { key: 'legacy-2', title: 'L', messages: 0, running: false, mode: 'orchestrator' }
+      const state = buildState([bySurface, byMode], ['legacy-1', 'legacy-2'])
+      expect(selectUnreadByMode('')(state)).toBe(2)
     })
 
     it('returns the same selector instance on repeated calls (memoization)', () => {
@@ -383,7 +390,7 @@ describe('dashboardSlice', () => {
       // selectAllSurfacesAttention) call this on every render — recreating
       // the selector would defeat both useAppSelector's referential-equality
       // fast path and reselect's input-equality memoization.
-      expect(selectUnreadByMode('orchestrator')).toBe(selectUnreadByMode('orchestrator'))
+      expect(selectUnreadByMode('dashboard')).toBe(selectUnreadByMode('dashboard'))
     })
   })
 

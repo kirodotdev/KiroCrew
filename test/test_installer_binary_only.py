@@ -358,7 +358,9 @@ def test_venv_branch_passes_binary_only_before_the_wheel(
     result, argv = _run_installer(tmp_path / "case", signing_key, with_pipx=False)
 
     assert result.returncode == 0, result.stderr
-    assert argv[:2] == ["install", "--quiet"], argv
+    # `--quiet` is gone on purpose: the progress line and the failure report
+    # both read pip's Collecting/Downloading lines from the log.
+    assert argv[:3] == ["install", "--progress-bar", "off"], argv
     assert argv[-2] == ONLY_BINARY, argv
     assert argv[-1].endswith(WHEEL_NAME), argv
     # `$PIP_BINARY_ONLY` is expanded unquoted so that an empty value vanishes;
@@ -735,7 +737,9 @@ def test_restore_checks_the_path_is_gone_before_moving() -> None:
     """Every restore site uses the helper; no bare `rm -rf ... || true` followed
     by `mv backup target` remains, since that pair is what nests on residue."""
     body = INSTALLER.read_text(encoding="utf-8")
-    assert body.count("_restore_tree ") == 3, body.count("_restore_tree ")
+    # pipx rollback, venv-create failure, wheel-install failure, and the
+    # interrupt exit in _tolerate.
+    assert body.count("_restore_tree ") == 4, body.count("_restore_tree ")
     assert 'if [ -e "$2" ] || [ -L "$2" ]; then\n    return 1' in body
     for target in ('"$_PIPX_VENV"', '"$VENV"'):
         assert f"rm -rf {target} 2>/dev/null || true\n      mv " not in body, target

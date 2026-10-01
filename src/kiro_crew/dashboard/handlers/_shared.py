@@ -50,7 +50,7 @@ from kiro_crew.messaging.privacy_mode import is_incognito as is_thread_incognito
 from kiro_crew.messaging.privacy_mode import is_temporary as is_thread_temporary
 from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
 from kiro_crew.skill_trust import is_project_trusted as _is_project_trusted
-from kiro_crew.skills import _trusted_skill_roots, skills_dir
+from kiro_crew.skills import _trusted_skill_roots, _with_canonical_globs, skills_dir
 from kiro_crew.terminal_safe import normalize_for_scanning, strip_control_characters
 
 if TYPE_CHECKING:
@@ -1048,7 +1048,8 @@ async def private_chat_route_refusal(request: web.Request) -> web.Response | Non
 #: The path is matched STRUCTURALLY by :func:`_admitted_chat_route_methods`
 #: against the exact registered patterns, never by a raw prefix, so a sibling
 #: literal that shares a prefix (``/api/chat/folders/reorder``,
-#: ``/api/chat/tag-columns``) is NOT admitted and keeps the owner-only refusal.
+#: ``/api/chat/tag-columns/order``) is NOT admitted and keeps the owner-only
+#: refusal.
 #:
 #: The admitted VERBS are exactly the ones a member may actually do -- a verb
 #: whose handler has no member fence is not admitted here, so the gate can never
@@ -1069,6 +1070,11 @@ _MEMBER_CHAT_FOLDER_ID_METHODS = frozenset({"PATCH"})
 #: row to the caller's own folder, so a member renumbers only what it owns.
 _MEMBER_CHAT_FOLDER_REORDER_METHODS = frozenset({"POST"})
 _MEMBER_CHAT_TAGS_METHODS = frozenset({"GET"})
+#: The board's column list is admitted READ-only, like the tag vocabulary: it
+#: names tags and live-state lanes, never a session. Its writes (POST, and the
+#: ``/{id}`` and ``/order`` routes, which are not matched at all) stay refused;
+#: ``_refuse_vocabulary_write`` in each write handler refuses a member too.
+_MEMBER_CHAT_TAG_COLUMNS_METHODS = frozenset({"GET"})
 _MEMBER_CHAT_SLOT_FOLDER_METHODS = frozenset({"PATCH"})
 _MEMBER_CHAT_SLOT_TAGS_METHODS = frozenset({"PUT"})
 #: Pinning a session (``chat_session_pin``); ``api_chat_slot_pin`` applies the
@@ -1088,8 +1094,9 @@ def _admitted_chat_route_methods(path: str) -> frozenset[str] | None:
     Structural, path-shape matching that mirrors the routes registered in
     ``routes/sessions.py`` / ``routes/chat.py`` EXACTLY. A trailing single
     segment on ``/folders/`` is a folder id (``{id}``); the reserved literal
-    ``/api/chat/folders/reorder`` and every ``/api/chat/tag-*`` are deliberately
-    excluded. ``/api/chat/tags/{id}`` is NOT admitted for any method -- a member
+    ``/api/chat/folders/reorder`` and every ``/api/chat/tag-*`` except the
+    read-only column list ``/api/chat/tag-columns`` are deliberately excluded.
+    ``/api/chat/tags/{id}`` is NOT admitted for any method -- a member
     neither renames nor deletes shared tags -- so its DELETE (which has no
     vocabulary fence) is refused at the gate. ``/api/chat/slots`` is the session
     LIST only; a deeper ``/api/chat/slots/<slot>/...`` sub-resource other than
@@ -1099,6 +1106,8 @@ def _admitted_chat_route_methods(path: str) -> frozenset[str] | None:
         return _MEMBER_CHAT_FOLDERS_METHODS
     if path in ("/api/chat/tags", "/api/chat/tags/"):
         return _MEMBER_CHAT_TAGS_METHODS
+    if path in ("/api/chat/tag-columns", "/api/chat/tag-columns/"):
+        return _MEMBER_CHAT_TAG_COLUMNS_METHODS
     if path in ("/api/chat/slots", "/api/chat/slots/"):
         return _MEMBER_CHAT_SLOTS_METHODS
     if path == "/api/chat/folders/reorder":
@@ -1743,13 +1752,14 @@ def _agent_loads_skill(agent_json: dict[str, Any], agent_path: Path, skill_md: P
     if not isinstance(resources, list):
         return False
     target = str(skill_md)
-    for res in resources:
-        if not isinstance(res, str):
-            continue
-        glob = _expand_resource_uri(res, agent_path)
-        if glob and fnmatch.fnmatch(target, glob):
-            return True
-    return False
+    globs = [
+        g
+        for res in resources
+        if isinstance(res, str)
+        for g in (_expand_resource_uri(res, agent_path),)
+        if g
+    ]
+    return any(fnmatch.fnmatch(target, g) for g in _with_canonical_globs(globs))
 
 
 def _expand_agent_globs(
@@ -1763,6 +1773,9 @@ def _expand_agent_globs(
     all skills avoids re-running :func:`_expand_resource_uri` once per
     (skill, agent, resource), which on a large catalog is the dominant cost.
     Agents with no skill:// resources are dropped (they can match nothing).
+    Each glob is paired with its canonical spelling, as the loader's scope
+    match does, so a ``~`` mapping under a symlinked ``$HOME`` still matches
+    the resolved catalog path the loader injects.
     """
     expanded: list[tuple[str, list[str]]] = []
     for name, data, agent_path in parsed_agents:
@@ -1777,7 +1790,7 @@ def _expand_agent_globs(
             if g
         ]
         if globs:
-            expanded.append((name, globs))
+            expanded.append((name, _with_canonical_globs(globs)))
     return expanded
 
 

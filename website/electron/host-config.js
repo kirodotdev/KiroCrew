@@ -3,6 +3,7 @@
 // without spinning up Electron.
 
 const { DEFAULT_REMOTE_BIN } = require("./remote-token");
+const { defaultedPort, portIsSchemeDefault } = require("./gateway-auth-hint");
 
 // Migrate legacy single-host config (remoteHost + kirocrewBinPath) to the
 // per-port remoteHosts map. Returns true if migration occurred.
@@ -52,14 +53,14 @@ function legacyMigrationPort({ envPort, configuredPort }) {
  *
  * The shell reaches its gateway over `http://localhost:<port>`, and
  * `new URL("http://localhost:80").port` is `""` -- the URL API strips a scheme's
- * default port. Every per-port lookup that derives its key from that URL then
- * misses: `isGatewayLocalForWindow` reads `remoteHosts[""]`, finds no host, and
- * reports a tunnelled crew as a gateway on this machine, after which the
- * host-presence heartbeat sends this machine's internal secret over the tunnel.
+ * default port. A per-port lookup keyed off that raw property therefore misses,
+ * which is why every such lookup normalizes through `defaultedPort` first.
  *
- * The classifier is where that belongs fixed, and it is wrong on port 80
- * independently of this module. Until it is, selecting 80 from stored config is
- * a target this app cannot classify, so it is not offered.
+ * The port stays unselectable because the erasure is a property of the URL API
+ * rather than of any one call site: a target whose port does not survive the
+ * round trip through the URL the shell builds is one more place for a future
+ * lookup to read the empty key, and the consequence there is a tunnelled crew
+ * classified as a gateway on this machine. So 80 is not offered.
  */
 const UNSELECTABLE_PORT = 80;
 
@@ -135,7 +136,11 @@ function getRemoteHostConfig(store, port) {
   return hosts[String(port)] || null;
 }
 
-function setRemoteHostConfig(store, port, { host, binPath, remotePort, remotePath } = {}) {
+function setRemoteHostConfig(
+  store,
+  port,
+  { host, binPath, remotePort, remotePath, manageTunnel } = {},
+) {
   const hosts = store.get("remoteHosts") || {};
   if (host) {
     hosts[String(port)] = {
@@ -144,6 +149,10 @@ function setRemoteHostConfig(store, port, { host, binPath, remotePort, remotePat
       binPath: binPath || DEFAULT_REMOTE_BIN,
       remotePort: remotePort || "",
       remotePath: remotePath || "",
+      // Opt-in: only a crew reached over a plain SSH forward can have that
+      // forward rebuilt by this app. A port carried by a VPN, a kubectl
+      // port-forward or the user's own ssh must never be taken over.
+      manageTunnel: manageTunnel === true,
     };
   } else {
     // Clear SSH fields but preserve defaultName
@@ -259,6 +268,119 @@ function selectLaunchPort({ store, configuredPort, localGatewayEnabled, log = ()
   return DEFAULT_PORT;
 }
 
+/**
+ * The remote-host entry for the gateway `url` names, honouring a record left
+ * under the empty key by an older version.
+ *
+ * `URL.port` is "" for a scheme default, and a version that keyed this map off
+ * that raw property wrote its crew under `remoteHosts[""]`. Such a record names
+ * a port that cannot be recovered from the record itself, so it is honoured for
+ * exactly the shape of URL that could have produced it -- one whose port is
+ * its scheme's default -- and ignored for every other. Reading "no crew" there would
+ * classify a tunnelled crew as a gateway on this machine, which is the answer
+ * that puts this machine's internal secret through the tunnel.
+ *
+ * Only a host-bearing legacy record counts. An entry holding just a
+ * `defaultName` is a window-title setting, and the same older versions wrote
+ * those under the empty key too.
+ *
+ * @param {{get: (key: string) => unknown}} store
+ * @param {string} url
+ * @returns {object|null}
+ */
+function getRemoteHostConfigForUrl(store, url) {
+  const port = defaultedPort(url);
+  // An unparseable URL names no port, and `defaultedPort` says so with "". Left
+  // unguarded that would read `remoteHosts[""]` through the ordinary path, which
+  // is the one key this function must reach only by the deliberate route below.
+  if (port === "") return null;
+  const resolved = getRemoteHostConfig(store, port);
+  if (resolved?.host) return resolved;
+  // A hostless record (a `defaultName`-only title setting) names no crew, so the
+  // only crew this function can still answer with is a host-bearing legacy one
+  // under the empty key, and only for a URL whose port that record could have
+  // been written under. Everything else names no crew: answer null rather than
+  // hand back a hostless record a caller might read `?.host` off as one.
+  if (portIsSchemeDefault(url)) {
+    const legacy = getRemoteHostConfig(store, "");
+    if (typeof legacy?.host === "string" && legacy.host !== "") return legacy;
+  }
+  return null;
+}
+
+/**
+ * The window-title suffix stored for the gateway `url` names, honouring a name
+ * an older version left under the empty key.
+ *
+ * The name is a cosmetic setting, so its fallback is wider than the crew
+ * resolver's: a legacy record carrying only a `defaultName` (no host) still
+ * supplied a title on a scheme-default port, and until that record is retired --
+ * which only happens once the user restates the crew -- the resolved key holds
+ * no name to read. So a name under the empty key is honoured for a scheme-default
+ * URL whether or not the record also names a host, and ignored for every other
+ * port, exactly as `getRemoteHostConfigForUrl` scopes its own fallback.
+ *
+ * @param {{get: (key: string) => unknown}} store
+ * @param {string} url
+ * @returns {string|undefined}
+ */
+function getRemoteHostDefaultNameForUrl(store, url) {
+  const port = defaultedPort(url);
+  if (port === "") return undefined;
+  const resolved = getRemoteHostConfig(store, port);
+  if (resolved?.defaultName) return resolved.defaultName;
+  if (!portIsSchemeDefault(url)) return undefined;
+  const legacy = getRemoteHostConfig(store, "");
+  return legacy?.defaultName || undefined;
+}
+
+/**
+ * Drop a host-bearing `remoteHosts[""]` record, carrying its window name onto
+ * the record that supersedes it.
+ *
+ * Called once the user has DURABLY stated what the crew on a scheme-default port
+ * is, so the superseded record does not outlive its replacement: without this a
+ * user who CLEARS the crew still reads as remote forever, because the resolver
+ * above keeps falling back to the record the clear was meant to remove.
+ *
+ * A `defaultName` on the legacy record is the window title the user pinned for
+ * this crew under the empty key the same older versions wrote it to. Deleting
+ * the record outright would erase that name -- a datum the user set and would
+ * have to re-enter -- so it is migrated to the resolved-port entry first, and
+ * only when that entry does not already carry a name of its own (a name stated
+ * under the resolved key is the newer statement and wins).
+ *
+ * @param {{get: Function, set: Function}} store
+ * @param {string|number} resolvedPort  the port the superseding record is keyed
+ *   under. Required: retirement only ever runs on the save path, past the write
+ *   that created that record, so a resolved-key entry always exists to migrate
+ *   the pinned name onto.
+ * @returns {boolean} whether a record was retired
+ */
+function retireLegacyEmptyPortHost(store, resolvedPort) {
+  const hosts = store.get("remoteHosts") || {};
+  const legacy = hosts[""];
+  if (!legacy || typeof legacy.host !== "string" || legacy.host === "") return false;
+  if (
+    resolvedPort !== undefined
+    && resolvedPort !== ""
+    && typeof legacy.defaultName === "string"
+    && legacy.defaultName !== ""
+  ) {
+    const key = String(resolvedPort);
+    const target = hosts[key];
+    // Carry the pinned name onto the resolved key, unless a name already stated
+    // there wins. The save path always wrote the resolved-key record before this
+    // runs, so `target` exists; a name stated under it is the newer statement.
+    if (target && !target.defaultName) {
+      hosts[key] = { ...target, defaultName: legacy.defaultName };
+    }
+  }
+  delete hosts[""];
+  store.set("remoteHosts", hosts);
+  return true;
+}
+
 module.exports = {
   fallbackLocalPort,
   isSelectablePort,
@@ -267,5 +389,8 @@ module.exports = {
   remoteHostPort,
   getRemoteHostConfig,
   selectLaunchPort,
+  getRemoteHostConfigForUrl,
+  getRemoteHostDefaultNameForUrl,
+  retireLegacyEmptyPortHost,
   setRemoteHostConfig,
 };

@@ -2478,7 +2478,7 @@ class TestNoteEndpoint:
         """
         import inspect
 
-        from kiro_crew.dashboard import chat_orchestrator, chat_runner
+        from kiro_crew.dashboard import chat_runner
 
         queued = inspect.getsource(chat_runner._start_next_queued_turn)
         assert "flush_deferred_notes" in queued
@@ -2490,15 +2490,6 @@ class TestNoteEndpoint:
         assert queued.index('slot._queue[0].get("kind")') < queued.index(
             "flush_deferred_notes"
         )
-
-        stages = inspect.getsource(chat_orchestrator._stage_loop)
-        # Exactly ONE call, and it is the loop's EXIT -- below the auto-go row.
-        # A stage turn is automatic, so flushing above that row would spend the
-        # note on a turn nobody asked for. The exit call covers the completed,
-        # paused and cancelled paths alike.
-        assert stages.count("flush_deferred_notes") == 1
-        stage_row = stages.index('slot.append("user", context')
-        assert stages.index("flush_deferred_notes") > stage_row
 
     def test_every_queue_drain_seam_flushes_before_starting_the_successor(self):
         """A NEW successor-dispatch path that skips the flush must turn this red.
@@ -2820,157 +2811,6 @@ class TestNoteEndpoint:
         assert len(busy) == 10
         assert [m["content"] for m in slot.messages] == ["tenth", "eleventh"]
 
-    @pytest.mark.asyncio
-    async def test_the_stage_exit_leaves_a_note_held_while_a_turn_runs(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ):
-        """A stage can leave a continuation turn running, and it drains later.
-
-        The stage exit flushed unconditionally. A turn that owns the task drains
-        the queue AFTER its task is assigned, so flushing there handed the note
-        to a request written before the note existed and the next turn saw
-        nothing. The running turn writes it at its own completion instead.
-        """
-        from unittest.mock import MagicMock
-
-        from kiro_crew.dashboard.chat import _stage_loop
-
-        for module in ("state", "chat", "chat_orchestrator"):
-            monkeypatch.setattr(f"kiro_crew.dashboard.{module}.config_dir", lambda: tmp_path)
-
-        state = MagicMock()
-        state.broadcast_ws = MagicMock()
-        state.push_slots_update = MagicMock()
-        state.subagents = _StageManager()
-
-        slot = _ChatSlot("stage-slot", mode="orchestrator")
-        slot._auto_run = False
-        slot._stage_titles = ["build"]
-        slot._plan_goal = "goal"
-        slot._orch_tracker = None
-        state._slots = {slot.key: slot}
-
-        async def _mock_run_chat(state, slot, message, **kwargs):
-            slot.append("assistant", "done", "msg msg-a")
-            slot._deferred_notes.append(
-                {"content": "away note", "cls": "reconcile-note", "context": None}
-            )
-            # A refusal-recovery continuation owns the task past the stage exit.
-            slot.task = asyncio.get_running_loop().create_future()
-
-        monkeypatch.setattr(
-            "kiro_crew.dashboard.chat_orchestrator._run_chat", _mock_run_chat
-        )
-
-        await _stage_loop(state, slot, auto_run=True)
-
-        # Still held: the live turn owns the drain, so the exit must not write.
-        assert len(slot._deferred_notes) == 1
-        assert not any(m.get("role") == "inject" for m in slot.messages)
-        slot.task = None
-        assert slot.flush_deferred_notes() == 1
-        assert [m["content"] for m in slot.messages if m.get("role") == "inject"] == [
-            "away note"
-        ]
-
-    @staticmethod
-    def _stage_slot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, timeout: int = 0):
-        """A slot mid-plan, wired the way api_chat_plan_action wires one."""
-        from unittest.mock import MagicMock
-
-        from kiro_crew.dashboard.chat_orchestrator import OrchestrationTracker
-
-        for module in ("state", "chat", "chat_orchestrator"):
-            monkeypatch.setattr(f"kiro_crew.dashboard.{module}.config_dir", lambda: tmp_path)
-
-        state = MagicMock()
-        state.broadcast_ws = MagicMock()
-        state.push_slots_update = MagicMock()
-        state.subagents = _StageManager()
-
-        slot = _ChatSlot("stage-slot", mode="orchestrator")
-        slot._auto_run = True
-        slot._stage_titles = ["build"]
-        slot._plan_goal = "goal"
-        slot._orch_tracker = (
-            OrchestrationTracker(stage_timeout_seconds=timeout) if timeout else None
-        )
-        state._slots = {slot.key: slot}
-        return state, slot
-
-    @pytest.mark.asyncio
-    async def test_a_cancelled_stage_still_writes_a_held_note(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ):
-        """Closing the slot mid-stage must not swallow an accepted note.
-
-        The exit guard read ``slot.running``, which inside this loop's own
-        ``finally`` names the loop's task -- still not done, so it read true and
-        the note was dropped. On cancellation the slot is then saved closed, so
-        that drop is permanent.
-        """
-        from kiro_crew.dashboard import chat_orchestrator
-        from kiro_crew.dashboard.chat import _stage_loop
-
-        state, slot = self._stage_slot(tmp_path, monkeypatch)
-        started = asyncio.Event()
-
-        async def _mock_run_chat(state, slot, message, **kwargs):
-            slot._deferred_notes.append(
-                {"content": "away note", "cls": "reconcile-note", "context": None}
-            )
-            started.set()
-            await asyncio.sleep(5)
-
-        monkeypatch.setattr(chat_orchestrator, "_run_chat", _mock_run_chat)
-
-        task = asyncio.create_task(_stage_loop(state, slot, auto_run=True))
-        slot.task = task  # exactly as api_chat_plan_action assigns it
-        await started.wait()
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-
-        # Asserted with no further await: a later seam nulling slot.task would
-        # otherwise flush it and hide the drop this test exists to catch.
-        assert slot._deferred_notes == []
-        injected = [m["content"] for m in slot.messages if m.get("role") == "inject"]
-        assert injected == ["away note"]
-
-    @pytest.mark.asyncio
-    async def test_a_timed_out_stage_still_writes_a_held_note(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ):
-        """Same drop via the ceiling, where the cancelled flag is never set.
-
-        ``_bounded_turn`` cancels the turn and raises, so the loop exits with
-        ``_cancelled`` false -- which is why the fix keys on who owns the task
-        rather than on that flag.
-        """
-        from kiro_crew.dashboard import chat_orchestrator
-        from kiro_crew.dashboard.chat import _stage_loop
-
-        state, slot = self._stage_slot(tmp_path, monkeypatch, timeout=1)
-
-        async def _mock_run_chat(state, slot, message, **kwargs):
-            slot._deferred_notes.append(
-                {"content": "away note", "cls": "reconcile-note", "context": None}
-            )
-            await asyncio.sleep(5)
-
-        monkeypatch.setattr(chat_orchestrator, "_run_chat", _mock_run_chat)
-
-        task = asyncio.create_task(_stage_loop(state, slot, auto_run=True))
-        slot.task = task
-        # Bounded: this stage ends only when the 1s ceiling cancels it, so an
-        # unfired ceiling must fail here rather than block until the suite cap.
-        await asyncio.wait_for(task, timeout=20)
-
-        assert slot._deferred_notes == []
-        injected = [m["content"] for m in slot.messages if m.get("role") == "inject"]
-        assert injected == ["away note"]
-
-
 # ---------------------------------------------------------------------------
 # Uninstall app-sources cleanup tests
 # ---------------------------------------------------------------------------
@@ -3020,24 +2860,6 @@ class TestAutomaticSuccessorsDoNotConsumeNotes:
             "a user-authored queued turn was not given the note it was owed"
         )
         assert any("owed to the next user turn" in m.get("content", "") for m in slot.messages)
-
-    def test_the_stage_loop_still_flushes_on_every_exit_path(self):
-        """(c) hazard: withholding must delay delivery, never lose it.
-
-        The stage loop does not flush above its auto-go row, so its EXIT call
-        is the only delivery point for a plan that runs to completion and then
-        idles. That call sits in the function's ``finally`` and is reached by the
-        completed, paused and cancelled paths alike -- asserted structurally
-        because driving three plan outcomes end-to-end would test the harness.
-        """
-        import inspect
-
-        from kiro_crew.dashboard import chat_orchestrator
-
-        src = inspect.getsource(chat_orchestrator._stage_loop)
-        assert src.count("flush_deferred_notes") == 1
-        # The single call is inside the finally, so no early return can skip it.
-        assert src.index("finally:") < src.index("flush_deferred_notes")
 
 
 class TestImmediateNoteSessionBinding:

@@ -147,6 +147,15 @@ class SpawnPlan:
     hides, or it re-exposes something nothing denied.
     """
 
+    private_state_env: str | None = None
+    """Environment variable this host needs pointed at a per-process directory.
+
+    ``None`` for a host whose state tolerates concurrent processes. Otherwise the
+    runtime sets the named variable to its own per-process scratch directory,
+    which no other process uses and which is reclaimed once this one is dead.
+    A value already in the child's environment is left as set.
+    """
+
 
 # ── Seam 3: session/new and session/load extras ──
 
