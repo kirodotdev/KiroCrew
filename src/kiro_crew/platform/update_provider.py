@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from typing import Protocol, runtime_checkable
 
-from kiro_crew import platform_compat
+from kiro_crew import platform_compat, update_ownership
 from kiro_crew.gateway_shutdown_budget import (
     UPDATE_INSTALLER_KILL_REAP_SECS,
     UPDATE_INSTALLER_TERM_GRACE_SECS,
@@ -53,7 +53,9 @@ _MAX_CAPTURED_OUTPUT = 64 * 1024
 async def _read_bounded_output(
     proc: asyncio.subprocess.Process, *, timeout: float, want_stdout: bool
 ) -> tuple[bytes, bytes]:
-    """Wait for *proc*, keeping at most :data:`_MAX_CAPTURED_OUTPUT` per stream.
+    """Wait for *proc*, its exit included, for at most *timeout*.
+
+    Keeps at most :data:`_MAX_CAPTURED_OUTPUT` per stream.
 
     Drains both pipes concurrently so a full pipe buffer cannot deadlock the
     child, but stops accumulating past the cap and discards the rest. ``apply``
@@ -72,12 +74,14 @@ async def _read_bounded_output(
             if keep and len(buf) < _MAX_CAPTURED_OUTPUT:
                 buf.extend(chunk[: _MAX_CAPTURED_OUTPUT - len(buf)])
 
-    out, err = await asyncio.wait_for(
-        asyncio.gather(_drain(proc.stdout, want_stdout), _drain(proc.stderr, True)),
-        timeout=timeout,
-    )
-    await proc.wait()
-    return out, err
+    async def _run() -> tuple[bytes, bytes]:
+        out, err = await asyncio.gather(_drain(proc.stdout, want_stdout), _drain(proc.stderr, True))
+        await proc.wait()
+        return out, err
+
+    # The exit is inside the bound too: a command that closes or redirects its
+    # own stdio ends the drain at once and would otherwise run unbounded.
+    return await asyncio.wait_for(_run(), timeout=timeout)
 
 
 async def _kill_and_reap(proc: asyncio.subprocess.Process) -> None:
@@ -99,6 +103,10 @@ async def _kill_and_reap(proc: asyncio.subprocess.Process) -> None:
 #: Mirrors the shared default so the updater's bound stays independently
 #: patchable without touching every other reap site.
 _REAP_TIMEOUT_SECS = 10
+
+#: One run of the policy's ``apply_command``, its exit included: a command still
+#: running past it is stopped and the apply reported failed.
+_APPLY_TIMEOUT_SECS = 600
 
 
 #: How long an installer stopped by its route's TIMEOUT (not by shutdown) gets
@@ -439,8 +447,13 @@ class CommandProvider:
             version = version[:128]
         return UpdateCheckResult(available=True, remote_version=version)
 
+    @update_ownership.owning(update_ownership.Step.POLICY_APPLY)
     async def apply(self) -> bool:
-        """Run apply_command. Exit 0 = success."""
+        """Run apply_command. Exit 0 = success.
+
+        The command can rewrite the install in place, so the call owns a missing
+        bundle while it runs (``update_ownership``).
+        """
         cmd = self._resolve_command("apply_command")
         if not cmd:
             logger.warning("CommandProvider.apply: no apply_command configured")
@@ -472,7 +485,9 @@ class CommandProvider:
                 # agent-writable checkout. Operator commands name absolute paths.
                 cwd="/",
             )
-            _stdout, stderr = await _read_bounded_output(proc, timeout=600, want_stdout=False)
+            _stdout, stderr = await _read_bounded_output(
+                proc, timeout=_APPLY_TIMEOUT_SECS, want_stdout=False
+            )
         except asyncio.CancelledError:
             if proc is not None:
                 await _stop_installer(proc)
@@ -481,7 +496,7 @@ class CommandProvider:
         except asyncio.TimeoutError:
             if proc is not None:
                 await _stop_installer(proc, grace=INSTALLER_TIMEOUT_TERM_GRACE_SECS)
-            logger.error("CommandProvider.apply: timed out (10 min)")
+            logger.error("CommandProvider.apply: timed out (%ds)", _APPLY_TIMEOUT_SECS)
             return False
         except OSError:
             # OSError, not just FileNotFoundError (see check() above).

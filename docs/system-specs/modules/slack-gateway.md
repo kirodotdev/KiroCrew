@@ -378,7 +378,7 @@ a restart-on-failure supervisor never relaunches an exit 0:
 | Status | Source | Meaning |
 | --- | --- | --- |
 | 0 | operator (SIGTERM, `systemctl stop`, Ctrl+C) | stay down as asked |
-| 75 (`EX_TEMPFAIL`) | stale-asset watchdog | the served assets vanished |
+| 75 (`EX_TEMPFAIL`) | stale-asset watchdog | the served assets vanished and no update step this gateway is running owns the gap |
 | 69 (`EX_UNAVAILABLE`) | listener guard (`dashboard/listener_guard.py`) | the TCP listener could not be restored, so the process was alive but unreachable |
 | 78 (`EX_CONFIG`) | gateway lock refusal (`gateway_lock.LIVE_HOLDER_EXIT_CODE`), before the gateway runs — not a shutdown | the serving-holder predicate (`GatewayLock._serving_verdict`) is True: the process `/proc/locks` positively identifies as holding `gateway.lock` is running, holds the configured dashboard port with its OWN socket at the address this gateway is configured to bind, and answers HTTP there — a sibling gateway already serves this home. The systemd unit's `RestartPreventExitStatus=` names this one status so it is NOT relaunched (see [cli](cli.md), *Service Management*); every other lock refusal — a holder no surface can identify, however the recorded pid looks; a holder whose own socket at the probed address is silent (a wedged gateway); a holder on the port only at another address, or one the platform did not report (the residual row, unasserted by design, so a stranger's answer there is never credited to it) among them — exits 1 and is relaunched |
 
@@ -387,6 +387,48 @@ closes the LISTEN socket after one failed `accept()` and never re-arms it. The
 guard rebinds first and only sets this status when rebinding keeps failing, or
 when the rebind binds yet the loopback `/api/live` probe still gets no answer —
 a state no rebind can fix.
+
+**The stale-asset watchdog stands down for this gateway's own update steps.**
+Some update steps leave the served bundle missing while they run: the
+managed-venv installer or a policy `apply_command` replacing the install in
+place, and a frontend build while `static/dist` is still the dev-mode link into
+`website/dist` (Vite empties its output directory first; once
+`_stage_dist_locked` has made `static/dist` a real directory, a rebuild leaves
+it intact). Shutting down then cancels the step mid-write, and a cancelled
+installer leaves a venv without its console scripts. So each such step the
+gateway runs registers with `update_ownership` for as long as it rewrites the
+install: the git auto-update (from the reset), the managed-venv installer,
+`CommandProvider.apply`, and the dashboard update's worker. So do
+`_restart_after_update` and the dashboard's `_restart_gateway`, so a restart's
+teardown is not raced. An update step hands the gap to the restart it awaits:
+its own entry ends as the restart's begins, with no yield between. A restart
+deferred while callback work drains stays owned for `DEFERRED_RESTART_MAX_SECS`
+counted from the FIRST deferral; the coordinator's retries do not extend it, and
+it ends early only when a restart commits (`restart_committed`, right before the
+sessions close) or finds no usable interpreter (`clear_restart_deferral`), never
+when a restart merely starts and then coalesces or refuses with an interpreter
+still in place. A restart deferred for want of a usable interpreter is not owned
+either: the pruned tree took the bundle with it, and the watchdog's exit is what
+lets the supervisor relaunch through its own command. Both `_restart_after_update`
+and the dashboard's `_restart_gateway` end the deferral on that refusal. Each kind has a generous
+maximum duration (`update_ownership.Step`); an entry past it stops counting,
+with a WARNING, so a step wedged on an unbounded wait cannot switch the
+watchdog off for good. An expired entry is skipped and the search goes on to
+older live ones, whatever its kind: the registry is shared by every task, so
+the entry before an expired restart can be an unrelated update step (the
+dashboard's worker next to the coordinator's restart) that still owns the gap.
+
+The watchdog reads the registry (on the loop, no I/O) on every missing sample
+and once more as the last thing before it signals, with no await in between, so
+a step that starts inside the confirm or drain window still stands it down; it
+names the owner in a WARNING. A bundle missing at startup while a step owns it
+is waited out before the arming check; if it is still missing once no step owns
+it, the update made that gap, so the watchdog arms and treats it as a vanish
+(only a bundle missing at startup with no owner ever seen is a dev install that
+leaves it disarmed). The registry is in-process only: a
+shutdown can cancel only this gateway's own steps, never another process's
+installer, so coordinating with a terminal `kirocrew update` belongs to a
+cross-process lease, not to this.
 
 ### Event-loop stall watchdog & blocking-work executors
 

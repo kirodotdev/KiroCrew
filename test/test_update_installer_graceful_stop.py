@@ -19,6 +19,7 @@ import os
 import shlex
 import shutil
 import time
+import types
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -149,8 +150,17 @@ def wheel_route(monkeypatch, tmp_path, reap_groups):
     monkeypatch.setattr(
         "kiro_crew.platform.update_governance.update_blocked_reason", lambda _base: None
     )
-    orch = SimpleNamespace(dashboard_state=None, _restart_after_update=None)
+    orch = _orchestrator()
     return orch, case
+
+
+def _orchestrator() -> SimpleNamespace:
+    """Just what the wheel update reads, with its installer step bound to it."""
+    from kiro_crew.slack.gateway import GatewayOrchestrator
+
+    orch = SimpleNamespace(dashboard_state=None, _restart_after_update=None)
+    orch._run_wheel_installer = types.MethodType(GatewayOrchestrator._run_wheel_installer, orch)
+    return orch
 
 
 async def _cancel_and_settle(task: asyncio.Task) -> None:
@@ -216,7 +226,7 @@ class TestSetsidStepRollsBack:
         monkeypatch.setattr(
             "kiro_crew.platform.update_governance.update_blocked_reason", lambda _base: None
         )
-        orch = SimpleNamespace(dashboard_state=None, _restart_after_update=None)
+        orch = _orchestrator()
         task = asyncio.create_task(GatewayOrchestrator._auto_apply_wheel_update(orch))
         try:
             await _wait_for_file(case / "phase")

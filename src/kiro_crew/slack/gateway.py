@@ -64,6 +64,7 @@ from kiro_crew import (
     runtime_death,
     session_work_dir,
     shutdown_event,
+    update_ownership,
     work_root,
 )
 from kiro_crew.acp.client import AcpError, AcpProcessDied
@@ -10969,6 +10970,7 @@ class GatewayOrchestrator:
         else:
             print("👻 Already on latest version")
 
+    @update_ownership.owning(update_ownership.Step.RESTART)
     async def _restart_after_update(self, respawn: Callable[[], str]) -> None:
         """Save state and restart only after callback/refusal work is durable.
 
@@ -10979,6 +10981,12 @@ class GatewayOrchestrator:
         The interpreter is established BEFORE any of that. When it is missing, this
         returns without saving, fencing or draining, because an exec that cannot
         succeed must not be reached after every session has been closed.
+
+        Owns a missing bundle while it runs (``update_ownership``), so the
+        stale-asset watchdog does not race its teardown. A deferral while
+        callback work drains is owned for a while too, from the first deferral
+        on (a retry does not extend it), so the watchdog does not force the
+        restart it just put off.
         """
         logger.info("Update applied, preparing a callback-safe gateway restart")
         self._pending_update_respawn = respawn
@@ -11004,6 +11012,11 @@ class GatewayOrchestrator:
             # ``_pending_update_respawn`` stays set so
             # ``_retry_pending_update_restart`` finishes the update once an
             # operator repairs the install.
+            # Not a deferral the watchdog waits out: with the tree pruned the
+            # bundle is gone too, and its exit lets the supervisor relaunch
+            # through its own command, which a retry here cannot do. So one an
+            # earlier drain armed ends here too.
+            update_ownership.clear_restart_deferral()
             self._update_apply_deferred = True
             logger.error(
                 "Update applied but restart deferred: no usable interpreter. "
@@ -11043,6 +11056,7 @@ class GatewayOrchestrator:
 
         if not await self._drain_update_callback_work(timeout=self._UPDATE_DRAIN_TIMEOUT_SECS):
             self._update_apply_deferred = True
+            update_ownership.note_restart_deferred()
             logger.warning(
                 "Update applied but restart deferred: callback/refusal work did not drain"
             )
@@ -11052,6 +11066,9 @@ class GatewayOrchestrator:
                 )
             return
 
+        # Past the last deferral: the restart commits here, and a deferral it
+        # retried is over (a lost fence below means a real shutdown anyway).
+        update_ownership.restart_committed()
         sessions = self.sessions
         if sessions is not None:
             # Yield-free with the successful drain above: a callback is now
@@ -11516,6 +11533,7 @@ class GatewayOrchestrator:
         # needs it. Called only after the install succeeded (see the exec below).
         from kiro_crew.platform.wheel_engine import respawn_executable
 
+        owned = contextlib.ExitStack()
         try:
             # Every git call below reads a tree an agent can write, and several of
             # them (`status`, `diff`, `reset`) will EXEC a program the repository
@@ -12048,6 +12066,10 @@ class GatewayOrchestrator:
                     self.dashboard_state.push_refresh("update_available")
                 return
 
+            # From the reset on, this step rewrites the install it serves from,
+            # so it owns a missing bundle until it returns (update_ownership).
+            owned.enter_context(update_ownership.step(update_ownership.Step.GIT_AUTO_UPDATE))
+
             # Hard reset to remote. Reached only with a clean tracked tree and no
             # untracked collisions, so it overwrites nothing the developer owns.
             reset = await asyncio.create_subprocess_exec(
@@ -12261,6 +12283,9 @@ class GatewayOrchestrator:
             importlib.reload(kiro_crew)
             new_ver = kiro_crew.__version__
             print(f"👻 New version {new_ver} available — auto-updating and restarting…")
+            # Hand the gap to the restart: this step's ownership ends here and
+            # the restart's begins as the await starts, with no yield between.
+            owned.close()
             await self._restart_after_update(respawn_executable)
         except Exception:
             logger.warning("Auto-update failed", exc_info=True)
@@ -12276,6 +12301,8 @@ class GatewayOrchestrator:
                 # thread waits in its place; the loop keeps serving.
                 hint = await asyncio.to_thread(restart_command_hint)
                 self.dashboard_state.push_update_progress("failed", f"Restart failed — run: {hint}")
+        finally:
+            owned.close()
 
     async def _auto_apply_wheel_update(self) -> None:
         """Auto-apply a wheel/cli.sh update by re-running the signed installer.
@@ -12299,9 +12326,9 @@ class GatewayOrchestrator:
         The command is composed by
         :func:`kiro_crew.platform.update_layout.wheel_update_command` from a
         validated channel name and a scheme-pinned artifact base URL
-        (``--proto '=https'``), never from feed data. A successful run replaces the
-        venv in-place; a failure leaves the existing install intact (cli.sh writes
-        to a temp dir and atomically replaces via ``ln -sf``).
+        (``--proto '=https'``), never from feed data. ``cli.sh`` rebuilds the venv
+        in place, so the served bundle is missing while it runs; the installer
+        run owns that gap (``update_ownership``) until the restart takes it over.
         """
         from kiro_crew.dashboard.handlers import _update_info
 
@@ -12368,12 +12395,7 @@ class GatewayOrchestrator:
         # (which can lead with an agent-writable venv/bin), so a planted shim
         # cannot hijack the installer spawn. Fail CLOSED if no trusted shell:
         # a bare-name fallback would reopen the very hole this closes.
-        from kiro_crew.platform.update_provider import (
-            INSTALLER_TIMEOUT_TERM_GRACE_SECS,
-            _read_bounded_output,
-            _stop_installer,
-            _trusted_path_env,
-        )
+        from kiro_crew.platform.update_provider import _trusted_path_env
         from kiro_crew.platform_compat import trusted_system_bin
 
         _sh = trusted_system_bin("sh")
@@ -12397,15 +12419,34 @@ class GatewayOrchestrator:
                     "failed", "No trusted PATH — run manually: kirocrew update"
                 )
             return
+        if not await self._run_wheel_installer(update_cmd, _sh, _env):
+            return
+        # The installer's ownership ended as it returned and the restart's begins
+        # as this await starts, with no yield between them.
+        await self._restart_after_update(respawn_executable)
+
+    @update_ownership.owning(update_ownership.Step.MANAGED_VENV_INSTALLER)
+    async def _run_wheel_installer(self, update_cmd: str, sh: str, env: dict[str, str]) -> bool:
+        """Run the installer line; ``True`` when it succeeded.
+
+        Owns a missing bundle while it runs: ``cli.sh`` rebuilds the venv the
+        gateway serves from in place.
+        """
+        from kiro_crew.platform.update_provider import (
+            INSTALLER_TIMEOUT_TERM_GRACE_SECS,
+            _read_bounded_output,
+            _stop_installer,
+        )
+
         proc: asyncio.subprocess.Process | None = None
         try:
             proc = await asyncio.create_subprocess_exec(
-                _sh,
+                sh,
                 "-c",
                 update_cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                env=_env,
+                env=env,
                 # Root, not the gateway's cwd, which can be an agent-writable
                 # checkout a relative command word would resolve inside.
                 cwd="/",
@@ -12442,7 +12483,7 @@ class GatewayOrchestrator:
                 self.dashboard_state.push_update_progress(
                     "failed", "Installer timed out — run manually: kirocrew update"
                 )
-            return
+            return False
         except OSError:
             # OSError, not just FileNotFoundError: fd or process exhaustion
             # raises a different OSError, and this runs on the boot path.
@@ -12451,7 +12492,7 @@ class GatewayOrchestrator:
                 self.dashboard_state.push_update_progress(
                     "failed", "'sh' not available — run manually: kirocrew update"
                 )
-            return
+            return False
 
         if proc.returncode != 0:
             from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -12475,10 +12516,10 @@ class GatewayOrchestrator:
                     "failed",
                     f"Installer failed (exit {proc.returncode}) — " "run manually: kirocrew update",
                 )
-            return
+            return False
 
         logger.info("Auto-update (wheel): installer succeeded, preparing safe restart")
-        await self._restart_after_update(respawn_executable)
+        return True
 
     # ------------------------------------------------------------------
     # Main run loop

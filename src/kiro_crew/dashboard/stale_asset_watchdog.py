@@ -10,7 +10,9 @@ minutes and a forced restart may fail on slow cold starts.
 This watchdog runs inside the gateway itself and catches the problem at the
 source: if the dashboard static bundle is missing, log a CRITICAL warning
 and initiate graceful shutdown so a supervisor (systemd, launchd) can
-restart a fresh process immediately.
+restart a fresh process immediately. A gap an update step this gateway is
+running owns (``update_ownership``) is the exception: shutting down then would
+cancel that step mid-write, so the watchdog stands down for it.
 
 The check is cheap (one Path.is_file() + one Path.is_file() — no I/O beyond
 stat()) and runs every 60 seconds by default. It only arms itself if assets
@@ -31,6 +33,7 @@ import logging
 from collections.abc import Callable
 from typing import Protocol
 
+from kiro_crew import update_ownership
 from kiro_crew.dashboard.handlers.core import _DIST_INDEX
 
 logger = logging.getLogger(__name__)
@@ -150,6 +153,15 @@ async def run_stale_asset_watchdog(
     static-asset serving, so active ACP turns can finish rather than being
     killed mid-prompt when the supervisor restarts a fresh process.
 
+    A missing bundle that an update step this gateway is running owns
+    (``update_ownership.current_owner``) does not shut down. The owner is read on
+    every missing sample, and once more as the last thing before signalling,
+    with no await in between, because a step can start inside the confirm or
+    drain window. A bundle missing at startup while a step owns it is waited out
+    rather than read as a dev install; if it is still missing once that step
+    ends, the update made the gap, so the watchdog arms and handles it like any
+    other vanish.
+
     Parameters
     ----------
     shutdown_event:
@@ -170,7 +182,36 @@ async def run_stale_asset_watchdog(
     drain_poll:
         Seconds between in-flight re-counts while draining. Default 2s.
     """
-    if not assets_present():
+    announced: str | None = None
+
+    def _owner(*, after_drain: bool = False) -> str | None:
+        nonlocal announced
+        owner = update_ownership.current_owner()
+        if owner is not None and (after_drain or owner != announced):
+            # After a drain that logged "proceeding with shutdown", always say
+            # why the shutdown is not happening.
+            announced = owner
+            logger.warning(
+                "Stale-asset watchdog: assets missing while %s owns the gap; "
+                "standing down%s.",
+                owner,
+                " after drain" if after_drain else "",
+            )
+        return owner
+
+    present = assets_present()
+    owner_seen = False
+    while not present and _owner() is not None:
+        # An update started at boot can have the bundle missing before the
+        # watchdog arms: wait for it rather than disarm as a dev install.
+        owner_seen = True
+        try:
+            await asyncio.wait_for(shutdown_event.wait(), timeout=interval)
+            return False
+        except asyncio.TimeoutError:
+            pass
+        present = assets_present()
+    if not present and not owner_seen:
         # Assets were never here — this is likely a dev/source install that
         # hasn't built its frontend yet. Don't arm the watchdog; let the
         # gateway serve the fallback page as it always has.
@@ -188,6 +229,8 @@ async def run_stale_asset_watchdog(
             pass
 
         if not assets_present():
+            if _owner() is not None:
+                continue
             # Re-confirm after a short delay: a frontend rebuild in a source
             # install deletes and recreates static/dist/, and an unlucky tick
             # inside that window must not kill a healthy gateway. An update
@@ -235,6 +278,10 @@ async def run_stale_asset_watchdog(
                     "shutting down."
                 )
                 continue
+            # The last thing before signalling, with no await in between: an
+            # update step can have started inside the confirm or drain window.
+            if _owner(after_drain=True) is not None:
+                continue
             logger.critical(
                 "Dashboard static assets vanished — an update likely "
                 "pruned the running install. Initiating graceful shutdown "
@@ -242,6 +289,9 @@ async def run_stale_asset_watchdog(
             )
             shutdown_event.set()
             return True
+        else:
+            # A healthy sample ends the gap: a later one is announced afresh.
+            announced = None
     # Loop never entered: the event was already set when the watchdog armed.
     return False
 

@@ -571,6 +571,29 @@ def cap_node_module_walk(monkeypatch, ceiling: pathlib.Path) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _fresh_update_ownership(_floor_monkeypatch):
+    """Give every test its own update-ownership registry, and fail one that leaks a step.
+
+    ``update_ownership`` keeps process-wide state that production paths a test
+    drives fill; a leftover entry would make a later test in the same worker see
+    a gap owner that belongs to an earlier one. The registry is REBOUND, not
+    cleared: ``step()`` removes its entry from the list it joined, so a step an
+    earlier test left open unwinds against its own list, and the inherited state
+    is put back at teardown. A step still open when this test ends is a task it
+    never finished, which would own the gap in whatever test runs next, so that
+    fails the test that left it.
+    """
+    from kiro_crew import update_ownership
+
+    registry: list = []
+    _floor_monkeypatch.setattr(update_ownership, "_live", registry)
+    _floor_monkeypatch.setattr(update_ownership, "_deferred_restart_until", None)
+    yield
+    open_steps = [entry.step.label for entry in registry]
+    assert not open_steps, f"the test left update steps open: {open_steps}"
+
+
+@pytest.fixture(autouse=True)
 def _approve_every_mcp_launch(request, monkeypatch):
     """Treat every gatewayd launch as operator-approved, except where it is the subject.
 

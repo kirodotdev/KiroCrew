@@ -1015,6 +1015,47 @@ class TestApplyRefusals:
         assert not any(c[:2] == ("git", "pull") for c in self._argv_seen)
 
     @pytest.mark.asyncio
+    async def test_the_worker_owns_the_bundle_gap(self, monkeypatch, tmp_path):
+        """The build can empty the served bundle, so the watchdog must see an owner."""
+        from kiro_crew import update_ownership
+
+        seen = []
+
+        async def _build(_proj, _state):
+            seen.append(update_ownership.current_owner())
+
+        async def _pip(_proj, _state):
+            seen.append(update_ownership.current_owner())
+            return False
+
+        monkeypatch.setattr(updates, "_build_frontend", _build)
+        monkeypatch.setattr(updates, "_venv_pip_install", _pip)
+
+        await self._drive_worker(monkeypatch, tmp_path, [_FakeProc()])
+
+        assert seen == ["the dashboard update", "the dashboard update"]
+        assert update_ownership.current_owner() is None
+
+    @pytest.mark.asyncio
+    async def test_the_worker_hands_the_gap_to_the_restart(self, monkeypatch, tmp_path):
+        """No update step is still open around the restart, so its own maximum binds."""
+        from kiro_crew import update_ownership
+
+        open_at_restart = []
+
+        async def _restart(_state, *, resolver=None):
+            open_at_restart.append(list(update_ownership._live))
+            return True
+
+        monkeypatch.setattr(updates, "_build_frontend", AsyncMock())
+        monkeypatch.setattr(updates, "_venv_pip_install", AsyncMock(return_value=True))
+        monkeypatch.setattr(updates, "_restart_gateway", _restart)
+
+        await self._drive_worker(monkeypatch, tmp_path, [_FakeProc()])
+
+        assert open_at_restart == [[]]
+
+    @pytest.mark.asyncio
     async def test_an_unexpected_crash_surfaces_as_a_failed_update(self, monkeypatch, tmp_path):
         """An exception inside the worker must reach the UI, not just the log.
 

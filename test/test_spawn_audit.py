@@ -1662,7 +1662,7 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # installer, which performs its own RSA-SHA256 signature verification.
         # NOT sandbox-routed because the installer must write to the managed
         # venv and symlink ~/.local/bin/kirocrew.
-        "slack/gateway.py::_auto_apply_wheel_update",
+        "slack/gateway.py::_run_wheel_installer",
         # Pluggable update provider: CommandProvider runs operator-configured
         # shell commands from security_policy.json or config.json (sensitive
         # home dirs the agent cannot write). The check command probes for a

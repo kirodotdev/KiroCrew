@@ -501,3 +501,229 @@ async def test_watchdog_survives_asset_gap_that_heals_while_draining(caplog):
     assert not [r for r in caplog.records if r.levelno >= logging.CRITICAL], (
         "healed run logged a misleading graceful-shutdown CRITICAL"
     )
+
+
+# --- update stand-down ------------------------------------------------------------
+
+_WATCHDOG_LOGGER = "kiro_crew.dashboard.stale_asset_watchdog"
+
+
+def _gap(*, present_reads: int = 1):
+    """``assets_present`` stand-in: present for the first reads, then gone."""
+    calls = {"n": 0}
+
+    def _assets_present() -> bool:
+        calls["n"] += 1
+        return calls["n"] <= present_reads
+
+    return patch(
+        "kiro_crew.dashboard.stale_asset_watchdog.assets_present",
+        side_effect=_assets_present,
+    )
+
+
+def _owner_is(reader):
+    return patch("kiro_crew.update_ownership.current_owner", side_effect=reader)
+
+
+async def _run(shutdown, **kwargs):
+    from kiro_crew.dashboard.stale_asset_watchdog import run_stale_asset_watchdog
+
+    kwargs.setdefault("interval", 0.01)
+    kwargs.setdefault("confirm_delay", 0.01)
+    return await asyncio.wait_for(run_stale_asset_watchdog(shutdown, **kwargs), timeout=5.0)
+
+
+def _records(caplog, *, level=None, text=None):
+    return [
+        r.getMessage()
+        for r in caplog.records
+        if r.name == _WATCHDOG_LOGGER
+        and (level is None or r.levelno == level)
+        and (text is None or text in r.getMessage())
+    ]
+
+
+@pytest.mark.asyncio
+async def test_watchdog_stands_down_while_an_update_step_owns_the_gap(caplog):
+    caplog.set_level(logging.WARNING, logger=_WATCHDOG_LOGGER)
+    shutdown = asyncio.Event()
+    asked = {"n": 0}
+
+    def _owner():
+        asked["n"] += 1
+        if asked["n"] >= 4:
+            asyncio.get_running_loop().call_soon(shutdown.set)
+        return "the managed-venv installer"
+
+    with _gap(), _owner_is(_owner):
+        fired = await _run(shutdown)
+
+    assert fired is False
+    standing = _records(caplog, text="standing down")
+    # Named, once per gap.
+    assert len(standing) == 1 and "the managed-venv installer" in standing[0]
+    assert not _records(caplog, level=logging.CRITICAL)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("drains", [False, True], ids=["confirm-window", "drain-window"])
+async def test_a_step_starting_before_the_signal_still_stands_down(caplog, drains):
+    """The last owner check, after the confirm AND after the drain, sees it."""
+    caplog.set_level(logging.WARNING, logger=_WATCHDOG_LOGGER)
+    shutdown = asyncio.Event()
+    state = {"owner": None, "reads": 0}
+    pending = {"n": 1}
+
+    def _count() -> int:
+        n, pending["n"] = pending["n"], 0
+        if n == 0:
+            state["owner"] = "the dashboard update"
+        return n
+
+    def _owner():
+        state["reads"] += 1
+        if not drains and state["reads"] == 1:
+            # The tick's own read finds nothing; the step starts during the confirm.
+            state["owner"] = "the dashboard update"
+            return None
+        if state["owner"] is not None:
+            asyncio.get_running_loop().call_soon(shutdown.set)
+        return state["owner"]
+
+    with _gap(), _owner_is(_owner):
+        fired = await _run(
+            shutdown,
+            count_in_flight=_count if drains else None,
+            drain_timeout=5.0,
+            drain_poll=0.01,
+        )
+
+    assert fired is False
+    if drains:
+        assert pending["n"] == 0, "the drain must have run"
+    # Even after the drain logged its way to "shutdown", the stand-down is said.
+    assert _records(caplog, text="standing down after drain")
+
+
+@pytest.mark.asyncio
+async def test_a_step_live_at_arm_time_is_waited_out_then_the_watchdog_arms():
+    """A boot-time update with the bundle missing is not read as a dev install."""
+    shutdown = asyncio.Event()
+    reads = {"n": 0}
+
+    def _assets_present() -> bool:
+        reads["n"] += 1
+        # missing while the boot update runs, present once it finished, then
+        # pruned for good with no owner.
+        return reads["n"] in (3, 4)
+
+    def _owner():
+        return "the managed-venv installer" if reads["n"] < 3 else None
+
+    with patch(
+        "kiro_crew.dashboard.stale_asset_watchdog.assets_present",
+        side_effect=_assets_present,
+    ), _owner_is(_owner):
+        fired = await _run(shutdown)
+
+    assert fired is True
+
+
+@pytest.mark.asyncio
+async def test_a_gap_a_boot_time_step_leaves_behind_arms_the_watchdog(caplog):
+    """The step that owned the gap at startup ended with the bundle still gone.
+
+    The update made that gap (a pruned versioned tree, a restart that found no
+    interpreter), so it is not a dev install: the watchdog must arm and exit so
+    the supervisor relaunches, instead of staying up on pruned code for good.
+    """
+    caplog.set_level(logging.INFO, logger=_WATCHDOG_LOGGER)
+    shutdown = asyncio.Event()
+    owner_reads = {"n": 0}
+
+    def _owner():
+        owner_reads["n"] += 1
+        return "the managed-venv installer" if owner_reads["n"] <= 2 else None
+
+    with patch(
+        "kiro_crew.dashboard.stale_asset_watchdog.assets_present",
+        return_value=False,
+    ), _owner_is(_owner):
+        fired = await _run(shutdown)
+
+    assert fired is True
+    assert shutdown.is_set()
+    assert not _records(caplog, text="not arming")
+
+
+@pytest.mark.asyncio
+async def test_a_restart_into_an_update_is_not_raced(caplog):
+    """The real registry: a step, then a restart whose teardown takes a while."""
+    from kiro_crew import update_ownership
+
+    caplog.set_level(logging.WARNING, logger=_WATCHDOG_LOGGER)
+    shutdown = asyncio.Event()
+    teardown_seen = asyncio.Event()
+
+    @update_ownership.owning(update_ownership.Step.RESTART)
+    async def _restart():
+        # The teardown: wait until the watchdog has looked at the gap at least once.
+        await asyncio.wait_for(teardown_seen.wait(), timeout=5.0)
+        shutdown.set()  # stands for the exec
+
+    async def _apply_then_restart():
+        with update_ownership.step(update_ownership.Step.MANAGED_VENV_INSTALLER):
+            await asyncio.sleep(0)
+        await _restart()
+
+    reads = {"n": 0}
+    real_owner = update_ownership.current_owner
+
+    def _owner():
+        reads["n"] += 1
+        owner = real_owner()
+        if owner == "the restart into an applied update" and reads["n"] >= 3:
+            teardown_seen.set()
+        return owner
+
+    with _gap(), _owner_is(_owner):
+        watchdog = asyncio.ensure_future(_run(shutdown))
+        await asyncio.wait_for(_apply_then_restart(), timeout=5.0)
+        fired = await watchdog
+
+    assert fired is False
+    assert not _records(caplog, level=logging.CRITICAL)
+
+
+@pytest.mark.asyncio
+async def test_a_step_wedged_past_its_maximum_no_longer_holds_the_watchdog(caplog):
+    """A stuck restart drain cannot keep a gateway with no bundle up for good."""
+    import time
+
+    from kiro_crew import update_ownership
+
+    caplog.set_level(logging.WARNING, logger="kiro_crew.update_ownership")
+    shutdown = asyncio.Event()
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def _wedged_restart():
+        with update_ownership.step(update_ownership.Step.RESTART):
+            # Scaled down: the entry's maximum runs out almost at once.
+            update_ownership._live[-1].deadline = time.monotonic() + 0.05
+            entered.set()
+            await release.wait()
+
+    restart = asyncio.ensure_future(_wedged_restart())
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5.0)
+        with _gap():
+            fired = await _run(shutdown)
+    finally:
+        release.set()
+        await restart
+
+    assert fired is True
+    assert [
+        r for r in caplog.records if r.name == "kiro_crew.update_ownership" and "maximum" in r.getMessage()
+    ]
