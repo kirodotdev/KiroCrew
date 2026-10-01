@@ -44,6 +44,13 @@ src/kiro_crew/_vendor/**/*.py text eol=lf
 src/kiro_crew/_vendor/**/*.md text eol=lf
 src/kiro_crew/_vendor/**/*.typed text eol=lf
 
+# A dashboard card PAGE is shipped package data whose bytes are compared and budgeted: the
+# fixture the website test reads embeds the page verbatim and is itself pinned to LF, and the
+# page must fit the host's 8192-byte cap -- which a CRLF checkout moves by one byte per line.
+# Under core.autocrlf=true an unpinned page therefore fails its own staleness check and its own
+# size budget on Windows, for a reason that has nothing to do with either.
+src/kiro_crew/dashboard_card_pages/*.html text eol=lf
+
 # The generated config snapshot is compared byte-for-byte with UTF-8/LF output.
 # Keep checkout conversion from changing it under core.autocrlf=true.
 /config-baseline.json text eol=lf

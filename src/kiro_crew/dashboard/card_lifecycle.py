@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import logging
 import re
@@ -638,6 +639,29 @@ def _listen_for_log_growth(lifecycle: "CardLifecycle") -> None:
             _growth_registered = True
 
 
+def _derived_allowed(slot: Any) -> bool:
+    """Whether *slot*'s content may be published to a derived surface AT ALL.
+
+    Privacy and remoteness only -- the cost exclusions do not apply to a card that costs
+    nothing. Read on EVERY read as well as at publish, because these are properties of the slot
+    as it is NOW and a slot can tighten after its card was stored: a persistent session turned
+    incognito, or one that became remote, would otherwise keep serving content the live rules
+    withhold. A published card that outlives the condition that permitted it is the same defect
+    as never having checked.
+
+    A MODULE-LEVEL function, not a static method. ``_eligible`` calls it so the privacy triple
+    has one spelling, and a method would have to reach it through the class NAME -- a lookup in
+    module globals, which a test that substitutes ``CardLifecycle`` replaces, so the predicate
+    would resolve against whatever stood in for the class. A plain function is bound at
+    definition and cannot be redirected that way.
+    """
+    return not (
+        getattr(slot, "is_remote", False)
+        or getattr(slot, "executor", "") == "remote"
+        or is_incognito_transcript(getattr(slot, "memory_mode", ""))
+    )
+
+
 class CardLifecycle:
     """One bounded producer per gateway; no browsing-triggered generation."""
 
@@ -645,6 +669,13 @@ class CardLifecycle:
         self.state = state
         self.enabled = enabled
         self.publisher = CardPublisher(self._generate, self._valid, self._changed)
+        #: Slot key -> a card the PRODUCT derived, with its owner identity and stamp. See
+        #: :meth:`publish_derived`; deliberately not an entry in the queue above.
+        self.derived: dict[str, dict] = {}
+        #: Slot key -> the source stamp a RETIREMENT was ordered at, kept after the card itself
+        #: is gone. One short string per retired slot, dropped the moment a card is stored for
+        #: that key again. See :meth:`_out_of_order`.
+        self._retired: dict[str, str] = {}
         self.wake = asyncio.Event()
         self.worker: asyncio.Task[None] | None = None
         self.cancel_pending = False
@@ -675,6 +706,10 @@ class CardLifecycle:
         if enabled:
             self.seed_open_sessions()
         else:
+            # The derived map is deliberately NOT cleared here. This flag is the owner's
+            # opt-in to the cost of model-generated cards, and a derived card has none --
+            # clearing it would make turning that cost off also delete the conductor's
+            # board, which the owner did not ask for and cannot see the connection to.
             self.restart_after_cancel = False
             keys = list(self.publisher.entries)
             self.publisher.entries.clear()
@@ -709,20 +744,28 @@ class CardLifecycle:
 
     @staticmethod
     def _eligible(slot: Any) -> bool:
-        # ROOT sessions only (:func:`is_root_session`). A session with a parent is a
-        # worker in that team: cards cost attempts from one shared hourly budget, so a
-        # fan-out would spend it on workers and starve the session a person is
-        # following, and its numbers are read by opening the worker itself. A remote
-        # slot's crew log is on its peer's disk, so there is nothing here to fold. With
-        # the crew log off there is no fold at all, and every fact would read "not
-        # recorded" on a card that still spent a model call.
-        return not (
-            not crew_log_enabled()
-            or getattr(slot, "is_remote", False)
-            or getattr(slot, "executor", "") == "remote"
-            or is_incognito_transcript(getattr(slot, "memory_mode", ""))
-            or bool(getattr(slot, "_dashboard_card_exempt", False))
-            or not is_root_session(slot)
+        """Whether the MODEL path may write a card for *slot*.
+
+        The privacy and remoteness half is :func:`_derived_allowed`, CALLED rather than
+        restated: two copies of a privacy predicate is how one of them gains a condition and
+        the other does not, and the copy that would be missed is the derived path, whose
+        cards outlive a single turn. Composing them makes a new condition reach both by
+        construction.
+
+        What this adds on top are the exclusions that are about COST, not privacy. With the
+        crew log off there is no fold at all, and every fact would read "not recorded" on a
+        card that still spent a model call. A session another session dispatched is a worker
+        in that team (:func:`is_root_session`, which reads both ``_created_by`` and the
+        session-tree parent so an ADOPTED worker is caught too): cards spend attempts from one
+        shared hourly budget, so a fan-out would starve the session a person is following, and
+        a worker's numbers are read by opening the worker itself. A derived card spends nothing
+        from that budget, which is why it does not carry these terms.
+        """
+        return (
+            _derived_allowed(slot)
+            and crew_log_enabled()
+            and is_root_session(slot)
+            and not bool(getattr(slot, "_dashboard_card_exempt", False))
         )
 
     def _valid(self, entry: CardEntry) -> bool:
@@ -1017,6 +1060,193 @@ class CardLifecycle:
         entry.generated_source = source
         return payload
 
+    # ----------------------------------------------------------------------
+    # THE DERIVED SEAM: a card the product built, with no model call
+    # ----------------------------------------------------------------------
+    #
+    # Kept in its own map rather than as a flag on ``CardEntry``, and that is what makes
+    # this the SMALLEST seam: a derived card never enters the generator's state machine,
+    # so it cannot take the sole permit, spend an attempt from the shared hourly budget,
+    # be debounced, or be marked stale against a revision nothing will regenerate. None
+    # of those mechanisms exist for it because none of them apply.
+    #
+    # It is also why it does not read ``self.enabled``. That flag is the owner's opt-in to
+    # the COST of model-generated cards; a card assembled from a fold the product already
+    # keeps costs nothing, so gating it there would hide the one card on the machine that
+    # is free -- and the conductor's board is the dashboard, not an extra.
+
+    def _out_of_order(self, key: str, revision: str, authoritative: bool) -> bool:
+        """Whether a write carrying *revision* is older than what *key* already holds.
+
+        ONE rule, shared by publication and RETIREMENT, because a retirement is a write whose
+        content is "no board". Ordering only the publications leaves the removal path taking any
+        arrival, so a delayed read that snapshotted a record with no board drops a card a later
+        publish stored -- the same inversion, reached through the other door.
+
+        Compared as strings because the stamp is an ISO-8601 UTC time, whose lexical order is its
+        chronological order, and because a value that is not a stamp at all then sorts
+        consistently rather than raising. An empty *revision* is not ordered at all: a record
+        with no ``published_at`` has no stamp to compare, and refusing it would drop a real
+        board over a missing field.
+        """
+        if not revision:
+            return False
+        held = self.derived.get(key)
+        # A RETIRED key keeps its stamp, because dropping the card drops the only thing that
+        # ordered the next arrival: ``forget_derived`` pops the whole entry, so without this the
+        # store holds nothing, every revision is accepted, and an in-flight read that snapshotted
+        # the board record before the retirement republishes the board that was just retired.
+        stored = held["revision"] if held is not None else self._retired.get(key, "")
+        if not stored:
+            return False
+        # STRICTLY OLDER is refused from either writer.
+        if stored > revision:
+            return True
+        # EQUAL is refused from the refresher only: a second-granularity stamp cannot separate
+        # two records written in one second, so the tie goes to the writer that holds the record
+        # rather than to whichever arrival lands last.
+        return stored == revision and not authoritative
+
+    def forget_retired(self, key: str) -> None:
+        """Drop *key*'s retirement stamp.
+
+        Called when a card is stored for *key* again, and when the slot is DEFINITIVELY removed.
+        Both are the same fact: the stamp exists only to order a write that arrives after the
+        retirement, so once a card is present, or the slot is gone, it orders nothing. Without
+        the removal call it retains one string per slot the gateway ever hosted.
+        """
+        self._retired.pop(key, None)
+
+    def retire_derived(self, key: str, revision: str = "", authoritative: bool = False) -> bool:
+        """Drop *key*'s derived card because its record carries no board -- IN ORDER.
+
+        Distinct from :meth:`forget_derived`, which is the UNCONDITIONAL drop the queue path
+        needs: there the card is going because its entry is going, and no revision is involved.
+        Here the removal is a statement about a particular record, so it is ordered against the
+        stored card exactly as a publication is.
+        """
+        if self._out_of_order(key, revision, authoritative):
+            return False
+        self.forget_derived(key)
+        # The stamp OUTLIVES the card it retired, so the removal can still be ordered against.
+        if revision:
+            self._retired[key] = revision
+        return True
+
+    def publish_derived(
+        self,
+        slot: Any,
+        payload: dict | None,
+        revision: str = "",
+        authoritative: bool = False,
+    ) -> bool:
+        """Store *payload* as *slot*'s card, if it is not older than what is stored.
+
+        *revision* is the source stamp the card was built FROM -- the record's ``published_at``.
+        It exists because a card is built in one hop and stored in another, so two requests can
+        interleave: a panel read snapshots a record, a publish stores a newer card, and the
+        delayed read then republishes its older snapshot as current. Nothing in the payload says
+        which board it describes, so without a stamp the store cannot tell a stale write from a
+        fresh one and simply takes the last arrival.
+
+        *authoritative* is the second half of the order, and it exists because the stamp alone
+        cannot carry it. That stamp is the record's ``published_at`` at SECOND granularity, and
+        nothing throttles a panel publish to one per second, so two records genuinely differing
+        can share a revision -- and ordering on the stamp alone then has to accept the tie,
+        which is the stale overwrite again with a smaller window rather than without one.
+        Comparing a finer clock would not help: the ambiguity is in the source stamp, not in
+        how it is read.
+
+        So a tie is broken by WHICH WRITER is calling, which the two callers already know:
+        the publish route holds the record it just wrote and is authoritative for that
+        revision; the panel read holds a snapshot that may be any age and is a refresher. At
+        an equal revision the refresher is refused, because the publish that minted that
+        revision already stored its card -- so the refusal drops nothing, while accepting it
+        is exactly how an older snapshot lands last. A refresher is still accepted when the
+        revision is NEWER (the store is behind, as after a restart) and when nothing is held
+        at all (there is no card to make stale), which is what keeps it a rehydrator.
+
+        An EMPTY *revision* is accepted, because a record with no ``published_at`` has no stamp
+        to compare and refusing it would drop a real board over a missing field. It does not
+        advance the stored stamp either, so it cannot make a later genuine write look older.
+
+        The payload is normalized by the host's own :func:`normalize_card`, exactly like a
+        model's is: a derived producer is still a producer and its output is still refused
+        rather than trusted. A refused card leaves the previous one in place, because a
+        board that briefly cannot be built is not a board that changed.
+        """
+        current = self.state._slots.get(slot.key)
+        if current is not slot:
+            # A scratch copy shares the live identity and its edits are not committed.
+            return False
+        if not _derived_allowed(slot):
+            return False
+        held = self.derived.get(slot.key)
+        if self._out_of_order(slot.key, revision, authoritative):
+            return False
+        # NOT ``_eligible``: that also excludes a session another session created, and its
+        # stated reason is the shared hourly budget -- a fan-out of workers would spend it
+        # and starve the session a person is following. A derived card spends nothing from
+        # that budget, so the exclusion has no force here, and a conductor dispatched by
+        # another session is exactly the case that must still get its board.
+        card = normalize_card(payload, (self.derived.get(slot.key) or {}).get("card"))
+        if card is None:
+            return False
+        # A panel read republishes the board every time it is served, so an OPEN drawer
+        # would otherwise announce a card event per read and have every dashboard client
+        # refetch bytes it already holds. Unchanged means BOTH the content and the owner:
+        # on an owner change ``_derived_for`` withholds the held card, so the client was
+        # shown nothing, and identical content from the new owner is news to it.
+        unchanged = (
+            held is not None
+            and held.get("owner") == slot._dashboard_card_identity
+            and held.get("card") == card
+        )
+        # The key is live again, so its retirement stamp has nothing left to order.
+        self.forget_retired(slot.key)
+        self.derived[slot.key] = {
+            "card": card,
+            # The owner identity travels with it: a slot's replacement session must not
+            # inherit the retired crew's board, which would be the one wrong thing a
+            # cached panel can do.
+            "owner": slot._dashboard_card_identity,
+            "published_at": self.publisher.wall_clock(),
+            # The SOURCE stamp, kept so the next write can be ordered against this one. Distinct
+            # from ``published_at``, which is when this store was written: two cards built from
+            # one record have the same revision and different store times, and it is the record
+            # they describe that decides which is newer.
+            "revision": revision or (held or {}).get("revision", ""),
+        }
+        # The STORE is written either way, even when the content is unchanged: the stamp it
+        # carries is what orders the next write, so leaving it at an older revision would let
+        # a delayed read's genuinely older board be accepted afterwards.
+        #
+        # NOT ``_changed``: it derives ``removed`` from whether the key is in the
+        # GENERATOR's queue, which a derived card never joins -- so routing a successful
+        # publish through it announces the card as REMOVED, and the client answers a
+        # removal by resetting the card query it was just handed. This says what happened.
+        if not unchanged:
+            self.state.broadcast_ws_owners("dashboard_card", {"slot": slot.key, "removed": False})
+        return True
+
+    def forget_derived(self, key: str) -> None:
+        """Drop *key*'s derived card. Called where the queue's entry is dropped."""
+        if self.derived.pop(key, None) is not None:
+            self._changed(key)
+
+    def _derived_for(self, slot: Any) -> dict | None:
+        held = self.derived.get(slot.key)
+        if held is None:
+            return None
+        # EVICTED, not merely hidden, on either refusal. Leaving the entry in place would
+        # keep withheld content in memory and let it reappear the moment the slot loosened
+        # again -- and a card nobody may read is not a card being kept, it is a leak waiting
+        # for the condition to flip back.
+        if held["owner"] != slot._dashboard_card_identity or not _derived_allowed(slot):
+            self.forget_derived(slot.key)
+            return None
+        return held
+
     async def read(self, slot: Any) -> dict:
         entry = self.publisher.entries.get(slot.key)
         empty = {
@@ -1026,6 +1256,21 @@ class CardLifecycle:
             "content_event_at": None,
             "stale": False,
         }
+        # BEFORE the ``enabled`` gate, for the reason above: a derived card is free, so
+        # the cost opt-in does not decide whether it is shown. Before the queue too -- a
+        # card the product derived from a fold is not in competition with one a model
+        # wrote about the same session, it is the more authoritative of the two.
+        held = self._derived_for(slot)
+        if held is not None:
+            return {
+                "card": copy.deepcopy(held["card"]),
+                "status": "published",
+                "published_at": held["published_at"],
+                # No generating event behind it and nothing pending to be stale against:
+                # it is rebuilt from the fold every time its own source is read.
+                "content_event_at": None,
+                "stale": False,
+            }
         if not self.enabled:
             return {**empty, "status": "disabled"}
         if not self._eligible(slot):

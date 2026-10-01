@@ -443,6 +443,24 @@ _lineage_seed_in_flight = False
 _lineage_failure_warned = False
 
 
+def _new_card_store(state: Any) -> Any:
+    """*state*'s dynamic-card store, constructed on first use. THE one constructor.
+
+    A module-level function rather than a method, because both callers need it and one of them
+    (``set_dynamic_cards_enabled``) is exercised against bare stub objects that carry only
+    ``_dynamic_cards`` -- a sibling method call would not resolve on those.
+
+    The import stays INSIDE the function: it is the deferred one that keeps the card lifecycle
+    off the gateway's boot stack, and a test asserts the module is not imported until a caller
+    actually needs a store.
+    """
+    if state._dynamic_cards is None:
+        from kiro_crew.dashboard.card_lifecycle import CardLifecycle
+
+        state._dynamic_cards = CardLifecycle(state)
+    return state._dynamic_cards
+
+
 def _attach_slot_parents(
     rows: "list[dict]", resolve_aliases: "Callable[[], dict[str, str] | None] | None" = None
 ) -> None:
@@ -10090,10 +10108,23 @@ class DashboardState:
                 live = getattr(self._slots[key], "_dashboard_card_identity", None)
                 if entry is not None and entry.owner != live:
                     self._dynamic_cards.publisher.forget(key)
+                # A DERIVED card is retired on exactly the same rule and for exactly the
+                # same reason: it was built for the closed transcript, so it goes with it
+                # rather than being presented by the replacement as its own.
+                held = self._dynamic_cards.derived.get(key)
+                if held is not None and held["owner"] != live:
+                    self._dynamic_cards.forget_derived(key)
             self.push_slots_update()
             return
         if self._dynamic_cards is not None:
             self._dynamic_cards.publisher.forget(key)
+            self._dynamic_cards.forget_derived(key)
+            # The retirement STAMP goes with the slot too. It is kept so a write arriving after a
+            # removal can still be ordered against it, and a slot that is definitively gone has
+            # no later write to order -- so keeping it past this point retains one string per
+            # slot the gateway ever hosted, for nothing. This is the only place that knows the
+            # removal is definitive rather than a replacement.
+            self._dynamic_cards.forget_retired(key)
         if self._has_legacy_slots_audience():
             self.push_slots_update(legacy_only=True)
         if self._has_slot_patch_clients():
@@ -10122,15 +10153,33 @@ class DashboardState:
         """Serialize one ``slot_patch`` frame and hand it to patch-capable sockets."""
         _websocket_for(self).send_ws_slot_patch(json.dumps({"type": "slot_patch", "data": data}))
 
+    def ensure_dynamic_card_store(self) -> Any:
+        """The card store, constructed if absent, with the MODEL path left off.
+
+        Delegates to the module-level :func:`_new_card_store` rather than sharing a method with
+        :meth:`set_dynamic_cards_enabled`, because that method is exercised against bare stub
+        objects carrying only ``_dynamic_cards`` -- a sibling method call would fail on them,
+        and the deferred-import assertion those tests make is about WHEN the import happens,
+        which a module-level function keeps true for both callers.
+
+        A derived card -- one the product assembles from a fold it already keeps -- costs no
+        call and spends nothing from the model path's hourly budget, so it is deliberately not
+        gated on the owner's opt-in to that cost. Constructing the container only inside
+        :meth:`set_dynamic_cards_enabled` would make a free card's availability depend on
+        TOGGLE HISTORY: never enabled means no store and therefore no card, while
+        enabled-once-then-off leaves a store behind and the card appears. Same feature,
+        opposite answers, decided by a switch neither answer is about.
+
+        Constructing it here with ``enabled`` untouched keeps the model path exactly as opt-in
+        as it was: no worker is started and no attempt is spent by existing.
+        """
+        return _new_card_store(self)
+
     def set_dynamic_cards_enabled(self, enabled: bool) -> None:
         """Post-bind activation; retain the producer and its budgets across toggles."""
-        if self._dynamic_cards is None:
-            if not enabled:
-                return
-            from kiro_crew.dashboard.card_lifecycle import CardLifecycle
-
-            self._dynamic_cards = CardLifecycle(self)
-        self._dynamic_cards.set_enabled(enabled)
+        if self._dynamic_cards is None and not enabled:
+            return
+        _new_card_store(self).set_enabled(enabled)
 
     def notify_dashboard_card(self, slot: "_ChatSlot", reason: str) -> None:
         """Queue semantic work from a real event, never from a read/serialize."""

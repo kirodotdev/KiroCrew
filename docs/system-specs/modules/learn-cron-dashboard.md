@@ -1716,19 +1716,50 @@ Settings > Developer > Feature Previews, and only while that preview flag
 are for reading. The config watcher applies UI, CLI and file edits alike.
 Its copy names the hourly attempt limit shared by all sessions, including failures.
 The optional producer is neither imported nor constructed during route or watcher
-registration. Both server entrypoints defer initial activation until after listening;
-default-off startup leaves it absent until the first live enable. Later toggles
-retain the same instance and budgets. Cleanup disables and awaits its worker.
+registration. Both server entrypoints defer initial activation until after listening.
+A DERIVED card -- one the product assembles from a fold it already keeps, with no model
+call and no attempt against the hourly budget -- constructs the store on first use with
+the model path still off, so a free card's availability does not depend on whether the
+cost opt-in was ever enabled. Later toggles
+retain the same instance and budgets, and disabling the model path does not discard a
+derived card. Cleanup disables and awaits its worker.
 Enabling queues eligible open sessions, and post-restore startup does the same
-when enabled. Only a ROOT session is eligible (`is_root_session`: no `created_by`
-and no session-tree parent, so an adopted worker is excluded too): every attempt
-comes from the one shared hourly budget, so a fan-out would otherwise spend it on
-workers and starve the session a person follows. A worker's card read answers
-`unavailable` without queuing work, and its team-panel tile shows host state only.
-The card's numbers are folded from the session's crew log and re-bound on each later
-crew-log event without a model call; the model writes only the layout and three
-sentences, and a card whose model part carries a digit is refused (see
-[artifacts](artifacts.md)). Live user/assistant messages, errors, turn completion and pending
+when enabled. Only a ROOT session is eligible for a MODEL card (`is_root_session`: no
+`created_by` and no session-tree parent, so an adopted worker is excluded too): every
+attempt comes from the one shared hourly budget, so a fan-out would otherwise spend it on
+workers and starve the session a person follows. A worker's MODEL card read answers
+`unavailable` without queuing work, and its team-panel tile shows host state only; that
+exclusion is about cost, so it does not apply to a derived card, which a dispatched session
+may carry. The privacy and remoteness exclusions apply to both, and a derived card re-checks
+them on every read rather than at publish alone, evicting one whose slot has since turned
+incognito or remote -- a stored card must not outlive the condition that permitted it. The
+MODEL card's numbers are folded from the session's crew log and re-bound on each later
+crew-log event without a model call; the model writes only the layout and three sentences,
+and a card whose model part carries a digit is refused (see [artifacts](artifacts.md)). A
+derived write carries the source record's publish stamp and an older one cannot overwrite a
+newer card, so a delayed read cannot republish a stale board as current; a record that carries
+no board evicts the card instead of leaving the last one published, ordered by that same
+stamp. An absent record is the one removal with no stamp to order by, so it evicts only from
+the AUTHORITATIVE publish route -- the writer, which just read the record -- while a
+non-authoritative panel read that found the board absent leaves a held card alone rather than
+drop a board a publish stored between its read and its store hop. A rebuild whose normalized
+card and owner are both unchanged is stored but NOT broadcast, so a panel read served
+repeatedly does not have every dashboard client refetch bytes it already holds; the store is
+still written, because the stamp it keeps is what orders the next write.
+The derived store is in MEMORY only. The panel record it is built from persists, but nothing
+rebuilds a card at startup or on a card-route miss, so a gateway restart leaves a conductor's
+board absent from the card surface until the next member-panel read republishes it. Today the
+drawer read is that producer. Removing the drawer rendering therefore REQUIRES the read path or
+startup to rebuild a missing derived card from the stored panel record first: without it, the
+change trades a surface that always renders for one that renders only after a restart is
+followed by a visit, which is a regression rather than the migration it is meant to be.
+One field on a derived board is NOT the card's to write: the lede is published by the crew,
+and the card can clip it but cannot correct it. So a publisher that writes "nothing yet" over
+a board whose round tile reads 3 contradicts the numbers beside it, and no gate here can stop
+that. Every phrase the card itself composes names its round instead of pointing at it, and the
+shipped sample board models the same shape, but the governing fix belongs with the prompt that
+asks a conductor for its judgment, which this module does not own.
+Live user/assistant messages, errors, turn completion and pending
 questions enqueue subsequent updates, independently of an attached stream
 reader. Replay, token chunks, GET and polling do not enqueue model work; that
 includes a History resume, whose rebuild replays the window while the slot is
