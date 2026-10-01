@@ -9,10 +9,9 @@ things must see that ceiling, and these tests pin both:
   (``/sys/fs/cgroup/memory.max``, absent on a bare host) and host
   ``MemAvailable`` -- so posture reads ``tight``/``critical`` and spawns are
   refused while the kernel is throttling the agent subtree;
-* the ``initialize`` handshake extends its budget while the slice is
-  throttling and refuses a still-alive, slow kiro-cli at the deadline with a
-  typed overload error instead of killing it and retrying into the same
-  throttle.
+* the ``initialize`` handshake refuses a still-alive, slow kiro-cli at the
+  end of its cold-start budget with a typed overload error while the slice is
+  throttling, instead of killing it and retrying into the same throttle.
 
 Each test here fabricates the slice's cgroup files under a temp directory and
 points ``sandbox._agents_slice_cgroup_dir`` at it; nothing reads the machine
@@ -34,7 +33,7 @@ import kiro_crew.sandbox as sb
 import kiro_crew.subagent as sa
 from kiro_crew.acp import runtime as runtime_mod
 from kiro_crew.acp.runtime import (
-    _INIT_TIMEOUT_UNDER_THROTTLE,
+    _INITIALIZE_TIMEOUT,
     _REQUEST_TIMEOUT,
     AcpRequestTimeout,
     AcpRuntime,
@@ -311,9 +310,13 @@ def _uninitialized_runtime() -> tuple[AcpRuntime, MagicMock]:
 
 class TestInitializeHandshakeUnderThrottle:
     @pytest.mark.asyncio
-    async def test_unthrottled_host_keeps_the_plain_budget(self, monkeypatch):
+    @pytest.mark.parametrize("throttled", [False, True], ids=["unthrottled", "throttled"])
+    async def test_initialize_gets_the_cold_start_budget(self, monkeypatch, throttled):
+        """A cold start is not a control-plane round trip: kiro-cli answers
+        ``initialize`` only once it has started, which can outlast the plain
+        request budget on an unthrottled host too."""
         rt, _ = _uninitialized_runtime()
-        monkeypatch.setattr(runtime_mod, "agents_slice_throttling", lambda: False)
+        monkeypatch.setattr(runtime_mod, "agents_slice_throttling", lambda: throttled)
         seen: dict[str, object] = {}
 
         async def _fake_send(method, params, timeout=None):
@@ -324,34 +327,20 @@ class TestInitializeHandshakeUnderThrottle:
         monkeypatch.setattr(rt, "_send_and_await", _fake_send)
         await rt._initialize_handshake({})
         assert seen["method"] == "initialize"
-        assert seen["timeout"] == _REQUEST_TIMEOUT
+        assert seen["timeout"] == _INITIALIZE_TIMEOUT
+        assert _INITIALIZE_TIMEOUT > _REQUEST_TIMEOUT
 
-    @pytest.mark.asyncio
-    async def test_throttled_host_gets_the_extended_budget(self, monkeypatch):
-        rt, _ = _uninitialized_runtime()
-        monkeypatch.setattr(runtime_mod, "agents_slice_throttling", lambda: True)
-        seen: dict[str, object] = {}
-
-        async def _fake_send(method, params, timeout=None):
-            seen["timeout"] = timeout
-            return {"agentCapabilities": {}}
-
-        monkeypatch.setattr(rt, "_send_and_await", _fake_send)
-        await rt._initialize_handshake({})
-        assert seen["timeout"] == _INIT_TIMEOUT_UNDER_THROTTLE
-        assert _INIT_TIMEOUT_UNDER_THROTTLE > _REQUEST_TIMEOUT
-
-    def test_extended_budget_expires_before_the_startup_watchdog_reaps(self):
+    def test_cold_start_budget_expires_before_the_startup_watchdog_reaps(self):
         """A subagent's ``info._pid`` is recorded only after ``provider.start()``
         returns, so the startup watchdog (``_is_startup_stalled_impl``: turns==0,
         ``_pid is None``, no first stream, ``_exec_started`` older than
         ``_STARTUP_TIMEOUT_SECS``) sees "no runtime" for the whole handshake.
-        If the throttled budget were as long as the watchdog window, the
-        reaper's ``_force_reap`` would kill the live runtime before
+        If the budget were as long as the watchdog window, the reaper's
+        ``_force_reap`` would kill the live runtime before
         ``AcpRuntimeOverloaded`` could be raised, and the caller would see a
         killed process instead of the overload verdict. Keep a margin for the
         subprocess spawn that runs between ``_exec_started`` and the handshake."""
-        assert _INIT_TIMEOUT_UNDER_THROTTLE <= sa._STARTUP_TIMEOUT_SECS - 30
+        assert _INITIALIZE_TIMEOUT <= sa._STARTUP_TIMEOUT_SECS - 30
 
     @pytest.mark.asyncio
     async def test_alive_and_throttled_at_deadline_is_overload(self, monkeypatch):
@@ -385,88 +374,74 @@ class TestInitializeHandshakeUnderThrottle:
 
     @pytest.mark.asyncio
     async def test_throttle_that_begins_mid_handshake_is_still_overload(self, monkeypatch):
-        """Without a still-pending request to wait on (the fake raises a bare
-        timeout), a late-detected throttle can only be reported as overload."""
+        """A fresh gateway's first probe only baselines the counter, so the
+        spawn-time read can miss a throttle already under way; the deadline's
+        own read still names the overload."""
         rt, _ = _uninitialized_runtime()
         readings = iter([False, True])
         monkeypatch.setattr(runtime_mod, "agents_slice_throttling", lambda: next(readings))
-        seen: dict[str, object] = {}
 
         async def _stall(method, params, timeout=None):
-            seen["timeout"] = timeout
             raise AcpRequestTimeout("Request initialize timed out")
 
         monkeypatch.setattr(rt, "_send_and_await", _stall)
         with pytest.raises(AcpRuntimeOverloaded):
             await rt._initialize_handshake({})
-        # Unthrottled at spawn, so the plain budget applied.
-        assert seen["timeout"] == _REQUEST_TIMEOUT
 
     @pytest.mark.asyncio
-    async def test_late_detected_throttle_keeps_the_request_pending(self, monkeypatch):
-        """A fresh gateway's first probe only baselines the counter, so the
-        spawn-time read misses a throttle already under way and the plain
-        budget applies. When the deadline then sees the throttle with the
-        process alive, the SAME initialize must be given the rest of the
-        extended budget -- its late answer is the handshake, not a leak."""
-        rt, _ = _uninitialized_runtime()
-        readings = iter([False, True])
-        monkeypatch.setattr(runtime_mod, "agents_slice_throttling", lambda: next(readings))
-        loop = asyncio.get_running_loop()
-        pending: asyncio.Future = loop.create_future()
-        rt._pending_requests[7] = pending
-
-        async def _stall(method, params, timeout=None):
-            exc = AcpRequestTimeout(f"Request {method} timed out after {timeout:g}s")
-            exc.req_id = 7
-            exc.adopted_future = pending
-            raise exc
-
-        monkeypatch.setattr(rt, "_send_and_await", _stall)
-        loop.call_later(0.01, pending.set_result, {"agentCapabilities": {"late": True}})
-        result = await rt._initialize_handshake({})
-        assert result == {"agentCapabilities": {"late": True}}
-
-    @pytest.mark.asyncio
-    async def test_late_detected_throttle_still_overloads_at_the_extended_deadline(
-        self, monkeypatch
-    ):
-        rt, _ = _uninitialized_runtime()
-        readings = iter([False, True])
-        monkeypatch.setattr(runtime_mod, "agents_slice_throttling", lambda: next(readings))
-        monkeypatch.setattr(runtime_mod, "_INIT_TIMEOUT_UNDER_THROTTLE", _REQUEST_TIMEOUT + 0.02)
-        loop = asyncio.get_running_loop()
-        pending: asyncio.Future = loop.create_future()
-        rt._pending_requests[9] = pending
-
-        async def _stall(method, params, timeout=None):
-            exc = AcpRequestTimeout(f"Request {method} timed out after {timeout:g}s")
-            exc.req_id = 9
-            exc.adopted_future = pending
-            raise exc
-
-        monkeypatch.setattr(rt, "_send_and_await", _stall)
-        with pytest.raises(AcpRuntimeOverloaded) as raised:
-            await rt._initialize_handshake({})
-        # The overload names the FULL budget the process was given.
-        assert f"{_REQUEST_TIMEOUT + 0.02:g}s" in str(raised.value)
-        # And the abandoned request is unregistered, so the reader loop has
-        # nothing to resolve for it.
-        assert 9 not in rt._pending_requests
-
-    @pytest.mark.asyncio
-    async def test_send_and_await_keeps_a_timed_out_initialize_registered(self, monkeypatch):
-        """The extension above is only possible if the transport hands the
-        still-pending request back instead of dropping it on timeout."""
+    async def test_unthrottled_slow_cold_start_succeeds_within_the_budget(self, monkeypatch):
+        """The reported failure: no throttle, kiro-cli answers ``initialize``
+        after the plain request budget. Through the real transport, with both
+        budgets scaled down, the late answer is the handshake."""
         rt, proc = _uninitialized_runtime()
-        proc.stdin.write = MagicMock()
+        monkeypatch.setattr(runtime_mod, "agents_slice_throttling", lambda: False)
+        monkeypatch.setattr(runtime_mod, "_REQUEST_TIMEOUT", 0.05)
+        monkeypatch.setattr(runtime_mod, "_INITIALIZE_TIMEOUT", 5.0)
+        loop = asyncio.get_running_loop()
+
+        def _answer() -> None:
+            for req_id in list(rt._pending_requests):
+                rt._pending_requests.pop(req_id).set_result({"agentCapabilities": {"ok": True}})
+
+        proc.stdin.write = MagicMock(side_effect=lambda _data: loop.call_later(0.2, _answer))
+        result = await rt._initialize_handshake({})
+        assert result == {"agentCapabilities": {"ok": True}}
+
+    @pytest.mark.asyncio
+    async def test_initialize_past_the_budget_still_times_out(self, monkeypatch):
+        rt, _ = _uninitialized_runtime()
+        monkeypatch.setattr(runtime_mod, "agents_slice_throttling", lambda: False)
+        monkeypatch.setattr(runtime_mod, "_INITIALIZE_TIMEOUT", 0.05)
         with pytest.raises(AcpRequestTimeout) as raised:
-            await rt._send_and_await("initialize", {}, timeout=0.01)
-        req_id = getattr(raised.value, "req_id", None)
-        adopted = getattr(raised.value, "adopted_future", None)
-        assert req_id is not None and adopted is not None
-        assert rt._pending_requests[req_id] is adopted
-        assert not adopted.done()
+            await rt._initialize_handshake({})
+        assert not isinstance(raised.value, AcpRuntimeOverloaded)
+        assert "timed out after 0.05s" in str(raised.value)
+
+    @pytest.mark.asyncio
+    async def test_failed_handshake_cleanup_leaves_no_unretrieved_future(self, monkeypatch):
+        """The timed-out ``initialize`` is unregistered, so the cleanup kill's
+        ``_mark_dead`` has no pending future to fail that nobody will read --
+        the source of asyncio's "Future exception was never retrieved"."""
+        import gc
+
+        rt, _ = _uninitialized_runtime()
+        monkeypatch.setattr(runtime_mod, "agents_slice_throttling", lambda: False)
+        monkeypatch.setattr(runtime_mod, "_INITIALIZE_TIMEOUT", 0.05)
+        loop = asyncio.get_running_loop()
+        reported: list[dict] = []
+        previous = loop.get_exception_handler()
+        loop.set_exception_handler(lambda _loop, ctx: reported.append(ctx))
+        try:
+            with pytest.raises(AcpRequestTimeout):
+                await rt._initialize_handshake({})
+            assert not rt._pending_requests
+            rt._mark_dead("killed (failed init handshake cleanup)")
+            await asyncio.sleep(0)
+            gc.collect()
+            await asyncio.sleep(0)
+        finally:
+            loop.set_exception_handler(previous)
+        assert [c.get("message") for c in reported] == []
 
     @pytest.mark.asyncio
     async def test_exited_process_is_a_plain_timeout(self, monkeypatch):
