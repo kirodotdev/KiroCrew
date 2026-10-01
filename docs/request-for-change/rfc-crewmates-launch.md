@@ -5,6 +5,7 @@ author: CrysisDeu
 created: 2026-09-22
 last-audited: 2026-09-22
 audited-at: 87553ba866
+revision: 2026-10-01 — §11 roster-as-floating-card amendment
 doc-pr:
 implementation-prs: [12797, 12798, 12805, 12806, 12924, 14897, 14914, 14925]
 tracking-issues: []
@@ -467,3 +468,109 @@ component, so "one editor" is literally true in code, is the committed follow-up
 Provenance: accepted by the product owner on 2026-09-30 (CREW-18688), recorded
 here ahead of the implementation PR (#15275) so the decision lands on main
 before the code that relies on it.
+
+## 11. Amendment — the roster is a floating card, not a full-height column
+
+Status: ACCEPTED 2026-10-01 (product owner). This section supersedes screen
+01's "the Crewmates tab shows the roster first … one column away" layout and
+screen 05's centred thread-header identity pill, **for the roster list only**.
+The roster's contents, grouping, filters and the identity pill's edit behaviour
+(§10) are unchanged; what changes is where the roster lives and how it is
+summoned.
+
+The problem this fixes: today the roster is a permanent full-height side column
+beside every crewmate chat (`<aside>` with `w-[var(--roster-w)]`, a draggable
+`ResizeHandle` on its right edge, in `MembersPage.tsx`). For a person with one
+crewmate it is a column of one, taking fixed horizontal room from the only
+conversation they have; for a person with several it is still always open,
+whether or not they are switching. The chat is the place a person spends their
+time, and the roster is a switch they reach for occasionally — the layout gives
+them the opposite weights.
+
+Decision:
+
+- **The roster is a floating card, not a full-height column.** When shown it
+  overlays the chat (it does not reserve a column of its own), anchored at the
+  top-left under the crewmate avatar. Its height fits its contents — as tall as
+  the number of crewmates, not the viewport — so a small crew gets a small card.
+- **The crewmate avatar moves from the centre of the thread header to the
+  top-left corner.** It stops being a centred identity pill and becomes the
+  page's top-left anchor; its edit-on-click behaviour from §10 is unchanged.
+- **A toggle sits directly under the avatar.** Functionally a hamburger: it
+  shows and hides the floating roster card, which opens directly beneath it.
+  The toggle is visible only while the card is **closed** — once the card is
+  open it carries its own close affordance, so the hamburger steps aside (the
+  same split the side-panel opener already makes: `panelChrome`'s `showOpener`
+  hides the opener while the docked panel is open). The exact glyph and
+  placement are provisional — "for now" — and may be refined as the surface is
+  built; the toggle's *job* (show/hide the card) is the decided part.
+- **The toggle and the card appear only when more than one crewmate is
+  defined.** With exactly one crewmate there is nothing to switch to: no
+  toggle, no card, and the chat takes the full width. The count that gates this
+  is the roster the page already reads, not team membership.
+- **Open/closed is persisted** across members and reloads, in the dashboard's
+  existing `mc-` localStorage family (the same idiom as the roster filters and
+  the side-panel-open flag — e.g. a new `mc-members-roster-open` key), per
+  gateway origin. It is a property of the page's furniture, not of any one
+  crewmate.
+
+This replaces the roster UI entirely: there is no mode in which the full-height
+column and the floating card both exist. The full-height `<aside>` and its
+width variable are removed, not toggled.
+
+Default when first shown (no persisted value, more than one crewmate): the card
+starts **collapsed**. The point of the change is to give the chat the room; a
+person who wants the roster open presses the toggle once and the choice sticks.
+
+Why this shape:
+
+- A floating card over the chat, rather than a resized column, keeps the chat
+  at full width whenever the roster is not actively being used, which is most
+  of the time.
+- Height-fitting to the crew removes the empty expanse a short crew saw in a
+  full-height column, and keeps the card from reading as a second permanent
+  panel.
+- Gating on `> 1` crewmate means the single-crewmate case — the first thing a
+  new person has — carries no chrome for a choice they cannot make.
+
+Backward compatibility: this is a layout change to one page. No route, API,
+config key or i18n key name changes; the roster rows, grouping, filters and the
+identity-pill editor are the same components in a new container. The one removed
+affordance is the roster column's width `ResizeHandle` (see Open question
+below). The new localStorage key is additive; its absence reads as the default
+(collapsed) above, so an existing install loses no state.
+
+Open questions:
+
+1. **The width resize handle — RESOLVED 2026-10-01: removed.** A height-fit
+   floating card has no column width to drag, so the `ResizeHandle` on the
+   roster's right edge is removed outright. The card is not width-resizable or
+   draggable.
+2. **Dismiss-on-outside-click vs. explicit toggle only — RESOLVED 2026-10-01:
+   toggle only.** The card closes only when the toggle is pressed again; a click
+   into the chat behind it does not hide it. This matches the persisted-state
+   model — hiding the switcher is a deliberate act, not a side effect of
+   returning to the conversation.
+3. **Narrow viewport (below `md`) — RESOLVED 2026-10-01: keep today's layout,
+   but the gate applies on both.** The floating-card model is a wide-viewport
+   concern; below the medium breakpoint the page stays single-pane and the
+   roster keeps its existing full-screen behaviour — the floating card and the
+   avatar/hamburger relocation do NOT apply there. What DOES carry across both
+   layouts is the show-at-all gate: the roster affordance (the toggle + card on
+   wide; the roster route/entry on narrow) appears only when more than one
+   crewmate is defined — i.e. the built-in default plus at least one custom
+   crewmate. With exactly one crewmate there is nothing to switch to on either
+   viewport.
+
+Implementation: frontend-only, in `website/src/pages/members/MembersPage.tsx`
+and the shared list-shell/thread-header pieces it composes. The parity tests
+that pin the roster to the shared list-shell classes
+(`src/test/listShellParity.test.ts`, `src/test/kiroLightShellHooks.test.ts`)
+and the resize-handle parity test (`src/test/ResizeHandle.parity.test.tsx`) are
+the ones most likely to move with this change and must be updated in the same
+commit.
+
+Provenance: accepted by the product owner on 2026-10-01, recorded here ahead of
+the implementation PR so the product-shape decision — a floating card replacing
+a full-height panel, gated on crew size — lands on main before the code that
+relies on it, per the First Principles lane's base-branch read.
