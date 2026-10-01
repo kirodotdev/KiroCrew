@@ -372,6 +372,92 @@ class TestAnEmptyLibraryDoesNotVetoTheWholeRestore:
         assert (home / "artifacts" / "kept.md").is_file(), out
         assert (home / "artifacts" / "imported.md").read_text() == "saved while the restore ran"
 
+    def test_rollback_leaves_a_later_tree_the_restore_never_mutated(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """A saved rollback copy is not ownership of a target the mutation never reached.
+
+        Both present trees are saved in phase one.  The artifact replacement fails before
+        the uploads pass starts, after a dashboard upload lands.  Recovery must restore the
+        artifact tree it removed without replacing uploads from its older phase-one copy.
+        """
+        home = _home(tmp_path, monkeypatch)
+        bundle = _snapshot(tmp_path, "artifacts", "uploads")
+        real_copytree = snap._copytree_safe
+        failed = False
+
+        def fail_artifacts_after_upload(src, dst, **kwargs):
+            nonlocal failed
+            if Path(dst) == home / "artifacts" and not failed:
+                failed = True
+                (home / "uploads" / "concurrent.bin").write_bytes(b"arrived during restore")
+                raise OSError("disk full")
+            return real_copytree(src, dst, **kwargs)
+
+        monkeypatch.setattr(snap, "_copytree_safe", fail_artifacts_after_upload)
+        rc = _restore(bundle, "replace", "artifacts", "uploads")
+        out = capsys.readouterr().out
+
+        assert rc == 1, out
+        assert (home / "artifacts" / "report.md").read_text() == "# quarterly report\n"
+        assert (home / "uploads" / "concurrent.bin").read_bytes() == b"arrived during restore"
+
+    def test_rollback_restores_a_locked_document_this_run_replaced(self, tmp_path):
+        """A locked document the run reached is put back on rollback -- main's behavior.
+
+        Locked documents are OUT OF SCOPE for this PR's non-locked ownership guard: they
+        keep exactly main's rollback rule. A replace that reached the locked document
+        (`rel in installed`) and saved a copy of the prior roster must, on rollback, put
+        that saved copy back VERBATIM. Driven straight at `_restore_everything_from_rollback`
+        -- the recovery function the guard narrowing touched -- to prove the locked-doc
+        branch still restores regardless of that guard.
+        """
+        from kiro_crew import snapshot_restore
+
+        rel = "crew-teams/teams.json"
+        mc = tmp_path / "home"
+        store = mc / "crew-teams"
+        store.mkdir(parents=True)
+        # The live roster was replaced during the run; the prior roster sits in the backup.
+        (store / "teams.json").write_text("live roster after the failed replace")
+        backup = tmp_path / "pre-restore"
+        (backup / "crew-teams").mkdir(parents=True)
+        (backup / rel).write_text("the roster before the restore")
+
+        # The run reached this locked document, so the mutation ledger records it.
+        installed = {rel}
+        failed = snapshot_restore._restore_everything_from_rollback(backup, mc, [rel], installed)
+        assert failed == [], failed
+        assert (
+            store / "teams.json"
+        ).read_text() == "the roster before the restore", "the saved roster was not put back"
+
+    def test_rollback_leaves_a_locked_document_this_run_never_reached(self, tmp_path):
+        """A locked document the run never reached is left alone -- main's behavior.
+
+        The narrowed guard leaves an unreached NON-LOCKED target alone; a locked document
+        the run never reached (`rel not in installed`, no saved copy) must also be left
+        exactly as it stands. This pins that the guard narrowing did not start deleting or
+        rewriting a locked document the restore never opened -- the live roster, including
+        any edit that landed independently, survives untouched.
+        """
+        from kiro_crew import snapshot_restore
+
+        rel = "crew-teams/teams.json"
+        mc = tmp_path / "home"
+        store = mc / "crew-teams"
+        store.mkdir(parents=True)
+        (store / "teams.json").write_text("an untouched live roster")
+        backup = tmp_path / "pre-restore"
+        backup.mkdir()  # the run never reached this document, so nothing was saved for it
+
+        installed: set[str] = set()  # not in the mutation ledger
+        failed = snapshot_restore._restore_everything_from_rollback(backup, mc, [rel], installed)
+        assert failed == [], failed
+        assert (
+            store / "teams.json"
+        ).read_text() == "an untouched live roster", "rollback disturbed an unreached roster"
+
     def test_a_hollow_memory_declaration_is_still_refused(self, tmp_path, monkeypatch, capsys):
         """The case the guard was written for, which the narrowing must not reach."""
         home = _home(tmp_path, monkeypatch)
