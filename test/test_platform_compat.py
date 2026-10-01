@@ -6454,8 +6454,9 @@ def test_traversed_components_visits_a_hop_in_the_middle_of_a_chain(tmp_path):
 
     Neither ``realpath`` then ``.parents`` nor a lexical walk over the entry names
     ``writable``; the component walk records it because it reads it. The symlinks
-    themselves are absent: their mode is meaningless and the directory holding
-    them governs their replacement.
+    themselves are absent: their mode is meaningless, and
+    ``traversed_components_and_links`` reports them for a question that needs
+    their owners.
     """
     from kiro_crew import platform_compat
 
@@ -6498,6 +6499,40 @@ def test_traversed_components_visits_both_sides_of_a_symlinked_directory_compone
     assert holder.resolve() in components
     assert (holder / "bin").resolve() in components
     assert prefix / "bin" not in components, "the symlink itself is not a component"
+
+
+def test_traversed_components_and_links_names_every_symlink_the_walk_follows(tmp_path):
+    """The final name's link, a hop in the middle and a symlinked directory alike.
+
+    Each is spelled under a directory the walk read, which is where its owner's
+    right to replace it is decided in a sticky directory, and the directories
+    are exactly what ``traversed_components`` answers for the same path.
+    """
+    from kiro_crew import platform_compat
+
+    if platform_compat.IS_WINDOWS:  # pragma: no cover - POSIX symlinks
+        pytest.skip("POSIX symlink semantics")
+
+    (tmp_path / "hop").mkdir()
+    (tmp_path / "dir").mkdir()
+    entry, middle, _writable, target = _hop_chain(tmp_path / "hop")
+    via_dir, prefix, _holder, _leaf = _symlinked_component_chain(tmp_path / "dir")
+
+    def spelled(link: Path) -> Path:
+        return link.parent.resolve() / link.name
+
+    for path, expected in ((entry, [entry, middle]), (via_dir, [prefix / "bin"])):
+        walk = platform_compat.traversed_components_and_links(path)
+
+        assert walk is not None
+        components, links = walk
+        assert components == platform_compat.traversed_components(path)
+        assert links == [spelled(link) for link in expected]
+        assert all(link.parent in components for link in links)
+    assert platform_compat.traversed_components_and_links(target) == (
+        platform_compat.traversed_components(target),
+        [],
+    )
 
 
 def test_traversed_components_is_none_on_a_symlink_loop(tmp_path):

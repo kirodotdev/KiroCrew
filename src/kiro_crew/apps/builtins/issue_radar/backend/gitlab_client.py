@@ -249,7 +249,7 @@ def _glab_run(
     argv: list[str], *, host: str, timeout: float, input_text: str | None = None
 ) -> subprocess.CompletedProcess:
     """Single spawn chokepoint for every ``glab`` call -- replaces argv[0] with
-    the trusted canonical glab and passes the minimal, host-pinned env."""
+    the validated glab and passes the minimal, host-pinned env."""
     resolved_host = _resolve_host(host)
     glab = _glab_bin()
     operation = f"glab {' '.join(argv[1:3])}"  # e.g. "glab api projects/…" (bounded)
