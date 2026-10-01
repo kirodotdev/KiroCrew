@@ -87,6 +87,7 @@ from kiro_crew.effort import (
     model_supports_effort,
     resolve_effort_for_model,
 )
+from kiro_crew.managed_capabilities import ManagedCapabilityReceipt
 from kiro_crew.mcp_hot_reload import mcp_hot_reload_supported, parse_kiro_cli_version
 from kiro_crew.messaging.link import telemetry_channel_of
 from kiro_crew.providers.base import (
@@ -2357,6 +2358,19 @@ class AcpProvider(LLMProvider):
         if isinstance(self._client, AcpSessionProvider):
             return self._client.native_context_documents
         return {}
+
+    @property
+    def managed_context_receipt(self) -> object | None:
+        """Post-initialization receipt from the active session provider only."""
+        if not isinstance(self._client, AcpSessionProvider):
+            return None
+        receipt = self._client.managed_context_receipt
+        if not isinstance(receipt, ManagedCapabilityReceipt):
+            return None
+        return ManagedCapabilityReceipt(
+            context_incarnation=self.context_incarnation,
+            documents=receipt.documents,
+        )
 
     @property
     def native_steering(self) -> bool:

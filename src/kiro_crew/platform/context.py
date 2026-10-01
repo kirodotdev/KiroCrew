@@ -45,6 +45,7 @@ if TYPE_CHECKING:  # avoid import cycles — config.loader imports heavy modules
         ImportSourceProvider,
         JailProvider,
         KnowledgeProvider,
+        ManagedContextProvider,
         McpToolingProvider,
         MemoryFilesProvider,
         MobileConnectProvider,
@@ -349,6 +350,10 @@ class PlatformContext:
     # the single constructor and the companion's ``dataclasses.replace`` paths
     # need no change beyond opting in.
     governance: "Optional[GovernanceCeiling]" = None
+
+    # Edition-owned catalog of managed context expected by provider sessions.
+    # Optional for compatibility with companion contexts built against v1.
+    managed_context: "Optional[ManagedContextProvider]" = None
 
     def __post_init__(self) -> None:
         """Bind the ``CapabilityManager`` bound + warn on reserved-slot overrides.

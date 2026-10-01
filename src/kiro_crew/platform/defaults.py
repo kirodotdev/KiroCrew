@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     from kiro_crew.tips_pool import TipsPool
 
 from kiro_crew import security, sso_status
+from kiro_crew.managed_capabilities import ManagedCapabilityCatalog
 from kiro_crew.platform.interfaces import (
     BUILTIN_PROVISIONER_ID,
     CapabilityResult,
@@ -349,6 +350,13 @@ class DefaultAgentCatalogProvider:
 
     def builtin_agents(self) -> List[Dict[str, Any]]:
         return []
+
+
+class DefaultManagedContextProvider:
+    """No edition-managed context catalog in the standalone build."""
+
+    def managed_context_catalog(self) -> object:
+        return ManagedCapabilityCatalog()
 
 
 class DefaultPromptSourceProvider:

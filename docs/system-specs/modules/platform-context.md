@@ -58,6 +58,7 @@ omit the policy.
 | `mcp_tooling` | adapter | `DefaultMcpToolingProvider` (all methods empty) | enterprise MCP server + skills + provider MCP scopes |
 | `agent_catalog` | adapter | `DefaultAgentCatalogProvider` (`builtin_agents()` → `[]`) | edition agent-catalog rows |
 | `prompt_sources` | adapter | `DefaultPromptSourceProvider` (`prompt_source_roots()` → `[]`) | edition prompt/SOP roots |
+| `managed_context` | adapter | `DefaultManagedContextProvider` (`managed_context_catalog()` → absent immutable catalog) | edition-owned expected-document catalog; provider receipts remain session-specific |
 | `skill_discovery` | adapter | `DefaultSkillDiscoveryProvider` (`skill_providers()` → `[]`) | edition skill discovery providers for the multi-provider search |
 | `tips` | adapter | `DefaultTipsProvider` (`tips_pool()` → `None`) | the edition's feature-tip pool. The one **REPLACE-capable** seam: a supplied `TipsPool` takes over from the public curated file AND the docs-scan catalog instead of being unioned into them, because a public tip advertises a capability an edition build may not have or may not expose. An empty pool means "this build shows no tips" |
 | `denied_rules` | adapter | `DefaultDeniedRuleProvider` (`denied_rules()` → `[]`) | edition denied-command rules that are default-on but USER-DISABLEABLE (distinct from `security`, the un-weakenable overlay floor) |
@@ -1248,6 +1249,19 @@ is byte-identical) with no `CONTRACT_VERSION` bump.
     A companion frontend that toggles a seam scope MUST send that scope's boolean
     explicitly to change it. (Equivalent alternative, not chosen: unify all scopes
     on preserve-on-omit and have every client always send explicit booleans.)
+- `ManagedContextProvider.managed_context_catalog() -> ManagedCapabilityCatalog` —
+  WIRED: `ContextBuilder` reads the immutable edition-owned catalog through
+  `safe_context_call`. The standalone default is absent and therefore emits no
+  frame. Catalog bytes cannot attest provider loading: `AVAILABLE` additionally
+  requires a post-initialization `ManagedCapabilityReceipt` whose incarnation
+  equals the live `ContextPromptProvider.context_incarnation`. Missing, stale,
+  duplicate, empty or ambiguous receipt evidence remains `UNVERIFIED`. Durable
+  frame presence is stored only on an existing matching transcript incarnation;
+  cold `session/load` resumes may recover a nondefinitive frame from that bit,
+  while unreadable metadata alone cannot promote the standalone absent catalog.
+  The seam
+  deliberately exposes no package paths or discovery layout, so an enterprise
+  companion owns those details without reintroducing them into public core.
 - `PromptSourceProvider.prompt_source_roots() -> List[Path]` — WIRED: the dashboard
   prompt listing (`handlers/__init__._list_aim_prompts`) walks each returned root
   generically (`rglob('*.sop.md')`) for prompt/SOP markdown, replacing the former

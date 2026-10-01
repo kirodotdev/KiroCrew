@@ -40,6 +40,7 @@ from kiro_crew.platform.defaults import (
     DefaultImportSourceProvider,
     DefaultJailProvider,
     DefaultKnowledgeProvider,
+    DefaultManagedContextProvider,
     DefaultMcpToolingProvider,
     DefaultMemoryFilesProvider,
     DefaultMobileConnectProvider,
@@ -166,6 +167,7 @@ def build_default_context(
         remote_provisioners=DefaultRemoteProvisionerProvider(),
         feature_apps=(),
         governance=governance,
+        managed_context=DefaultManagedContextProvider(),
     )
 
 

@@ -155,7 +155,16 @@ a guarantee that a silent trim recovers on the next turn.
 
 `context_provider_type` reports the actual backend label, independent of the
 installation's `agent.provider` setting. `native_context_documents` defaults to
-empty. Kiro's launch plan captures admitted selected-template sources after
+empty and records launch responsibility only; it is not evidence that the provider
+loaded a document. `managed_context_receipt` is the separate post-initialization
+attestation surface. `AcpSessionProvider` exists only after `session/new|load`, agent
+activation and the bounded initialization drain succeed; it emits an immutable
+receipt from the documents transferred to that handle and binds it to the provider's
+exact `context_incarnation`. The outer `AcpProvider` delegates only after its
+placeholder client has been replaced by that session provider. Pre-start, failed-start
+and unsupported direct-client paths return `None`. A receipt is accepted only when
+its `context_incarnation` equals the live provider's.
+Kiro's launch plan captures admitted selected-template sources after
 materialization and governance checks. Successful activation of that same agent
 in the same cwd transfers source responsibility to the handle. This relies on
 Kiro's supported `--agent` prompt/resources contract, not a per-file model receipt.

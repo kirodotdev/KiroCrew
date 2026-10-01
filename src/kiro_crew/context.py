@@ -52,6 +52,11 @@ from kiro_crew.hooks import (
     safe_read_file_bytes_nolink,
 )
 from kiro_crew.learn import LessonStore
+from kiro_crew.managed_capabilities import (
+    ManagedCapabilityCatalog,
+    ManagedCapabilityReceipt,
+    build_managed_capabilities_block,
+)
 from kiro_crew.member_essential_context import (
     _MAX_DOCUMENTS,
     ESSENTIAL_MAX_CHARS,
@@ -133,6 +138,10 @@ _stores_lock = threading.Lock()
 _DEFAULT_KEY = "default"
 _WS_KEY_PREFIX = "ws:"
 _STORE_KEY_PREFIX = "store:"
+# Monotonic for one transcript incarnation: once that conversation received a
+# managed frame, an evicted text cache must recover a nondefinitive frame. The
+# field leaves with the transcript on deletion and grants no capability rights.
+_MANAGED_CAPABILITY_METADATA_KEY = "managed_capability_frame_present"
 
 
 def cached_vector_store_entries() -> tuple[tuple[str, "VectorMemoryStore"], ...]:
@@ -653,6 +662,11 @@ _STRUCTURAL_MARKER_RES: tuple[re.Pattern[str], ...] = (
     # the variable-tail convention above.
     re.compile(r"\[\s*REINJECTED\s*AFTER\s*COMPACTION\s*[-]{1,2}", re.IGNORECASE),
     re.compile(r"\[\s*END\s*REINJECTED\s*\]", re.IGNORECASE),
+    # Managed-capability evidence is a trusted provider observation.  Its
+    # genuine frame is minted after untrusted context and user text are
+    # scrubbed; copies in either source must lose their authority markers.
+    re.compile(r"\[\s*MANAGED\s*CAPABILITIES\s*[-]{1,2}", re.IGNORECASE),
+    re.compile(r"\[\s*END\s*MANAGED\s*CAPABILITIES\s*\]", re.IGNORECASE),
     # Folder steering's own frame. Forging the opener presents attacker text
     # (a channel message, a memory line, a steering BODY) as operator-selected
     # folder rules "to follow as you would project steering" -- an escalation.
@@ -3292,6 +3306,7 @@ class ContextBuilder:
     # readings of it are held at once.
     _MAX_SUBAGENTS_TOKEN = "{{MAX_SUBAGENTS}}"
     _CAP_FIGURE_SESSIONS = 512
+    _MANAGED_CAPABILITY_SESSIONS = 512
 
     @staticmethod
     def get_memory_for(
@@ -3441,6 +3456,12 @@ class ContextBuilder:
         # read-evict-insert transaction is guarded.
         self._cap_figures: dict[str, str] = {}
         self._cap_figures_lock = threading.Lock()
+        # Managed-capability evidence is captured from provider receipts at
+        # session start and re-used verbatim after compaction. The bounded text
+        # LRU may evict a frame; the owning transcript retains a monotonic
+        # presence bit so a later cache miss can recover only UNVERIFIED state.
+        self._managed_capabilities: dict[str, str] = {}
+        self._managed_capabilities_lock = threading.Lock()
         # Captured for the Jev decision point at `skills.select`. Production
         # reaches `build_message` only through `run_in_embed_pool`, a thread
         # executor with no running loop, so the point cannot obtain one where it
@@ -3678,6 +3699,154 @@ class ContextBuilder:
                 memo.pop(next(iter(memo)), None)
             memo[key] = figure
             return figure
+
+    def _managed_capability_catalog(self):
+        """Read one typed catalog through the composed platform seam."""
+        from kiro_crew.platform.context import current_context, safe_context_call
+
+        provider = current_context().managed_context
+        if provider is None:
+            return ManagedCapabilityCatalog()
+        fallback: object = ManagedCapabilityCatalog(
+            problems=("managed context provider failed to return a catalog",),
+            present=True,
+        )
+        catalog = safe_context_call(
+            provider.managed_context_catalog,
+            fallback=fallback,
+            log_message="managed context catalog lookup failed",
+        )
+        if isinstance(catalog, ManagedCapabilityCatalog):
+            return catalog
+        return ManagedCapabilityCatalog(
+            problems=("managed context provider returned an invalid catalog",),
+            present=True,
+        )
+
+    @staticmethod
+    def _managed_capability_receipt(context_provider: "ContextPromptProvider | None"):
+        """Return documents confirmed by this provider incarnation only."""
+        if context_provider is None:
+            return (), "provider supplied no post-initialization receipt"
+
+        def _read_receipt():
+            receipt = context_provider.managed_context_receipt
+            if not isinstance(receipt, ManagedCapabilityReceipt):
+                return (), "provider supplied no post-initialization receipt"
+            if receipt.context_incarnation != context_provider.context_incarnation:
+                return (), "provider receipt belongs to a different context incarnation"
+            return receipt.documents, ""
+
+        try:
+            return _read_receipt()
+        except Exception:
+            # Receipt metadata is advisory after platform composition. A broken
+            # provider property must degrade this frame, never abort the turn.
+            return (), "provider receipt could not be verified"
+
+    def _managed_transcript_created_at(self, transcript_key: str) -> str | None:
+        """Snapshot the transcript incarnation that may receive presence metadata."""
+        if not transcript_key or self.conversation_log is None:
+            return None
+        try:
+            metadata, readable = self.conversation_log.get_metadata_status(transcript_key)
+        except (OSError, TypeError, ValueError):
+            logger.warning(
+                "managed capability transcript identity could not be read", exc_info=True
+            )
+            return None
+        if not readable or not isinstance(metadata, dict):
+            return None
+        created_at = metadata.get("created_at")
+        return created_at if isinstance(created_at, str) and created_at else None
+
+    def _session_had_managed_capability_frame(self, transcript_key: str) -> bool | None:
+        """Read durable presence; ``None`` means the metadata is unreadable."""
+        if not transcript_key or self.conversation_log is None:
+            return False
+        try:
+            metadata, readable = self.conversation_log.get_metadata_status(transcript_key)
+        except (OSError, TypeError, ValueError):
+            logger.warning("managed capability metadata could not be read", exc_info=True)
+            return None
+        if not readable or not isinstance(metadata, dict):
+            return None
+        if _MANAGED_CAPABILITY_METADATA_KEY not in metadata:
+            return False
+        return metadata[_MANAGED_CAPABILITY_METADATA_KEY] is not False
+
+    def _remember_managed_capability_frame(
+        self, transcript_key: str, transcript_created_at: str | None
+    ) -> None:
+        """Persist presence only while the exact owning transcript still exists."""
+        if (
+            not transcript_key
+            or self.conversation_log is None
+            or not isinstance(transcript_created_at, str)
+            or not transcript_created_at
+        ):
+            return
+
+        def _owns_transcript(metadata: dict) -> bool:
+            return (
+                metadata.get("_type") == "metadata"
+                and metadata.get("created_at") == transcript_created_at
+            )
+
+        try:
+            self.conversation_log.update_metadata_if(
+                transcript_key,
+                {_MANAGED_CAPABILITY_METADATA_KEY: True},
+                _owns_transcript,
+                require_existing=True,
+            )
+        except (OSError, TypeError, ValueError):
+            logger.warning("managed capability metadata could not be written", exc_info=True)
+
+    def _session_managed_capability_block(
+        self,
+        session_key: str,
+        catalog,
+        documents: tuple[str, ...],
+        receipt_problem: str,
+        *,
+        transcript_key: str,
+        transcript_created_at: str | None,
+        refresh: bool,
+    ) -> str:
+        """Capture one provider-evidence block and restore it after compaction."""
+        if not session_key:
+            return build_managed_capabilities_block(
+                catalog,
+                documents,
+                cache_miss=not refresh,
+                receipt_problem=receipt_problem,
+            )
+        key = self._cap_memo_key(session_key)
+        with self._managed_capabilities_lock:
+            if not refresh and key in self._managed_capabilities:
+                block = self._managed_capabilities.pop(key)
+                self._managed_capabilities[key] = block
+                return block
+        durable_presence = (
+            None if refresh else self._session_had_managed_capability_frame(transcript_key)
+        )
+        if durable_presence is True:
+            catalog = ManagedCapabilityCatalog(present=True)
+        block = build_managed_capabilities_block(
+            catalog,
+            documents,
+            cache_miss=not refresh,
+            receipt_problem=receipt_problem,
+        )
+        if refresh and block:
+            self._remember_managed_capability_frame(transcript_key, transcript_created_at)
+        with self._managed_capabilities_lock:
+            memo = self._managed_capabilities
+            if key not in memo and len(memo) >= self._MANAGED_CAPABILITY_SESSIONS:
+                memo.pop(next(iter(memo)), None)
+            memo[key] = block
+        return block
 
     @staticmethod
     def _resolve_prompt_templates(prompt: str, session_key: str, cap_figure: str = "") -> str:
@@ -5153,6 +5322,8 @@ class ContextBuilder:
         minimal_context: bool = False,
         *,
         runtime_source: str | None = None,
+        transcript_key: str | None = None,
+        transcript_created_at: str | None = None,
         request_prefix_context: str | None = None,
         exclude_last_n: int = 0,
         folder_path: str | None = None,
@@ -5226,16 +5397,58 @@ class ContextBuilder:
             blocks_reads or self._session_memory_modes.get(session_key or "") == "temporary"
         )
         native_documents: dict[str, str] = {}
+        managed_capability_block = ""
         context_provider = context_provider_of(context_provider)
         if context_provider is not None:
             candidate_delivery = context_provider.essential_delivery
             if isinstance(candidate_delivery, EssentialDelivery):
                 delivery = candidate_delivery
                 provider_type = context_provider.context_provider_type
-                if project is None:
-                    project = context_provider.cwd or None
                 if is_new_session and not resumed and not needs_reinjection:
                     native_documents = context_provider.native_context_documents
+                if project is None:
+                    project = context_provider.cwd or None
+        managed_transcript_key = (
+            transcript_key
+            if isinstance(transcript_key, str) and transcript_key
+            else session_key or ""
+        )
+        if transcript_created_at is None and is_new_session and not resumed:
+            transcript_created_at = self._managed_transcript_created_at(managed_transcript_key)
+        if is_new_session:
+            catalog = self._managed_capability_catalog()
+            if resumed:
+                managed_capability_block = self._session_managed_capability_block(
+                    session_key or "",
+                    catalog,
+                    (),
+                    "",
+                    transcript_key=managed_transcript_key,
+                    transcript_created_at=transcript_created_at,
+                    refresh=False,
+                )
+            else:
+                documents, receipt_problem = self._managed_capability_receipt(context_provider)
+                managed_capability_block = self._session_managed_capability_block(
+                    session_key or "",
+                    catalog,
+                    documents,
+                    receipt_problem,
+                    transcript_key=managed_transcript_key,
+                    transcript_created_at=transcript_created_at,
+                    refresh=True,
+                )
+        elif needs_reinjection:
+            catalog = self._managed_capability_catalog()
+            managed_capability_block = self._session_managed_capability_block(
+                session_key or "",
+                catalog,
+                (),
+                "",
+                transcript_key=managed_transcript_key,
+                transcript_created_at=transcript_created_at,
+                refresh=False,
+            )
         is_custom = agent and agent != "kirocrew"
         hook_result = self.hooks.on_message(text)
 
@@ -5471,6 +5684,13 @@ class ContextBuilder:
                         + session_ctx
                         + "[END OF SESSION CONTEXT]\n\n"
                     )
+            # The provider-native observation is trusted transport metadata, not
+            # prompt text.  Its frame is minted only after the session-context
+            # scrub so an identical marker in memory or history cannot survive
+            # as a second authoritative block.
+            if managed_capability_block:
+                parts.append(managed_capability_block)
+
             # Folder-inherited steering: the ONE delivery seam for every
             # provider. No is_cc / is_custom gate on purpose -- kiro-cli,
             # Claude Code, Codex, KAS and any config-authored harness all
@@ -5576,6 +5796,8 @@ class ContextBuilder:
                 parts.append(
                     f"[AGENT SYSTEM PROMPT]\n{_agent_prompt}\n[END AGENT SYSTEM PROMPT]\n\n"
                 )
+            if managed_capability_block:
+                parts.append(managed_capability_block)
             # The stored-memory half routes through the same config intersection
             # as the session-start build: this path restores a block that build
             # withheld, so reading the caller scope alone would hand back the

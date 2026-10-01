@@ -2704,7 +2704,12 @@ async def _run_task(args: argparse.Namespace) -> None:
     # config.json's hooks section (the agent cannot write the keystone file).
     hooks = HookManager(hooks_config_from_config_dict(cfg.hooks))
     ctx = ContextBuilder(
-        memory=memory, skills=skills, hooks=hooks, lessons=lessons, bot_name=cfg.agent.bot_name
+        memory=memory,
+        skills=skills,
+        hooks=hooks,
+        lessons=lessons,
+        conversation_log=conv_log,
+        bot_name=cfg.agent.bot_name,
     )
     register_skill_read_observer(ctx)
     runner = TaskRunner(

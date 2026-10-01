@@ -573,6 +573,21 @@ def _read_and_tighten_turn_execution(
     return tightened_live or execution.with_mode(retained_mode)
 
 
+def _read_transcript_created_at(conversation_log: Any, transcript_key: str) -> str:
+    """Return the exact readable transcript incarnation, or ``""`` fail-closed."""
+    if conversation_log is None or not transcript_key:
+        return ""
+    try:
+        metadata, readable = conversation_log.get_metadata_status(transcript_key)
+    except (OSError, TypeError, ValueError):
+        logger.warning("managed transcript identity could not be read", exc_info=True)
+        return ""
+    if not readable or not isinstance(metadata, dict):
+        return ""
+    created_at = metadata.get("created_at")
+    return created_at if isinstance(created_at, str) and created_at else ""
+
+
 async def _persist_tool_result_rows(state: Any, slot: Any) -> Any:
     """Persist tool rows without leaving a same-file replacement looser."""
     history_key = slot_history_key(slot)
@@ -13169,6 +13184,14 @@ async def _run_chat(
             # context, taking the skills index with it. Read-and-clear the flag
             # here so this turn re-injects the index exactly once.
             _needs_reinjection = consume_reinjection(state.sessions, session_key)
+            _transcript_key = slot_history_key(slot)
+            _transcript_created_at: str | None = None
+            if _context_is_new and not _provider_has_history:
+                _transcript_created_at = await asyncio.to_thread(
+                    _read_transcript_created_at,
+                    state.conversation_log,
+                    _transcript_key,
+                )
             # Folder steering directories, resolved LIVE from the committed
             # folder tree rather than from a value cached on the slot, so a
             # folder edit or a re-file reaches the chats already inside it at
@@ -13244,6 +13267,8 @@ async def _run_chat(
                 blocks_reads=slot.blocks_reads,
                 provider_type=cfg.agent.provider,
                 runtime_source="dashboard",
+                transcript_key=_transcript_key,
+                transcript_created_at=_transcript_created_at,
                 request_prefix_context=_request_prefix_context or None,
                 exclude_last_n=1,
                 folder_path=folder_path,

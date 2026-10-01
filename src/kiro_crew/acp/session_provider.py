@@ -51,6 +51,7 @@ from kiro_crew.acp.types import (
 from kiro_crew.agent_sdk import host_auth
 from kiro_crew.config.paths import kiro_sessions_dir
 from kiro_crew.constants import COMPACT_WAIT_TIMEOUT_SECS
+from kiro_crew.managed_capabilities import ManagedCapabilityReceipt
 from kiro_crew.mcp_gateway.claim import schedule_claim
 from kiro_crew.providers.base import CancelOutcome, LLMEvent, LLMProvider
 from kiro_crew.recovery.ladder import InfraError
@@ -558,6 +559,20 @@ class AcpSessionProvider(LLMProvider):
     @property
     def native_context_documents(self) -> dict[str, str]:
         return dict(self._handle.native_context_documents)
+
+    @property
+    def managed_context_receipt(self) -> object | None:
+        """Documents accepted by this successfully initialized ACP session."""
+        documents = self.native_context_documents
+        if not documents or any(
+            not isinstance(path, str) or not isinstance(body, str)
+            for path, body in documents.items()
+        ):
+            return None
+        return ManagedCapabilityReceipt(
+            context_incarnation=self.context_incarnation,
+            documents=tuple(documents[path] for path in sorted(documents)),
+        )
 
     @property
     def native_steering(self) -> bool:

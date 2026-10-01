@@ -55,6 +55,9 @@ class ContextPromptProvider(Protocol):
     def native_context_documents(self) -> dict[str, str]: ...
 
     @property
+    def managed_context_receipt(self) -> object | None: ...
+
+    @property
     def native_steering(self) -> bool: ...
 
     @property

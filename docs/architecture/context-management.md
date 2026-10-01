@@ -56,30 +56,49 @@ cannot disagree with what was sent.
 | 10 | `[WORKSPACE IDENTITY]` | `workspace_dir_for` | `kirocrew` agent only |
 | 11 | `[DOCUMENTATION]` | `_build_docs_section`, the packaged docs dir | `kirocrew` agent, `project` group |
 | 12 | `[Steering resources]` | `_load_steering_resources` → `file://*.md` in `~/.kiro/agents/kirocrew.json` | **Claude Code backend**, `kirocrew` agent, `project` group |
-| 13 | `[THREAD CONVERSATION HISTORY]` | `build_session_replay` (lossless, newest first), else `_recall_rows` truncation | new, non-resumed session |
-| 14 | `[PREVIOUS TURN WAS CANCELLED …]` | `_build_stop_event_notes` | recent user stop |
-| 15 | `[Memory …]` + `[Memory activity index]` + `[Memory activity]` + `[Memory tools]` | `memory.py` → `get_context`, `activity_index`, `get_activity_context` | not temporary, `memory` group; the activity block also needs `memory.inject_activity` |
-| 16 | `[Skills:]` (pinned bodies, then discovery) | `skill_runtime/delivery.py` → `get_context` | see §4 |
-| 17 | `[Learned corrections …]` | vector `get_lessons_context`, else `lessons.jsonl` | `lessons` group |
-| 18 | `## Recent Session Context` | `conversation_log.recent_with_provenance` | `memory` group |
-| 19 | `[RESPONSE PREFERENCES]` | `_build_response_preferences_section` | reply-style level set |
-| 20 | `[CONVERSATION HISTORY …]` | outer replay, `build_session_replay` | compressed history passed |
+| 13 | `[MANAGED CAPABILITIES]` | `managed_capabilities.py` → typed `ManagedContextProvider` catalog intersected with an incarnation-bound `ContextPromptProvider.managed_context_receipt` | managed catalog present; minted after untrusted-context scrubbing |
+| 14 | `[THREAD CONVERSATION HISTORY]` | `build_session_replay` (lossless, newest first), else `_recall_rows` truncation | new, non-resumed session |
+| 15 | `[PREVIOUS TURN WAS CANCELLED …]` | `_build_stop_event_notes` | recent user stop |
+| 16 | `[Memory …]` + `[Memory activity index]` + `[Memory activity]` + `[Memory tools]` | `memory.py` → `get_context`, `activity_index`, `get_activity_context` | not temporary, `memory` group; the activity block also needs `memory.inject_activity` |
+| 17 | `[Skills:]` (pinned bodies, then discovery) | `skill_runtime/delivery.py` → `get_context` | see §4 |
+| 18 | `[Learned corrections …]` | vector `get_lessons_context`, else `lessons.jsonl` | `lessons` group |
+| 19 | `## Recent Session Context` | `conversation_log.recent_with_provenance` | `memory` group |
+| 20 | `[RESPONSE PREFERENCES]` | `_build_response_preferences_section` | reply-style level set |
+| 21 | `[CONVERSATION HISTORY …]` | outer replay, `build_session_replay` | compressed history passed |
 
 **A Memory V2 member is the one exception to this order.** Its essentials
 envelope (`_build_v2_essentials`) is not a row in the table: the last step of
 `build_session_context` splices it in immediately after the critical-rules block,
 ahead of every other block. Three rows are suppressed for it, each on the same
 `not essentials` gate: the member row (6), steering (12) and the memory family
-(15) — the envelope carries its own persona, project documents and memory
+(16) — the envelope carries its own persona, project documents and memory
 binding, so re-injecting those would duplicate them (§5). Read the table as the
 V1 / non-member order.
+
+The managed-capability frame is intentionally outside the background session
+wrapper. `build_message` first scrubs memory, history, and user-controlled
+markers, then reads an immutable catalog from the edition's
+`ManagedContextProvider`. The standalone provider returns an absent catalog and
+therefore emits no frame. The catalog identifies expected provider
+representations but cannot earn `AVAILABLE` by itself; only a
+post-initialization `ManagedCapabilityReceipt` bound to the live
+`context_incarnation` can do that. Capability IDs and expected-content digests
+must each be unique, receipt content must be nonempty valid UTF-8, and exactly
+one receipt body must match. Any malformed, inconsistent, over-cap, stale,
+missing, duplicate, or ambiguous catalog/receipt evidence suppresses definitive
+states and reports `UNVERIFIED`. A coherent catalog may explicitly report
+`UNAVAILABLE`. Package layout, event selection, and race-safe discovery remain
+enterprise-adapter responsibilities and do not exist in public core. The block
+is advisory and never grants tool, deployment, or authorization rights.
 
 Then the per-turn blocks of §2 follow, and the user's own text is last. This
 build happens *after* the user's message arrives, so it lands directly on
 time-to-first-token: `build_session_context` stamps `_mark(...)` per group
 (`member`, `preamble`, `profile`, `workspace`, `docs`, `steering`,
 `thread_history`, `stop_notes`, `memory`, `skills`, `lessons`, `provenance`,
-`finalize`) and `_emit_context_section_timings` logs and histograms them.
+`finalize`) and `_emit_context_section_timings` logs and histograms them. The
+post-scrub managed-capability frame is measured from the final prompt by
+`context_blocks.py` under the stable `managed_capabilities` label.
 
 ### What memory contributes at session start
 
@@ -263,7 +282,25 @@ re-adds, once:
    This one is the *session-start* copy: `{{MAX_SUBAGENTS}}` carries the reading
    `_session_cap_figure` took when the session started, because the cap in force
    is derived from live host conditions and a second reading would hand the
-   session a contract it never agreed to, differing in a number it never chose.
+   session a contract it never agreed to, differing in a number it never chose;
+6. `[MANAGED CAPABILITIES]` — the exact provider-evidence block captured at
+   session start. `_session_managed_capability_block` restores that cached text
+   verbatim even when the provider object is unavailable. A monotonic presence
+   bit lives in the owning transcript's metadata, so it survives ordinary close,
+   restart, and resumable persistent sessions without retaining session keys in
+   process memory. The runtime session key remains the in-process cache identity;
+   the dashboard separately passes the transcript key and its observed
+   `created_at` incarnation. Presence is written with a require-existing,
+   incarnation-guarded merge, so deletion or transcript replacement wins and an
+   unbound channel tab cannot create a dashboard-named phantom file. Deleting the
+   transcript retires the bit with that session incarnation. If the bounded text
+   cache no longer has a transcript positively marked as managed, the bit forces
+   a generic `UNVERIFIED` cache-miss frame without consulting later definitive
+   state. A cold first turn restored through `session/load` consults the same bit
+   even when the process-local reinjection flag and text cache were lost. An
+   unreadable metadata line is unknown, not positive presence: a live managed
+   catalog still degrades through its own cache-miss path, while a standalone
+   absent catalog remains inert.
 
 If that turn does not land (cancelled, refused, errored), `rearm_reinjection` puts
 the flag back, so the context is never lost to a failed turn.

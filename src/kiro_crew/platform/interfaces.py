@@ -616,6 +616,14 @@ class AgentCatalogProvider(Protocol):
         ...
 
 
+class ManagedContextProvider(Protocol):
+    """Edition-owned immutable managed-context catalog snapshots."""
+
+    def managed_context_catalog(self) -> object:
+        """Return the current typed catalog; the public default is absent."""
+        ...
+
+
 class PromptSourceProvider(Protocol):
     """Edition-contributed prompt/SOP source roots the dashboard lists.
 

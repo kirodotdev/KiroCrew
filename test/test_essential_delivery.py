@@ -983,3 +983,34 @@ async def test_provider_receipt_wrap_and_history_invalidation_contract(env, adap
     await send(target, build(env, target, project=str(env.project)))
     await send(target, build(env, target, project=str(env.project)))
     assert [message.count(HEADER) for message in wire.messages] == [1, 0, 0, 1, 0]
+
+
+@pytest.mark.asyncio
+async def test_shared_native_documents_do_not_elide_warm_reinjection(env):
+    native = dict(documents_for_member("writer-template", str(env.project), native_only=True))
+    body = "Bound Soul: preserve the user's voice."
+    assert body in native.values()
+    wire = Wire(env.project, ACP_BACKEND_KIRO)
+    handle = SimpleNamespace(
+        prompt=wire.stream_events,
+        session_id="shared-reinjection",
+        cwd=str(env.project),
+        served_model="",
+        native_context_documents=native,
+    )
+    runtime = SimpleNamespace(process_instance="runtime-reinjection", acp_backend=ACP_BACKEND_KIRO)
+    target = AcpSessionProvider(handle, runtime)
+
+    await send(target, build(env, target, fresh=True, project=str(env.project)))
+    await send(
+        target,
+        build(
+            env,
+            target,
+            needs_reinjection=True,
+            project=str(env.project),
+        ),
+    )
+
+    assert [message.count(body) for message in wire.messages] == [0, 1]
+    assert [message.count(HEADER) for message in wire.messages] == [1, 1]

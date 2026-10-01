@@ -248,6 +248,38 @@ async def _settle(slot) -> None:
 
 
 @pytest.mark.asyncio
+async def test_context_builder_receives_unbound_channel_transcript_identity(tmp_path) -> None:
+    context_builder = MagicMock()
+    context_builder.build_message = MagicMock(return_value=("task", None))
+    state, client = _runner_state(tmp_path, context_builder=context_builder)
+    slot = _slot("slack_1700000000.000001")
+    slot.channel_origin = True
+    slot.created_at = "slot-incarnation"
+    state._slots[slot.key] = slot
+    await asyncio.to_thread(
+        state.conversation_log.update_metadata,
+        "slack_1700000000.000001",
+        {"created_at": "channel-incarnation"},
+    )
+    bindings = ResolvedBindings(
+        workspace_dir=tmp_path,
+        memory_store_name="default",
+        effective_memory_config={},
+        kiro_agent="kirocrew",
+        selection_kind="template",
+    )
+    client.stream = MagicMock(return_value=_async_iter([_complete()]))
+
+    with patch.object(chat_runner, "resolve_agent_bindings", return_value=bindings):
+        await _drive(state, slot)
+
+    call = state.context_builder.build_message.call_args
+    assert call.args[2] == "dashboard:slack_1700000000.000001"
+    assert call.kwargs["transcript_key"] == "slack_1700000000.000001"
+    assert call.kwargs["transcript_created_at"] == "channel-incarnation"
+
+
+@pytest.mark.asyncio
 async def test_turn_start_folds_temporary_line_over_live_incognito(tmp_path, monkeypatch) -> None:
     """The metadata privacy ratchet outranks a looser live-first carrier."""
     from kiro_crew import execution_context

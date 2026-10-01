@@ -124,6 +124,11 @@ class LLMProvider(ABC):
         """Exact documents supplied at native startup, empty without evidence."""
         return {}
 
+    @property
+    def managed_context_receipt(self) -> object | None:
+        """Post-initialization loaded-document receipt, absent by default."""
+        return None
+
     @abstractmethod
     async def start(self) -> None:
         """Initialize the provider (spawn process, create client, etc.)."""
