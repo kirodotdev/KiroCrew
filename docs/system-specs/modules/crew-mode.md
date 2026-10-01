@@ -1323,10 +1323,11 @@ passes as `crewmateTranscript`, because the policy-block marker lives on an
 system-forced continuation to the user. User messages keep their existing
 rendering. The run position is exported (`crewmateRunPosition`) for a
 reply-thread footer to reuse; no DOM attribute is stamped until that reader
-exists. The reply thread's own panel
-(`pages/members/ThreadPanel`, see history.md) is that reader: it draws the
-crewmate's replies on the same `crewmateRunPosition` / `crewmateBubbleClass`
-rule; the user's replies are always singles.
+exists. The thread panel (`pages/members/ThreadPanel`, see history.md) is that
+reader once the VERSION 1 fold ships, which lands in a follow-up (history.md):
+the panel's version 1 branch draws no replies at all today, so `crewmateBubbleClass`
+is its only import here and `crewmateRunPosition` still has no reader. A live thread is an ordinary session rendered by the ordinary chat pane,
+so its own bubbles follow that pane's rules rather than these.
 
 **Session links resolve.** A crewmate's prose names sessions constantly — the
 worker it dispatched, the session it is answering about — as a `/chat?sid=…`

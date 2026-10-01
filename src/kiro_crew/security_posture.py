@@ -795,13 +795,28 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "StreamRedactor mirroring the main chat for the side-question stream.",
     ),
     (
-        "Reply-thread stream and store",
+        "Reply-thread anchors and seed",
         "dashboard/chat_threads.py",
-        "Three boundaries of a reply thread on a crewmate chat message: the "
-        "StreamRedactor on the crewmate's live reply (as the side panel's), the "
-        "thread envelope (parent, surrounding chat and prior replies, which "
-        "kiro-cli persists into its own session file), and every stored reply "
-        "and quoted parent on its way out of the sidecar to the browser.",
+        "Every free-text boundary an anchored thread has. A thread's own turns run "
+        "in an ordinary session, so its live stream is redacted by the main chat's "
+        "own sink and nothing here duplicates that. What this module owns is the "
+        "text that crosses between a thread and its parent: the anchor title on the "
+        "way in (`open_thread`) and again on the way out (`summarize`), so a title "
+        "stored under an older redactor is re-run through the current one; the seed "
+        "built from the quoted parent and any in-flight snapshot, which kiro-cli "
+        "persists into the thread's own session file; the closing summary card "
+        "written back into the parent; and every version 1 sidecar reply and quoted "
+        "parent projected to the browser.",
+    ),
+    (
+        "Reply-thread parent-context projection",
+        "dashboard/thread_projection.py",
+        "The parent's wording on its way INTO a thread, which leaves the host twice: "
+        "each fold group goes to a summarizer as a prompt, and the block is queued "
+        "into the thread's turn, which kiro-cli persists. The anchor's transcript "
+        "text (`_anchor_text`) and every digest line carrying a body (`digest_row`) "
+        "are scrubbed, whole text before the clip so a secret straddling the cap is "
+        "not cut into an unmatchable fragment.",
     ),
     (
         "Steering file metadata",

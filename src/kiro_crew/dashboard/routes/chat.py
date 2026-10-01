@@ -138,12 +138,21 @@ def register(app: web.Application) -> None:
     # Note — visible transcript line + silent next-turn context, no LLM turn
     app.router.add_post("/api/chat/slots/{slot}/note", chat.api_chat_slot_note)
     app.router.add_post("/api/chat/slots/{slot}/fork", chat.api_chat_slot_fork)
-    # Reply threads on a crewmate chat message. The literal ``/threads`` summary
-    # is registered before the ``{mid}`` pattern that would otherwise capture
-    # "threads" as an id, per this module's ordering rule.
+    # Threads on a chat message: the anchor index, one anchor, and the opener.
+    # The literal ``/threads`` summary is registered before the ``{mid}`` pattern
+    # that would otherwise capture "threads" as an id, per this module's ordering
+    # rule. ``{mid}`` on the open route also admits the literal ``inflight``,
+    # which means "the reply being written right now" -- a streaming row has no
+    # mid, so the backend resolves the anchor to the turn's own prompt.
     app.router.add_get("/api/chat/threads", chat_threads.api_chat_threads_summary)
+    # Registered BEFORE ``{mid}``: aiohttp matches in registration order, and
+    # ``context`` would otherwise be swallowed as a message id and refused as an
+    # invalid mid. It names no slot -- the caller's own thread is resolved from the
+    # verified session key -- so it needs no ``{mid}`` of its own.
+    app.router.add_get("/api/chat/threads/context", chat_threads.api_chat_thread_context)
     app.router.add_get("/api/chat/threads/{mid}", chat_threads.api_chat_thread_detail)
-    app.router.add_post("/api/chat/threads/{mid}/reply", chat_threads.api_chat_thread_reply)
+    app.router.add_post("/api/chat/threads/{mid}/open", chat_threads.api_chat_thread_open)
+    app.router.add_post("/api/chat/threads/{mid}/close", chat_threads.api_chat_thread_close)
     app.router.add_post("/api/chat/slots/{slot}/side/open", handlers.api_side_open)
     app.router.add_post("/api/chat/slots/{slot}/side/turn", handlers.api_side_turn)
     app.router.add_post("/api/chat/slots/{slot}/side/close", handlers.api_side_close)

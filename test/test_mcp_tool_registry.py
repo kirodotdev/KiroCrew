@@ -186,3 +186,35 @@ def test_no_unresolvable_free_names(domain: str) -> None:
             unresolved[fn.name] = gap
 
     assert unresolved == {}, f"{domain}: unresolvable names {unresolved}"
+
+
+def test_thread_context_read_is_on_the_always_mounted_server() -> None:
+    """A thread's injected context block names this tool and tells the model to
+    call it, so it has to be on a server every session mounts.
+
+    ``kirocrew-dashboard`` is an OPT-IN set: the default agent's spec references
+    neither the server nor its tools, so a thread run by that agent mounted no
+    dashboard tool at all. Asked directly, such a thread answered that it had no
+    tool of this name and offered ``get_chat_session`` instead -- the block was
+    promising a capability the session did not have. ``kirocrew-core`` is always
+    mounted, which is what makes the promise keepable.
+    """
+    from kiro_crew import mcp_dashboard
+    from kiro_crew.mcp_tools import build_tool_list
+
+    core = {t["name"] for t in build_tool_list()}
+    dashboard = {t["name"] for t in mcp_dashboard._list_tools()}
+    assert "thread_context_read" in core
+    assert "thread_context_read" not in dashboard
+    # And it is reachable, not merely advertised.
+    from kiro_crew.mcp_tools import sessions
+
+    assert "thread_context_read" in sessions.HANDLERS
+
+
+def test_the_thread_context_tool_stays_walled_off_from_channel_agents() -> None:
+    """Moving servers must not widen containment: the channel block matches the
+    tool NAME across every qualified spelling, so the entry still covers it."""
+    from kiro_crew.channel import CHANNEL_AGENT_BLOCKED_TOOLS
+
+    assert "thread_context_read" in CHANNEL_AGENT_BLOCKED_TOOLS

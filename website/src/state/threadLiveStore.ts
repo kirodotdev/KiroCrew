@@ -1,42 +1,49 @@
 /**
- * The crewmate's reply as it streams into ONE thread.
+ * A thread's live ANCHOR state, keyed `slot + mid`.
  *
- * Framework-free, `useSyncExternalStore`-shaped, keyed by `slot + mid`. The
- * stored replies live in React Query (`threadsApi`); this store holds only the
- * text of the reply that is still being written, fed by `chat.thread_reply`
- * frames. The terminal frame (`final`) clears the row: the panel then reads the
- * stored reply from the refetched query, so streamed text is never shown twice.
+ * It holds the anchor and nothing else: which slot a parent message's thread
+ * resolved to, and whether that thread has been closed. The `chat.thread_anchor`
+ * frame feeds it, so a thread opened or closed in another tab reaches this one's
+ * footers without a poll.
  *
- * Deltas are grouped by `run_id`: a frame for another run than the one held
- * replaces the row rather than appending, so a late chunk from an earlier
- * reply cannot be glued onto a newer one.
+ * No transcript is mirrored here. A thread is an ordinary chat session
+ * (NOTES D1), so its messages stream on the THREAD SLOT'S OWN frames and the
+ * ordinary chat state owns them — the surface rendering a thread is the ordinary
+ * chat pane, which already has them. The anchor is the one fact no ordinary chat
+ * frame carries, which is why it needs a store of its own.
  *
- * A reconnect drops every row (`reset`): the terminal frame of a reply that
- * finished while the socket was down was never delivered, so a row held across
- * the gap would show a partial reply forever. The stored replies are the
- * truth; the reconnect refetches them.
+ * `useSyncExternalStore`-shaped and framework-free. A reconnect drops every row
+ * (`reset`): announcements made while the socket was down were never delivered,
+ * so the anchor index is refetched rather than trusted from memory.
  *
- * The same module keeps each thread's unsent draft (`drafts`), keyed the same
- * way, so closing a thread and opening it again finds what was typed. Memory
- * only: a draft is not persisted across reloads, as the main composer's is not.
+ * The same module keeps each thread's unsent draft (`threadDrafts`), memory
+ * only, as the main composer's is.
  */
 
 export interface ThreadLive {
-  runId: string
-  text: string
-  /** A plain-language failure from the terminal frame; the row is kept so the
-   *  panel can show it until the next reply is sent. */
-  error?: string
+  /** The thread's own slot key, once known. */
+  threadSlot: string
+  title?: string
+  /** Set by a `closed` announcement; the thread then reads as finished. The
+   *  frame carries no timestamp of its own, so the moment it arrived is used —
+   *  the anchor read that follows replaces it with the stored value. */
+  closedAt?: string
 }
 
-export interface ThreadReplyFrame {
+/**
+ * One `chat.thread_anchor` frame. `event` says what happened to the anchor —
+ * the frame announces anchor changes only, never a thread's message text, which
+ * is why it carries no `run_id`, no `role` and no `content`.
+ */
+export interface ThreadAnchorFrame {
   slot: string
   mid: string
-  run_id: string
-  role: 'user' | 'assistant' | string
-  content: string
-  final?: boolean
-  is_error?: boolean
+  thread_slot: string
+  event: 'opened' | 'closed'
+  title?: string
+  opened_by?: string
+  summary_mid?: string
+  ts?: number
 }
 
 const EMPTY_LISTENERS: ReadonlySet<() => void> = new Set()
@@ -53,34 +60,27 @@ export class ThreadLiveStore {
     for (const fn of this.listeners.get(key) ?? EMPTY_LISTENERS) fn()
   }
 
-  /** Apply one wire frame. User frames carry no live text and are ignored here
-   *  (the stored reply arrives through the query refetch). */
-  apply(frame: ThreadReplyFrame): void {
-    if (frame.role !== 'assistant') return
+  /** Apply one anchor announcement. A frame naming no thread slot says nothing
+   *  this store can hold, so it is dropped rather than stored as a blank row. */
+  apply(frame: ThreadAnchorFrame): void {
+    if (!frame.thread_slot) return
     const key = ThreadLiveStore.key(frame.slot, frame.mid)
-    if (frame.final) {
-      if (frame.is_error) {
-        this.rows.set(key, { runId: frame.run_id, text: '', error: frame.content })
-      } else {
-        this.rows.delete(key)
-      }
-      this.notify(key)
-      return
-    }
+    // A CLOSE names the thread it ended, and the row may already hold a
+    // different one: closing releases the message, so a replacement thread can be
+    // opened on the same mid before a close frame for the old one arrives (two
+    // tabs, or an agent ending a thread while the reader starts the next). Keyed
+    // by `(slot, mid)` alone, that stale close would overwrite the live
+    // replacement with the ended thread's slot -- the footer would read "Ended"
+    // and point at a conversation nobody is in. So a close applies only to the
+    // thread it actually names. An OPEN is the newest word on that mid by
+    // definition and always replaces.
     const held = this.rows.get(key)
-    const text = held && held.runId === frame.run_id && !held.error ? held.text + frame.content : frame.content
-    this.rows.set(key, { runId: frame.run_id, text })
+    if (frame.event === 'closed' && held && held.threadSlot !== frame.thread_slot) return
+    const row: ThreadLive = { threadSlot: frame.thread_slot }
+    if (frame.title) row.title = frame.title
+    if (frame.event === 'closed') row.closedAt = new Date().toISOString()
+    this.rows.set(key, row)
     this.notify(key)
-  }
-
-  /** A new reply was just sent: drop a stale error so the panel shows the pending state. */
-  clearError(slot: string, mid: string): void {
-    const key = ThreadLiveStore.key(slot, mid)
-    const held = this.rows.get(key)
-    if (held?.error) {
-      this.rows.delete(key)
-      this.notify(key)
-    }
   }
 
   subscribe(slot: string, mid: string, listener: () => void): () => void {
@@ -101,7 +101,7 @@ export class ThreadLiveStore {
     return this.rows.get(ThreadLiveStore.key(slot, mid))
   }
 
-  /** Drop every live row and tell every subscriber. Called on WS reconnect. */
+  /** Drop every row and tell every subscriber. Called on WS reconnect. */
   reset(): void {
     const keys = [...this.rows.keys()]
     this.rows.clear()
@@ -111,7 +111,7 @@ export class ThreadLiveStore {
 
 export const threadLiveStore = new ThreadLiveStore()
 
-/** Unsent reply text per thread, kept while the panel is closed. */
+/** Unsent text per thread, kept while the thread's surface is closed. */
 export const threadDrafts = {
   store: new Map<string, string>(),
   get(slot: string, mid: string): string {
@@ -120,29 +120,6 @@ export const threadDrafts = {
   set(slot: string, mid: string, text: string): void {
     const key = ThreadLiveStore.key(slot, mid)
     if (text) this.store.set(key, text)
-    else this.store.delete(key)
-  },
-}
-
-export type PendingReply = { id: string; text: string }
-
-/**
- * The reply id of the send in flight or the one that last failed, per thread,
- * with the text it was minted for. It lives beside the draft rather than in the
- * panel, because it has to outlive the panel: a send whose 202 was lost on the
- * wire keeps its draft, and if the user closes the panel and retries later the
- * SAME id must go out again so the server hands back the stored row instead of
- * appending a second reply and starting a second turn. Cleared only once the
- * server has confirmed the reply.
- */
-export const threadPendingReplies = {
-  store: new Map<string, PendingReply>(),
-  get(slot: string, mid: string): PendingReply | null {
-    return this.store.get(ThreadLiveStore.key(slot, mid)) ?? null
-  },
-  set(slot: string, mid: string, pending: PendingReply | null): void {
-    const key = ThreadLiveStore.key(slot, mid)
-    if (pending) this.store.set(key, pending)
     else this.store.delete(key)
   },
 }

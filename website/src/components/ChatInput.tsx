@@ -201,6 +201,7 @@ function ChatInput({
   promptOptimizer = true,
   collapsible = false,
   connected = true,
+  inThread = false,
   onOptimizeResult,
 }: ChatInputProps) {
   // Under a `<Composer draft>` root the text arrives through the root's store,
@@ -640,12 +641,12 @@ function ChatInput({
                       <button
                           type="button"
                           onClick={showInChat}
-                          title={i18nT('components.chatInput.show_pending_tool_call_in_chat')}
-                          aria-label={i18nT('components.chatInput.show_pending_tool_call_in_chat')}
+                          title={inThread ? i18nT('pages.chat.thread.show_pending_tool_call_here') : i18nT('components.chatInput.show_pending_tool_call_in_chat')}
+                          aria-label={inThread ? i18nT('pages.chat.thread.show_pending_tool_call_here') : i18nT('components.chatInput.show_pending_tool_call_in_chat')}
                           className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-transparent border border-border text-muted text-[11px] cursor-pointer hover:text-text hover:border-border-strong hover:bg-bg-hover transition-colors"
                       >
                           <Target size={11} className="shrink-0" />
-                          {i18nT('components.chatInput.show_in_chat')}
+                          {inThread ? i18nT('pages.chat.thread.show_in_thread') : i18nT('components.chatInput.show_in_chat')}
                       </button>
                   )}
                   {/* `data-approval-actions` is the probe `queryPendingApprovalAction`

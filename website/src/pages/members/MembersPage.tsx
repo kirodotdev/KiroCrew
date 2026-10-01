@@ -1923,7 +1923,8 @@ export default function MembersPage() {
     staleTime: 30_000,
   })
   const threadSummaries = threadsQuery.data?.threads
-  const openReplyThread = useCallback((mid: string) => {
+  const openReplyThread = useCallback((mid: string | undefined) => {
+    if (!mid) return
     setOpenThreadMid(mid)
     if (beside) setDockedOpen(true)
     else setOverlayOpen(true)

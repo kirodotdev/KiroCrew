@@ -220,8 +220,8 @@ _SLOT_SCOPED_EVENTS = frozenset({
     "chat_segment", "chat_append", "chat_message_update", "chat_variant_switch",
     # Side-conversation channel (``broadcast_side_result``); carries ``slot``.
     "chat.side_result",
-    # Reply-thread channel (``broadcast_thread_reply``); carries ``slot``.
-    "chat.thread_reply",
+    # Thread-anchor channel (``broadcast_thread_anchor``); carries ``slot``.
+    "chat.thread_anchor",
     "heartbeat", "context_usage",
     # Tool / queue
     "tool_call", "tool_result",

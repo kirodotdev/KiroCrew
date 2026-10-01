@@ -1198,7 +1198,10 @@ _EXPECTED_WARM_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
         ("api_chat_slot_agent", "dashboard"),
     ],
     "kiro_crew/dashboard/chat_runner.py": [("chat_turn", "unknown")],
-    "kiro_crew/dashboard/chat_threads.py": [("thread_reply", "dashboard")],
+    # ``chat_threads.py`` is deliberately absent. A thread is an ordinary session
+    # minted through the create core, which does its own agent resolution and its
+    # own spec read under its own label, so the thread module resolves no agent
+    # and reads no spec of its own.
     "kiro_crew/dashboard/handlers/side.py": [("side_panel", "dashboard")],
     "kiro_crew/spawn_warm.py": [("spawn_warm", "unknown")],
 }

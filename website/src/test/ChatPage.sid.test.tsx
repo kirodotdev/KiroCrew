@@ -44,6 +44,15 @@ vi.mock('../pages/ChatSidebar', () => ({ default: () => null, SIDEBAR_MIN: 200, 
 vi.mock('../pages/chat/ChatSettings', () => ({ loadChatConfig: () => ({ contentWidth: 'compact' }), CONTENT_WIDTH: { compact: { messages: '900px', input: '916px' }, comfortable: { messages: '84%', input: '85%' }, full: { messages: '92%', input: '93%' } } }))
 
 // --- Stub hooks ---
+// The per-message anchor read must SUCCEED in this fixture. Left unstubbed it
+// rejects, and a failed read is its own alert -- which would leave this file's
+// alert ratchet counting two alerts for one page state and hide a real duplicate
+// behind a filter. An empty map is the honest answer for a chat with no threads.
+vi.mock('../api/threads', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../api/threads')>()
+  return { ...actual, threadsApi: { ...actual.threadsApi, summary: async () => ({ threads: {} }) } }
+})
+
 vi.mock('../hooks/useBranding', () => ({ useBranding: () => ({ botName: 'Test', avatar: '' }) }))
 vi.mock('../hooks/useAgents', () => ({ useAgents: () => ({ agents: [], defaultAgent: null }) }))
 vi.mock('../hooks/useFilteredDropdown', () => ({ useFilteredDropdown: () => ({ filtered: [], query: '', setQuery: vi.fn(), selectedIndex: 0, setSelectedIndex: vi.fn(), onKeyDown: vi.fn() }) }))

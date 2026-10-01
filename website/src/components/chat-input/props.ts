@@ -60,6 +60,10 @@ export interface ChatInputProps {
    * `canSteer` + `onSteer` exactly like the split button; without a steer
    * path the busy send still falls back to the queue button. */
   busyMode?: ComposerBusyMode
+  /** A THREAD pane's composer, beside the chat it hangs off: the approval card's
+   *  focus control expands the call in place, so "Show in chat" would read next
+   *  to the parent's own transcript as an offer to jump there. */
+  inThread?: boolean
   disabled?: boolean
   placeholder?: string
   prefillHint?: boolean

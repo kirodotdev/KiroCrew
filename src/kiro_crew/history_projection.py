@@ -72,7 +72,12 @@ METADATA_LINE_CORRUPT = "corrupt"
 #: (``history_consolidation``), and every other model-bound reader already filters
 #: to conversation roles. The Slack thread-parent row, in particular, is untrusted
 #: text whose only route to the model is a fenced, injection-screened block.
-DISPLAY_ONLY_ROLES = frozenset({"notice"})
+#: ``thread_closed`` is the close card a thread leaves on its parent
+#: (``dashboard/chat_threads.ROLE_THREAD_CLOSED``): a row the reader clicks to reach the
+#: finished thread, whose text the gateway wrote. Carried to a model it reads as the
+#: crewmate having announced the ending, and memory consolidation and skill extraction
+#: would both learn it as something said in the conversation.
+DISPLAY_ONLY_ROLES = frozenset({"notice", "thread_closed"})
 
 
 def _history_facade() -> Any:

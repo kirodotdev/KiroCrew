@@ -287,6 +287,45 @@ class ChannelLink:
         )
 
 
+#: How long an anchor's ``conversation`` or ``mid`` may be. Both are opaque ids
+#: minted by the surface they come from -- a dashboard slot key, a Slack channel
+#: id, a Slack ``thread_ts``, a minted row id -- so the shape that matters is
+#: "bounded and cannot carry prose", exactly as ``THREAD_SLOT_MAX_CHARS`` puts it
+#: for the slot key. The per-surface spelling is each adapter's own rule, checked
+#: where that surface's ids are minted, not here.
+THREAD_ANCHOR_ID_MAX_CHARS = 200
+#: The dashboard's surface name. It sits here, beside the anchor it names, because
+#: the dashboard is the one surface that is not a ``channel_type``: every other
+#: surface spells its own name in its own package, and a shared registry for one
+#: constant would be a seam with a single user.
+SURFACE_DASHBOARD = "dashboard"
+
+
+@dataclass(frozen=True)
+class ThreadAnchor:
+    """One message, on one conversation, on one surface -- what a thread hangs off.
+
+    A surface, a conversation on it and a message id, which is what makes a
+    thread identity channel-neutral: the dashboard's anchor is ``(dashboard,
+    parent_slot_key, mid)`` and Slack's is ``(slack, channel_id, thread_ts)``.
+    Both surfaces read and write this one type rather than each carrying its own
+    vocabulary for the same relation.
+
+    Frozen because an anchor is an identity, not a record. Where the surface has a
+    parent transcript to hang an index off, that index IS the record -- the
+    dashboard writes it there and nowhere else. Slack has no parent transcript, so
+    its anchor lives on the thread session's own metadata instead: one record per
+    surface, never two to keep in step.
+    """
+
+    surface: str
+    conversation: str
+    mid: str
+
+    def to_dict(self) -> dict[str, str]:
+        return {"surface": self.surface, "conversation": self.conversation, "mid": self.mid}
+
+
 def session_key(channel_type: str, conversation_id: str) -> str:
     """Build a namespaced session key, e.g. ``slack:123.456``."""
     return f"{channel_type}:{conversation_id}"

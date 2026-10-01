@@ -1,6 +1,7 @@
 import { memo, useState, useRef, useEffect, useCallback, type ReactNode } from 'react'
 import { motion } from 'framer-motion'
-import { Pencil, Send, Copy, Check, Link2, MessageSquare, Target, Pin, PinOff, X, Clock } from 'lucide-react'
+import { Pencil, Send, Copy, Check, Link2, MessageSquare, Target, Pin, PinOff, X, Clock, MoreHorizontal } from 'lucide-react'
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '../../components/ui/dropdown-menu'
 import { copyToClipboard } from '../../utils/clipboard'
 import { copySessionLink } from '../../utils/shareUrl'
 import { ICON_ACTION_ROW_CLS } from '../../utils/touchActions'
@@ -48,6 +49,9 @@ interface UserMessageProps {
   onTogglePin?: () => void
   /** Open (or start) the reply thread on this message. Only a crewmate's chat offers it. */
   onReplyInThread?: () => void
+  /** That control's label key when the default does not apply: on an ENDED thread
+   *  it mints a new one while the close card beside it reopens the old. */
+  replyInThreadLabelKey?: string
   /** Whether the slot currently has a running turn. Gates the pending-steer
    *  indicator: the backend settle is best-effort, so a row can be stranded in
    *  `written` forever, and a perpetual "Steering…" pulse on an idle slot
@@ -75,7 +79,7 @@ interface UserMessageProps {
   onEditConsumed?: () => void
 }
 
-const UserMessage = memo(function UserMessage({ content, meta, timestamp, timestampTitle, renderContent, canEdit, messageIndex, messageTs, onEditResend, doubleClickToEdit = false, slotKey, slotTitle, mode, pinned, onTogglePin, onReplyInThread, slotRunning, hideSteerBadge, editRequest, onEditConsumed }: UserMessageProps) {
+const UserMessage = memo(function UserMessage({ content, meta, timestamp, timestampTitle, renderContent, canEdit, messageIndex, messageTs, onEditResend, doubleClickToEdit = false, slotKey, slotTitle, mode, pinned, onTogglePin, onReplyInThread, replyInThreadLabelKey, slotRunning, hideSteerBadge, editRequest, onEditConsumed }: UserMessageProps) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const [editing, setEditing] = useState(false)
   const ime = useImeGuard()
@@ -377,6 +381,63 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
     </div>
   )
 
+  // The row's overflow, mounted only when there is something to put in it. Same
+  // component and same shape as the assistant footer's More, which is the pattern
+  // the rule names rather than a second one invented here.
+  //
+  // Mounted only where a thread is offered, and the copy-link button moves in only
+  // then. A surface with no threads keeps the row exactly as the base branch has
+  // it: the reason to collapse the row is the action being added to it, so a chat
+  // that gains no action should not lose a button either.
+  //
+  // Copy link is the one that moves, of the four the row carries. Pin is a
+  // habitual one-click action on every message and threads are offered on every
+  // surface, so demoting Pin would cost a second click everywhere and for good.
+  // Edit carries `data-message-edit`, which index.css uses to drop the control
+  // while the row stands in for the pinned banner -- inside a menu that rule
+  // reaches nothing. A permalink is the narrowest of the four and the only one
+  // with neither property.
+  const linkInMenu = !!onReplyInThread && !!messageTs && !!slotKey
+  const threadMenu = onReplyInThread ? (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          className="text-muted hover:text-text p-0.5 rounded transition-colors"
+          data-testid="user-message-more-actions"
+          title={i18nT('pages.chat.userMessage.more_actions')}
+          aria-label={i18nT('pages.chat.userMessage.more_actions')}
+        >
+          <MoreHorizontal size={14} />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="min-w-[210px]">
+        {onReplyInThread && (
+          <DropdownMenuItem className="[@media(hover:none)]:min-h-10" data-testid="reply-in-thread" onSelect={onReplyInThread}>
+            <span className="flex items-center gap-2">
+              <MessageSquare className="lucide-inline shrink-0" />
+              <span>{i18nT(replyInThreadLabelKey || 'pages.chat.thread.reply_in_thread')}</span>
+            </span>
+          </DropdownMenuItem>
+        )}
+        {linkInMenu && (
+          <DropdownMenuItem
+            className="[@media(hover:none)]:min-h-10"
+            data-testid="copy-link-to-message"
+            onSelect={() => {
+              const flash = (outcome: CopyOutcome) => { setLinkCopied(outcome); setTimeout(() => setLinkCopied('idle'), 1500) }
+              copySessionLink(slotKey!, slotTitle, messageTs!, mode).then(ok => flash(ok ? 'ok' : 'failed'), () => flash('failed'))
+            }}
+          >
+            <span className="flex items-center gap-2">
+              {copyOutcomeIcon(linkCopied, <Link2 className="lucide-inline shrink-0" />)}
+              <span>{copyOutcomeLabel(linkCopied, i18nT('pages.chat.userMessage.copy_link_to_message'))}</span>
+            </span>
+          </DropdownMenuItem>
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  ) : null
+
   return (
     // Every box between the content column and the bubble is a fit-content flex
     // item, so a percentage cap only bites once ALL of them carry one.
@@ -497,17 +558,6 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
           is re-shown in place — visible outright, because the card lives in an
           overlay outside this row and its hover can never be `group-hover/msg`. */}
       <div data-message-actions="" className={`flex items-center gap-y-1 mt-1 opacity-0 transition-opacity duration-300 delay-100 group-hover/msg:opacity-100 group-hover/msg:delay-300 group-focus-within/msg:opacity-100 group-focus-within/msg:delay-300 ${ICON_ACTION_ROW_CLS}`}>
-        {onReplyInThread && (
-          <button
-            onClick={onReplyInThread}
-            className="text-muted hover:text-text p-0.5 rounded transition-colors"
-            data-testid="reply-in-thread"
-            title={i18nT('pages.chat.thread.reply_in_thread')}
-            aria-label={i18nT('pages.chat.thread.reply_in_thread')}
-          >
-            <MessageSquare size={14} />
-          </button>
-        )}
         <button
           onClick={() => {
             const pastes = (meta?.pastes as PasteBlock[] | undefined) || []
@@ -530,7 +580,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
         >
           {copyOutcomeIcon(copied, <Copy size={14} />)}
         </button>
-        {messageTs && slotKey && (
+        {!linkInMenu && messageTs && slotKey && (
           <button
             onClick={() => {
               const flash = (outcome: CopyOutcome) => { setLinkCopied(outcome); setTimeout(() => setLinkCopied('idle'), 1500) }
@@ -543,6 +593,12 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
             {copyOutcomeIcon(linkCopied, <Link2 size={14} />)}
           </button>
         )}
+        {/* Pin is a row button on every surface. This row carries four peer
+            controls, a count the two-button rule lets it keep but not grow, so a
+            thread action cannot be a fifth: the More trigger stands in one of the
+            four slots and the copy-link button moves into it, which keeps Pin one
+            click and gives the menu a second item so it is a menu rather than a
+            single-item shell. */}
         {messageTs && onTogglePin && (
           <button
             onClick={onTogglePin}
@@ -554,6 +610,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
             {pinned ? <PinOff size={14} /> : <Pin size={14} />}
           </button>
         )}
+        {threadMenu}
         {canEdit && onEditResend && (
           <button
             onClick={startEdit}
