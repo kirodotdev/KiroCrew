@@ -3122,18 +3122,34 @@ def trusted_system_bin(name: str) -> str | None:
     after boot would never be picked up.
     """
 
+    found = trusted_system_bin_quiet(name)
+    if found is None:
+        _log_tool_outside_trusted_dirs(name, _trusted_bin_search()[0])
+    return found
+
+
+def _trusted_bin_search() -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """``(directories, suffixes)`` the trusted lookup searches on this platform."""
     if IS_WINDOWS:
-        directories: tuple[str, ...] = _windows_system_dirs()
-        suffixes: tuple[str, ...] = _WINDOWS_BIN_SUFFIXES
-    else:
-        directories = _TRUSTED_SYSTEM_BIN_DIRS
-        suffixes = ("",)
+        return _windows_system_dirs(), _WINDOWS_BIN_SUFFIXES
+    return _TRUSTED_SYSTEM_BIN_DIRS, ("",)
+
+
+def trusted_system_bin_quiet(name: str) -> str | None:
+    """:func:`trusted_system_bin` without its miss diagnostic.
+
+    The diagnostic walks ``PATH`` (``shutil.which``) to say where else the tool
+    is, and a ``PATH`` entry on a stalled mount hangs that walk. A caller on
+    the event loop uses this instead, so the lookup stays a handful of ``stat``
+    calls on fixed system directories, and reports a miss in its own words.
+    """
+
+    directories, suffixes = _trusted_bin_search()
     for directory in directories:
         for suffix in suffixes:
             candidate = os.path.join(directory, name + suffix)
             if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
                 return candidate
-    _log_tool_outside_trusted_dirs(name, directories)
     return None
 
 
