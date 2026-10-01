@@ -10789,7 +10789,6 @@
         "open_terminal_hint": "このプロジェクトのフォルダーで始まるコマンドラインです。",
         "project_actions": "プロジェクトの操作",
         "refresh": "更新",
-        "select_file_hint": "ツリーからファイルを選択すると新しいタブで開きます",
         "title": "ファイル",
         "tree_error": "ファイルツリーを読み込めませんでした"
       },

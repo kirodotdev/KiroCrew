@@ -11099,7 +11099,6 @@
         "open_terminal_hint": "Una riga di comando che parte dalla cartella di questo progetto.",
         "project_actions": "Azioni del progetto",
         "refresh": "Aggiorna",
-        "select_file_hint": "Seleziona un file dall'albero per aprirlo in una nuova scheda",
         "title": "File",
         "tree_error": "Non è stato possibile caricare l’albero dei file"
       },

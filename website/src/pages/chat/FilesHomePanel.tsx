@@ -17,8 +17,8 @@ function basename(p: string): string {
 }
 
 /**
- * The pinned Files tab: an empty preview pane on the left and the permanent
- * file-browser rail on the right, under one full-width header. Clicking a
+ * The pinned Files tab: the file-browser tree at full width under one header.
+ * Clicking a
  * file NEVER opens inline here — every open spawns a file tab (the same
  * primitive every other file-open path lands in), so this tab stays the
  * stable jumping-off point.
@@ -138,6 +138,12 @@ export default function FilesHomePanel({ projectDir, onFileOpen, onAddToContext,
         </div>
       )}
       <div className="flex-1 min-h-0 flex">
+        {treeAvailable ? (
+          // No preview pane beside the tree: every open spawns a file tab, so a
+          // pane here could only ever hold a "select a file" hint. The tree takes
+          // the whole tab instead.
+          <FileBrowserRail projectDir={projectDir} onFileOpen={onFileOpen} onAddToContext={onAddToContext} active={active} fill />
+        ) : (
         <div className="flex-1 min-w-0 flex flex-col items-center justify-center gap-2 text-muted px-6 text-center">
           <FileText size={22} className="opacity-40" />
           {treeFailed ? (
@@ -164,13 +170,9 @@ export default function FilesHomePanel({ projectDir, onFileOpen, onAddToContext,
               >{t('pages.chat.filesHome.refresh')}</button>
             </>
           ) : (
-            <span className="text-[12.5px]">
-              {treeAvailable ? t('pages.chat.filesHome.select_file_hint') : t('pages.chat.filesHome.no_project_dir')}
-            </span>
+            <span className="text-[12.5px]">{t('pages.chat.filesHome.no_project_dir')}</span>
           )}
         </div>
-        {treeAvailable && (
-          <FileBrowserRail projectDir={projectDir} onFileOpen={onFileOpen} onAddToContext={onAddToContext} active={active} />
         )}
       </div>
     </div>

@@ -330,8 +330,12 @@ function ContentResults({ query, projectDir, onOpen }: {
  * Both tree modes render the SAME Pierre tree; Changed feeds it the git-status
  * path set and its opens land in diff mode (`onFileOpen`'s second argument).
  */
-export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext, selectedPath, active = true }: {
+export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext, selectedPath, active = true, fill = false }: {
   projectDir: string
+  /** Take the host's full width instead of a resizable side column. The
+   *  pinned Files tab has no preview pane beside the tree, so a fixed-width
+   *  rail there left an empty pane holding only a hint. */
+  fill?: boolean
   /** `opts.line` opens the file scrolled to that line — a content-search hit. */
   onFileOpen: (absPath: string, diff: boolean, opts?: { line?: number }) => void
   /** Right-click "Add to context" on a tree row: forwards the ABSOLUTE path
@@ -454,15 +458,20 @@ export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext
 
   return (
     <>
+      {!fill && (
+        <div
+          {...rail.handleProps}
+          role="separator"
+          aria-orientation="vertical"
+          aria-label={t('pages.chat.fileBrowserRail.resize')}
+          className="w-1 shrink-0 cursor-col-resize bg-transparent hover:bg-accent/40 active:bg-accent/60 transition-colors"
+          style={{ touchAction: 'none' }}
+        />
+      )}
       <div
-        {...rail.handleProps}
-        role="separator"
-        aria-orientation="vertical"
-        aria-label={t('pages.chat.fileBrowserRail.resize')}
-        className="w-1 shrink-0 cursor-col-resize bg-transparent hover:bg-accent/40 active:bg-accent/60 transition-colors"
-        style={{ touchAction: 'none' }}
-      />
-      <div style={{ width: rail.width }} className="shrink-0 min-h-0 border-l border-border flex flex-col">
+        style={fill ? undefined : { width: rail.width }}
+        className={cn('min-h-0 flex flex-col', fill ? 'flex-1 min-w-0' : 'shrink-0 border-l border-border')}
+      >
         <div className="flex items-center gap-1.5 px-2 h-[40px] shrink-0 border-b border-border">
           {/* All/Changed scopes the TREE, and Content mode has no tree. Left
               rendered it kept its "Changed" highlight while the content results

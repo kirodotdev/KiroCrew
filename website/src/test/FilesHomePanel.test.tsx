@@ -212,11 +212,12 @@ describe('FilesHomePanel per-project quick actions', () => {
 })
 
 describe('FilesHomePanel tree availability', () => {
-  it('mounts the rail and points at it while the tree endpoint answers', async () => {
+  it('gives the tree the whole tab while the tree endpoint answers', async () => {
     mount()
     expect(await screen.findByTestId('tree')).toBeInTheDocument()
-    expect(screen.getByText('Select a file from the tree to open it in a new tab')).toBeInTheDocument()
-    expect(screen.getByRole('separator')).toBeInTheDocument()
+    // No preview pane beside it, so no hint and no resize grip between the two.
+    expect(screen.queryByText('Select a file from the tree to open it in a new tab')).toBeNull()
+    expect(screen.queryByRole('separator')).toBeNull()
   })
 
   it('names the FETCH as the failure, not the setting, once the tree endpoint errors', async () => {
@@ -339,8 +340,8 @@ describe('FilesHomePanel tree availability', () => {
     mount(DIR, onFileOpen)
     fireEvent.click(await screen.findByTestId('tree'))
     expect(onFileOpen).toHaveBeenCalledWith(H.OPENED, false)
-    // Still the empty preview pane: this tab never renders the file itself.
-    expect(screen.getByText('Select a file from the tree to open it in a new tab')).toBeInTheDocument()
+    // Still just the tree: this tab never renders the file itself.
+    expect(screen.getByTestId('tree')).toBeInTheDocument()
   })
 
   it('probes under the tree component\'s own query key, so the probe costs no extra request', async () => {

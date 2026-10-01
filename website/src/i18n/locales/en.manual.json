@@ -4564,7 +4564,6 @@
         "open_terminal_hint": "A command line that starts in this project’s folder.",
         "project_actions": "Project actions",
         "refresh": "Refresh",
-        "select_file_hint": "Select a file from the tree to open it in a new tab",
         "title": "Files",
         "tree_error": "Couldn't load the file tree"
       },
