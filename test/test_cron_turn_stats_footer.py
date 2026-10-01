@@ -7,7 +7,7 @@ it stamps the same shape on the cron result row.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from chat_test_helpers import _make_state
 from test_cron_context_meter_seed import _inject
@@ -33,6 +33,31 @@ def test_cron_run_hands_its_usage_to_the_result_row() -> None:
         patch("kiro_crew.slack.gateway.persist_token_record_async", new_callable=AsyncMock),
     ):
         _run_callback(gateway, job, stream_result="cron output")
+    mock_inject.assert_called_once()
+    assert mock_inject.call_args.kwargs["turn_stats"] == {
+        "elapsed_ms": 4200,
+        "credits": 1.2346,
+        "model": "claude-sonnet-4.5",
+    }
+
+
+def test_silent_cron_hands_the_real_turn_stats_to_the_result_row() -> None:
+    # The silent and duplicate-suppressed inject sites are only asserted with
+    # turn_stats=ANY in test_cron_thread_routing, so swapping them to None would
+    # stay green. Pin the real value on the silent path to close that gap.
+    gateway = _make_gateway()
+    gateway.dashboard_state.has_slot = MagicMock(return_value=True)
+    job = _make_job(persistent_session=True, silent=True)
+    with (
+        patch("kiro_crew.slack.gateway.inject_cron_result_to_dashboard") as mock_inject,
+        patch(
+            "kiro_crew.slack.gateway.provider_last_turn_usage",
+            return_value=TurnUsage(credits=1.23456, duration_ms=4200),
+        ),
+        patch("kiro_crew.slack.gateway.read_turn_model", return_value="claude-sonnet-4.5"),
+        patch("kiro_crew.slack.gateway.persist_token_record_async", new_callable=AsyncMock),
+    ):
+        _run_callback(gateway, job, stream_result="silent output")
     mock_inject.assert_called_once()
     assert mock_inject.call_args.kwargs["turn_stats"] == {
         "elapsed_ms": 4200,
