@@ -1271,7 +1271,25 @@ against sweep completeness, and are torn down at `close_all`.
   whose runtime-anchor members have all died is never reclaimed, even if every
   survivor still has the marker or is an attributable env-cleared descendant;
   old skipped scopes are summarized at INFO by stable reason category, making
-  that residual operator-visible. Stale
+  that residual operator-visible. Each member's `/proc/<pid>/stat` is read as
+  BYTES through `platform_compat.read_proc_stat`, lazily and at most once per
+  evaluation (a scope rejected at (i) with an active-enter stamp reads none):
+  `comm` is whatever a process named itself through `prctl(PR_SET_NAME)`, and a
+  text read raises on a name that is not UTF-8. The gateway's own boot stamp is
+  read the same way, so a gateway whose `comm` is not UTF-8 still has a stamp
+  and the predates-boot arm stays available to it. `systemctl` output is decoded
+  with `errors="replace"`, since a localized diagnostic in a legacy locale is
+  not UTF-8. One scope whose evaluation or reclaim RAISES costs that scope
+  alone: an evaluation error is skipped as category `error`, and a reclaim that
+  raises is audited by what it left behind (`completed` when the scope is empty,
+  else `failed`, category `reclaim_error`); both count as old, so the INFO
+  summary counts them by category on every tick, and the unit is named in a
+  WARNING once per scope, phase and exception type, repeated at most hourly while
+  it keeps failing and re-armed by the next clean check. An `AssertionError` is
+  never absorbed. Residuals: a read that BLOCKS (an `environ` or `cmdline` read
+  waiting on a process's mmap lock behind a hung mount) still stalls the sweep;
+  and under `/proc` `hidepid`, a live group leader outside the scope whose stat
+  cannot be read is taken as dead. Stale
   `session_pid_<pid>.txt`/`.sig` files are separately pruned by
   `_prune_stale_session_pid_files` (below); the reaper adds no second deletion
   path.

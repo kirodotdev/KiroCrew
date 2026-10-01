@@ -6543,6 +6543,18 @@ class TestTrackedAgentPids:
         with patch.object(Path, "read_text", side_effect=OSError(errno.EACCES, "denied")):
             assert _read_tracked_agent_pids() == (set(), False)
 
+    def test_undecodable_file_marks_snapshot_incomplete(
+        self, pid_file: Path, session_pid_file: Path
+    ) -> None:
+        """A stray non-UTF-8 byte is damage, not an exception out of every reaper."""
+        from kiro_crew.session_pid import _read_tracked_agent_pids
+
+        session_pid_file.write_bytes(b"10:11\n\xff\xfe\n")
+        pid_file.write_text("31:32\n", encoding="utf-8")
+        # Like a malformed entry: the damaged line marks the snapshot incomplete
+        # and every readable line is still counted.
+        assert _read_tracked_agent_pids() == ({11, 31}, False)
+
     def test_malformed_entry_marks_snapshot_incomplete_but_keeps_valid_pids(
         self, pid_file: Path, session_pid_file: Path
     ) -> None:
