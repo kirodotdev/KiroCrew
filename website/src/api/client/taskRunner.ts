@@ -5,6 +5,7 @@
  */
 
 import { toApiError } from '../apiError'
+import type { ReviewFixActionRequest, ReviewFixTaskResponse } from '../../types'
 import type { ClientTransport } from './transport'
 
 /**
@@ -32,6 +33,13 @@ export function createTaskRunnerEndpoints({ get, post, put, del, j }: ClientTran
     renameTaskRun: (taskId: string, name: string) => fetch('/api/taskrunner/' + encodeURIComponent(taskId) + '/name', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) }).then(j),
     updateTask: (taskId: string, index: number, updates: { title?: string; description?: string; depends_on?: number[]; requires_approval?: boolean; force_approval?: boolean }) => fetch('/api/taskrunner/' + encodeURIComponent(taskId) + '/tasks/' + index, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(updates) }).then(j),
     taskRunToChat: (taskId: string) => post('/api/taskrunner/' + encodeURIComponent(taskId) + '/to-chat').then(j),
+    reviewFixStatus: (taskId: string): Promise<ReviewFixTaskResponse> =>
+      fetch('/api/taskrunner/' + encodeURIComponent(taskId) + '/review-fix').then(j),
+    reviewFixAction: (
+      taskId: string,
+      input: ReviewFixActionRequest,
+    ): Promise<ReviewFixTaskResponse> =>
+      post('/api/taskrunner/' + encodeURIComponent(taskId) + '/review-fix/actions', input).then(j),
   }
 
   const plans = {

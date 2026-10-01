@@ -7,7 +7,7 @@ import { AlertTriangle, ScanSearch } from 'lucide-react'
 import { useSage } from '../context'
 import { effectiveRunStatus, relativeAge, typicalRunMs } from '../lib/format'
 import { runIdentity } from '../lib/format'
-import type { Run } from '../lib/types'
+import { REVIEW_MODEL_AUTO, type Run } from '../lib/types'
 import EmptyState from './EmptyState'
 import ReportView from './ReportView'
 import RunProgress from './RunProgress'
@@ -79,7 +79,10 @@ function DetailHeader({ run }: { run: Run }) {
       <div className="mt-3">
         <FailureNotice
           run={run}
-          onRetry={() => startReview.mutate(run.changes)}
+          onRetry={() => startReview.mutate({
+            changes: run.changes,
+            model: run.model ?? REVIEW_MODEL_AUTO,
+          })}
           retrying={startReview.isPending}
         />
       </div>

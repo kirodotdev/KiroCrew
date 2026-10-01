@@ -108,8 +108,15 @@ export function useConfirm(): {
       }
     >
       {/* Full-contrast body: this line carries the consequence ("permanently
-          deletes bucket …"), which must not read quieter than the buttons. */}
-      {opts.body != null ? <p className="text-sm text-text m-0">{opts.body}</p> : null}
+          deletes bucket …"), which must not read quieter than the buttons.
+          A plain string is the common case and gets a <p>; richer content
+          (e.g. a push preview) supplies its own wrapper, since a block
+          element nested in a <p> is invalid HTML. */}
+      {opts.body != null ? (
+        typeof opts.body === 'string'
+          ? <p className="text-sm text-text m-0">{opts.body}</p>
+          : <div className="text-sm text-text">{opts.body}</div>
+      ) : null}
     </Modal>
   ) : null
 

@@ -339,6 +339,19 @@ export function failureReason(run: {
   return { text: raw, raw }
 }
 
+/** Whether a finding's severity token is the must-fix (blocking) tier.
+ *
+ * Findings arrive in two vocabularies depending on their source: a Sage
+ * report's `Finding.severity` is `'red' | 'yellow'`; a local-review
+ * `LocalFinding.severity` is `'info' | 'warning' | 'error'`. Both name their
+ * must-fix tier differently ('red' vs 'error'), so a check for only one of
+ * them silently mis-labels the other vocabulary's must-fix findings as
+ * should-fix. Anything else — including an unset severity — is should-fix,
+ * the softer default. */
+export function isMustFixSeverity(severity?: string): boolean {
+  return severity === 'red' || severity === 'error'
+}
+
 /** Build the `PullRequestLink` the shared `PullRequestPanel` expects from a Sage
  *  change URL, or `null` when the URL is not a GitHub pull request.
  *

@@ -55,6 +55,7 @@ from kiro_crew.recovery.ladder import L3_ACP_RUNTIME, default_ladder
 from kiro_crew.safety_override import safety_override
 from kiro_crew.sandbox import (
     create_subprocess_limited,
+    drain_bounded,
     sandboxed_spawn_argv,
     sandboxed_spawn_argv_async,
 )
@@ -154,6 +155,28 @@ async def _end_stalled_step(
     task.status = TaskStatus.FAILED
     task.error = f"{stop.stop_class} ({stop.stop_reason}) — {why} — partial result preserved"
     return False
+
+
+def _uses_generic_git_commit(run: Project) -> bool:
+    """Keep per-task Git commits enabled only for ordinary Task Runner runs."""
+    return bool(
+        run.branch_name
+        and run.execution_mode != "review_fix"
+        and run.commit_policy != "manual_group"
+    )
+
+
+async def _pin_review_fix_model(run: Project, client) -> None:
+    """Pin every review-fix turn to the concrete model captured at creation."""
+    if run.execution_mode != "review_fix" or not run.review_fix:
+        return
+    model_id = run.review_fix.model.resolved_model_id
+    if not model_id:
+        raise RuntimeError("review-fix model resolution is incomplete")
+    setter = getattr(client, "set_model", None)
+    if not callable(setter):
+        raise RuntimeError("review-fix provider cannot pin a model")
+    await setter(model_id)
 
 
 async def _check_error_loop(
@@ -312,7 +335,7 @@ async def execute_single_task(
 
     if success:
         committed = False
-        if run.branch_name:
+        if _uses_generic_git_commit(run):
             try:
                 sha = await git_coord.commit_step(run, task)
                 committed = bool(sha)
@@ -322,7 +345,7 @@ async def execute_single_task(
         task.status = TaskStatus.REVIEWING
         review_ok = await self_review(run, task, sessions, agent, session_key, ctx=ctx)
         if not review_ok:
-            if committed and run.branch_name:
+            if committed and _uses_generic_git_commit(run):
                 try:
                     await git_coord.revert_step(run)
                 except Exception:
@@ -509,6 +532,7 @@ async def execute_task(
                 sessions, session_key, agent or "kirocrew", (client, is_new, _resumed), _claim
             )
             _turn_provider = client
+            await _pin_review_fix_model(run, client)
 
             task_prompt = await build_task_prompt(run, task, attempt, work_dir)
             if ctx:
@@ -1351,7 +1375,13 @@ async def self_review(
         diff = ""
         if run.branch_name:
             try:
-                diff = await git_coord.get_step_diff(run)
+                if run.execution_mode == "review_fix" and run.review_fix:
+                    from kiro_crew.review_fix_git import candidate_patch
+
+                    base_sha = run.review_fix.target.head_sha or run.review_fix.source_head_sha
+                    diff = (await candidate_patch(run.work_dir, base_sha)).patch_text
+                else:
+                    diff = await git_coord.get_step_diff(run)
             except Exception:
                 pass
 
@@ -1386,6 +1416,7 @@ async def self_review(
             agent=agent or None,
             cwd=str(run.work_dir) if run.work_dir else None,
         )
+        await _pin_review_fix_model(run, client)
         # Wall clock for the review turn (see execute_task): the acp provider
         # reports no duration, so this local measurement is the fallback. Bracket
         # ONLY the model stream, not open_task_session / diff fetch / prompt build.
@@ -1440,6 +1471,18 @@ async def self_review(
 # Grace period between SIGTERM and SIGKILL when reaping a timed-out test's
 # process group.
 _TEST_KILL_GRACE = 5.0
+
+# Hard parent-side cap on buffered test output. communicate() buffered the
+# ENTIRE stream first, so a noisily-looping test OOM'd the gateway before the
+# 2000-char failure tail could ever be applied; drain_bounded caps the buffer
+# and discards the excess while the child keeps its normal exit semantics.
+_TEST_OUTPUT_CAP_BYTES = 512 * 1024
+
+# `run_tests` reports a missing test executable as success so the generic Task
+# Runner keeps treating "nothing to run" as a skip. The string is also the
+# contract: review-fix validation detects the skip by this exact sentinel and
+# refuses to credit it as passing evidence (see review_fix.validate_group).
+TESTS_SKIPPED_OUTPUT = "test command not found (skipped)"
 
 
 async def _reap_process_group(proc: asyncio.subprocess.Process) -> None:
@@ -1516,13 +1559,31 @@ async def run_tests(test_cmd: list[str], work_dir: Path) -> tuple[bool, str]:
             start_new_session=platform_compat.IS_POSIX,
             creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
         )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=TEST_TIMEOUT)
-        output = stdout.decode(errors="replace") if stdout else ""
+        assert proc is not None
+        # Drain with a hard parent-side cap instead of communicate(): a
+        # noisily-looping test buffered in FULL here OOMs the gateway before
+        # any downstream truncation runs. Excess output is read and discarded,
+        # so the child keeps its normal exit semantics.
+        data, truncated = await asyncio.wait_for(
+            drain_bounded(proc.stdout, _TEST_OUTPUT_CAP_BYTES), timeout=TEST_TIMEOUT
+        )
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=_TEST_KILL_GRACE)
+        except asyncio.TimeoutError:
+            # Still running after closing stdout: the finally-block reaps the
+            # tree; returncode stays None -> reported as failure.
+            pass
+        output = data.decode(errors="replace") if data else ""
+        if truncated:
+            output += (
+                f"\n...[output truncated at {_TEST_OUTPUT_CAP_BYTES // 1024} KiB; "
+                "excess discarded]"
+            )
         success = proc.returncode == 0
         if success:
             logger.info("TaskRunner: tests passed")
         else:
-            logger.warning("TaskRunner: tests failed (rc=%d)", proc.returncode)
+            logger.warning("TaskRunner: tests failed (rc=%s)", proc.returncode)
             if len(output) > 2000:
                 output = "...\n" + output[-2000:]
         return success, output
@@ -1531,7 +1592,7 @@ async def run_tests(test_cmd: list[str], work_dir: Path) -> tuple[bool, str]:
         return False, f"Test timed out after {TEST_TIMEOUT}s"
     except FileNotFoundError:
         logger.debug("Test command not found, skipping tests")
-        return True, "test command not found (skipped)"
+        return True, TESTS_SKIPPED_OUTPUT
     finally:
         # Reap the process group on EVERY exit path (timeout, crash, or normal
         # return where communicate() left the child alive) so orphaned test
