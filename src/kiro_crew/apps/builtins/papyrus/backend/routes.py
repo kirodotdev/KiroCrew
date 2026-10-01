@@ -30,15 +30,23 @@ Routes (browser-facing, same-origin authed):
   POST   /api/apps/papyrus/git/push                  {"name"}
   POST   /api/apps/papyrus/git/pull                  {"name"}
 
-Authorization is deny-by-default at three layers, in this order:
+Authorization is deny-by-default at four layers, in this order:
 
 1. ``_require_enabled`` — the app is opt-in (``defaultEnabled: false``) but routes
    are registered once at startup, so every handler refuses with 403 while the app
    is disabled.
-2. ``_project`` — the project name must be a single validated slug that resolves
+2. Owner-only, INCLUDING reads, enforced in the same wrapper. The papers are the
+   owner's private drafts, and the git routes run with the owner's own git
+   credentials, so every route answers anyone but the dashboard owner with the
+   shared ``require_owner_dashboard_request`` 403 ``owner_only``. That covers a
+   non-owner dashboard subject and every app token, papyrus's own included: the
+   page is a builtin that fetches with the owner's session cookie, and the
+   co-author agent edits files with its own file tools, so no app-token caller
+   exists.
+3. ``_project`` — the project name must be a single validated slug that resolves
    inside the app's own data dir (``store.safe_project_dir``), and the directory
    must exist. A name that fails either is a 400/404, never a filesystem touch.
-3. ``store.safe_child`` — every relative path (read, write, create, delete, main
+4. ``store.safe_child`` — every relative path (read, write, create, delete, main
    selection) is re-validated against the resolved project root, which is what
    rejects traversal and symlink escapes.
 
@@ -136,17 +144,29 @@ _Handler = Callable[[web.Request], Awaitable[web.StreamResponse]]
 
 
 def _require_enabled(handler: _Handler) -> _Handler:
-    """Deny every request while Papyrus is disabled (deny-by-default).
+    """Deny every request while Papyrus is disabled, then to anyone but the owner.
 
     Routes are registered once at gateway startup, so a default-disabled app
     would otherwise stay callable. ``is_app_enabled`` is a synchronous
     ``installed.json`` read, so it runs off the event loop.
+
+    The owner gate runs second, on every route, reads included: see layer 2 in
+    the module docstring.
     """
+
+    operation = f"papyrus.{handler.__name__.removeprefix('_handle_')}"
 
     @wraps(handler)
     async def _wrapped(request: web.Request) -> web.StreamResponse:
         if not await asyncio.to_thread(is_app_enabled, store.APP_NAME):
             return web.json_response({"error": "papyrus is disabled", "code": "app_disabled"}, status=403)
+        # Imported here, not at module top: ``_shared`` pulls in the dashboard
+        # handler surface (issue_radar resolves it the same way).
+        from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+        owner_denied = await require_owner_dashboard_request(request, operation)
+        if owner_denied is not None:
+            return owner_denied
         return await handler(request)
 
     return _wrapped

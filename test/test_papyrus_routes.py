@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest import mock
 
@@ -54,6 +55,37 @@ def _json_of(response: web.StreamResponse) -> dict[str, Any]:
     return json.loads(response.body)
 
 
+_OWNER = "U-OWNER"
+_GUEST = "U-GUEST"
+_UNSET = object()
+
+
+def _gated_request(
+    method: str,
+    path: str,
+    body: dict[str, Any] | None = None,
+    *,
+    user: str,
+    app_claim: object = "",
+) -> web.Request:
+    """A mocked request carrying an auth identity, on an app with a configured owner.
+
+    ``app_claim`` is the ``request["app"]`` value the auth middleware publishes:
+    ``""`` for a dashboard subject, an app name for an app token, and
+    ``_UNSET`` for an internal caller whose app claim is left absent.
+    """
+    payload = json.dumps(body or {}).encode()
+    app = web.Application()
+    app["state"] = SimpleNamespace(owner_id=_OWNER)
+    request = make_mocked_request(method, path, app=app)
+    request.json = mock.AsyncMock(return_value=body if body is not None else {})  # type: ignore[method-assign]
+    request._payload_length = len(payload)  # type: ignore[attr-defined]
+    request["user"] = user
+    if app_claim is not _UNSET:
+        request["app"] = app_claim
+    return request
+
+
 @pytest.fixture()
 def enabled(monkeypatch: pytest.MonkeyPatch) -> None:
     """Report the app as enabled, so the deny-by-default gate lets requests through."""
@@ -78,6 +110,87 @@ def project(data_root: Path) -> Path:
     return proj
 
 
+# ── the owner gate ───────────────────────────────────────────────────────────
+
+
+def _registered_routes() -> list[tuple[str, str, Any]]:
+    app = web.Application()
+    routes.register_routes(app)
+    found = [
+        (r.method, r.resource.canonical, r.handler)
+        for r in app.router.routes()
+        if r.resource is not None and r.method != "HEAD"
+    ]
+    assert len(found) == 19, found
+    return found
+
+
+@pytest.mark.asyncio
+class TestOwnerGate:
+    """Papers are the owner's private drafts and the git routes run with the owner's
+    git credentials, so every route refuses anyone but the dashboard owner."""
+
+    @pytest.mark.parametrize(
+        ("label", "user", "app_claim"),
+        [
+            ("non-owner dashboard subject", _GUEST, ""),
+            ("own-app token", _OWNER, "papyrus"),
+            ("other app token", _OWNER, "issue_radar"),
+            ("internal caller without an app claim", _OWNER, _UNSET),
+        ],
+    )
+    async def test_every_route_refuses_a_non_owner_caller(
+        self, enabled: None, data_root: Path, label: str, user: str, app_claim: object
+    ) -> None:
+        for method, path, handler in _registered_routes():
+            response = await handler(
+                _gated_request(method, f"{path}?name=my-paper", {"name": "my-paper"}, user=user, app_claim=app_claim)
+            )
+            assert response.status == 403, f"{label} reached {method} {path}"
+            assert _json_of(response)["code"] == "owner_only", f"{method} {path}"
+
+    async def test_owner_reaches_every_route(self, enabled: None, data_root: Path) -> None:
+        reached: list[str] = []
+        for method, path, handler in _registered_routes():
+
+            async def _record(request: web.Request, _path: str = path) -> web.StreamResponse:
+                reached.append(_path)
+                return web.json_response({})
+
+            guarded = routes._require_enabled(_record)
+            response = await guarded(_gated_request(method, path, user=_OWNER))
+            assert response.status == 200, f"owner refused on {method} {path} ({handler.__name__})"
+        assert len(reached) == 19
+
+    async def test_registered_push_and_commit_never_reach_git_for_a_non_owner(
+        self, enabled: None, data_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        (store.projects_dir() / "my-paper" / ".git").mkdir(parents=True)
+        push = mock.AsyncMock(return_value="pushed")
+        commit = mock.AsyncMock(return_value="committed")
+        clone = mock.AsyncMock(return_value=None)
+        monkeypatch.setattr(gitops, "push", push)
+        monkeypatch.setattr(gitops, "commit", commit)
+        monkeypatch.setattr(gitops, "clone", clone)
+        handlers = {(m, p): h for m, p, h in _registered_routes()}
+        for path, body in (
+            ("/git/commit", {"name": "my-paper"}),
+            ("/git/push", {"name": "my-paper"}),
+            ("/projects/clone", {"url": "https://example.invalid/x.git", "name": "pwn"}),
+        ):
+            full = f"{routes.API_BASE}{path}"
+            response = await handlers[("POST", full)](_gated_request("POST", full, body, user=_GUEST))
+            assert response.status == 403, path
+        assert not push.called and not commit.called and not clone.called
+
+    async def test_disabled_check_still_answers_first(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(routes, "is_app_enabled", lambda _name: False)
+        guarded = routes._require_enabled(routes._handle_list_projects)
+        response = await guarded(_gated_request("GET", "/api/apps/papyrus/projects", user=_GUEST))
+        assert response.status == 403
+        assert _json_of(response)["code"] == "app_disabled"
+
+
 # ── the deny-by-default gate ─────────────────────────────────────────────────
 
 
@@ -94,7 +207,7 @@ class TestRequireEnabled:
 
     async def test_allows_the_route_when_enabled(self, enabled: None, data_root: Path) -> None:
         guarded = routes._require_enabled(routes._handle_list_projects)
-        response = await guarded(_request("GET", "/api/apps/papyrus/projects"))
+        response = await guarded(_gated_request("GET", "/api/apps/papyrus/projects", user=_OWNER))
         assert response.status == 200
 
 
