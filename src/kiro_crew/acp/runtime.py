@@ -433,12 +433,13 @@ _REQUEST_TIMEOUT = 30.0
 _MCP_SIGN_IN_TIMEOUT = 630.0
 # JSON-RPC server-error code for a consent URL Crew did not show anyone.
 _MCP_URL_NOT_OPENED = -32000
-# ``initialize`` budget while the kernel is throttling the agents slice. A
-# throttled kiro-cli is alive and making progress, only slowly, so the fixed
-# budget above kills work that would have finished; each retry then pays the
-# same startup into the same throttle and deepens it. Three times the plain
-# budget, not unbounded: the cold-start semaphore (``runtime_start``) is held for
-# the whole wait. The value MUST stay strictly below the subagent startup watchdog
+# ``initialize`` budget: a cold start, not a control-plane round trip. kiro-cli
+# answers ``initialize`` only after it has started up, so a slow disk, a large
+# skill tree or a throttled agents slice can push the first answer past the plain
+# budget above while the process is alive and making progress. Killing it there
+# discards that startup, and every retry pays the same startup again. Three times
+# the plain budget, not unbounded: the cold-start semaphore (``runtime_start``) is
+# held for the whole wait. The value MUST stay strictly below the subagent startup watchdog
 # (``subagent._STARTUP_TIMEOUT_SECS``, 120s from ``_exec_started``): a
 # subagent's ``info._pid`` is recorded only after ``provider.start()`` returns,
 # i.e. after this handshake, so the watchdog sees "no runtime yet" for the
@@ -446,7 +447,7 @@ _MCP_URL_NOT_OPENED = -32000
 # The budget therefore has to expire first, with room for the spawn that
 # precedes the handshake, so ``AcpRuntimeOverloaded`` is what the caller sees
 # rather than a reaper kill. ``test_agents_slice_admission`` pins the ordering.
-_INIT_TIMEOUT_UNDER_THROTTLE = 90.0
+_INITIALIZE_TIMEOUT = 90.0
 
 
 class _PendingRequests(dict):
@@ -1716,34 +1717,27 @@ class AcpRuntime:
         return plan
 
     async def _initialize_handshake(self, client_capabilities: dict[str, Any]) -> dict[str, Any]:
-        """Send ``initialize`` with a budget sized to the host's throttle state.
+        """Send ``initialize`` with the cold-start budget.
 
         ``client_capabilities`` is the declaration :meth:`spawn` resolved before
         the process existed (the harness constant, or the wire-filled variant a
         ``client_meta_settings`` host gets); this helper only owns the budget.
 
-        The plain budget assumes an unthrottled process. When the agents slice
-        is being throttled at spawn time the budget is
-        :data:`_INIT_TIMEOUT_UNDER_THROTTLE` instead, because a throttled
-        kiro-cli is alive and answering slowly, not hung -- killing it at the
-        plain deadline discards its startup and the retry pays the same
-        startup into the same throttle. When the throttle is first seen at the
-        plain deadline with the process still ALIVE, the same ``initialize``
-        request stays pending for the remainder of the extended budget (a
-        fresh gateway's first probe can only baseline the counter, so the
-        spawn-time read can miss a throttle already under way). A timeout that
-        lands while the process is still ALIVE and the slice is throttling is
-        re-raised as :class:`AcpRuntimeOverloaded`, so the failure names
-        overload instead of a killed process. Any other timeout, and an exited
-        process, propagate unchanged.
+        The budget is :data:`_INITIALIZE_TIMEOUT` whatever the host's state:
+        ``initialize`` is answered only once kiro-cli has started, so a slow
+        start is a live process answering late, not a hung one. A timeout that
+        lands while the process is still ALIVE and the agents slice is
+        throttling is re-raised as :class:`AcpRuntimeOverloaded`, so the failure
+        names overload instead of a killed process. Any other timeout, and an
+        exited process, propagate unchanged.
         """
         throttled_at_spawn = agents_slice_throttling()
-        timeout = _INIT_TIMEOUT_UNDER_THROTTLE if throttled_at_spawn else _REQUEST_TIMEOUT
+        timeout = _INITIALIZE_TIMEOUT
         if throttled_at_spawn:
             logger.warning(
-                "acp_startup_stage stage=initialize outcome=throttled_budget "
+                "acp_startup_stage stage=initialize outcome=throttled_at_spawn "
                 "timeout_budget_s=%g pid=%s: the agents slice is being throttled, "
-                "so this handshake gets the extended budget",
+                "so this cold start may be slow",
                 timeout,
                 self._pid,
             )
@@ -1774,28 +1768,6 @@ class AcpRuntime:
             alive = self._process is not None and self._process.returncode is None
             if not alive or not (throttled_at_spawn or agents_slice_throttling()):
                 raise
-            pending = getattr(exc, "adopted_future", None)
-            if not throttled_at_spawn and pending is not None:
-                # The throttle surfaced only at the plain deadline (a fresh
-                # gateway's first probe can only baseline the counter, and
-                # reclaim can hold usage just under the line at spawn). The
-                # process is alive and the request is still registered, so
-                # give it the rest of the extended budget instead of reaping
-                # a startup that is merely slow.
-                extension = _INIT_TIMEOUT_UNDER_THROTTLE - timeout
-                logger.warning(
-                    "acp_startup_stage stage=initialize outcome=late_throttle_extension "
-                    "timeout_budget_s=%g extension_s=%g pid=%s: the agents slice began "
-                    "throttling during the handshake; keeping the request pending",
-                    timeout,
-                    extension,
-                    self._pid,
-                )
-                try:
-                    return await asyncio.wait_for(pending, timeout=extension)
-                except asyncio.TimeoutError:
-                    self._pending_requests.pop(getattr(exc, "req_id", None), None)
-                    timeout = _INIT_TIMEOUT_UNDER_THROTTLE
             raise AcpRuntimeOverloaded(
                 f"initialize went unanswered for {timeout:g}s while the agents slice is "
                 "being throttled at its memory ceiling; the process was alive, not hung. "
@@ -2456,7 +2428,7 @@ class AcpRuntime:
         # the process, its reader/stderr tasks, its PID-file entries AND its
         # _PROTECTED_PIDS shield would all leak. kill() reaps them (and
         # unregisters the protected PID via _mark_dead) before we re-raise.
-        # BaseException so CancelledError during the 30s handshake also cleans up.
+        # BaseException so CancelledError during the handshake also cleans up.
         try:
             # Start stderr drain
             if self._process.stderr:
@@ -2465,8 +2437,8 @@ class AcpRuntime:
             # Start the single reader task — owns stdout exclusively
             self._reader_task = asyncio.ensure_future(self._reader_loop())
 
-            # Protocol handshake ("initialize"); the budget follows the host's
-            # throttle state -- see _initialize_handshake. The capabilities
+            # Protocol handshake ("initialize"); the cold-start budget is
+            # _INITIALIZE_TIMEOUT -- see _initialize_handshake. The capabilities
             # were resolved above, before the process existed.
             init_resp = await self._initialize_handshake(client_capabilities)
             _agent_caps = init_resp.get("agentCapabilities", {})
@@ -7810,25 +7782,19 @@ class AcpRuntime:
         try:
             result = await asyncio.wait_for(future, timeout=timeout)
         except asyncio.TimeoutError:
-            if method == METHOD_SESSION_NEW or method == "initialize":
-                # The answer may still come. For ``session/new`` it names a
-                # session the runtime has CREATED, so keep the future registered
-                # for the reader loop and hand ownership to the caller's
-                # StartCollector via ``adopt`` (RFC §4.4) instead of leaving an
-                # unowned session in the shared process. For ``initialize`` the
-                # caller (:meth:`_initialize_handshake`) may decide the deadline
-                # was too short -- the slice started throttling after the
-                # budget was chosen -- and keep waiting on the SAME request
-                # rather than reap a process that is alive and answering
-                # slowly. ``wait_for`` cancelled the future; register a fresh
-                # one bound to the same id either way.
+            if method == METHOD_SESSION_NEW:
+                # The answer may still come, and it names a session the runtime
+                # has CREATED, so keep the future registered for the reader loop
+                # and hand ownership to the caller's StartCollector via ``adopt``
+                # (RFC §4.4) instead of leaving an unowned session in the shared
+                # process. ``wait_for`` cancelled the future; register a fresh one
+                # bound to the same id. Every other method is popped: a future
+                # left registered with no reader is failed by the cleanup kill's
+                # ``_mark_dead`` and logged as an exception nobody retrieved.
                 fresh: asyncio.Future[dict[str, Any]] = loop.create_future()
                 self._pending_requests[req_id] = fresh
-                if method == METHOD_SESSION_NEW:
-                    adopt = getattr(self._pending_requests, "adopt", None)
-                    adopted = adopt(req_id) if adopt is not None else fresh
-                else:
-                    adopted = fresh
+                adopt = getattr(self._pending_requests, "adopt", None)
+                adopted = adopt(req_id) if adopt is not None else fresh
             else:
                 self._pending_requests.pop(req_id, None)
                 adopted = None
