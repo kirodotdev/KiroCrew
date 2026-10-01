@@ -76,6 +76,7 @@ from kiro_crew.history import (
     transcript_stems,
     transcript_withholds_derivation,
 )
+from kiro_crew.image_refs import strip_image_refs_flat
 from kiro_crew.kiro_prerequisite import spawn_supervised_oneshot
 from kiro_crew.label_guard import PROSE_OPENERS, is_verdict_reply, looks_like_prose
 from kiro_crew.llm_helpers import run_bg_oneliner
@@ -1562,6 +1563,7 @@ async def api_sessions(request: web.Request) -> web.Response:
 _SUMMARIZE_MAX_SESSIONS = 8  # bound cost/latency: only the top-N get an LLM pass
 _SUMMARIZE_MODEL = "auto"  # inherit the governed default; a hardcoded id 400s where unavailable
 _SUMMARIZE_MSG_LIMIT = 12  # messages fed to the summarizer per session
+_SUMMARIZE_LINE_CHARS = 300  # characters of each message the summarizer sees
 _SUMMARIZE_TIMEOUT_SECS = (
     30  # per-session deadline so one stalled prompt can't pin the shared _bg session
 )
@@ -1618,9 +1620,11 @@ def _build_summary_prompt(messages: list[dict]) -> str | None:
     lines: list[str] = []
     for m in messages[:_SUMMARIZE_MSG_LIMIT]:
         role = m.get("role", "")
-        content = " ".join(str(m.get("content", "")).split())
-        if role in ("user", "assistant") and content:
-            lines.append(f"{role}: {content[:300]}")
+        if role not in ("user", "assistant"):
+            continue
+        content = strip_image_refs_flat(str(m.get("content", "")), _SUMMARIZE_LINE_CHARS)
+        if content:
+            lines.append(f"{role}: {content}")
     if not lines:
         return None
     return _SUMMARIZE_PROMPT.format(transcript="\n".join(lines))

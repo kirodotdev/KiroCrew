@@ -10922,13 +10922,19 @@ class AcpClient:
         self,
         message: str,
         timeout: float | None = None,
+        *,
+        allow_image: bool = True,
     ) -> AsyncIterator[AcpEvent]:
-        """Send a prompt and yield AcpEvent objects (text, tool_call, permission, complete)."""
+        """Send a prompt and yield AcpEvent objects (text, tool_call, permission, complete).
+
+        ``allow_image=False`` sends *message* as text only: no path in it is
+        read or inlined.
+        """
         timeout = await _effective_prompt_timeout_async(timeout)
         self._cancelled = False
         self._turn_done.clear()
         await self.ensure_ready()
-        req_id = await self._send_prompt(message)
+        req_id = await self._send_prompt(message, allow_image=allow_image)
         async for event in self._dispatch_events(req_id, timeout):
             yield event
 
@@ -11799,7 +11805,7 @@ class AcpClient:
 
     # ── Private Helpers ──
 
-    async def _send_prompt(self, message: str) -> int:
+    async def _send_prompt(self, message: str, *, allow_image: bool = True) -> int:
         # Shared with AcpSessionHandle.prompt via prompt_blocks so the two paths
         # cannot drift.
         return await self._send_request(
@@ -11808,7 +11814,9 @@ class AcpClient:
                 "sessionId": self._session_id,
                 # Offloaded: see the note in session_handle.prompt -- image
                 # reads and base64 encoding must not block the event loop.
-                "prompt": await asyncio.to_thread(build_prompt_blocks, message),
+                "prompt": await asyncio.to_thread(
+                    build_prompt_blocks, message, allow_image=allow_image
+                ),
             },
         )
 

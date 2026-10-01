@@ -6,18 +6,26 @@ link-label, folder-icon, and session-summary generation.
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
+import os
+import pathlib
+import tempfile
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from kiro_crew.acp.client import AcpError, _rejected_model_from_error
+from kiro_crew.acp.prompt_blocks import build_prompt_blocks
 from kiro_crew.acp.types import (
     EVENT_COMPLETE,
     EVENT_PERMISSION_REQUEST,
     EVENT_TEXT_CHUNK,
+    JsonRpcMessage,
     TurnUsage,
 )
+from kiro_crew.image_refs import strip_image_refs
 from kiro_crew.llm_helpers import run_bg_oneliner
 
 
@@ -41,7 +49,7 @@ class _FakeSession:
         self.model = model
         self.served_model = model
 
-    async def prompt(self, _prompt):
+    async def prompt(self, _prompt, *, allow_image=True):
         if self._raise:
             raise RuntimeError("backend boom")
         # Fresh per-turn stats, installed as the real handle does once the turn
@@ -163,7 +171,7 @@ async def test_image_paths_in_the_prompt_are_not_sent_as_attachments(tmp_path):
     sent: list[str] = []
 
     class _Capturing(_FakeSession):
-        async def prompt(self, prompt):
+        async def prompt(self, prompt, *, allow_image=True):
             sent.append(prompt)
             async for event in super().prompt(prompt):
                 yield event
@@ -287,7 +295,7 @@ class _RejectThenSucceedSession:
         self.models.append(model)
         self.served_model = model
 
-    async def prompt(self, _prompt):
+    async def prompt(self, _prompt, *, allow_image=True):
         self._calls += 1
         if self._calls == 1:
             err = AcpError("model rejected", transient=False)
@@ -423,7 +431,7 @@ async def test_non_rejection_error_is_not_retried():
     it must propagate unchanged (no retry), and the session is destroyed."""
 
     class _BoomSession(_FakeSession):
-        async def prompt(self, _p):
+        async def prompt(self, _p, *, allow_image=True):
             raise AcpError("backend boom")
             yield  # pragma: no cover
 
@@ -590,7 +598,7 @@ class _ClaudeSeamSession(_FakeSession):
         super().__init__(events)
         self._turn_stats = turn_stats
 
-    async def prompt(self, _prompt):
+    async def prompt(self, _prompt, *, allow_image=True):
         self.last_prompt_stats = self._turn_stats
         for e in self._events:
             yield e
@@ -648,3 +656,196 @@ async def test_a_claude_seam_turn_that_billed_nothing_still_records_nothing():
         await run_bg_oneliner(_FakeSessions(sess), "p")
 
     persist.assert_not_awaited()
+
+
+# ── Text-only turns ──────────────────────────────────────────────────────────
+#
+# A background one-liner's prompt goes out text-only, on every harness path.
+#
+# ``run_bg_oneliner`` prompts are text ABOUT a session -- a title, a summary, a
+# suggestion, a status card -- so an image path inside one is quoted history, not
+# an attachment. ``strip_image_refs`` keeps a spaced path whose shape cannot be
+# told from prose, so the scrub alone cannot keep a still-readable file out of
+# the request; the text-only seam does, whatever shape a caller composes.
+#
+# The three composed prompts below each put a channel attachment line somewhere
+# the scrub leaves it (mid-line, after a prefix, inside a JSON string) and each
+# asserts that, sent the default way, the prompt WOULD carry an image block --
+# so the test fails if the seam is dropped rather than passing vacuously.
+
+# Smallest valid 1x1 PNG.
+_PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+)
+
+
+def _types(blocks: list[dict]) -> list[str]:
+    return [b["type"] for b in blocks]
+
+
+@pytest.fixture
+def attachment():
+    """A readable channel attachment under a temp directory holding a space.
+
+    Directly under the system temp directory rather than ``tmp_path``: the
+    suggestions builder keeps 150 characters of a row, and a Windows runner's
+    ``tmp_path`` alone runs past that, cutting the path before its suffix.
+    """
+    with tempfile.TemporaryDirectory(prefix="kc") as root:
+        spaced = pathlib.Path(root) / "John Smith"
+        spaced.mkdir()
+        path = spaced / "tmpab12cd_4.png"
+        path.write_bytes(_PNG)
+        yield str(path)
+
+
+class _BuildingSession(_FakeSession):
+    """A background handle that builds the real prompt blocks it would send."""
+
+    def __init__(self) -> None:
+        super().__init__([])
+        self.sent: list[list[dict]] = []
+
+    async def prompt(self, message, *, allow_image=True):
+        self.sent.append(build_prompt_blocks(message, allow_image=allow_image))
+        yield SimpleNamespace(kind=EVENT_COMPLETE, text="")
+
+
+async def _send(prompt: str) -> list[list[dict]]:
+    # The premise: sent with inlining on, the scrubbed prompt carries the file.
+    assert "image" in _types(build_prompt_blocks(strip_image_refs(prompt)))
+    session = _BuildingSession()
+    await run_bg_oneliner(_FakeSessions(session), prompt)
+    return session.sent
+
+
+@pytest.mark.asyncio
+async def test_the_title_prompt_carries_no_image(attachment):
+    from kiro_crew.dashboard.chat_title import _build_title_prompt
+
+    prompt = _build_title_prompt([{"role": "user", "content": f"look at this\n{attachment}"}])
+
+    assert prompt and attachment in prompt
+    assert [_types(b) for b in await _send(prompt)] == [["text"]]
+
+
+@pytest.mark.asyncio
+async def test_the_suggestions_prompt_carries_no_image(attachment, monkeypatch):
+    from kiro_crew import suggestions
+
+    monkeypatch.setattr(
+        suggestions.ContextBuilder, "get_memory_for", MagicMock(side_effect=RuntimeError)
+    )
+    log = SimpleNamespace(
+        list_sessions=lambda: [{"key": "k", "title": "Screenshots"}],
+        derive_recent=lambda key, max_messages: [{"role": "user", "content": attachment}],
+    )
+    state = SimpleNamespace(conversation_log=log, crons=SimpleNamespace(list_jobs=lambda: []))
+    context = suggestions._build_context(state)
+
+    assert f"  - User: {attachment}" in context
+    assert [_types(b) for b in await _send(context)] == [["text"]]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="JSON doubles a Windows path's separators")
+@pytest.mark.asyncio
+async def test_the_status_card_prompt_carries_no_image(attachment):
+    from kiro_crew.dashboard import card_lifecycle
+
+    rows = card_lifecycle._evidence_rows([{"role": "user", "content": attachment}])
+    prompt = card_lifecycle._ROOT_PROMPT + json.dumps({"recent_messages": rows})
+
+    assert f'"text": "{attachment}"' in prompt
+    assert [_types(b) for b in await _send(prompt)] == [["text"]]
+
+
+# ── The seam on each path a background handle can take ──────────────────────
+
+
+class _PromptRuntime:
+    """Runtime double that answers one session/prompt with an end of turn."""
+
+    def __init__(self, queue: asyncio.Queue) -> None:
+        self.pid = None
+        self.is_alive = MagicMock(return_value=True)
+        self.send_notification = AsyncMock()
+        self.supports_image_prompt = True
+        self.acp_backend = ""
+        self.requests: list[tuple[str, dict]] = []
+        self._queue = queue
+
+    def mark_turn_active(self, session_id: str, active: bool) -> None:
+        pass
+
+    async def send_request(self, method: str, params: dict) -> int:
+        self.requests.append((method, params))
+        self._queue.put_nowait(JsonRpcMessage(id=7, result={"stopReason": "end_turn"}))
+        return 7
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("allow_image", "expected"), [(True, ["image"]), (False, [])])
+async def test_the_runtime_handle_honours_the_seam(attachment, allow_image, expected):
+    from kiro_crew.acp.session_handle import AcpSessionHandle
+
+    queue: asyncio.Queue = asyncio.Queue()
+    rt = _PromptRuntime(queue)
+    handle = AcpSessionHandle("sA", queue, rt)
+
+    async for _ in handle.prompt(f"look {attachment}", timeout=5.0, allow_image=allow_image):
+        pass
+
+    _method, params = rt.requests[-1]
+    assert [t for t in _types(params["prompt"]) if t == "image"] == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("allow_image", "expected"), [(True, ["image"]), (False, [])])
+async def test_the_direct_client_honours_the_seam(tmp_path, attachment, allow_image, expected):
+    from kiro_crew.acp.client import AcpClient
+
+    client = AcpClient(work_dir=tmp_path)
+    client._session_id = "sid"
+    client._send_request = AsyncMock(return_value=3)
+
+    await client._send_prompt(f"look {attachment}", allow_image=allow_image)
+
+    _method, params = client._send_request.await_args[0]
+    assert [t for t in _types(params["prompt"]) if t == "image"] == expected
+
+
+@pytest.mark.asyncio
+async def test_the_provider_paths_forward_the_seam():
+    from kiro_crew.acp.session_provider import AcpSessionProvider
+    from kiro_crew.providers.acp import AcpProvider
+    from kiro_crew.session_background import _ProviderBgSession
+
+    seen: list[object] = []
+
+    async def _record(message, *, allow_image=True):
+        seen.append(allow_image)
+        return
+        yield  # pragma: no cover - makes this an async generator
+
+    # The provider-backed background adapter, over a non-runtime backend.
+    provider = SimpleNamespace(stream=_record)
+    bg = _ProviderBgSession(SimpleNamespace(semaphore=asyncio.Semaphore(1), provider=provider))
+    async for _ in bg.prompt("p", allow_image=False):
+        pass
+
+    # The direct-client provider that entry holds.
+    with patch("kiro_crew.providers.acp.AcpClient"):
+        direct = AcpProvider(acp_backend="")
+    direct._client = MagicMock()
+    direct._client.stream_events = _record
+    async for _ in direct.stream("p", allow_image=False):
+        pass
+
+    # The runtime-backed provider.
+    handle = MagicMock()
+    handle.prompt = _record
+    on_runtime = AcpSessionProvider(handle, MagicMock())
+    async for _ in on_runtime.stream("p", allow_image=False):
+        pass
+
+    assert seen == [False, False, False]
