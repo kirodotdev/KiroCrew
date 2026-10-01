@@ -141,8 +141,40 @@ function createRendererRecovery({
   };
 }
 
+/**
+ * Mark a dashboard URL as a recovery reload by adding `safe=1`.
+ *
+ * `safe=1` tells the dashboard not to reopen the chat it remembered. That chat
+ * is often what froze or crashed the renderer, and reopening it repeats the
+ * crash on every reload (#12907). See website/src/lib/safeReload.ts. Every
+ * other part of the URL, origin and credential included, is kept as given.
+ */
+function withSafeReload(dashboardUrl) {
+  const url = new URL(dashboardUrl);
+  url.searchParams.set("safe", "1");
+  return url.toString();
+}
+
+/**
+ * Whether a dashboard URL is a recovery reload, i.e. carries `safe=1`.
+ *
+ * A 403 token retry re-requests the dashboard from the URL that failed. It has
+ * to keep this flag: a bare retry reopens the remembered chat and repeats the
+ * crash the reload exists to break. A malformed URL reads as not a recovery
+ * reload, so the ordinary path stays unchanged.
+ */
+function hasSafeReload(dashboardUrl) {
+  try {
+    return new URL(dashboardUrl).searchParams.get("safe") === "1";
+  } catch {
+    return false;
+  }
+}
+
 module.exports = {
   createRendererRecovery,
+  withSafeReload,
+  hasSafeReload,
   isRecoverableReason,
   RECOVERABLE_REASONS,
   DEFAULT_MAX_ATTEMPTS,

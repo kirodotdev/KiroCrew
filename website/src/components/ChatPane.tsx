@@ -719,17 +719,15 @@ export default function ChatPane({
   // One-time hydrate of this slot's message history via React Query + the api
   // client (caching + cross-pane dedup; staleTime Infinity keeps it one-shot —
   // live updates arrive through the WS store routing, not a refetch).
-  // Unbounded while streaming is deliberate, not a raw-row guard: the handler
-  // collapses chunk runs BEFORE computing total and slicing, even mid-stream.
-  // A background slot's stream state reads idle until an SSE frame arrives, so
-  // the slot record is the signal; latch only once unbounded so a turn that starts
-  // while the bounded fetch is still in flight can still upgrade it.
+  // Bounded whether or not the slot is running. The handler collapses chunk runs
+  // BEFORE it computes total and slices, even mid-stream, so a limit cannot cut
+  // a streaming response apart, and the page's `has_more` still marks older
+  // history. The rows a turn produces arrive over the WS routing, not this
+  // fetch. Lifting the bound for a running slot pulled its WHOLE transcript on
+  // every open: on a long, busy session that froze the renderer, and the crash
+  // recovery reopened the same chat into the same freeze (#12907).
   const limitRef = useRef<number | undefined>(PANE_HYDRATE_LIMIT)
   const limitLatched = useRef(false)
-  if (!limitLatched.current && (running || paneSlot?.running)) {
-    limitRef.current = undefined
-    limitLatched.current = true
-  }
   // A crewmate's chat that filters a BOUNDED window down to no speech has
   // proved nothing: the last thing it said may sit just behind the window,
   // under fifty newer patrol rows. The never-spoken hint is a claim about the

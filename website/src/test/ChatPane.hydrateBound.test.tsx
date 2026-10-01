@@ -110,14 +110,15 @@ describe('ChatPane hydrate is bounded', () => {
     expect(limit).toBeLessThanOrEqual(500)
   })
 
-  it('hydrates a slot that is already mid-turn unbounded, so the tail is not all it shows', async () => {
-    // Stream state reads idle until an SSE frame arrives, so the slot record is the
-    // signal. Unbounded is deliberate: the handler collapses chunk runs before slicing.
+  it('hydrates a slot that is already mid-turn with the same bound (#12907)', async () => {
+    // An unbounded read of a long, running session froze the renderer, and the
+    // crash recovery reopened it into the same freeze. The handler collapses chunk
+    // runs before slicing, so the bound is safe mid-stream.
     renderPane('pane-running-1', { running: true })
     await waitFor(() => expect(api.chatSlotDetail).toHaveBeenCalled())
-    const [slot, limit] = (api.chatSlotDetail as ReturnType<typeof vi.fn>).mock.calls[0]
-    expect(slot).toBe('pane-running-1')
-    expect(limit).toBeUndefined()
+    const calls = (api.chatSlotDetail as ReturnType<typeof vi.fn>).mock.calls
+    expect(calls[0][0]).toBe('pane-running-1')
+    expect(calls.every((c) => c[1] === PANE_HYDRATE_LIMIT)).toBe(true)
   })
 
   it('hydrates each pane once, so the bound is what caps a multi-pane grid', async () => {
@@ -233,8 +234,8 @@ describe('ChatPane hydrate is bounded', () => {
 /* A pane can mount against an IDLE slot and have the user start a turn before the
  * bounded fetch is served, so the limit must still be upgradable at that point. The
  * handler collapses chunk runs before slicing, so a bound is not a raw-row hazard. */
-describe('a turn that starts while the bounded fetch is in flight upgrades the limit', () => {
-  it('refetches unbounded when an idle slot starts running mid-hydrate', async () => {
+describe('a turn that starts while the bounded fetch is in flight keeps the limit', () => {
+  it('keeps the bound when an idle slot starts running mid-hydrate', async () => {
     // Never resolves: pins the pane in the window where the bounded fetch is in flight.
     ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockImplementation(() => new Promise(() => {}))
     const store = makeStore('pane-midturn', undefined, [], false)
@@ -253,13 +254,12 @@ describe('a turn that starts while the bounded fetch is in flight upgrades the l
     await waitFor(() => expect(api.chatSlotDetail).toHaveBeenCalled())
     expect((api.chatSlotDetail as ReturnType<typeof vi.fn>).mock.calls[0][1]).toBe(PANE_HYDRATE_LIMIT)
 
-    // The turn starts. Pre-fix the limit was already latched bounded and never upgraded,
-    // so the pane committed the tail of the streaming response with no marker.
+    // The turn starts. The pane must not re-ask for the whole transcript.
     act(() => {
       store.dispatch(sseSlots([{ key: 'pane-midturn', messages: 0, running: true, mode: '', pending_approval: false, waiting_for_input: false, last_activity_ts: undefined }] as unknown as Parameters<typeof sseSlots>[0]))
     })
-    await waitFor(() =>
-      expect((api.chatSlotDetail as ReturnType<typeof vi.fn>).mock.calls.some((c) => c[1] === undefined)).toBe(true))
+    await act(async () => {})
+    expect((api.chatSlotDetail as ReturnType<typeof vi.fn>).mock.calls.some((c) => c[1] === undefined)).toBe(false)
   })
 })
 

@@ -4,9 +4,10 @@
  * not bypass the SW). The heal compares the RUNNING entry script against the
  * server's live index.html and breaks out exactly once per interval.
  */
-import { describe, it, expect, vi } from 'vitest'
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest'
 
 import { HEAL_PROBE_DELAY_MS, HEAL_RELOAD_MIN_INTERVAL_MS, extractEntryScript, healIfStale, installStaleShellHeal } from '../lib/staleShellHeal'
+import { _resetSafeReloadForTests, captureSafeReload } from '../lib/safeReload'
 
 const ORIGIN = 'https://kc.example'
 const html = (entry: string) =>
@@ -81,6 +82,7 @@ describe('installStaleShellHeal (boot wiring)', () => {
   afterEach(() => {
     vi.useRealTimers()
     vi.restoreAllMocks()
+    _resetSafeReloadForTests()
     document.querySelectorAll('script[type="module"]').forEach((el) => el.remove())
   })
 
@@ -164,5 +166,42 @@ describe('installStaleShellHeal (boot wiring)', () => {
     installStaleShellHeal()
     await vi.advanceTimersByTimeAsync(HEAL_PROBE_DELAY_MS + 10)
     expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('keeps a crash-recovery load safe: heals with safe=1 back in the address', async () => {
+    // The probe fires ~3s after boot, before a user on a safe load has had to
+    // pick a chat. `captureSafeReload` already stripped `?safe=1`, so a bare
+    // reload here would reopen the remembered chat that crashed the renderer
+    // (#12907). The heal must reload through `reloadKeepingSafe` instead.
+    captureSafeReload({
+      location: { href: 'https://kc.example/?token=abc&safe=1' } as Location,
+      history: { state: null, replaceState: () => {} } as unknown as History,
+    })
+    plantRunningScript('/assets/index-OLD.js')
+    Object.defineProperty(window.navigator, 'serviceWorker', { configurable: true, value: undefined })
+    Object.defineProperty(window, 'caches', { configurable: true, value: undefined })
+    const reload = vi.fn()
+    const replace = vi.fn()
+    const origLocation = window.location
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { ...origLocation, origin: origLocation.origin, href: 'https://kc.example/?token=abc', reload, replace },
+    })
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        text: () =>
+          Promise.resolve('<script type="module" src="/assets/index-NEW.js"></script>'),
+      }),
+    )
+
+    installStaleShellHeal()
+    await vi.advanceTimersByTimeAsync(HEAL_PROBE_DELAY_MS + 10)
+    expect(reload).not.toHaveBeenCalled()
+    expect(replace).toHaveBeenCalledTimes(1)
+    expect(replace).toHaveBeenCalledWith('https://kc.example/?token=abc&safe=1')
+
+    Object.defineProperty(window, 'location', { configurable: true, value: origLocation })
   })
 })
