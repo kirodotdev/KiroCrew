@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from ...execution_context import ExecutionContext
     from ...subagent import (
         AGENT_NOT_AVAILABLE_CODE,
+        MEMORY_CAUSE_CGROUP_USAGE_UNREADABLE,
         QUEUED_REASON_ADAPTIVE_CAP_ZERO,
         QUEUED_REASON_CONCURRENCY_LIMIT,
         QUEUED_REASON_LOW_MEMORY,
@@ -35,6 +36,7 @@ if TYPE_CHECKING:
         logger,
         parent_spawn_policy,
         platform_compat,
+        pop_memory_check_cause,
         redact_credentials,
         redact_exfiltration_urls,
         sel,
@@ -815,14 +817,23 @@ class _GateMixin(ManagerComponent):
                 settled_gb=settled,
                 claim_prices=[price for price, _ in self._manager._claim_prices.values()],
             )
+        pop_memory_check_cause()  # drop a cause left by any earlier reading
         mem_ok, avail_gb = (True, -1.0) if _dispatch_now else check_memory_available(min_gb=min_mem)
+        memory_cause = pop_memory_check_cause()
         if not mem_ok:
+            # An unreadable cgroup usage file still defers; only the words change.
+            unknown_usage = memory_cause == MEMORY_CAUSE_CGROUP_USAGE_UNREADABLE
+            unknown_note = (
+                "memory headroom unknown: a finite cgroup memory limit is set but its "
+                "usage is unreadable; restore read access to memory.current / "
+                "memory.usage_in_bytes"
+            )
             logger.warning(
-                "Subagent spawn %s: only %.2f GB available, need %.2f GB (this start "
+                "Subagent spawn %s: %s, need %.2f GB (this start "
                 "priced at %.2f GB, plus the starts still warming, with "
                 "agent.spawn_min_memory_gb left over).",
                 "deferred" if _durable else "refused",
-                avail_gb,
+                unknown_note if unknown_usage else f"only {avail_gb:.2f} GB available",
                 min_mem,
                 candidate_price or 0.0,
             )
@@ -836,6 +847,7 @@ class _GateMixin(ManagerComponent):
                     "min_gb": min_mem,
                     "startup_cost_gb": start_cost,
                     "start_price_gb": candidate_price,
+                    **({"cause": memory_cause} if memory_cause else {}),
                     **_task_audit,
                 },
             )
@@ -849,7 +861,9 @@ class _GateMixin(ManagerComponent):
                 parent_session_key=parent_session_key,
                 done=True,
                 error=(
-                    f"spawn refused: only {avail_gb:.1f} GB memory available (need "
+                    f"spawn refused: {unknown_note} (need {min_mem:.1f} GB)"
+                    if unknown_usage
+                    else f"spawn refused: only {avail_gb:.1f} GB memory available (need "
                     f"{min_mem:.1f} GB; {candidate_price or 0.0:.2f} GB for this start)"
                 ),
                 batch_id=batch_id,
@@ -857,8 +871,12 @@ class _GateMixin(ManagerComponent):
             )
             deferred = (
                 _deferred(
-                    f"low memory: {avail_gb:.1f} GB available, need {min_mem:.1f} GB "
-                    f"({candidate_price or 0.0:.2f} GB for this start)",
+                    (
+                        f"{unknown_note}; need {min_mem:.1f} GB"
+                        if unknown_usage
+                        else f"low memory: {avail_gb:.1f} GB available, need {min_mem:.1f} GB "
+                        f"({candidate_price or 0.0:.2f} GB for this start)"
+                    ),
                     info,
                     wait={
                         "reason": QUEUED_REASON_LOW_MEMORY,

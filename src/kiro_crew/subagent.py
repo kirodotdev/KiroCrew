@@ -15,6 +15,7 @@ import logging
 import math
 import os
 import re
+import threading
 import time
 from collections.abc import Awaitable, Callable, Container, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -1470,6 +1471,25 @@ def _timeout_context(
     return " | ".join(parts)
 
 
+#: Cause recorded when a finite cgroup memory limit is set but that level's
+#: usage file cannot be read: the headroom is unknown, not measured as low.
+MEMORY_CAUSE_CGROUP_USAGE_UNREADABLE = "cgroup_usage_unreadable"
+
+#: Set by the cgroup probe inside :func:`check_memory_available` and read by the
+#: spawn gate with :func:`pop_memory_check_cause`. Thread-local, so a probe on
+#: another thread (the sizing sampler, a session transfer) never writes the
+#: cause a gate on this thread reads. Diagnostic only: the admission verdict
+#: never depends on it.
+_memory_check_cause = threading.local()
+
+
+def pop_memory_check_cause() -> str:
+    """Return this thread's last memory-check cause ("" for none) and clear it."""
+    cause = getattr(_memory_check_cause, "value", "")
+    _memory_check_cause.value = ""
+    return cause
+
+
 def check_memory_available(
     min_gb: float = DEFAULT_SPAWN_MIN_MEMORY_GB, *, path: str = "/proc/meminfo"
 ) -> tuple[bool, float]:
@@ -1511,6 +1531,7 @@ def check_memory_available(
         # A failed host read cannot discard a known container constraint.
         pass
     if path == "/proc/meminfo":
+        pop_memory_check_cause()  # the cgroup probe below records a fresh one
         cgroup_gb = _cgroup_available_gb()
         if cgroup_gb >= 0:
             avail = cgroup_gb if avail < 0 else min(avail, cgroup_gb)
@@ -1884,7 +1905,9 @@ def _container_cgroup_available_gb() -> float:
     SAME level, including siblings charged to a parent. A finite limit with
     unknown usage contributes zero headroom, never zero usage. Ancestors
     hidden above a mount cannot be measured. Usage excludes the level's
-    inactive page cache (:func:`_read_inactive_file_bytes`).
+    inactive page cache (:func:`_read_inactive_file_bytes`). An unknown usage
+    records :data:`MEMORY_CAUSE_CGROUP_USAGE_UNREADABLE` so a deferral can say
+    the headroom is unknown rather than exhausted.
     """
     available = -1.0
     for leaf, mount, v2 in _cgroup_memory_roots():
@@ -1902,11 +1925,13 @@ def _container_cgroup_available_gb() -> float:
                 current = _read_int_file(str(directory / usage_name))
                 if limit is not None and 0 <= limit < _CGROUP_UNLIMITED:
                     # No spare capacity is established when usage is unknown.
-                    headroom = (
-                        max(0.0, (limit - _working_set(directory, v2, current)) / (1024**3))
-                        if current is not None and current >= 0
-                        else 0.0
-                    )
+                    if current is not None and current >= 0:
+                        headroom = max(
+                            0.0, (limit - _working_set(directory, v2, current)) / (1024**3)
+                        )
+                    else:
+                        headroom = 0.0
+                        _memory_check_cause.value = MEMORY_CAUSE_CGROUP_USAGE_UNREADABLE
                     available = headroom if available < 0 else min(available, headroom)
             if directory == mount:
                 break
