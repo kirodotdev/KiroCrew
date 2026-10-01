@@ -436,8 +436,8 @@ def _mount_sites(tree: ast.AST) -> tuple[dict[str, int], dict[tuple[str, str], i
 
 
 #: Every raw mount the program may make, by function, each exactly once: the refusing
-#: guard, its degrade-open sibling for the write carve-outs, and the unreadable mask's
-#: private tmpfs.
+#: guard, its degrade-open sibling for the write carve-outs and granted files, and the
+#: private tmpfs the unreadable mask and granted files are staged on.
 _PERMITTED_RAW_MOUNTS = {"_mount_or_die": 1, "_mount_or_warn": 1, "_mount_private_tmpfs": 1}
 
 #: Each of those calls IS the test of an ``if ... != 0:``, in exactly this form.
@@ -447,7 +447,7 @@ _CHECKED_RAW_MOUNTS = {
     (
         "_mount_private_tmpfs",
         "launch.libc.mount(b'tmpfs', target, b'tmpfs', _MS_NOSUID | _MS_NODEV | _MS_NOEXEC, "
-        "b'mode=0700,size=16k') != 0",
+        "options) != 0",
     ): 1,
 }
 
@@ -455,8 +455,9 @@ _CHECKED_RAW_MOUNTS = {
 #: remount, credential dirs, the private window's two -- staging its real contents out
 #: before the parent is masked, then binding them onto the placeholder inside the
 #: stand-in -- the nested re-mask that re-hides a masked leaf sitting INSIDE such a
-#: window, sensitive files and the read-only seal on an unreadable mask, and ~/.ssh.
-_GUARDED_SITES = 10
+#: window, sensitive files and the read-only seal on an unreadable mask, the read-only
+#: seal on a granted credential file, and ~/.ssh.
+_GUARDED_SITES = 11
 
 _EXPECTED_SITES = (_PERMITTED_RAW_MOUNTS, _CHECKED_RAW_MOUNTS, _GUARDED_SITES)
 

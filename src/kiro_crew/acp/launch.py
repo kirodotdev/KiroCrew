@@ -813,6 +813,7 @@ class LaunchTools:
     agent_scratch: ModuleType
     apply_pod_bundle_spawn: Callable[..., tuple[list[str], bool]]
     forward_ssh_auth_sock: Callable[[], bool]
+    credential_file_grants: Callable[[], tuple[str, ...]]
     wrap_argv_async: Callable[..., Awaitable[tuple[list[str], str | None]]]
     wrap_argv: Callable[..., Any]
     wrapped_by_crew_sandbox: Callable[[Sequence[str]], bool]
@@ -954,6 +955,11 @@ async def launch(host: LaunchHost, request: LaunchRequest, tools: LaunchTools) -
     # reads config synchronously on the loop. Scoped to this agent spawn:
     # generic launchers default the flag off and keep scrubbing the socket.
     forward_ssh_auth_sock = await asyncio.to_thread(tools.forward_ssh_auth_sock)
+    # Edition-granted credential files, resolved off-loop per spawn for the same reason
+    # (the edition adapter may read its own grant state) and never cached, so a revoked
+    # grant stops reaching the next spawn. Empty under the Default sandbox policy, so the
+    # public edition's spawn arguments are unchanged.
+    secret_files = await asyncio.to_thread(tools.credential_file_grants)
     argv, host._sandbox_cleanup = await tools.wrap_argv_async(
         argv,
         mode=request.sandbox_mode,
@@ -965,6 +971,7 @@ async def launch(host: LaunchHost, request: LaunchRequest, tools: LaunchTools) -
         extra_hidden_dirs=request.extra_hidden_dirs,
         extra_private_dirs=scratch_window,
         extra_expose_files=request.extra_expose_files,
+        extra_secret_files=secret_files,
         is_kiro_cli=delegate_internal_sandbox,
         _prepare=tools.wrap_argv,
     )

@@ -147,6 +147,8 @@ class Launch:
         self.mask_occupants = plan["mask_occupants"]
         self.crew_home_aliases = plan["crew_home_aliases"]
         self.expose_files = plan["expose_files"]
+        self.secret_files = plan["secret_files"]
+        self.secret_file_max_bytes = plan["secret_file_max_bytes"]
         self.env_prefixes = plan["env_prefixes"]
         self.ssh_dir = plan["ssh_dir"]
         self.ssh_known_hosts = plan["ssh_known_hosts"]
@@ -191,6 +193,8 @@ class Launch:
         self.src_prefix = ""
         #: The exposed files' bytes, read before the masks hide their parents.
         self.expose_data = {}
+        #: The granted credential files' bytes, read before the masks hide them.
+        self.secret_data = {}
         #: Private window -> the staging mount that holds its real inode.
         self.private_stage = {}
         #: Whether this process made itself non-dumpable before unsharing its mounts.
@@ -1076,6 +1080,51 @@ def preread_exposed_files(launch):
                 )
 
 
+def _skip_grant(path, why):
+    """Say why a granted credential file stays absent: a grant that does nothing points nowhere."""
+    sys.stderr.write(
+        "sandbox: WARNING -- granted credential file %s %s; it stays ABSENT inside the "
+        "sandbox.\n" % (path, why)
+    )
+
+
+def preread_granted_files(launch):
+    """Read each credential file the edition granted, before any mask hides it.
+
+    Stricter than :func:`preread_exposed_files`, because these bytes are a credential the
+    operator chose to grant: ``O_NOFOLLOW`` so a link planted at the granted name cannot
+    aim the grant at another file, the type and size checked on the OPENED descriptor so
+    a check/open race cannot substitute one, and a hard size cap so a grant cannot stage
+    an arbitrary large file. Every refusal leaves the file ABSENT, the un-granted state.
+    """
+    for src_path, _root in launch.secret_files:
+        try:
+            fd = os.open(src_path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK)
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            _skip_grant(src_path, "cannot be read safely (%s)" % exc)
+            continue
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                _skip_grant(src_path, "is not a regular file")
+                continue
+            chunks = []
+            total = 0
+            while total <= launch.secret_file_max_bytes:
+                chunk = os.read(fd, 65536)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                total += len(chunk)
+            if total > launch.secret_file_max_bytes:
+                _skip_grant(src_path, "exceeds %d bytes" % launch.secret_file_max_bytes)
+                continue
+            launch.secret_data[src_path] = b"".join(chunks)
+        finally:
+            os.close(fd)
+
+
 def _pin_below_mask(root, leaf):
     """A descriptor on *leaf*, opened one no-follow component at a time from *root*.
 
@@ -1492,11 +1541,12 @@ def _stage_is_fresh_mount(dfd, parent):
     return os.fstat(dfd).st_dev != os.stat(parent).st_dev
 
 
-def _mount_private_tmpfs(launch, target):
+def _mount_private_tmpfs(launch, target, options=b"mode=0700,size=16k"):
     """Mount a small private tmpfs on *target*; 0 on success, else the errno.
 
-    Degrades open by design, unlike ``_mount_or_die``: a failure here costs only the
-    unreadable stand-in, and the caller falls back to the readable empty mask.
+    Degrades open by design, unlike ``_mount_or_die``: a failure here costs only what
+    the caller would have staged on it -- the unreadable stand-in, which falls back to
+    the readable empty mask, or a granted credential file, which stays absent.
     """
     if (
         launch.libc.mount(
@@ -1504,12 +1554,42 @@ def _mount_private_tmpfs(launch, target):
             target,
             b"tmpfs",
             _MS_NOSUID | _MS_NODEV | _MS_NOEXEC,
-            b"mode=0700,size=16k",
+            options,
         )
         != 0
     ):
         return ctypes.get_errno() or -1
     return 0
+
+
+def _open_private_stage(launch, what, options=b"mode=0700,size=16k"):
+    """``(stage_fd, stage)`` for a fresh tmpfs private to this mount namespace, else the errno.
+
+    The tmpfs is mounted over a fresh stage directory in THIS mount namespace only:
+    outside it the stage is an empty host directory. The caller must hold
+    ``launch.nondumpable``, so no other same-uid process holds or can open a way into it
+    through /proc/<pid>/root or /proc/<pid>/fd.
+    """
+    _parent = launch.tmpfs_src or tempfile.gettempdir()
+    _stage = tempfile.mkdtemp(dir=launch.tmpfs_src, prefix=launch.src_prefix)
+    _pin = os.open(_stage, os.O_PATH | os.O_NOFOLLOW | os.O_DIRECTORY)
+    try:
+        _err = _mount_private_tmpfs(launch, ("/proc/self/fd/%d" % _pin).encode(), options)
+    finally:
+        os.close(_pin)
+    if _err:
+        try:
+            os.rmdir(_stage)
+        except OSError:
+            pass
+        return _err
+    _sfd = os.open(_stage, os.O_PATH | os.O_NOFOLLOW | os.O_DIRECTORY)
+    if not _stage_is_fresh_mount(_sfd, _parent):
+        sys.exit(
+            "sandbox: BLOCKED -- the private stage for %s was replaced before it could "
+            "be used. Lower agent.sandbox to run without this control deliberately." % what
+        )
+    return _sfd, _stage
 
 
 def _open_unreadable_stand_in(launch, what):
@@ -1527,31 +1607,15 @@ def _open_unreadable_stand_in(launch, what):
     """
     if not launch.nondumpable:
         return None
-    _parent = launch.tmpfs_src or tempfile.gettempdir()
-    _stage = tempfile.mkdtemp(dir=launch.tmpfs_src, prefix=launch.src_prefix)
-    _pin = os.open(_stage, os.O_PATH | os.O_NOFOLLOW | os.O_DIRECTORY)
-    try:
-        _err = _mount_private_tmpfs(launch, ("/proc/self/fd/%d" % _pin).encode())
-    finally:
-        os.close(_pin)
-    if _err:
-        try:
-            os.rmdir(_stage)
-        except OSError:
-            pass
+    _staged = _open_private_stage(launch, "the unreadable mask over %s" % what)
+    if isinstance(_staged, int):
         sys.stderr.write(
             "sandbox: WARNING -- could not mount a private tmpfs for the "
             "unreadable mask over %s (errno %d); that mask reads as empty "
-            "instead.\n" % (what, _err)
+            "instead.\n" % (what, _staged)
         )
         return None
-    _sfd = os.open(_stage, os.O_PATH | os.O_NOFOLLOW | os.O_DIRECTORY)
-    if not _stage_is_fresh_mount(_sfd, _parent):
-        sys.exit(
-            "sandbox: BLOCKED -- the private stage for the unreadable mask "
-            "over %s was replaced before it could be used. Lower "
-            "agent.sandbox to run without this control deliberately." % what
-        )
+    _sfd, _stage = _staged
     _ffd = os.open(
         "stand-in",
         os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
@@ -1563,22 +1627,161 @@ def _open_unreadable_stand_in(launch, what):
 
 def _retire_unreadable_stage(launch, sealed, what):
     """Detach the stage tmpfs by its pinned root, then drop the descriptors."""
+    _retire_private_stage(launch, sealed, "the unreadable mask over %s" % what)
+
+
+def _retire_private_stage(launch, sealed, what):
+    """Detach a private stage's tmpfs by its pinned root, then drop the descriptors.
+
+    Afterwards the bind made from the stage is the only way left to the staged file.
+    """
     _ffd, _sfd, _stage = sealed
     os.close(_ffd)
     if launch.libc.umount2(("/proc/self/fd/%d" % _sfd).encode(), _MNT_DETACH) != 0:
         _err = ctypes.get_errno()
         sys.exit(
-            "sandbox: BLOCKED -- could not retire the private stage for the "
-            "unreadable mask over %s: errno %d (%s). It is a second, writable "
-            "path to the mask, so the agent could make it readable. Lower "
-            "agent.sandbox to run without this control deliberately."
-            % (what, _err, os.strerror(_err))
+            "sandbox: BLOCKED -- could not retire the private stage for %s: errno %d "
+            "(%s). It is a second, writable path to the staged file, so the agent "
+            "could change it. Lower agent.sandbox to run without this control "
+            "deliberately." % (what, _err, os.strerror(_err))
         )
     os.close(_sfd)
     try:
         os.rmdir(_stage)
     except OSError:
         pass
+
+
+def _open_grant_placeholder(launch, path, root):
+    """``(parent_fd, leaf, leaf_fd)`` for an empty placeholder at *path*, else None.
+
+    Walked down from *root*, the mask the planner found hiding *path*, which must still
+    reach the stand-in this launcher bound there. Each component is opened without
+    following a link and the leaf is created exclusively, so a same-uid writer in the
+    shared stand-in tmpfs cannot steer the placeholder into a real tree.
+    """
+    want = launch.masked_names.get(root)
+    if want is None:
+        _skip_grant(path, "is not under a mask this launcher placed")
+        return None
+    try:
+        fd = os.open(root, os.O_PATH | os.O_DIRECTORY | os.O_CLOEXEC)
+    except OSError as exc:
+        _skip_grant(path, "has a mask root that cannot be opened (%s)" % exc)
+        return None
+    try:
+        root_st = os.fstat(fd)
+        if (root_st.st_dev, root_st.st_ino) != tuple(want):
+            raise OSError("its mask root no longer reaches the stand-in")
+        parts = os.path.relpath(path, root).split("/")
+        for part in parts[:-1]:
+            try:
+                os.mkdir(part, 0o700, dir_fd=fd)
+            except FileExistsError:
+                pass
+            below = os.open(
+                part, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=fd
+            )
+            os.close(fd)
+            fd = below
+        leaf = parts[-1]
+        os.close(
+            os.open(
+                leaf,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                0o444,
+                dir_fd=fd,
+            )
+        )
+        leaf_fd = os.open(leaf, os.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=fd)
+    except OSError as exc:
+        os.close(fd)
+        _skip_grant(path, "has no safe placeholder (%s)" % exc)
+        return None
+    return fd, leaf, leaf_fd
+
+
+def _restore_granted_file(launch, path, root, data):
+    """Bind a read-only snapshot of *data* at *path*; see :func:`restore_granted_files`."""
+    placeholder = _open_grant_placeholder(launch, path, root)
+    if placeholder is None:
+        return
+    parent_fd, leaf, leaf_fd = placeholder
+    staged = None
+    bound = False
+    try:
+        stage = _open_private_stage(
+            launch, "granted credential file %s" % path, b"mode=0700,size=%d" % (len(data) + 65536)
+        )
+        if isinstance(stage, int):
+            _skip_grant(path, "has no private tmpfs (errno %d)" % stage)
+        else:
+            stage_fd, stage_dir = stage
+            snap_fd = os.open(
+                "snapshot",
+                os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                0o444,
+                dir_fd=stage_fd,
+            )
+            staged = (snap_fd, stage_fd, stage_dir)
+            view = memoryview(data)
+            while view:
+                view = view[os.write(snap_fd, view) :]
+            snap_st = os.fstat(snap_fd)
+            snap_id = (snap_st.st_dev, snap_st.st_ino)
+            bound = _mount_or_warn(
+                launch,
+                ("/proc/self/fd/%d" % snap_fd).encode(),
+                ("/proc/self/fd/%d" % leaf_fd).encode(),
+                _MS_BIND,
+                "restoring granted credential file %s" % path,
+            )
+        if bound:
+            # The remount names the NAME, as the unreadable mask's seal does: the pinned
+            # descriptor still refers to the placeholder underneath the bind.
+            _mount_or_die(
+                launch,
+                path.encode(),
+                path.encode(),
+                _MS_REMOUNT | _MS_BIND | _MS_RDONLY | _locked_mount_flags(path.encode()),
+                "sealing granted credential file %s read-only" % path,
+            )
+        else:
+            os.unlink(leaf, dir_fd=parent_fd)
+    finally:
+        os.close(leaf_fd)
+        os.close(parent_fd)
+        if staged is not None:
+            _retire_private_stage(launch, staged, "granted credential file %s" % path)
+    if bound:
+        _verify_masked_name(launch, path.encode(), snap_id, path)
+
+
+def restore_granted_files(launch):
+    """Restore each granted credential file as a read-only snapshot at its own path.
+
+    The planner placed every grant strictly inside a mask, so its name now resolves into
+    that mask's empty stand-in. The bytes are written ONLY to a tmpfs private to this
+    mount namespace: the host sees the empty stand-in and an empty placeholder, never a
+    credential-bearing file, which is the difference from :func:`restore_exposed_files`,
+    whose copy lands in the host-visible stand-in. The bind goes through the
+    placeholder's own descriptor, is sealed read-only, and the name is checked to reach
+    the snapshot; the stage is then detached, leaving the granted path as the snapshot's
+    only name.
+
+    A grant WIDENS access, so a step that cannot be established leaves the file absent
+    with a warning rather than refusing the spawn. A name that escapes its bind refuses,
+    as it does for every mask. Runs while the launcher is still non-dumpable, which the
+    private stage needs, so before :func:`mask_sensitive_files` restores dumpability.
+    """
+    for src_path, root in launch.secret_files:
+        data = launch.secret_data.get(src_path)
+        if data is None:
+            continue
+        if not launch.nondumpable:
+            _skip_grant(src_path, "needs a non-dumpable launcher for its private stage")
+            continue
+        _restore_granted_file(launch, src_path, root, data)
 
 
 def mask_sensitive_files(launch):
@@ -2133,7 +2336,8 @@ def place_masks(launch):
 
     Windows are staged before anything is masked, read-only seals land before the hides
     placed on top of them, carve-outs after the seals they punch through, the exposed
-    files are restored into their empty masks, and the single files and ``~/.ssh`` are
+    files are restored into their empty masks, the granted credential files are bound
+    in while the launcher is still non-dumpable, and the single files and ``~/.ssh`` are
     masked last.
     """
     stage_private_windows(launch)
@@ -2141,6 +2345,7 @@ def place_masks(launch):
     mask_sensitive(launch)
     apply_carveouts(launch)
     restore_exposed_files(launch)
+    restore_granted_files(launch)
     verify_fail_closed_aliases(launch)
     mask_sensitive_files(launch)
     mask_ssh_keys(launch)
@@ -2155,6 +2360,7 @@ def run_child(launch, argv):
     pick_stand_in_root(launch)
     check_crew_home_aliases(launch)
     preread_exposed_files(launch)
+    preread_granted_files(launch)
     place_masks(launch)
     confirm_crew_home_aliases(launch)
     scrub_env(launch)

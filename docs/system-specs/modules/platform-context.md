@@ -49,7 +49,7 @@ omit the policy.
 | `agent_runtime` | adapter | `DefaultAgentRuntime` (`run_first_run_setup` wired; `managed_mcp_servers` **RESERVED**) | extra one-time first-run provisioning |
 | `agent_executable` | adapter | `DefaultAgentExecutableResolver` (identity) | resolves an edition-managed launcher to its direct executable before core sandboxing |
 | `gateway_lifecycle` | adapter | `DefaultGatewayLifecycleProvider` (`restart_launcher()` → `None`) | stable absolute launcher for package-manager-owned gateway installs |
-| `sandbox` | settings | `DefaultSandboxPolicy` (`_STRICT_DIRS`/`_CC_DIRS`) | additional edition-specific credential dirs |
+| `sandbox` | settings | `DefaultSandboxPolicy` (`_STRICT_DIRS`/`_CC_DIRS`; `credential_file_grants()` → `[]`) | additional edition-specific credential dirs; operator-granted credential files restored read-only per agent spawn (see the note below) |
 | `credentials` | adapter | `DefaultCredentialPolicy` (AKIA/ASIA redaction; `exempt_exact_hosts()` → `frozenset()`) | internal token regexes + trusted-tenant exempt hosts |
 | `security` | **concrete** | `PolicyAuthority()` (baseline only) | `PolicyAuthority(overlay=…)` ADD-only |
 | `governance` | **concrete carrier** | `load_security_policy()` result or `None` | bundled Level-1 ceiling |
@@ -78,6 +78,26 @@ omit the policy.
 | `mobile_connect` | adapter | `DefaultMobileConnectProvider` (personal-install pair: `tailnet_qr` + `login_link` (id == kind by design)) | edition-specific phone-connection methods (descriptor-only `{id, kind}`; minting stays on each method's own endpoint; an empty list hides the dashboard entry; list + mint governed by `capabilities.mobile_connect`) |
 | `remote_provisioners` | adapter | `DefaultRemoteProvisionerProvider` (the built-in `aws_ec2` lane backed by `RealLaunchEngine`, **plus a conditional `aws_fargate` lane** backed by `FargateLaunchEngine` that is offered only when `cloud.json` carries a complete `fargate` block; id == kind by design for both) | edition-specific ways to CREATE a remote instance (a managed dev environment, a container task): descriptor-only `{id, kind, label, posix_only, step_labels, confirm_before_launch}` plus a `LaunchEngine` per id (`confirm_before_launch` carries what the operator must see and confirm before that lane may launch -- `POST /api/cloud/launch` requires `confirm_recipient` to equal it, so the requirement is derived from the row rather than hard-coded to one id, and a lane with nothing to confirm leaves it empty); the core's durable launch job still drives every launch, so cancel, rollback and orphan reaping are inherited rather than reimplemented |
 | `feature_apps` | tuple | **RESERVED** — `()`; apps register via `apps_loader` (provenance record only) | — (slot inert) |
+
+> `sandbox` note — `credential_file_grants()` is the one widening method on an
+> otherwise add-only seam, so its shape is narrow on purpose. The sandbox hides
+> whole credential homes (`~/.docker`, `~/.kube`, ...) from every agent, which is
+> the right default and the wrong answer for a deployment whose operators want
+> agents to pull from a private registry: the only lever was disabling the
+> sandbox. The method lets an edition name `$HOME`-relative FILES to restore for
+> one ACP agent spawn. The core resolves it off-loop on every spawn (never
+> cached, so a revoked or expired grant stops at the next spawn), refuses any
+> path under the crew data home or the kiro trees, and on the Linux namespace
+> backend restores each file as a read-only snapshot on a tmpfs private to the
+> sandbox's mount namespace — never into the host-visible stand-in
+> `extra_expose_files` copies use — while the rest of the hidden parent stays
+> hidden. Seatbelt and Windows drop the grant with a warning and the file stays
+> hidden. The agent's file tools are unaffected: `is_sensitive_path` still fences
+> the path, so the grant reaches programs the agent runs (`docker pull`), not the
+> model's own reads. Everything that makes a grant a DECISION — whether one
+> exists, its duration, the operator's consent, where that consent lives — is the
+> edition's, and the edition must store it where the agent cannot write it. A
+> companion that predates the method grants nothing.
 
 > `remote_provisioners` note — this seam lets the Set-up tab under Settings →
 > Remote Crew offer lanes beyond an EC2 instance in the user's own AWS account:

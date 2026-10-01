@@ -653,6 +653,7 @@ def _launch_tools(
         agent_scratch=scratch,
         apply_pod_bundle_spawn=_pod_bundle,
         forward_ssh_auth_sock=lambda: True,
+        credential_file_grants=lambda: (),
         wrap_argv_async=_wrap_async,
         wrap_argv=lambda *a, **k: None,
         wrapped_by_crew_sandbox=lambda argv: argv[:1] == ["sandbox"],
