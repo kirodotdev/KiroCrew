@@ -109,7 +109,7 @@ from kiro_crew.skill_runtime.read_credit import (  # noqa: F401
     _shell_segments_reading_content,
     _tool_read_path_candidates,
 )
-from kiro_crew.skill_runtime.search import _body_term_hits  # noqa: F401
+from kiro_crew.skill_runtime.search import SkillSearchReport, _body_term_hits  # noqa: F401
 from kiro_crew.skill_search_index import (  # noqa: F401
     SKILL_SEARCH_INDEX_FILENAME,
     SkillSearchIndex,
@@ -2229,11 +2229,6 @@ class SkillsLoader:
             ├── url-shortener/SKILL.md
             └── mcp-debug/SKILL.md
     """
-
-    #: Whether the last ``search_skills`` answer may be missing matches. Declared
-    #: rather than set in ``__init__``: it exists only once a search has run, and
-    #: readers take it through ``getattr(loader, "search_incomplete", False)``.
-    search_incomplete: bool
 
     def __init__(
         self,
@@ -5187,7 +5182,7 @@ class SkillsLoader:
         terms: Iterable[str],
         live_keys: list[str],
         project_dir: str | Path | None,
-    ) -> dict[str, set[str]]:
+    ) -> tuple[dict[str, set[str]], bool]:
         """Refresh once per query, with bounded work and explicit incomplete recall."""
         return _search._body_matches(self, skills, terms, live_keys, project_dir)
 
@@ -5271,10 +5266,29 @@ class SkillsLoader:
     ) -> list[dict]:
         """Rank total query coverage before rarity, metadata preference and usage.
 
-        Sets ``search_incomplete`` when the answer may be missing matches. Contract and
-        rationale: ``skill_runtime.search.search_skills``.
+        The matches of :meth:`search_skills_report`, for callers that do not report
+        whether the answer may be missing matches.
         """
-        return _search.search_skills(
+        return self.search_skills_report(
+            query, limit, project_dir=project_dir, only=only, offset=offset, browse=browse
+        ).matches
+
+    def search_skills_report(
+        self,
+        query: str,
+        limit: int = 20,
+        *,
+        project_dir: str | Path | None = None,
+        only: list[str] | None = None,
+        offset: int = 0,
+        browse: bool = False,
+    ) -> SkillSearchReport:
+        """One search's matches plus whether they may be incomplete.
+
+        Contract and rationale: ``skill_runtime.search.SkillSearchReport`` and
+        ``skill_runtime.search.search_skills_report``.
+        """
+        return _search.search_skills_report(
             self, query, limit, project_dir=project_dir, only=only, offset=offset, browse=browse
         )
 

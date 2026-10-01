@@ -197,12 +197,13 @@ def skill_search(name: str, args: dict[str, Any]) -> str:
                     )
                     next_offset = None
                 else:
-                    matches = loader.search_skills(
+                    report = loader.search_skills_report(
                         query, limit=limit + 1, offset=offset, browse=action == "list"
                     )
+                    matches = report.matches
                     next_offset = offset + limit if len(matches) > limit else None
                     matches = matches[:limit]
-                    incomplete = bool(getattr(loader, "search_incomplete", False))
+                    incomplete = report.incomplete
             finally:
                 loader.close()
     except Exception as exc:  # pragma: no cover — defensive

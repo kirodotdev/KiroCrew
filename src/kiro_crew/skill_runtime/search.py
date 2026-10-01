@@ -13,7 +13,7 @@ import logging
 import math
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Iterable
+from typing import TYPE_CHECKING, Iterable, NamedTuple
 
 from kiro_crew.skill_runtime import catalog as _catalog
 from kiro_crew.skill_runtime import listing as _listing
@@ -22,6 +22,18 @@ if TYPE_CHECKING:
     from kiro_crew.skills import SkillsLoader
 
 logger = logging.getLogger("kiro_crew.skills")
+
+
+class SkillSearchReport(NamedTuple):
+    """One search's answer, and whether that answer may be missing matches.
+
+    ``incomplete`` belongs to the call that produced it. The loader and its term
+    index are shared by every concurrent search in the gateway, so a flag kept on
+    either would be overwritten by whichever search finished last.
+    """
+
+    matches: list[dict]
+    incomplete: bool
 
 
 def _body_term_hits(content: str, terms: Iterable[str]) -> int:
@@ -52,10 +64,8 @@ def _body_hits(
     live_keys: list[str],
     project_dir: str | Path | None,
 ) -> dict[str, int]:
-    return {
-        key: len(hits)
-        for key, hits in loader._body_matches(skills, terms, live_keys, project_dir).items()
-    }
+    hits, _incomplete = loader._body_matches(skills, terms, live_keys, project_dir)
+    return {key: len(matched) for key, matched in hits.items()}
 
 
 def _body_matches(
@@ -64,12 +74,16 @@ def _body_matches(
     terms: Iterable[str],
     live_keys: list[str],
     project_dir: str | Path | None,
-) -> dict[str, set[str]]:
-    """Refresh once per query, with bounded work and explicit incomplete recall."""
+) -> tuple[dict[str, set[str]], bool]:
+    """Refresh once per query, with bounded work and explicit incomplete recall.
+
+    Returns the hits and whether this call left bodies unread.
+    """
     from kiro_crew import skills as sk  # circular import: the facade imports this module
 
     terms = tuple(terms)
     hits: dict[str, set[str]] = {}
+    incomplete = False
     unconfined = [s for s in skills if not s.get("confine_root")]
     fallback = [s for s in skills if s.get("confine_root")]
     indexed = None
@@ -82,19 +96,21 @@ def _body_matches(
             if fingerprint:
                 rows.append((str(skill["key"]), path, fingerprint))
         # A scoped query cannot evict the other agents' persistent entries.
-        deferred = loader._search_index.sync(
+        outcome = loader._search_index.sync(
             rows,
             budget_seconds=0.25,
             canonical_roots={
                 str(s["key"]): str(s["mapping_root"]) for s in unconfined if s.get("mapping_root")
             },
         )
-        if deferred is not None:
-            pending = loader._search_index.pending_keys
-            loader.search_incomplete = bool(pending)
+        if outcome is not None:
+            deferred, pending = outcome
             answered = [str(s["key"]) for s in unconfined if str(s["key"]) not in deferred]
             indexed = loader._search_index.body_matches(answered, terms)
             if indexed is not None:
+                # Pending bodies are unread only on this branch: without index
+                # hits every unconfined body joins the direct read below.
+                incomplete = bool(pending)
                 fallback += [
                     s
                     for s in unconfined
@@ -108,7 +124,7 @@ def _body_matches(
     deadline = time.monotonic() + 0.25
     for skill in fallback:
         if time.monotonic() >= deadline:
-            loader.search_incomplete = True
+            incomplete = True
             break
         cap = sk.PROJECT_SKILL_BODY_CAP if skill.get("confine_root") else None
         if cap is not None and int(skill.get("size_bytes", 0)) > cap:
@@ -123,7 +139,7 @@ def _body_matches(
         matched = {term for term in terms if _body_term_hits(content, [term])}
         if matched:
             hits[str(skill["key"])] = matched
-    return hits
+    return hits, incomplete
 
 
 def _exact_read_while_building(
@@ -173,7 +189,7 @@ def _exact_read_while_building(
     return None
 
 
-def search_skills(
+def search_skills_report(
     loader: SkillsLoader,
     query: str,
     limit: int = 20,
@@ -182,40 +198,38 @@ def search_skills(
     only: list[str] | None = None,
     offset: int = 0,
     browse: bool = False,
-) -> list[dict]:
+) -> SkillSearchReport:
     """Rank total query coverage before rarity, metadata preference and usage.
 
     Partial matches remain available, with stable full keys and pagination.
     An empty browse request lists the complete resolved scope in key order.
+    ``incomplete`` says this answer may be missing matches: an unfinished first
+    walk, or body work this call's budget left undone.
     """
     from kiro_crew import skills as sk  # circular import: the facade imports this module
 
-    loader.search_incomplete = False
     rows = loader.scoped_skills(project_dir=project_dir, only=only)
     # An unfinished first walk is the other way this answer can be partial, and
     # the caller cannot tell it from "no match" without being told: `incomplete`
     # already travels to the MCP tool and the dashboard, so the existing signal
     # carries it rather than a second one.
     building = loader.catalog_status(project_dir) == "building"
-    loader.search_incomplete = building
     offset = max(0, offset)
     if browse:
-        return sorted(rows, key=lambda s: str(s["key"]))[offset : offset + limit]
+        return SkillSearchReport(
+            sorted(rows, key=lambda s: str(s["key"]))[offset : offset + limit], building
+        )
     rows = _listing._dedupe_identical_skills(rows)
     terms = sorted(sk.recall_terms((query or "").strip().lower()))
     if not terms:
-        return []
+        return SkillSearchReport([], building)
     # Ask every term across both surfaces: a metadata hit must not suppress
     # the other query words found only in the procedure.
     matched: dict[str, set[str]] = {}
     meta_counts: dict[str, int] = {}
     frequencies: dict[str, int] = {}
     live = [str(s["key"]) for s in rows if not s.get("confine_root")]
-    bodies = loader._body_matches(rows, terms, live, project_dir)
-    # `_body_matches` owns this flag for the body tier and assigns it outright,
-    # so an unfinished catalog — an independent reason the answer is partial —
-    # is re-applied rather than left to be overwritten.
-    loader.search_incomplete = loader.search_incomplete or building
+    bodies, bodies_incomplete = loader._body_matches(rows, terms, live, project_dir)
     metadata = loader._search_index.metadata_matches(terms) if loader._search_index else None
     for row in rows:
         key = str(row["key"])
@@ -239,7 +253,9 @@ def search_skills(
         return (-len(hits), -rarity, -meta_counts.get(key, 0), -usage, key)
 
     candidates = [s for s in rows if str(s["key"]) in matched]
-    return sorted(candidates, key=rank)[offset : offset + limit]
+    return SkillSearchReport(
+        sorted(candidates, key=rank)[offset : offset + limit], building or bodies_incomplete
+    )
 
 
 def resolve_dollar_skills(

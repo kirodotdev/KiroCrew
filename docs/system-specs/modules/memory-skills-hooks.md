@@ -3174,7 +3174,7 @@ and signature and calls the function that owns the rule in `kiro_crew.skill_runt
 | `catalog` | The three `_iter` tiers, the `skill-catalog-refresh` worker and its generation and epoch fences, admission of stored snapshot rows, root enumeration in precedence order (`_iter_uncached`), disabled-app filtering by owning app (`_owning_app`), expansion of an agent's `skill://` mapping (`_scoped_entries`) and enumerated-name lookup |
 | `listing` | `list_skills` rows, the `owned` hint and delivery counts, the byte-identical duplicate filter, and the reader-side frontmatter helper (`_readable_frontmatter`) every per-turn reader degrades through |
 | `delivery` | `get_context` (bounded directory, required bodies, legacy reader, project bodies) and its ranking, `split_triggered` and `trigger_hint` |
-| `search` | `search_skills` and its body matching, exact reads while a first walk runs, and `$skillname` resolution |
+| `search` | `search_skills_report` (the matches plus that call's `incomplete` flag, as `SkillSearchReport`) and its body matching, exact reads while a first walk runs, and `$skillname` resolution |
 | `read_credit` | Direct-read attribution (`resolve_tool_read_keys`, `credit_skill_reads`), ledger alias folding and `_record_use` |
 | `authoring` | `create_skill`, `update_skill`, `set_pinned` and `set_inject_on_trigger` |
 | `auto_skills` | Generated-skill create, refine and similarity, the lifecycle (archive, restore, eviction), the slug allocator and staging, and queue dismissal and pruning |
@@ -3616,7 +3616,7 @@ disposable index. Short-lived consumers close their loader's SQLite handle befor
 returning or removing an owned temporary data home.
 Enumeration and stat checks still run, so zero reads does not mean zero filesystem
 work. Cold body refresh is incremental (250 ms per query), with a separately bounded
-read fallback and an explicit incomplete flag. Repeating a query advances refresh;
+read fallback and an explicit incomplete flag on each call's own result. Repeating a query advances refresh;
 listing and exact reads do not wait for the index. Debug timings distinguish catalog
 enumeration, metadata reads and body-index refresh/query work. Confined metadata and
 bodies are never persisted in this global index. The index stores each skill's distinct body terms, from the same
@@ -3648,6 +3648,13 @@ size, while keeping the warm path metadata-only. These properties are load-beari
   to a thread, the MCP tool runs in its own subprocess), and because a raise
   latches the index unusable, a thread-bound connection would drop every later
   search back to reading files for the life of the process.
+- **A search's answer is its own.** The same threads share one loader and one index,
+  so nothing about a single search is kept on either. `sync` returns a `SyncOutcome`
+  carrying the keys it declined and the subset its budget left pending, and
+  `search_skills_report` returns the matches with that call's `incomplete` flag.
+  The dashboard route and the MCP tool read the flag from the result. Kept on the
+  shared object, the flag was whatever the search that finished last wrote, so a
+  search with bodies still pending could report a complete answer.
 - **The tokenizer is part of the key.** Stored terms are `recall_terms` output, so a
   change in how it splits or normalizes leaves rows a new query can no longer match —
   a miss, with nothing raised and nothing logged. `tokenizer_signature()` hashes the
@@ -3660,7 +3667,7 @@ size, while keeping the warm path metadata-only. These properties are load-beari
   one search. A substring scan on the read side would make a skill's rank depend on
   which side answered for it.
 - **A declined body costs only itself.** `sync` answers with the set of keys it
-  cannot store. The caller retries those through the bounded safe reader with
+  cannot store (`SyncOutcome.deferred`). The caller retries those through the bounded safe reader with
   the same admitted root; hardlinks and other unsafe files remain refused. One
   pathological file does not send the whole catalog back to reading every body.
   Stale terms for a refused key are deleted and no fingerprint is stored, so the
@@ -3986,8 +3993,8 @@ finishes inside that budget, and finishing is what makes `always: true` bodies k
 and therefore honored. Past the budget the partial answer is served, the scope is
 marked in `_catalog_incomplete`, and `catalog_status()` reports `"building"` so a
 caller can distinguish "still discovering" from "no skills" — an empty list alone
-cannot tell those apart. `search_skills` reports the same thing through the
-`search_incomplete` flag the MCP tool and the dashboard already surface.
+cannot tell those apart. `search_skills_report` reports the same thing through the
+`incomplete` field the MCP tool and the dashboard already surface.
 
 `get_context` consumes that verdict rather than returning `""`: it emits an explicit
 *discovery in progress* notice saying the set may be incomplete and an always-loaded

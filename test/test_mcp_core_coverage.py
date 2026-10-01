@@ -42,6 +42,7 @@ from kiro_crew.mcp_core import (
     _validate_args,
     _ws_bucket,
 )
+from kiro_crew.skill_runtime.search import SkillSearchReport
 
 
 class _FakeResponse:
@@ -1043,9 +1044,17 @@ class TestSkillSearch:
             mcp_core,
             "SkillsLoader",
             lambda **_kw: SimpleNamespace(
-                search_skills=lambda q, limit, **kwargs: [
-                    {"name": "global-only", "key": "g/global-only", "description": q, "path": "/g"}
-                ],
+                search_skills_report=lambda q, limit, **kwargs: SkillSearchReport(
+                    [
+                        {
+                            "name": "global-only",
+                            "key": "g/global-only",
+                            "description": q,
+                            "path": "/g",
+                        }
+                    ],
+                    False,
+                ),
                 close=lambda: closed.append(True),
             ),
         )
@@ -1081,11 +1090,13 @@ class TestSkillSearch:
         closed: list[bool] = []
 
         def _loader(**_kw: object) -> SimpleNamespace:
-            def _search(_q: str, limit: int, **kwargs) -> list[dict]:
+            def _search(_q: str, limit: int, **kwargs) -> SkillSearchReport:
                 seen.append(limit)
-                return [{"name": "s", "key": "s", "description": "d", "path": "/p"}]
+                return SkillSearchReport(
+                    [{"name": "s", "key": "s", "description": "d", "path": "/p"}], False
+                )
 
-            return SimpleNamespace(search_skills=_search, close=lambda: closed.append(True))
+            return SimpleNamespace(search_skills_report=_search, close=lambda: closed.append(True))
 
         monkeypatch.setattr(mcp_core, "SkillsLoader", _loader)
         out = _call_tool("skill_search", {"query": "x", "limit": 7})

@@ -79,7 +79,7 @@ class TestBodyIndex:
         _skill(tmp_path / "skills", "repair", description="zirconium", body="procedure")
         loader = _loader(tmp_path, opened=opened)
         monkeypatch.setattr(loader._search_index, "store_metadata", lambda rows: False)
-        monkeypatch.setattr(loader, "_body_matches", lambda *args: {})
+        monkeypatch.setattr(loader, "_body_matches", lambda *args: ({}, False))
         assert loader.search_skills("zirconium")[0]["key"] == "repair"
 
     def test_external_mapping_body_fallback_without_index(self, tmp_path, opened):
@@ -194,7 +194,7 @@ class TestIndexUnit:
         index = opened(SkillSearchIndex(tmp_path / "index.sqlite3"))
         first = body_fingerprint(path)
         assert first is not None
-        assert index.sync([("k", str(path), first)], live_keys=["k"]) == frozenset()
+        assert index.sync([("k", str(path), first)], live_keys=["k"]).deferred == frozenset()
         assert index.body_hits(["k"], ["alpha"]) == {"k": 1}
 
         original = path.stat()
@@ -209,7 +209,7 @@ class TestIndexUnit:
         second = body_fingerprint(path)
         assert second is not None
         assert second != first
-        assert index.sync([("k", str(path), second)], live_keys=["k"]) == frozenset()
+        assert index.sync([("k", str(path), second)], live_keys=["k"]).deferred == frozenset()
         assert index.body_hits(["k"], ["alpha"]) == {}
         assert index.body_hits(["k"], ["bravo"]) == {"k": 1}
 
@@ -222,9 +222,12 @@ class TestIndexUnit:
         index = opened(SkillSearchIndex(tmp_path / "index.sqlite3"))
         fingerprint = body_fingerprint(path)
         assert fingerprint is not None
-        assert index.sync([("gone", str(path), fingerprint)], live_keys=["gone"]) == frozenset()
+        assert (
+            index.sync([("gone", str(path), fingerprint)], live_keys=["gone"]).deferred
+            == frozenset()
+        )
         assert index.body_hits(["gone"], ["terraform"]) == {"gone": 1}
-        assert index.sync([], live_keys=["other"]) == frozenset()
+        assert index.sync([], live_keys=["other"]).deferred == frozenset()
         assert index.body_hits(["gone"], ["terraform"]) == {}
 
     def test_refused_hardened_read_clears_stale_terms(self, tmp_path, monkeypatch, opened):
@@ -233,7 +236,7 @@ class TestIndexUnit:
         index = opened(SkillSearchIndex(tmp_path / "index.sqlite3"))
         first = body_fingerprint(path)
         assert first is not None
-        assert index.sync([("k", str(path), first)], live_keys=["k"]) == frozenset()
+        assert index.sync([("k", str(path), first)], live_keys=["k"]).deferred == frozenset()
         assert index.body_hits(["k"], ["oldterm"]) == {"k": 1}
 
         path.write_text("secretterm replacement", encoding="utf-8")
@@ -248,12 +251,12 @@ class TestIndexUnit:
         monkeypatch.setattr(skill_search_index_module, "safe_read_file_bytes_nolink", refuse)
         # Handed back for a direct read, NOT silently answered as a body with no
         # terms: the caller's own reader decides whether those bytes are served.
-        assert index.sync([("k", str(path), second)], live_keys=["k"]) == frozenset({"k"})
+        assert index.sync([("k", str(path), second)], live_keys=["k"]).deferred == frozenset({"k"})
         assert reads == [str(path)]
         assert index.body_hits(["k"], ["oldterm", "secretterm"]) == {}
         # No fingerprint was stored, so the next search retries instead of
         # treating the refusal as a cached answer.
-        assert index.sync([("k", str(path), second)], live_keys=["k"]) == frozenset({"k"})
+        assert index.sync([("k", str(path), second)], live_keys=["k"]).deferred == frozenset({"k"})
 
     def test_body_hits_counts_each_term_once(self, tmp_path, opened):
         path = tmp_path / "SKILL.md"
@@ -320,7 +323,7 @@ class TestIndexUnit:
         index = opened(SkillSearchIndex(tmp_path / "index.sqlite3"))
         fingerprint = body_fingerprint(path)
         assert fingerprint is not None
-        assert index.sync([("k", str(path), fingerprint)], live_keys=["k"]) == frozenset()
+        assert index.sync([("k", str(path), fingerprint)], live_keys=["k"]).deferred == frozenset()
 
         results: list[dict[str, int] | None] = []
 
@@ -454,7 +457,7 @@ class TestDecliningOneBodyDoesNotCostTheCatalog:
             fingerprint = body_fingerprint(body)
             assert fingerprint is not None
             rows.append((key, str(body), fingerprint))
-        assert index.sync(rows, live_keys=["small", "huge"]) == frozenset({"huge"})
+        assert index.sync(rows, live_keys=["small", "huge"]).deferred == frozenset({"huge"})
         # The small body was still indexed by that very same call.
         assert index.body_hits(["small"], ["smallneedle"]) == {"small": 1}
 
@@ -521,7 +524,7 @@ class TestTransientLockDoesNotLatch:
         index = opened(SkillSearchIndex(db_path))
         first = body_fingerprint(path)
         assert first is not None
-        assert index.sync([("k", str(path), first)], live_keys=["k"]) == frozenset()
+        assert index.sync([("k", str(path), first)], live_keys=["k"]).deferred == frozenset()
 
         path.write_text("bravo term", encoding="utf-8")
         second = body_fingerprint(path)
@@ -538,7 +541,7 @@ class TestTransientLockDoesNotLatch:
             blocker.close()
 
         # Not latched: with the neighbour gone the very next call indexes again.
-        assert index.sync([("k", str(path), second)], live_keys=["k"]) == frozenset()
+        assert index.sync([("k", str(path), second)], live_keys=["k"]).deferred == frozenset()
         assert index.body_hits(["k"], ["bravo"]) == {"k": 1}
 
     def test_a_broken_database_still_latches(self, tmp_path, monkeypatch, opened):
@@ -547,7 +550,7 @@ class TestTransientLockDoesNotLatch:
         index = opened(SkillSearchIndex(tmp_path / "index.sqlite3"))
         fingerprint = body_fingerprint(path)
         assert fingerprint is not None
-        assert index.sync([("k", str(path), fingerprint)], live_keys=["k"]) == frozenset()
+        assert index.sync([("k", str(path), fingerprint)], live_keys=["k"]).deferred == frozenset()
 
         class _Broken:
             def execute(self, *args, **kwargs):
@@ -594,7 +597,7 @@ class TestTokenizerChangeInvalidatesTheIndex:
         assert fingerprint is not None
 
         index = opened(SkillSearchIndex(db_path))
-        assert index.sync([("k", str(path), fingerprint)], live_keys=["k"]) == frozenset()
+        assert index.sync([("k", str(path), fingerprint)], live_keys=["k"]).deferred == frozenset()
         assert index.body_hits(["k"], ["alpha"]) == {"k": 1}
 
         # A different tokenizer, same file, same fingerprint: a fresh index over
@@ -607,7 +610,9 @@ class TestTokenizerChangeInvalidatesTheIndex:
         )
         rebuilt = opened(SkillSearchIndex(db_path))
         assert rebuilt.body_hits(["k"], ["alpha"]) == {}
-        assert rebuilt.sync([("k", str(path), fingerprint)], live_keys=["k"]) == frozenset()
+        assert (
+            rebuilt.sync([("k", str(path), fingerprint)], live_keys=["k"]).deferred == frozenset()
+        )
         assert rebuilt.body_hits(["k"], ["zalpha"]) == {"k": 1}
 
 
@@ -677,11 +682,11 @@ class TestCoverageAndPersistedMetadata:
         loader = _loader(tmp_path, opened=opened)
         # Complete the bounded incremental refresh before testing the ranking.
         for _ in range(80):
-            result = loader.search_skills("deploy zirconium")
-            if not loader.search_incomplete:
+            report = loader.search_skills_report("deploy zirconium")
+            if not report.incomplete:
                 break
-        assert not loader.search_incomplete
-        assert result[0]["key"] == "rare-repair"
+        assert not report.incomplete
+        assert report.matches[0]["key"] == "rare-repair"
 
     def test_new_loader_reuses_metadata_and_body_then_refreshes_a_change(
         self, tmp_path, monkeypatch, opened
@@ -712,8 +717,109 @@ class TestCoverageAndPersistedMetadata:
         paths = [_skill(root, f"s{n}", body="zirconium") for n in range(4)]
         index = opened(SkillSearchIndex(tmp_path / "bounded.sqlite3"))
         rows = [(p.parent.name, str(p), body_fingerprint(p)) for p in paths]
-        assert index.sync(rows, budget_seconds=0) == frozenset(p.parent.name for p in paths)
-        assert index.pending_keys
-        assert index.sync(rows) == frozenset()
-        assert not index.pending_keys
+        bounded = index.sync(rows, budget_seconds=0)
+        assert bounded is not None
+        assert bounded.deferred == frozenset(p.parent.name for p in paths)
+        assert bounded.pending
+        assert index.sync(rows) == (frozenset(), frozenset())
         assert len(index.body_hits([r[0] for r in rows], ["zirconium"])) == 4
+
+
+class TestConcurrentSearchesKeepTheirOwnAnswer:
+    """One loader and one index serve every concurrent search in the gateway.
+
+    The dashboard hands each search to a worker thread, so whether an answer may be
+    missing matches has to travel with that call's result. Kept on the shared
+    object, the flag is whatever the search that finished last wrote.
+    """
+
+    _WAIT = 30.0
+
+    def test_a_later_sync_does_not_rewrite_an_earlier_pending_set(self, tmp_path, opened):
+        """``sync`` holds the index lock, so two calls never overlap inside it.
+
+        The race was reading the answer back after the lock was released, by
+        which time a later call had replaced it. A returned outcome cannot be.
+        """
+        root = tmp_path / "skills"
+        paths = [_skill(root, f"s{n}", body="zirconium") for n in range(3)]
+        index = opened(SkillSearchIndex(tmp_path / "shared.sqlite3"))
+        rows = [(p.parent.name, str(p), body_fingerprint(p)) for p in paths]
+        bounded = index.sync(rows, budget_seconds=0)
+        complete = index.sync(rows)
+        assert bounded == (frozenset({"s0", "s1", "s2"}),) * 2
+        assert complete == (frozenset(), frozenset())
+        assert not hasattr(index, "pending_keys")
+
+    def test_an_incomplete_search_is_not_overwritten_by_a_complete_one(
+        self, tmp_path, monkeypatch, opened
+    ):
+        """The incomplete search is held after its sync until the other one finishes."""
+        root = tmp_path / "skills"
+        for n in range(3):
+            _skill(root, f"s{n}", body="zirconium procedure")
+        loader = _loader(tmp_path, opened=opened)
+        assert len(loader.scoped_skills()) == 3, "the catalog walk did not finish"
+        index = loader._search_index
+        assert index is not None
+        real_sync = index.sync
+        synced = threading.Event()
+        released = threading.Event()
+
+        def interleaved(rows, **kwargs):
+            if threading.current_thread().name == "incomplete-search":
+                # No budget: every changed body is left pending, so this search
+                # can only honestly answer "may be missing matches".
+                outcome = real_sync(rows, **{**kwargs, "budget_seconds": 0})
+                synced.set()
+                assert released.wait(timeout=self._WAIT), "the complete search never ran"
+                return outcome
+            return real_sync(rows, **{**kwargs, "budget_seconds": None})
+
+        monkeypatch.setattr(index, "sync", interleaved)
+        reports: dict[str, object] = {}
+
+        def search(name: str) -> None:
+            reports[name] = loader.search_skills_report("zirconium")
+
+        def complete_search() -> None:
+            assert synced.wait(timeout=self._WAIT), "the incomplete search never synced"
+            try:
+                search("complete")
+            finally:
+                released.set()
+
+        threads = [
+            threading.Thread(target=search, args=("incomplete",), name="incomplete-search"),
+            threading.Thread(target=complete_search, name="complete-search"),
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=self._WAIT)
+            assert not thread.is_alive(), "a search never returned"
+
+        incomplete, complete = reports["incomplete"], reports["complete"]
+        assert incomplete.incomplete is True, "a later complete search erased this answer"
+        assert complete.incomplete is False
+        assert sorted(row["key"] for row in complete.matches) == ["s0", "s1", "s2"]
+
+    def test_pending_bodies_read_directly_do_not_mark_the_answer_incomplete(
+        self, tmp_path, monkeypatch, opened
+    ):
+        """Without index hits every body is read directly, pending ones included."""
+        root = tmp_path / "skills"
+        for n in range(3):
+            _skill(root, f"s{n}", body="zirconium procedure")
+        loader = _loader(tmp_path, opened=opened)
+        assert len(loader.scoped_skills()) == 3, "the catalog walk did not finish"
+        index = loader._search_index
+        assert index is not None
+        real_sync = index.sync
+        monkeypatch.setattr(
+            index, "sync", lambda rows, **kwargs: real_sync(rows, **{**kwargs, "budget_seconds": 0})
+        )
+        monkeypatch.setattr(index, "body_matches", lambda keys, terms: None)
+        report = loader.search_skills_report("zirconium")
+        assert sorted(row["key"] for row in report.matches) == ["s0", "s1", "s2"]
+        assert report.incomplete is False

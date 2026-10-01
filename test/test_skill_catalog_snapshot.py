@@ -458,8 +458,7 @@ class TestAnUnfinishedFirstWalk:
     def test_search_marks_the_answer_incomplete(self, harness, monkeypatch, instant_budget):
         loader = harness.loader()
         harness.stub_walk(loader, monkeypatch, rows=[])
-        assert loader.search_skills("anything") == []
-        assert loader.search_incomplete is True
+        assert loader.search_skills_report("anything") == ([], True)
 
     def test_it_clears_once_the_walk_publishes(self, harness, monkeypatch, instant_budget):
         alpha = _skill(harness.root, "alpha")

@@ -141,8 +141,8 @@ _LOADER_MEMBERS = {
         load_skill pending_candidate_is_staged preview_pending_update prune_pending
         read_auto_skill_body read_scoped_skill reconfigure resolve_dollar_skills
         resolve_ledger_aliases resolve_tool_read_keys restore_auto_skill
-        run_skill_lifecycle scoped_skills search_skills set_inject_on_trigger set_pinned
-        split_triggered stage_skill_candidate sync_builtins trigger_hint
+        run_skill_lifecycle scoped_skills search_skills search_skills_report
+        set_inject_on_trigger set_pinned split_triggered stage_skill_candidate sync_builtins trigger_hint
         update_auto_skill update_skill
     """,
     "static": """
@@ -170,7 +170,7 @@ _LOADER_SIGNATURES = {
     "_auto_slug_claim_lock": "(self) -> 'Iterator[bool]'",
     "_auto_slug_from_name": "(name: 'str') -> 'str'",
     "_body_hits": "(self, skills: 'list[dict]', terms: 'Iterable[str]', live_keys: 'list[str]', project_dir: 'str | Path | None') -> 'dict[str, int]'",
-    "_body_matches": "(self, skills: 'list[dict]', terms: 'Iterable[str]', live_keys: 'list[str]', project_dir: 'str | Path | None') -> 'dict[str, set[str]]'",
+    "_body_matches": "(self, skills: 'list[dict]', terms: 'Iterable[str]', live_keys: 'list[str]', project_dir: 'str | Path | None') -> 'tuple[dict[str, set[str]], bool]'",
     "_cached_frontmatter": "(self, path: 'Path', mtime: 'float | None' = None, *, within: 'str | None', canonical_root: 'str | None' = None) -> 'dict[str, str]'",
     "_candidate_has_symlink": "(pdir: 'Path') -> 'bool'",
     "_candidate_layout_findings_at": "(self, root_fd: 'int') -> 'list[str]'",
@@ -277,6 +277,7 @@ _LOADER_SIGNATURES = {
     "run_skill_lifecycle": "(self, *, max_auto_skills: 'int', stale_after_days: 'int', archive_after_days: 'int', cron_referenced: 'set[str] | None' = None, exempt: 'set[str] | None' = None, now: 'float | None' = None) -> 'dict'",
     "scoped_skills": "(self, *, project_dir: 'str | Path | None' = None, only: 'list[str] | None' = None) -> 'list[dict]'",
     "search_skills": "(self, query: 'str', limit: 'int' = 20, *, project_dir: 'str | Path | None' = None, only: 'list[str] | None' = None, offset: 'int' = 0, browse: 'bool' = False) -> 'list[dict]'",
+    "search_skills_report": "(self, query: 'str', limit: 'int' = 20, *, project_dir: 'str | Path | None' = None, only: 'list[str] | None' = None, offset: 'int' = 0, browse: 'bool' = False) -> 'SkillSearchReport'",
     "set_inject_on_trigger": "(self, name: 'str', inject: 'bool') -> 'bool'",
     "set_pinned": "(self, name: 'str', pinned: 'bool') -> 'bool'",
     "split_triggered": "(self, names: 'list[str]', project_dir: 'str | Path | None' = None) -> 'tuple[list[str], list[str]]'",
@@ -447,11 +448,21 @@ class TestSurface:
         }
         assert current == _LOADER_SIGNATURES
 
-    def test_search_incomplete_is_declared_but_never_preset(self) -> None:
-        """Readers take the flag through ``getattr(..., False)``: it must stay absent
-        until a search has run, while moved code may still assign it."""
-        assert "search_incomplete" in SkillsLoader.__annotations__
-        assert not hasattr(SkillsLoader, "search_incomplete")
+    def test_no_search_leaves_its_answer_on_the_shared_loader(self, tmp_path) -> None:
+        """Whether a search is incomplete travels with that call's result.
+
+        One loader serves every concurrent search, so a flag kept on it would be
+        read by whichever caller looked last, not the one that searched.
+        """
+        assert "search_incomplete" not in getattr(SkillsLoader, "__annotations__", {})
+        loader = SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)
+        try:
+            before = set(vars(loader))
+            loader.search_skills_report("anything")
+            assert set(vars(loader)) == before
+            assert not hasattr(loader, "search_incomplete")
+        finally:
+            loader.close()
 
     def test_every_module_name_still_resolves_on_the_facade(self) -> None:
         missing = [name for name in _MODULE_NAMES if not hasattr(sk, name)]

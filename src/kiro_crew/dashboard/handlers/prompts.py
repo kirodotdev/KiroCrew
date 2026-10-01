@@ -2305,7 +2305,7 @@ async def api_skills(request: web.Request) -> web.Response:
                     ),
                     "next_offset": None,
                 }
-            matches = skills.search_skills(
+            report = skills.search_skills_report(
                 query,
                 limit=limit + 1,
                 project_dir=project_dir,
@@ -2313,6 +2313,7 @@ async def api_skills(request: web.Request) -> web.Response:
                 offset=offset,
                 browse=action == "list",
             )
+            matches = report.matches
             next_offset = offset + limit if len(matches) > limit else None
             matches = matches[:limit]
             result = []
@@ -2332,7 +2333,7 @@ async def api_skills(request: web.Request) -> web.Response:
             return {
                 "matches": result,
                 "next_offset": next_offset,
-                "incomplete": bool(getattr(skills, "search_incomplete", False)),
+                "incomplete": report.incomplete,
             }
 
         try:
