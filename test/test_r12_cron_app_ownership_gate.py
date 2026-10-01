@@ -302,3 +302,57 @@ async def test_batch_decision_writes_one_audit_row_naming_the_app(
             "resources": ids["owner"] if foreign else ids["a"],
         }
     ], rows
+
+
+async def _ack_with_ts(svc: CronService, job_id: str, ts: str, log: list[dict]):
+    """POST an app-A ack naming ``ts``, against a notification log of ``log``."""
+    app = _server(svc, APP_A)
+    app["state"]._notification_log = log
+    app["state"].ack_notification = AsyncMock(return_value=True)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post(f"/api/crons/{job_id}/ack", json={"summary": "planted", "ts": ts})
+        try:
+            payload = await resp.json()
+        except Exception:
+            payload = {}
+    return resp.status, payload, app["state"].ack_notification
+
+
+@pytest.mark.parametrize("ts", ["t-owner", "t-unknown"])
+async def test_app_ack_with_another_jobs_notification_ts_is_refused(
+    svc, grant_crons, sel_calls, ts
+) -> None:
+    """App A acks its own job but names the owner job's notification ts."""
+    ids = await _seed(svc)
+    log = [{"ts": "t-owner", "kind": "cron", "job_id": ids["owner"], "acknowledged": False}]
+    status, payload, ack_notification = await _ack_with_ts(svc, ids["a"], ts, log)
+    assert status == 403, (status, payload)
+    assert payload.get("code") == "owner_only", payload
+    ack_notification.assert_not_awaited()
+    assert log[0]["acknowledged"] is False
+    assert "planted" not in svc.get_job(ids["a"]).acked_items
+    denied = [
+        c.kwargs
+        for c in sel_calls.log_api_access.call_args_list
+        if c.kwargs.get("outcome") == "denied"
+    ]
+    assert denied == [
+        {
+            "caller": f"app:{APP_A}",
+            "operation": "crons.ack",
+            "outcome": "denied",
+            "source": "dashboard",
+            "resources": ids["a"],
+        }
+    ], denied
+
+
+async def test_app_ack_with_its_own_jobs_notification_ts_is_allowed(
+    svc, grant_crons, sel_calls
+) -> None:
+    ids = await _seed(svc)
+    log = [{"ts": "t-a", "kind": "cron", "job_id": ids["a"], "acknowledged": False}]
+    status, payload, ack_notification = await _ack_with_ts(svc, ids["a"], "t-a", log)
+    assert status == 200, (status, payload)
+    ack_notification.assert_awaited_once_with("t-a")
+    assert "planted" in svc.get_job(ids["a"]).acked_items
