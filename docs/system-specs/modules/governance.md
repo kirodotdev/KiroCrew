@@ -246,12 +246,62 @@ pins ride in the policy file for it:
   (a glob so one pin covers a mirror set, and so non-URL remote shapes —
   SCP-style, local path — are pinnable). Empty = unpinned. A checkout whose
   remote cannot be resolved is **denied when a pin exists**: an admin's pin must
-  not be satisfied by "we could not tell".
-- **`min_version`** — the minimum version the fleet may run. A host below it
-  takes a **mandatory** update, overriding the user's `auto_update=false`
-  (user config sits under the enterprise ceiling). It never refuses to *boot*:
-  bricking a fleet on a policy typo would remove the surface an admin needs to
-  fix it. An unparseable floor imposes none, for the same reason.
+  not be satisfied by "we could not tell". The `cli.sh` managed venv's update
+  checks the same pin against the feed and download URLs, so a git-only glob
+  blocks that install's updates, mandatory ones included.
+- **`min_version`** — the minimum version the fleet may run. On an install
+  whose gateway updates itself, a host below it takes a **mandatory** update,
+  overriding the user's `auto_update=false` (user config sits under the
+  enterprise ceiling). It never refuses to *boot*: bricking a fleet on a policy
+  typo would remove the surface an admin needs to fix it. An unparseable floor
+  imposes none, for the same reason. What "takes the update" means depends on
+  the install (`slack/gateway.py` `_check_for_updates` and
+  `_check_for_updates_via_provider`):
+  - **A policy provider** (`check_command` below) applies whenever the check
+    reports a version.
+  - **A git checkout** on a primary branch applies, and below the floor it skips
+    the voluntary path's `version_newer` gate, so it resets to every new upstream
+    commit, released or not ([#15796](https://github.com/kirodotdev/KiroCrew/issues/15796)). A non-primary branch never
+    applies, floor or not.
+  - **The `cli.sh` managed venv** re-runs the installer when the feed has a
+    newer build that `source` permits. With nothing newer it writes a log line
+    and does not reinstall; About can still read "up to date".
+  - **pip and pipx installs** only light the update badge, even when the feed
+    has nothing newer.
+  - **Docker and the desktop app's bundled gateway** (without a provider) do
+    not apply from the backend; a container needs a newer image. The app's own
+    updater does not act on the floor: with the app's update switch off, the
+    floor only makes the update-found prompt undismissable, and with it on (the
+    default) the floor has no effect.
+  - A mandatory apply waits for idle like any other
+    ([configuration.md → Updates](../../../src/kiro_crew/docs/configuration.md#when-the-gateway-checks))
+    and is never forced: the grace period (`_MANDATORY_UPDATE_MAX_DEFER_SECS`)
+    only logs.
+- **`check_command`** / **`apply_command`** — select the command update
+  provider (`platform/update_provider.py` `CommandProvider`), which then owns
+  the check, the badge and the Update button, and is resolved before any
+  layout's own updater or deferral. `check_command` exits 0 and prints the
+  available version on stdout when an update is available, and exits non-zero
+  when up to date; exit 0 with empty output is a failed check. `apply_command`
+  exits 0 on success; non-zero means the apply failed and the install is intact.
+  Applying needs both. They run unsandboxed as the gateway through a trusted
+  `sh -c` with a system-only `PATH`, so name binaries absolutely. On Windows they
+  never run (`_shell_exec_args` returns `None`), so a Windows host with a
+  provider never updates from the gateway. A packaged desktop app with a provider is
+  treated as policy-managed: `_arm_packaged_app` refuses with "updates on this
+  host are managed by policy".
+- **`platform_commands`** — per-platform overrides of those two commands, keyed
+  `{sys.platform}-{machine}` (`linux-x86_64`, `darwin-arm64`, `win32-x86_64`;
+  an unrecognised machine keeps its raw lowercased name). A matching entry
+  overrides each non-empty field it sets. Any command in any entry selects the
+  provider on every host, so a host whose platform has no command then never
+  checks or applies.
+
+These five are the only keys `updates` accepts (`UpdatePins.from_dict`). Any
+other key, or a non-string value, **fails closed** (`_reject_unknown_keys`); what
+an unparsable file does at boot is in [Loading + precedence](#loading--precedence).
+The desktop marker's camelCase names (`checkCommand`, `updateCommand`) are
+**not** valid here.
 
 **Not an archetype, by design.** Every archetype answers "is X permitted?"; a
 remote URL and a version number are *values the core consumes*. So they ride

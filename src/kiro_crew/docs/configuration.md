@@ -521,7 +521,7 @@ member-memory sandbox is required.
 
 | Key | Description | Default |
 |-----|-------------|---------|
-| `auto_update` | Enable automatic update checks | `true` |
+| `auto_update` | Where the install can apply updates, `true` installs them once no work is running and restarts the gateway; `false` only notifies. Elsewhere it has no effect. On those same installs a policy minimum version applies regardless. See [Updates](#updates) | `true` |
 | `timezone` | IANA timezone name, e.g. `"America/Los_Angeles"` | `""` (falls back to UTC) |
 | `snapshot_dir` | Where `kirocrew snapshot` writes tarballs | `""` (`~/.kiro/crew/snapshots`) |
 
@@ -553,6 +553,99 @@ The `timezone` key affects three things:
 - `skip_dates` evaluation for cron jobs
 
 A per-job `timezone` on a cron job wins over this global value.
+
+## Updates
+
+### When the gateway checks
+
+The gateway checks for a newer release when it starts (its own restarts
+included), every 12 hours, and every five minutes while an update is waiting
+for running work to finish. Depending on the install, the check is a `git
+fetch` or a release-feed fetch. Docker and the desktop app's bundled gateway
+skip it (see below); everywhere else it runs whatever `auto_update` is set to.
+
+`auto_update` decides what happens when the check finds something. With `true`
+(the default), the gateway applies the update and restarts itself, on the
+installs that can apply. With `false`, it only notifies.
+
+The gateway applies only when no turn or background job is running. If work is
+in flight, it keeps serving and tries again five minutes later, so steady
+activity can postpone even a mandatory update. While the update applies, the
+gateway does not start new turns.
+
+### What each install does
+
+A security policy that names update commands replaces everything in this
+section: its commands then check and apply on every install shape except
+Windows, where they never run and the gateway does not update itself. See the
+[governance spec](../../../docs/system-specs/modules/governance.md#update-pins-updates--policy-only).
+
+| Install | With `auto_update` on |
+|---|---|
+| Git or source checkout (any OS) on a primary branch: `main`, `mainline` or `master` <!-- wokeignore:rule=master --> | Applies |
+| The `cli.sh` managed venv (macOS, Linux) | Applies |
+| pipx (what `cli.sh` uses when pipx is on `PATH`) or plain `pip` | Notifies only |
+| Docker | Neither checks nor applies. The About page says to pull a newer image |
+| The gateway bundled in the desktop app | Neither. The app's own updater owns it |
+
+Of the installs that update by re-running the installer, the gateway re-runs it
+itself only for the `cli.sh` managed venv, so pip and pipx only notify.
+
+A checkout applies when the tip of its branch carries a newer `__version__` than
+the running code, and then hard-resets to that tip and restarts. It does not
+apply over local changes, local commits or untracked files the update would
+overwrite, and it does not restart a gateway whose checkout you already pulled
+by hand. Other branches,
+`release/*` included, never auto-apply. `main` is always one minor version ahead
+of the release line, so a `main` checkout moves onto nightly code each time a
+release branch is cut. Below a policy minimum version, a primary-branch checkout
+skips the version test and resets to every new upstream commit, released or
+not.
+
+### Turning it off and updating by hand
+
+Set `auto_update` with `kirocrew config set auto_update false`, from
+**Developer → Config → Auto Update** in the dashboard, or with the gateway's
+update switch on the About page when the dashboard is open in a browser.
+
+Updating by hand never restarts a running gateway, so finish with
+`kirocrew restart`:
+
+- **Git checkout, `cli.sh` managed venv or pipx:** run `kirocrew update`, then
+  `kirocrew restart`. On pipx it re-runs the installer, which replaces the pipx
+  install.
+- **Plain `pip`:** upgrade with pip in the same environment, from the channel
+  index you installed from (Kiro Crew is not on PyPI; see
+  [Installing a published wheel with pip](../../../docs/guides/install.md#installing-a-published-wheel-with-pip)),
+  then `kirocrew restart`. Here `kirocrew update` installs a separate copy
+  instead of upgrading that environment.
+
+`kirocrew --version` prints the version installed on disk. The About page shows
+the version the running gateway serves.
+
+### What can still update a host with `auto_update` off
+
+- **A policy minimum version.** An administrator can set `min_version` in the
+  `updates` block of `security_policy.json`. On an install whose gateway updates
+  itself, a gateway below that version applies the update even with
+  `auto_update` off. The scope per install is in the
+  [governance spec](../../../docs/system-specs/modules/governance.md#update-pins-updates--policy-only).
+- **The desktop app's own updater.** On a desktop install, the app's update
+  switch on the About page is the one that stops automatic updates. It updates
+  the app and the gateway bundled in it. `auto_update` matters there only if a
+  policy names update commands, or if the app is attached to a separately
+  installed gateway (from the CLI, as a service, or reached over an SSH tunnel),
+  which follows its own `auto_update` per the table above. The app
+  keeps its switch in its own settings file (**Open Config File** in the tray
+  menu or the **Connection** menu), not in the gateway's
+  `~/.kiro/crew/config.json`. How the app's updater downloads and installs is in
+  [release.md](../../../docs/build/release.md#client-auto-update).
+
+An edition can hand updates to a package manager, through policy
+`check_command` / `apply_command` or a packaged app marker's `checkCommand` /
+`updateCommand`. While its updates are on, a pause set in that package manager
+holds only if the edition's check command honours it; see
+[externally managed installs](../../../docs/build/desktop-app.md#externally-managed-installs-repackagers).
 
 ## Credentials
 

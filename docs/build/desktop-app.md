@@ -1155,6 +1155,27 @@ carries **no** network rules, so the sandbox does not block sockets — but whet
 TCC's responsible-process attribution still lands on the app bundle across that
 `exec` has to be confirmed on a real macOS 15 host rather than reasoned about.
 
+## Updates: two updaters, two switches
+
+The desktop app's updater replaces the whole bundle, embedded gateway included.
+A gateway the app spawns carries a desktop distribution stamp and defers its
+update check to the app's updater, unless an `updates` block in
+`security_policy.json` names update commands, because the provider is resolved
+before the deferral (on Windows those commands never run; see
+[governance.md → Update pins](../system-specs/modules/governance.md#update-pins-updates--policy-only)). A gateway the app reuses defers the same
+way when it runs the app's own bundled backend. A separately installed one (from
+the CLI, as a service, or reached over an SSH tunnel) follows its own
+`auto_update` ([where to set it](../../src/kiro_crew/docs/configuration.md#turning-it-off-and-updating-by-hand)). A
+container defers to its image. Both updaters running on one install is
+[#15797](https://github.com/kirodotdev/KiroCrew/issues/15797).
+
+Settings → About renders the app's update section in the desktop app's own
+window and the gateway's in a browser, never both. The app's switch, its default
+and install-on-quit are owned by
+[release.md → Client auto-update](release.md#client-auto-update); the policy
+floor by [governance.md → Update pins](../system-specs/modules/governance.md#update-pins-updates--policy-only). The user-facing summary is
+[configuration.md → Updates](../../src/kiro_crew/docs/configuration.md#updates).
+
 ## Externally-managed installs (repackagers)
 
 A distro or enterprise packager that redistributes the desktop app through its
@@ -1167,22 +1188,27 @@ Such a packager opts out by dropping an `EXTERNALLY-MANAGED` marker file
 (named after the PEP 668 precedent) into the packaged resources directory —
 the same outside-asar surface that carries `package-type` and `backend-dist`
 (`Contents/Resources/` on macOS, `resources/` on Linux and Windows). Its
-presence alone disables the updater: the feed is never contacted, and
+presence takes the install off the release feed: the feed is never contacted, and
 Settings → About hides the release-channel switcher (the lanes it offers are
-ones the packager never reads). The body is optional JSON metadata for the
-About panel:
+ones the packager never reads). The body is optional JSON:
 
 ```json
 {
   "managedBy": "your package manager's name",
-  "updateCommand": "the command users run to update"
+  "checkCommand": "the command that prints an available version",
+  "updateCommand": "the command that applies it"
 }
 ```
 
-`managedBy` names the owning system in the "updates are managed by …"
-message; `updateCommand` renders as a copyable command. An empty or
-unparsable body still counts as managed — an operator who dropped the file
-gets the safe behavior even when the metadata is wrong.
+A marker without `updateCommand` turns the updater off, and About shows the
+"updates are managed by …" message naming `managedBy`. A marker with
+`updateCommand` runs the managed lane below instead, and About shows the normal
+update card, with no managed-by message and no copyable command. That lane also
+needs `checkCommand`: without it every check fails with "this managed install
+has no checkCommand", so no update is ever offered or applied
+([#15799](https://github.com/kirodotdev/KiroCrew/issues/15799)). An empty or unparsable body still counts as managed — an
+operator who dropped the file gets the safe behavior even when the metadata is
+wrong.
 
 The body is only read when the marker's **provenance** can be established:
 neither the marker nor its directory may be owned by the account the app runs
@@ -1194,6 +1220,19 @@ the managed auto-update path, so a marker in a user-owned resources directory
 (Homebrew, `pip --user`, `~/Applications`) is treated as a bare marker: managed,
 updater off, no metadata and nothing to run. Packagers that want the managed
 commands honored must install the resources directory root-owned.
+
+On the managed path the app treats a `checkCommand` that exits 0 and prints a
+version as an available update. With the app's update switch on, it then runs
+`updateCommand` on the next quit.
+
+**A package manager's own update pause holds only if the check command honours
+it**: on this managed lane while the app's update switch is on, and on the
+gateway's policy `check_command` (below) while `auto_update` is on or a policy
+floor forces the update. Neither lane compares versions after an apply: if the
+check still prints a version and the apply command exits 0 having changed
+nothing, the gateway restarts and checks again at boot, and the app runs
+`updateCommand` and relaunches on every quit, so both loop
+([#15798](https://github.com/kirodotdev/KiroCrew/issues/15798)).
 
 The commands run with a **constructed environment**, not the app's own. Only an explicit pass-through set reaches them — `USER`, `LOGNAME`, `TZ`, `TMPDIR`, the `LANG`/`LC_*` locale vars, and the proxy vars — plus a narrowed system-only `PATH` and `cwd=/`. `HOME` is deliberately excluded: Python derives its user-site directory from it, so passing it through would let a planted `sitecustomize.py` run on every `python` start. Everything else is absent by construction, because `shell: true` means a shell interprets the command and a shell reads its environment as code: the loader family (`LD_*`/`DYLD_*`), the interpreter family (`PYTHON*`, `NODE_OPTIONS`), the startup files (`BASH_ENV`, `ENV`), the tracing pair (`SHELLOPTS` plus a command-substituting `PS4`), word splitting (`IFS`), and exported shell functions (`BASH_FUNC_*`, which shadow a command name outright). A packager whose updater needs any other variable must set it inside its own command rather than relying on inheritance.
 
@@ -1256,8 +1295,13 @@ The gateway has the matching seam for its own surfaces: an operator's
 `security_policy.json` `updates` block (`check_command` / `apply_command`)
 routes the dashboard's update check, badge, and Update button through the
 declared commands, and the gateway then reports no release channel at all.
-The `check_command` runs on every check — the 12-hourly background poll AND
-the manual Check button — so it must be side-effect-free and idempotent.
+The `check_command` runs on every gateway check
+([when](../../src/kiro_crew/docs/configuration.md#when-the-gateway-checks)) and
+whenever the dashboard asks for one, so it must be side-effect-free, idempotent
+and quick: a check still running after 60 seconds is stopped and counts as
+failed. The keys and the command
+contract are in
+[governance.md → Update pins](../system-specs/modules/governance.md#update-pins-updates--policy-only).
 If the `apply_command` installs into a new versioned tree and prunes the old one,
 it deletes the interpreter the running gateway was launched from. The gateway then
 has nothing to re-enter, and it says so rather than trying: the restart is refused

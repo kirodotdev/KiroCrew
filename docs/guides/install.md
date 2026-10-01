@@ -431,6 +431,23 @@ under Rosetta 2, so a universal build needs an Apple-Silicon host;
 `UNIVERSAL=0` forces a faster host-arch-only build. Linux is always host-arch,
 and the three Linux formats come from one backend tree packaged three times.
 
+The published, signed apps ([prebuilt downloads](../../README.md#app-downloads))
+update themselves, and the gateway bundled inside them, through the
+app's own updater. By default a new release downloads in the background and
+installs the next time you quit the app (closing the window only hides it to
+the tray; quit from the tray or the menu bar). To be asked first, turn off the
+app's update switch on the About page; the app then offers each release and
+downloads it when you click Download, in the update popup or on the About page.
+A locally built app is stamped ahead of the stable channel, so on stable it gets
+no update until a newer release ships. The updater is also off when the app runs from the DMG or
+another read-only volume, from a macOS translocated copy (move it to
+Applications), as an AppImage in a directory it cannot write, as an unknown
+package format, under a bare `EXTERNALLY-MANAGED` marker, or as an unpackaged
+build; About then says automatic updates are unavailable, or managed elsewhere,
+instead of showing the switch. Details:
+[release.md → Client auto-update](../build/release.md#client-auto-update) and
+[Updates](../../src/kiro_crew/docs/configuration.md#updates).
+
 #### Installing a Linux desktop package
 
 ```bash
@@ -444,8 +461,8 @@ on a host whose AppArmor supports the bundled profile — installs and loads the
 `userns` profile the agent sandbox needs, so no manual `sandbox install-profile`
 step is required. The fixed install path is what makes all of that durable.
 
-Updates arrive through the app (**About → Check for updates**), which downloads
-the new package and hands it to `dpkg` / `rpm`. That needs root, so expect one
+Updates arrive through the app's updater described above (or **Check for
+updates** on the About page), which hands the package to `dpkg` / `rpm`. That needs root, so expect one
 elevation prompt (`pkexec` or `sudo`) at install time — it is the package
 manager doing the write, not the app. `sudo apt remove kirocrew` /
 `sudo dnf remove kirocrew` uninstalls; see

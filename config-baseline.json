@@ -8963,7 +8963,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Auto Update",
-      "help": "Enable automatic update checks.",
+      "help": "Where the install can apply updates, true installs them once no work is running and restarts; false only notifies. Elsewhere it has no effect. On those same installs a policy minimum version applies regardless.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true

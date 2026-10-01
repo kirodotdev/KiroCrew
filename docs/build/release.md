@@ -944,6 +944,12 @@ downloaded stays armed, because the preference is not what put it there. The
 stage itself is never discarded, so an explicit Install still applies it with
 nothing to re-download.
 
+**This preference and the gateway's `auto_update` are independent.** Neither
+reads or writes the other: `autoDownloadUpdates` lives in the app's
+electron-store, `auto_update` in the gateway's `config.json`. Which gateways
+defer to this updater is in
+[desktop-app.md → Updates](desktop-app.md#updates-two-updaters-two-switches).
+
 **Which channel a build follows is a default plus an opt-in, not a property of
 the bytes.** `channelForVersion()` classifies the version stamp and `nightly`
 stays pinned by it, but for the two production lanes `resolveChannel()` honours
