@@ -42,7 +42,7 @@ from kiro_crew.agent_sdk.drivers.acp_vocab import (  # noqa: F401 - STOP_* resol
     classify_stop_reason,
     is_runtime_death,
 )
-from kiro_crew.execution_context import read_session_execution
+from kiro_crew.execution_context import CLI_ORIGIN, read_session_execution
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR
 
@@ -77,6 +77,8 @@ from kiro_crew.config.loader import DEFAULT_MODEL, KiroCrewConfig
 from kiro_crew.config.paths import data_home
 from kiro_crew.config.sections import SESSION_START_TIMEOUT_MIN, AgentConfig
 from kiro_crew.constants import (  # noqa: F401 - DENY_CAUSE_* resolved by run.py via bind_component_globals
+    CLI_SESSION_KEY,
+    DEFAULT_AGENT_NAME,
     DEFAULT_SPAWN_MIN_MEMORY_GB,
     DEFAULT_SUBAGENT_COST_GB,
     DEFAULT_SUBAGENT_MAX_TURNS,
@@ -528,6 +530,50 @@ def _validate_agent(requested: str, project_dir: str = "") -> tuple[str, str, st
         f"agent {requested!r} not found{_available_agents_hint(available)}",
         AGENT_NOT_FOUND_CODE,
     )
+
+
+def spawn_governance_key(parent_session_key: str, origin: str) -> str:
+    """The session key a spawn's ``capabilities.spawn`` checks are evaluated under.
+
+    The parent session's surface, except for a CLI-origin run (``origin`` from its
+    ``ExecutionContext``) with no parent, which is governed as the attended CLI
+    surface rather than as an empty key that matches no profile. A continuation of
+    one that names a parent session is asked for by that session, and is governed
+    under its key.
+    """
+    if origin == CLI_ORIGIN and not parent_session_key:
+        return CLI_SESSION_KEY
+    return parent_session_key
+
+
+def spawn_policy_agents(agent: str, crew: str, execution: ExecutionContext) -> tuple[str, ...]:
+    """Every agent name a spawn's ``capabilities.spawn`` agent scope must permit.
+
+    One answer for admission and for ``run.py``'s re-check before the run starts.
+    The explicit template the run executes, and the agent it resolves to: the
+    member a crew delegation targets, else a member selection's name, else the
+    template (``DEFAULT_AGENT_NAME``, the runtime's default, when nothing named
+    one, so an omitted agent is not an unchecked one). A spawn naming both a
+    template and a member answers to both.
+    """
+    if crew:
+        resolved = crew
+    elif execution.selection_kind == "member":
+        resolved = execution.selection_name
+    else:
+        resolved = agent or execution.template_id or DEFAULT_AGENT_NAME
+    return tuple(dict.fromkeys(name for name in (agent, resolved) if name))
+
+
+def _vet_spawn_policy(
+    parent_session_key: str, agents: tuple[str, ...], app: str = ""
+) -> str | None:
+    """:func:`_vet_spawn_governance` for each of *agents*; the first denial, else None."""
+    for name in agents or ("",):
+        denial = _vet_spawn_governance(parent_session_key, name, app=app)
+        if denial:
+            return denial
+    return None
 
 
 def _vet_spawn_governance(parent_session_key: str, agent: str, app: str = "") -> str | None:

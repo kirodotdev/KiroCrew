@@ -586,6 +586,16 @@ def read_pid(port: int) -> int | None:
     return _read_pid_path(path)
 
 
+def read_pid_record(port: int) -> tuple[int, str] | None:
+    """``(pid, start_token)`` the gateway serving *port* recorded, or ``None``.
+
+    :func:`read_pid` with the start identity that proves the pid still names the
+    process that wrote it (:func:`read_pid_record_path`). Read-only: never
+    creates ``run/``.
+    """
+    return read_pid_record_path(config_dir() / RUN_DIR_NAME / pid_file_name(port))
+
+
 def read_launcher(port: int) -> str | None:
     """Launcher path recorded by the gateway serving *port*, or ``None``.
 

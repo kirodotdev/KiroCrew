@@ -98,6 +98,8 @@ schema calls that column references rather than grants: no start path reads it.
 The one in-process exception is the accepting process's own `approval_mode` for a
 row still waiting, restored on its window refill (subagent.md,
 `_held_approval_modes`); a restart never sees it.
+A `kirocrew spawn run` row's origin rides its execution record
+([subagent.md § CLI](subagent.md#cli-kirocrew-spawn-run-task)).
 Pinned by
 `test_taskq_admission_integration.py::test_an_ad_hoc_auto_approval_is_never_persisted_on_the_row`,
 and the legacy importer drops a persisted `auto_approve` for the same reason

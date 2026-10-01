@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import functools
 import importlib.util
 import inspect
@@ -66,6 +67,7 @@ from kiro_crew.dashboard.chat_utils import (
     subagent_event_slot,
 )
 from kiro_crew.dashboard.handlers._shared import (
+    _audit_private_memory_denial,
     _pip_install_channel_available,
     guard_owner_surface_routes,
     internal_memory_scope,
@@ -87,6 +89,7 @@ from kiro_crew.dashboard.token_auth import (
     LINK_WINDOW_SECS,
     caller_names_a_missing_slot,
     generate_token,
+    validated_token_origin,
 )
 from kiro_crew.dashboard.ws_event_scope import (
     _audit_allow,
@@ -95,6 +98,7 @@ from kiro_crew.dashboard.ws_event_scope import (
     persisted_snapshot_denial_reason,
     slot_owner_snapshot,
 )
+from kiro_crew.execution_context import CLI_ORIGIN
 from kiro_crew.messaging.display_safety import redact_for_display
 from kiro_crew.messaging.link import SLACK_NAMESPACE, ChannelLink
 from kiro_crew.messaging.renderer import (
@@ -432,20 +436,19 @@ def _run_belongs_to_caller(caller: str, run_id: str, parent: object) -> bool:
     """Whether *caller* may control run *run_id* whose originating session is *parent*.
 
     Ownership is the ONLY admission: the run's parent session, or the run itself.
-    A caller with no identity owns nothing that a session started -- it is admitted
-    to a run with no parent (one the host operator started from the CLI, which
-    carries the internal secret and no session) and to nothing else. Neither the
-    caller's memory store nor the transport it arrived on widens this.
+    A caller with no identity owns no run. A run no session started (the owner's,
+    from the dashboard or ``kirocrew spawn run``) belongs to the owner principal,
+    which reaches these routes with an owner token and no ``internal_auth``, so it
+    never takes this check. Neither the caller's memory store nor the transport it
+    arrived on widens this.
     """
     if caller == f"subagent:{run_id}":
         return True
-    if parent is None:
-        # No record of this run at all: nothing vouches for who started it, so
-        # nobody owns it. Reading "unknown" as "parentless" would let a caller
-        # with no identity act on any id it can name.
+    if not caller or parent is None:
+        # No identity owns nothing; no record of the run (``parent is None``)
+        # means nothing vouches for who started it, so nobody owns it.
         return False
-    parent_key = parent if isinstance(parent, str) else ""
-    return parent_key == caller
+    return (parent if isinstance(parent, str) else "") == caller
 
 
 async def _queued_run(state: DashboardState, run_id: str) -> QueuedRun | None:
@@ -553,12 +556,13 @@ async def _spawn_scope_refusal(
 ) -> web.Response | None:
     """Keep run controls with their originating session, regardless of target member.
 
-    Every INTERNAL caller (kiro-cli's MCP servers, the CLI) takes the ownership
+    Every INTERNAL caller (kiro-cli's MCP servers, scripts) takes the ownership
     check, whatever memory store its identity resolved to and whether it resolved
     one at all: a verified Global-memory session is still only the owner of its
-    own runs, and a caller that presented no ``X-Session-Key`` owns no run a
-    session started. Only the dashboard owner (cookie auth, no ``internal_auth``)
-    is admitted without it, because that surface IS the owner. Refusals answer
+    own runs, and a caller that presented no ``X-Session-Key`` owns no run. Only
+    the dashboard owner (an owner token, from the browser or ``kirocrew spawn``;
+    no ``internal_auth``) is admitted without it, because that principal IS the
+    owner. Refusals answer
     404 ``task_scope_denied`` so a run id is never confirmed to a caller that may
     not see it; the identity-less refusal says why, since a wrong run id and a
     missing identity are indistinguishable from the caller's side otherwise.
@@ -731,7 +735,8 @@ async def api_spawn(request: web.Request) -> web.Response:
     # ``X-Internal-Secret`` loopback process is admitted by the constant-time
     # secret match and reaches here with ``app`` ABSENT, and an app token is
     # confined to its manifest's declared paths by ``_enforce_app_scope``.
-    if request.get("internal_auth") is not True and request.get("app") == "":
+    owner = request.get("internal_auth") is not True and request.get("app") == ""
+    if owner:
         # Body-scope import, like the sibling gates in this package
         # (``connections.py``, ``mcp_apps.py``, ``files.py``): ``source_providers``
         # reaches back into sibling handler modules, so importing the helper at
@@ -781,6 +786,33 @@ async def api_spawn(request: web.Request) -> web.Response:
             {"error": "parent_session must be a string", "code": "invalid_parent_session"},
             status=400,
         )
+    # ``kirocrew spawn run`` authenticates with an owner token whose signed
+    # ``origin`` claim says it came from the terminal (``/api/token/local
+    # ?origin=cli``); no body field and no other credential can claim it. It
+    # decides the run's governance surface; the run faces the ordinary prompt.
+    origin = CLI_ORIGIN if owner and validated_token_origin(request) == CLI_ORIGIN else ""
+    if origin and parent_session:
+        return web.json_response(
+            {"error": "a spawn from the CLI has no parent session", "code": "invalid_origin"},
+            status=400,
+        )
+    # Stated, not left to the identity check below: a parentless run is the
+    # owner's, so an internal caller with no session cannot start one.
+    if (
+        request.get("internal_auth") is True
+        and not parent_session
+        and not request.headers.get("X-Session-Key", "")
+    ):
+        # The same denial row the identity check writes for this refusal.
+        await _audit_private_memory_denial("spawn.create", "The execution identity is unavailable.")
+        return web.json_response(
+            {
+                "error": "A caller with no session identity cannot start a run with no "
+                "parent; the owner spawns from the dashboard or kirocrew spawn run.",
+                "code": "member_identity_unavailable",
+            },
+            status=409,
+        )
     _, refusal = await internal_memory_scope(
         request, "spawn.create", claimed_session=parent_session
     )
@@ -803,8 +835,9 @@ async def api_spawn(request: web.Request) -> web.Response:
     # rather than in SPAWN_RUN_SCHEMA because they are transport-layer
     # params, not tool-schema params.
     #
-    # Security: this endpoint requires X-Internal-Secret (internal_paths
-    # in server.py), so only local MCP server processes can call it.
+    # Security: this path is mixed (``_MIXED_INTERNAL_API_PATHS`` in server.py):
+    # it takes the internal secret OR a dashboard credential (an owner token, or
+    # an app token confined to its manifest).
     approval_mode = body.get("approval_mode", "")
     if approval_mode not in ("", "auto"):
         return web.json_response({"error": "approval_mode must be '' or 'auto'"}, status=400)
@@ -869,6 +902,8 @@ async def api_spawn(request: web.Request) -> web.Response:
             config=config,
             requested_mode=admitted_mode,
         )
+        if origin:
+            admitted_execution = dataclasses.replace(admitted_execution, origin=origin)
         child_memory_store = admitted_execution.store.legacy_name
     except (OSError, ValueError) as exc:
         return web.json_response(
@@ -1515,6 +1550,9 @@ async def api_spawn_status(request: web.Request) -> web.Response:
         if view_meta:
             data["result_meta"] = view_meta
         data["error"] = _redact(info.error) if info.error else ""
+        # The recorded ending, as the persistence fallback reports it; a fallback
+        # answer without one is a run nothing settled (``kirocrew spawn run``).
+        data["outcome"] = getattr(info, "outcome", "")
     else:
         data["turns"] = info.turns
         data["last_tool"] = _redact(info.last_tool)
@@ -1532,7 +1570,23 @@ async def api_spawn_status(request: web.Request) -> web.Response:
         # separate `spawn list` or a log grep.
         if _awaiting_spawn_approval(info):
             data["awaiting_approval"] = True
+        elif _awaiting_tool_approval(info):
+            data["awaiting_tool_approval"] = True
     return web.json_response(data)
+
+
+def _awaiting_tool_approval(info: object) -> bool:
+    """True only while a STARTED run is parked on a tool-approval prompt.
+
+    The other half of :func:`_awaiting_spawn_approval`'s discriminator: the same
+    flag with ``_exec_started`` stamped. Reported so a terminal user polling with
+    ``kirocrew spawn run`` learns the run is waiting on them; same strict reads, for
+    the same lightweight info doubles.
+    """
+    return (
+        getattr(info, "_awaiting_approval", False) is True
+        and getattr(info, "_exec_started", None) is not None
+    )
 
 
 def _awaiting_spawn_approval(info: object) -> bool:
@@ -1587,11 +1641,11 @@ async def api_spawn_list(request: web.Request) -> web.Response:
     agents = []
     caller = request.headers.get("X-Session-Key", "")
     # An internal caller lists only the runs it may control, by the same
-    # ownership rule the per-run routes apply: its own runs, or -- with no
-    # identity at all -- only runs no session started. Listing is a read, but a
-    # run id, its task text and its parent key are exactly what a later steer
-    # needs, so the list must not hand out what the control route would refuse.
-    # The dashboard owner (no ``internal_auth``) still sees everything.
+    # ownership rule the per-run routes apply: its own runs, and none at all
+    # without an identity. Listing is a read, but a run id, its task text and its
+    # parent key are exactly what a later steer needs, so the list must not hand
+    # out what the control route would refuse. The dashboard owner (an owner
+    # token, no ``internal_auth``) still sees everything.
     internal = request.get("internal_auth") is True
     # The queued half is opt-in (``?queued=1``): only the spawn tools act on it,
     # and the dashboard's pollers would otherwise pay a store read every few
@@ -1630,6 +1684,8 @@ async def api_spawn_list(request: web.Request) -> web.Response:
             # has no child process and is only ever waiting to be approved.
             if _awaiting_spawn_approval(info):
                 entry["awaiting_approval"] = True
+            elif _awaiting_tool_approval(info):
+                entry["awaiting_tool_approval"] = True
         # Present only when a group was actually withheld, so the default
         # (everything on) payload is unchanged.
         withheld = [

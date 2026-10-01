@@ -14,7 +14,7 @@ from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 from member_memory_helpers import DOCUMENT_CREDENTIAL, document_store
 from member_memory_helpers import env as _member_env
-from member_memory_helpers import request, seed_body
+from member_memory_helpers import request, seed_body, spawn_row
 
 from kiro_crew import hooks, mcp_core, memory_schema, memory_stores
 from kiro_crew.config import loader
@@ -1133,33 +1133,16 @@ async def test_spawn_list_follows_origin_including_cross_member_delegation(env):
 
 
 def _spawn_rows():
-    def row(name, parent):
-        return SimpleNamespace(
-            id=name,
-            memory_store="",
-            task=name,
-            done=True,
-            parent_session_key=parent,
-            agent="kirocrew",
-            started=1,
-            result="result-" + name,
-            error="",
-            user_stopped=False,
-            outcome="success",
-            include_memory=True,
-            include_lessons=True,
-            include_project=True,
-        )
-
-    return [row("owned-run", "dashboard:someone"), row("cli-run", "")]
+    return [spawn_row("owned-run", "dashboard:someone"), spawn_row("cli-run", "")]
 
 
 @pytest.mark.asyncio
 async def test_run_controls_fail_closed_for_a_caller_with_no_session_identity(env):
     """Run controls are ownership-scoped for EVERY internal caller. One that
     presents no ``X-Session-Key`` owns no run a session started, so it is refused
-    with a reason that names the identity gap; it keeps reaching a run no session
-    started (the host operator's own CLI run), which is the only run it can own.
+    with a reason that names the identity gap. A run no session started belongs to
+    the owner principal, which reaches these routes with an owner token
+    (``test_spawn_cli_owner.py``), so this caller is refused that one too.
     """
     from kiro_crew.dashboard.handlers import messaging
 
@@ -1177,7 +1160,8 @@ async def test_run_controls_fail_closed_for_a_caller_with_no_session_identity(en
 
     req = request(env, body={"message": "steer"}, internal=True, session="")
     req.match_info["agent_id"] = "cli-run"
-    assert await messaging._spawn_scope_refusal(req) is None
+    refusal = await messaging._spawn_scope_refusal(req)
+    assert refusal is not None and refusal.status == 404
 
 
 @pytest.mark.asyncio
@@ -1212,7 +1196,8 @@ async def test_a_persisted_run_is_owned_by_its_recorded_parent(env):
     """A run that is not live is judged by its persisted record, whose
     field is ``parent_session``: the recorded owner is admitted, an identity-less
     caller is refused, a record without the field owns nobody, and a persisted
-    CLI run (empty parent) is still the one thing an identity-less caller reaches."""
+    parentless run (empty parent) is not this caller's either: it is the owner
+    principal's."""
     from kiro_crew.dashboard.handlers import messaging
 
     env.state.subagents = SimpleNamespace(get=lambda _id: None, all_agents=[])
@@ -1228,7 +1213,7 @@ async def test_a_persisted_run_is_owned_by_its_recorded_parent(env):
         for run_id, session, admitted in (
             ("owned-old", "", False),
             ("owned-old", "dashboard:someone", True),
-            ("cli-old", "", True),
+            ("cli-old", "", False),
             ("no-field", "", False),
         ):
             req = request(env, body={"message": "x"}, internal=True, session=session)
@@ -1293,9 +1278,11 @@ async def test_a_global_memory_session_still_only_controls_its_own_runs(env):
 
 
 @pytest.mark.asyncio
-async def test_spawn_list_shows_an_identity_less_caller_only_unowned_runs(env):
+async def test_spawn_list_shows_an_identity_less_caller_nothing(env):
     """The list must not hand out the run ids, task text and parent keys that the
-    control routes would refuse to act on for the same caller."""
+    control routes would refuse to act on for the same caller: an identity-less
+    caller that is not the host operator's CLI owns no run, parentless ones
+    included."""
     from kiro_crew.dashboard.handlers import messaging
 
     rows = _spawn_rows()
@@ -1303,8 +1290,7 @@ async def test_spawn_list_shows_an_identity_less_caller_only_unowned_runs(env):
         all_agents=rows, _agents={r.id: r for r in rows}, _tasks={r.id: object() for r in rows}
     )
     response = await messaging.api_spawn_list(request(env, internal=True, session=""))
-    assert [r["id"] for r in json.loads(response.text)["agents"]] == ["cli-run"]
-    assert "dashboard:someone" not in response.text and "result-owned" not in response.text
+    assert json.loads(response.text)["agents"] == []
 
 
 def _queued_registry(*queued, truncated=False):

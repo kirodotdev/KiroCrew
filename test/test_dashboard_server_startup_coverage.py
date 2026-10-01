@@ -35,7 +35,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import ANY, AsyncMock, MagicMock
 
 import pytest
 from aiohttp import web
@@ -722,7 +722,11 @@ class TestStartDashboardWiring:
             AsyncMock(return_value=_fake_reserved_socket(port=real_port)),
         )
         monkeypatch.setattr(srv.web, "SockSite", _FakeSockSite)
-        monkeypatch.setattr(srv, "_start_unix_site", AsyncMock(return_value=None))
+        unix_site = AsyncMock(return_value=None)
+        monkeypatch.setattr(srv, "_start_unix_site", unix_site)
+        # The SockSite double registers no address, so stand in for the kernel's
+        # answer the real listener gives the bound-port read.
+        monkeypatch.setattr(srv, "_resolved_bound_port", lambda _r, port: port or real_port)
         spies = _neutralise_outside_process_work(monkeypatch)
         spies["start_enabled_app_backends"].side_effect = lambda: (
             seen.append(os.environ.get("KIROCREW_BOUND_PORT")),
@@ -763,6 +767,10 @@ class TestStartDashboardWiring:
                 f"({real_port}), not inherited or configured evidence; it saw "
                 f"{seen!r}"
             )
+            # The unix socket is named for the bound port too: under ``--port
+            # auto`` one named for the requested 0 is a socket no client dials,
+            # and ``kirocrew spawn`` has no TCP path to fall back on.
+            unix_site.assert_awaited_once_with(ANY, real_port)
         finally:
             await runner.cleanup()
             await _cancel_stray_tasks()

@@ -205,8 +205,8 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/approvals", handlers.api_approvals)
     app.router.add_post("/api/approvals/{id}/{action}", handlers.api_approval_resolve)
 
-    # Local token bootstrap (file-based secret auth in handler, bypasses middleware)
-    app.router.add_get("/api/token/local", handlers.api_token_local)
+    # Local token bootstrap: registered with the API routes both servers share
+    # (``server._register_mcp_routes``), so a headless gateway serves it too.
 
     # Tunnel status
     app.router.add_get("/api/tunnel/status", api_tunnel_status)

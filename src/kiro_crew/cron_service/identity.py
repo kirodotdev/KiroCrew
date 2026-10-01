@@ -150,6 +150,8 @@ def bind_cron_memory(job: CronJob) -> None:
         raise ValueError("Restricted sessions cannot create persistent schedules")
     if job.agent_id:
         execution = replace(execution, template_id=job.agent_id)
-    job.execution_context = execution.to_record()
+    # A schedule fires on its own, so a creator that the owner started from the
+    # terminal hands it no CLI governance: ``origin`` stays off.
+    job.execution_context = replace(execution, origin="").to_record()
     job.member_id = execution.member_id or ""
     job.memory_store = execution.store.legacy_name

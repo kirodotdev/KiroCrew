@@ -1878,6 +1878,10 @@ def _deferred_work_ledger(handler_name: str) -> Callable:
 
 def _register_mcp_routes(app: web.Application) -> None:
     """Register API routes used by MCP tools (spawn, lessons, crons, etc.)."""
+    # Local owner-token bootstrap (local secret + peer checks in the handler, and
+    # token_auth's bypass). Here rather than with the dashboard's own routes so the
+    # headless API server mints for ``kirocrew spawn`` and ``kirocrew app`` too.
+    app.router.add_get("/api/token/local", handlers.api_token_local)
     app.router.add_post("/api/spawn", handlers.api_spawn)
     app.router.add_post("/api/spawn/lost", handlers.api_spawn_lost)
     app.router.add_post("/api/spawn/mark-collected", handlers.api_spawn_mark_collected)
@@ -6497,16 +6501,17 @@ async def start_dashboard(
         )
     # Additional kernel-verifiable transport for the internal API (POSIX only;
     # degrades to TCP-only on any failure — see _start_unix_site).
-    _unix_socket_holder["path"] = await _start_unix_site(runner, port)
     # Hold the OTHER loopback family too, so a client dialling a NAME cannot be
     # answered by anyone else -- see _start_secondary_loopback_site. None when
     # there is no second listener, and the client then signs in explicitly.
-    # Resolved ONCE, and used for both the second bind and the publication below.
-    # Under `--port auto` the requested port is 0 and stays 0, so binding the
-    # second family on it lands on an unrelated ephemeral port while the sidecar
-    # is filed under the real one -- which would publish coverage for an address
-    # nothing listens on and leave the real one free for anyone to take.
+    # Resolved ONCE, and used for the unix socket, the second bind and the
+    # publication below. Under `--port auto` the requested port is 0 and stays 0,
+    # so binding the second family on it lands on an unrelated ephemeral port
+    # while the sidecar is filed under the real one -- which would publish
+    # coverage for an address nothing listens on and leave the real one free for
+    # anyone to take -- and a socket named for port 0 is one no client dials.
     _bound_port = _resolved_bound_port(runner, port)
+    _unix_socket_holder["path"] = await _start_unix_site(runner, _bound_port)
     _second_loopback = await _start_secondary_loopback_site(runner, _bound_port, _bind_ip)
 
     # Port bind succeeded — now safe to write the secret file. Offloaded:
@@ -7509,13 +7514,13 @@ async def start_api_server(
     _export_bound_port(runner, port)
     # Additional kernel-verifiable transport for the internal API (parity with
     # start_dashboard; POSIX only, degrades to TCP-only on any failure).
-    _unix_socket_holder["path"] = await _start_unix_site(runner, port)
     # Parity with start_dashboard: hold the other loopback family so a client
     # dialling a NAME cannot be answered by anyone else.
     # Same resolve-once rule as start_dashboard: `--port auto` leaves the
-    # requested port at 0, and the second family must bind the port the sidecar
-    # will name.
+    # requested port at 0, and the unix socket and the second family must use
+    # the port the sidecar will name.
     _bound_port = _resolved_bound_port(runner, port)
+    _unix_socket_holder["path"] = await _start_unix_site(runner, _bound_port)
     _second_loopback = await _start_secondary_loopback_site(
         runner, _bound_port, _resolved_bound_host(runner, bind_addr)
     )

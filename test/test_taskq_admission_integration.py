@@ -425,6 +425,41 @@ async def test_a_row_on_disk_carrying_auto_approval_faces_the_spawn_gate(quiet) 
     await mgr.cancel_all()
 
 
+@pytest.mark.asyncio
+async def test_a_cli_origin_row_keeps_its_origin_and_faces_the_prompt(quiet) -> None:
+    """The origin rides the row's execution record, so a start from the store is
+    governed as the CLI, and it faces the spawn prompt like any other row."""
+    from kiro_crew.execution_context import CLI_ORIGIN, ExecutionContext, MemoryStoreRef
+
+    mgr = await _manager(max_concurrent=1)
+    store: TaskStore = mgr._taskq
+    mgr._sessions.get_approval_policy = MagicMock(return_value="ask")
+    mgr._ctx_builder.hooks.auto_approve_subagent_spawn = False
+    approvals = AsyncMock(return_value=True)
+    mgr._on_spawn_approval = approvals
+    execution = ExecutionContext(
+        None, MemoryStoreRef("default"), "template", "kirocrew", origin=CLI_ORIGIN
+    )
+    store.accept_one(
+        model.TaskRecord(
+            id="sa-cli",
+            kind=model.KIND_SUBAGENT,
+            session_key="",
+            params={
+                "task": "t",
+                "parent_session_key": "",
+                "_execution_context": execution.to_record(),
+            },
+        )
+    )
+    with patch.object(SubagentManager, "_run", new=AsyncMock()):
+        mgr._drain_queue()
+        await _settle(store)
+    assert mgr._agents["sa-cli"].execution_context.origin == CLI_ORIGIN
+    assert approvals.await_count == 1, "a row from the store skipped the spawn prompt"
+    await mgr.cancel_all()
+
+
 # ── terminal writes ───────────────────────────────────────────────────────────
 
 

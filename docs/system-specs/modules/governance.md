@@ -24,10 +24,19 @@ implementation companion to the design doc (Pippin `kirocrew/MVTDhLpm2SSW`).
 > (see [subagent](subagent.md) § Parent agent spec allowlist); it is not a
 > governance scope and never widens what this model denies.
 
-Subagent admission checks explicit target names. When execution resolves an
-omitted name from the original conversation or parent session, the runner also
-checks that effective name against the parent's `capabilities.spawn` agent scope
-before provider allocation, using the same evaluator and app identity.
+Subagent admission checks every agent name a run answers to
+(`subagent.spawn_policy_agents`): the explicit template it executes, and the agent
+it resolves to, which is a crew delegation's member, else a member selection's
+name, else the template (`kirocrew` when nothing named one, so an omitted agent
+is not an unchecked one). The runner checks the same names again, under the same
+key and app identity, before provider allocation, for every run, so a scope
+tightened while a spawn waited for approval or in the queue binds it, and a name
+resolved from the original conversation or parent session is checked too.
+A run that names no agent runs `kirocrew` by name (`run.py` claims it from the
+session pool explicitly), so the agent checked is the agent that runs, never the
+warm pool's `session.pool_agent` / `agent.default_agent`. An agents allow-list
+without `kirocrew` therefore refuses, at admission, a spawn that names no agent
+and whose parent records no template; add `kirocrew` to the list to admit it.
 
 ## The four archetypes (one composition algebra each)
 
@@ -1468,6 +1477,10 @@ operator has flipped the keystone. That is the product decision recorded in
 [computer-use.md](computer-use.md); the containment is the keystone the agent cannot
 write plus the SEL audit trail, not a surface ceiling. Do not re-document the refusal
 without re-implementing it.
+
+**`kirocrew spawn run` governs as surface `cli`** (`cli_chat`), on the agent names
+the run answers to; [subagent.md § CLI](subagent.md#cli-kirocrew-spawn-run-task)
+states the rule.
 
 **`host` surface (in-process host actions).** A governance check that is not
 driven by a user-facing surface — app activation

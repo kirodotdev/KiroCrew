@@ -2145,8 +2145,10 @@ list admit an `internal_auth` caller only to runs it owns: the run's originating
 session (`parent_session_key == X-Session-Key`) or the run itself
 (`subagent:<id>`). The check runs whatever memory store the caller's identity
 resolved to -- a verified Global-memory session is still only the owner of its own
-runs -- and a caller that presented NO `X-Session-Key` owns no run a session
-started; it reaches only a run with no parent (the host operator's own CLI run).
+runs -- and a caller that presented NO `X-Session-Key` owns no run at all,
+parentless ones included: a parentless run is the owner principal's
+([subagent.md § CLI](subagent.md#cli-kirocrew-spawn-run-task)), which reaches these
+routes with an owner token and never takes this check.
 A refusal is 404 `task_scope_denied`, so a run id is never confirmed to a caller
 that may not see it; the identity-less refusal says so and points at the
 strict-identity diagnosis (`kirocrew doctor`), because from the caller's side a
