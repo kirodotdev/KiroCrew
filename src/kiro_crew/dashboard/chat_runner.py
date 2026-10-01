@@ -8,6 +8,7 @@ import hashlib
 import inspect
 import json
 import logging
+import math
 import os
 import re
 import stat as stat_module
@@ -3156,6 +3157,32 @@ def _flush_file_changes(
         reply_mids.clear()
 
 
+def turn_stats_meta(
+    elapsed_ms: int, credits: float, cost_usd: float, model: str = ""
+) -> dict[str, Any] | None:
+    """The ``meta.turn_stats`` value the footer renders, or None for nothing to show.
+
+    One shape for every writer: a chat turn (``_attach_turn_stats``) and a cron
+    run's result row (the gateway passes it to ``inject_cron_result_to_dashboard``).
+    Zero/empty fields are omitted so the footer shows only what was reported.
+    A non-finite number is omitted too: ``json.dumps`` writes it as a bare
+    ``Infinity``/``NaN`` that no browser parses. The provider-reported model id is
+    scrubbed like every ACP-controlled string (``_redact_acp_string``) and dropped past ``_MAX_MODEL_ID_LEN``, because the row is retained.
+    """
+    if elapsed_ms <= 0:
+        return None
+    stats: dict[str, Any] = {"elapsed_ms": int(elapsed_ms)}
+    if math.isfinite(credits) and credits > 0:
+        stats["credits"] = round(credits, 4)
+    if math.isfinite(cost_usd) and cost_usd > 0:
+        stats["cost_usd"] = round(cost_usd, 6)
+    if model:
+        safe_model = _redact_acp_string(model)
+        if len(safe_model) <= _MAX_MODEL_ID_LEN:
+            stats["model"] = safe_model
+    return stats
+
+
 def _attach_turn_stats(
     slot: "_ChatSlot",
     elapsed_ms: int,
@@ -3194,15 +3221,9 @@ def _attach_turn_stats(
     with the failed turn's numbers. No-op when the turn produced no assistant
     message or when there is nothing to show.
     """
-    if elapsed_ms <= 0:
+    stats = turn_stats_meta(elapsed_ms, credits, cost_usd, model)
+    if stats is None:
         return False
-    stats: dict[str, Any] = {"elapsed_ms": int(elapsed_ms)}
-    if credits > 0:
-        stats["credits"] = round(credits, 4)
-    if cost_usd > 0:
-        stats["cost_usd"] = round(cost_usd, 6)
-    if model:
-        stats["model"] = model
     if ttft_ms > 0:
         stats["ttft_ms"] = int(ttft_ms)
     boundary = max(0, turn_boundary)

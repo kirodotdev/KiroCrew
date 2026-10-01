@@ -134,6 +134,7 @@ from kiro_crew.dashboard.chat_runner import (
     _resolve_channel_target,
     _run_chat,
     _slot_is_trusted,
+    turn_stats_meta,
 )
 from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     CRON_NOTIFICATION_KIND,
@@ -161,6 +162,7 @@ from kiro_crew.dashboard.handlers.usage import (
     persist_token_record_async,
     read_context_tokens,
     read_effective_agent,
+    read_turn_model,
 )
 from kiro_crew.dashboard.listener_guard import listener_guard_exit_code
 from kiro_crew.dashboard.origin import (
@@ -4975,6 +4977,8 @@ class GatewayOrchestrator:
 
                 # ── Per-turn usage row: attribute background spend. ──
                 # Best-effort; must never fail the cron turn.
+                # The same usage feeds the result row's footer (meta.turn_stats).
+                _turn_stats: dict[str, Any] | None = None
                 try:
 
                     _used, _window = read_context_tokens(client)
@@ -4984,6 +4988,12 @@ class GatewayOrchestrator:
                         # prompt's snapshotted credits alongside the
                         # continuation's on a resumed turn.
                         _turn_usage.credits += _carried_credits
+                    _turn_stats = turn_stats_meta(
+                        int(_turn_usage.duration_ms or (time.monotonic() - _turn_t0) * 1000),
+                        float(_turn_usage.credits or 0.0),
+                        float(_turn_usage.cost_usd or 0.0),
+                        read_turn_model(client),
+                    )
                     await persist_token_record_async(
                         session_key,
                         # Blank on a downgrade or an active fallback — see the
@@ -5073,6 +5083,7 @@ class GatewayOrchestrator:
                                 result_text,
                                 history=await prefetch_cron_history(self.dashboard_state, job.id),
                                 context_reading=_ctx_reading,
+                                turn_stats=_turn_stats,
                             )
                         return result_text
 
@@ -5098,6 +5109,7 @@ class GatewayOrchestrator:
                             result_text,
                             history=await prefetch_cron_history(self.dashboard_state, job.id),
                             context_reading=_ctx_reading,
+                            turn_stats=_turn_stats,
                         )
                     return result_text
 
@@ -5130,6 +5142,7 @@ class GatewayOrchestrator:
                             result_text,
                             history=history,
                             context_reading=_ctx_reading,
+                            turn_stats=_turn_stats,
                         )
                     redacted_for_dash, _ = redact_exfiltration_urls(result_text)
                     redacted_for_dash, _ = redact_credentials(redacted_for_dash)

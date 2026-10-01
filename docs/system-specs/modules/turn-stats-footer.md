@@ -33,6 +33,10 @@ AssistantMessage renders the footer when its presentation gates permit it
 
 The helper preserves pre-existing `meta`, always records a positive `elapsed_ms`, and omits non-positive credits, cost, and empty model values. `TestAttachTurnStats.test_credits_rounded` pins credit precision; `test_preserves_existing_meta`, `test_zero_credits_key_omitted`, `test_zero_cost_key_omitted`, and `test_model_omitted_when_unattributable` pin the remaining contract.
 
+### Cron run results
+
+`chat_runner.turn_stats_meta` builds the same `turn_stats` dict for both writers. The single-agent cron run in `slack/gateway.py` builds it from the run's `provider_last_turn_usage` and `read_turn_model`, and `cron_inject.inject_cron_result_to_dashboard` passes it as `meta` on the result row's `slot.append`, so the live broadcast and the slot window both carry it. Cron results have no `chat_done`; the broadcast is what an open tab renders. `test/test_cron_turn_stats_footer.py` pins both halves.
+
 ### Model attribution
 
 `dashboard.handlers.usage.read_turn_model` returns a concrete resolved model identifier when one is available, the `auto` sentinel for an Auto request without a resolved identifier, or an empty string when neither is known. `TestReadTurnModel` enforces the precedence and the unattributable case. The sentinel distinguishes an explicit Auto selection from absent attribution; callers that need a concrete identifier for pricing or context-window lookup use `read_effective_model` instead.

@@ -632,6 +632,7 @@ def append_rows_if_absent_off_loop(
     rows: "Sequence[tuple[str, str, str, str | None]]",
     *,
     agent: str | None = None,
+    row_meta: "Sequence[dict[str, Any] | None] | None" = None,
 ) -> Any:
     """Persist SEVERAL rows of one turn as one indivisible off-loop write.
 
@@ -652,7 +653,9 @@ def append_rows_if_absent_off_loop(
     *rows* is an ordered sequence of ``(role, content, cls, mid)``; they are
     appended in that order. Each row keeps ``append_if_absent``'s idempotence,
     so a row the periodic slot save already serialized is skipped individually
-    without dropping its siblings.
+    without dropping its siblings. ``row_meta``, when given, is aligned with
+    *rows* by index and adds display fields to that row's ``meta``
+    (see :meth:`ConversationLog.append`).
 
     Returns the executor future, or None when the write already happened inline
     (no running loop). Best-effort like its siblings: a lock timeout or I/O
@@ -661,8 +664,11 @@ def append_rows_if_absent_off_loop(
 
     def _do() -> None:
         with conversation_log.atomic_appends(key):
-            for role, content, cls, mid in rows:
-                conversation_log.append_if_absent(key, role, content, agent=agent, cls=cls, mid=mid)
+            for i, (role, content, cls, mid) in enumerate(rows):
+                extra = row_meta[i] if row_meta and i < len(row_meta) else None
+                conversation_log.append_if_absent(
+                    key, role, content, agent=agent, cls=cls, mid=mid, extra_meta=extra
+                )
 
     try:
         loop = asyncio.get_running_loop()
@@ -2530,8 +2536,12 @@ class ConversationLog:
         tab_id: str | None = None,
         cls: str = "",
         mid: str | None = None,
+        extra_meta: dict[str, Any] | None = None,
     ) -> None:
         """Append a message with optional provenance to the session log.
+
+        *extra_meta* adds display fields (e.g. ``turn_stats``) to the row's
+        ``meta``; it never overrides ``mid``.
 
         *cls* persists the message's presentation class. The in-memory slot
         carries one (``_ChatSlot.append``) but this durable copy had nowhere to
@@ -2621,6 +2631,8 @@ class ConversationLog:
                 # the read side — persisting any other shape would store an id
                 # the reader is structurally unable to honour.
                 msg["meta"] = {"mid": mid}
+            if extra_meta:
+                msg["meta"] = {**extra_meta, **msg.get("meta", {})}
 
             # Session transcripts are intentionally local plaintext JSONL (the
             # documented storage format), not a credential/secret store.
@@ -2652,6 +2664,7 @@ class ConversationLog:
         tab_id: str | None = None,
         cls: str = "",
         mid: str | None = None,
+        extra_meta: dict[str, Any] | None = None,
     ) -> bool:
         """Append a message only if an identical one is not already persisted.
 
@@ -2734,7 +2747,16 @@ class ConversationLog:
             # the critical section we already hold. The skip paths above leave
             # the persisted rows untouched — an id is never retrofitted onto a
             # row already on disk.
-            self.append(key, role, content, agent=agent, tab_id=tab_id, cls=cls, mid=mid)
+            self.append(
+                key,
+                role,
+                content,
+                agent=agent,
+                tab_id=tab_id,
+                cls=cls,
+                mid=mid,
+                extra_meta=extra_meta,
+            )
             return True
 
     def recent(
