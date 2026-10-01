@@ -9519,7 +9519,8 @@
       "stream_error_decode_failed": "Die Spracherkennung konnte diese Transkription nicht abschließen. Diktiere sie noch einmal.",
       "stream_error_max_duration": "Das Diktat hat seine Längenbegrenzung erreicht. Starte eine neue Aufnahme, um weiterzumachen.",
       "stream_error_model_missing": "Das Sprachmodell ist noch nicht bereit. Lade es in den Spracherkennungseinstellungen herunter und versuche es dann noch einmal.",
-      "stream_error_session_failed": "Die Diktiersitzung ist fehlgeschlagen. Nimm es noch einmal auf."
+      "stream_error_session_failed": "Die Diktiersitzung ist fehlgeschlagen. Nimm es noch einmal auf.",
+      "stream_error_vocabulary_rejected": "Amazon Transcribe konnte dein benutzerdefiniertes Vokabular nicht verwenden. Wähle in den Spracherkennungseinstellungen ein anderes oder „Keines“ und versuche es dann noch einmal."
     },
     "templateSource": {
       "built_in": "Integriert",
@@ -15892,6 +15893,15 @@
         "aws_credentials_profile_for_transcribe_blank_def": "AWS-Anmeldedatenprofil für Transcribe (leer = Standardkette)",
         "aws_profile_transcribe": "AWS-Profil (Transcribe)",
         "aws_region_for_transcribe": "AWS-Region für Transcribe",
+        "transcribe_vocabulary": "Benutzerdefiniertes Vokabular",
+        "transcribe_vocabulary_hint": "Namen und Begriffe, die du in Amazon Transcribe hochgeladen hast, damit das Diktat sie richtig schreibt. Aufgelistet aus dem AWS-Profil und der Region oben.",
+        "transcribe_vocabulary_none": "Keines",
+        "transcribe_vocabulary_loading": "Vokabulare werden geladen…",
+        "transcribe_vocabulary_option": "{{name}} ({{language}})",
+        "transcribe_vocabulary_language_mismatch": "Dieses Vokabular ist für {{vocabularyLanguage}}, aber das Diktat ist auf {{dictationLanguage}} eingestellt. Amazon Transcribe lehnt ein Vokabular in einer anderen Sprache ab, deshalb schlägt das Diktat fehl, bis du ein anderes oder „Keines“ auswählst.",
+        "transcribe_vocabulary_unavailable": "Amazon Transcribe hat in {{region}} kein bereites Vokabular namens {{name}}. Das Diktat schlägt fehl, bis du ein anderes oder „Keines“ auswählst.",
+        "transcribe_vocabulary_access_denied": "Diese AWS-Anmeldedaten dürfen keine benutzerdefinierten Vokabulare auflisten. Erteile {{permission}}, um sie hier zu sehen.",
+        "transcribe_vocabulary_list_failed": "Deine benutzerdefinierten Vokabulare konnten nicht aus AWS geladen werden.",
         "aws_region_transcribe": "AWS-Region (Transcribe)",
         "bcp_47_language_code_for_speech_recognition": "BCP-47-Sprachcode für die Spracherkennung",
         "default": "Standard",

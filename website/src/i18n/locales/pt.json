@@ -9646,7 +9646,8 @@
       "stream_error_decode_failed": "O reconhecimento de fala não conseguiu concluir esta transcrição. Dite novamente.",
       "stream_error_max_duration": "O ditado atingiu o limite de duração. Inicie uma nova gravação para continuar.",
       "stream_error_model_missing": "O modelo de voz ainda não está pronto. Baixe-o nas configurações de voz para texto e tente novamente.",
-      "stream_error_session_failed": "A sessão de ditado falhou. Tente gravar novamente."
+      "stream_error_session_failed": "A sessão de ditado falhou. Tente gravar novamente.",
+      "stream_error_vocabulary_rejected": "O Amazon Transcribe não conseguiu usar seu vocabulário personalizado. Escolha outro, ou Nenhum, nas configurações de voz para texto e tente novamente."
     },
     "templateSource": {
       "built_in": "Integrado",
@@ -16121,6 +16122,15 @@
         "aws_credentials_profile_for_transcribe_blank_def": "Perfil de credenciais AWS para o Transcribe (em branco = cadeia padrão)",
         "aws_profile_transcribe": "Perfil AWS (Transcribe)",
         "aws_region_for_transcribe": "Região AWS para o Transcribe",
+        "transcribe_vocabulary": "Vocabulário personalizado",
+        "transcribe_vocabulary_hint": "Nomes e termos que você enviou ao Amazon Transcribe para que o ditado os escreva corretamente. Listados a partir do perfil e da região AWS acima.",
+        "transcribe_vocabulary_none": "Nenhum",
+        "transcribe_vocabulary_loading": "Carregando vocabulários…",
+        "transcribe_vocabulary_option": "{{name}} ({{language}})",
+        "transcribe_vocabulary_language_mismatch": "Este vocabulário é para {{vocabularyLanguage}}, mas o ditado está configurado para {{dictationLanguage}}. O Amazon Transcribe recusa vocabulários em outro idioma, então o ditado vai falhar até você escolher outro ou Nenhum.",
+        "transcribe_vocabulary_unavailable": "O Amazon Transcribe não tem nenhum vocabulário pronto chamado {{name}} em {{region}}. O ditado vai falhar até você escolher outro ou Nenhum.",
+        "transcribe_vocabulary_access_denied": "Estas credenciais AWS não têm permissão para listar vocabulários personalizados. Conceda {{permission}} para vê-los aqui.",
+        "transcribe_vocabulary_list_failed": "Não foi possível carregar seus vocabulários personalizados da AWS.",
         "aws_region_transcribe": "Região AWS (Transcribe)",
         "bcp_47_language_code_for_speech_recognition": "Código de idioma BCP-47 para reconhecimento de fala",
         "default": "padrão",

@@ -9646,7 +9646,8 @@
       "stream_error_decode_failed": "Il riconoscimento vocale non è riuscito a completare questa trascrizione. Dettala di nuovo.",
       "stream_error_max_duration": "La dettatura ha raggiunto il limite di durata. Avvia una nuova registrazione per continuare.",
       "stream_error_model_missing": "Il modello vocale non è ancora pronto. Scaricalo nelle impostazioni di riconoscimento vocale, poi riprova.",
-      "stream_error_session_failed": "La sessione di dettatura non è riuscita. Prova a registrare di nuovo."
+      "stream_error_session_failed": "La sessione di dettatura non è riuscita. Prova a registrare di nuovo.",
+      "stream_error_vocabulary_rejected": "Amazon Transcribe non è riuscito a usare il tuo vocabolario personalizzato. Scegline un altro, o Nessuno, nelle impostazioni di riconoscimento vocale, poi riprova."
     },
     "templateSource": {
       "built_in": "Integrato",
@@ -16121,6 +16122,15 @@
         "aws_credentials_profile_for_transcribe_blank_def": "Profilo credenziali AWS per Transcribe (vuoto = catena predefinita)",
         "aws_profile_transcribe": "Profilo AWS (Transcribe)",
         "aws_region_for_transcribe": "Regione AWS per Transcribe",
+        "transcribe_vocabulary": "Vocabolario personalizzato",
+        "transcribe_vocabulary_hint": "Nomi e termini che hai caricato su Amazon Transcribe perché la dettatura li scriva correttamente. Elencati dal profilo e dalla regione AWS indicati sopra.",
+        "transcribe_vocabulary_none": "Nessuno",
+        "transcribe_vocabulary_loading": "Caricamento dei vocabolari…",
+        "transcribe_vocabulary_option": "{{name}} ({{language}})",
+        "transcribe_vocabulary_language_mismatch": "Questo vocabolario è per {{vocabularyLanguage}}, ma la dettatura è impostata su {{dictationLanguage}}. Amazon Transcribe rifiuta un vocabolario in un’altra lingua, quindi la dettatura non funzionerà finché non ne scegli un altro o Nessuno.",
+        "transcribe_vocabulary_unavailable": "Amazon Transcribe non ha nessun vocabolario pronto chiamato {{name}} in {{region}}. La dettatura non funzionerà finché non ne scegli un altro o Nessuno.",
+        "transcribe_vocabulary_access_denied": "Queste credenziali AWS non sono autorizzate a elencare i vocabolari personalizzati. Concedi {{permission}} per vederli qui.",
+        "transcribe_vocabulary_list_failed": "Impossibile caricare i tuoi vocabolari personalizzati da AWS.",
         "aws_region_transcribe": "Regione AWS (Transcribe)",
         "bcp_47_language_code_for_speech_recognition": "Codice lingua BCP-47 per il riconoscimento vocale",
         "default": "predefinito",

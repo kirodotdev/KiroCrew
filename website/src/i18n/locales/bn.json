@@ -9519,7 +9519,8 @@
       "stream_error_decode_failed": "স্পিচ রিকগনিশন এই প্রতিলিপি শেষ করতে পারেনি। আবার বলে লিখিয়ে নাও।",
       "stream_error_max_duration": "ডিকটেশন তার সময়সীমায় পৌঁছে গেছে। চালিয়ে যেতে নতুন রেকর্ডিং শুরু করো।",
       "stream_error_model_missing": "স্পিচ মডেল এখনও তৈরি নয়। স্পিচ-টু-টেক্সট সেটিংসে এটি ডাউনলোড করো, তারপর আবার চেষ্টা করো।",
-      "stream_error_session_failed": "ডিকটেশন সেশন ব্যর্থ হয়েছে। আবার রেকর্ড করে দেখো।"
+      "stream_error_session_failed": "ডিকটেশন সেশন ব্যর্থ হয়েছে। আবার রেকর্ড করে দেখো।",
+      "stream_error_vocabulary_rejected": "Amazon Transcribe তোমার কাস্টম শব্দভান্ডার ব্যবহার করতে পারেনি। স্পিচ-টু-টেক্সট সেটিংসে অন্য একটি বা \"কোনোটি নয়\" বেছে নাও, তারপর আবার চেষ্টা করো।"
     },
     "templateSource": {
       "built_in": "বিল্ট-ইন",
@@ -15892,6 +15893,15 @@
         "aws_credentials_profile_for_transcribe_blank_def": "Transcribe-এর জন্য AWS ক্রেডেনশিয়াল প্রোফাইল (খালি = ডিফল্ট চেইন)",
         "aws_profile_transcribe": "AWS প্রোফাইল (Transcribe)",
         "aws_region_for_transcribe": "Transcribe-এর জন্য AWS রিজিয়ন",
+        "transcribe_vocabulary": "কাস্টম শব্দভান্ডার",
+        "transcribe_vocabulary_hint": "যে নাম ও শব্দগুলো তুমি Amazon Transcribe-এ আপলোড করেছ, যাতে ডিকটেশন সেগুলোর বানান ঠিক লেখে। তালিকাটি ওপরের AWS প্রোফাইল ও রিজিয়ন থেকে নেওয়া হয়।",
+        "transcribe_vocabulary_none": "কোনোটি নয়",
+        "transcribe_vocabulary_loading": "শব্দভান্ডারগুলো লোড হচ্ছে…",
+        "transcribe_vocabulary_option": "{{name}} ({{language}})",
+        "transcribe_vocabulary_language_mismatch": "এই শব্দভান্ডারটি {{vocabularyLanguage}}-এর জন্য, কিন্তু ডিকটেশন {{dictationLanguage}}-এ সেট করা আছে। Amazon Transcribe অন্য ভাষার শব্দভান্ডার প্রত্যাখ্যান করে, তাই তুমি অন্য একটি বা \"কোনোটি নয়\" বেছে না নেওয়া পর্যন্ত ডিকটেশন ব্যর্থ হবে।",
+        "transcribe_vocabulary_unavailable": "{{region}}-এ Amazon Transcribe-এর {{name}} নামে কোনো প্রস্তুত শব্দভান্ডার নেই। তুমি অন্য একটি বা \"কোনোটি নয়\" বেছে না নেওয়া পর্যন্ত ডিকটেশন ব্যর্থ হবে।",
+        "transcribe_vocabulary_access_denied": "এই AWS ক্রেডেনশিয়ালগুলোর কাস্টম শব্দভান্ডারের তালিকা দেখার অনুমতি নেই। সেগুলো এখানে দেখতে {{permission}} অনুমতি দাও।",
+        "transcribe_vocabulary_list_failed": "AWS থেকে তোমার কাস্টম শব্দভান্ডারগুলো লোড করা যায়নি।",
         "aws_region_transcribe": "AWS রিজিয়ন (Transcribe)",
         "bcp_47_language_code_for_speech_recognition": "স্পিচ রিকগনিশনের জন্য BCP-47 ভাষা কোড",
         "default": "ডিফল্ট",

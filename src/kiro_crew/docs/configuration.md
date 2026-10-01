@@ -334,6 +334,7 @@ transcribed the same way.
 | `stt.timeout_secs` | Ceiling on transcribing one whole file: the audio decode, and each model load or recognition inside it | `300` |
 | `stt.transcribe_region` | AWS region for the Transcribe API (`transcribe` provider only) | `"us-east-1"` |
 | `stt.transcribe_profile` | AWS profile for the Transcribe API. Empty uses the default credential chain (`transcribe` provider only) | `""` |
+| `stt.transcribe_vocabulary` | Name of an Amazon Transcribe custom vocabulary to recognise your names and terms, from the same region. Its language must match `stt.language_code`, or Amazon Transcribe refuses it and dictation fails. Empty uses none (`transcribe` provider only) | `""` |
 
 #### The local provider downloads one model, once
 

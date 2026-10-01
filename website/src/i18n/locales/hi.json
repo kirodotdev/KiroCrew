@@ -9519,7 +9519,8 @@
       "stream_error_decode_failed": "वाक् पहचान यह प्रतिलेख पूरा नहीं कर सकी। इसे दोबारा बोलकर लिखवाओ।",
       "stream_error_max_duration": "डिक्टेशन अपनी अवधि सीमा पर पहुँच गया। जारी रखने के लिए नई रिकॉर्डिंग शुरू करो।",
       "stream_error_model_missing": "वाक् मॉडल अभी तैयार नहीं है। इसे वाक्-से-पाठ सेटिंग में डाउनलोड करो, फिर दोबारा कोशिश करो।",
-      "stream_error_session_failed": "डिक्टेशन सत्र विफल हो गया। दोबारा रिकॉर्ड करके देखो।"
+      "stream_error_session_failed": "डिक्टेशन सत्र विफल हो गया। दोबारा रिकॉर्ड करके देखो।",
+      "stream_error_vocabulary_rejected": "Amazon Transcribe तुम्हारी कस्टम शब्दावली का उपयोग नहीं कर सका। वाक्-से-पाठ सेटिंग में कोई दूसरी शब्दावली या \"कोई नहीं\" चुनो, फिर दोबारा कोशिश करो।"
     },
     "templateSource": {
       "built_in": "बिल्ट-इन",
@@ -15892,6 +15893,15 @@
         "aws_credentials_profile_for_transcribe_blank_def": "Transcribe के लिए AWS क्रेडेंशियल प्रोफ़ाइल (खाली = डिफ़ॉल्ट चेन)",
         "aws_profile_transcribe": "AWS प्रोफ़ाइल (Transcribe)",
         "aws_region_for_transcribe": "Transcribe के लिए AWS रीजन",
+        "transcribe_vocabulary": "कस्टम शब्दावली",
+        "transcribe_vocabulary_hint": "वे नाम और शब्द जो तुमने Amazon Transcribe पर अपलोड किए हैं, ताकि डिक्टेशन उन्हें सही लिखे। सूची ऊपर दी गई AWS प्रोफ़ाइल और रीजन से ली जाती है।",
+        "transcribe_vocabulary_none": "कोई नहीं",
+        "transcribe_vocabulary_loading": "शब्दावलियाँ लोड हो रही हैं…",
+        "transcribe_vocabulary_option": "{{name}} ({{language}})",
+        "transcribe_vocabulary_language_mismatch": "यह शब्दावली {{vocabularyLanguage}} के लिए है, लेकिन डिक्टेशन {{dictationLanguage}} पर सेट है। Amazon Transcribe किसी दूसरी भाषा की शब्दावली को अस्वीकार कर देता है, इसलिए जब तक तुम कोई दूसरी शब्दावली या \"कोई नहीं\" नहीं चुनते, डिक्टेशन विफल होता रहेगा।",
+        "transcribe_vocabulary_unavailable": "{{region}} में Amazon Transcribe के पास {{name}} नाम की कोई तैयार शब्दावली नहीं है। जब तक तुम कोई दूसरी शब्दावली या \"कोई नहीं\" नहीं चुनते, डिक्टेशन विफल होता रहेगा।",
+        "transcribe_vocabulary_access_denied": "इन AWS क्रेडेंशियल्स को कस्टम शब्दावलियाँ सूचीबद्ध करने की अनुमति नहीं है। उन्हें यहाँ देखने के लिए {{permission}} की अनुमति दो।",
+        "transcribe_vocabulary_list_failed": "तुम्हारी कस्टम शब्दावलियाँ AWS से लोड नहीं हो सकीं।",
         "aws_region_transcribe": "AWS रीजन (Transcribe)",
         "bcp_47_language_code_for_speech_recognition": "वाक् पहचान के लिए BCP-47 भाषा कोड",
         "default": "डिफ़ॉल्ट",

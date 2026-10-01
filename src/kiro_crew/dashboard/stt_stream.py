@@ -23,8 +23,10 @@ from aiohttp import WSMsgType, web
 # can diagnose. api_ws_stt() re-checks and returns a friendly WS error.
 try:
     from amazon_transcribe.client import TranscribeStreamingClient
+    from amazon_transcribe.exceptions import BadRequestException as _TranscribeBadRequest
 except ImportError:  # pragma: no cover — exercised by test_import_error_*
     TranscribeStreamingClient = None  # type: ignore[assignment,misc]
+    _TranscribeBadRequest = None  # type: ignore[assignment,misc]
 
 from kiro_crew import aws_consent, stt
 from kiro_crew.config.loader import KiroCrewConfig
@@ -136,6 +138,11 @@ _CODE_SESSION_FAILED = "stt_session_failed"
 # profile+region. Distinct from `_CODE_SESSION_FAILED` because the fix is an
 # operator action in Settings rather than a retry.
 _CODE_CONSENT_REQUIRED = "stt_consent_required"
+# Amazon Transcribe refused to open a stream with the operator's custom vocabulary
+# (deleted, still processing, or in another region). Distinct from
+# `_CODE_SESSION_FAILED` because retrying cannot help: the fix is choosing another
+# vocabulary, or none, in Settings.
+_CODE_VOCABULARY_REJECTED = "stt_transcribe_vocabulary_rejected"
 
 # ── Semantic endpointing (stt.endpointing, default off) ──
 # On each stable Transcribe `final`, a fast background model judges whether the
@@ -170,6 +177,22 @@ def _redacted(text: str) -> str:
     out, _ = redact_exfiltration_urls(text)
     out, _ = redact_credentials(out)
     return out
+
+
+def _vocabulary_rejected(exc: BaseException, vocabulary: str) -> bool:
+    """Whether a refused stream start was Amazon Transcribe refusing *vocabulary*.
+
+    Narrow on purpose: a vocabulary must be configured, the refusal must be the
+    service's ``BadRequestException`` (raised by ``start_stream_transcription``
+    itself, before any audio is sent), and its message must name the vocabulary. A
+    bad request for any other reason keeps the generic code, so an operator is
+    never sent to change a vocabulary that is not the problem.
+    """
+    if not vocabulary or _TranscribeBadRequest is None:
+        return False
+    if not isinstance(exc, _TranscribeBadRequest):
+        return False
+    return "vocabulary" in str(getattr(exc, "message", "")).lower()
 
 
 def _drop_task_result(task: "asyncio.Task[Any]") -> None:
@@ -1398,12 +1421,16 @@ async def api_ws_stt(request: web.Request) -> web.WebSocketResponse:
             await _close_and_end_audit(ws, caller, outcome="error")
             return ws
 
+        vocabulary = cfg.stt.transcribe_vocabulary
         stream = None
         try:
             stream = await client.start_stream_transcription(
                 language_code=cfg.stt.effective_language_code,
                 media_sample_rate_hz=STREAM_SAMPLE_RATE_HZ,
                 media_encoding="pcm",
+                # The operator's custom vocabulary, if one is chosen. None sends no
+                # vocabulary header at all.
+                vocabulary_name=vocabulary or None,
                 # Stabilization=high tells Transcribe to commit each word
                 # sooner, at the cost of slightly more downstream corrections.
                 # For interactive dictation this trades accuracy on the last
@@ -1412,9 +1439,19 @@ async def api_ws_stt(request: web.Request) -> web.WebSocketResponse:
                 enable_partial_results_stabilization=True,
                 partial_results_stability="high",
             )
-        except Exception:
-            logger.exception("Failed to start Transcribe stream")
-            await _send_error(ws, "failed to start transcription", _CODE_SESSION_FAILED)
+        except Exception as exc:
+            if _vocabulary_rejected(exc, vocabulary):
+                logger.warning(
+                    "Amazon Transcribe refused custom vocabulary %r: %s",
+                    vocabulary,
+                    getattr(exc, "message", ""),
+                )
+                await _send_error(
+                    ws, "custom vocabulary rejected by Amazon Transcribe", _CODE_VOCABULARY_REJECTED
+                )
+            else:
+                logger.exception("Failed to start Transcribe stream")
+                await _send_error(ws, "failed to start transcription", _CODE_SESSION_FAILED)
             await _close_and_end_audit(ws, caller, outcome="error")
             return ws
 

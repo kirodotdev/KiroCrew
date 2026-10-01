@@ -2345,6 +2345,7 @@ class SttConfig:
     timeout_secs: int = 300
     transcribe_region: str = "us-east-1"   # transcribe provider only
     transcribe_profile: str = ""           # transcribe provider only; empty = default credential chain
+    transcribe_vocabulary: str = ""        # transcribe provider only; custom vocabulary name, empty = none; an unusable stored name degrades to none
 
 @dataclass
 class ComputerUseConfig:

@@ -4,7 +4,7 @@ import { Download, Sparkles } from 'lucide-react'
 import { SettingsCard, SettingsToggle, SettingsSelect, SettingsInput, SettingsButtonGroup, SettingsSection, SettingsStepper } from '../../components/settings'
 import { Badge, Btn, FormSkeleton } from '../../components/ui'
 import InfoTip from '../../components/InfoTip'
-import { api, ApiError } from '../../api/client'
+import { api, ApiError, type AwsConsentStatus } from '../../api/client'
 import { RestartGatewayButton } from './AboutPanel'
 import { listMicrophones, getPreferredMicId, setPreferredMicId, acquireMicStream, reportIfMicDenied } from '../../hooks/mic'
 import { fmtBytes, fmtNumber, fmtUnit } from '../../i18n/format'
@@ -21,7 +21,7 @@ import {
   providerLabel,
   unavailableMessage,
 } from '../../lib/sttProviders'
-import { sendErrorToChat } from '../../utils/errorReport'
+import { parseErrorCode, parseErrorField, reportForError, sendErrorToChat } from '../../utils/errorReport'
 import { PttTestStrip } from '../../components/PttTestStrip'
 import AwsConsentGate from '../../components/AwsConsentGate'
 import {
@@ -57,6 +57,8 @@ interface SttConfig {
   dictation_panel?: boolean
   transcribe_region?: string
   transcribe_profile?: string
+  /** Amazon Transcribe custom vocabulary name; '' for none. */
+  transcribe_vocabulary?: string
   language_code?: string
   /** Whether a fast model tidies the finished transcript. Off unless turned on. */
   polish?: boolean
@@ -216,6 +218,43 @@ const SLOW_WITHOUT_ACCELERATION = ['large-v3-turbo']
 /** `Capabilities.backend` when the build could not be interrogated at all. */
 const BACKEND_UNKNOWN = 'unknown'
 
+/** One Amazon Transcribe custom vocabulary, as served by `GET /api/stt/vocabularies`. */
+interface SttVocabulary {
+  name: string
+  /** The language it was built for. Amazon Transcribe applies a vocabulary only to
+   *  dictation in that language, and says nothing when it does not. */
+  language_code: string
+  /** `READY`, `PENDING` or `FAILED`. Only a ready one can be streamed with. */
+  state: string
+}
+
+interface SttVocabularies {
+  /** The profile and region the list was read from. A list read before either
+   *  changed describes another account or region, so it decides nothing. */
+  profile: string
+  region: string
+  /** Whether AWS was actually asked. A gated answer (consent refused at call time,
+   *  or another provider stored) is `false` and carries no vocabularies. */
+  listed: boolean
+  /** Whether a page cap stopped the listing while AWS still had another page.
+   *  Sent only when `listed`. */
+  truncated?: boolean
+  vocabularies: SttVocabulary[]
+}
+
+/** The only vocabulary state Amazon Transcribe opens a stream with. */
+const VOCABULARY_READY = 'READY'
+
+/** The listing's refusal code with an IAM fix of its own, from `transcribe.py`. */
+const VOCABULARIES_ACCESS_DENIED = 'stt_vocabularies_access_denied'
+
+/**
+ * How long a vocabulary list stays fresh. Finite, unlike the dashboard's default,
+ * so coming back to this tab after creating a vocabulary in the AWS console reads
+ * the list again instead of showing the one from before.
+ */
+const VOCABULARIES_STALE_MS = 30_000
+
 /** A read-only info row that lines up with SettingsToggle / SettingsField rows. */
 function InfoRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -223,6 +262,132 @@ function InfoRow({ label, children }: { label: string; children: React.ReactNode
       <div className="text-[13px] font-semibold text-text">{label}</div>
       {children}
     </div>
+  )
+}
+
+/**
+ * The custom vocabulary picker for the `transcribe` provider.
+ *
+ * Offers only READY vocabularies, plus the stored name when the list does not
+ * contain it, so opening this panel can never change the setting by itself. While
+ * the list is still being read the picker is disabled and says so, with the stored
+ * value still visible, so it never reads as "you have none". The two warnings are
+ * the two ways a configured vocabulary makes every dictation fail: a name that is
+ * missing or not ready, and a vocabulary in another language than dictation, which
+ * Amazon Transcribe refuses as well. A missing name is judged only from a complete
+ * list; a listed name is judged even when the list is truncated. Language is judged
+ * whenever the stored vocabulary appears. Both use a list actually read from AWS
+ * for the profile and region now configured; a gated answer
+ * (`listed: false`) decides nothing.
+ */
+function TranscribeVocabularyPicker({
+  value,
+  dictationLanguage,
+  profile,
+  region,
+  listing,
+  listFetching,
+  listError,
+  disabled,
+  askAgent,
+  onChange,
+}: {
+  value: string
+  dictationLanguage: string
+  profile: string
+  region: string
+  /** The last list read, or undefined before one has arrived. */
+  listing?: SttVocabularies
+  /** Whether a list request is in flight right now. */
+  listFetching: boolean
+  listError: unknown
+  disabled: boolean
+  /** Whether an error hand-off may navigate away (no unsaved AWS drafts). */
+  askAgent: boolean
+  onChange: (name: string) => void
+}) {
+  // Trusted only when AWS was actually asked, for this very target. A gated
+  // answer, or one read for another profile or region, cannot say what exists.
+  const current = listing && listing.listed && listing.profile === profile && listing.region === region
+    ? listing
+    : undefined
+  // A request in flight with nothing trustworthy to show yet. A background refresh
+  // of a trusted list is not loading, and a failed read shows its notice instead.
+  const loading = listFetching && !current && !listError
+  const ready = (current?.vocabularies ?? []).filter(v => v.state === VOCABULARY_READY)
+  const options = ['', ...ready.map(v => v.name)]
+  const optionLabels = [
+    i18nT('pages.settings.sttSettings.transcribe_vocabulary_none'),
+    ...ready.map(v => i18nT('pages.settings.sttSettings.transcribe_vocabulary_option', {
+      name: v.name,
+      language: v.language_code,
+    })),
+  ]
+  if (value && !options.includes(value)) {
+    options.push(value)
+    optionLabels.push(value)
+  }
+  const selected = ready.find(v => v.name === value)
+  const unavailable = !!value && !!current && !selected
+    && (!current.truncated || current.vocabularies.some(v => v.name === value))
+  const languageMismatch = !!selected
+    && !!selected.language_code
+    && !!dictationLanguage
+    && selected.language_code !== dictationLanguage
+  // Read off the error's body rather than through `instanceof ApiError`: only a
+  // structured refusal carries a body, and a transport failure falls through to the
+  // generic sentence either way. The IAM action comes from the backend, which knows
+  // what it called; without it the specific sentence would have nothing to name.
+  const errorBody = listError ? (listError as { body?: string }).body : undefined
+  const errorCode = parseErrorCode(errorBody)
+  const permission = parseErrorField(errorBody, 'permission')
+  const accessDenied = errorCode === VOCABULARIES_ACCESS_DENIED && !!permission
+  // A cleared region stores "", which AWS resolves to the profile's default region.
+  const regionLabel = region || i18nT('components.awsConsentGate.provider_default')
+
+  return (
+    <>
+      <SettingsSelect
+        label={i18nT('pages.settings.sttSettings.transcribe_vocabulary')}
+        hint={i18nT('pages.settings.sttSettings.transcribe_vocabulary_hint')}
+        value={value}
+        options={options}
+        optionLabels={optionLabels}
+        onChange={onChange}
+        disabled={disabled || loading}
+        configKey="stt.transcribe_vocabulary"
+      />
+      {loading && (
+        <p className="text-[12px] text-muted -mt-1 mb-1" aria-live="polite" data-testid="stt-vocabularies-loading">
+          {i18nT('pages.settings.sttSettings.transcribe_vocabulary_loading')}
+        </p>
+      )}
+      {unavailable && (
+        <p role="alert" className="text-[12px] text-warn -mt-1 mb-1" data-testid="stt-vocabulary-unavailable">
+          {i18nT('pages.settings.sttSettings.transcribe_vocabulary_unavailable', { name: value, region: regionLabel })}
+        </p>
+      )}
+      {languageMismatch && selected && (
+        <p role="alert" className="text-[12px] text-warn -mt-1 mb-1" data-testid="stt-vocabulary-language-mismatch">
+          {i18nT('pages.settings.sttSettings.transcribe_vocabulary_language_mismatch', {
+            vocabularyLanguage: selected.language_code,
+            dictationLanguage,
+          })}
+        </p>
+      )}
+      {!!listError && (
+        <ErrorNotice
+          variant="inline"
+          className="-mt-1 mb-1"
+          testId="stt-vocabularies-error"
+          report={reportForError(listError)}
+          message={accessDenied
+            ? i18nT('pages.settings.sttSettings.transcribe_vocabulary_access_denied', { permission })
+            : i18nT('pages.settings.sttSettings.transcribe_vocabulary_list_failed')}
+          askAgent={askAgent}
+        />
+      )}
+    </>
   )
 }
 
@@ -498,6 +663,23 @@ export default function SttSettings({ cardIndex }: {
     }
   }, [sttQ.data])
 
+  // The consent gate's own cache entry (same key, same fetch), read here because
+  // the vocabulary list exists only once Amazon Transcribe is confirmed: until
+  // then the backend refuses to call AWS and answers an empty list.
+  const transcribeSelected = sttQ.data?.provider === PROVIDER_TRANSCRIBE
+  const consentQ = useQuery<AwsConsentStatus>({
+    queryKey: ['awsConsent', PROVIDER_TRANSCRIBE],
+    queryFn: () => api.awsConsent(PROVIDER_TRANSCRIBE),
+    enabled: transcribeSelected,
+  })
+  const transcribeConfirmed = transcribeSelected && !!consentQ.data?.granted
+  const vocabulariesQ = useQuery<SttVocabularies>({
+    queryKey: ['sttVocabularies'],
+    queryFn: () => api.sttVocabularies(),
+    enabled: transcribeConfirmed,
+    staleTime: VOCABULARIES_STALE_MS,
+  })
+
   const mut = useMutation({
     mutationFn: (patch: Partial<SttConfig>) => api.saveSttConfig(patch),
     onSuccess: (data, patch) => {
@@ -510,6 +692,8 @@ export default function SttSettings({ cardIndex }: {
       // keeps the old one and Confirm 409s as a stale confirmation.
       if ('transcribe_profile' in patch || 'transcribe_region' in patch) {
         qc.invalidateQueries({ queryKey: ['awsConsent', PROVIDER_TRANSCRIBE] })
+        // The vocabularies on offer belong to the old account or region too.
+        qc.invalidateQueries({ queryKey: ['sttVocabularies'] })
       }
     },
     onError: (e: Error) => setErr(e.message || i18nT('pages.settings.sttSettings.failed_to_save_stt_config')),
@@ -687,6 +871,14 @@ export default function SttSettings({ cardIndex }: {
     return set({ provider: v })
   }
 
+  // The AWS profile / region inputs commit `onBlur`, so a failed save leaves the
+  // typed-but-rejected text in them — kept on purpose, so it can be corrected
+  // rather than retyped. An agent hand-off navigates away, so it is offered only
+  // while neither draft differs from the stored value.
+  const awsDraftsSaved =
+    localProfile.trim() === (stt.transcribe_profile || '')
+    && localRegion.trim() === (stt.transcribe_region || '')
+
   return (
     <>
       {/* Only mutation failures reach here, so dismissing simply clears it. There
@@ -701,10 +893,7 @@ export default function SttSettings({ cardIndex }: {
         message={err}
         onDismiss={() => setErr('')}
         className="mb-4 animate-rise"
-        askAgent={
-          localProfile.trim() === (stt.transcribe_profile || '')
-          && localRegion.trim() === (stt.transcribe_region || '')
-        }
+        askAgent={awsDraftsSaved}
       />
       <SettingsCard index={cardIndex}>
         <SettingsToggle label={i18nT('pages.settings.sttSettings.enabled')} hint={i18nT('pages.settings.sttSettings.transcribe_voice_into_the_message_box_when_you_c')} checked={stt.enabled} onChange={v => set({ enabled: v })} disabled={saving} />
@@ -904,9 +1093,31 @@ export default function SttSettings({ cardIndex }: {
 
         {isTranscribe && (
           <>
-            <AwsConsentGate service={PROVIDER_TRANSCRIBE} />
+            <AwsConsentGate
+              service={PROVIDER_TRANSCRIBE}
+              // A grant or a withdrawal changes whether AWS may be asked at all, so a
+              // vocabulary list read under the previous answer is stale.
+              onConsentChange={() => qc.invalidateQueries({ queryKey: ['sttVocabularies'] })}
+            />
             <SettingsInput label={i18nT('pages.settings.sttSettings.aws_profile_transcribe')} description={i18nT('pages.settings.sttSettings.aws_credentials_profile_for_transcribe_blank_def')} value={localProfile} onChange={setLocalProfile} onBlur={() => set({ transcribe_profile: localProfile.trim() })} placeholder={i18nT('pages.settings.sttSettings.default')} disabled={saving} />
             <SettingsInput label={i18nT('pages.settings.sttSettings.aws_region_transcribe')} description={i18nT('pages.settings.sttSettings.aws_region_for_transcribe')} value={localRegion} onChange={setLocalRegion} onBlur={() => set({ transcribe_region: localRegion.trim() })} placeholder={i18nT('pages.settings.sttSettings.us_east_1')} disabled={saving} />
+            {/* Below the profile and region because it is read FROM them. Shown once
+                AWS may be asked for the list, or while a vocabulary is stored, so a
+                stored one can always be seen and cleared. */}
+            {(transcribeConfirmed || !!stt.transcribe_vocabulary) && (
+              <TranscribeVocabularyPicker
+                value={stt.transcribe_vocabulary || ''}
+                dictationLanguage={stt.language_code || ''}
+                profile={stt.transcribe_profile || ''}
+                region={stt.transcribe_region || ''}
+                listing={vocabulariesQ.data}
+                listFetching={vocabulariesQ.isFetching}
+                listError={vocabulariesQ.error}
+                disabled={saving}
+                askAgent={awsDraftsSaved}
+                onChange={v => set({ transcribe_vocabulary: v })}
+              />
+            )}
           </>
         )}
 

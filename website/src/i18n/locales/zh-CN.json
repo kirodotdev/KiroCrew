@@ -9392,7 +9392,8 @@
       "stream_error_decode_failed": "语音识别未能完成这段转写。请重新口述一次。",
       "stream_error_max_duration": "口述已达到时长上限。重新开始录制即可继续。",
       "stream_error_model_missing": "语音模型还没准备好。请在语音转文字设置中下载它，然后重试。",
-      "stream_error_session_failed": "口述会话失败。请重新录制。"
+      "stream_error_session_failed": "口述会话失败。请重新录制。",
+      "stream_error_vocabulary_rejected": "Amazon Transcribe 无法使用你的自定义词汇表。在语音转文字设置中选择其他词汇表或“无”，然后重试。"
     },
     "templateSource": {
       "built_in": "内置",
@@ -15663,6 +15664,15 @@
         "aws_credentials_profile_for_transcribe_blank_def": "用于 Transcribe 的 AWS 凭证配置（留空 = 默认链）",
         "aws_profile_transcribe": "AWS 配置（Transcribe）",
         "aws_region_for_transcribe": "Transcribe 使用的 AWS 区域",
+        "transcribe_vocabulary": "自定义词汇表",
+        "transcribe_vocabulary_hint": "你上传到 Amazon Transcribe 的名称和术语，让口述能正确拼写它们。列表来自上方的 AWS 配置和区域。",
+        "transcribe_vocabulary_none": "无",
+        "transcribe_vocabulary_loading": "正在加载词汇表…",
+        "transcribe_vocabulary_option": "{{name}} ({{language}})",
+        "transcribe_vocabulary_language_mismatch": "此词汇表适用于 {{vocabularyLanguage}}，但口述语言设置为 {{dictationLanguage}}。Amazon Transcribe 会拒绝其他语言的词汇表，因此在你选择其他词汇表或“无”之前，口述会一直失败。",
+        "transcribe_vocabulary_unavailable": "Amazon Transcribe 在 {{region}} 中没有名为 {{name}} 的可用词汇表。在你选择其他词汇表或“无”之前，口述会一直失败。",
+        "transcribe_vocabulary_access_denied": "这些 AWS 凭证无权列出自定义词汇表。授予 {{permission}} 权限即可在此处查看。",
+        "transcribe_vocabulary_list_failed": "无法从 AWS 加载你的自定义词汇表。",
         "aws_region_transcribe": "AWS 区域（Transcribe）",
         "bcp_47_language_code_for_speech_recognition": "语音识别的 BCP-47 语言代码",
         "default": "默认",

@@ -25,7 +25,7 @@ from aiohttp.client_exceptions import ClientConnectionResetError
 
 import kiro_crew
 import kiro_crew.config.resolution as _resolution
-from kiro_crew import beacon, platform_compat, stt
+from kiro_crew import aws_consent, beacon, platform_compat, stt
 from kiro_crew.acp_backends import selectable_backend_values
 from kiro_crew.computer_use.types import MAX_SCREENSHOT_MAX_PX as _CU_MAX_SCREENSHOT_MAX_PX
 from kiro_crew.computer_use.types import MAX_TREE_NODES_LIMIT as _CU_MAX_TREE_NODES_LIMIT
@@ -65,6 +65,7 @@ from kiro_crew.config.sections import (
     FOLDER_SORT_MODES,
     JUDGE_PROVIDERS,
     STT_LANGUAGE_AUTO,
+    transcribe_vocabulary_name,
 )
 from kiro_crew.context_management import RESULT_FILE_MAX_BYTES
 from kiro_crew.dashboard.chat_utils import drained_to_thread
@@ -104,6 +105,10 @@ from kiro_crew.stt.limits import (
     MIN_SILENCE_MS,
 )
 from kiro_crew.transcribe import (
+    VOCABULARIES_ACCESS_DENIED,
+    VOCABULARIES_LIST_FAILED,
+    VOCABULARIES_LIST_PERMISSION,
+    VocabularyListError,
     _find_ffmpeg,
     _whisper_language,
     audio_exceeds_secs,
@@ -112,6 +117,7 @@ from kiro_crew.transcribe import (
     ensure_ffmpeg_in_path,
     ffmpeg_source,
     is_available,
+    list_custom_vocabularies,
 )
 
 logger = logging.getLogger(__name__)
@@ -922,6 +928,13 @@ async def api_stt_config(request: web.Request) -> web.Response:
                 stt_section["transcribe_region"] = body["transcribe_region"]
             if "transcribe_profile" in body and isinstance(body["transcribe_profile"], str):
                 stt_section["transcribe_profile"] = body["transcribe_profile"]
+            # Through the loader's own rule, so a name accepted here is never one the
+            # next load drops. ``""`` clears it; an unusable name is skipped like any
+            # other malformed field, leaving the stored vocabulary in force.
+            if "transcribe_vocabulary" in body:
+                vocabulary = transcribe_vocabulary_name(body["transcribe_vocabulary"])
+                if vocabulary is not None:
+                    stt_section["transcribe_vocabulary"] = vocabulary
             if "language_code" in body and isinstance(body["language_code"], str):
                 stt_section["language_code"] = body["language_code"]
             if "streaming" in body and isinstance(body["streaming"], bool):
@@ -1029,6 +1042,7 @@ async def api_stt_config(request: web.Request) -> web.Response:
             "polish": cfg.stt.polish,
             "transcribe_region": cfg.stt.transcribe_region,
             "transcribe_profile": cfg.stt.transcribe_profile,
+            "transcribe_vocabulary": cfg.stt.transcribe_vocabulary,
             "language_code": cfg.stt.effective_language_code,
             "silence_ms": cfg.stt.silence_ms,
             "partial_interval_ms": cfg.stt.partial_interval_ms,
@@ -1206,6 +1220,84 @@ async def api_stt_status(request: web.Request) -> web.Response:
                 "arch": platform.machine(),
                 "download": dict(stt_decoder.store().status),
             },
+        }
+    )
+
+
+#: Whole-request ceiling on the vocabulary listing. The worker thread carries its
+#: own per-attempt bounds; this one keeps a settings panel from waiting on every
+#: page and retry of a slow or unreachable endpoint in sequence.
+_STT_VOCABULARIES_TIMEOUT_SECS = 30
+
+
+async def api_stt_vocabularies(request: web.Request) -> web.Response:
+    """GET /api/stt/vocabularies — the Amazon Transcribe custom vocabularies on offer.
+
+    Feeds the Voice panel's picker for ``stt.transcribe_vocabulary``. Read from the
+    live configuration, never from the request, so the list is always the one the
+    configured profile and region would really use. Both are echoed back: a client
+    that changed either since asking can tell the list describes the old target.
+
+    Two gates come before AWS, and both answer 200 with ``listed: false`` and an
+    empty list, so the panel can tell "AWS was not asked" from "AWS has none" and
+    judges the stored name only against a listed answer. Neither gate may be
+    dropped, because the frontend declining to ask is not a gate:
+
+    1. ``transcribe`` is not the selected provider: nothing has business calling it.
+    2. Amazon Transcribe is not confirmed for this profile and region. Listing bills
+       nothing, but no request reaches a paid service's account without the
+       operator's recorded consent, and the consent card already explains the gap.
+
+    A failure returns a ``code`` and never the service's message, which names the
+    caller's ARN on an access denial.
+    """
+    denied = _deny_app_token(request, "stt.vocabularies")
+    if denied is not None:
+        return denied
+    cfg = KiroCrewConfig.load()
+    profile, region = cfg.stt.transcribe_profile, cfg.stt.transcribe_region
+    target = {"profile": profile, "region": region}
+    if cfg.stt.provider != "transcribe":
+        return web.json_response({**target, "listed": False, "vocabularies": []})
+    if not await aws_consent.refuse_and_log(
+        aws_consent.SERVICE_TRANSCRIBE, profile=profile, region=region
+    ):
+        return web.json_response({**target, "listed": False, "vocabularies": []})
+    try:
+        listing = await asyncio.wait_for(
+            asyncio.to_thread(list_custom_vocabularies, profile, region),
+            timeout=_STT_VOCABULARIES_TIMEOUT_SECS,
+        )
+    except asyncio.TimeoutError:
+        logger.warning("Listing custom vocabularies in %s timed out", region)
+        return web.json_response(
+            {"error": "listing custom vocabularies timed out", "code": VOCABULARIES_LIST_FAILED},
+            status=502,
+        )
+    except VocabularyListError as exc:
+        if exc.code == VOCABULARIES_ACCESS_DENIED:
+            # The one fact the fix needs, as data rather than inside a sentence.
+            return web.json_response(
+                {
+                    "error": "not allowed to list custom vocabularies",
+                    "code": VOCABULARIES_ACCESS_DENIED,
+                    "permission": VOCABULARIES_LIST_PERMISSION,
+                },
+                status=502,
+            )
+        return web.json_response(
+            {"error": "could not list custom vocabularies", "code": VOCABULARIES_LIST_FAILED},
+            status=502,
+        )
+    return web.json_response(
+        {
+            **target,
+            "listed": True,
+            "truncated": listing.truncated,
+            "vocabularies": [
+                {"name": v.name, "language_code": v.language_code, "state": v.state}
+                for v in listing.vocabularies
+            ],
         }
     )
 

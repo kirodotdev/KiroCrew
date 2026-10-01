@@ -9392,7 +9392,8 @@
       "stream_error_decode_failed": "음성 인식이 이 전사를 완료하지 못했습니다. 다시 구술하세요.",
       "stream_error_max_duration": "구술이 길이 제한에 도달했습니다. 계속하려면 새로 녹음하세요.",
       "stream_error_model_missing": "음성 모델이 아직 준비되지 않았습니다. 음성 텍스트 변환 설정에서 내려받은 후 다시 시도하세요.",
-      "stream_error_session_failed": "구술 세션이 실패했습니다. 다시 녹음하세요."
+      "stream_error_session_failed": "구술 세션이 실패했습니다. 다시 녹음하세요.",
+      "stream_error_vocabulary_rejected": "Amazon Transcribe가 사용자 지정 어휘를 사용하지 못했습니다. 음성 텍스트 변환 설정에서 다른 어휘나 ‘없음’을 선택한 후 다시 시도하세요."
     },
     "templateSource": {
       "built_in": "기본 제공",
@@ -15663,6 +15664,15 @@
         "aws_credentials_profile_for_transcribe_blank_def": "Transcribe용 AWS 자격 증명 프로필(비워 두면 기본 체인)",
         "aws_profile_transcribe": "AWS 프로필(Transcribe)",
         "aws_region_for_transcribe": "Transcribe용 AWS 리전",
+        "transcribe_vocabulary": "사용자 지정 어휘",
+        "transcribe_vocabulary_hint": "구술에서 올바르게 표기되도록 Amazon Transcribe에 업로드한 이름과 용어입니다. 위의 AWS 프로필과 리전에서 가져온 목록입니다.",
+        "transcribe_vocabulary_none": "없음",
+        "transcribe_vocabulary_loading": "어휘를 불러오는 중…",
+        "transcribe_vocabulary_option": "{{name}} ({{language}})",
+        "transcribe_vocabulary_language_mismatch": "이 어휘는 {{vocabularyLanguage}}용이지만 구술 언어는 {{dictationLanguage}}(으)로 설정되어 있습니다. Amazon Transcribe는 다른 언어의 어휘를 거부하므로, 다른 어휘나 ‘없음’을 선택할 때까지 구술이 실패합니다.",
+        "transcribe_vocabulary_unavailable": "{{region}}의 Amazon Transcribe에는 이름이 {{name}}인 준비된 어휘가 없습니다. 다른 어휘나 ‘없음’을 선택할 때까지 구술이 실패합니다.",
+        "transcribe_vocabulary_access_denied": "이 AWS 자격 증명에는 사용자 지정 어휘 목록을 조회할 권한이 없습니다. 여기에서 보려면 {{permission}} 권한을 부여하세요.",
+        "transcribe_vocabulary_list_failed": "AWS에서 사용자 지정 어휘를 불러오지 못했습니다.",
         "aws_region_transcribe": "AWS 리전(Transcribe)",
         "bcp_47_language_code_for_speech_recognition": "음성 인식용 BCP-47 언어 코드",
         "default": "기본값",

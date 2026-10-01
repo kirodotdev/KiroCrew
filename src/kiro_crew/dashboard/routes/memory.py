@@ -30,6 +30,7 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/config/stt", handlers.api_stt_config)
     app.router.add_put("/api/config/stt", handlers.api_stt_config)
     app.router.add_get("/api/stt/status", handlers.api_stt_status)
+    app.router.add_get("/api/stt/vocabularies", handlers.api_stt_vocabularies)
     app.router.add_post("/api/stt/prepare", handlers.api_stt_prepare)
     app.router.add_post("/api/stt/prewarm", handlers.api_stt_prewarm)
     app.router.add_post("/api/stt/polish", handlers.api_stt_polish)

@@ -24,6 +24,7 @@ export function createVoiceEndpoints({ post, put, j }: ClientTransport) {
       dictation_panel?: boolean
       transcribe_region?: string
       transcribe_profile?: string
+      transcribe_vocabulary?: string
       language_code?: string
       polish?: boolean
     }) => put('/api/config/stt', body).then(j),
@@ -32,6 +33,12 @@ export function createVoiceEndpoints({ post, put, j }: ClientTransport) {
     // model is being fetched, and polling the config endpoint would re-read and
     // re-probe configuration several times a second.
     sttStatus: () => fetch('/api/stt/status').then(j),
+    // The Amazon Transcribe custom vocabularies the configured profile and region
+    // can use, for the vocabulary picker. `listed: false` with no names unless
+    // `transcribe` is the provider and its AWS use is confirmed at call time;
+    // echoes the profile and region it listed, so a reply about a target the user
+    // has since changed can be told apart from one about the current target.
+    sttVocabularies: () => fetch('/api/stt/vocabularies').then(j),
     // Fetch a model now, so the cost is paid at a moment the user chose rather
     // than in the middle of their first dictation. Returns as soon as the transfer
     // is under way; progress is read from `sttStatus`.

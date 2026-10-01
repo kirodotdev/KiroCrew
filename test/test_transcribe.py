@@ -594,6 +594,51 @@ class TestTranscribeAudio:
         assert await tr._transcribe_aws(str(audio), cfg) is None
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(("vocabulary", "expected"), [("team-terms", "team-terms"), ("", None)])
+    async def test_aws_batch_sends_the_configured_vocabulary(
+        self, tmp_path, monkeypatch, vocabulary, expected
+    ):
+        """A voice memo hears the same names live dictation does: both Transcribe
+        paths read the one setting, and None (not ``""``) means no header at all."""
+        from kiro_crew import transcribe as tr
+
+        audio = tmp_path / "memo.ogg"
+        audio.write_bytes(b"fake audio")
+        cfg = SttConfig(
+            enabled=True, provider="transcribe", timeout_secs=10, transcribe_vocabulary=vocabulary
+        )
+        TestTranscribeAwsTempOwnership._grant_consent(tmp_path, monkeypatch, cfg)
+        started: dict = {}
+        stream = SimpleNamespace(
+            input_stream=SimpleNamespace(send_audio_event=AsyncMock(), end_stream=AsyncMock()),
+            output_stream=object(),
+        )
+
+        class FakeClient:
+            def __init__(self, **kwargs):
+                pass
+
+            async def start_stream_transcription(self, **kwargs):
+                started.update(kwargs)
+                return stream
+
+        class SilentHandler:
+            def __init__(self, output_stream, transcript_parts):
+                pass
+
+            async def handle_events(self):
+                pass
+
+        monkeypatch.setattr(tr, "boto3", object())
+        monkeypatch.setattr(tr, "_read_audio_bytes", lambda path: b"fake audio")
+        monkeypatch.setattr(
+            tr, "_load_aws_transcribe_components", lambda: (FakeClient, SilentHandler)
+        )
+
+        assert await tr._transcribe_aws(str(audio), cfg) == ""
+        assert started["vocabulary_name"] == expected
+
+    @pytest.mark.asyncio
     async def test_local_wav_decode_runs_off_event_loop(self, tmp_path, monkeypatch):
         """Reading and converting the WAV is file I/O plus an array copy, so it
         belongs off the loop like every other blocking step on this path."""

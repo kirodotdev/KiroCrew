@@ -564,12 +564,16 @@ class TestStreamLifecycle:
     def _require_amazon_transcribe(self):
         pytest.importorskip("amazon_transcribe")
 
-    def _install_stubs(self, monkeypatch, *, fail_start=False, language_code="auto"):
+    def _install_stubs(
+        self, monkeypatch, *, fail_start=False, language_code="auto", vocabulary="", start_exc=None
+    ):
         from amazon_transcribe.handlers import TranscriptResultStreamHandler
 
         monkeypatch.setattr(
             "kiro_crew.dashboard.stt_stream.KiroCrewConfig.load",
-            classmethod(lambda cls: _cfg(language_code=language_code)),
+            classmethod(
+                lambda cls: _cfg(language_code=language_code, transcribe_vocabulary=vocabulary)
+            ),
         )
         monkeypatch.setattr("kiro_crew.dashboard.stt_stream.check_origin", lambda r, require: True)
 
@@ -582,7 +586,9 @@ class TestStreamLifecycle:
         stream.output_stream = MagicMock()
 
         client = MagicMock()
-        if fail_start:
+        if start_exc is not None:
+            client.start_stream_transcription = AsyncMock(side_effect=start_exc)
+        elif fail_start:
             client.start_stream_transcription = AsyncMock(side_effect=RuntimeError("start failed"))
         else:
             client.start_stream_transcription = AsyncMock(return_value=stream)
@@ -634,6 +640,95 @@ class TestStreamLifecycle:
             msg = await ws.receive_json()
             assert msg["type"] == "error"
             await ws.close()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("vocabulary", "expected"), [("team-terms", "team-terms"), ("", None)])
+    async def test_the_configured_vocabulary_rides_on_the_stream(
+        self, monkeypatch, vocabulary, expected
+    ):
+        """None, not ``""``, when unset: the SDK omits the header only for None, and an
+        empty name breaks the API's minimum length of 1."""
+        transcribe_client, _ = self._install_stubs(monkeypatch, vocabulary=vocabulary)
+        async with TestClient(TestServer(_make_app())) as client:
+            ws = await client.ws_connect("/api/ws/stt")
+            assert (await ws.receive_json()) == {"type": "ready"}
+            await ws.send_str('{"type":"stop"}')
+            await ws.close()
+        kwargs = transcribe_client.start_stream_transcription.call_args.kwargs
+        assert kwargs["vocabulary_name"] == expected
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("vocabulary", "service_message", "expected_code"),
+        [
+            # The refusal this code exists for: retrying cannot help, Settings can.
+            # This is the text Amazon Transcribe returned live (us-east-1) when
+            # start_stream_transcription named a vocabulary that does not exist.
+            (
+                "team-terms",
+                "The specified vocabulary doesn't exist. Check the name and try your "
+                "request again.",
+                "stt_transcribe_vocabulary_rejected",
+            ),
+            # Live text (us-east-1) for a vocabulary still PENDING.
+            (
+                "team-terms",
+                "The specified vocabulary isn't ready for use. Try your request again later.",
+                "stt_transcribe_vocabulary_rejected",
+            ),
+            # Live text (us-east-1) for a READY en-US vocabulary on a fr-FR stream.
+            (
+                "team-terms",
+                "Language used in the vocabulary doesn't match the specified language "
+                "code. Correct language code and try again.",
+                "stt_transcribe_vocabulary_rejected",
+            ),
+            # A bad request about something else is not blamed on the vocabulary.
+            (
+                "team-terms",
+                "The language code you specified isn't supported.",
+                "stt_session_failed",
+            ),
+            # With no vocabulary configured, it cannot be the vocabulary.
+            ("", "The requested vocabulary couldn't be found.", "stt_session_failed"),
+        ],
+    )
+    async def test_a_vocabulary_refusal_has_its_own_code(
+        self, monkeypatch, vocabulary, service_message, expected_code
+    ):
+        from amazon_transcribe.exceptions import BadRequestException
+
+        self._install_stubs(
+            monkeypatch, vocabulary=vocabulary, start_exc=BadRequestException(service_message)
+        )
+        outcomes: list[str] = []
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.stt_stream._emit_end_audit",
+            lambda caller, *, outcome: outcomes.append(outcome),
+        )
+        async with TestClient(TestServer(_make_app())) as client:
+            ws = await client.ws_connect("/api/ws/stt")
+            msg = await ws.receive_json()
+            assert msg["type"] == "error"
+            assert msg["code"] == expected_code
+            await ws.close()
+        for _ in range(int(_AUDIT_WAIT_TIMEOUT_SECS / 0.02)):
+            if outcomes:
+                break
+            await asyncio.sleep(0.02)
+        assert outcomes == ["error"]
+
+    def test_only_the_service_refusal_counts_as_a_vocabulary_rejection(self):
+        """A transport failure whose text happens to say "vocabulary" is not the
+        service refusing it, and with no vocabulary configured nothing is."""
+        from amazon_transcribe.exceptions import BadRequestException
+
+        from kiro_crew.dashboard import stt_stream
+
+        refusal = BadRequestException("The requested vocabulary couldn't be found.")
+        assert stt_stream._vocabulary_rejected(refusal, "team-terms") is True
+        assert stt_stream._vocabulary_rejected(RuntimeError("vocabulary"), "team-terms") is False
+        assert stt_stream._vocabulary_rejected(refusal, "") is False
 
     @pytest.mark.asyncio
     async def test_start_failure_emits_sel_end_audit(self, monkeypatch):

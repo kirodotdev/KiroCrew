@@ -1430,6 +1430,14 @@
       "description": "AWS region for Transcribe"
     },
     {
+      "id": "voice.custom-vocabulary",
+      "label": "Custom vocabulary",
+      "tab": "voice",
+      "route": "/settings/voice?highlight=key%3Astt.transcribe_vocabulary",
+      "description": "Names and terms you uploaded to Amazon Transcribe so dictation spells them right. Listed from the AWS profile and region above.",
+      "configKey": "stt.transcribe_vocabulary"
+    },
+    {
       "id": "voice.dictation-panel",
       "label": "Dictation panel",
       "tab": "voice",

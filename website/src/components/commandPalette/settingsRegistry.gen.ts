@@ -2388,6 +2388,16 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "voice.custom-vocabulary",
+    "label": "Custom vocabulary",
+    "labelKey": "pages.settings.sttSettings.transcribe_vocabulary",
+    "description": "Names and terms you uploaded to Amazon Transcribe so dictation spells them right. Listed from the AWS profile and region above.",
+    "tab": "voice",
+    "type": "select",
+    "occurrence": 1,
+    "configKey": "stt.transcribe_vocabulary"
+  },
+  {
     "id": "voice.dictation-panel",
     "label": "Dictation panel",
     "labelKey": "pages.settings.sttSettings.dictation_panel",

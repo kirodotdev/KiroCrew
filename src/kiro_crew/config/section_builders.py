@@ -903,4 +903,7 @@ def _build_stt_config(stt_data: dict) -> SttConfig:
         ),
         transcribe_region=stt_data.get("transcribe_region", "us-east-1"),
         transcribe_profile=stt_data.get("transcribe_profile", ""),
+        transcribe_vocabulary=_sections._validated_transcribe_vocabulary(
+            stt_data.get("transcribe_vocabulary")
+        ),
     )

@@ -246,6 +246,50 @@ request is a grant an automated caller can take.
 Moving that check later, adding a CLI verb that records a grant, or reporting the
 refusal over some other channel each break one of those three properties.
 
+### Custom vocabulary (`transcribe` only)
+
+`stt.transcribe_vocabulary` names a custom vocabulary the operator already created
+in Amazon Transcribe (empty: none). Both Transcribe paths pass it as
+`VocabularyName`: the live socket and `transcribe._transcribe_aws`, so a voice memo
+hears the same names dictation does. Kiro Crew never creates, uploads or edits a
+vocabulary.
+
+- **One name rule for both writers.** `config.sections.transcribe_vocabulary_name`
+  is AWS's own constraint (1-200 of `[0-9A-Za-z._-]`, case-sensitive, surrounding
+  whitespace dropped). `PUT /api/config/stt` stores only a name it accepts, and the
+  loader degrades anything else to none with a one-time warning: the name rides on
+  every request as a header, so an unusable one could only fail them all.
+- **A refusal has its own code, narrowly.** A vocabulary that is missing, not yet
+  `READY`, or in a language other than the request's `LanguageCode` makes
+  `start_stream_transcription` itself raise `BadRequestException`, before any audio
+  is sent, with a message naming the vocabulary. When a vocabulary is configured
+  and the service's message names it, the frame carries
+  `stt_transcribe_vocabulary_rejected`, whose fix is in Settings rather than a
+  retry; every other start failure keeps `stt_session_failed`. The batch path keeps
+  its `None` failure contract.
+- **The panel warns before the first dictation.** The Voice panel compares the
+  chosen vocabulary against the list read from AWS and its language against
+  `effective_language_code`, and says that dictation will fail when the vocabulary
+  is not ready or is for another language. `VocabularyName` is also not valid with
+  language identification, which would need `VocabularyNames` instead.
+- **`GET /api/stt/vocabularies` lists what the picker offers.** Read from live
+  config, refused to an app token, and gated twice before any AWS call: `transcribe`
+  must be the provider and `aws_consent.refuse_and_log` must grant, otherwise it
+  answers `listed: false` with an empty list, and the panel judges only a listed
+  answer. It pages `ListVocabularies` through boto3 with the stream's credential
+  resolution (named profile, else the default chain) under bounded timeouts and a
+  page cap, and answers `listed: true` echoing the profile and region it read so a
+  list about a target the user has since changed decides nothing; `truncated` says
+  whether that cap left another page unread, so the picker does not infer absence
+  from an incomplete list. A failure answers 502 with `stt_vocabularies_access_denied`
+  (plus the IAM `permission` to grant) or
+  `stt_vocabularies_list_failed`, never the service's text, which names the caller's
+  ARN on a denial.
+- **The picker never changes the setting by itself.** It offers `READY`
+  vocabularies plus the stored name when the list lacks it, is disabled and says it
+  is loading while the list is still being read with the stored value still shown,
+  and warns when the stored name is not ready in the configured region.
+
 ## The local provider's pipeline
 
 whisper.cpp is not a streaming recogniser: it decodes a buffer. Live text is

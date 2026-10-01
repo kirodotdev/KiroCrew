@@ -3144,7 +3144,8 @@
         "dictation_panel": true,
         "timeout_secs": 300,
         "transcribe_region": "us-east-1",
-        "transcribe_profile": ""
+        "transcribe_profile": "",
+        "transcribe_vocabulary": ""
       }
     },
     {
@@ -3349,6 +3350,20 @@
       "tags": [],
       "label": "Transcribe Profile",
       "help": "AWS profile for Transcribe API.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
+      "path": "stt.transcribe_vocabulary",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Transcribe Vocabulary",
+      "help": "Name of a custom vocabulary you created in Amazon Transcribe, in the same region, so names and terms it would mishear are recognised (`transcribe` provider only). Its language must match the dictation language, or Amazon Transcribe refuses it and dictation fails. Empty uses none.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""

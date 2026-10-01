@@ -9773,7 +9773,8 @@
       "stream_error_decode_failed": "Распознавание речи не смогло завершить эту расшифровку. Продиктуй ещё раз.",
       "stream_error_max_duration": "Диктовка достигла предела длительности. Начни новую запись, чтобы продолжить.",
       "stream_error_model_missing": "Речевая модель ещё не готова. Загрузи её в настройках распознавания речи и попробуй снова.",
-      "stream_error_session_failed": "Сеанс диктовки завершился ошибкой. Попробуй записать снова."
+      "stream_error_session_failed": "Сеанс диктовки завершился ошибкой. Попробуй записать снова.",
+      "stream_error_vocabulary_rejected": "Amazon Transcribe не смог использовать твой пользовательский словарь. Выбери другой или «Нет» в настройках распознавания речи и попробуй снова."
     },
     "templateSource": {
       "built_in": "Встроенный",
@@ -16350,6 +16351,15 @@
         "aws_credentials_profile_for_transcribe_blank_def": "Профиль учётных данных AWS для Transcribe (пусто = цепочка по умолчанию)",
         "aws_profile_transcribe": "Профиль AWS (Transcribe)",
         "aws_region_for_transcribe": "Регион AWS для Transcribe",
+        "transcribe_vocabulary": "Пользовательский словарь",
+        "transcribe_vocabulary_hint": "Имена и термины, загруженные тобой в Amazon Transcribe, чтобы диктовка писала их правильно. Список берётся из профиля и региона AWS, указанных выше.",
+        "transcribe_vocabulary_none": "Нет",
+        "transcribe_vocabulary_loading": "Загрузка словарей…",
+        "transcribe_vocabulary_option": "{{name}} ({{language}})",
+        "transcribe_vocabulary_language_mismatch": "Этот словарь предназначен для {{vocabularyLanguage}}, а для диктовки выбран {{dictationLanguage}}. Amazon Transcribe отклоняет словарь на другом языке, поэтому диктовка не будет работать, пока ты не выберешь другой словарь или «Нет».",
+        "transcribe_vocabulary_unavailable": "В {{region}} у Amazon Transcribe нет готового словаря с именем {{name}}. Диктовка не будет работать, пока ты не выберешь другой словарь или «Нет».",
+        "transcribe_vocabulary_access_denied": "Этим учётным данным AWS не разрешено получать список пользовательских словарей. Выдай разрешение {{permission}}, чтобы видеть их здесь.",
+        "transcribe_vocabulary_list_failed": "Не удалось загрузить твои пользовательские словари из AWS.",
         "aws_region_transcribe": "Регион AWS (Transcribe)",
         "bcp_47_language_code_for_speech_recognition": "Код языка BCP-47 для распознавания речи",
         "default": "по умолчанию",

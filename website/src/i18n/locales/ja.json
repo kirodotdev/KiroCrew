@@ -9392,7 +9392,8 @@
       "stream_error_decode_failed": "音声認識はこの書き起こしを完了できませんでした。もう一度口述してください。",
       "stream_error_max_duration": "口述が長さの上限に達しました。続けるには新しい録音を開始してください。",
       "stream_error_model_missing": "音声モデルの準備がまだできていません。音声入力の設定でダウンロードしてから、もう一度お試しください。",
-      "stream_error_session_failed": "口述セッションが失敗しました。もう一度録音してみてください。"
+      "stream_error_session_failed": "口述セッションが失敗しました。もう一度録音してみてください。",
+      "stream_error_vocabulary_rejected": "Amazon Transcribe でカスタム語彙を使用できませんでした。音声入力の設定で別の語彙か「なし」を選んでから、もう一度お試しください。"
     },
     "templateSource": {
       "built_in": "組み込み",
@@ -15663,6 +15664,15 @@
         "aws_credentials_profile_for_transcribe_blank_def": "Transcribe の AWS 認証情報プロファイル（空白 = デフォルトチェーン）",
         "aws_profile_transcribe": "AWS プロファイル（Transcribe）",
         "aws_region_for_transcribe": "Transcribe の AWS リージョン",
+        "transcribe_vocabulary": "カスタム語彙",
+        "transcribe_vocabulary_hint": "Amazon Transcribe にアップロードした名前や用語で、口述で正しく表記されるようにします。上の AWS プロファイルとリージョンから一覧表示します。",
+        "transcribe_vocabulary_none": "なし",
+        "transcribe_vocabulary_loading": "語彙を読み込み中…",
+        "transcribe_vocabulary_option": "{{name}} ({{language}})",
+        "transcribe_vocabulary_language_mismatch": "この語彙は {{vocabularyLanguage}} 用ですが、口述は {{dictationLanguage}} に設定されています。Amazon Transcribe は別の言語の語彙を拒否するため、別の語彙か「なし」を選ぶまで、口述は失敗します。",
+        "transcribe_vocabulary_unavailable": "Amazon Transcribe の {{region}} には、{{name}} という名前の使用可能な語彙がありません。別の語彙か「なし」を選ぶまで、口述は失敗します。",
+        "transcribe_vocabulary_access_denied": "この AWS 認証情報には、カスタム語彙を一覧表示する権限がありません。ここに表示するには {{permission}} を許可してください。",
+        "transcribe_vocabulary_list_failed": "AWS からカスタム語彙を読み込めませんでした。",
         "aws_region_transcribe": "AWS リージョン（Transcribe）",
         "bcp_47_language_code_for_speech_recognition": "音声認識の BCP-47 言語コード",
         "default": "デフォルト",

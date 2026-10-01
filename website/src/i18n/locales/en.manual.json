@@ -7213,6 +7213,15 @@
         "config_load_failed": "Could not load the skills settings. The switches show defaults, not what is stored."
       },
       "sttSettings": {
+        "transcribe_vocabulary": "Custom vocabulary",
+        "transcribe_vocabulary_hint": "Names and terms you uploaded to Amazon Transcribe so dictation spells them right. Listed from the AWS profile and region above.",
+        "transcribe_vocabulary_none": "None",
+        "transcribe_vocabulary_loading": "Loading vocabularies…",
+        "transcribe_vocabulary_option": "{{name}} ({{language}})",
+        "transcribe_vocabulary_language_mismatch": "This vocabulary is for {{vocabularyLanguage}}, but dictation is set to {{dictationLanguage}}. Amazon Transcribe refuses a vocabulary in another language, so dictation will fail until you choose another one or None.",
+        "transcribe_vocabulary_unavailable": "Amazon Transcribe has no ready vocabulary named {{name}} in {{region}}. Dictation will fail until you choose another one or None.",
+        "transcribe_vocabulary_access_denied": "These AWS credentials are not allowed to list custom vocabularies. Grant {{permission}} to see them here.",
+        "transcribe_vocabulary_list_failed": "Your custom vocabularies could not be loaded from AWS.",
         "language_auto": "Detect language automatically",
         "failed_to_save_stt_config": "Failed to save STT config",
         "microphone_2": "Microphone {{n}}",
@@ -8156,7 +8165,8 @@
       "stream_error_decode_failed": "Speech recognition could not finish this transcript. Dictate it again.",
       "stream_error_max_duration": "Dictation reached its length limit. Start a new recording to continue.",
       "stream_error_model_missing": "The speech model is not ready yet. Download it in the speech-to-text settings, then try again.",
-      "stream_error_session_failed": "The dictation session failed. Try recording again."
+      "stream_error_session_failed": "The dictation session failed. Try recording again.",
+      "stream_error_vocabulary_rejected": "Amazon Transcribe could not use your custom vocabulary. Choose another one, or None, in the speech-to-text settings, then try again."
     },
     "templateSource": {
       "built_in": "Built-in",

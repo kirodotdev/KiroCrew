@@ -9646,7 +9646,8 @@
       "stream_error_decode_failed": "La reconnaissance vocale n'a pas pu terminer cette transcription. Dicte-la à nouveau.",
       "stream_error_max_duration": "La dictée a atteint sa durée maximale. Lance un nouvel enregistrement pour continuer.",
       "stream_error_model_missing": "Le modèle vocal n'est pas encore prêt. Télécharge-le dans les paramètres de reconnaissance vocale, puis réessaie.",
-      "stream_error_session_failed": "La session de dictée a échoué. Réessaie d'enregistrer."
+      "stream_error_session_failed": "La session de dictée a échoué. Réessaie d'enregistrer.",
+      "stream_error_vocabulary_rejected": "Amazon Transcribe n’a pas pu utiliser ton vocabulaire personnalisé. Choisis-en un autre, ou Aucun, dans les paramètres de reconnaissance vocale, puis réessaie."
     },
     "templateSource": {
       "built_in": "Intégré",
@@ -16121,6 +16122,15 @@
         "aws_credentials_profile_for_transcribe_blank_def": "Profil d'identifiants AWS pour Transcribe (vide = chaîne par défaut)",
         "aws_profile_transcribe": "Profil AWS (Transcribe)",
         "aws_region_for_transcribe": "Région AWS pour Transcribe",
+        "transcribe_vocabulary": "Vocabulaire personnalisé",
+        "transcribe_vocabulary_hint": "Noms et termes que tu as importés dans Amazon Transcribe pour que la dictée les orthographie correctement. Liste issue du profil et de la région AWS ci-dessus.",
+        "transcribe_vocabulary_none": "Aucun",
+        "transcribe_vocabulary_loading": "Chargement des vocabulaires…",
+        "transcribe_vocabulary_option": "{{name}} ({{language}})",
+        "transcribe_vocabulary_language_mismatch": "Ce vocabulaire est destiné à {{vocabularyLanguage}}, mais la dictée est réglée sur {{dictationLanguage}}. Amazon Transcribe refuse un vocabulaire dans une autre langue, donc la dictée échouera tant que tu n’en auras pas choisi un autre ou Aucun.",
+        "transcribe_vocabulary_unavailable": "Amazon Transcribe n’a aucun vocabulaire prêt nommé {{name}} dans {{region}}. La dictée échouera tant que tu n’en auras pas choisi un autre ou Aucun.",
+        "transcribe_vocabulary_access_denied": "Ces identifiants AWS ne sont pas autorisés à lister les vocabulaires personnalisés. Accorde {{permission}} pour les voir ici.",
+        "transcribe_vocabulary_list_failed": "Impossible de charger tes vocabulaires personnalisés depuis AWS.",
         "aws_region_transcribe": "Région AWS (Transcribe)",
         "bcp_47_language_code_for_speech_recognition": "Code de langue BCP-47 pour la reconnaissance vocale",
         "default": "default",

@@ -12,13 +12,21 @@
  * one would otherwise surface only as a silent dictation failure.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, cleanup, fireEvent, waitFor, act } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { store } from '../store'
 import { initI18n } from '../i18n'
 import SttSettings from '../pages/settings/SttSettings'
 import { api } from '../api/client'
+import {
+  __resetErrorJournalForTests,
+  __resetNavSeamForTests,
+  attachReport,
+  consumeChatHandoff,
+  installSoftNavigate,
+  recordError,
+} from '../utils/errorReport'
 
 vi.mock('../api/client', () => ({
   api: {
@@ -27,7 +35,9 @@ vi.mock('../api/client', () => ({
     restartGateway: vi.fn(),
     sttStatus: vi.fn(),
     sttPrepare: vi.fn(),
+    sttVocabularies: vi.fn(),
     awsConsent: vi.fn(),
+    grantAwsConsent: vi.fn(),
   },
 }))
 
@@ -36,7 +46,9 @@ const mockApi = api as unknown as {
   saveSttConfig: ReturnType<typeof vi.fn>
   restartGateway: ReturnType<typeof vi.fn>
   sttStatus: ReturnType<typeof vi.fn>
+  sttVocabularies: ReturnType<typeof vi.fn>
   awsConsent: ReturnType<typeof vi.fn>
+  grantAwsConsent: ReturnType<typeof vi.fn>
 }
 
 function payload(over: Record<string, unknown> = {}) {
@@ -54,10 +66,33 @@ function payload(over: Record<string, unknown> = {}) {
   }
 }
 
-function mount(over: Record<string, unknown> = {}) {
+function mount(
+  over: Record<string, unknown> = {},
+  opts: {
+    granted?: boolean
+    vocabularies?: unknown
+    truncated?: boolean
+    seed?: unknown
+    pending?: Promise<unknown>
+  } = {},
+) {
   const data = payload(over)
   mockApi.sttConfig.mockResolvedValue(data)
   mockApi.saveSttConfig.mockImplementation(async (p: Record<string, unknown>) => ({ ...data, ...p }))
+  // The list the backend reads from the profile and region the fixture stores, so a
+  // fixture cannot accidentally describe another target. A seeded cache never
+  // reaches the endpoint: what is on screen is exactly the seed. A `pending`
+  // promise is handed to the test, which settles it when the scene calls for it.
+  if (opts.pending) mockApi.sttVocabularies.mockReturnValue(opts.pending)
+  else if (opts.seed) mockApi.sttVocabularies.mockReturnValue(new Promise(() => {}))
+  else if (opts.vocabularies instanceof Error) mockApi.sttVocabularies.mockRejectedValue(opts.vocabularies)
+  else mockApi.sttVocabularies.mockResolvedValue({
+    profile: data.transcribe_profile ?? '',
+    region: data.transcribe_region ?? '',
+    listed: true,
+    truncated: opts.truncated ?? false,
+    vocabularies: opts.vocabularies ?? [],
+  })
   // The status endpoint answers the SAME verdict as the config fixture. The two
   // are served from one backend probe, so a fixture where they disagree would
   // exercise a state the gateway cannot produce. That includes the decoder: the
@@ -89,6 +124,7 @@ function mount(over: Record<string, unknown> = {}) {
     },
   })
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  if (opts.seed) qc.setQueryData(['sttVocabularies'], opts.seed)
   mockApi.awsConsent.mockResolvedValue({
     service: 'transcribe',
     serviceLabel: 'Amazon Transcribe',
@@ -99,7 +135,7 @@ function mount(over: Record<string, unknown> = {}) {
     arn: 'arn:aws:iam::111111111111:user/old',
     identityResolved: true,
     identityDetail: '',
-    granted: true,
+    granted: opts.granted ?? true,
     reason: '',
     revokedOnAccountChange: false,
   })
@@ -311,5 +347,273 @@ describe('SttSettings Transcribe consent-gate refresh', () => {
     await waitFor(() => expect(mockApi.saveSttConfig).toHaveBeenCalledWith({ enabled: false }))
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['sttStatus'] })
     expect(invalidate).not.toHaveBeenCalledWith({ queryKey: ['awsConsent', 'transcribe'] })
+  })
+})
+
+/**
+ * The custom vocabulary picker. Two of its warnings exist because Amazon
+ * Transcribe refuses a stream whose vocabulary is missing, not ready, or in
+ * another language than dictation, so each of those fails every dictation; the
+ * panel is where a user learns that before the first attempt.
+ */
+describe('SttSettings Transcribe custom vocabulary', () => {
+  beforeEach(async () => {
+    await initI18n()
+    vi.clearAllMocks()
+    __resetErrorJournalForTests()
+    __resetNavSeamForTests()
+    sessionStorage.clear()
+    installSoftNavigate(() => {})
+  })
+  afterEach(() => {
+    cleanup()
+    __resetNavSeamForTests()
+  })
+
+  const vocabularySelect = () => screen.getByRole('combobox', { name: /custom vocabulary/i })
+  const READY = { name: 'team-terms', language_code: 'en-US', state: 'READY' }
+
+  it('offers only ready vocabularies, labelled with their language, and saves the pick', async () => {
+    mount(
+      { provider: 'transcribe', language_code: 'en-US', transcribe_region: 'us-east-1' },
+      { vocabularies: [READY, { name: 'still-building', language_code: 'en-US', state: 'PENDING' }] },
+    )
+    // Disabled while the list is read, so wait for the enabled control.
+    await waitFor(() => expect(vocabularySelect()).toBeEnabled())
+    fireEvent.click(vocabularySelect())
+    expect(await screen.findByRole('option', { name: 'team-terms (en-US)' })).toBeTruthy()
+    expect(screen.getByRole('option', { name: 'None' })).toBeTruthy()
+    // A pending vocabulary cannot be streamed with yet, so offering it would offer a
+    // dictation failure.
+    expect(screen.queryByRole('option', { name: /still-building/ })).toBeNull()
+
+    fireEvent.click(screen.getByRole('option', { name: 'team-terms (en-US)' }))
+    await waitFor(() =>
+      expect(mockApi.saveSttConfig).toHaveBeenCalledWith({ transcribe_vocabulary: 'team-terms' }),
+    )
+    expect(screen.queryByTestId('stt-vocabulary-unavailable')).toBeNull()
+    expect(screen.queryByTestId('stt-vocabulary-language-mismatch')).toBeNull()
+  })
+
+  it('stays hidden, and never asks AWS, until Amazon Transcribe is confirmed', async () => {
+    mount({ provider: 'transcribe' }, { granted: false })
+    await loaded()
+    await screen.findByTestId('aws-consent-transcribe')
+    expect(screen.queryByRole('combobox', { name: /custom vocabulary/i })).toBeNull()
+    expect(mockApi.sttVocabularies).not.toHaveBeenCalled()
+  })
+
+  it('keeps a stored vocabulary visible and clearable while confirmation is missing', async () => {
+    mount({ provider: 'transcribe', transcribe_vocabulary: 'team-terms' }, { granted: false })
+    await waitFor(() => expect(vocabularySelect()).toHaveTextContent('team-terms'))
+    expect(mockApi.sttVocabularies).not.toHaveBeenCalled()
+
+    fireEvent.click(vocabularySelect())
+    fireEvent.click(await screen.findByRole('option', { name: 'None' }))
+    await waitFor(() =>
+      expect(mockApi.saveSttConfig).toHaveBeenCalledWith({ transcribe_vocabulary: '' }),
+    )
+  })
+
+  it('disables the picker and says the list is loading until the request settles', async () => {
+    let settle!: (list: unknown) => void
+    const pending = new Promise(resolve => { settle = resolve })
+    mount(
+      { provider: 'transcribe', transcribe_vocabulary: 'team-terms', language_code: 'en-US', transcribe_region: 'us-east-1' },
+      { pending },
+    )
+    await waitFor(() => expect(vocabularySelect()).toBeDisabled())
+    expect(await screen.findByTestId('stt-vocabularies-loading')).toHaveTextContent('Loading vocabularies…')
+    // The stored value stays visible while the list is still being read.
+    expect(vocabularySelect()).toHaveTextContent('team-terms')
+    expect(screen.queryByTestId('stt-vocabulary-unavailable')).toBeNull()
+
+    await act(async () => {
+      settle({ profile: '', region: 'us-east-1', listed: true, vocabularies: [READY] })
+    })
+    await waitFor(() => expect(vocabularySelect()).toBeEnabled())
+    expect(screen.queryByTestId('stt-vocabularies-loading')).toBeNull()
+    fireEvent.click(vocabularySelect())
+    expect(await screen.findByRole('option', { name: 'team-terms (en-US)' })).toBeTruthy()
+    expect(screen.getByRole('option', { name: 'None' })).toBeTruthy()
+  })
+
+  it('shows no loading line while confirmation is missing, since nothing is being read', async () => {
+    mount({ provider: 'transcribe', transcribe_vocabulary: 'team-terms' }, { granted: false })
+    await waitFor(() => expect(vocabularySelect()).toHaveTextContent('team-terms'))
+    expect(vocabularySelect()).toBeEnabled()
+    expect(screen.queryByTestId('stt-vocabularies-loading')).toBeNull()
+    fireEvent.click(vocabularySelect())
+    expect(await screen.findByRole('option', { name: 'None' })).toBeTruthy()
+    expect(mockApi.sttVocabularies).not.toHaveBeenCalled()
+  })
+
+  it('judges nothing from an answer the gateway gave without asking AWS', async () => {
+    // Consent can be confirmed locally yet refused at call time (expired SSO, no
+    // network): the gateway then answers 200 with `listed: false` and no names.
+    // That says nothing about whether the stored vocabulary exists.
+    mount(
+      { provider: 'transcribe', transcribe_vocabulary: 'team-terms', language_code: 'fr-FR', transcribe_region: 'us-east-1' },
+      { seed: { profile: '', region: 'us-east-1', listed: false, vocabularies: [] } },
+    )
+    await waitFor(() => expect(vocabularySelect()).toHaveTextContent('team-terms'))
+    expect(vocabularySelect()).toBeEnabled()
+    expect(screen.queryByTestId('stt-vocabulary-unavailable')).toBeNull()
+    expect(screen.queryByTestId('stt-vocabulary-language-mismatch')).toBeNull()
+    expect(screen.queryByTestId('stt-vocabularies-error')).toBeNull()
+    expect(screen.queryByTestId('stt-vocabularies-loading')).toBeNull()
+    fireEvent.click(vocabularySelect())
+    await screen.findByRole('option', { name: 'None' })
+    expect(screen.getAllByRole('option').map(o => o.textContent)).toEqual(['None', 'team-terms'])
+  })
+
+  it('does not infer a stored vocabulary is absent from a truncated listing', async () => {
+    mount(
+      { provider: 'transcribe', transcribe_vocabulary: 'stored-after-cap', transcribe_region: 'eu-west-1' },
+      { vocabularies: [READY], truncated: true },
+    )
+    await waitFor(() => expect(vocabularySelect()).toHaveTextContent('stored-after-cap'))
+    expect(screen.queryByTestId('stt-vocabulary-unavailable')).toBeNull()
+  })
+
+  it('warns when a truncated listing includes the stored vocabulary as pending', async () => {
+    mount(
+      { provider: 'transcribe', transcribe_vocabulary: 'still-building', transcribe_region: 'eu-west-1' },
+      {
+        vocabularies: [READY, { name: 'still-building', language_code: 'en-US', state: 'PENDING' }],
+        truncated: true,
+      },
+    )
+    expect(await screen.findByTestId('stt-vocabulary-unavailable')).toHaveTextContent('still-building')
+  })
+
+  it('still warns when the same missing-name listing is complete', async () => {
+    mount(
+      { provider: 'transcribe', transcribe_vocabulary: 'stored-after-cap', transcribe_region: 'eu-west-1' },
+      { vocabularies: [READY], truncated: false },
+    )
+    expect(await screen.findByTestId('stt-vocabulary-unavailable')).toHaveTextContent('stored-after-cap')
+  })
+
+  it('warns, without replacing it, when the stored vocabulary is not ready in the region', async () => {
+    mount(
+      { provider: 'transcribe', transcribe_vocabulary: 'deleted-terms', transcribe_region: 'eu-west-1' },
+      { vocabularies: [READY, { name: 'deleted-terms', language_code: 'en-US', state: 'FAILED' }] },
+    )
+    const warning = await screen.findByTestId('stt-vocabulary-unavailable')
+    expect(warning).toHaveTextContent('deleted-terms')
+    expect(warning).toHaveTextContent('eu-west-1')
+    // It appears after the list arrives, so a screen reader must be told without a re-read.
+    expect(screen.getByRole('alert')).toBe(warning)
+    // Opening the panel must never change the setting by itself.
+    expect(vocabularySelect()).toHaveTextContent('deleted-terms')
+    expect(mockApi.saveSttConfig).not.toHaveBeenCalled()
+  })
+
+  it('names the provider default region in the warning when the region field is cleared', async () => {
+    mount(
+      { provider: 'transcribe', transcribe_vocabulary: 'team-terms', transcribe_region: '' },
+      { vocabularies: [] },
+    )
+    const warning = await screen.findByTestId('stt-vocabulary-unavailable')
+    expect(warning).toHaveTextContent('team-terms')
+    expect(warning).toHaveTextContent('in (provider default).')
+    expect(warning).not.toHaveTextContent('in .')
+  })
+
+  it('warns when the vocabulary is for another language than dictation', async () => {
+    mount(
+      { provider: 'transcribe', transcribe_vocabulary: 'team-terms', language_code: 'fr-FR' },
+      { vocabularies: [READY] },
+    )
+    const warning = await screen.findByTestId('stt-vocabulary-language-mismatch')
+    expect(warning).toHaveTextContent('en-US')
+    expect(warning).toHaveTextContent('fr-FR')
+    expect(screen.getByRole('alert')).toBe(warning)
+    expect(screen.queryByTestId('stt-vocabulary-unavailable')).toBeNull()
+  })
+
+  it('judges a stored name only against a list read from the region now configured', async () => {
+    const view = mount(
+      { provider: 'transcribe', transcribe_vocabulary: 'team-terms', transcribe_region: 'eu-west-1' },
+      { seed: { profile: '', region: 'us-east-1', listed: true, vocabularies: [] } },
+    )
+    await waitFor(() => expect(vocabularySelect()).toBeTruthy())
+    // The seeded list describes another region, so it proves nothing about this one.
+    expect(screen.queryByTestId('stt-vocabulary-unavailable')).toBeNull()
+
+    act(() => {
+      view.qc.setQueryData(['sttVocabularies'], { profile: '', region: 'eu-west-1', listed: true, vocabularies: [] })
+    })
+    expect(await screen.findByTestId('stt-vocabulary-unavailable')).toHaveTextContent('eu-west-1')
+  })
+
+  it('names the IAM permission when AWS refuses to list', async () => {
+    const refusal = Object.assign(new Error('502'), {
+      body: JSON.stringify({
+        error: 'could not list',
+        code: 'stt_vocabularies_access_denied',
+        permission: 'transcribe:ListVocabularies',
+      }),
+    })
+    mount({ provider: 'transcribe' }, { vocabularies: refusal })
+    expect(await screen.findByTestId('stt-vocabularies-error')).toHaveTextContent(
+      'transcribe:ListVocabularies',
+    )
+  })
+
+  it('says the list could not be loaded for any other failure', async () => {
+    mount({ provider: 'transcribe' }, { vocabularies: new Error('network down') })
+    const notice = await screen.findByTestId('stt-vocabularies-error')
+    expect(notice).toHaveTextContent(/could not be loaded/i)
+    expect(notice).not.toHaveTextContent('transcribe:ListVocabularies')
+  })
+
+  it('hands a structured listing failure to the agent with its endpoint, status, and code', async () => {
+    const body = JSON.stringify({
+      error: 'could not list custom vocabularies',
+      code: 'stt_vocabularies_list_failed',
+    })
+    const failure = Object.assign(new Error('Bad Gateway'), { status: 502, body })
+    attachReport(failure, recordError({
+      source: 'api',
+      message: failure.message,
+      status: failure.status,
+      code: 'stt_vocabularies_list_failed',
+      endpoint: '/api/stt/vocabularies',
+      detail: body,
+    }))
+    mount({ provider: 'transcribe' }, { vocabularies: failure })
+    expect(await screen.findByTestId('stt-vocabularies-error')).toHaveTextContent(/could not be loaded/i)
+
+    fireEvent.click(screen.getByRole('button', { name: /ask the agent/i }))
+
+    const prompt = consumeChatHandoff() ?? ''
+    expect(prompt).toContain('/api/stt/vocabularies')
+    expect(prompt).toContain('HTTP 502')
+    expect(prompt).toContain('stt_vocabularies_list_failed')
+  })
+
+  it('re-reads the list when the AWS region is saved', async () => {
+    const view = mount({ provider: 'transcribe', transcribe_region: 'us-east-1' })
+    await loaded()
+    const invalidate = vi.spyOn(view.qc, 'invalidateQueries')
+
+    const regionInput = screen.getByLabelText(/aws.*region/i)
+    fireEvent.change(regionInput, { target: { value: 'eu-west-1' } })
+    fireEvent.blur(regionInput)
+
+    await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ['sttVocabularies'] }))
+  })
+
+  it('re-reads the list once Amazon Transcribe is confirmed', async () => {
+    mockApi.grantAwsConsent.mockResolvedValue({})
+    const view = mount({ provider: 'transcribe' }, { granted: false })
+    const confirm = await screen.findByTestId('aws-consent-transcribe-confirm')
+    const invalidate = vi.spyOn(view.qc, 'invalidateQueries')
+
+    fireEvent.click(confirm)
+
+    await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ['sttVocabularies'] }))
   })
 })

@@ -3837,6 +3837,65 @@ def _validated_stt_model(value: object) -> str:
     return _resolve_stt_model(value).name
 
 
+#: Amazon Transcribe's own limit on a custom vocabulary name
+#: (``StartStreamTranscription``'s ``VocabularyName``). The name travels as a
+#: request header on every stream, so a value outside this shape can only ever
+#: fail the request it rides on.
+TRANSCRIBE_VOCABULARY_NAME_MAX = 200
+_TRANSCRIBE_VOCABULARY_NOTICE_VALUE_MAX = 120
+_TRANSCRIBE_VOCABULARY_NAME_RE = _re.compile(r"[0-9A-Za-z._-]+")
+_LAST_WARNED_TRANSCRIBE_VOCABULARY: str | None = None
+
+
+def transcribe_vocabulary_name(value: object) -> str | None:
+    """The custom vocabulary *value* names: ``""`` for none, None when unusable.
+
+    Only surrounding whitespace is dropped. AWS compares vocabulary names
+    case-sensitively, so folding case would select a different vocabulary, or
+    none at all.
+
+    The one rule both writers apply: ``PUT /api/config/stt`` stores only a value
+    this accepts, and the loader keeps only what this accepts, so the name a user
+    reads back is the name every Transcribe request carries.
+    """
+    if not isinstance(value, str):
+        return None
+    name = value.strip()
+    if not name:
+        return ""
+    if len(name) > TRANSCRIBE_VOCABULARY_NAME_MAX:
+        return None
+    return name if _TRANSCRIBE_VOCABULARY_NAME_RE.fullmatch(name) else None
+
+
+def _validated_transcribe_vocabulary(value: object) -> str:
+    """:func:`transcribe_vocabulary_name` for a stored value: degrades to none, logs once.
+
+    Degrades rather than failing the load, like the provider and model above. A
+    ``null`` is the absent key and says nothing. An unusable name is dropped rather
+    than sent, because Amazon Transcribe would refuse every stream that carried it:
+    dictation keeps working without the vocabulary, and the notice says why.
+    """
+    global _LAST_WARNED_TRANSCRIBE_VOCABULARY
+
+    if value is None:
+        return ""
+    name = transcribe_vocabulary_name(value)
+    if name is not None:
+        return name
+    seen = repr(value)[:_TRANSCRIBE_VOCABULARY_NOTICE_VALUE_MAX]
+    if seen != _LAST_WARNED_TRANSCRIBE_VOCABULARY:
+        _LAST_WARNED_TRANSCRIBE_VOCABULARY = seen
+        logger.warning(
+            "Unusable stt.transcribe_vocabulary %s; dictation runs without a custom "
+            "vocabulary. Amazon Transcribe names are 1-%d letters, digits, '.', '_' or "
+            "'-'. Choose one in Settings -> Voice, or fix the value in config.json.",
+            seen,
+            TRANSCRIBE_VOCABULARY_NAME_MAX,
+        )
+    return ""
+
+
 _VALID_COMPLETION_KEEP = ("head", "tail", "both")
 
 
@@ -4247,6 +4306,16 @@ class SttConfig:
     transcribe_profile: str = field(
         default="",
         metadata=_meta("Transcribe Profile", "AWS profile for Transcribe API."),
+    )
+    transcribe_vocabulary: str = field(
+        default="",
+        metadata=_meta(
+            "Transcribe Vocabulary",
+            "Name of a custom vocabulary you created in Amazon Transcribe, in the same "
+            "region, so names and terms it would mishear are recognised (`transcribe` "
+            "provider only). Its language must match the dictation language, or "
+            "Amazon Transcribe refuses it and dictation fails. Empty uses none.",
+        ),
     )
 
     def __post_init__(self) -> None:
