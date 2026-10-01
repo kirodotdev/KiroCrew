@@ -2178,10 +2178,10 @@ async def api_chat_folder_delete(request: web.Request) -> web.Response:
     # session closing after the scan and writing its folder_id on the way out.
     # Each was closable in isolation; the class was not.
     #
-    # Nothing shipped loses a capability: no MCP tool exposes folder deletion
-    # (the set is chat_folder_tree / chat_folder_create / chat_folder_move /
-    # chat_folder_move_session), and the only client of this route is the
-    # dashboard UI, which is the person. An app organizes its own work by
+    # Nothing shipped loses a capability: the one MCP tool that reaches this
+    # route, chat_folder_delete, deletes only an EMPTY folder and is refused
+    # here for an app like any other app caller, so its working callers are
+    # the person's own sessions and the dashboard UI. An app organizes its own work by
     # creating, renaming and reparenting its folders and filing its sessions --
     # cleanup is the person's, who can delete a full folder as they always could.
     if request_app:

@@ -1,6 +1,6 @@
 """Tests for the chat (sidebar) folder tools on the kirocrew-dashboard server.
 
-Covers dispatch for ``chat_folder_tree/create/move/move_session`` — schema
+Covers dispatch for ``chat_folder_tree/create/move/move_session/delete`` — schema
 validation, path→id resolution, mkdir -p, session-reference resolution, HTTP
 call shape, and result formatting. The HTTP helpers are patched; the endpoints
 themselves are tested by ``test_folder_store_writer.py`` and
@@ -664,6 +664,126 @@ class TestFolderMove:
         assert "bbbbbbbbbbbb" in out and "cccccccccccc" in out
         mock_post.assert_not_called()
         mock_patch.assert_not_called()
+
+
+class TestFolderDelete:
+    """``chat_folder_delete`` removes a folder only when it holds nothing."""
+
+    def test_deletes_an_empty_folder_by_path(self) -> None:
+        with (
+            patch("kiro_crew.mcp_dashboard._get", side_effect=_rows),
+            patch("kiro_crew.mcp_dashboard._delete", return_value={"ok": True}) as mock_delete,
+        ):
+            out = _call_tool_inner("chat_folder_delete", {"folder": "Travel"})
+        assert mock_delete.call_args.args == ("/api/chat/folders/cccccccccccc",)
+        # The verified caller key is what the write carries, not a re-resolved one.
+        assert mock_delete.call_args.kwargs == {"session_key": "dashboard:chat-1-100"}
+        assert out == "Deleted empty folder `Travel` (id=cccccccccccc)."
+
+    def test_a_folder_with_subfolders_is_refused(self) -> None:
+        with (
+            patch("kiro_crew.mcp_dashboard._get", side_effect=_rows),
+            patch("kiro_crew.mcp_dashboard._delete") as mock_delete,
+        ):
+            out = _call_tool_inner("chat_folder_delete", {"folder": "kirocrew"})
+        assert out.startswith("Error:") and "subfolders" in out
+        mock_delete.assert_not_called()
+
+    def test_a_folder_with_a_live_session_is_refused(self) -> None:
+        with (
+            patch("kiro_crew.mcp_dashboard._get", side_effect=_rows),
+            patch("kiro_crew.mcp_dashboard._delete") as mock_delete,
+        ):
+            out = _call_tool_inner("chat_folder_delete", {"folder": "kirocrew/0811"})
+        assert out.startswith("Error:") and "live sessions" in out
+        mock_delete.assert_not_called()
+
+    def test_a_folder_holding_only_a_private_session_is_refused_without_naming_it(
+        self,
+    ) -> None:
+        private = {
+            "key": "chat-9-900",
+            "title": "Secret plans",
+            "folder_id": "cccccccccccc",
+            "memory_mode": "incognito",
+        }
+
+        def _get(path: str) -> list[dict]:
+            if path == "/api/chat/slots":
+                return _slots_with_caller(private)
+            return _rows(path)
+
+        with (
+            patch("kiro_crew.mcp_dashboard._get", side_effect=_get),
+            patch("kiro_crew.mcp_dashboard._delete") as mock_delete,
+        ):
+            out = _call_tool_inner("chat_folder_delete", {"folder": "Travel"})
+        assert out.startswith("Error:") and "live sessions" in out
+        assert "chat-9-900" not in out and "Secret plans" not in out
+        mock_delete.assert_not_called()
+
+    def test_a_folder_with_archived_sessions_is_refused_without_a_count(self) -> None:
+        folders = [
+            {"id": "cccccccccccc", "name": "Travel", "parent_id": "", "history_count": 2},
+        ]
+
+        def _get(path: str) -> list[dict]:
+            if path == "/api/chat/folders":
+                return [dict(f) for f in folders]
+            return _slots_with_caller()
+
+        with (
+            patch("kiro_crew.mcp_dashboard._get", side_effect=_get),
+            patch("kiro_crew.mcp_dashboard._delete") as mock_delete,
+        ):
+            out = _call_tool_inner("chat_folder_delete", {"folder": "Travel"})
+        assert out.startswith("Error:") and "archived" in out
+        assert "2" not in out
+        mock_delete.assert_not_called()
+
+    def test_root_is_not_a_deletable_subject(self) -> None:
+        with (
+            patch("kiro_crew.mcp_dashboard._get", side_effect=_rows),
+            patch("kiro_crew.mcp_dashboard._delete") as mock_delete,
+        ):
+            out = _call_tool_inner("chat_folder_delete", {"folder": "root"})
+        assert out.startswith("Error:")
+        mock_delete.assert_not_called()
+
+    def test_unknown_folder_errors(self) -> None:
+        with (
+            patch("kiro_crew.mcp_dashboard._get", side_effect=_rows),
+            patch("kiro_crew.mcp_dashboard._delete") as mock_delete,
+        ):
+            out = _call_tool_inner("chat_folder_delete", {"folder": "Nope"})
+        assert out.startswith("Error:") and "folder not found" in out
+        mock_delete.assert_not_called()
+
+    def test_the_endpoint_refusal_is_surfaced(self) -> None:
+        """An app or crew-member caller is refused by the endpoint, not here."""
+        with (
+            patch("kiro_crew.mcp_dashboard._get", side_effect=_rows),
+            patch(
+                "kiro_crew.mcp_dashboard._delete",
+                return_value={"error": "an app cannot delete folders"},
+            ),
+        ):
+            out = _call_tool_inner("chat_folder_delete", {"folder": "Travel"})
+        assert out == "Error: an app cannot delete folders"
+
+    def test_an_unverifiable_caller_cannot_delete(self) -> None:
+        with (
+            patch("kiro_crew.mcp_core._resolve_session_key_strict", return_value=""),
+            patch("kiro_crew.mcp_dashboard._get", side_effect=_rows),
+            patch("kiro_crew.mcp_dashboard._delete") as mock_delete,
+        ):
+            out = _call_tool_inner("chat_folder_delete", {"folder": "Travel"})
+        assert out.startswith("Error:") and "deleting a folder" in out
+        mock_delete.assert_not_called()
+
+    def test_folder_is_required(self) -> None:
+        with pytest.raises(ValidationError):
+            _call_tool_inner("chat_folder_delete", {})
 
 
 class TestFolderMoveSession:
@@ -1880,6 +2000,7 @@ class TestAdvertisedSet:
             "chat_folder_create",
             "chat_folder_move",
             "chat_folder_move_session",
+            "chat_folder_delete",
             "chat_folder_file_self",
             "chat_tag_list",
             "chat_tag_create",

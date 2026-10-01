@@ -19,8 +19,10 @@ every tool in it. That is the unit to keep in mind when adding one — a capabil
 that must be grantable separately belongs in a server of its own.
 
 What it controls today is the chat (sidebar) folder tree: read it, create a
-folder, reparent a folder, and file a live session into one. Create and move
-only — no delete and no rename, so nothing here can lose a conversation. It also
+folder, reparent a folder, file a live session into one, and delete a folder
+that is EMPTY. No rename, and the delete refuses any folder that still holds a
+subfolder or a live or archived session, so nothing here can lose a
+conversation or unfile one. It also
 controls session TAGS with the same posture: read the vocabulary, create or
 update a tag (rename, recolor, status flag), and add or remove tags on a live
 session — no tag delete, so nothing here can strip a label from every session
@@ -40,8 +42,8 @@ caller's.
 Why the set needs no second gate behind the assignment: these tools grant no
 read the agent does not already have (``list_sessions`` in ``kirocrew-core`` is
 always available and already returns every session's title and key), they cannot
-delete a folder or a conversation, and the worst outcome is a sidebar the user
-has to tidy. Contrast the keystone leaves in ``security.py``
+delete a conversation or a folder that holds anything, and the worst outcome is
+a sidebar the user has to tidy. Contrast the keystone leaves in ``security.py``
 (``computer_use.json``, ``browser-mode-enabled``, the Ops Mission Control mode):
 each grants reach OUTSIDE Kiro Crew — desktop input synthesis, the operator's
 logged-in browser, writes against production incident tooling — or is the
@@ -87,6 +89,7 @@ from kiro_crew.dashboard.chat_folders import (
     _subtree_holds_foreign_folder,
 )
 from kiro_crew.mcp_core import (
+    _delete,
     _get,
     _patch,
     _post,
@@ -102,6 +105,7 @@ from kiro_crew.validation import (
     BROADCAST_RESPONSE_MARGIN_SECS,
     BROADCAST_TARGET_ALLOWANCE_SECS,
     CHAT_FOLDER_CREATE_SCHEMA,
+    CHAT_FOLDER_DELETE_SCHEMA,
     CHAT_FOLDER_FILE_SELF_SCHEMA,
     CHAT_FOLDER_MOVE_SCHEMA,
     CHAT_FOLDER_MOVE_SESSION_SCHEMA,
@@ -196,8 +200,8 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "then one line per live session (slot key + title) nested under it, "
                 "and an '(unfiled)' group for sessions at the top level. Use this to "
                 "get folder ids/paths and session keys before calling "
-                "chat_folder_create / chat_folder_move / chat_folder_move_session, "
-                "or when the user asks what their tree looks like. This is the "
+                "chat_folder_create / chat_folder_move / chat_folder_move_session / "
+                "chat_folder_delete, or when the user asks what their tree looks like. This is the "
                 "folder-shaped view; list_sessions is the flat newest-first one."
             ),
             "inputSchema": {"type": "object", "properties": {}},
@@ -312,6 +316,25 @@ def _tool_definitions() -> list[dict[str, Any]]:
                     },
                 },
                 "required": ["session"],
+            },
+        },
+        {
+            "name": "chat_folder_delete",
+            "description": (
+                "Delete an EMPTY sidebar folder. ``folder`` is a folder id or human "
+                "path from chat_folder_tree. Refused unless the folder holds no "
+                "subfolders, no live sessions and no archived (history) sessions, "
+                "so a delete never moves or unfiles anything: empty it first with "
+                "chat_folder_move / chat_folder_move_session. Only the person's "
+                "own sessions may delete; an app agent or a crew member is "
+                "refused by the dashboard."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "folder": {"type": "string", "description": "Folder to delete (id or path)."},
+                },
+                "required": ["folder"],
             },
         },
         {
@@ -3337,6 +3360,53 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             return redact(f"Unfiled session `{slot_key}` to the top level.")
         folder_label = _chat_folder_paths(chat_folders).get(fld_id, fld_id)
         return redact(f"Moved session `{slot_key}` into `{folder_label}` (id={fld_id}).")
+    if name == "chat_folder_delete":
+        args = validate_tool_args(args, CHAT_FOLDER_DELETE_SCHEMA)
+        caller_key, _caller_app, gate = _refuse_tree_shaping_if_unverifiable("deleting a folder")
+        if gate:
+            return gate
+        chat_folders, folders_err = _get_rows("/api/chat/folders")
+        if folders_err:
+            return f"Error: {folders_err}"
+        fld_id, fld_err = _resolve_chat_folder_id(args["folder"], chat_folders)
+        if fld_err:
+            return redact(f"Error: {fld_err}")
+        if not fld_id:
+            return "Error: 'root' is not a folder — name the folder to delete."
+        fld_path = _chat_folder_paths(chat_folders).get(fld_id) or fld_id
+        # Empty-only. The endpoint deletes a full folder by unfiling its sessions
+        # and lifting its subfolders to the top level, and leaves archived
+        # sessions pointing at a folder that is gone. That is the person's own
+        # sidebar action; this tool only removes a folder with nothing in it, so
+        # a delete through here relocates nothing the person arranged.
+        if any(str(f.get("parent_id") or "") == fld_id for f in chat_folders):
+            return redact(
+                f"Error: folder `{fld_path}` has subfolders, so it is not deleted. "
+                "Move or delete them first."
+            )
+        row = next((f for f in chat_folders if str(f.get("id")) == fld_id), {})
+        # No count and no names: the archived count and the raw slot list cover
+        # private (incognito / temporary) sessions too, which nothing this server
+        # emits may describe. "Not empty" is the most the refusal says.
+        if int(row.get("history_count") or 0) > 0:
+            return redact(
+                f"Error: folder `{fld_path}` still holds archived (history) "
+                "sessions, so it is not deleted. Revive and move them out first, "
+                "or ask the person to delete it from the sidebar."
+            )
+        slot_rows, slots_err = _get_rows("/api/chat/slots")
+        if slots_err:
+            return redact(f"Error: {slots_err}")
+        if any(str(r.get("folder_id") or "") == fld_id for r in slot_rows):
+            return redact(
+                f"Error: folder `{fld_path}` still holds live sessions, so it is not "
+                "deleted. Move them out with chat_folder_move_session first."
+            )
+        d = _delete(f"/api/chat/folders/{quote(fld_id, safe='')}", session_key=caller_key)
+        if d.get("error"):
+            return redact(f"Error: {d['error']}")
+        return redact(f"Deleted empty folder `{fld_path}` (id={fld_id}).")
+
     if name == "chat_folder_file_self":
         args = validate_tool_args(args, CHAT_FOLDER_FILE_SELF_SCHEMA)
         # The destination may not exist yet (mkdir -p, like session_create's

@@ -2451,6 +2451,13 @@ CHAT_FOLDER_MOVE_SESSION_SCHEMA = ToolSchema(
     ],
 )
 
+CHAT_FOLDER_DELETE_SCHEMA = ToolSchema(
+    tool_name="chat_folder_delete",
+    fields=[
+        FieldSpec("folder", str, required=True, max_len=_ARTIFACT_FOLDER_REF_MAX),
+    ],
+)
+
 CHAT_FOLDER_FILE_SELF_SCHEMA = ToolSchema(
     tool_name="chat_folder_file_self",
     fields=[
@@ -3933,6 +3940,7 @@ MCP_DASHBOARD_SCHEMAS: dict[str, ToolSchema] = {
     "chat_folder_create": CHAT_FOLDER_CREATE_SCHEMA,
     "chat_folder_move": CHAT_FOLDER_MOVE_SCHEMA,
     "chat_folder_move_session": CHAT_FOLDER_MOVE_SESSION_SCHEMA,
+    "chat_folder_delete": CHAT_FOLDER_DELETE_SCHEMA,
     "chat_folder_file_self": CHAT_FOLDER_FILE_SELF_SCHEMA,
     "chat_tag_list": CHAT_TAG_LIST_SCHEMA,
     "chat_tag_create": CHAT_TAG_CREATE_SCHEMA,
