@@ -3904,18 +3904,16 @@ def _kick_local_decision_model(state: DashboardState) -> None:
     """Start the local decision model the provider names, post-bind.
 
     Called by both gateway entrypoints only after ``_start_site`` has returned. The
-    import and the config read happen inside the worker thread, so a gateway with no
-    local model configured pays one thread hop after the listener is serving.
+    import and the config read happen off the event loop, under the provider-switch
+    lock, so a gateway with no local model configured pays one thread hop after the
+    listener is serving and a switch made meanwhile is never undone by a stale read.
     """
-
-    def _resume_in_thread() -> str:
-        from kiro_crew.decisions.local_runtime import resume_configured
-
-        return resume_configured()
 
     async def _resume() -> None:
         try:
-            preset = await asyncio.to_thread(_resume_in_thread)
+            from kiro_crew.dashboard.handlers.decisions import resume_local_decision_model
+
+            preset = await resume_local_decision_model()
         except Exception:  # noqa: BLE001 - an optional subsystem never fails the gateway
             logger.warning("local decision model: resume at startup failed", exc_info=True)
             return

@@ -1000,3 +1000,24 @@ class TestDeleteAndSwitchAreSerialised:
         resp = await asyncio.wait_for(pending, timeout=5)
         assert resp.status == 409
         assert ("remove", "laya") not in runtime.calls
+
+
+class TestStartupResumeIsSerialisedWithSwitches:
+    @pytest.mark.asyncio
+    async def test_the_startup_resume_waits_for_a_switch_in_flight(self, monkeypatch):
+        """A resume that read the config before a switch landed would start the stale preset."""
+        import asyncio
+
+        import kiro_crew.dashboard.handlers.decisions as mod
+        from kiro_crew.decisions import local_runtime
+
+        calls: list = []
+        monkeypatch.setattr(
+            local_runtime, "resume_configured", lambda: calls.append("resume") or "laya"
+        )
+        async with mod._PROVIDER_SWITCH_LOCK:
+            pending = asyncio.ensure_future(mod.resume_local_decision_model())
+            await asyncio.sleep(0.05)
+            assert not pending.done() and calls == []
+        assert await asyncio.wait_for(pending, timeout=5) == "laya"
+        assert calls == ["resume"]

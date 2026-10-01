@@ -1146,8 +1146,17 @@ def _write_provider(endpoint: str, model: str, timeout_ms: int) -> None:
 
 
 #: Serialises provider switches: the config write and the consent carry land as
-#: one change.
+#: one change. The startup resume takes it too, so a switch made just after boot
+#: cannot be overtaken by a resume that read the config before it.
 _PROVIDER_SWITCH_LOCK = LoopBoundLock()
+
+
+async def resume_local_decision_model() -> str:
+    """Start the preset the provider names, under the provider-switch lock; its id or ""."""
+    from kiro_crew.decisions.local_runtime import resume_configured
+
+    async with _PROVIDER_SWITCH_LOCK:
+        return await asyncio.to_thread(resume_configured)
 
 
 def _carry_consent(endpoint: str) -> bool:
