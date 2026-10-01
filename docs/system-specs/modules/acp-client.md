@@ -1959,6 +1959,33 @@ unchanged: an out-of-roster server is still named there, where naming it is the
 point. Pinned by
 `test_session_start_timeout_diagnostics.py::test_a_complete_roster_says_the_stall_is_not_in_those_servers`.
 
+**A start that queued behind another one says so.** kiro-cli (2.26 and earlier)
+answers `session/new`, `session/load` and `session/set_mode` one at a time per
+process. Its ACP handlers await the whole start, or the mode switch's MCP init,
+inside the connection's dispatch loop, and that loop reads nothing else
+meanwhile. A start sent while one of those is unanswered therefore spends its own
+budget waiting for it. The commonest case is a retry sent behind the start that
+just timed out, which its collector still owns.
+
+On a backend in `ACP_BACKENDS_SERIAL_SESSION_STARTS` (kiro-cli, the one measured;
+harness-parity H6), `_send_and_await` records the method and send time of every
+awaited request in `_ONE_AT_A_TIME_METHODS` (`_one_at_a_time_sent`). Any other
+backend records nothing and its timeouts read as before. An id counts only while
+`_pending_requests` still holds it, so an answered or abandoned request drops out
+at the next send and the map cannot outgrow the pending set.
+
+When a session start times out, it carries only the requests ahead of it that
+were STILL unanswered at its deadline (`queued_behind`). On a serializing backend,
+this start had not begun while such a request was outstanding. A request answered
+before the deadline may have cost a few seconds or nothing, so it is not blamed
+for the budget. The same rule covers a request answered while this start was
+still waiting for the stdin write lock. `_session_start_stalled` then puts `queued behind N earlier
+request(s) this agent process had not answered by the deadline (…; oldest sent
+Xs earlier), and it answers those one at a time` ahead of the MCP progress. The
+roster-complete note is withheld in that case, because the budget went to those
+requests, which is not "later in session startup". Pinned by
+`test_session_start_queued_behind.py`.
+
 **One permit is reserved for a start that has not gone out.** A collector holding
 its permit is the intended back-pressure — the backend really is still working on
 that request — but at `session_start_concurrency = 2` two collectors hold the
