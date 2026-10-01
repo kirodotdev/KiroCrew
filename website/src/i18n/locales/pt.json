@@ -360,7 +360,10 @@
     "kiro_credit_usage_no_reading": "Uso de créditos do Kiro — ainda sem leitura do saldo; abra para atualizar",
     "kiro_credit_usage_config_unreadable": "Uso de créditos do Kiro — não foi possível ler a configuração do backend; abra para tentar de novo",
     "metrics_card_old_data": "Última atualização há mais de 90 segundos",
-    "metrics_card_fetch_failed": "A última atualização das métricas falhou"
+    "metrics_card_fetch_failed": "A última atualização das métricas falhou",
+    "metrics_card_cores_many": "{{count}} núcleos",
+    "metrics_card_cores_one": "{{count}} núcleo",
+    "metrics_card_cores_other": "{{count}} núcleos"
   },
   "appSdk": {
     "chatEmbed": {

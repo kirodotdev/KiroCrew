@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { useQuery } from '@tanstack/react-query'
-import { AudioWaveform } from 'lucide-react'
+import { AudioWaveform, Monitor } from 'lucide-react'
 import { api } from '../../api/client'
 import { useHoverIntent } from '../../hooks/useHoverIntent'
 import { usePersistedBool } from '../../hooks/usePersistedBool'
@@ -9,6 +9,7 @@ import ErrorNotice from '../../components/ErrorNotice'
 import { safeSetItem } from '../../utils/safeStorage'
 import { metricColor } from '../../utils/metricColor'
 import { isMetricNumber, metricNumber } from '../../utils/metrics'
+import { machineIdentity, type MachineIdentity } from '../../utils/machineIdentity'
 import { fmtNumber, fmtPercent, fmtUnit } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 
@@ -35,6 +36,9 @@ export type SysMetricsFrame = {
   posture?: 'ample' | 'tight' | 'critical' | 'unknown'
   availableGb?: number
   subagentCap?: number
+  /** Which machine the frame describes, proven from the untyped payload by
+   *  `machineIdentity`; null when the frame names nothing. */
+  identity?: MachineIdentity | null
 }
 
 /**
@@ -117,7 +121,7 @@ export function useMetricsReadout(isMobile: boolean, updateAvailable: boolean, a
   const metricsCardAnchor = metricsPopoverAnchor ?? metricsHoverAnchor
   const metricsCardOpen = metricsCardAnchor !== null
   const metricsCardId = 'topbar-metrics-card'
-  const { data: sysMetrics, isError, errorUpdatedAt, dataUpdatedAt: sysMetricsUpdatedAt } = useQuery({ queryKey: ['system-metrics'], queryFn: () => api.system().then((d): SysMetricsFrame => ({ memUsed: d.mem_used_gb, memTotal: d.mem_total_gb, cpuPct: d.cpu_pct, diskTotal: d.disk_total_gb, diskFree: d.disk_free_gb, posture: d.resource_posture as 'ample' | 'tight' | 'critical' | 'unknown' | undefined, availableGb: d.resource_available_gb as number | undefined, subagentCap: d.subagent_cap as number | undefined })), refetchInterval: metricsOpen || metricsCardOpen ? 30_000 : 60_000, enabled: true })
+  const { data: sysMetrics, isError, errorUpdatedAt, dataUpdatedAt: sysMetricsUpdatedAt } = useQuery({ queryKey: ['system-metrics'], queryFn: () => api.system().then((d): SysMetricsFrame => ({ memUsed: d.mem_used_gb, memTotal: d.mem_total_gb, cpuPct: d.cpu_pct, diskTotal: d.disk_total_gb, diskFree: d.disk_free_gb, posture: d.resource_posture as 'ample' | 'tight' | 'critical' | 'unknown' | undefined, availableGb: d.resource_available_gb as number | undefined, subagentCap: d.subagent_cap as number | undefined, identity: machineIdentity(d.hostname, d.os, d.cpu_count) })), refetchInterval: metricsOpen || metricsCardOpen ? 30_000 : 60_000, enabled: true })
   // A failing query that never produced a frame refetches through `pending`,
   // which clears `isError` for the length of each retry: the readout and the
   // failure notice would blink on every poll, and the desktop bar re-collapse
@@ -412,6 +416,10 @@ export function MetricsCard({ metrics }: { metrics: MetricsReadout }) {
           { label: i18nT('app.mem'), valid: memValid, pct: memValid ? m.memUsed / m.memTotal : NaN, detail: memValid ? `${fmtNumber(m.memUsed, { maximumFractionDigits: 1 })}/${fmtUnit(m.memTotal, 'gigabyte', { maximumFractionDigits: 1 })}` : i18nT('app.memory_unavailable') },
           { label: i18nT('app.dsk'), valid: dskValid, pct: dskValid ? dskUsed / m.diskTotal : NaN, detail: dskValid ? `${fmtNumber(dskUsed, { maximumFractionDigits: 0 })}/${fmtUnit(m.diskTotal, 'gigabyte', { maximumFractionDigits: 0 })}` : i18nT('app.disk_unavailable') },
         ]
+        const id = sysMetrics.identity
+        // OS family and core count tell machines apart when the hostname
+        // alone does not: a Mac commonly reports a bare serial-like name.
+        const idDetail = id ? [id.os, id.cores > 0 ? i18nT('app.metrics_card_cores', { count: id.cores }) : ''].filter(Boolean).join(' \u00b7 ') : ''
         return (
           <>
             {rows.map(r => (
@@ -423,6 +431,22 @@ export function MetricsCard({ metrics }: { metrics: MetricsReadout }) {
                 </span>
               </div>
             ))}
+            {/* Which machine these readings belong to. Every instance tab
+                renders this same card from its own gateway, so the numbers
+                alone cannot say whose they are. The full name is the
+                tooltip; the line shows its first label so a long FQDN does
+                not widen the card. */}
+            {id && (
+              <div className="border-t border-border pt-1.5 flex flex-col gap-px">
+                {id.host && (
+                  <div className="flex items-center gap-1.5 min-w-0 text-[11px] text-text" title={id.fullHost !== id.host ? id.fullHost : undefined}>
+                    <Monitor aria-hidden="true" size={11} className="shrink-0 text-muted" />
+                    <span className="font-mono truncate max-w-[13rem]">{id.host}</span>
+                  </div>
+                )}
+                {idDetail && <div className="text-[10px] text-muted">{idDetail}</div>}
+              </div>
+            )}
             {/* The expanded readout's click hides it; the hover card is where
                 that affordance is announced now that the button carries no
                 title tooltip. */}

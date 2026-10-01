@@ -16,6 +16,8 @@
     "app.cpu": "Abbreviation for \"CPU\" in the dashboard header's resource strip, followed by a percentage. Width-constrained: keep it as short as the target language allows.",
     "app.dsk": "Abbreviation for \"disk\" in the dashboard header's resource strip, followed by a percentage. Width-constrained: keep it as short as the target language allows.",
     "app.mem": "Abbreviation for \"memory\" (RAM) in the dashboard header's resource strip, followed by a percentage. Width-constrained: keep it as short as the target language allows.",
+    "app.metrics_card_cores_one": "Logical CPU core count of the machine whose readings the header's system-metrics card shows, after its OS name (\"macOS · 1 core\"). \"Core\" is a processor core, not \"central\" or \"essential\". Singular form.",
+    "app.metrics_card_cores_other": "Logical CPU core count of the machine whose readings the header's system-metrics card shows, after its OS name (\"macOS · 10 cores\"). \"Core\" is a processor core, not \"central\" or \"essential\". Plural form.",
     "app.nav_back": "Top-bar route-history Back arrow's accessible name and tooltip, and the shortcuts-modal row for Cmd/Ctrl+Left. Browser-back sense (navigation history), not 'return an item'.",
     "app.nav_back_title": "Tooltip for the top-bar Back arrow while keyboard shortcuts are enabled, on Windows/Linux. Label plus the chord after a middot, like app.focus_mode_title; translate the label and the modifier name (de: Strg), keep the arrow glyph.",
     "app.nav_back_title_mac": "macOS variant of app.nav_back_title — the chord uses the ⌘ glyph; translate only the label.",

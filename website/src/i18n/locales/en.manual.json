@@ -305,7 +305,9 @@
     "kiro_credit_usage_config_unreadable": "Kiro credit usage — could not read the backend setting; open to retry",
     "notifications_ask_agent_help": "Leaves this page and opens a new chat with this error's report already filled in, ready for you to send",
     "metrics_card_old_data": "Last updated more than 90 seconds ago",
-    "metrics_card_fetch_failed": "The last metrics update failed"
+    "metrics_card_fetch_failed": "The last metrics update failed",
+    "metrics_card_cores_one": "{{count}} core",
+    "metrics_card_cores_other": "{{count}} cores"
   },
   "appSdk": {
     "chatEmbed": {

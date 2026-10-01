@@ -356,7 +356,9 @@
     "kiro_credit_usage_no_reading": "Kiro ক্রেডিট ব্যবহার — এখনো কোনো ব্যালেন্স রিডিং নেই; রিফ্রেশ করতে খোলো",
     "kiro_credit_usage_config_unreadable": "Kiro ক্রেডিট ব্যবহার — ব্যাকএন্ড সেটিং পড়া যায়নি; আবার চেষ্টা করতে খোলো",
     "metrics_card_old_data": "শেষ আপডেট 90 সেকেন্ডের বেশি আগে",
-    "metrics_card_fetch_failed": "শেষ মেট্রিক আপডেট ব্যর্থ হয়েছে"
+    "metrics_card_fetch_failed": "শেষ মেট্রিক আপডেট ব্যর্থ হয়েছে",
+    "metrics_card_cores_one": "{{count}}টি কোর",
+    "metrics_card_cores_other": "{{count}}টি কোর"
   },
   "appSdk": {
     "chatEmbed": {

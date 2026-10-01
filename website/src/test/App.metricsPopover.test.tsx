@@ -265,6 +265,56 @@ describe('top-bar metrics control — collapsed band opens a popover', () => {
     expect(card.textContent).toMatch(/40\/100\s*GB/)
   })
 
+  it('names the machine the readings belong to, with its OS and core count', async () => {
+    localStorage.setItem('mc-topbar-metrics', '1')
+    // Every instance tab renders this card from its own gateway, so the card
+    // must say whose numbers they are. The FQDN is shortened on the line and
+    // kept whole in the tooltip.
+    vi.mocked(api.system).mockReset().mockResolvedValue({
+      mem_used_gb: 4.0, mem_total_gb: 16.0, cpu_pct: 25.0, disk_total_gb: 100.0, disk_free_gb: 60.0,
+      hostname: 'build-box-7.eu-west-1.example.com', os: 'Darwin 25.0.0', cpu_count: 10,
+    })
+    renderWithProviders(<App />, { route: '/chat' })
+    const readout = (await screen.findByText(/CPU 25%/)).closest('button')!
+    fireEvent.mouseEnter(readout)
+
+    const card = await screen.findByRole('tooltip', { name: /System metrics/ })
+    const host = await within(card).findByText('build-box-7')
+    expect(host.closest('[title]')?.getAttribute('title')).toBe('build-box-7.eu-west-1.example.com')
+    expect(card.textContent).toContain('macOS · 10 cores')
+    // The identity follows the readings rather than displacing them.
+    expect(card.textContent).toMatch(/40\/100\s*GB[\s\S]*build-box-7[\s\S]*macOS/)
+  })
+
+  it('uses the singular form for one core and omits what the frame does not carry', async () => {
+    localStorage.setItem('mc-topbar-metrics', '1')
+    vi.mocked(api.system).mockReset().mockResolvedValue({
+      mem_used_gb: 4.0, mem_total_gb: 16.0, cpu_pct: 25.0, disk_total_gb: 100.0, disk_free_gb: 60.0,
+      os: 'Linux 6.1.0', cpu_count: 1,
+    })
+    renderWithProviders(<App />, { route: '/chat' })
+    const readout = (await screen.findByText(/CPU 25%/)).closest('button')!
+    fireEvent.mouseEnter(readout)
+
+    const card = await screen.findByRole('tooltip', { name: /System metrics/ })
+    await waitFor(() => expect(card.textContent).toContain('Linux · 1 core'))
+    expect(card.textContent).not.toContain('1 cores')
+    // No hostname in the frame: no host line, so no tooltip to carry one.
+    expect(card.querySelector('[title]')).toBeNull()
+  })
+
+  it('shows no identity footer for a frame that names no machine', async () => {
+    localStorage.setItem('mc-topbar-metrics', '1')
+    renderWithProviders(<App />, { route: '/chat' })
+    const readout = (await screen.findByText(/CPU 25%/)).closest('button')!
+    fireEvent.mouseEnter(readout)
+
+    const card = await screen.findByRole('tooltip', { name: /System metrics/ })
+    await waitFor(() => expect(card.textContent).toMatch(/40\/100\s*GB/))
+    // The rows are followed directly by the hint: no host line, no OS line.
+    expect(card.textContent).toMatch(/40\/100\s*GB\s*\d+%\s*Click to hide$/)
+  })
+
   it('closes the hover card on a window resize, since its anchor is measured once', async () => {
     localStorage.setItem('mc-topbar-metrics', '1')
     renderWithProviders(<App />, { route: '/chat' })
