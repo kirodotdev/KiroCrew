@@ -30,6 +30,7 @@
  */
 import { toDate } from './i18n/format'
 import type { CronJob } from './types'
+import { MAX_TIMER_DELAY_MS } from './utils/timerDelay'
 
 /**
  * The run state of an app's scheduled work, as one value for its rail row.
@@ -130,7 +131,10 @@ function jobState(job: CronJob, nowMs: number): AppRunState | null {
   // between the gateway host and the browser. Treating it as fresh is the safe
   // reading: it is a real recent run, and the window still expires it once the
   // browser clock passes it.
-  if (ageMs > SUCCESS_WINDOW_MS) return null
+  // `>=`, not `>`: `nextSuccessExpiryMs` arms a timer for exactly the time left,
+  // so the instant it fires must already be outside the window, or it would find
+  // the mark still showing and re-arm on a zero delay.
+  if (ageMs >= SUCCESS_WINDOW_MS) return null
   return 'success'
 }
 
@@ -178,7 +182,8 @@ export function appRunStates(
  *
  * Null when nothing is showing `success`, so a caller arms no timer at all in
  * the common case. Never negative: an already-expired run contributes no mark,
- * so there is nothing to wait for.
+ * so there is nothing to wait for. Never above `MAX_TIMER_DELAY_MS`, so the
+ * value is always safe to hand straight to `setTimeout`.
  *
  * Only a success the app actually SHOWS counts. An app whose winning state is
  * `error` or `running` may still own a recent successful job, and arming on that
@@ -199,11 +204,14 @@ export function nextSuccessExpiryMs(
     if (jobState(job, nowMs) !== 'success') continue
     const lastRun = toDate(job.last_run_ts)
     if (lastRun === null) continue
-    // Clamped at 0 only as a lower bound. A future timestamp -- the clock skew
+    // Clamped at 0 as a lower bound. A future timestamp -- the clock skew
     // `jobState` admits as fresh -- correctly yields window + skew, because that
     // mark is due to clear 90s after the moment it claims to have run.
     const left = Math.max(0, SUCCESS_WINDOW_MS - (nowMs - lastRun.getTime()))
     if (soonest === null || left < soonest) soonest = left
   }
-  return soonest
+  // A skew past ~24.8 days would push window + skew beyond what a timer can
+  // hold, so the delay is capped there: the timer then fires early, finds the
+  // mark still showing, and re-arms for the rest.
+  return soonest === null ? null : Math.min(soonest, MAX_TIMER_DELAY_MS)
 }

@@ -5,6 +5,7 @@ import { streamErrorMessage } from '../lib/sttProviders'
 import type { SttModelProgress } from '../lib/sttProviders'
 import { joinTranscript } from '../lib/dictationText'
 import { i18nT } from '../i18n/t'
+import { MAX_TIMER_DELAY_MS } from '../utils/timerDelay'
 
 /**
  * Streaming STT over `/api/ws/stt`.
@@ -45,7 +46,6 @@ const PREPARE_TIMEOUT_FALLBACK_MS = 300000
 // Older gateways omit their finalization budget. Give their default five-minute
 // native decode ceiling a little transport/cleanup headroom.
 const DEFAULT_FINAL_TIMEOUT_MS = 315000
-const MAX_TIMER_DELAY_MS = 2147483647
 // 16 kHz mono Int16: retain a preparation window of speech before auto-stopping.
 const MAX_BUFFERED_BYTES = (READY_TIMEOUT_MS / 1000) * 16000 * 2
 const WORKLET_FLUSH_TIMEOUT_MS = 500
