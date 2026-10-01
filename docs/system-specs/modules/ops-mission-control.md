@@ -813,7 +813,7 @@ holds the credential, so the agent never needs one.
 **The brief bounds evidence separately from the adapter budget.**
 `EvidenceBudget.max_bytes` (64 KB) caps what an adapter may *return* — right for a
 spool, far too large for a prompt (6 calls × 64 KB ≈ 384 KB, against the documented
-50k total session context budget in `context.py`). A measured brief measured
+50k total session context budget in `context_assembly/budget.py`). A measured brief measured
 **37,423 chars** from two items. `MAX_BRIEF_EVIDENCE_CHARS` (8k total) and
 `MAX_BRIEF_EVIDENCE_ITEM_CHARS` (4k per item) bound the rendered text, and the brief
 **says** when it truncates — an agent silently handed half a log dump will reason

@@ -2927,7 +2927,7 @@ KEEP handling", "KEEP-ALIVE header bug") survives.
 `dashboard.verbosity` describes how the PERSON wants replies to read, so it is
 delivered as session-context chrome — the same class as `[CURRENT DATE]` and
 `[UI LANGUAGE]` — not as a token an agent prompt has to opt into.
-`context.py::_build_response_preferences_section(cfg)` renders the level's
+`context_assembly/sections.py::_build_response_preferences_section(cfg)` renders the level's
 rules (`_reply_style_rules`) inside a `[RESPONSE PREFERENCES — MANDATORY]` …
 `[END RESPONSE PREFERENCES]` frame whose one sentence of preamble states that the
 rules bind every reply, on every surface, for every agent, and outrank any

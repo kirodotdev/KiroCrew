@@ -1329,19 +1329,24 @@ class TestGrantsStoreMaskedFromAgents:
     def test_grant_grammar_is_dashboard_free_for_context(self):
         """``context.py`` screens the [BOARD] rail with the grant grammar and
         must stay free of ``kiro_crew.dashboard`` imports (seventeen dashboard
-        modules import it). The grammar therefore lives in its own module, and
-        the grants store re-exports the same objects so the mint and the rail
-        cannot drift."""
+        modules import it), and so must the ``context_assembly`` owners it is
+        composed from, which hold that rail's code. The grammar therefore lives
+        in its own module, and the grants store re-exports the same objects so
+        the mint and the rail cannot drift."""
         import importlib
         import inspect
+        from pathlib import Path
 
         from kiro_crew import board_tag_grammar, context
         from kiro_crew.dashboard import chat_tag_grants as g
 
         assert g.is_grantable_tag_id is board_tag_grammar.is_grantable_tag_id
         assert g.DEFAULT_TAG_IDS is board_tag_grammar.DEFAULT_TAG_IDS
-        src = inspect.getsource(context)
-        assert "from kiro_crew.dashboard" not in src and "import kiro_crew.dashboard" not in src
+        owners = sorted(Path(context.__file__).with_name("context_assembly").glob("*.py"))
+        # A floor, so a moved or renamed package cannot turn the scan into a no-op.
+        assert len(owners) >= 8, owners
+        for src in [inspect.getsource(context)] + [p.read_text(encoding="utf-8") for p in owners]:
+            assert "from kiro_crew.dashboard" not in src and "import kiro_crew.dashboard" not in src
         assert (
             "kiro_crew.dashboard"
             not in inspect.getsource(importlib.import_module(board_tag_grammar.__name__)).split(

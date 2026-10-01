@@ -5312,6 +5312,35 @@ their reported benchmark gains are not Kiro Crew measurements.
 
 ## Context Builder (`context.py`)
 
+#### Ownership
+
+`context.py` is the facade and the assembly owner. `ContextBuilder.build_session_context`
+and `build_message` decide block order and which lifecycle carries each block. It
+also keeps the per-target store handles and their routing (`store_of_session`,
+`prepare_store_vectors`, `ContextBuilder.ensure_store`, `_build_store_vectors`),
+every transcript read and redaction a prompt replays, the agent-spec reads
+(`_load_agent_prompt`, `_load_steering_resources`), the critical-rules contract, the
+UI-language renderers, and each name callers rebind on it. The rest is composed from
+`src/kiro_crew/context_assembly/`, and every name stays importable from
+`kiro_crew.context`:
+
+| Owner | Responsibility; new work of this kind goes here |
+|---|---|
+| `markers.py` | marker and fence neutralization of untrusted text (`_neutralize_structural_markers` and `_member_marker_spans` stay on the facade) |
+| `budget.py` | character caps, model windows, the embedding deadline, whole-block background admission (`_resolve_caps` stays on the facade) |
+| `sections.py` | stable conduct sections: runtime identity and refresh, user profile, reply-style preferences, workspace identity, the widget pointer |
+| `replay.py` | replay and recall projection of transcript rows: row quotas, delivery-identity merge, replay budget, thread-history fallback, turn restores |
+| `inclusion.py` | context-group scope, the folder-steering renderer, the skills loader call session start and re-injection share |
+| `member.py` | the member identity section and the V2 essentials envelope; delivery stays at the `member_turn_context` chokepoint |
+| `store_admission.py` | which store answers each memory and lesson section, the per-message lessons block, the shown-lesson record |
+| `turn.py` | follow-up turn additions (post-compaction re-injection, Slack thread context, per-turn rails, guidance) and the user's own turn text |
+
+At module scope an owner imports only its sibling owners and type-checking-only
+names; any other Kiro Crew import is function-local. Owners read every name callers
+rebind on `kiro_crew.context` through it at call time, so a patch there still
+reaches the moved code; `test/test_context_composition_contract.py` derives that set
+from the tests and pins it.
+
 Assembles all sources into prompts:
 - New session: `_CRITICAL_RULES` (runtime-conditional diff blocks + OPTIONS buttons) + agent prompt + static preference/project anchors + activity index + budgeted `[Memory activity]` block (projects, daily history (14 full days, then decayed summaries and counts to day 180), task facts, relevant episodes; `memory.inject_activity`, default on) + memory tool guidance + skills + scoped lessons + conversation history (last 20 messages, thread history at TOP with explicit framing)
 - Every message: channel history, hook transforms, triggered skills, context rules, OPTIONS hint (interactive sessions only). Memory search is an explicit MCP operation; a fresh first turn with `memory.inject_activity` on embeds the request once to rank the activity block's facts and episodes (two embed calls on the same text, one shared inference), and a warm follow-up generates no query embedding.

@@ -193,7 +193,7 @@ looks like a gap — reopen the decision in this spec first.
 
 Imported instruction/knowledge content is rewritten into Kiro Crew's existing
 memory tiers. Tier choice is driven by two properties — **context priority**
-(`context.py` per-section caps) and **durability**.
+(`context_assembly/budget.py` per-section caps) and **durability**.
 
 ### Durability constraint (read before choosing a tier)
 
