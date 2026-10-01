@@ -1472,7 +1472,9 @@ class AcpSessionHandle:
 
     # ── Prompt ──
 
-    async def prompt(self, message: str, timeout: float | None = None) -> AsyncIterator[AcpEvent]:
+    async def prompt(
+        self, message: str, timeout: float | None = None, *, allow_image: bool = True
+    ) -> AsyncIterator[AcpEvent]:
         """Send session/prompt and yield AcpEvent objects until the turn completes.
 
         Dispatches events from the per-session queue with the same logic as
@@ -1482,6 +1484,10 @@ class AcpSessionHandle:
         ``timeout=None`` (every dashboard turn) resolves from
         ``agent.chat_turn_timeout_secs`` so the transport wait follows a raised
         turn ceiling instead of cutting the turn at the 2h default underneath it.
+
+        ``allow_image=False`` sends the message as text only: no path in it is
+        read or inlined, whatever the agent advertises. For a prompt that is
+        text ABOUT a session, where a path is quoted history, not an attachment.
         """
 
         async def _build() -> tuple[str, dict[str, Any]]:
@@ -1492,7 +1498,7 @@ class AcpSessionHandle:
             prompt_blocks = await asyncio.to_thread(
                 build_prompt_blocks,
                 message,
-                allow_image=self._runtime.supports_image_prompt,
+                allow_image=allow_image and self._runtime.supports_image_prompt,
             )
             # Content-free outbound STRUCTURE diagnostics: one
             # line per turn build recording block counts, per-type counts, and

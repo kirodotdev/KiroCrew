@@ -139,8 +139,12 @@ class LLMProvider(ABC):
         """Gracefully shut down."""
 
     @abstractmethod
-    async def stream(self, message: str) -> AsyncIterator[LLMEvent]:
-        """Send a message and yield events."""
+    async def stream(self, message: str, *, allow_image: bool = True) -> AsyncIterator[LLMEvent]:
+        """Send a message and yield events.
+
+        ``allow_image=False`` sends *message* as text only: no image path in it
+        is read or inlined as an image block.
+        """
         yield LLMEvent(kind=EVENT_COMPLETE)  # pragma: no cover
 
     @abstractmethod

@@ -221,13 +221,15 @@ class _ProviderBgSession:
         self,
         message: str,
         timeout: float | None = None,
+        *,
+        allow_image: bool = True,
     ) -> AsyncIterator[AcpEvent]:
         # timeout is accepted for AcpSessionHandle signature parity; the
         # underlying provider/client manages its own stale-turn watchdog.
         await self._sess.semaphore.acquire()
         self._sem_held = True
         try:
-            async for event in self._sess.provider.stream(message):
+            async for event in self._sess.provider.stream(message, allow_image=allow_image):
                 yield event
         finally:
             self._release()

@@ -2418,15 +2418,16 @@ class AcpProvider(LLMProvider):
         # the fallback keeps those guides reachable without a false capability.
         return self._client.backend == ACP_BACKEND_KAS
 
-    async def stream(self, message: str) -> AsyncIterator[LLMEvent]:
+    async def stream(self, message: str, *, allow_image: bool = True) -> AsyncIterator[LLMEvent]:
         # The direct client can respawn in ensure_ready; resolve that BEFORE
         # comparing receipts so a recycled conversation receives the full text.
         if isinstance(self._client, AcpClient):
             await self._client.ensure_ready()
+        send = self._client.stream_events
+        if not allow_image:
+            send = functools.partial(send, allow_image=False)
         async with aclosing(
-            self.essential_delivery.stream(
-                message, self._client.stream_events, lambda: self.context_incarnation
-            )
+            self.essential_delivery.stream(message, send, lambda: self.context_incarnation)
         ) as events:
             async for e in events:
                 yield self._to_llm_event(e)
