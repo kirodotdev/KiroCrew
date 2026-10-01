@@ -17,8 +17,8 @@ import type { useComposerSessionControls } from './sessionControls'
  */
 
 /**
- * The dock's measured height and scrollbar gutter, plus the composer box ref
- * (the quote flight's target).
+ * The dock's measured height and scrollbar gutter, whether its status stack
+ * holds a bar, plus the composer box ref (the quote flight's target).
  */
 export function useComposerDockMetrics(scrollerRef: ReturnType<typeof useScrollManager>['scrollerRef']) {
   const inputAreaRef = useRef<HTMLDivElement>(null)
@@ -34,6 +34,19 @@ export function useComposerDockMetrics(scrollerRef: ReturnType<typeof useScrollM
   // painted frame already carries the right padding, where an effect-timed
   // measurement paints one frame with the last line under the glass, then jumps.
   const [dockH, setDockH] = useState(0)
+  // Whether the status stack above the composer (the sub-agent tray, the task
+  // and workflow bars, the queue cards) holds anything right now. The composer
+  // alone may float over the transcript: it is a sparse glass pane. The stack
+  // may not: it is dense text, and a paragraph scrolling under the tray's rows
+  // collided with them in every theme, worst in glass mode. So while the stack
+  // is occupied the page ends the scroller's box above the dock instead of
+  // running it under (see ChatPage's `dockReserved`). Read as "some child has
+  // rendered height", not the band's own height (its 11px padding/negative-
+  // margin pair for QueueStack's fuse leaves it 11px tall when empty) and not
+  // child presence (CommandCenterDock and QueueStack keep a zero-height wrapper
+  // mounted while they show nothing). Measured in the same callback as the
+  // height, since a bar mounting is exactly what resizes the dock.
+  const [statusStackOccupied, setStatusStackOccupied] = useState(false)
   // The scroller reserves a `scrollbar-gutter: stable` column on its right, and
   // its rows are centred in the content box that EXCLUDES that column. The dock
   // is inset by the same width, so its column lines up with the transcript's and
@@ -45,9 +58,11 @@ export function useComposerDockMetrics(scrollerRef: ReturnType<typeof useScrollM
   const dockRef = useCallback((el: HTMLDivElement | null) => {
     dockObserverRef.current?.disconnect()
     dockObserverRef.current = null
-    if (!el) { setDockH(0); setDockGutter(0); return }
+    if (!el) { setDockH(0); setDockGutter(0); setStatusStackOccupied(false); return }
     const measure = () => {
       setDockH(el.offsetHeight)
+      const band = el.querySelector<HTMLElement>('[data-testid="composer-status-stack"]')
+      setStatusStackOccupied(!!band && Array.from(band.children).some(c => (c as HTMLElement).offsetHeight > 0))
       const sc = scrollerRef.current
       setDockGutter(sc ? Math.max(0, sc.offsetWidth - sc.clientWidth) : 0)
     }
@@ -61,7 +76,7 @@ export function useComposerDockMetrics(scrollerRef: ReturnType<typeof useScrollM
     if (scrollerRef.current) ro.observe(scrollerRef.current)
     dockObserverRef.current = ro
   }, [scrollerRef])
-  return { inputAreaRef, dockH, dockGutter, dockRef }
+  return { inputAreaRef, dockH, dockGutter, dockRef, statusStackOccupied }
 }
 
 interface ComposerAboveBandOptions {

@@ -351,6 +351,37 @@ that grows a status bar) only has to keep its `padding-bottom` honest.
 The full owner map is in
 [history](../../docs/system-specs/modules/history.md#the-dashboard-transcript-window-frontend).
 
+### The composer dock and what may float over the transcript
+
+On the main chat page (`ChatPage.tsx`) the composer dock is one absolutely
+positioned box over the bottom of the transcript scroller (the iOS toolbar
+layout): the scroller runs the full height of the pane, the conversation scrolls
+under the composer's glass, and the scroller pays for the covered strip with
+`paddingBottom: dockH + DOCK_CLEARANCE_PX`, measured from the dock by a
+`ResizeObserver`. That scroll-under is for the composer pane alone. Everything
+else that floats at the bottom reserves its space instead, so no label is ever
+read through glass: while the status stack above the composer (the sub-agent
+tray, the task and workflow bars, the queue cards) holds a bar, or while the
+jump-to-bottom pill shows, the scroller's box ENDS above the dock
+(`marginBottom: dockH`) and the transcript never passes under it at any scroll
+position. The pill is a row of the dock (`JumpToBottomButton placement="inline"`),
+not a float over the transcript: it shows exactly while the reader is scrolled
+up, which is exactly when text would pass under a floating pill. The welcome
+hero ends above the dock the same way (`marginBottom: dockH`, never padding), so
+its suggestion cards and the Refresh link are never blurred under the composer
+or the memory-mode chip; a column taller than the hero scrolls inside it.
+`dockReserved` is the flag (`statusStackOccupied`, read from the band's children
+in the same measurement, or the pill showing); the geometry is pinned by
+`src/test/ChatPage.dockClearance.test.tsx`. Occupancy means "some child of the
+status stack has rendered height", so a child that is mounted while it shows
+nothing must stay at zero height (a wrapper with no box, not a hidden-but-tall
+one): a tall idle wrapper would reserve the dock's space for an empty band. The dock root carries no z-index of
+its own (`ChatPage.statusStackLayering.test.tsx` says why), so a sibling that
+sits against it must not lift its children with z-indexes that compare against
+the composer's: the welcome hero is `isolate` for exactly that reason, and a new
+sibling takes the same class. The side-panel `ChatPane.tsx` keeps its bars in
+flow and needs none of this.
+
 ## Stat cards
 
 OPTIONAL summary metrics above the content. Add a row only when a number is not

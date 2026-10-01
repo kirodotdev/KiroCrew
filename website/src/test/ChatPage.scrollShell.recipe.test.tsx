@@ -261,6 +261,9 @@ describe('scroll shell: floating dock and jump pill', () => {
     // The pill's own markup (geometry, classes, catalog label) is pinned by
     // the ChatScrollChrome consumers' suites; what belongs to THIS page is the
     // visibility gate and the controller wiring.
-    expect(SRC).toContain('<JumpToBottomButton visible={!isAtBottom && messages.length > 0} onClick={() => scrollBottom(true)} />')
+    // `jumpPillVisible` IS that gate; dockClearance pins its definition and that
+    // the pill is an in-flow row of the dock (`placement="inline"`), not a float.
+    expect(SRC).toContain('const jumpPillVisible = !isAtBottom && messages.length > 0')
+    expect(SRC).toContain('<JumpToBottomButton visible={jumpPillVisible} onClick={() => scrollBottom(true)} placement="inline" />')
   })
 })
