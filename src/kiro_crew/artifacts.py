@@ -114,6 +114,7 @@ from kiro_crew.artifact_store.rules import (  # noqa: F401 — re-export for API
     detect_editor_kind,
     has_unthemed_hardcoded_colors,
     is_document_path,
+    normalize_tag,
     slugify,
 )
 from kiro_crew.config.loader import KiroCrewConfig, config_dir
@@ -161,6 +162,7 @@ _EXPORTS: dict[str, str] = {
     "MAX_NAME_LEN": "kiro_crew.artifact_store.rules",
     "MAX_SOURCE_PATH_LEN": "kiro_crew.artifact_store.rules",
     "MAX_TAGS": "kiro_crew.artifact_store.rules",
+    "MAX_TAG_LEN": "kiro_crew.artifact_store.rules",
     "_EXT_KIND_MAP": "kiro_crew.artifact_store.rules",
     "_HARDCODED_COLOR_RE": "kiro_crew.artifact_store.rules",
     "_HREF_ATTR_RE": "kiro_crew.artifact_store.rules",
@@ -169,7 +171,6 @@ _EXPORTS: dict[str, str] = {
     "_SLUG_NORMALIZE_RE": "kiro_crew.artifact_store.rules",
     "_SLUG_RE": "kiro_crew.artifact_store.rules",
     "_SVG_ROOT_RE": "kiro_crew.artifact_store.rules",
-    "_TAG_RE": "kiro_crew.artifact_store.rules",
     "_strip_session_scope": "kiro_crew.artifact_store.rules",
 }
 
@@ -1663,6 +1664,10 @@ class ArtifactStore:
         unlocked reads safe — the worst case is a stale-but-valid snapshot
         for an artifact that was just renamed.
 
+        ``tag`` is read through the tag rule (``normalize_tag``), so a label
+        matches in whichever Unicode spelling it was typed, and a value that is
+        not a well-formed tag matches nothing.
+
         ``session_key`` scopes to one originating chat session (the in-session
         artifact panel's query). Like ``folder``, it distinguishes absent from
         empty: ``None`` doesn't scope, while ``""`` matches only artifacts with
@@ -1679,6 +1684,13 @@ class ArtifactStore:
         """
         with self._lock:
             meta_paths = list(self._iter_meta_paths())
+        if tag:
+            # Tags are stored in their NFC spelling, so the filter is read the same
+            # way; a value that is not a tag at all can match no stored tag.
+            try:
+                tag = normalize_tag(tag)
+            except ValueError:
+                return []
         results: _List[Artifact] = []
         for meta_path in meta_paths:
             try:
@@ -2699,13 +2711,13 @@ if TYPE_CHECKING:  # every forwarded name, for type checkers and IDEs
         _SLUG_NORMALIZE_RE,
         _SLUG_RE,
         _SVG_ROOT_RE,
-        _TAG_RE,
         ALLOWED_KINDS,
         ALLOWED_SOURCES,
         DOC_EXTENSIONS,
         MAX_DESCRIPTION_LEN,
         MAX_NAME_LEN,
         MAX_SOURCE_PATH_LEN,
+        MAX_TAG_LEN,
         MAX_TAGS,
         _strip_session_scope,
     )

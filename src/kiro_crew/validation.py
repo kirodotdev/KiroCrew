@@ -25,6 +25,14 @@ from dataclasses import dataclass, field
 from pathlib import PureWindowsPath
 from typing import Any
 
+# The artifact tag rule lives with the store's other field grammar and is read
+# here so the tool gate and the store cannot disagree about a tag. Import-safe:
+# ``artifact_store.rules`` loads the record dataclasses and the slug hash
+# fallback, never ``kiro_crew.artifacts`` (the service module whose import from
+# here would close the ``artifacts -> hooks -> webhooks -> validation`` cycle).
+from kiro_crew.artifact_store.rules import MAX_TAG_LEN as ARTIFACT_TAG_MAX
+from kiro_crew.artifact_store.rules import normalize_tag as _normalize_artifact_tag
+
 # Computer-use tool names and their argument bounds. Safe to import at module
 # scope: ``computer_use.types`` is deliberately dependency-free (it imports
 # nothing from ``kiro_crew`` and never touches ctypes), so there is no cycle and
@@ -1994,9 +2002,12 @@ WORKFLOW_RERUN_SCHEMA = ToolSchema(
     ],
 )
 
-# Artifact tools — slug pattern matches kiro_crew.artifacts._SLUG_RE.
+# Artifact tools — slug pattern matches kiro_crew.artifacts._SLUG_RE. The tag
+# rule is NOT a pattern: a tag is Unicode letters, marks and digits, which are
+# general categories ``re`` cannot spell, so the artifact schemas below carry
+# only the tag count and length caps as fields and check each tag's characters
+# in ``_validate_artifact_tags`` through the store's own ``normalize_tag``.
 _ARTIFACT_SLUG_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,78}[a-z0-9])?$")
-_ARTIFACT_TAG_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_:.-]{0,63}\Z")
 _ARTIFACT_KIND_RE = re.compile(r"^(widget|html|markdown|svg|json|text|image|webapp)$")
 
 # Model identifiers passed to kiro-cli ``--model`` (AcpRuntime). First char
@@ -2014,8 +2025,33 @@ ARTIFACT_CONTENT_MAX = ARTIFACT_MAX_CONTENT_BYTES
 ARTIFACT_WEBAPP_METADATA_MAX_BYTES = 16_384
 
 
+def _validate_artifact_tags(cleaned: dict) -> None:
+    """Hold every tag argument to the store's tag rule and answer with its reason.
+
+    Runs after the field pass, so each item is already NFC-normalized, stripped
+    of hidden characters and bounded by the schema's caps; what is left to check
+    is the character rule, which is a category test no ``FieldSpec`` pattern can
+    express. The store applies the same rule on write; checking here means the
+    tool reports the offending tag and why, instead of a store error.
+    """
+    tags = cleaned.get("tags")
+    if isinstance(tags, list):
+        for i, item in enumerate(tags):
+            try:
+                _normalize_artifact_tag(item)
+            except ValueError as exc:
+                raise ValidationError("tags", f"item[{i}]: {exc}") from None
+    tag = cleaned.get("tag")
+    if isinstance(tag, str) and tag:
+        try:
+            _normalize_artifact_tag(tag)
+        except ValueError as exc:
+            raise ValidationError("tag", str(exc)) from None
+
+
 def _validate_artifact_save(cleaned: dict) -> None:
-    """Reject an oversized or structurally invalid webapp_metadata blob before disk write."""
+    """Reject a malformed tag, then an oversized or structurally invalid webapp_metadata blob."""
+    _validate_artifact_tags(cleaned)
     am = cleaned.get("webapp_metadata")
     if am is None:
         return
@@ -2199,8 +2235,7 @@ ARTIFACT_SAVE_SCHEMA = ToolSchema(
             "tags",
             list,
             item_type=str,
-            item_max_len=64,
-            item_pattern=_ARTIFACT_TAG_RE,
+            item_max_len=ARTIFACT_TAG_MAX,
             max_items=16,
         ),
         FieldSpec("folder", str, max_len=4096),
@@ -2228,8 +2263,7 @@ ARTIFACT_UPDATE_SCHEMA = ToolSchema(
             "tags",
             list,
             item_type=str,
-            item_max_len=64,
-            item_pattern=_ARTIFACT_TAG_RE,
+            item_max_len=ARTIFACT_TAG_MAX,
             max_items=16,
         ),
         FieldSpec("webapp_metadata", dict),
@@ -2244,9 +2278,10 @@ ARTIFACT_DELETE_SCHEMA = ToolSchema(
 )
 
 ARTIFACT_LIST_SCHEMA = ToolSchema(
+    custom_validator=_validate_artifact_tags,
     tool_name="artifact_list",
     fields=[
-        FieldSpec("tag", str, max_len=64, pattern=_ARTIFACT_TAG_RE),
+        FieldSpec("tag", str, max_len=ARTIFACT_TAG_MAX),
         FieldSpec("kind", str, max_len=20, pattern=_ARTIFACT_KIND_RE),
         FieldSpec("q", str, max_len=200),
     ],
