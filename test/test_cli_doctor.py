@@ -4392,6 +4392,10 @@ class TestRunDirCensus:
         monkeypatch.setattr(cli_doctor, "_RUN_DIR_BACKLOG_WARN", 2)
         out = self._run(monkeypatch, capsys, root)
         assert "⚠️ " in out and "With the gateway stopped, move directories matching" in out
+        assert (
+            "hold nothing beyond .kiro/settings/cli.json,"
+            " .kiro/settings/.kirocrew-cli-settings.lock and an empty .kiro/agents"
+        ) in out
         original = session_work_dir.count_run_dirs
         monkeypatch.setattr(
             session_work_dir,
@@ -4400,6 +4404,29 @@ class TestRunDirCensus:
         )
         out = self._run(monkeypatch, capsys, root)
         assert "2+ run director(ies) carry no" in out and "0+ marked" in out
+
+    @pytest.mark.parametrize("pinned", [True, False])
+    def test_an_unmarked_memory_consolidation_backlog_is_counted_on_either_walk(
+        self, pinned: bool, tmp_path: Path, monkeypatch, capsys
+    ) -> None:
+        """The by-name walk never marks these folders, so the census is where they surface."""
+        from kiro_crew import session_work_dir
+
+        monkeypatch.setattr(session_work_dir.pinned_fs, "supports_pinned_walk", lambda: pinned)
+        root = tmp_path / "ws"
+        for n in range(1, 4):
+            name = f"memory-consolidation_work_{n:032x}"
+            (root / name / ".kiro" / "settings").mkdir(parents=True)
+        before = sorted(p.name for p in root.rglob("*"))
+        monkeypatch.setattr(cli_doctor, "_RUN_DIR_BACKLOG_WARN", 2)
+        out = self._run(monkeypatch, capsys, root)
+        (line,) = [ln for ln in out.splitlines() if "run dirs:" in ln]
+        assert "⚠️ " in line and "3 run director(ies) carry no" in line
+        assert "(left by a build that did not mark that kind)" in line
+        assert "With the gateway stopped, move directories matching" in out
+        assert session_work_dir.DERIVED_NAME_RE.pattern in out
+        assert r"memory\-consolidation" in out
+        assert sorted(p.name for p in root.rglob("*")) == before
 
     def test_a_root_with_nothing_the_sweep_cannot_reclaim_is_clean(
         self, tmp_path: Path, monkeypatch, capsys
