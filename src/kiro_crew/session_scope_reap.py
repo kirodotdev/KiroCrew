@@ -47,6 +47,7 @@ Every reclaimed scope emits a SEL event, as the ``session_pid`` sweeps do.
 
 from __future__ import annotations
 
+import functools
 import logging
 import os
 import signal
@@ -74,6 +75,7 @@ from kiro_crew.session_pid import (
     _pid_cmdline,
     _read_env_has_kirocrew_marker,
 )
+from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +94,23 @@ _REAP_MIN_AGE_SECS = 600
 _GATEWAY_BOOT_MONOTONIC_US: int | None = None
 _GATEWAY_BOOT_RESOLVED = False
 
+#: A scope error that keeps recurring is re-reported at WARNING this often.
+_SCOPE_ERROR_REWARN_SECS = 3600.0
+
+#: ``(unit, phase) -> (exception type, monotonic time of its last WARNING)`` for
+#: errors raised by the most recent sweep; phase is ``"evaluation"`` or
+#: ``"reclaim"``. A recurring error warns again once the interval passes or its
+#: type changes, and every key that did not raise on the latest sweep is dropped,
+#: so a clean pass re-arms the warning and the map stays bounded by the scopes
+#: currently failing.
+_SCOPE_ERRORS_WARNED: dict[tuple[str, str], tuple[str, float]] = {}
+
+#: The reading for a pid whose stat cannot be read: every field unknown.
+_NO_STAT = platform_compat.ProcStat(state=None, ppid=None, pgrp=None, start_ticks=None)
+
+#: Each pid's stat, read on first use and reused (see :func:`_stat_memo`).
+_Stats = Callable[[int], platform_compat.ProcStat]
+
 
 @dataclass
 class ReapSummary:
@@ -107,35 +126,32 @@ class ReapSummary:
 # ── clock / identity helpers ────────────────────────────────────────────────
 
 
-def gateway_boot_monotonic_us() -> int | None:
+def gateway_boot_monotonic_us(proc_root: Path = Path("/proc")) -> int | None:
     """This gateway process's start, on systemd's ``CLOCK_MONOTONIC`` (µs).
 
     systemd stamps ``ActiveEnterTimestampMonotonic`` in ``CLOCK_MONOTONIC``
     microseconds, so a scope's stamp and this value are directly comparable. We
     derive the gateway's start by subtracting its own elapsed runtime from
     ``CLOCK_MONOTONIC`` now. Elapsed is measured on ``CLOCK_BOOTTIME`` (which
-    ``/proc/self/stat`` field 22 counts from), and the two clocks differ only by
+    ``/proc/<pid>/stat`` field 22 counts from), and the two clocks differ only by
     time spent suspended -- which makes the derived start slightly *earlier*
     than the truth, so the "predates gateway boot" arm errs toward NOT reaping.
-    Returns ``None`` off Linux or on any read failure; the leader-dead arm then
-    carries condition 3 alone.
+    The stat line is read as bytes, so a gateway whose ``comm`` is not UTF-8
+    still gets its stamp. Returns ``None`` off Linux or on any read failure; the
+    leader-dead arm then carries condition 3 alone.
     """
     if sys.platform != "linux":
         return None
-    try:
-        now_mono = time.clock_gettime(time.CLOCK_MONOTONIC)
-        now_boot = time.clock_gettime(time.CLOCK_BOOTTIME)
-        stat = Path("/proc/self/stat").read_text(encoding="utf-8")
-        # comm (field 2) may contain spaces and ')' -- split after the LAST ')'.
-        after = stat.rsplit(")", 1)[1].split()
-        start_ticks = int(after[19])  # field 22 overall (starttime), 0-indexed 19 here
-        clk_tck = os.sysconf("SC_CLK_TCK")
-        if clk_tck <= 0:
-            return None
-        elapsed = now_boot - (start_ticks / clk_tck)
-        return int((now_mono - elapsed) * 1_000_000)
-    except (OSError, ValueError, IndexError, AttributeError):
+    # MONOTONIC first: any delay before the boot-clock read inside the age then
+    # lengthens the elapsed time, which moves the derived start EARLIER.
+    now_mono = time.clock_gettime(time.CLOCK_MONOTONIC)
+    stat = platform_compat.read_proc_stat(os.getpid(), proc_root=proc_root)
+    if stat is None or stat.start_ticks is None:
         return None
+    elapsed = platform_compat.process_age_secs(stat.start_ticks)
+    if elapsed is None:
+        return None
+    return int((now_mono - elapsed) * 1_000_000)
 
 
 def _cached_gateway_boot_us() -> int | None:
@@ -167,9 +183,8 @@ def _scope_active_enter_us(unit_name: str) -> int | None:
                 "--value",
             ],
             capture_output=True,
-            text=True,
-            encoding="utf-8",
             timeout=5,
+            **UTF8_TEXT,
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -204,38 +219,26 @@ def _pid_alive(pid: int, proc_root: Path) -> bool:
     return (proc_root / str(pid)).exists()
 
 
-def _pid_pgrp(pid: int, proc_root: Path) -> int | None:
-    """Process-group id from ``/proc/<pid>/stat`` field 5, or ``None``.
+def _stat_memo(proc_root: Path) -> _Stats:
+    """Each pid's stat, read on first use and reused: one read per pid per evaluation.
 
-    ``comm`` (field 2) is parenthesised and may itself contain spaces and
-    ``)``, so the numeric fields are read after the LAST ``)``: there, index 0
-    is ``state``, 1 is ``ppid``, 2 is ``pgrp``.
+    Lazy so a scope rejected before an arm needs a field pays nothing for it,
+    and memoized so every arm of one decision reads the same process. The
+    per-signal re-verification takes a FRESH memo, never the decision's.
     """
-    try:
-        stat = (proc_root / str(pid) / "stat").read_text(encoding="utf-8")
-    except OSError:
-        return None
-    try:
-        after = stat.rsplit(")", 1)[1].split()
-        return int(after[2])
-    except (ValueError, IndexError):
-        return None
+
+    @functools.cache
+    def stat(pid: int) -> platform_compat.ProcStat:
+        return platform_compat.read_proc_stat(pid, proc_root=proc_root) or _NO_STAT
+
+    return stat
 
 
-def _pid_ppid(pid: int, proc_root: Path) -> int | None:
-    """Parent pid from ``/proc/<pid>/stat`` field 4 (index 1 after ``)``)."""
-    try:
-        stat = (proc_root / str(pid) / "stat").read_text(encoding="utf-8")
-    except OSError:
-        return None
-    try:
-        after = stat.rsplit(")", 1)[1].split()
-        return int(after[1])
-    except (ValueError, IndexError):
-        return None
-
-
-def _scope_owned_pids(pids: list[int], proc_root: Path) -> tuple[set[int], str]:
+def _scope_owned_pids(
+    pids: list[int],
+    proc_root: Path,
+    stats: _Stats,
+) -> tuple[set[int], str]:
     """``(owned members, reason)`` -- *reason* is non-empty when ANY member is not ours.
 
     Ownership is by TREE, not by per-process environ. The spawn wrapper stamps
@@ -252,6 +255,8 @@ def _scope_owned_pids(pids: list[int], proc_root: Path) -> tuple[set[int], str]:
     uses *owned* alone, so a stranger (a recycled PID, a foreign process placed
     in our cgroup, an unreadable environ) is skipped while our own members are
     still signalled.
+
+    *stats* supplies each member's ``ppid``; only unmarked members' chains read it.
     """
     members = set(pids)
     marked: set[int] = set()
@@ -270,7 +275,7 @@ def _scope_owned_pids(pids: list[int], proc_root: Path) -> tuple[set[int], str]:
         cur = pid
         seen: set[int] = set()
         while True:
-            parent = _pid_ppid(cur, proc_root)
+            parent = stats(cur).ppid
             if parent is None or parent <= 1 or parent not in members or parent in seen:
                 reason = reason or f"pid {pid} missing {KIROCREW_SPAWNED_ENV} marker"
                 break
@@ -323,7 +328,7 @@ def _scope_is_only_credential_helpers(pids: list[int], proc_root: Path) -> bool:
     return True
 
 
-def _leaders_dead(pids: list[int], proc_root: Path) -> bool:
+def _leaders_dead(pids: list[int], proc_root: Path, stats: _Stats) -> bool:
     """True when every process-group leader of *pids* is gone.
 
     A live leader that is still a leader (``pgrp == pid``) means the owning
@@ -332,7 +337,7 @@ def _leaders_dead(pids: list[int], proc_root: Path) -> bool:
     """
     pgids: set[int] = set()
     for pid in pids:
-        pg = _pid_pgrp(pid, proc_root)
+        pg = stats(pid).pgrp
         if pg is None or pg <= 0:
             return False
         pgids.add(pg)
@@ -340,8 +345,10 @@ def _leaders_dead(pids: list[int], proc_root: Path) -> bool:
         if not _pid_alive(pg, proc_root):
             continue
         # A recycled PID that is NOT itself a group leader does not resurrect
-        # ownership; a live true leader (pgrp == self) does.
-        if _pid_pgrp(pg, proc_root) == pg:
+        # ownership; a live true leader (pgrp == self) does. A live leader is
+        # normally a member already read; one outside the scope is a recycled or
+        # foreign pid, or a group the spawn did not lead, and is read here.
+        if stats(pg).pgrp == pg:
             return False
     return True
 
@@ -369,7 +376,8 @@ def _scope_reclaimable(
         return False, "no members", None
 
     enter_us = active_enter_us(scope_dir.name)
-    age = _scope_age_secs(enter_us, pids, proc_root, now_monotonic)
+    stats = _stat_memo(proc_root)
+    age = _scope_age_secs(enter_us, pids, now_monotonic, stats)
 
     # (i) nothing tracked / no live provider tree.
     for pid in pids:
@@ -380,7 +388,7 @@ def _scope_reclaimable(
 
     # (ii-a) every member is ours -- by marker or by descent from a marked
     # member inside this scope; an unreadable environ fails closed.
-    _owned, why = _scope_owned_pids(pids, proc_root)
+    _owned, why = _scope_owned_pids(pids, proc_root, stats)
     if why:
         return False, why, age
 
@@ -395,7 +403,7 @@ def _scope_reclaimable(
         return False, "no agent-runtime anchor in scope", age
 
     # (iii) leader dead OR scope predates this gateway's boot.
-    leaders_dead = _leaders_dead(pids, proc_root)
+    leaders_dead = _leaders_dead(pids, proc_root, stats)
     predates_boot = (
         enter_us is not None and gateway_boot_us is not None and enter_us < gateway_boot_us
     )
@@ -441,8 +449,8 @@ def _skip_reason_category(reason: str) -> str:
 def _scope_age_secs(
     enter_us: int | None,
     pids: list[int],
-    proc_root: Path,
     now_monotonic: float,
+    stats: _Stats,
 ) -> float | None:
     """Age of the scope in seconds, from its active-enter stamp when present.
 
@@ -455,31 +463,12 @@ def _scope_age_secs(
         return max(0.0, now_monotonic - enter_us / 1_000_000)
     youngest: float | None = None
     for pid in pids:
-        age = _pid_age_secs(pid, proc_root)
+        ticks = stats(pid).start_ticks
+        age = None if ticks is None else platform_compat.process_age_secs(ticks)
         if age is None:
             continue
         youngest = age if youngest is None else min(youngest, age)
     return youngest
-
-
-def _pid_age_secs(pid: int, proc_root: Path) -> float | None:
-    """Age of *pid* from ``/proc/<pid>/stat`` starttime, or ``None``.
-
-    ``starttime`` (field 22) is in clock ticks from boot on the same base as
-    ``CLOCK_BOOTTIME``, so ``boottime_now - starttime`` is the process age. Used
-    only as a fallback when the scope's active-enter stamp is unavailable.
-    """
-    try:
-        stat = (proc_root / str(pid) / "stat").read_text(encoding="utf-8")
-        after = stat.rsplit(")", 1)[1].split()
-        start_ticks = int(after[19])
-        clk_tck = os.sysconf("SC_CLK_TCK")
-        uptime = time.clock_gettime(time.CLOCK_BOOTTIME)
-    except (OSError, ValueError, IndexError, AttributeError):
-        return None
-    if clk_tck <= 0:
-        return None
-    return max(0.0, uptime - start_ticks / clk_tck)
 
 
 # ── reclaim ──────────────────────────────────────────────────────────────────
@@ -494,9 +483,8 @@ def _systemctl_stop(unit_name: str) -> bool:
         out = subprocess.run(
             [systemctl, "--user", "stop", unit_name],
             capture_output=True,
-            text=True,
-            encoding="utf-8",
             timeout=15,
+            **UTF8_TEXT,
         )
     except (OSError, subprocess.SubprocessError):
         return False
@@ -533,7 +521,7 @@ def _pidfd_signal_owned(
         # this number before the pin is not a member of the abandoned scope.
         if pid not in _read_cgroup_procs(scope_dir):
             return False, ""
-        owned, _why = _scope_owned_pids(members, proc_root)
+        owned, _why = _scope_owned_pids(members, proc_root, _stat_memo(proc_root))
         if pid not in owned:
             return False, ""
         try:
@@ -682,8 +670,19 @@ def _stop_and_signal_members(
         return True
 
     refusal_reasons: set[str] = set()
-
-    def warn_refusals() -> None:
+    try:
+        return _signal_survivors(
+            unit_name,
+            scope_dir,
+            proc_root,
+            my_pid=my_pid,
+            signal_owned=signal_owned,
+            sleep=sleep,
+            refusal_reasons=refusal_reasons,
+        )
+    finally:
+        # In a finally so a signal seam that raises mid-ladder still reports the
+        # refusals gathered before it.
         if refusal_reasons:
             logger.warning(
                 "agent_scope_reap signalling skipped unit=%s reasons=%s",
@@ -691,6 +690,18 @@ def _stop_and_signal_members(
                 ",".join(sorted(refusal_reasons)),
             )
 
+
+def _signal_survivors(
+    unit_name: str,
+    scope_dir: Path,
+    proc_root: Path,
+    *,
+    my_pid: int,
+    signal_owned: Callable[[int, int, list[int], Path, Path], tuple[bool, str]],
+    sleep: Callable[[float], None],
+    refusal_reasons: set[str],
+) -> bool:
+    """SIGTERM -> grace -> SIGKILL the members left after the stop; whether it cleared."""
     # Through ``platform_compat``, which defines both on every platform, rather than
     # off ``signal``, where SIGKILL does not exist on Windows. The values are
     # identical on POSIX; what this buys is a function whose ladder can be exercised
@@ -699,7 +710,6 @@ def _stop_and_signal_members(
     for sig in (platform_compat.SIGTERM, platform_compat.SIGKILL):
         remaining = _read_cgroup_procs(scope_dir)
         if not remaining:
-            warn_refusals()
             return True
         sent_any = False
         for pid in remaining:
@@ -729,7 +739,6 @@ def _stop_and_signal_members(
                 refusal_reasons.add(reason)
         if sig == platform_compat.SIGTERM and sent_any:
             sleep(_TERM_GRACE_SECS)
-    warn_refusals()
     return not _read_cgroup_procs(scope_dir)
 
 
@@ -780,6 +789,91 @@ def _instance_scope_dir() -> tuple[Path | None, str]:
     return inst, ""
 
 
+def _warn_scope_error(unit_name: str, phase: str, exc: BaseException) -> None:
+    """Report a scope whose *phase* raised: at WARNING when new, changed or due again.
+
+    The traceback is always logged, at DEBUG when the WARNING is withheld.
+    """
+    key = (unit_name, phase)
+    kind = type(exc).__name__
+    now = time.monotonic()
+    last = _SCOPE_ERRORS_WARNED.get(key)
+    if last is not None and last[0] == kind and now - last[1] < _SCOPE_ERROR_REWARN_SECS:
+        logger.debug("agent_scope_reap unit=%s %s failed again", unit_name, phase, exc_info=True)
+        return
+    logger.warning(
+        "agent_scope_reap unit=%s: %s failed (%s: %s); the other scopes are still swept "
+        "(repeats at most once per %.0fs while it keeps failing)",
+        unit_name,
+        phase,
+        kind,
+        exc,
+        _SCOPE_ERROR_REWARN_SECS,
+        exc_info=True,
+    )
+    _SCOPE_ERRORS_WARNED[key] = (kind, now)
+
+
+def _reclaim_and_audit(
+    scope_dir: Path,
+    reason: str,
+    *,
+    proc_root: Path,
+    stop_unit: Callable[[str], bool],
+    signal_owned: Callable[[int, int, list[int], Path, Path], tuple[bool, str]],
+    sleep: Callable[[float], None],
+) -> tuple[bool, bool]:
+    """Reclaim one reclaimable scope and emit its SEL event: ``(cleared, raised)``.
+
+    A reclaim that raises is audited by what it left behind -- the stop may
+    already have landed -- so an emptied scope is ``completed`` and one with
+    members left is ``failed``; it is never an evaluation error and never silent.
+    """
+    unit_name = scope_dir.name
+    members = len(_read_cgroup_procs(scope_dir))
+    refused: list[str] = []
+    raised = False
+    try:
+        cleared = _reclaim_scope(
+            scope_dir,
+            unit_name,
+            proc_root=proc_root,
+            stop_unit=stop_unit,
+            signal_owned=signal_owned,
+            sleep=sleep,
+            on_refusal=refused.append,
+        )
+    except AssertionError:
+        raise
+    except Exception as exc:
+        _warn_scope_error(unit_name, "reclaim", exc)
+        raised = True
+        cleared = not _read_cgroup_procs(scope_dir)
+    # A refusal and a failure are different events for an operator: one says a
+    # tenant is still using the scope and the next pass should try again, the
+    # other says the stop was attempted and did not finish.
+    if cleared:
+        outcome = "completed"
+    elif refused:
+        outcome = "refused"
+    else:
+        outcome = "failed"
+    _sel_scope_reap(unit_name, members, reason, outcome)
+    # A reclaim that raised was already named under the per-scope rate limit, so
+    # repeating the unit at WARNING on every tick would defeat that limit.
+    level = logging.DEBUG if raised else logging.WARNING
+    if refused:
+        logger.log(
+            level,
+            "agent_scope_reap left unit=%s for the next pass: %s",
+            unit_name,
+            ",".join(refused),
+        )
+    elif not cleared:
+        logger.log(level, "agent_scope_reap could not fully clear unit=%s", unit_name)
+    return cleared, raised
+
+
 def reap_scopes(
     slice_dir: Path,
     *,
@@ -810,19 +904,36 @@ def reap_scopes(
     except OSError as exc:
         summary.reason = f"cannot list slice dir: {exc}"
         return summary
+    errored: set[tuple[str, str]] = set()
     for scope_dir in children:
         summary.scanned += 1
         unit_name = scope_dir.name
-        reclaimable, reason, age = _scope_reclaimable(
-            scope_dir,
-            proc_root=proc_root,
-            active_pids=active_pids,
-            tracked_pids=tracked_pids,
-            gateway_boot_us=gateway_boot_us,
-            min_age_secs=min_age_secs,
-            now_monotonic=now_monotonic,
-            active_enter_us=active_enter_us,
-        )
+        # A scope whose evaluation raises costs that scope alone: the loop is
+        # sorted, so an error escaping here would starve every scope after it on
+        # every tick, and the session-cleanup hook does not retry within a tick.
+        # An AssertionError is a broken invariant, not an unreadable scope.
+        try:
+            reclaimable, reason, age = _scope_reclaimable(
+                scope_dir,
+                proc_root=proc_root,
+                active_pids=active_pids,
+                tracked_pids=tracked_pids,
+                gateway_boot_us=gateway_boot_us,
+                min_age_secs=min_age_secs,
+                now_monotonic=now_monotonic,
+                active_enter_us=active_enter_us,
+            )
+        except AssertionError:
+            raise
+        except Exception as exc:
+            _warn_scope_error(unit_name, "evaluation", exc)
+            errored.add((unit_name, "evaluation"))
+            summary.skipped += 1
+            skipped_reasons["error"] += 1
+            # Its age is unknown, so it counts as old: the INFO summary then
+            # counts it on every tick it keeps failing.
+            has_old_skipped_scope = True
+            continue
         logger.debug(
             "agent_scope_reap unit=%s reclaimable=%s reason=%s", unit_name, reclaimable, reason
         )
@@ -833,39 +944,26 @@ def reap_scopes(
                 age is not None and age > min_age_secs
             )
             continue
-        members = len(_read_cgroup_procs(scope_dir))
-        refused: list[str] = []
-        cleared = _reclaim_scope(
+        cleared, raised = _reclaim_and_audit(
             scope_dir,
-            unit_name,
+            reason,
             proc_root=proc_root,
             stop_unit=stop_unit,
             signal_owned=signal_owned,
             sleep=sleep,
-            on_refusal=refused.append,
         )
-        # A refusal and a failure are different events for an operator: one says a
-        # tenant is still using the scope and the next pass should try again, the
-        # other says the stop was attempted and did not finish.
-        if cleared:
-            outcome = "completed"
-        elif refused:
-            outcome = "refused"
-        else:
-            outcome = "failed"
-        _sel_scope_reap(unit_name, members, reason, outcome)
+        if raised:
+            errored.add((unit_name, "reclaim"))
         if cleared:
             summary.reclaimed += 1
-        else:
-            summary.skipped += 1
-            if refused:
-                logger.warning(
-                    "agent_scope_reap left unit=%s for the next pass: %s",
-                    unit_name,
-                    ",".join(refused),
-                )
-            else:
-                logger.warning("agent_scope_reap could not fully clear unit=%s", unit_name)
+            continue
+        summary.skipped += 1
+        if raised:
+            skipped_reasons["reclaim_error"] += 1
+            has_old_skipped_scope = True
+    # A key that did not raise this sweep is forgotten: its next error is new.
+    for key in [key for key in _SCOPE_ERRORS_WARNED if key not in errored]:
+        del _SCOPE_ERRORS_WARNED[key]
     if has_old_skipped_scope:
         counts = " ".join(f"{name}={count}" for name, count in sorted(skipped_reasons.items()))
         logger.info("agent_scope_reap: skipped old scope(s): %s", counts)

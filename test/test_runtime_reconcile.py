@@ -4157,3 +4157,45 @@ def test_an_incomplete_union_skip_surfaces_through_the_same_warn_once_ledger(
     assert warnings, "the incomplete-union skip must warn, not stay at debug"
     assert "incomplete" in warnings[0].getMessage()
     assert cleanup.state.reconcile_refusal_reason == "the active-pid union is incomplete"
+
+
+def test_a_failing_scope_reap_hook_warns_rate_limited_and_re_arms(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An escape from the agent-scope reaper skips every scope, so it reaches WARNING.
+
+    Once per interval while it keeps failing, and again at once after a clean pass:
+    a DEBUG-only escape is how the reaper once went inert with nothing to see.
+    """
+    import dataclasses
+
+    logger = logging.getLogger("test.scope_reap_hook.warn")
+    clock = [100.0]
+    cleanup = _cleanup_with_clock(clock, logger=logger)
+    outcome: list[Any] = [RuntimeError("boom")]
+
+    def reap(_pids: set[int]) -> Any:
+        if isinstance(outcome[0], Exception):
+            raise outcome[0]
+        return outcome[0]
+
+    cleanup._deps = dataclasses.replace(cleanup._deps, reap_agent_scopes=reap)
+    interval = cleanup.PROBE_FAILURE_WARN_INTERVAL_SECS
+
+    def warnings() -> int:
+        return sum("Agent-scope reap failed" in m for m in caplog.messages)
+
+    with caplog.at_level(logging.WARNING, logger=logger.name):
+        asyncio.run(cleanup._reap_agent_scopes_hook())
+        clock[0] += 1.0
+        asyncio.run(cleanup._reap_agent_scopes_hook())
+        assert warnings() == 1
+        clock[0] += interval
+        asyncio.run(cleanup._reap_agent_scopes_hook())
+        assert warnings() == 2
+        outcome[0] = None
+        asyncio.run(cleanup._reap_agent_scopes_hook())
+        outcome[0] = RuntimeError("again")
+        clock[0] += 1.0
+        asyncio.run(cleanup._reap_agent_scopes_hook())
+        assert warnings() == 3

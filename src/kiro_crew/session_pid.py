@@ -4589,7 +4589,10 @@ def _read_tracked_agent_pids() -> tuple[set[int], bool]:
     paths = (_session_pid_file_path(), _pid_file_path())
     for path, (_label, reapable_index) in zip(paths, _REAPABLE_PID_FIELD):
         try:
-            raw = path.read_text(encoding="utf-8")
+            # errors="replace": bytes no writer produces are damage, so they fail
+            # the per-line int() below and mark the snapshot incomplete instead of
+            # raising out of every reaper that reads it.
+            raw = path.read_text(encoding="utf-8", errors="replace")
         except OSError as exc:
             if exc.errno != errno.ENOENT:
                 complete = False
