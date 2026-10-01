@@ -68,10 +68,13 @@ vi.mock('../api/client', () => ({
 import chatReducer, {
   PANE_HYDRATE_LIMIT,
   WINDOW_WALK_MAX_PAGES,
+  appendSlotMessage,
   hydrateSlotMessages,
   refreshSlot,
   setActiveSlot,
+  sseChatMessage,
   switchSlot,
+  warmSlotCache,
 } from './chatSlice'
 import { api } from '../api/client'
 
@@ -82,7 +85,7 @@ function makeStore(extra: Record<string, unknown> = {}) {
   return configureStore({
     reducer: { chat: chatReducer },
     preloadedState: { chat: { ...base, activeSlot: SLOT, ...extra } },
-    middleware: (getDefault) => getDefault({ serializableCheck: false, immutableCheck: false }),
+    // Match the production store, including the default development checks.
   })
 }
 
@@ -309,6 +312,230 @@ describe('walkWindowBackTo', () => {
       expect(after.messages).toHaveLength(1300)
       expect(after.messages[0].content).toBe('m0')
       expect(after.slotHasMore).toBe(false)
+    })
+  })
+
+  describe('warmSlotCache', () => {
+    /** A background pane holding rows `[from, from + n)`, as a switch away caches it. */
+    function backgroundPane(n: number, from: number, total: number) {
+      const store = makeStore({ activeSlot: 'other' })
+      store.dispatch(setActiveSlot('other'))
+      store.dispatch(hydrateSlotMessages({
+        slot: SLOT, messages: rows(n, from), hasMore: from > 0,
+        bounded: true, total, running: false,
+      }))
+      return store
+    }
+    const cached = (store: ReturnType<typeof makeStore>) =>
+      (store.getState().chat.slotMessages?.[SLOT] ?? []).map(m => m.content)
+
+    it('warms a pane past the clamp with one bounded page, not the whole transcript', async () => {
+      // The reported case: a background pane holds the newest 8,000 rows of an
+      // 8,000-row session and its turn ends with two new rows. One clamp-sized
+      // page overlaps the cache, so one request does it -- the cache is too wide
+      // for a count-matched limit, which used to mean an unbounded read.
+      HISTORY = rows(8000)
+      const store = backgroundPane(8000, 0, 8000)
+      HISTORY = rows(8002)
+
+      await store.dispatch(warmSlotCache(SLOT) as never)
+
+      expect(requests()).toEqual([[SERVER_CLAMP, undefined]])
+      const contents = cached(store)
+      // The held head above the page survived, and the new rows landed.
+      expect(contents).toHaveLength(8002)
+      expect(contents[0]).toBe('m0')
+      expect(contents.at(-1)).toBe('m8001')
+      expect(new Set(contents).size).toBe(contents.length)
+    })
+
+    it('walks a coverage gap older, bounded, and keeps the held head where it anchors', async () => {
+      // The pane holds rows 0..599 and the server gained 1,400 while it was off
+      // screen. The newest page (1500..1999) misses the cache; the walk reads
+      // 1000..1499 and 500..999, which anchors cache row 500. Stop there.
+      HISTORY = rows(600)
+      const store = backgroundPane(600, 0, 600)
+      HISTORY = rows(2000)
+
+      await store.dispatch(warmSlotCache(SLOT) as never)
+
+      expect(requests()).toEqual([
+        [SERVER_CLAMP, undefined],
+        [SERVER_CLAMP, 1500],
+        [SERVER_CLAMP, 1000],
+        [SERVER_CLAMP, undefined],
+      ])
+      const contents = cached(store)
+      expect(contents).toHaveLength(2000)
+      // Rows 0..499 sat above the walked window: the reducer kept them.
+      expect(contents[0]).toBe('m0')
+      expect(contents).toContain('m599')
+      expect(contents.at(-1)).toBe('m1999')
+      expect(new Set(contents).size).toBe(contents.length)
+    })
+
+    it('keeps a just-sent row when the walk stops on a window that contains the whole cache', async () => {
+      // The pane holds rows 1100..1149 plus a send the server has not persisted yet,
+      // and the server is now 2,000 rows deep. The walk's second older page
+      // (949..1448) contains the cache's oldest row, so it stops on a SUPERSET whose
+      // own oldest row is older than the cache. That window covers the cache: the
+      // just-sent row must survive as newer than the page, not be dropped as if the
+      // walk had run out of pages.
+      HISTORY = rows(1150)
+      const store = backgroundPane(50, 1100, 1150)
+      store.dispatch(appendSlotMessage({
+        slot: SLOT,
+        message: { role: 'user', content: 'just sent', cls: 'msg msg-u', ts: new Date(Date.UTC(2026, 0, 2)).toISOString(), meta: { sendId: 's-1' } } as never,
+      }))
+      HISTORY = rows(2000)
+
+      await store.dispatch(warmSlotCache(SLOT) as never)
+
+      expect(limits()).not.toContain(undefined)
+      const contents = cached(store)
+      expect(contents).toContain('m1100')
+      expect(contents).toContain('m1999')
+      expect(contents.at(-1)).toBe('just sent')
+    })
+
+    it.each([50, 5000])('keeps the cache when a user row is appended during an unanchored warm of %i rows', async (held) => {
+      HISTORY = rows(held)
+      const store = backgroundPane(held, 0, held)
+      const before = store.getState().chat
+      let live = before
+      HISTORY = rows(20_000)
+      ON_OLDER = () => {
+        store.dispatch(appendSlotMessage({
+          slot: SLOT,
+          message: { role: 'user', content: 'sent during walk', cls: 'msg msg-u', meta: { sendId: 'during-walk' } },
+        }))
+        live = store.getState().chat
+      }
+
+      const payload = await store.dispatch(warmSlotCache(SLOT)).unwrap()
+
+      expect(payload?.walkUnanchored).toBe(true)
+      expect(payload?.cacheAtDispatch).toBe(before.slotMessages[SLOT])
+      expect(limits()).toHaveLength(1 + WINDOW_WALK_MAX_PAGES + 1)
+      expect(limits()).not.toContain(undefined)
+      // An optimistic send changes the cache without changing the run tick.
+      expect(live.slotRun[SLOT]?.tick).toBe(before.slotRun[SLOT]?.tick)
+      expect(live.slotMessages[SLOT]).not.toBe(before.slotMessages[SLOT])
+      const after = store.getState().chat
+      expect(after.slotMessages[SLOT]).toBe(live.slotMessages[SLOT])
+      expect(cached(store)).toEqual([...rows(held).map(m => m.content), 'sent during walk'])
+      expect(after.slotPaneHasMore?.[SLOT]).toBe(live.slotPaneHasMore?.[SLOT])
+      expect(after.slotPaneBounded?.[SLOT]).toBe(live.slotPaneBounded?.[SLOT])
+      expect(after.slotServerTotal?.[SLOT]).toBe(20_000)
+    })
+
+    it('keeps an in-place streaming chunk received during an unanchored warm', async () => {
+      HISTORY = rows(50)
+      const store = backgroundPane(50, 0, 50)
+      store.dispatch(sseChatMessage({ slot: SLOT, role: 'chunk', content: 'first', seq: 1 }))
+      const before = store.getState().chat
+      let live = before
+      HISTORY = rows(20_000)
+      ON_OLDER = () => {
+        store.dispatch(sseChatMessage({ slot: SLOT, role: 'chunk', content: ' second', seq: 2 }))
+        live = store.getState().chat
+      }
+
+      const payload = await store.dispatch(warmSlotCache(SLOT)).unwrap()
+
+      expect(payload?.walkUnanchored).toBe(true)
+      expect(payload?.cacheAtDispatch).toBe(before.slotMessages[SLOT])
+      expect(limits()).toHaveLength(1 + WINDOW_WALK_MAX_PAGES + 1)
+      expect(limits()).not.toContain(undefined)
+      // The real chunk reducer edits the row, not the array length; Immer must
+      // still give that slot a new array identity without mutating the snapshot.
+      expect(live.slotMessages[SLOT]).toHaveLength(before.slotMessages[SLOT].length)
+      expect(live.slotMessages[SLOT]).not.toBe(before.slotMessages[SLOT])
+      expect(before.slotMessages[SLOT].at(-1)?.content).toBe('first')
+      const after = store.getState().chat
+      expect(after.slotMessages[SLOT]).toBe(live.slotMessages[SLOT])
+      expect(cached(store)).toEqual([...rows(50).map(m => m.content), 'first second'])
+      expect(after.slotMessages[SLOT].at(-1)).toMatchObject({
+        role: 'streaming', content: 'first second', rawText: 'first second',
+      })
+      expect(after.slotPaneHasMore?.[SLOT]).toBe(live.slotPaneHasMore?.[SLOT])
+      expect(after.slotPaneBounded?.[SLOT]).toBe(live.slotPaneBounded?.[SLOT])
+      expect(after.slotRun[SLOT]).toEqual(live.slotRun[SLOT])
+      expect(after.slotServerTotal?.[SLOT]).toBe(20_000)
+    })
+
+    it('keeps the newer cache and paging markers when an older unanchored warm settles last', async () => {
+      HISTORY = rows(50)
+      const store = backgroundPane(50, 0, 50)
+      const detail = vi.mocked(api.chatSlotDetail)
+      const readDetail = detail.getMockImplementation()!
+      let releaseOlder!: () => void
+      detail.mockImplementationOnce((...args) => {
+        const response = readDetail(...args)
+        return new Promise(resolve => { releaseOlder = () => resolve(response) })
+      })
+      // Hold the old snapshot while a newer warm observes rewritten history.
+      const cacheAtDispatch = store.getState().chat.slotMessages[SLOT]
+      const staleHistory = rows(20_000)
+      HISTORY = staleHistory
+      const older = store.dispatch(warmSlotCache(SLOT))
+      HISTORY = rows(20)
+      await store.dispatch(warmSlotCache(SLOT)).unwrap()
+      const newer = store.getState().chat
+      const requestsBeforeRelease = limits().length
+      expect(cached(store)).toEqual(HISTORY.map(m => m.content))
+      expect(newer.slotPaneHasMore?.[SLOT]).toBe(false)
+      expect(newer.slotPaneBounded?.[SLOT]).toBeUndefined()
+
+      // The older request finishes its bounded walk against its old corpus.
+      HISTORY = staleHistory
+      releaseOlder()
+      const payload = await older.unwrap()
+      expect(payload?.walkUnanchored).toBe(true)
+      expect(payload?.cacheAtDispatch).toBe(cacheAtDispatch)
+      expect(newer.slotMessages[SLOT]).not.toBe(cacheAtDispatch)
+      expect(limits()).toHaveLength(requestsBeforeRelease + WINDOW_WALK_MAX_PAGES + 1)
+      expect(limits()).not.toContain(undefined)
+      const after = store.getState().chat
+      expect(after.slotMessages[SLOT]).toBe(newer.slotMessages[SLOT])
+      expect(after.slotPaneHasMore?.[SLOT]).toBe(newer.slotPaneHasMore?.[SLOT])
+      expect(after.slotPaneBounded?.[SLOT]).toBe(newer.slotPaneBounded?.[SLOT])
+      expect(after.slotServerTotal?.[SLOT]).toBe(20)
+      expect(after.slotServerTotalSeq?.[SLOT]).toBe(newer.slotServerTotalSeq?.[SLOT])
+      expect(after.slotRun[SLOT]).toEqual(newer.slotRun[SLOT])
+    })
+
+    it('never reads unbounded, spending at most 1 + cap + 1 requests, and replaces rather than splices when the cap runs out', async () => {
+      // The gap is wider than the cap covers: the pane holds rows 0..4999 -- more
+      // than the walk's whole window -- and the server is 20,000 rows deep. The walk
+      // takes exactly the cap and stops, where the unbounded read it replaces would
+      // have moved all 20,000. The walked window is disjoint from the cache, so
+      // merging would publish a hole between row 4999 and the window; the pane takes
+      // the window instead, with a paging cursor that reaches the rest.
+      HISTORY = rows(5000)
+      const store = backgroundPane(5000, 0, 5000)
+      const cacheAtDispatch = store.getState().chat.slotMessages[SLOT]
+      HISTORY = rows(20_000)
+
+      const payload = await store.dispatch(warmSlotCache(SLOT)).unwrap()
+
+      expect(payload?.walkUnanchored).toBe(true)
+      expect(payload?.cacheAtDispatch).toBe(cacheAtDispatch)
+      expect(Object.isFrozen(payload?.cacheAtDispatch)).toBe(true)
+      const sent = limits()
+      expect(sent).not.toContain(undefined)
+      expect(sent).toHaveLength(1 + WINDOW_WALK_MAX_PAGES + 1)
+      expect(Math.max(...(sent as number[]))).toBeLessThanOrEqual(SERVER_CLAMP)
+      const contents = cached(store)
+      const walked = (1 + WINDOW_WALK_MAX_PAGES) * SERVER_CLAMP
+      expect(contents).toHaveLength(walked)
+      expect(contents[0]).toBe(`m${20_000 - walked}`)
+      expect(contents.at(-1)).toBe('m19999')
+      expect(contents).not.toContain('m4999')
+      expect(contents).toEqual(HISTORY.slice(-walked).map(m => m.content))
+      expect(store.getState().chat.slotMessages[SLOT]).not.toBe(cacheAtDispatch)
+      expect(store.getState().chat.slotPaneHasMore?.[SLOT]).toBe(true)
+      expect(store.getState().chat.slotPaneBounded?.[SLOT]).toBe(walked)
     })
   })
 })

@@ -154,8 +154,10 @@ describe('a bounded refetch must not shrink what is already loaded', () => {
     expect(store.getState().chat.slotMessages.bg.length).toBe(111)
 
     await store.dispatch(warmSlotCache('bg'))
-    // The newest 111 rows miss this oldest-111 cache, so coverage widens once.
-    expect(limitsFor('bg')).toEqual([111, undefined])
+    // The newest 111 rows miss this oldest-111 cache, so the window walks older
+    // one clamp-sized page (which reaches the start here), then re-reads its
+    // newest edge -- every request bounded.
+    expect(limitsFor('bg')).toEqual([111, 500, 500])
     expect(store.getState().chat.slotMessages.bg.length).toBeGreaterThanOrEqual(111)
   })
 

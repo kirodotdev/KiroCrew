@@ -1,7 +1,7 @@
 /** Extending a most-recent slot-detail window OLDER, one bounded page at a time,
- *  until it reaches the rows a tab already holds. `refreshSlot` and `switchSlot`
- *  take this instead of re-reading the whole chained transcript when their
- *  window misses what the tab holds. */
+ *  until it reaches the rows a tab already holds. `refreshSlot`, `switchSlot` and
+ *  `warmSlotCache` take this instead of re-reading the whole chained transcript
+ *  when their window misses what the tab holds. */
 import { api } from '../../api/client'
 import type { ChatMessage } from '../../types'
 import { devLog, inspectorOn } from '../../dev/scrollInspector'
