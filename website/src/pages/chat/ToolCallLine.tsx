@@ -15,7 +15,7 @@ import ErrorNotice from '../../components/ErrorNotice'
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion'
 import type { ChatMessage } from '../../types'
 import { ToolDetails } from './ToolDetails'
-import { extractDenyDetail } from '../../utils/denyReason'
+import { extractDenyDetail, extractDenyNotice } from '../../utils/denyReason'
 import { registerToolPill } from '../../store/toolPillRegistry'
 import { ROW_PILL_BUTTON_CLASS, ROW_PILL_WRAPPER_CLASS } from './rowPill'
 import { extractToolFilePath } from '../../utils/toolFilePath'
@@ -236,7 +236,7 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
   // expansion as well as completion status for the icon. All transcript scans go
   // through the shared per-slot index (see toolRowIndex.ts): built once per
   // (messages, toolLog) identity change, O(1) per row per dispatch.
-  const { effectiveId, isDone: logIsDone, isRejected, isAutoDenied, autoDenyReason, purpose, input, output, inputCut, outputCut, auto, ts, executionStartedAt, hasEntry, isShell, toolKind, toolName, trustedToolName, mcpServer, fromLog } = useAppSelector(s => {
+  const { effectiveId, isDone: logIsDone, isRejected, isAutoDenied, autoDenyReason, autoDenyNotice, purpose, input, output, inputCut, outputCut, auto, ts, executionStartedAt, hasEntry, isShell, toolKind, toolName, trustedToolName, mcpServer, fromLog } = useAppSelector(s => {
     // Slot-aware: for a non-active slot (split-view pane) read that slot's
     // per-slot tool log / messages / running state; `slot` undefined or equal to
     // the active slot → active-slot globals.
@@ -263,14 +263,18 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
     // Output panel leads with its own LOCALIZED sentence and follows with the
     // rule, so the user learns which rule fired without a translated sentence
     // being replaced by untranslated English (extractDenyDetail yields "" for a
-    // row without that marker, and the panel then shows the localized line
-    // alone). The interactive user-reject path also appends a 🚫 message, but
-    // that flow ALSO resolves a permission message as rejected —
-    // wasRejectedByPerm() takes precedence below, so a user rejection still
-    // shows red, not amber.
+    // row without that marker). A row without the marker but with the host's
+    // own "Blocked: …" sentence — the gate-crash refusal, which says no policy
+    // rule fired — yields that sentence as the NOTICE, and the panel shows it
+    // in place of the localized line rather than contradicting it. A row with
+    // neither (hook blocked) shows the localized line alone. The interactive
+    // user-reject path also appends a 🚫 message, but that flow ALSO resolves
+    // a permission message as rejected — wasRejectedByPerm() takes precedence
+    // below, so a user rejection still shows red, not amber.
     const denySibling = denySiblingContent(index, toolCallId, message)
     const autoDenied = !!denySibling
     const autoDenyReason = extractDenyDetail(denySibling)
+    const autoDenyNotice = extractDenyNotice(denySibling)
 
     const e = lookupLogEntry(index, toolCallId, label)
     if (e) {
@@ -281,6 +285,7 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
         isDone, isRejected: rejected,
         isAutoDenied: !rejected && autoDenied,
         autoDenyReason,
+        autoDenyNotice,
         purpose: e.purpose || '',
         input: e.input || '',
         output: e.output || '',
@@ -324,6 +329,7 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
       isDone: true, isRejected: rejected,
       isAutoDenied: !rejected && autoDenied,
       autoDenyReason,
+      autoDenyNotice,
       purpose: (message.meta?.purpose as string) || '',
       // Persisted meta is served whole by the server (_tool_meta caps at 1 MB,
       // never clamps), so a historical row has no seam to mark.
@@ -732,9 +738,18 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
   // to fix: it names no rule, so the reader cannot tell WHICH policy fired.
   // Detail is absent for a hook-blocked row, which carries no marker; the
   // localized line then stands alone, exactly as it did before.
-  const denyOutput = [i18nT('pages.chat.toolCallLine.blocked_by_security_policy'), autoDenyReason]
-    .filter(Boolean)
-    .join('\n')
+  //
+  // A row that carries no marker but does carry the host's own "Blocked: …"
+  // sentence (the gate-crash refusal) shows that sentence INSTEAD of the
+  // localized line: the sentence states that no policy rule fired, so leading
+  // with "blocked by security policy" would assert the very thing it denies.
+  // The gate-crash sentence is an error (a caught gate exception), so it
+  // renders through ErrorNotice below rather than as the details output.
+  const denyOutput = autoDenyNotice
+    ? ''
+    : [i18nT('pages.chat.toolCallLine.blocked_by_security_policy'), autoDenyReason]
+      .filter(Boolean)
+      .join('\n')
 
   // The language-neutral, argument-derived title for this call — `List files
   // in src` for `ls -la src`, `Session send: <target>` for an MCP call, kiro-cli's
@@ -1170,6 +1185,10 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
             transition={{ duration: 0.35, ease: [0.4, 0.0, 0.2, 1] /* Material standard */ }}
             style={{ overflow: 'hidden' }}
           >
+            {/* askAgent on: a transcript row holds no draft of its own, the
+                composer draft is persisted per slot, and an in-chat hand-off
+                opens a fresh slot rather than navigating away. */}
+            {isAutoDenied && <ErrorNotice variant="inline" message={autoDenyNotice} askAgent testId="gate-crash-notice" />}
             <ToolDetails purpose={purpose} pillLabel={toolLabel} toolName={derived.rawTitle || label} input={input} output={isAutoDenied ? denyOutput : output} inputCut={inputCut} outputCut={isAutoDenied ? null : outputCut} auto={auto} pending={hasPendingPerm} ts={ts} hasEntry={hasEntry} fmtTime={fmtTime} barColor={barStyle} layoutId={`tool-detail-${effectiveId || toolCallId || fallbackId}`} flush />
           </motion.div>
         )}

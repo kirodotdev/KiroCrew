@@ -1236,6 +1236,11 @@ function createGatewaySupervisor({
       // shutdown deadline. The tree sweep is awaited because taskkill can emit
       // the parent's exit while descendants are still being reaped.
       killTreeFn: killGatewayTreeOnWindowsBounded,
+      // POSIX: the child may be a launcher shim that forked the gateway. These
+      // let the stop find and stop that gateway once the shim is gone.
+      listDescendantsFn: posixDescendantPids,
+      getCommandFn: psCommand,
+      signalPidFn: (pid, signal) => processObj.kill(pid, signal),
     });
     gatewayProcess = null;
     spawnedExecutablePaths = [];

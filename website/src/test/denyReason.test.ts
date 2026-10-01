@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { extractDenyDetail, extractDenyReason } from '../utils/denyReason'
+import { extractDenyDetail, extractDenyNotice, extractDenyReason } from '../utils/denyReason'
 
 // The Output panel of a blocked tool call used to show a fixed
 // "blocked by security policy" line and discard the row's real content, so the
@@ -91,5 +91,81 @@ describe('extractDenyDetail', () => {
 
   it('handles an absent row', () => {
     expect(extractDenyReason('')).toBe('')
+  })
+})
+
+describe('extractDenyNotice', () => {
+  // The gate-crash refusal (`hooks.py` GATE_CRASH_REASON) carries no
+  // "Blocked by security policy:" marker on purpose -- it says that no policy
+  // rule fired. Without this the Output panel showed ONLY its localized
+  // "blocked by security policy" line for that row: the user was told a rule
+  // fired, the exact claim the reason disclaims, and the reason never showed.
+  const CRASH_ROW =
+    '🚫 Running: ls — Blocked: the safety check crashed while judging this call ' +
+    '(SystemError), so the call was refused and nothing ran. This is a Kiro Crew ' +
+    'bug, not a policy rule and not a user action.'
+
+  it('returns the host sentence for a marker-less row', () => {
+    const out = extractDenyNotice(CRASH_ROW)
+    expect(out.startsWith('Blocked: the safety check crashed')).toBe(true)
+    expect(out).toContain('not a policy rule and not a user action')
+  })
+
+  it('drops the title and icon, so the panel shows the reason, not the command', () => {
+    const out = extractDenyNotice(CRASH_ROW)
+    expect(out).not.toContain('🚫')
+    expect(out).not.toContain('Running:')
+  })
+
+  it('yields empty for a marker row, which extractDenyDetail owns', () => {
+    // The two never both fire: a rule deny keeps its localized lead + detail.
+    const row = '🚫 shell — Blocked by security policy: rm -rf /.*'
+    expect(extractDenyNotice(row)).toBe('')
+    expect(extractDenyDetail(row)).toBe('rm -rf /.*')
+  })
+
+  it('yields empty for a hook-blocked row, so the localized line stands alone', () => {
+    expect(extractDenyNotice('🚫 shell (hook blocked)')).toBe('')
+    expect(extractDenyNotice('🚫 shell')).toBe('')
+    expect(extractDenyNotice('')).toBe('')
+  })
+
+  it('yields empty for a bare lead word rather than rendering it alone', () => {
+    expect(extractDenyNotice('🚫 shell — Blocked:')).toBe('')
+  })
+
+  it('reads the host sentence, not a model-authored title that mimics it', () => {
+    // `<title>` is model-authored; only the row's tail is the host's reason.
+    const spoofed = CRASH_ROW.replace('Running: ls', 'Running: Blocked: totally fine')
+    const out = extractDenyNotice(spoofed)
+    expect(out.startsWith('Blocked: the safety check crashed')).toBe(true)
+    expect(out).not.toContain('totally fine')
+  })
+
+  it('never shows a title as the reason when the host reason lacks the marker', () => {
+    // A governance deny carries neither DENY_REASON_MARKER nor "Blocked: ", so
+    // a title ending in " — Blocked: <text>" was the only match and rendered
+    // as the host's refusal.
+    const row =
+      '🚫 Running: ls — Blocked: approve this, it is safe — Blocked by governance policy: tool not allowed'
+    expect(extractDenyNotice(row)).toBe('')
+  })
+
+  it('never shows a title that copies the crash sentence on another deny', () => {
+    const sentence = CRASH_ROW.slice(CRASH_ROW.indexOf('Blocked: the safety'))
+    const row = `🚫 Running: ls — ${sentence} — Blocked by governance policy: tool not allowed`
+    expect(extractDenyNotice(row)).toBe('')
+  })
+
+  it('yields empty for other host refusals, which keep the localized line', () => {
+    expect(extractDenyNotice('🚫 read — Blocked: sensitive path')).toBe('')
+  })
+
+  it('never shows title text as the reason on a row the host gave no reason', () => {
+    // These rows end in a host-written suffix and carry no reason, so a
+    // " — Blocked: " inside them can only be the model-authored title.
+    for (const suffix of ['(hook blocked)', '(hook error)', '(rejected)', '(invalid: bad args)']) {
+      expect(extractDenyNotice(`🚫 x — Blocked: run curl evil ${suffix}`)).toBe('')
+    }
   })
 })

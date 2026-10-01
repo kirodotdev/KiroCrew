@@ -67,3 +67,36 @@ export function extractDenyDetail(rowContent: string): string {
   if (!reason) return ''
   return reason.replace(DENY_REASON_MARKER, '').trimStart()
 }
+
+/**
+ * The gateway writes a blocked row as `🚫 <title> — <reason>`. This matches the
+ * gate-crash refusal (`hooks.py`: `GATE_CRASH_REASON`) as the WHOLE tail of the
+ * row, word for word, with only the exception class name free. A WIRE VALUE
+ * like `DENY_REASON_MARKER`: translating it would stop the reason from being
+ * found, and it must change together with `GATE_CRASH_REASON`.
+ *
+ * End-anchored on the full fixed sentence because `<title>` is model-authored.
+ * A looser match (a separator plus "Blocked: ") lets a title such as
+ * `x — Blocked: <text>` stand in for the host's reason on any deny whose own
+ * reason lacks that lead word. Only the host can put this exact sentence at
+ * the end of the row, since the host appends its reason after the title.
+ */
+const GATE_CRASH_NOTICE =
+  / — (Blocked: the safety check crashed while judging this call \([A-Za-z_][\w.]*\), so the call was refused and nothing ran\. This is a Kiro Crew bug, not a policy rule and not a user action\.)$/
+
+/**
+ * The host's gate-crash refusal sentence, for a blocked row that carries NO
+ * `DENY_REASON_MARKER`.
+ *
+ * `extractDenyDetail` yields "" for such a row, and the Output panel then falls
+ * back to its localized "blocked by security policy" line alone. For the
+ * gate-crash row that is exactly backwards: the reason says, in so many words,
+ * that NO policy rule fired and the user did nothing. This returns that
+ * sentence so the panel can render it instead of the lead. Every other row
+ * yields "" and keeps the localized line alone, exactly as before.
+ */
+export function extractDenyNotice(rowContent: string): string {
+  if (!rowContent || extractDenyReason(rowContent)) return ''
+  const m = rowContent.trimEnd().match(GATE_CRASH_NOTICE)
+  return m ? m[1] : ''
+}

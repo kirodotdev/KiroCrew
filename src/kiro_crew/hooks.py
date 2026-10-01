@@ -10,6 +10,7 @@ import asyncio
 import copy
 import errno
 import fnmatch
+import functools
 import hashlib as _hashlib
 import json
 import logging
@@ -342,6 +343,51 @@ class ToolHookResult:
         """
         ToolHookResult._count(TOOL_DENY, False)
         return ToolHookResult(action=TOOL_DENY, reason=reason, security_deny=False)
+
+
+#: The reason a call is refused when the gate itself raised while judging it.
+#: Says plainly that the refusal is a gate defect, not a rule the call broke and
+#: not a user action -- without it the host surfaces kiro-cli's generic
+#: "User denied tool execution" and the model concludes the user cancelled.
+GATE_CRASH_REASON = (
+    "Blocked: the safety check crashed while judging this call ({error}), so the "
+    "call was refused and nothing ran. This is a Kiro Crew bug, not a policy rule "
+    "and not a user action."
+)
+
+
+def _fail_closed_on_gate_crash(judge: Any) -> Any:
+    """Turn an exception out of the tool gate into a visible security deny.
+
+    The gate parses untrusted command text, and a parser can raise on input
+    nobody anticipated (a NUL byte once made the inline-payload lexer raise
+    ``SystemError``). An exception that escapes ``on_tool_call`` reaches each
+    caller's own handling -- some refuse with a vague reason, some let the
+    turn fail, and on the dashboard the call was reported as aborted by the
+    user. Refusing here, in the one place every surface consults, makes the
+    outcome the same everywhere: fail closed, and say why.
+
+    ``PlatformCompositionError`` still propagates: it means the host itself is
+    mis-composed, which the gate re-raises on purpose so a broken install is
+    loud instead of degrading one call at a time. ``functools.wraps`` keeps the
+    wrapped signature and source visible to ``inspect``, which the gate's
+    parameter-parity and source-shape tests read.
+    """
+
+    @functools.wraps(judge)
+    def wrapper(self: Any, *args: Any, **kwargs: Any) -> ToolHookResult:
+        try:
+            result: ToolHookResult = judge(self, *args, **kwargs)
+            return result
+        except Exception as exc:
+            from kiro_crew.platform.context import PlatformCompositionError
+
+            if isinstance(exc, PlatformCompositionError):
+                raise
+            logger.exception("tool gate raised while judging a call; refusing it")
+            return ToolHookResult.deny(GATE_CRASH_REASON.format(error=type(exc).__name__))
+
+    return wrapper
 
 
 # ── Config Types ──
@@ -809,6 +855,7 @@ class HookManager:
 
     # ── Tool hooks ──
 
+    @_fail_closed_on_gate_crash
     def on_tool_call(
         self,
         tool_name: str,

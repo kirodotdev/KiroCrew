@@ -102,12 +102,36 @@ function executableSelector(tokens) {
  * directory the junction resolved to. A path the resolver did not select stays
  * foreign, so a matching basename elsewhere can still never authorize a kill.
  */
-function isKirocrewCommand(
+function isKirocrewCommand(commandLine, options) {
+  return kirocrewCommandShape(commandLine, options) !== null;
+}
+
+/**
+ * `isKirocrewCommand`, narrowed to a Kiro Crew SERVER: argparse's first
+ * positional after the executable (or after the console script) must be one of
+ * `KIROCREW_SERVER_SUBCOMMANDS`, exactly as the Python twin
+ * `port_resolution._args_look_like_kirocrew` gates its console-script form.
+ * `isKirocrewCommand` alone accepts any `kirocrew` executable, which also
+ * matches the built-in MCP servers the gateway spawns as `<root>/bin/kirocrew
+ * mcp-core` / `mcp-cron`; the survivor sweep must never signal those.
+ */
+function isKirocrewGatewayCommand(commandLine, options) {
+  const shape = kirocrewCommandShape(commandLine, options);
+  return shape !== null && shape.serverSubcommand;
+}
+
+/**
+ * Classify a command line: `null` when it is not a Kiro Crew command, else
+ * `{ serverSubcommand }` -- whether argparse's first positional selects a
+ * server subcommand. The `-m <module>` shape only ever matches WITH that
+ * subcommand, so it is always `true` there.
+ */
+function kirocrewCommandShape(
   commandLine,
   { trustedExecutablePaths = [], canonicalizePath = () => "" } = {}
 ) {
   const tokens = commandLineTokens(commandLine);
-  if (!tokens.length) return false;
+  if (!tokens.length) return null;
 
   const windowsExecutablePath = normalizedWindowsAbsolutePath(tokens[0]);
   if (windowsExecutablePath) {
@@ -127,21 +151,22 @@ function isKirocrewCommand(
       if (resolved) trusted.add(resolved);
     }
     const observed = [windowsExecutablePath, canonical(windowsExecutablePath)];
-    if (!observed.some((candidate) => candidate && trusted.has(candidate))) return false;
+    if (!observed.some((candidate) => candidate && trusted.has(candidate))) return null;
   }
 
   const selector = windowsExecutablePath
     ? { name: executableName(tokens[0]), next: 1 }
     : executableSelector(tokens);
-  if (KIROCREW_EXE_NAMES.has(selector.name)) return true;
-  if (!PYTHON_EXE_RE.test(selector.name)) return false;
-
   let index = selector.next;
   // Windows process identity prefixes ExecutablePath to the OS command line.
   // Skip that exact duplicate without skipping a Python-named script argument.
   if (normalizedWindowsPath(tokens[index]) === normalizedWindowsPath(tokens[0])) {
     index += 1;
   }
+  if (KIROCREW_EXE_NAMES.has(selector.name)) {
+    return { serverSubcommand: KIROCREW_SERVER_SUBCOMMANDS.has(tokens[index]) };
+  }
+  if (!PYTHON_EXE_RE.test(selector.name)) return null;
 
   while (index < tokens.length) {
     const token = tokens[index];
@@ -149,10 +174,11 @@ function isKirocrewCommand(
       // Module AND server subcommand, both in their fixed argparse slots. The
       // subcommand is the first positional after the module, so only that slot
       // is read: a later argument (`-m kiro_crew run gateway`) never qualifies.
-      return KIROCREW_MODULE_RE.test(tokens[index + 1] || "")
+      const isGatewayModule = KIROCREW_MODULE_RE.test(tokens[index + 1] || "")
         && KIROCREW_SERVER_SUBCOMMANDS.has(tokens[index + 2]);
+      return isGatewayModule ? { serverSubcommand: true } : null;
     }
-    if (token === "-c" || token === "-") return false;
+    if (token === "-c" || token === "-") return null;
     if (token === "--") {
       index += 1;
       break;
@@ -166,7 +192,8 @@ function isKirocrewCommand(
   }
 
   const script = tokens[index];
-  return /[\\/]/.test(script || "") && KIROCREW_EXE_NAMES.has(executableName(script));
+  if (!(/[\\/]/.test(script || "") && KIROCREW_EXE_NAMES.has(executableName(script)))) return null;
+  return { serverSubcommand: KIROCREW_SERVER_SUBCOMMANDS.has(tokens[index + 1]) };
 }
 
 // A gateway whose parent is init (PID 1) is owned by the OS service manager —
@@ -240,6 +267,66 @@ function postShutdown({
   })();
 }
 
+function pidIsAlive(pid, signalPidFn) {
+  try { signalPidFn(pid, 0); return true; } catch { return false; }
+}
+
+// JS-side bound on one survivor identity read. `execFile`'s own timeout only
+// signals ps; a ps stuck in an uninterruptible read never exits, and an
+// unbounded await here would hold the quit / auto-update caller forever. An
+// identity that cannot be read in time resolves to "" -- not a gateway, so no
+// signal is sent (fail closed).
+const SURVIVOR_COMMAND_READ_MS = 2000;
+
+function readCommandBounded(getCommandFn, pid, timeoutMs = SURVIVOR_COMMAND_READ_MS) {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(""), timeoutMs);
+    Promise.resolve()
+      .then(() => getCommandFn(pid))
+      .then((command) => { clearTimeout(timer); resolve(String(command || "")); })
+      .catch(() => { clearTimeout(timer); resolve(""); });
+  });
+}
+
+/**
+ * After the child exits, stop any descendant listed before its SIGTERM that is
+ * still alive and still a gateway -- the gateway a launcher shim forked. It
+ * gets SIGTERM (its own handler flushes state), then SIGKILL once BOTH
+ * `deadline` has passed AND `graceMs` has elapsed since the last SIGTERM was
+ * sent. Identity is re-read right before each signal, so a pid that exited and
+ * was reused by an unrelated process is never signalled. The identity test is
+ * the SERVER one (`isKirocrewGatewayCommand`): a `kirocrew mcp-core` /
+ * `mcp-cron` descendant is a Kiro Crew executable too, but it belongs to the
+ * backend's own orphan sweep, not to this one.
+ */
+async function stopForkedGatewaySurvivors(pids, { deadline, graceMs, getCommandFn, signalPidFn, pollMs }) {
+  const stillGateway = async (pid) => {
+    if (!pidIsAlive(pid, signalPidFn)) return false;
+    return isKirocrewGatewayCommand(await readCommandBounded(getCommandFn, pid));
+  };
+  // Validate and signal each pid in the same step: no other pid's identity
+  // read (a /bin/ps spawn) may sit between this pid's check and its signal.
+  let survivors = [];
+  for (const pid of pids) {
+    if (!(await stillGateway(pid))) continue;
+    try { signalPidFn(pid, "SIGTERM"); survivors.push(pid); } catch {}
+  }
+  if (!survivors.length) return;
+  // The grace window is measured from the SIGTERM, not from entry: each
+  // identity read above may take up to SURVIVOR_COMMAND_READ_MS, and a
+  // deadline fixed before the loop would charge that read time against the
+  // gateway's cooperative shutdown.
+  const killAt = Math.max(deadline, Date.now() + graceMs);
+  while (Date.now() < killAt) {
+    survivors = survivors.filter((pid) => pidIsAlive(pid, signalPidFn));
+    if (!survivors.length) return;
+    await new Promise((r) => { setTimeout(r, pollMs); });
+  }
+  for (const pid of survivors) {
+    if (await stillGateway(pid)) { try { signalPidFn(pid, "SIGKILL"); } catch {} }
+  }
+}
+
 /**
  * Stop the gateway child gracefully and await its exit.
  *   1. POST /api/shutdown (clean flush + self-exit)
@@ -263,6 +350,20 @@ function postShutdown({
  * the only correct step-2 there. This mirrors the backend, which routes its own
  * stop path through platform_compat.kill_process_tree for exactly this reason.
  *
+ * WHY POSIX LISTS THE TREE. The child may be a launcher shim that FORKED the
+ * real gateway instead of exec'ing it (a package manager can install the
+ * command that way). SIGTERM then reaches only the shim: it dies, its 'exit'
+ * fires, and the gateway lives on re-parented to init, holding the port and
+ * the lock. So, when the caller supplies the probes, the tree is listed BEFORE
+ * the signal re-parents it. SIGTERM still goes to the child alone -- a real
+ * gateway reaps its own children on SIGTERM, so the graceful path is
+ * unchanged. Once the child is gone, any listed descendant that is still alive
+ * AND still reads as a gateway command is the forked gateway: it gets its own
+ * SIGTERM, then SIGKILL at the deadline. Other leftovers (kiro-cli, MCP) are
+ * not touched here; the backend's own orphan sweep owns them. The SIGKILL
+ * escalation of a child that outlived the deadline goes to the child alone:
+ * only the identity-checked survivor sweep ever signals a listed pid.
+ *
  * @param {import("child_process").ChildProcess} proc
  * @param {object} opts
  * @param {string} [opts.platform] process.platform override (tests)
@@ -273,6 +374,22 @@ function postShutdown({
  *   fit inside this function's deadline — it is awaited, never pre-empted, since
  *   cutting it short would kill the parent alone and orphan the very descendants
  *   it exists to reap.
+ * @param {(pid:number) => Promise<number[]>} [opts.listDescendantsFn] POSIX:
+ *   every live descendant of pid, deepest first. With getCommandFn, turns on
+ *   the shim handling above; without either, POSIX signals the child alone.
+ * @param {(pid:number) => Promise<string>} [opts.getCommandFn] POSIX: a pid's
+ *   command line, used to confirm a survivor is a gateway before signalling it.
+ * @param {(pid:number, signal:string|number) => void} [opts.signalPidFn]
+ *   process.kill, injectable for tests.
+ * @param {number} [opts.survivorGraceMs] POSIX: the least time a forked
+ *   gateway gets between its own SIGTERM and SIGKILL. The sweep runs only after
+ *   the child is gone, so by then the child's own deadline may already be spent
+ *   -- a shim that ignored SIGTERM dies only to the SIGKILL at timeoutMs, and
+ *   without this floor its gateway would be SIGKILLed the moment it was
+ *   SIGTERMed. Default 10000 matches the backend's own cooperative budget
+ *   (`gateway_shutdown_budget.GRACEFUL_SHUTDOWN_SECS`). Worst case this adds
+ *   that much to the stop: only when a shim outlived timeoutMs AND its gateway
+ *   ignores SIGTERM -- the case where the alternative is a lost flush.
  * @returns {Promise<void>}
  */
 async function stopGatewayGracefully(
@@ -288,10 +405,26 @@ async function stopGatewayGracefully(
     pathMod,
     platform = process.platform,
     killTreeFn = null,
+    listDescendantsFn = null,
+    getCommandFn = null,
+    signalPidFn = (pid, signal) => process.kill(pid, signal),
+    survivorPollMs = 200,
+    survivorGraceMs = 10000,
+    termGraceMs = survivorGraceMs,
   } = {}
 ) {
   if (!proc || proc.exitCode !== null) return;
   const useTreeKill = platform === "win32" && typeof killTreeFn === "function";
+  const listsTree = platform !== "win32"
+    && typeof listDescendantsFn === "function"
+    && typeof getCommandFn === "function";
+  const deadline = Date.now() + timeoutMs;
+  // The tree as it stood just before SIGTERM, and the listing in flight. Kept
+  // outside the executor so the survivor sweep below can read them.
+  let termSnapshot = [];
+  let listingInFlight = null;
+  // True between "decided to SIGTERM" and "SIGTERM sent" while the tree is listed.
+  let termPending = false;
   // In-flight tree kill, awaited before this function reports the gateway gone.
   // taskkill /T terminates the PARENT first and then walks the rest of the tree, so
   // the process 'exit' event fires while descendants are still being reaped —
@@ -323,20 +456,44 @@ async function stopGatewayGracefully(
       const killPid = () => {
         if (proc.exitCode === null) { try { proc.kill(signal); } catch {} }
       };
-      if (!useTreeKill) { killPid(); return; }
-      treeKillInFlight = killTreeFn(proc.pid).catch(killPid);
+      if (useTreeKill) { treeKillInFlight = killTreeFn(proc.pid).catch(killPid); return; }
+      if (!listsTree || !proc.pid || signal !== "SIGTERM") { killPid(); return; }
+      // List BEFORE signalling: the signal re-parents the tree to init.
+      termPending = true;
+      listingInFlight = Promise.resolve()
+        .then(() => listDescendantsFn(proc.pid))
+        .catch(() => [])
+        .then((pids) => {
+          termSnapshot = Array.isArray(pids) ? pids : [];
+          termPending = false;
+          killPid();
+          // The listing ran before SIGTERM, so it ate into a budget that was armed
+          // at entry. Give the child its full grace window from ITS SIGTERM.
+          armEscalation(Math.max(deadline, Date.now() + termGraceMs));
+        });
     };
     // Escalate at timeoutMs but DON'T resolve here — wait for the real 'exit' so
     // callers are guaranteed the process is gone (and signalCode is accurate). A
     // hard safety net resolves even if 'exit' never fires.
-    const killTimer = setTimeout(() => {
-      if (proc.exitCode === null) {
-        // On Windows the first kill was already terminal, so the only thing left
-        // to add is SCOPE: sweep the tree in case descendants outlived it.
-        killWith("SIGKILL");
-      }
-    }, timeoutMs);
-    const hardTimer = setTimeout(done, timeoutMs + 3000);
+    let killTimer = null;
+    let hardTimer = null;
+    function armEscalation(killAt) {
+      clearTimeout(killTimer);
+      clearTimeout(hardTimer);
+      if (settled) return;
+      const delay = Math.max(0, killAt - Date.now());
+      killTimer = setTimeout(() => {
+        // SIGTERM has not gone out yet: the listing re-arms this once it has.
+        if (termPending) return;
+        if (proc.exitCode === null) {
+          // On Windows the first kill was already terminal, so the only thing left
+          // to add is SCOPE: sweep the tree in case descendants outlived it.
+          killWith("SIGKILL");
+        }
+      }, delay);
+      hardTimer = setTimeout(done, delay + 3000);
+    }
+    armEscalation(deadline);
     proc.once("exit", () => { clearTimeout(killTimer); clearTimeout(hardTimer); });
     // Prefer the clean endpoint; kill only if it didn't take.
     postShutdownFn({ backendUrl, kirocrewHome, secrets, httpMod, fsMod, pathMod }).then((ok) => {
@@ -354,6 +511,16 @@ async function stopGatewayGracefully(
   // kill's own timeouts to fit inside timeoutMs (see main.js), so in practice this
   // adds only the sweep's remaining tail; the race is the backstop for when that
   // sizing is wrong.
+  if (listingInFlight) {
+    await Promise.race([listingInFlight, new Promise((r) => { setTimeout(r, timeoutMs); })]);
+  }
+  if (termSnapshot.length) {
+    // The survivor's own grace window starts at ITS SIGTERM, not the child's.
+    await stopForkedGatewaySurvivors(termSnapshot, {
+      deadline, graceMs: survivorGraceMs,
+      getCommandFn, signalPidFn, pollMs: survivorPollMs,
+    });
+  }
   if (treeKillInFlight) {
     await Promise.race([
       treeKillInFlight,
@@ -646,5 +813,6 @@ module.exports = {
   probePortBinding,
   isServiceManaged,
   isKirocrewCommand,
+  isKirocrewGatewayCommand,
   INIT_PPID,
 };
