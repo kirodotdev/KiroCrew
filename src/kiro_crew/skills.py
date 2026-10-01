@@ -808,11 +808,20 @@ def _decode_skill_text(raw: bytes, *, strict: bool = True) -> str:
     ``\r``, nothing would match ``always`` or ``pinned``, and skill bodies would
     silently stop being injected there while Linux and macOS looked fine.
 
+    ``utf-8-sig`` for the same reason: a UTF-8 file saved "with BOM" (Notepad and
+    other Windows editors) is valid UTF-8 whose first character is U+FEFF, which
+    is not content. Left in, it sits in front of the ``---`` fence, so the
+    frontmatter grammar (column 0, position 0) finds no block and the skill lists
+    with no metadata -- and the mark itself lands in the injected body. The codec
+    strips one leading mark and is otherwise plain UTF-8: a file without one
+    decodes byte-for-byte as before, and a file that is not UTF-8 at all (UTF-16,
+    which opens with ``0xFF``) still raises under *strict*.
+
     *strict* decoding propagates invalid UTF-8, which a WRITER must hear
     (``update_auto_skill`` carries version metadata across a rewrite). Callers
     that only render text pass ``strict=False``.
     """
-    text = raw.decode("utf-8") if strict else raw.decode("utf-8", errors="replace")
+    text = raw.decode("utf-8-sig") if strict else raw.decode("utf-8-sig", errors="replace")
     # Universal newlines, matching TEXT-mode reads: CRLF and lone CR both fold.
     return text.replace("\r\n", "\n").replace("\r", "\n")
 
@@ -924,6 +933,41 @@ def _disabled_app_names() -> frozenset[str]:
     except Exception:
         logger.debug("skills: could not read app enablement", exc_info=True)
         return frozenset()
+
+
+# One unreadable SKILL.md costs its own row, never the index. The listing runs
+# on every chat turn and every Skills-page poll, and a failed read is never
+# cached, so without a bound a persistent bad file would write the same line
+# every few seconds. The bounded cache warns about once per (file, stat
+# fingerprint, problem): an unchanged bad file does not repeat, and a re-saved
+# one -- a new mtime -- earns a fresh line, so the operator who fixes it wrongly
+# twice hears about it twice.
+@functools.lru_cache(maxsize=256)
+def _warn_unreadable_skill(path: str, fingerprint: str, problem: str) -> None:
+    logger.warning("Skipping skill whose SKILL.md could not be read: %s (%s)", path, problem)
+
+
+def _warning_fingerprint(skill_file: Path, *, within: str | None) -> str:
+    """The stat fingerprint the warning bound keys on, one for every unconfined reader.
+
+    Taken HERE, when the read has already failed, never handed in by the
+    caller: the listing's own fingerprint is the catalog walk's until the next
+    walk, so a bad file re-saved out of band would keep its old identity and
+    the fresh line the operator is promised would wait for the refresh. A stat
+    on a failure only, so the hot path pays nothing, and it is the same
+    ``body_fingerprint`` string the listing and the catalog walk build (the
+    bare stat, without a mapped row's root suffix). One turn runs both the
+    listing and the matcher over the same file; with one key they warn once
+    between them. A confined row is never stat'ed by path (its reader is
+    descriptor-pinned) and never fails here, and a path the stat itself refuses
+    keys on the empty string, as the listing's own failed stat does.
+    """
+    if within is not None:
+        return ""
+    try:
+        return body_fingerprint(skill_file) or ""
+    except ValueError:  # a path no filesystem holds, such as an embedded NUL byte
+        return ""
 
 
 def _dedupe_identical_skills(skills: list[dict]) -> list[dict]:
@@ -3615,6 +3659,54 @@ class SkillsLoader:
         self._fm_cache[key] = (mtime, meta)
         return meta
 
+    def _readable_frontmatter(
+        self,
+        path: Path,
+        *,
+        within: str | None,
+        mtime: float | None = None,
+        canonical_root: str | None = None,
+    ) -> dict[str, str] | None:
+        """Frontmatter for a READER, or ``None`` when the row must be dropped.
+
+        The unconfined metadata read is strict on purpose: writers share it and
+        must never rewrite metadata they could not decode, so
+        :meth:`_cached_frontmatter` raises rather than guessing. A reader has the
+        opposite duty -- the index it is building, or the turn it is serving,
+        must not die on one file -- so every reader on the per-turn path takes
+        its metadata through here: the listing, the trigger matcher, and the two
+        renderers of its matches. A SKILL.md that is not UTF-8 (a UTF-16 file
+        PowerShell wrote, say) or that cannot be opened costs its own row, with
+        one warning naming the file and the problem, and the caller skips it. A
+        confined row never raises here (its reader already degrades), so the
+        call is uniform. ``None`` means "already warned about; drop it".
+
+        The warning keys on a stat taken at the failure (see
+        ``_warning_fingerprint``), so every reader keys the bound the same way
+        and a re-saved file earns its fresh line at once.
+        """
+        try:
+            return self._cached_frontmatter(
+                path, mtime=mtime, within=within, canonical_root=canonical_root
+            )
+        except UnicodeDecodeError as exc:
+            _warn_unreadable_skill(
+                str(path),
+                _warning_fingerprint(path, within=within),
+                f"not UTF-8 text: {exc}; re-save it as UTF-8",
+            )
+            return None
+        except (OSError, ValueError) as exc:
+            # A file that vanished or cannot be opened between enumeration and
+            # this read: the unconfined reader raises rather than refuses (see
+            # ``_read_enumerated_skill_bytes``), and a reader degrades.
+            _warn_unreadable_skill(
+                str(path),
+                _warning_fingerprint(path, within=within),
+                str(exc) or type(exc).__name__,
+            )
+            return None
+
     def _confined_frontmatter_and_size(self, path: Path, within: str) -> tuple[dict[str, str], int]:
         """Read confined metadata before any path-following metadata probe."""
         refusal_reasons: list[str] = []
@@ -3701,7 +3793,21 @@ class SkillsLoader:
 
         def read_entry(
             entry: _ScopedSkillEntry,
-        ) -> tuple[dict[str, str], int, str, tuple[str, str, dict] | None, int]:
+        ) -> tuple[dict[str, str], int, str, tuple[str, str, dict] | None, int] | None:
+            """Read one row's metadata; ``None`` means the row is dropped.
+
+            The unconfined read is strict on purpose (writers share it and must
+            never rewrite metadata they could not decode), so a SKILL.md that is
+            not UTF-8 -- a UTF-16 file PowerShell wrote, say -- raises out of
+            ``_cached_frontmatter``. This is a READER, so it takes its metadata
+            through ``_readable_frontmatter``, which catches at this call site --
+            both when it runs on the calling thread and when it runs on the pool
+            (where an exception would otherwise surface at ``future.result()``):
+            that one row is dropped with one warning naming the file, and every
+            other row is listed. Uncaught, one such file takes the whole index
+            with it: ``GET /api/skills`` answers 500 and every chat turn's
+            context build fails.
+            """
             name, skill_file, project_root, mapping_root = entry
             fingerprint = ""
             changed = None
@@ -3709,7 +3815,6 @@ class SkillsLoader:
             if project_root is not None:
                 meta, size_bytes = self._confined_frontmatter_and_size(skill_file, project_root)
             else:
-                st: os.stat_result | None = None
                 # A mapped row's fingerprint carries its mapping root, so the hint
                 # (which records the bare stat) would not match what is stored.
                 hinted = None if mapping_root else fingerprint_hint.get(str(skill_file))
@@ -3719,29 +3824,39 @@ class SkillsLoader:
                 else:
                     try:
                         st = skill_file.stat()
-                    except OSError:
-                        st = None
+                    except (OSError, ValueError) as exc:
+                        # The same answer as a failed read below. Without it the
+                        # row went on to a second stat inside ``_cached_frontmatter``
+                        # that swallows its own failure into ``{}``, which listed a
+                        # file that is gone as a row named after its path.
+                        # ``ValueError`` as well: a row adopted from the stored
+                        # snapshot can name a path no filesystem holds -- one with
+                        # an embedded NUL byte -- which ``os.stat`` refuses before
+                        # any syscall, and the index is agent-writable.
+                        _warn_unreadable_skill(str(skill_file), "", f"could not stat: {exc}")
+                        return None
                     fingerprint = (
                         f"{st.st_dev}:{st.st_ino}:{st.st_ctime_ns}:{st.st_mtime_ns}:{st.st_size}"
-                        if st is not None
-                        else ""
                     )
-                    if fingerprint and mapping_root:
+                    if mapping_root:
                         fingerprint += f":{mapping_root}"
-                    mtime = st.st_mtime if st is not None else None
-                    size_bytes = st.st_size if st is not None else 0
+                    mtime = st.st_mtime
+                    size_bytes = st.st_size
                 cached = cached_metadata.get(str(skill_file))
                 if cached and cached[0] == fingerprint and cached[1].get("_catalog_key") == name:
                     meta = cached[1]
                 else:
                     reads += 1
                     self._fm_cache.pop(str(skill_file), None)
-                    meta = self._cached_frontmatter(
+                    meta_or_none = self._readable_frontmatter(
                         skill_file,
-                        mtime=mtime,
                         within=None,
+                        mtime=mtime,
                         canonical_root=mapping_root,
                     )
+                    if meta_or_none is None:
+                        return None
+                    meta = meta_or_none
                     meta["_catalog_key"] = name
                     if fingerprint:
                         changed = (str(skill_file), fingerprint, meta)
@@ -3752,7 +3867,7 @@ class SkillsLoader:
         def rows() -> Iterator[
             tuple[
                 _ScopedSkillEntry,
-                tuple[dict[str, str], int, str, tuple[str, str, dict] | None, int],
+                tuple[dict[str, str], int, str, tuple[str, str, dict] | None, int] | None,
             ]
         ]:
             if len(entries) < _CATALOG_READ_BATCH:
@@ -3768,7 +3883,10 @@ class SkillsLoader:
                     ]
                     yield from zip(batch, (future.result() for future in futures))
 
-        for entry, (meta, size_bytes, fingerprint, changed, reads) in rows():
+        for entry, read in rows():
+            if read is None:
+                continue  # one unreadable file, already warned about; the index goes on
+            meta, size_bytes, fingerprint, changed, reads = read
             name, skill_file, project_root, mapping_root = entry
             if changed is not None:
                 changed_metadata.append(changed)
@@ -7200,7 +7318,11 @@ class SkillsLoader:
         visible = self._iter_visible(project_dir) if cap > 0 else ()
         text_words: set[str] = words_of(text) if cap > 0 else set()
         for name, skill_file, _within in visible:
-            meta = self._cached_frontmatter(skill_file, within=_within)
+            # A reader on the per-message path: one SKILL.md that is not UTF-8
+            # costs its own match, never the turn (rationale on the helper).
+            meta = self._readable_frontmatter(skill_file, within=_within)
+            if meta is None:
+                continue
             if meta.get("always", "").strip().lower() == "true":
                 continue
             triggers = meta.get("triggers", "")
@@ -7312,7 +7434,11 @@ class SkillsLoader:
             if found is None:
                 continue
             skill_file, within = found
-            meta = self._cached_frontmatter(skill_file, within=within)
+            # A reader on the per-message path: one SKILL.md that is not UTF-8
+            # costs its own match, never the turn (rationale on the helper).
+            meta = self._readable_frontmatter(skill_file, within=within)
+            if meta is None:
+                continue
             if within is not None:
                 enforced.append(name)
             elif meta.get("inject_on_trigger", "").strip().lower() == "false":
@@ -7354,7 +7480,11 @@ class SkillsLoader:
             skill_file, within = found
             if within is not None:
                 continue
-            meta = self._cached_frontmatter(skill_file, within=within)
+            # A reader on the per-message path: one SKILL.md that is not UTF-8
+            # costs its own pointer line, never the turn (rationale on the helper).
+            meta = self._readable_frontmatter(skill_file, within=within)
+            if meta is None:
+                continue
             desc = self._short_desc(meta.get("description", "") or name, suffix="…")
             lines.append(f"- **{meta.get('name', name)}**: {desc} → `{skill_file}`")
         if not lines:
