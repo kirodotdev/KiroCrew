@@ -78,6 +78,21 @@ def _ensure_utf8_process_environment() -> None:
     os.environ.update(_UTF8_PROCESS_ENV)
 
 
+#: Variables this process took out of its own environment so its descendants do
+#: not inherit them, but that its OWN exec successor must see again. Each
+#: ``reexec_*`` puts them back right before the exec.
+_KEPT_FOR_REEXEC: dict[str, str] = {}
+
+
+def keep_for_reexec(name: str, value: str) -> None:
+    """Hand *name* back to this process's exec successor, and only to it."""
+    _KEPT_FOR_REEXEC[name] = value
+
+
+def kept_for_reexec() -> dict[str, str]:
+    return dict(_KEPT_FOR_REEXEC)
+
+
 def _disarm_process_alarm_before_exec() -> None:
     """Cancel any pending process alarm before ``execv`` replaces this image.
 
@@ -103,6 +118,7 @@ def reexec_launcher(launcher: str, args: Sequence[str]) -> None:
     :func:`_disarm_process_alarm_before_exec`).
     """
     _ensure_utf8_process_environment()
+    os.environ.update(_KEPT_FOR_REEXEC)
     argv = [launcher, *args]
     if IS_WINDOWS:
         argv = [subprocess.list2cmdline([arg]) for arg in argv]
@@ -131,6 +147,7 @@ def reexec_python_module(module: str, args: Sequence[str], executable: str | Non
     # Windows ANSI stream or a hostile POSIX PYTHONIOENCODING and crashes on the
     # first emoji printed during boot.
     _ensure_utf8_process_environment()
+    os.environ.update(_KEPT_FOR_REEXEC)
     resolved = executable or sys.executable
     argv0 = ntpath.basename(resolved) if IS_WINDOWS else resolved
     # ``-P``: the successor inherits this process's cwd -- the home directory

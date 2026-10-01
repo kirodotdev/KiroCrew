@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -727,3 +728,515 @@ async def test_a_step_wedged_past_its_maximum_no_longer_holds_the_watchdog(caplo
     assert [
         r for r in caplog.records if r.name == "kiro_crew.update_ownership" and "maximum" in r.getMessage()
     ]
+
+
+# --- the re-entry check -----------------------------------------------------------
+
+
+@pytest.fixture
+def managed(monkeypatch):
+    """A gateway a generated service definition launched."""
+    monkeypatch.setenv("KIROCREW_SERVICE_MANAGED", "1")
+
+
+def _verdict(status, reason="", *, probed=False):
+    from kiro_crew.update_ownership import Reentry, ReentryVerdict
+
+    return ReentryVerdict(getattr(Reentry, status), reason, probed=probed)
+
+
+async def _run_until(shutdown, done: asyncio.Event, **kwargs):
+    """Run the watchdog until *done* fires (or it returns), then stop it like SIGTERM."""
+    task = asyncio.ensure_future(_run(shutdown, **kwargs))
+    fired = asyncio.ensure_future(done.wait())
+    try:
+        await asyncio.wait_for(
+            asyncio.wait({task, fired}, return_when="FIRST_COMPLETED"), timeout=5.0
+        )
+    finally:
+        shutdown.set()
+        fired.cancel()
+        await asyncio.gather(fired, return_exceptions=True)
+    return await task
+
+
+@pytest.mark.asyncio
+async def test_a_refused_relaunch_stays_up_says_so_once_and_backs_off(caplog):
+    """Asked again on a doubling backoff, without the confirm and drain each tick."""
+    caplog.set_level(logging.WARNING, logger=_WATCHDOG_LOGGER)
+    shutdown = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    asked_at: list[float] = []
+    drains = {"n": 0}
+    enough = asyncio.Event()
+
+    def _check():
+        asked_at.append(loop.time())
+        if len(asked_at) >= 5:
+            loop.call_soon_threadsafe(enough.set)
+        return _verdict("REFUSED", "its supervisor's command (/old/kirocrew) is missing")
+
+    def _count() -> int:
+        drains["n"] += 1
+        return 0
+
+    with _gap():
+        fired = await _run_until(
+            shutdown, enough, reentry_check=_check, count_in_flight=_count, interval=0.01
+        )
+
+    assert fired is False
+    criticals = _records(caplog, level=logging.CRITICAL)
+    assert len(criticals) == 1 and "could not relaunch" in criticals[0]
+    # One confirm-and-drain pass (the drain is counted again after the check),
+    # then only the backoff's re-asks.
+    assert drains["n"] == 2
+    gaps = [b - a for a, b in zip(asked_at[1:], asked_at[2:])]
+    assert all(later > earlier for earlier, later in zip(gaps, gaps[1:]))
+
+
+@pytest.mark.asyncio
+async def test_an_inconclusive_recheck_does_not_lift_a_refusal(caplog):
+    """A flapping check: one CRITICAL, one drain, and the backoff keeps growing."""
+    caplog.set_level(logging.WARNING, logger=_WATCHDOG_LOGGER)
+    shutdown = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    asked_at: list[float] = []
+    drains = {"n": 0}
+    enough = asyncio.Event()
+
+    def _check():
+        asked_at.append(loop.time())
+        if len(asked_at) >= 6:
+            loop.call_soon_threadsafe(enough.set)
+        if len(asked_at) % 2:
+            return _verdict("REFUSED", "its supervisor's command (/old/kirocrew) is missing")
+        raise OSError("stalled mount")
+
+    def _count() -> int:
+        drains["n"] += 1
+        return 0
+
+    with _gap():
+        fired = await _run_until(
+            shutdown, enough, reentry_check=_check, count_in_flight=_count, interval=0.01
+        )
+
+    assert fired is False
+    assert len(_records(caplog, level=logging.CRITICAL)) == 1
+    assert drains["n"] == 2
+    gaps = [b - a for a, b in zip(asked_at[1:], asked_at[2:])]
+    assert all(later > earlier for earlier, later in zip(gaps, gaps[1:]))
+
+
+@pytest.mark.asyncio
+async def test_an_inconclusive_check_is_not_a_refusal():
+    shutdown = asyncio.Event()
+
+    def _boom():
+        raise OSError("stalled mount")
+
+    with _gap():
+        assert await _run(shutdown, reentry_check=_boom) is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["an-owner-registers", "the-bundle-returns"])
+async def test_what_happens_during_the_check_is_seen_before_the_signal(caplog, change):
+    """The check is the last await: the reads after it see a change made during it."""
+    from kiro_crew import update_ownership
+
+    caplog.set_level(logging.WARNING, logger=_WATCHDOG_LOGGER)
+    shutdown = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    state = {"present": False, "reads": 0}
+    registered = asyncio.Event()
+
+    def _assets_present() -> bool:
+        state["reads"] += 1
+        return state["reads"] == 1 or state["present"]
+
+    def _check():
+        # Runs on the check's worker while the loop keeps going.
+        if change == "the-bundle-returns":
+            state["present"] = True
+        else:
+            loop.call_soon_threadsafe(registered.set)
+        return _verdict("REENTERABLE")
+
+    async def _step_during_the_check():
+        await registered.wait()
+        with update_ownership.step(update_ownership.Step.POLICY_APPLY):
+            await asyncio.sleep(0.2)
+            shutdown.set()
+
+    step = asyncio.ensure_future(_step_during_the_check())
+    with patch(
+        "kiro_crew.dashboard.stale_asset_watchdog.assets_present", side_effect=_assets_present
+    ):
+        task = asyncio.ensure_future(_run(shutdown, reentry_check=_check))
+        if change == "the-bundle-returns":
+            await asyncio.sleep(0.2)
+            shutdown.set()
+        fired = await task
+    registered.set()
+    await step
+
+    assert fired is False
+    assert not _records(caplog, level=logging.CRITICAL)
+
+
+@pytest.mark.asyncio
+async def test_an_operator_stop_during_the_check_is_not_reported_as_a_vanish(caplog):
+    caplog.set_level(logging.WARNING, logger=_WATCHDOG_LOGGER)
+    shutdown = asyncio.Event()
+    loop = asyncio.get_running_loop()
+
+    def _check():
+        loop.call_soon_threadsafe(shutdown.set)  # SIGTERM lands during the check
+        return _verdict("REENTERABLE")
+
+    with _gap():
+        fired = await _run(shutdown, reentry_check=_check)
+
+    assert fired is False
+    assert not _records(caplog, level=logging.CRITICAL)
+
+
+@pytest.mark.asyncio
+async def test_a_check_that_hangs_never_stacks_another_thread(monkeypatch):
+    import threading
+
+    from kiro_crew.dashboard import stale_asset_watchdog
+
+    monkeypatch.setattr(stale_asset_watchdog, "_REENTRY_CHECK_TIMEOUT_SECS", 0.05)
+    shutdown = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    calls = {"n": 0}
+    hang = threading.Event()
+    waited = asyncio.Event()
+    timeouts = {"n": 0}
+    real_wait_for = asyncio.wait_for
+
+    def _check():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return _verdict("REFUSED", "its supervisor's command (/x) is missing")
+        hang.wait(5)
+        return _verdict("REFUSED", "its supervisor's command (/x) is missing")
+
+    async def _counting_wait_for(aw, timeout):
+        try:
+            return await real_wait_for(aw, timeout)
+        except asyncio.TimeoutError:
+            if timeout == stale_asset_watchdog._REENTRY_CHECK_TIMEOUT_SECS:
+                # Only the re-entry check's own bound counts.
+                timeouts["n"] += 1
+                if timeouts["n"] >= 3:
+                    loop.call_soon(waited.set)
+            raise
+
+    monkeypatch.setattr(stale_asset_watchdog.asyncio, "wait_for", _counting_wait_for)
+    try:
+        with _gap():
+            fired = await _run_until(shutdown, waited, reentry_check=_check, interval=0.01)
+    finally:
+        hang.set()
+
+    assert fired is False
+    # Several timed-out waits on one hung check: no second check ran beside it.
+    assert calls["n"] == 2
+
+
+@pytest.mark.asyncio
+async def test_an_inconclusive_check_says_why_before_the_shutdown(caplog):
+    caplog.set_level(logging.WARNING, logger=_WATCHDOG_LOGGER)
+    shutdown = asyncio.Event()
+
+    def _boom():
+        raise OSError("stalled mount")
+
+    with _gap():
+        assert await _run(shutdown, reentry_check=_boom) is True
+
+    assert _records(caplog, level=logging.WARNING, text="stalled mount")
+
+
+@pytest.mark.asyncio
+async def test_an_update_that_stayed_up_keeps_a_managed_gateway_up_without_a_check(caplog, managed):
+    from kiro_crew import update_ownership
+
+    caplog.set_level(logging.WARNING, logger=_WATCHDOG_LOGGER)
+    shutdown = asyncio.Event()
+    update_ownership.refuse_restart("the dependency sync did not complete")
+    enough = asyncio.Event()
+    asyncio.get_running_loop().call_later(0.3, enough.set)
+    with _gap():
+        fired = await _run_until(shutdown, enough, reentry_check=None)
+
+    assert fired is False
+    assert _records(caplog, level=logging.CRITICAL, text="an update stopped before restart")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("standing", [False, True], ids=["first-gap", "lifting-a-refusal"])
+async def test_a_refusal_recorded_during_the_drain_is_seen_before_the_signal(caplog, standing, managed):
+    """Read with no await before the signal, even right after a refusal was lifted."""
+    from kiro_crew import update_ownership
+
+    caplog.set_level(logging.WARNING, logger=_WATCHDOG_LOGGER)
+    shutdown = asyncio.Event()
+    asks = {"n": 0}
+    counts = {"n": 0}
+    enough = asyncio.Event()
+
+    def _check():
+        asks["n"] += 1
+        if standing and asks["n"] == 1:
+            return _verdict("REFUSED", "its supervisor's command (/x) is missing")
+        return _verdict("REENTERABLE")
+
+    def _count() -> int:
+        counts["n"] += 1
+        if counts["n"] == (3 if standing else 1):
+            # An update that will stay up ends while this pass drains.
+            update_ownership.refuse_restart("the dependency sync did not complete")
+            asyncio.get_running_loop().call_later(0.2, enough.set)
+            return 1
+        return 0
+
+    with _gap():
+        fired = await _run_until(
+            shutdown, enough, reentry_check=_check, count_in_flight=_count, drain_poll=0.01
+        )
+
+    assert fired is False
+    assert _records(caplog, level=logging.CRITICAL, text="an update stopped before restart")
+
+
+@pytest.mark.asyncio
+async def test_without_a_service_manager_a_stay_up_refuses_nothing(monkeypatch):
+    """The exit behaves as before when nothing relaunches through a service manager."""
+    from kiro_crew import update_ownership
+
+    monkeypatch.delenv("KIROCREW_SERVICE_MANAGED", raising=False)
+    shutdown = asyncio.Event()
+    update_ownership.refuse_restart("the dependency sync did not complete")
+    with _gap():
+        assert await _run(shutdown, reentry_check=None) is True
+
+
+@pytest.mark.asyncio
+async def test_a_probe_that_proves_the_relaunch_clears_an_earlier_stay_up(managed):
+    """An install repaired out of band: fresher evidence than the recorded refusal."""
+    from kiro_crew import update_ownership
+
+    shutdown = asyncio.Event()
+    update_ownership.refuse_restart("the dependency sync did not complete")
+    with _gap():
+        fired = await _run(shutdown, reentry_check=lambda: _verdict("REENTERABLE", probed=True))
+
+    assert fired is True
+    assert update_ownership.restart_refusal() is None
+
+
+@pytest.mark.asyncio
+async def test_a_reentry_with_nothing_probed_does_not_clear_a_stay_up(managed):
+    from kiro_crew import update_ownership
+
+    shutdown = asyncio.Event()
+    update_ownership.refuse_restart("the dependency sync did not complete")
+    enough = asyncio.Event()
+    asyncio.get_running_loop().call_later(0.3, enough.set)
+    with _gap():
+        fired = await _run_until(shutdown, enough, reentry_check=lambda: _verdict("REENTERABLE"))
+
+    assert fired is False
+    assert update_ownership.restart_refusal() == "the dependency sync did not complete"
+
+
+@pytest.mark.asyncio
+async def test_a_stay_up_recorded_while_the_probe_ran_outlives_its_answer(managed):
+    """The probe began before the refusal, so it cannot speak for the state after it."""
+    from kiro_crew import update_ownership
+
+    shutdown = asyncio.Event()
+    enough = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    asks = {"n": 0}
+
+    def _check():
+        asks["n"] += 1
+        if asks["n"] > 1:
+            # Later asks cannot tell, so they neither lift nor clear anything.
+            return _verdict("INCONCLUSIVE", "the check did not answer")
+        loop.call_soon_threadsafe(
+            update_ownership.refuse_restart, "the dependency sync did not complete"
+        )
+        loop.call_soon_threadsafe(loop.call_later, 0.3, enough.set)
+        time.sleep(0.05)
+        return _verdict("REENTERABLE", probed=True)
+
+    with _gap():
+        fired = await _run_until(shutdown, enough, reentry_check=_check)
+
+    assert fired is False
+    assert update_ownership.restart_refusal() == "the dependency sync did not complete"
+
+
+@pytest.mark.asyncio
+async def test_a_turn_admitted_during_the_check_is_drained_before_the_signal():
+    shutdown = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    busy = {"turns": 0}
+    seen_at_signal = []
+
+    def _check():
+        # A message lands while the check runs; its turn ends shortly after.
+        loop.call_soon_threadsafe(busy.__setitem__, "turns", 1)
+        loop.call_soon_threadsafe(loop.call_later, 0.05, busy.__setitem__, "turns", 0)
+        return _verdict("REENTERABLE")
+
+    real_set = shutdown.set
+
+    def _set():
+        seen_at_signal.append(busy["turns"])
+        real_set()
+
+    shutdown.set = _set
+    with _gap():
+        fired = await _run(
+            shutdown,
+            reentry_check=_check,
+            count_in_flight=lambda: busy["turns"],
+            drain_poll=0.01,
+        )
+
+    assert fired is True
+    assert seen_at_signal == [0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reentry_check", [None, lambda: _verdict("REENTERABLE")], ids=["no-check", "check"])
+async def test_a_wedged_turn_holds_the_signal_for_one_drain_budget_not_two(monkeypatch, reentry_check):
+    """The drain after the check gets what the first drain left, nothing more."""
+    from kiro_crew.dashboard import stale_asset_watchdog
+
+    budgets = []
+    real_drain = stale_asset_watchdog._drain_in_flight
+
+    async def _spy(*args, drain_timeout, **kwargs):
+        budgets.append(drain_timeout)
+        await real_drain(*args, drain_timeout=drain_timeout, **kwargs)
+
+    monkeypatch.setattr(stale_asset_watchdog, "_drain_in_flight", _spy)
+    shutdown = asyncio.Event()
+    with _gap():
+        fired = await _run(
+            shutdown,
+            reentry_check=reentry_check,
+            count_in_flight=lambda: 1,  # a turn that never ends
+            drain_timeout=0.2,
+            drain_poll=0.01,
+        )
+
+    assert fired is True
+    # The first drain ran its whole budget out, so the second has none left.
+    assert budgets == [0.2, 0.0]
+
+
+@pytest.mark.asyncio
+async def test_a_check_that_cannot_get_a_thread_is_inconclusive_not_fatal(monkeypatch):
+    """A refused thread start must not end the watchdog for the life of the process."""
+    shutdown = asyncio.Event()
+    loop = asyncio.get_running_loop()
+
+    def _no_thread(*_a, **_k):
+        raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(loop, "run_in_executor", _no_thread)
+    with _gap():
+        assert await _run(shutdown, reentry_check=lambda: _verdict("REFUSED", "x")) is True
+
+
+@pytest.mark.asyncio
+async def test_an_answer_that_lands_after_its_bound_is_still_read(monkeypatch):
+    """A slow REENTERABLE lifts a standing refusal instead of being dropped unread."""
+    import threading
+
+    from kiro_crew.dashboard import stale_asset_watchdog
+
+    monkeypatch.setattr(stale_asset_watchdog, "_REENTRY_CHECK_TIMEOUT_SECS", 0.05)
+    shutdown = asyncio.Event()
+    calls = {"n": 0}
+
+    def _check():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return _verdict("REFUSED", "its supervisor's command (/x) is missing")
+        if calls["n"] == 2:
+            threading.Event().wait(0.15)  # past the bound, then the install is repaired
+        return _verdict("REENTERABLE")
+
+    with _gap():
+        fired = await _run(shutdown, reentry_check=_check, interval=0.02)
+
+    assert fired is True
+    # The late answer lifted the refusal; one fresh check after the drain decided.
+    assert calls["n"] == 3
+
+
+@pytest.mark.asyncio
+async def test_a_check_left_running_by_one_gap_does_not_answer_the_next(monkeypatch):
+    """A healthy sample ends the gap, and the old check's answer with it."""
+    import threading
+
+    from kiro_crew.dashboard import stale_asset_watchdog
+
+    monkeypatch.setattr(stale_asset_watchdog, "_REENTRY_CHECK_TIMEOUT_SECS", 0.05)
+    shutdown = asyncio.Event()
+    calls = {"n": 0}
+    release = threading.Event()
+    state = {"reads": 0}
+
+    def _check():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return _verdict("REFUSED", "its supervisor's command (/x) is missing")
+        if calls["n"] == 2:
+            release.wait(5)
+            return _verdict("REFUSED", "stale: from the first gap")
+        return _verdict("REENTERABLE")
+
+    def _assets_present() -> bool:
+        state["reads"] += 1
+        if state["reads"] == 1:
+            return True  # armed
+        if calls["n"] >= 2 and not release.is_set():
+            # The second check has hung past its bound: the bundle comes back
+            # for one sample, and the hung check then finishes.
+            release.set()
+            return True
+        return False
+
+    try:
+        with patch(
+            "kiro_crew.dashboard.stale_asset_watchdog.assets_present",
+            side_effect=_assets_present,
+        ):
+            fired = await _run(shutdown, reentry_check=_check, interval=0.02)
+    finally:
+        release.set()
+
+    assert fired is True
+    assert calls["n"] == 3
+
+
+def test_a_refused_relaunch_is_asked_again_within_a_few_intervals():
+    """A repaired install must not wait out a long backoff on the fallback page."""
+    from kiro_crew.dashboard import stale_asset_watchdog
+
+    assert (
+        stale_asset_watchdog._REENTRY_RECHECK_MAX_SECS
+        <= 5 * stale_asset_watchdog._CHECK_INTERVAL_SECS
+    )

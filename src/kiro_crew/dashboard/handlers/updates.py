@@ -2057,6 +2057,9 @@ async def api_update_apply(request: web.Request) -> web.Response:
         # Owns a missing bundle from the merge until the restart takes over.
         owned = contextlib.ExitStack()
         owned.enter_context(update_ownership.step(update_ownership.Step.DASHBOARD_UPDATE))
+        # Set once the merge may have moved the tree, cleared once its
+        # dependencies are installed: in between, a relaunch could die at import.
+        tree_moved = False
         try:
             state.push_update_progress("pulling", "Pulling latest changes…")
             # Fast-forward to the PINNED commit, not `git pull`: a pull refetches
@@ -2075,6 +2078,9 @@ async def api_update_apply(request: web.Request) -> web.Response:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
+            # Only a merge that started can have moved the tree: a spawn that
+            # raised wrote nothing.
+            tree_moved = True
             try:
                 await asyncio.wait_for(pull.communicate(), timeout=60)
             except asyncio.TimeoutError:
@@ -2106,7 +2112,17 @@ async def api_update_apply(request: web.Request) -> web.Response:
 
             # Reinstall the package so any new Python deps / entry points land.
             if not await _venv_pip_install(proj, state):
+                # On the new revision with its dependencies unsynced, and not
+                # restarting: a relaunch would die at import, so the stale-asset
+                # watchdog must not take one either.
+                update_ownership.refuse_restart(
+                    "the dependency install after the dashboard update did not complete"
+                )
                 return
+            # The tree and its dependencies agree again: a refusal an earlier
+            # attempt recorded does not describe the install.
+            tree_moved = False
+            update_ownership.clear_restart_refusal()
 
             # Restart: save history + clean up sessions then exec the same process.
             logger.info("Update complete — saving history and cleaning up before restart")
@@ -2116,6 +2132,11 @@ async def api_update_apply(request: web.Request) -> web.Response:
             await _restart_gateway(state, resolver=respawn_executable)
         except Exception:
             logger.exception("Update failed")
+            if tree_moved:
+                update_ownership.refuse_restart(
+                    "the dashboard update failed after the tree moved, before its "
+                    "dependencies were installed"
+                )
             state.push_update_progress("failed", "Update failed — check logs")
             state.push_refresh("update_failed")
         finally:

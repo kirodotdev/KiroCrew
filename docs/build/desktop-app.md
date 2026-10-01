@@ -1330,7 +1330,10 @@ while every session is still answerable, and on the orchestrator path it is
 deferred. Restore the interpreter and the deferred update finishes on its own.
 When the pruned tree also held the served dashboard bundle, the stale-asset
 watchdog does not wait for that repair: it exits so a supervisor relaunches the
-gateway through its own command
+gateway through its own command, but only when that command can start the
+gateway (`supervisor_reentry`, for example a stable link that points at the new
+tree) and no update chose to stay up instead of restarting. Otherwise it keeps
+the gateway up on its loaded code and logs why
 ([slack-gateway](../system-specs/modules/slack-gateway.md)).
 
 What it will not do is drain first and find out afterwards. That was the old

@@ -81,7 +81,7 @@ import shlex
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 try:  # pragma: no cover - exercised by whichever interpreter runs this
     import tomllib as _toml
@@ -641,6 +641,39 @@ def _probe_interpreter(
         cwd=target.parent,
         timeout=timeout,
     )
+
+
+def imports_gateway_entry_point(target_py: Path, *, env: Mapping[str, str], timeout: float) -> bool:
+    """Whether *target_py* imports the gateway's entry point the way a relaunch would.
+
+    Unlike :func:`_probe_interpreter`, NOT isolated: a service manager runs the
+    console script's interpreter without ``-I``, under the unit's own
+    environment, so an install reached through the user site or ``PYTHONPATH``
+    imports there and must import here too. *env* is that environment. The
+    working directory is ``/``, which holds no package, so ``-c`` putting it on
+    ``sys.path`` shadows nothing. ``kiro_crew.cli`` and ``kiro_crew.cli_server``
+    (what ``gateway`` dispatches into, numpy included) rather than the
+    stdlib-only package root, so a venv missing the gateway's own dependencies
+    fails.
+
+    Raises ``OSError`` when the interpreter cannot be run at all and
+    ``subprocess.TimeoutExpired`` when it does not answer in *timeout*; a caller
+    decides what an unanswered probe means.
+    """
+    return _probe_relaunch_import(Path(os.path.abspath(target_py)), env, timeout) == 0
+
+
+def _probe_relaunch_import(target: Path, env: Mapping[str, str], timeout: float) -> int:
+    return subprocess.run(
+        [str(target), "-X", "utf8", "-c", "import kiro_crew.cli, kiro_crew.cli_server"],
+        # Only the exit status answers; output is discarded, never buffered.
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        env=dict(env),
+        cwd=os.path.abspath(os.sep),
+        timeout=timeout,
+    ).returncode
 
 
 def interpreter_version(

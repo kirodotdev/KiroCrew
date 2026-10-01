@@ -5520,8 +5520,14 @@ class TestAutoApplyUpdateResetPath:
         ds.push_update_progress.assert_any_call("building", "Rebuilding package…")
 
     @staticmethod
-    async def _run_git_apply(orch, *, sync=None, build=None):
-        _fake_exec = _git_exec_fake(status_out=b"")
+    async def _run_git_apply(orch, *, sync=None, build=None, reset_rc=0, reset_spawn_error=None):
+        _git_fake = _git_exec_fake(status_out=b"", reset_rc=reset_rc)
+
+        async def _fake_exec(*args, **kwargs):
+            if reset_spawn_error is not None and "reset" in args:
+                raise reset_spawn_error
+            return await _git_fake(*args, **kwargs)
+
         sync = sync or (lambda *a, **k: 0)
         with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": "/tmp/proj"}):
             with patch("asyncio.create_subprocess_exec", side_effect=_fake_exec):
@@ -5571,6 +5577,76 @@ class TestAutoApplyUpdateResetPath:
         await self._run_git_apply(orch)
 
         assert open_at_restart == [[]]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_sync_that_stays_up_refuses_the_watchdogs_relaunch(self):
+        """The step keeps the gateway on its loaded code; the watchdog must too."""
+        from kiro_crew import update_ownership
+
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+        orch.sessions = _mock_sessions()
+
+        await self._run_git_apply(orch, sync=lambda *a, **k: gw.dep_sync.REFUSED)
+
+        assert update_ownership.restart_refusal() is not None
+
+    @pytest.mark.asyncio
+    async def test_a_later_update_that_fails_before_the_reset_keeps_the_refusal(self):
+        """The unsynced tree the refusal describes is still on disk."""
+        from kiro_crew import update_ownership
+
+        update_ownership.refuse_restart("an earlier sync did not complete")
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+        orch.sessions = _mock_sessions()
+
+        await self._run_git_apply(orch, reset_rc=128)
+
+        assert update_ownership.restart_refusal() == "an earlier sync did not complete"
+
+    @pytest.mark.asyncio
+    async def test_a_later_update_that_syncs_its_tree_ends_the_refusal(self):
+        from kiro_crew import update_ownership
+
+        update_ownership.refuse_restart("an earlier sync did not complete")
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+        orch.sessions = _mock_sessions()
+        orch._restart_after_update = AsyncMock()
+
+        await self._run_git_apply(orch)
+
+        assert update_ownership.restart_refusal() is None
+        orch._restart_after_update.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_reset_that_never_spawned_records_no_refusal(self):
+        """A fork failure wrote nothing to the checkout, so nothing describes a moved tree."""
+        from kiro_crew import update_ownership
+
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+        orch.sessions = _mock_sessions()
+
+        await self._run_git_apply(
+            orch, reset_spawn_error=BlockingIOError(11, "Resource temporarily unavailable")
+        )
+
+        assert update_ownership.restart_refusal() is None
+
+    @pytest.mark.asyncio
+    async def test_an_update_that_raises_after_the_reset_refuses_the_relaunch(self):
+        """The tree moved and its dependencies never synced: a relaunch would die at import."""
+        from kiro_crew import update_ownership
+
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+        orch.sessions = _mock_sessions()
+
+        await self._run_git_apply(orch, build=AsyncMock(side_effect=RuntimeError("vite crashed")))
+
+        assert "after the tree moved" in (update_ownership.restart_refusal() or "")
 
     @pytest.mark.asyncio
     async def test_a_cancelled_update_never_starts_a_queued_reinstall(self, monkeypatch):
