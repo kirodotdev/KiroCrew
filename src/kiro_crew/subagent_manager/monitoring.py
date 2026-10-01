@@ -483,30 +483,32 @@ class OrphanStallMonitor(ManagerComponent):
                                     else None
                                 )
                             try:
+                                # Never ``killed`` for a process the kill
+                                # left standing: the folder is reconciled
+                                # below either way, so this row is the only
+                                # place the process's fate is recorded. A
+                                # refusal and a failed signal are separate
+                                # outcomes because only one of them means
+                                # something tried and could not.
+                                #
+                                # TWO ways to be refused, and both must read as
+                                # one: the gate declining, and the teardown
+                                # barrier declining because a tenant arrived
+                                # after it allowed. The second leaves
+                                # ``kill_failed`` None -- no signal was even
+                                # attempted -- which is indistinguishable from a
+                                # clean kill by that field alone.
+                                if not authorized or not barriered:
+                                    outcome = "refused"
+                                elif kill_failed is None:
+                                    outcome = "killed"
+                                else:
+                                    outcome = "failed"
                                 sel().log_tool_invocation(
                                     session_key=f"subagent:{agent_id}",
                                     source="subagent",
                                     tool_name="orphan_reconcile_kill",
-                                    # Never ``killed`` for a process the kill
-                                    # left standing: the folder is reconciled
-                                    # below either way, so this row is the only
-                                    # place the process's fate is recorded. A
-                                    # refusal and a failed signal are separate
-                                    # outcomes because only one of them means
-                                    # something tried and could not.
-                                    #
-                                    # TWO ways to be refused, and both must read as
-                                    # one: the gate declining, and the teardown
-                                    # barrier declining because a tenant arrived
-                                    # after it allowed. The second leaves
-                                    # ``kill_failed`` None -- no signal was even
-                                    # attempted -- which is indistinguishable from a
-                                    # clean kill by that field alone.
-                                    outcome=(
-                                        "refused"
-                                        if not authorized or not barriered
-                                        else ("killed" if kill_failed is None else "failed")
-                                    ),
+                                    outcome=outcome,
                                     error=kill_failed or "",
                                     metadata={"subagent_id": agent_id, "pid": pid},
                                 )
