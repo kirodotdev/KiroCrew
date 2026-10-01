@@ -71,7 +71,7 @@ Moved by **every** entry in the log.
 
 Tokens, credits, context, compactions and duration, broken down per model.
 
-Moved by: `background/completed`, `compaction/applied`, `context/composed`, `step/completed`, `subagent/completed`, `subagent/failed`, `turn/completed`.
+Moved by: `background/completed`, `compaction/applied`, `context/composed`, `request/configured`, `session/opened`, `step/completed`, `subagent/completed`, `subagent/failed`, `turn/completed`, `turn/refused`.
 
 | Field | Type | Optional |
 |---|---|---|

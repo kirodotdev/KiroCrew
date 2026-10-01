@@ -27,7 +27,7 @@ vi.mock('../api/client', () => ({
 const trace = (over: Partial<ContextTrace> = {}): ContextTrace => ({
   slot: 's',
   turns: [
-    { ts: '2026-08-27T00:00:00Z', phase: 'per_turn', blocks: { loaded_skill: 4000, history: 6000 }, total_chars: 10000, context_used: 12000, context_window: 200000, model: 'opus-5' },
+    { ts: '2026-08-27T00:00:00Z', phase: 'per_turn', blocks: { loaded_skill: 4000, history: 6000 }, total_chars: 10000, context_used: 12000, context_window: 200000, model: 'opus-5', ordinal: 0 },
   ],
   totals: { loaded_skill: 4000, history: 6000 },
   injected_chars: 10000,
@@ -45,8 +45,8 @@ const traceFixtures: Record<string, ContextTrace> = {
   // width scaling against the larger turn (maxTurn).
   'subagent:multi': trace({
     turns: [
-      { ts: '2026-08-27T00:00:00Z', phase: 'per_turn', blocks: { loaded_skill: 4000, history: 6000 }, total_chars: 10000, context_used: 12000, context_window: 200000, model: 'opus-5' },
-      { ts: '2026-08-27T00:01:00Z', phase: 'per_turn', blocks: { history: 40000, memory: 8000 }, total_chars: 48000, context_used: 60000, context_window: 200000, model: 'opus-5' },
+      { ts: '2026-08-27T00:00:00Z', phase: 'per_turn', blocks: { loaded_skill: 4000, history: 6000 }, total_chars: 10000, context_used: 12000, context_window: 200000, model: 'opus-5', ordinal: 0 },
+      { ts: '2026-08-27T00:01:00Z', phase: 'per_turn', blocks: { history: 40000, memory: 8000 }, total_chars: 48000, context_used: 60000, context_window: 200000, model: 'opus-5', ordinal: 0 },
     ],
     totals: { loaded_skill: 4000, history: 46000, memory: 8000 },
     injected_chars: 58000,

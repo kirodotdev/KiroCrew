@@ -128,10 +128,13 @@
         "background/completed",
         "compaction/applied",
         "context/composed",
+        "request/configured",
+        "session/opened",
         "step/completed",
         "subagent/completed",
         "subagent/failed",
-        "turn/completed"
+        "turn/completed",
+        "turn/refused"
       ],
       "answers": "Tokens, credits, context, compactions and duration, broken down per model",
       "fields": [

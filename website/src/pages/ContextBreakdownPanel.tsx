@@ -24,6 +24,11 @@ export interface ContextTurn {
   context_used: number
   context_window: number
   model: string
+  /** The turn's EXACT 1-based position in the whole session history, assigned by the
+   *  backend fold before any truncation. Shown as the turn number directly: it stays
+   *  true no matter how many older turns the fold dropped or this day view excluded,
+   *  where a count applied to the array index would not. */
+  ordinal: number
 }
 
 export interface ContextTrace {
@@ -181,8 +186,15 @@ const HIT_COLUMN_MIN_PX = 12
 const VALUE_LABEL_MIN_WIDTH = 480
 
 interface ChartTurn {
-  /** 1-based turn number within the whole trace. */
+  /** 1-based index WITHIN the retained window. The selection key and the array
+   *  index (`trace.turns[n - 1]`), NOT what the user sees: turns dropped by the
+   *  backend before the window are not in the array, so this is not the turn's
+   *  true ordinal. */
   n: number
+  /** The turn's TRUE ordinal for display, straight from the backend row's own
+   *  `ordinal`. Shown to the user; never used to index
+   *  the window-local array. */
+  displayN: number
   total: number
   cats: Record<Category, number>
   isStart: boolean
@@ -219,11 +231,17 @@ export function axisLabelIndices(count: number, plotWidth: number, selectedIdx: 
 function StackedArea({
   turns,
   selected,
+  selectedDisplayN,
   onSelect,
   width: fixedWidth,
 }: {
   turns: ChartTurn[]
   selected: number
+  /** The selected turn's TRUE ordinal, resolved by the PARENT against the whole
+   *  retained set. The chart cannot derive it: `turns` here holds only the rows it
+   *  draws, so a session-start row selected ABOVE the chart is absent from it and
+   *  `selected` is that row's window-local `n`, which is not what the user is shown. */
+  selectedDisplayN: number
   onSelect: (n: number) => void
   /** Overrides the measured width (capture harnesses and tests). */
   width?: number
@@ -330,7 +348,7 @@ function StackedArea({
         height={CHART_HEIGHT}
         className="block"
         role="img"
-        aria-label={i18nT('pages.contextBreakdown.chart_aria', { n: fmtN(selected) })}
+        aria-label={i18nT('pages.contextBreakdown.chart_aria', { n: fmtN(selectedDisplayN) })}
         style={{ fontSize: 11 }}
       >
         {ticks.map(v => (
@@ -387,7 +405,7 @@ function StackedArea({
               fontWeight={i === selectedIdx ? 600 : 400}
               data-axis-label={t.n}
             >
-              {i18nT('pages.contextBreakdown.axis_turn_n', { n: fmtN(t.n) })}
+              {i18nT('pages.contextBreakdown.axis_turn_n', { n: fmtN(t.displayN) })}
             </text>
           ) : null,
         )}
@@ -415,7 +433,7 @@ function StackedArea({
             type="button"
             tabIndex={i === focusIdx ? 0 : -1}
             aria-pressed={i === selectedIdx}
-            aria-label={i18nT('pages.contextBreakdown.turn_button', { n: fmtN(t.n), chars: fmtN(t.total) })}
+            aria-label={i18nT('pages.contextBreakdown.turn_button', { n: fmtN(t.displayN), chars: fmtN(t.total) })}
             data-turn={t.n}
             className={`absolute inset-y-0 appearance-none bg-transparent border-0 p-0 m-0 cursor-pointer rounded focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--accent)] ${
               pointerSurface ? 'pointer-events-none' : 'hover:bg-[var(--card-hl)]'
@@ -444,7 +462,7 @@ function StartTurnRow({ turn, selected, onSelect }: { turn: ChartTurn; selected:
       }`}
       onClick={() => onSelect(turn.n)}
     >
-      <span>{i18nT('pages.contextBreakdown.start_row', { n: fmtN(turn.n) })}</span>
+      <span>{i18nT('pages.contextBreakdown.start_row', { n: fmtN(turn.displayN) })}</span>
       <span className="font-mono text-[12px] text-muted tabular-nums shrink-0">
         {i18nT('pages.contextBreakdown.turn_button_chars', { chars: fmtN(turn.total) })}
       </span>
@@ -528,6 +546,10 @@ function ContextBreakdownCard({ trace, chartWidth }: { trace: ContextTrace; char
 
   const all: ChartTurn[] = trace.turns.map((turn, i) => ({
     n: i + 1,
+    // The turn's TRUE ordinal, straight from the backend. NOT the array index plus a
+    // uniform omitted count: the array holds only the rows the fold kept AND this day
+    // view included, so an index-derived number would drift by every excluded row.
+    displayN: turn.ordinal || i + 1,
     total: turn.total_chars,
     cats: categorise(turn.blocks),
     isStart: turn.phase === 'session_start',
@@ -535,15 +557,42 @@ function ContextBreakdownCard({ trace, chartWidth }: { trace: ContextTrace; char
   // Session-start turns are listed above the chart: one of them is many times
   // the size of any later turn and would pin the y-axis, flattening the rest.
   const starts = all.filter(t => t.isStart)
-  const regular = all.filter(t => !t.isStart)
-  const hidden = Math.max(0, regular.length - MAX_CHART_TURNS)
-  const shown = regular.slice(hidden)
+  // One column per TURN, not per row. A retried or recomposed turn writes one row per
+  // attempt and every attempt carries that turn's single ordinal, so drawing rows would
+  // show "Turn N" twice and count it twice. Keep the newest attempt, the one the turn
+  // ended on, at the turn's first position.
+  const byTurn = new Map<number, ChartTurn>()
+  for (const t of all) if (!t.isStart) byTurn.set(t.displayN, t)
+  const regular = [...byTurn.values()]
+  // The chart draws the newest MAX_CHART_TURNS regular turns; the rest are earlier.
+  const clipped = Math.max(0, regular.length - MAX_CHART_TURNS)
+  const shown = regular.slice(clipped)
+  // "Earlier turns not shown" = the regular turns before the first one the chart draws.
+  // Derived from that row's EXACT ordinal, so it counts every earlier turn -- those the
+  // backend dropped, those this day view excluded, and those this chart clipped -- and
+  // never a turn shown above as a session-start row. Exact and window-scoped, because
+  // the first shown row is chosen after the day-window filter.
+  const firstShown = shown[0]
+  // DISTINCT ordinals, not rows. An ordinal numbers a TURN, and one turn can own more
+  // than one row: a failed replay that regenerates a turn re-emits its session-start
+  // injection, and both rows carry that turn's single ordinal. Counting rows would
+  // subtract two for one turn position and understate `hidden`, so the line would claim
+  // fewer earlier turns than there are -- and the claim is the one a reader cannot check.
+  const startsBeforeFirstShown = firstShown
+    ? new Set(starts.filter(t => t.displayN < firstShown.displayN).map(t => t.displayN)).size
+    : 0
+  const hidden = firstShown ? Math.max(0, firstShown.displayN - 1 - startsBeforeFirstShown) : 0
   const newest = all.length
   const selectable = new Set([...starts, ...shown].map(t => t.n))
   const selected = pinned !== null && selectable.has(pinned) ? pinned : newest
   const selectedTurn = trace.turns[selected - 1]
   const selectedChart = all[selected - 1]
-  const previous = selected > 1 ? all[selected - 2].total : undefined
+  // The previous TURN, not the previous row: a retried turn's earlier attempts are not
+  // drawn, so comparing against one would label attempt-vs-attempt as turn-vs-turn.
+  const kept = new Set<ChartTurn>(regular)
+  const sequence = all.filter(t => t.isStart || kept.has(t))
+  const at = sequence.indexOf(selectedChart)
+  const previous = at > 0 ? sequence[at - 1].total : undefined
   const delta = deltaText(selectedChart.total, previous)
   const select = (n: number) => setPinned(n === newest ? null : n)
 
@@ -583,7 +632,13 @@ function ContextBreakdownCard({ trace, chartWidth }: { trace: ContextTrace; char
               </p>
             ) : null}
 
-            <StackedArea turns={shown} selected={selected} onSelect={select} width={chartWidth} />
+            <StackedArea
+              turns={shown}
+              selected={selected}
+              selectedDisplayN={selectedChart.displayN}
+              onSelect={select}
+              width={chartWidth}
+            />
 
             <div className="flex flex-wrap gap-x-4 gap-y-1.5 mt-2 text-[12px] text-muted">
               {CATEGORIES.map(cat => (
@@ -606,8 +661,8 @@ function ContextBreakdownCard({ trace, chartWidth }: { trace: ContextTrace; char
         <div className="flex items-center justify-between gap-3">
           <strong className="text-[15px] text-text-strong">
             {selected === newest
-              ? i18nT('pages.contextBreakdown.turn_latest', { n: fmtN(selected) })
-              : i18nT('pages.contextBreakdown.turn_n', { n: fmtN(selected) })}
+              ? i18nT('pages.contextBreakdown.turn_latest', { n: fmtN(selectedChart.displayN) })
+              : i18nT('pages.contextBreakdown.turn_n', { n: fmtN(selectedChart.displayN) })}
           </strong>
           {delta ? <span className="text-[12px] text-muted">{delta}</span> : null}
         </div>

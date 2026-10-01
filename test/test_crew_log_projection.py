@@ -548,6 +548,31 @@ def test_usage_bills_injected_context_per_source():
     assert context["estimated_turns"] == 1
     assert context["by_source"]["memory"] == {"blocks": 2, "tokens": 25, "chars": 100}
     assert context["by_source"]["system"] == {"blocks": 1, "tokens": 25, "chars": 100}
+    assert context["sources_omitted"] == 0
+
+
+def test_usage_counts_the_sources_a_row_leaves_out():
+    """A row past the per-turn source cap says so, and keeps adding to labels it holds.
+
+    Two NEW labels past the cap are left out and counted. A label the row already
+    holds, arriving again at the cap, still adds to that label rather than being
+    dropped, so a kept figure is never cut short.
+    """
+    limit = crew_log.CONTEXT_SOURCES_PER_TURN_LIMIT
+    sources = [{"kind": f"src{i}", "chars": 1, "tokens": 0} for i in range(limit + 2)]
+    sources.append({"kind": "src0", "chars": 5, "tokens": 0})
+    handle = _log()
+    _opened(handle)
+    handle.append(
+        "context/composed",
+        {"turn": 1, "sources": sources, "chars": limit + 7, "tokens": 0, "tokens_estimated": True},
+        src=GATEWAY,
+    )
+    context = crew_log.fold_usage(_entries(handle))["context"]
+    (row,) = context["turns"]
+    assert len(row["sources"]) == limit
+    assert row["sources"]["src0"] == 6
+    assert context["sources_omitted"] == 2
 
 
 def test_usage_a_retry_attempts_reading_does_not_stamp_the_first_attempts_rows():
@@ -706,6 +731,120 @@ def test_usage_snapshot_row_is_not_stamped_by_a_later_completion():
     )
     assert state["context_turns"][0]["used"] == 9_000
     assert "used" not in snapshot["context_turns"][0]
+
+
+def test_usage_the_ordinal_memo_stays_bounded_over_a_long_session():
+    """MUTATION-SENSITIVE: the (unit, turn) memo must not grow without bound.
+
+    The memo lets a rewound turn reuse its ordinal, but it is checkpointed state, so it
+    is capped at ``CONTEXT_ORDINAL_MEMO_LIMIT`` keys and evicts oldest-first. Driving
+    more distinct turns than the cap must leave it at the cap, never larger -- while the
+    counter keeps advancing so each new turn still gets its true session-global ordinal
+    (the cap bounds the memory, not the numbering).
+    """
+    state = crew_log._usage_start()
+    limit = crew_log.CONTEXT_ORDINAL_MEMO_LIMIT
+    overflow = limit + 50
+    for turn in range(1, overflow + 1):
+        ordinal = crew_log._count_turn_ordinal(state, "acp-1", turn)
+        # Each distinct turn advances the counter, so its ordinal is its true position.
+        assert ordinal == turn
+    keys = state["context_turn_keys"]
+    # The memo never exceeds its cap, no matter how many turns passed through it.
+    assert keys.count(",") - 1 == limit
+    # The retained keys are the MOST RECENT ones; the oldest turns were evicted.
+    assert f",acp-1:{overflow}," in keys
+    assert f",acp-1:{overflow - limit + 1}," in keys
+    assert f",acp-1:{overflow - limit}," not in keys
+    # Retained turns at both ends still read back their own ordinal after eviction,
+    # and reading one back does not advance the counter.
+    assert crew_log._count_turn_ordinal(state, "acp-1", overflow) == overflow
+    assert crew_log._count_turn_ordinal(state, "acp-1", overflow - limit + 1) == (
+        overflow - limit + 1
+    )
+    assert state["context_turns_seq"] == overflow
+
+
+def test_usage_a_rewind_past_400_turns_keeps_the_turns_ordinal():
+    """MUTATION-SENSITIVE: a rewind deep into a long session reuses the turn's ordinal.
+
+    ``chat_rewind`` can re-run any user message in the slot's live list, which holds far
+    more than the fold's 200 rows. The memo once kept 400 keys, so rewinding to a turn
+    older than that counted it again: its label and every later ordinal moved up by one,
+    for good. A rewind to turn 10 after 1,000 turns must read ordinal 10 and advance
+    nothing.
+    """
+    state = crew_log._usage_start()
+    for turn in range(1, 1_001):
+        crew_log._count_turn_ordinal(state, 7, turn)
+    assert crew_log._count_turn_ordinal(state, 7, 10) == 10
+    assert state["context_turns_seq"] == 1_000
+    # The next NEW turn still takes the next ordinal.
+    assert crew_log._count_turn_ordinal(state, 7, 1_001) == 1_001
+    # The same turn number in another unit is a different turn.
+    assert crew_log._count_turn_ordinal(state, 8, 10) == 1_002
+
+
+def test_usage_a_regenerate_after_a_reattach_keeps_the_turns_ordinal():
+    """MUTATION-SENSITIVE: a re-attachment is the same unit, so its key space continues.
+
+    A gateway restart re-attaches to the same crew log and writes another
+    ``session/opened`` with ``resumed`` true. The conversation and its turn numbers are
+    the same unit's, so a regenerate of turn 1 after it is still turn 1: it must read
+    back ordinal 1 and count no extra turn. Keyed by the per-attachment counter, the
+    regenerate missed its key and took ordinal 2.
+    """
+
+    def _composed(turn: int) -> dict[str, Any]:
+        return {
+            "turn": turn,
+            "sources": [{"kind": "memory", "chars": 40, "tokens": 10}],
+            "chars": 40,
+            "tokens": 10,
+            "tokens_estimated": True,
+        }
+
+    def _completed(turn: int) -> dict[str, Any]:
+        return {
+            "turn": turn,
+            "stop_reason": "end_turn",
+            "depth": 0,
+            "duration_ms": 100,
+            "model": "opus",
+            "provider": "kiro",
+            "credits": 0.1,
+            "tokens": {"input": 1, "output": 1, "cache_read": 0, "cache_write": 0},
+        }
+
+    handle = _log()
+    _opened(handle)
+    handle.append("context/composed", _composed(1), src=GATEWAY)
+    handle.append("turn/completed", _completed(1), src=GATEWAY)
+    # The gateway process died and a new one re-attached to the same crew log.
+    _opened(handle, resumed=True)
+    handle.append(
+        "turn/started", {"turn": 1, "actor": "user", "depth": 0, "attempt": 2}, src=GATEWAY
+    )
+    handle.append("context/composed", _composed(1), src=GATEWAY)
+    handle.append("turn/completed", _completed(1), src=GATEWAY)
+    handle.append("context/composed", _composed(2), src=GATEWAY)
+
+    state = crew_log._usage_start()
+    for entry in _entries(handle):
+        crew_log._usage_step(state, entry)
+    assert [row["ordinal"] for row in state["context_turns"]] == [1, 1, 2]
+    assert state["context_turns_seq"] == 2
+
+
+def test_usage_the_ordinal_memo_covers_the_rewindable_range():
+    """The memo bound is the slot's live message cap, the range a rewind can reach.
+
+    ``crew_log`` cannot import the dashboard, so the figure is restated there and pinned
+    here: if the live cap grows, a rewind could again reach a turn the memo evicted.
+    """
+    from kiro_crew.dashboard import state as dashboard_state
+
+    assert crew_log.CONTEXT_ORDINAL_MEMO_LIMIT == dashboard_state._MAX_SLOT_MESSAGES
 
 
 def test_usage_an_interrupted_units_open_row_is_not_stamped_by_the_next_unit():

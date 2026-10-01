@@ -240,14 +240,15 @@ TIMELINE_LIMIT: Final[int] = 200
 #: Measured at the WORST CASE rather than reasoned about, since this is the fold's
 #: largest new state: 200 rows each holding :data:`CONTEXT_SOURCES_PER_TURN_LIMIT`
 #: sources whose labels sit at :data:`TEXT_LIMIT` is 808,912 bytes of Python objects.
-#: ``test_a_full_context_window_stays_under_the_slot_fold_cell_budget`` re-measures
+#: ``test_a_full_window_stays_under_the_slot_fold_cell_budget`` re-measures
 #: that same worst case, so the figure fails rather than rots -- and it measures the
 #: CAP, not a realistic row, because a realistic 40-source row is 511,192 and would
 #: leave the real ceiling untested.
 #:
 #: It matters because this fold is read per SLOT, so its state lands in the slot-fold
 #: cache, whose own ceiling is stated against its largest member -- ``radar`` at
-#: 995,342 bytes. A full window here fits under that with 186,430 bytes to spare.
+#: 995,342 bytes. A full window plus a full ordinal memo (``context_turn_keys``, 120,042
+#: bytes at its widest) fits under that with 66,388 bytes to spare.
 #: The row shape is what buys that: the entry's own list of three-key dicts measures
 #: 3,319,357 at the same worst case and would breach the ceiling by 2.3 MB. See
 #: ``row_sources`` in ``_usage_step``.
@@ -259,7 +260,8 @@ CONTEXT_TURNS_LIMIT: Final[int] = 200
 #: today's writer reaches. Past it the row's own ``chars`` total stays as recorded, so
 #: a truncated source list is never mistaken for a smaller prompt, and the session-wide
 #: ``by_source`` breakdown counts every source regardless -- it is keyed by label and so
-#: is not subject to this per-row cap.
+#: is not subject to this per-row cap. Each source a row leaves out is counted in the
+#: rendered ``context.sources_omitted``.
 CONTEXT_SOURCES_PER_TURN_LIMIT: Final[int] = 64
 
 #: Distinct tool names a ``tools`` projection details. Past it the totals stay
@@ -271,6 +273,18 @@ TOOL_NAME_LIMIT: Final[int] = 100
 #: the same posture as ``TOOL_NAME_LIMIT``. A turn carries a model string, so an
 #: unbounded ``by_model`` would grow the checkpoint over a long session.
 MODEL_LIMIT: Final[int] = 100
+
+#: ``(unit, turn)`` keys ``_count_turn_ordinal`` remembers, so a rewound or edit-resent
+#: turn reuses its ordinal rather than taking a new one. Sized to the REWINDABLE range:
+#: ``chat_rewind`` can re-run any user message still in the slot's live list, and that
+#: list holds up to ``dashboard.state._MAX_SLOT_MESSAGES`` (10,000) rows, so up to that
+#: many distinct turns can recur. A smaller bound evicts a turn a user can still rewind
+#: to, and the rerun then takes a NEW ordinal that nothing refolds. Pinned equal to that
+#: cap by ``test_usage_the_ordinal_memo_covers_the_rewindable_range``. Bounded at all
+#: because it is checkpointed fold state; the keys are held as ONE string (see
+#: ``context_turn_keys``) so the bound costs ~100 KB rather than a dict of 10,000 entries.
+#: Oldest-inserted keys evict first.
+CONTEXT_ORDINAL_MEMO_LIMIT: Final[int] = 10_000
 
 #: Open tool calls and pending approvals listed individually.
 OPEN_LIST_LIMIT: Final[int] = 50
@@ -1405,6 +1419,8 @@ def _usage_start() -> dict[str, Any]:
         "context_blocks": 0,
         "context_estimated": 0,
         "context_by_source": {},
+        # Sources a retained row could not detail (see ``CONTEXT_SOURCES_PER_TURN_LIMIT``).
+        "context_sources_omitted": 0,
         # The per-turn window the Context panel reads, newest LAST, bounded by
         # ``CONTEXT_TURNS_LIMIT``. The cumulative ``context_by_source`` above answers
         # "what does this session inject in total"; a panel drawing one bar per turn
@@ -1419,15 +1435,57 @@ def _usage_start() -> dict[str, Any]:
         # stamps the earlier unit's open row, unit alone stamps an earlier attempt whose
         # own closer reported no reading. Internal to the fold; stripped at render.
         "context_unit": 0,
-        # A monotonic 1-based counter over EVERY context row appended for this slot,
-        # never reset by truncation. Each row is stamped with its value as ``ordinal``,
-        # so a retained row carries its TRUE position in the whole session history --
-        # exact regardless of how many older rows the window dropped or the day view
-        # excluded. A reader shows this directly instead of deriving a turn number from
-        # an array index, which only counts the rows still present. It is a bare int and
-        # grows without bound over a session's life, which is the one running counter a
-        # long session needs and costs 8 bytes.
+        # Which crew-log UNIT the ordinal key belongs to, counted off the ``session/opened``
+        # that STARTS a unit (``resumed`` not true) and nothing else. Distinct from
+        # ``context_unit`` above, which also moves on every re-attachment: a re-attach is
+        # the same conversation picked up again, and its turn numbers continue the same
+        # unit's, so a regenerate after a gateway restart must find the key its first run
+        # left. Only a new unit -- a new session or a compaction, each its own crew log --
+        # starts a new key space, because that is where turn numbers restart.
+        "context_key_unit": 0,
+        # A monotonic 1-based counter over the slot's TURN HISTORY, never reset by
+        # truncation. Each composition row is stamped with its value as ``ordinal`` so a
+        # retained row carries its TRUE position in the whole session history -- exact
+        # regardless of how many older rows the window dropped or the day view excluded,
+        # and a reader shows it directly instead of deriving a turn number from an array
+        # index, which only counts the rows still present.
+        #
+        # It advances for turns WITHOUT a composition too, not just per composition row:
+        # a turn can complete having composed nothing (a refusal, or a turn that reused
+        # the prompt already in context), and if the counter only moved on compositions
+        # a later row would carry an ordinal that under-counts the turns that actually
+        # ran before it -- the panel would then show the wrong turn number and the wrong
+        # "earlier turns not shown" count. So a composition advances it (below) AND a
+        # ``turn/completed`` that closed a composition-less turn advances it once, so the
+        # ordinal tracks the durable turn sequence, not the subset that composed. It is a
+        # bare int that grows without bound over a session's life, the one running
+        # counter a long session needs, and costs 8 bytes.
         "context_turns_seq": 0,
+        # Every ``(unit, turn)`` the ordinal counter has already ACCOUNTED FOR, in the
+        # order the counter gave them out. A turn is counted once -- the first event that
+        # reaches it (a composition, the closer of a turn that composed nothing, or a
+        # refusal) advances the counter and appends its key here; every later event naming
+        # the same pair reads its ordinal back rather than advancing again, so a turn that
+        # composes more than once, is retried, or is both composed and closed shares one
+        # ordinal across its rows.
+        #
+        # Every seen pair rather than the single most-recent one because a turn number is
+        # not monotonic within a unit: the panel recomputes it from the live row count
+        # (``chat_runner``), and an edit-resend (``chat_regenerate``) or a rewind
+        # (``chat_rewind``) truncates that list in place in the same crew-log session, so
+        # a turn already counted can RECUR at a lower number later. A last-only check would
+        # see the recurring turn as new and advance the counter again -- mislabelling the
+        # rewound turn and inflating the dropped-turn count, with the wrong value persisted
+        # in savepoint state and no refold that corrects it.
+        #
+        # ONE string, ``",{unit}:{turn},{unit}:{turn},"``, rather than a key -> ordinal
+        # map: each new key takes the next ordinal, so a key's ordinal is its POSITION
+        # (``context_turns_seq`` minus the keys after it) and needs no stored value. That
+        # is what lets the memo cover the whole rewindable range
+        # (``CONTEXT_ORDINAL_MEMO_LIMIT``) inside the slot-fold cell budget, and a str is
+        # immutable, so a snapshot can share it without a copy. ``unit`` is the fold's own
+        # integer counter and ``turn`` an int, so neither can contain a separator.
+        "context_turn_keys": ",",
         # The newest NON-ZERO window ``request/configured`` stated. That entry is
         # written only when the configuration CHANGED, so the newest one still
         # describes every turn since, and a zero means the provider reported no
@@ -1528,6 +1586,55 @@ def _bill_credits(state: dict[str, Any], entry: Entry) -> float | None:
     return billed
 
 
+def _count_turn_ordinal(state: dict[str, Any], unit_no: int, turn_no: int) -> int:
+    """Advance the session-global ordinal counter ONCE per distinct ``(unit, turn)``.
+
+    *unit_no* is ``context_key_unit``, the crew-log unit, so the key is stable across a
+    retry, a rewind, a regenerate and a re-attachment within one unit; every caller
+    passes that and nothing else.
+
+    The ordinal is a context row's position in the session's turn history -- what the
+    panel renders as the turn's number and what it counts the dropped-off turns from.
+    Every durable turn boundary passes through here: a composition, the closer of a
+    turn that composed nothing, and the refusal of a turn a dispatch gate never let run.
+    Each is ONE turn, so each consumes AT MOST one ordinal.
+
+    ``context_turn_keys`` lists every ``(unit, turn)`` already accounted for, in the
+    order the counter numbered them. If this call names a listed pair, its ordinal is
+    read back from its position and the counter is left where it is -- so a turn that
+    composes more than once, is retried, or is both composed and closed takes a single
+    ordinal shared across its rows. A pair not yet seen advances the counter and is
+    appended, which is what makes position and ordinal agree.
+
+    Every pair rather than the single most-recent one because a turn number is NOT monotonic
+    within a unit: an edit-resend or a rewind truncates the live row list the panel
+    numbers from, so a turn already counted can recur at a lower number later. Reusing
+    its original ordinal keeps the rewound turn's label stable; a last-only check would
+    read the recurrence as new and advance the counter again, mislabelling it and
+    inflating the dropped-turn count with no refold that corrects it.
+
+    The list is BOUNDED at ``CONTEXT_ORDINAL_MEMO_LIMIT`` keys, the rewindable range, and
+    evicts its oldest key. The counter is a bare int that keeps advancing, so evicting a
+    key never disturbs a later turn's ordinal, and position still reads true because the
+    keys after a match are counted from the END.
+    """
+    keys = state["context_turn_keys"]
+    needle = f",{unit_no}:{turn_no},"
+    found = keys.find(needle)
+    if found >= 0:
+        # Each key after this one ends in exactly one comma, and the newest key holds
+        # the counter's current value.
+        return int(state["context_turns_seq"] - keys.count(",", found + len(needle)))
+    state["context_turns_seq"] += 1
+    keys = keys + needle[1:]
+    if state["context_turns_seq"] > CONTEXT_ORDINAL_MEMO_LIMIT:
+        # One key in, one key out: every advance appends exactly one key, so past the
+        # bound the list is full and drops its oldest.
+        keys = "," + keys[keys.index(",", 1) + 1 :]
+    state["context_turn_keys"] = keys
+    return int(state["context_turns_seq"])
+
+
 def _usage_step(state: dict[str, Any], entry: Entry) -> None:
     data = entry.data
     billed = _bill_credits(state, entry)
@@ -1541,6 +1648,18 @@ def _usage_step(state: dict[str, Any], entry: Entry) -> None:
         # composed before it unstamped, so occupancy reads absent. Under-reporting a
         # reading is the safe direction; carrying an earlier run's reading is not.
         state["context_unit"] += 1
+        if data.get("resumed") is not True:
+            state["context_key_unit"] = int(state.get("context_key_unit", 0)) + 1
+        # The model/window stamps are scoped to the unit that was told them, so a new
+        # unit must start without them. The successor restamps from its own
+        # request/configured; until it does, a row reads absent rather than inheriting
+        # the predecessor's values. request/configured only accepts a NON-ZERO window
+        # and a NON-EMPTY model (an auto/backend-default session reports model="" and a
+        # provider that has not reported a window writes 0), so without this reset such
+        # a successor would silently keep the previous unit's stamp -- carrying one
+        # unit's reading onto another's rows, with no self-correcting re-fold.
+        state["context_window"] = 0
+        state["context_model"] = ""
     elif entry.type == "turn/completed":
         state["turns_completed"] += 1
         model = _as_str(data.get("model"))
@@ -1645,6 +1764,29 @@ def _usage_step(state: dict[str, Any], entry: Entry) -> None:
         if isinstance(duration, int) and not isinstance(duration, bool):
             state["duration_ms"] += duration
             state["duration_turns"] += 1
+        # A turn that closed having composed nothing still ran, so it occupies a
+        # position in the turn history the ordinal tracks: advance the counter once for
+        # it so the NEXT composition's ordinal counts it among the turns before it,
+        # rather than the counter only ever moving on the turns that happened to compose
+        # (which would make the panel show the wrong turn number). This turn is not yet
+        # counted when the mark names some OTHER turn -- an earlier one, or none at all.
+        #
+        # ONCE, however many attempts it takes: the mark is stamped here as well as at a
+        # composition, so a retried composition-less turn -- closed once per attempt,
+        # which is why the seal above is per-attempt -- consumes one ordinal rather than
+        # one per attempt. Without the stamp the second attempt reads the same unstamped
+        # state as the first and advances again, and every later row carries a turn
+        # number too high.
+        _count_turn_ordinal(state, state["context_key_unit"], turn_no)
+    elif entry.type == "turn/refused":
+        # A refused turn never reached the model, so it carries no cost and composes
+        # nothing -- but it still OCCUPIED a position in the turn history (a dispatch
+        # gate declining a turn is ordinary operation), so it consumes an ordinal just
+        # as a composition-less close does, and through the same helper so the rule is
+        # one rule. ``turn/refused`` is a turn's only durable entry when it fires: no
+        # ``turn/completed`` follows, so without this the counter never accounts for the
+        # turn and every later composition in the unit reads an ordinal one low.
+        _count_turn_ordinal(state, state["context_key_unit"], _as_int(data.get("turn")))
     elif entry.type == "context/composed":
         state["context_tokens"] += _as_int(data.get("tokens"))
         state["context_chars"] += _as_int(data.get("chars"))
@@ -1685,9 +1827,17 @@ def _usage_step(state: dict[str, Any], entry: Entry) -> None:
                 # ``TEXT_LIMIT`` is not keyed, the same reason ``_keyable`` gives
                 # everywhere else: it cannot be told apart from one that was cut, so
                 # two sources would pool into one number.
+                # A source left out is COUNTED (``sources_omitted`` on the rendered
+                # ``context``), so a reader can tell a truncated breakdown from a
+                # complete one. A label the row already holds still adds to it at the
+                # cap: only a NEW label is refused, so a kept label is never cut short.
                 keyed = _as_str(label)
-                if len(row_sources) < CONTEXT_SOURCES_PER_TURN_LIMIT and _keyable(keyed):
+                if _keyable(keyed) and (
+                    keyed in row_sources or len(row_sources) < CONTEXT_SOURCES_PER_TURN_LIMIT
+                ):
                     row_sources[keyed] = row_sources.get(keyed, 0) + _as_int(source.get("chars"))
+                else:
+                    state["context_sources_omitted"] += 1
         row: dict[str, Any] = {
             "turn": _as_int(data.get("turn")),
             # The entry's own writer-assigned stamp (epoch ms). The entry data
@@ -1721,8 +1871,14 @@ def _usage_step(state: dict[str, Any], entry: Entry) -> None:
         # first retained row's ordinal is exactly how many rows came before it -- what a
         # reader needs to show a turn's real number without counting an array that holds
         # only the survivors.
-        state["context_turns_seq"] += 1
-        row["ordinal"] = state["context_turns_seq"]
+        #
+        # ONCE per distinct (unit, turn), through the shared helper: a single turn can
+        # compose more than once (a rebuild re-emits the session-start injection, a
+        # prompt recomposed within one turn), and every such row is the SAME turn, so it
+        # carries that turn's one ordinal. The helper reuses the current counter value
+        # when this turn is already the one it last accounted for, so a second
+        # composition does not advance past the real turn sequence.
+        row["ordinal"] = _count_turn_ordinal(state, state["context_key_unit"], row["turn"])
         turns_window = state["context_turns"]
         turns_window.append(row)
         if len(turns_window) > CONTEXT_TURNS_LIMIT:
@@ -1818,13 +1974,18 @@ def _usage_render(state: dict[str, Any]) -> dict[str, Any]:
             "by_source": {
                 name: dict(row) for name, row in sorted(state["context_by_source"].items())
             },
-            # The per-turn window, OLDEST FIRST, and the count that fell off its
-            # front. The pair is what makes this a window rather than a history: a
-            # reader shown 200 rows and no count cannot tell a session of 200 turns
-            # from one of 2,000. ``_closed`` is the fold's private seal (which closer
-            # already stamped this row) and ``unit`` (which run of the slot appended
-            # it) are both dropped here: together they keep one run's reading off
-            # another's same-ordinal rows, and no reader asks for either.
+            # How many sources the retained ``turns`` rows leave out, across the session.
+            # 0 means every row's ``sources`` is its whole breakdown.
+            "sources_omitted": state["context_sources_omitted"],
+            # The per-turn window, OLDEST FIRST. No count of what fell off the front
+            # rides beside it: each row carries its own ``ordinal``, assigned before
+            # any truncation, so the first row's number is what tells a reader this is
+            # a window rather than the whole history -- and it says how much precedes
+            # it, which a whole-session total could not for a narrower window.
+            # ``_closed`` is the fold's private seal (which closer already stamped this
+            # row) and ``unit`` (which run of the slot appended it) are both dropped
+            # here: together they keep one run's reading off another's same-ordinal
+            # rows, and no reader asks for either.
             "turns": [
                 {
                     **{k: v for k, v in row.items() if k not in ("_closed", "unit")},
@@ -5053,6 +5214,15 @@ USAGE_TYPES: Final[frozenset[str]] = frozenset(
         # turn now closing.
         "session/opened",
         "turn/completed",
+        # A refused turn never ran, so it carries no cost and no occupancy -- it is
+        # here only so the ordinal counter sees it. A dispatch gate refusing a turn
+        # (an oversized or blocked ``@prompt``, a superseded replay) is ordinary
+        # operation, and the refusal is the turn's ONLY durable entry: it emits no
+        # ``turn/completed`` and composes nothing. Without it the counter never
+        # accounts for that turn, so every later composition in the unit reads an
+        # ordinal one low per refusal -- the panel's turn number and its "earlier
+        # turns not shown" count both drift down and never self-correct.
+        "turn/refused",
         "context/composed",
         "compaction/applied",
         "step/completed",
@@ -5127,6 +5297,8 @@ def _usage_copy(state: dict[str, Any]) -> dict[str, Any]:
     # row: an in-place write would reach a projection already handed to a reader.
     grown["context_turns"] = list(state["context_turns"])
     grown["omitted_models"] = list(state["omitted_models"])
+    # ``context_turn_keys`` needs no copy: it is a str, which ``_count_turn_ordinal``
+    # REPLACES rather than mutates, so the snapshot keeps the value it was handed.
     return grown
 
 
@@ -5186,12 +5358,29 @@ _FOLDS: Final[dict[str, _Fold]] = {
         affects=USAGE_TYPES,
         copy_state=_usage_copy,
         # Moved off the base for the per-turn context window and the occupancy pair,
-        # and moved again for the monotonic ``context_turns_seq`` ordinal counter this
-        # fold now keeps. Each row carries its exact ordinal, so a savepoint from an
-        # earlier build stores rows without one and would resume onto logic that reads
-        # it; the bump retires THIS fold's files to a cold fold and leaves the others'
-        # standing.
-        state_version=_FOLD_STATE_VERSION_BASE + 2,
+        # and moved again for the monotonic ordinal counter this fold now keeps. That
+        # counter advances over the TURN HISTORY -- a turn that composed nothing still
+        # consumes an ordinal (``context_turns_seq`` plus the memo
+        # that records which turns were counted), and a REFUSED turn does too now
+        # that the fold sees ``turn/refused`` -- so a savepoint from a build whose
+        # counter only moved on compositions, or on completions but not refusals, would
+        # resume with a differently-numbered sequence; the bump retires THIS fold's
+        # files to a cold fold and leaves the others' standing. Moved again because a new
+        # unit now CLEARS the model/window stamps on ``session/opened``: a savepoint from
+        # a build that carried a prior unit's stamp into the next unit would resume still
+        # carrying it. Moved once more because the counter now REMEMBERS every counted
+        # ``(unit, turn)`` in a map rather than only the most recent, so a rewound or
+        # edit-resent turn reuses its ordinal instead of taking a new one; a savepoint
+        # written with the old scalar companion carries no such map and must refold cold.
+        # Moved again because the key's unit is now ``context_key_unit``, which a
+        # re-attachment does not advance; a savepoint keyed by the per-attachment counter
+        # would hand a regenerated turn a second ordinal.
+        # Moved again for ``context_sources_omitted``: a savepoint without the counter
+        # would resume short of it, and the count it renders would be wrong for good.
+        # Moved once more because the memo is now ``context_turn_keys``, one string
+        # covering the whole rewindable range; a savepoint holding the old bounded map
+        # carries neither the new field nor the turns that map had already evicted.
+        state_version=_FOLD_STATE_VERSION_BASE + 9,
     ),
     # LAZY on purpose, and the one fold where that deserves saying. It is the fold a
     # reader would guess wants pushing, because it is the one that looks like a live

@@ -794,7 +794,6 @@ def context_trace(slot: str, days: int = 14) -> dict[str, Any]:
     totals: dict[str, int] = {}
     peak_used = 0
     peak_window = 0
-    # The smallest EXACT ordinal among the rows kept in this day window, so the count
     # Whether any row in the window carried a reading. It separates two causes of a
     # zero window that must not share an answer: no reading in this span at all (the
     # configured size is then the best a reader can be given), or a reading whose
@@ -865,15 +864,27 @@ def context_trace(slot: str, days: int = 14) -> dict[str, Any]:
         # measured against. Taken here rather than from a session-wide figure because
         # the caller asked about a span of days: on a long session the fullest turn is
         # frequently older than every row in that span, and reporting it would answer a
-        # question nobody asked. ``>=`` keeps the LATEST among equally-full turns, which
-        # is the reading describing the model currently running.
-        if has_reading and (not peak_seen or used >= peak_used):
-            peak_used = used
-            # Travels with the reading, including as 0. A turn that reported a used
-            # count but no window has no size it was measured against, and borrowing
-            # another turn's would manufacture a ratio for a turn that never ran.
-            peak_window = _coerce_int(row.get("used_window"))
-            peak_seen = True
+        # question nobody asked.
+        #
+        # Fullest means the highest ``used / used_window`` RATIO, not the highest
+        # absolute ``used``: a model switch moves the window, so a turn with more used
+        # tokens against a larger window can be LESS full than a turn with fewer used
+        # tokens against a smaller one -- comparing ``used`` alone would crown the wrong
+        # turn and then divide it by a size it was never measured against. Only a
+        # "valid pair" (a reading whose window is positive) has a defined ratio, so a
+        # reading with no stated window is not a peak candidate: it has no size to be a
+        # fraction of, and letting it win would report a peak over a zero window. The
+        # ratio is compared by cross-multiplication (``used * peak_window`` vs
+        # ``peak_used * window``) to stay integer-exact and never divide by zero; both
+        # windows are positive here. ``>=`` keeps the LATEST among equally-full turns,
+        # the reading describing the model currently running.
+        row_used_window = _coerce_int(row.get("used_window"))
+        if has_reading and row_used_window > 0:
+            fuller = not peak_seen or used * peak_window >= peak_used * row_used_window
+            if fuller:
+                peak_used = used
+                peak_window = row_used_window
+                peak_seen = True
 
     return {
         "slot": slot,

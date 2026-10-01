@@ -109,6 +109,11 @@ def _billed(
     )
 
 
+def _refused(*, unit: str = UNIT, turn: int = 1, reason: str = "oversized") -> None:
+    """A turn a dispatch gate declined: it never ran, so it only emits turn/refused."""
+    crew_log_emit.on_turn_refused(unit, turn, reason)
+
+
 def _flush() -> None:
     crew_log_emit.flush(timeout=5.0)
     crew_log.forget_slot_folds()
@@ -220,6 +225,31 @@ class TestContextTrace:
         out = usage_mod.context_trace(SLOT, 14)
         assert out["turns"][0]["context_window"] == 200_000
         assert out["context_window"] == 200_000
+
+    def test_a_new_unit_does_not_inherit_the_previous_units_model_or_window(self):
+        """A slot folds every unit into one state, so the model/window stamps must be
+        cleared when a new unit opens -- otherwise a successor whose own configuration
+        reports an empty model or a zero window (the auto/backend-default and
+        provider-unreported cases, both ordinary) silently keeps the PREVIOUS unit's
+        stamp and mislabels its rows.
+        """
+        _open("acp-first", window=200_000, model="opus-5")
+        _compose({"memory": 100}, unit="acp-first", turn=1)
+        _flush()
+        # Second unit of the SAME slot opens with no configuration of its own
+        # (window=0, model="" -> _open skips request/configured), the auto/unreported
+        # case. Its row must read absent, not the first unit's opus-5 / 200k.
+        _open("acp-second", window=0, model="")
+        _compose({"memory": 50}, unit="acp-second", turn=1)
+        _flush()
+        out = usage_mod.context_trace(SLOT, 14)
+        first_row, second_row = out["turns"][0], out["turns"][1]
+        assert first_row["blocks"]["memory"] == 100
+        assert first_row["context_window"] == 200_000
+        assert first_row["model"] == "opus-5"
+        assert second_row["blocks"]["memory"] == 50
+        assert second_row["context_window"] == 0
+        assert second_row["model"] == ""
 
     def test_a_measured_row_reports_the_providers_window_not_the_configured_one(self):
         """A model switch moves the window, so a measured row uses the reading's own.
@@ -530,12 +560,15 @@ class TestContextTrace:
         assert out["peak_context_used"] == 0
         assert out["context_window"] == 200_000
 
-    def test_a_reading_whose_window_is_unknown_does_not_borrow_another(self):
-        """A used count with no window is a reading whose denominator is unknown.
+    def test_a_reading_whose_window_is_unknown_is_not_a_peak_candidate(self):
+        """A used count with no window has no fullness ratio, so it cannot be the peak.
 
-        Reporting the previous turn's window here would pair the number with a size it
-        was never measured against; 0 is what the frontend's own guard reads as "no
-        occupancy to show" (``context_window <= 0`` returns 0).
+        The peak is the fullest turn -- the highest ``used / used_window`` -- and a
+        reading whose window is 0 has no denominator to be a fraction of. Crowning it
+        would report a peak over a zero window (a broken ratio the frontend then has to
+        hide). Here the later turn reports MORE used tokens (80k) but no window, while
+        an earlier turn is a valid pair (40k / 100k): the earlier, valid turn is the
+        peak, and its own window travels with it.
         """
         _open(window=100_000)
         _compose({"memory": 100}, turn=1)
@@ -544,8 +577,56 @@ class TestContextTrace:
         _billed(turn=2, used=80_000, window=0)
         _flush()
         out = usage_mod.context_trace(SLOT, 14)
-        assert out["peak_context_used"] == 80_000
-        assert out["context_window"] == 0
+        assert out["peak_context_used"] == 40_000, (
+            "the windowless 80k reading has no ratio and must not win the peak over "
+            "the valid 40k/100k pair"
+        )
+        assert out["context_window"] == 100_000
+
+    def test_peak_is_the_fullest_ratio_not_the_largest_used_across_a_switch(self):
+        """A smaller ``used`` against a smaller window can be fuller than a larger one.
+
+        This is the exact case GPT flagged: comparing ``used`` alone ignores the
+        window a model switch moves. Turn 1 uses 90k of a 100k window (90% full); turn
+        2 switches to a 1M window and uses 200k (20% full). 200k is the larger absolute
+        reading, but turn 1 is the fuller turn -- the peak and its window must be turn
+        1's, and the rendered ratio 90%, not turn 2's 20%.
+        """
+        _open(window=100_000, model="opus-5")
+        _compose({"memory": 100}, turn=1)
+        _billed(turn=1, used=90_000, window=100_000, model="opus-5")
+        crew_log_emit.on_request_configured(
+            UNIT, 2, model="haiku-9", provider="acp", context_window=1_000_000
+        )
+        _compose({"memory": 100}, turn=2)
+        _billed(turn=2, used=200_000, window=1_000_000, model="haiku-9")
+        _flush()
+        out = usage_mod.context_trace(SLOT, 14)
+        assert (
+            out["peak_context_used"] == 90_000
+        ), "the fuller 90k/100k turn wins over the larger-but-emptier 200k/1M turn"
+        assert out["context_window"] == 100_000
+        assert out["peak_context_used"] / out["context_window"] == 0.9
+
+    def test_peak_keeps_the_later_turn_among_equally_full_readings(self):
+        """``>=`` on the ratio keeps the LATEST equally-full turn, as before.
+
+        Two turns are exactly 50% full on different windows (a switch between them).
+        The later one describes the model currently running, so its pair is reported.
+        """
+        _open(window=100_000, model="opus-5")
+        _compose({"memory": 100}, turn=1)
+        _billed(turn=1, used=50_000, window=100_000, model="opus-5")
+        crew_log_emit.on_request_configured(
+            UNIT, 2, model="haiku-9", provider="acp", context_window=200_000
+        )
+        _compose({"memory": 100}, turn=2)
+        _billed(turn=2, used=100_000, window=200_000, model="haiku-9")
+        _flush()
+        out = usage_mod.context_trace(SLOT, 14)
+        # Both are 50% full; the later turn's pair wins the tie.
+        assert out["peak_context_used"] == 100_000
+        assert out["context_window"] == 200_000
 
     def test_a_later_zero_window_does_not_erase_the_size_stated_earlier(self):
         """A provider that reports no window writes 0, which is not a window of nothing.
@@ -790,6 +871,162 @@ class TestContextTraceWindowBounds:
         # The survivors are ordinals 5, 6, 7 -- turns 2, 3, 4 are absent from the window.
         assert {t["ordinal"] for t in rows if t["phase"] == "per_turn"} == {5, 6, 7}
 
+    def test_a_turn_that_composed_nothing_still_advances_the_ordinal(self):
+        """MUTATION-SENSITIVE: a turn that composed nothing occupies a turn-history slot.
+
+        The ordinal is the row's position in the TURN history, not a count of the turns
+        that happened to compose. A turn can close having composed nothing -- a refusal,
+        or a turn that reused the prompt already in context -- and it still ran. If the
+        counter only moved on compositions, the composition AFTER a composition-less turn
+        would carry an ordinal one short of its real turn number, and the panel would
+        show the wrong "Turn N" and the wrong "earlier turns not shown" count.
+
+        Turn 1 composes (ordinal 1), turn 2 closes having composed NOTHING, turn 3
+        composes. The turn-3 row must read ordinal 3, not 2 -- turn 2 consumed a slot.
+        """
+        _open()
+        _compose({"memory": 10}, turn=1)
+        _billed(turn=2, used=0)  # a turn that closed without composing a row
+        _compose({"memory": 30}, turn=3)
+        _flush()
+        rows = usage_mod.context_trace(SLOT, 14)["turns"]
+        # Two composition rows survive (turn 2 wrote none), but their ordinals count the
+        # composition-less turn between them: 1 and 3, never 1 and 2.
+        assert [t["ordinal"] for t in rows] == [1, 3]
+
+    def test_a_retried_composition_less_turn_takes_ONE_ordinal(self):
+        """MUTATION-SENSITIVE: attempts of one turn share its ordinal, not one each.
+
+        One turn is closed once per ATTEMPT -- that is what the per-attempt seal in the
+        closer exists for -- so 'did this turn compose' is answered afresh at every
+        attempt. A composition-less turn that is retried would then be handed an ordinal
+        per attempt, and every later row would carry a turn number too high, with the
+        "earlier turns not shown" count inflated by the same amount. The counter is
+        marked when an ordinal is CONSUMED, which makes the second attempt a no-op.
+
+        Turn 1 composes (ordinal 1), turn 2 composes nothing and closes TWICE, turn 3
+        composes. The turn-3 row must read ordinal 3 -- never 4.
+        """
+        _open()
+        _compose({"memory": 10}, turn=1)
+        _billed(turn=2, used=0)
+        _billed(turn=2, used=0)
+        _compose({"memory": 30}, turn=3)
+        _flush()
+        rows = usage_mod.context_trace(SLOT, 14)["turns"]
+        assert [t["ordinal"] for t in rows] == [1, 3]
+
+    def test_consecutive_composition_less_turns_each_take_an_ordinal(self):
+        """Two turns in a row composing nothing advance the ordinal twice, not once.
+
+        A single boolean 'this turn composed' flag has to be RESET at each turn close,
+        or a run of composition-less turns would advance the ordinal only once for the
+        whole run. Turn 1 composes (1), turns 2 and 3 compose nothing, turn 4 composes:
+        the turn-4 row must read ordinal 4.
+        """
+        _open()
+        _compose({"memory": 10}, turn=1)
+        _billed(turn=2, used=0)
+        _billed(turn=3, used=0)
+        _compose({"memory": 40}, turn=4)
+        _flush()
+        rows = usage_mod.context_trace(SLOT, 14)["turns"]
+        assert [t["ordinal"] for t in rows] == [1, 4]
+
+    def test_repeated_compositions_of_one_turn_share_one_ordinal(self):
+        """MUTATION-SENSITIVE: a turn composed more than once is still ONE turn.
+
+        A single turn can compose more than once -- a rebuild re-emits the session-start
+        injection, a prompt is recomposed within the turn -- and every such row is the
+        SAME turn, so it carries that turn's one ordinal. Advancing the counter per
+        composition instead of per distinct (unit, turn) hands the second row a fresh
+        number, pushing the counter past the real turn sequence so every later row's turn
+        number and the panel's "earlier turns not shown" count read one too high per
+        extra composition.
+
+        Turn 1 composes TWICE, then turn 2 composes once. The two turn-1 rows must share
+        ordinal 1, and the turn-2 row must read ordinal 2 -- never 2 and 3.
+        """
+        _open()
+        _compose({"memory": 100}, turn=1)
+        _compose({"memory": 50}, turn=1)
+        _billed(turn=1, used=6_000)
+        _compose({"memory": 40}, turn=2)
+        _billed(turn=2, used=7_000)
+        _flush()
+        rows = usage_mod.context_trace(SLOT, 14)["turns"]
+        # Three rows: two for turn 1 (one ordinal between them), one for turn 2.
+        assert [t["ordinal"] for t in rows] == [1, 1, 2]
+
+    def test_a_refused_turn_consumes_an_ordinal(self):
+        """MUTATION-SENSITIVE: a turn a dispatch gate refused still occupied the history.
+
+        A refused turn never reaches the model, so it emits no ``turn/completed`` and
+        composes nothing -- its ``turn/refused`` is its only durable entry. A dispatch
+        gate declining a turn (an oversized or blocked ``@prompt``, a superseded replay)
+        is ordinary operation, so if the fold does not account for it the next
+        composition's ordinal -- and the panel's "earlier turns not shown" count derived
+        from it -- reads one low per refusal, and nothing self-corrects.
+
+        Turn 1 composes (ordinal 1), turn 2 is REFUSED, turn 3 composes. The turn-3 row
+        must read ordinal 3 -- never 2.
+        """
+        _open()
+        _compose({"memory": 100}, turn=1)
+        _billed(turn=1, used=5_000)
+        _refused(turn=2)
+        _compose({"memory": 40}, turn=3)
+        _billed(turn=3, used=6_000)
+        _flush()
+        rows = usage_mod.context_trace(SLOT, 14)["turns"]
+        # Two composition rows (turn 2 wrote none); their ordinals count the refused
+        # turn between them: 1 and 3, never 1 and 2.
+        assert [t["ordinal"] for t in rows] == [1, 3]
+
+    def test_a_refused_turn_counts_once_even_retried(self):
+        """A turn refused more than once (e.g. a retried oversized prompt) takes ONE.
+
+        The accounting is keyed on the turn identity, not on the refusal event, so a
+        turn refused twice consumes a single ordinal -- the same once-per-(unit, turn)
+        rule a composition-less close obeys. Turn 2 is refused TWICE between turn 1's
+        and turn 3's compositions; the turn-3 row must still read ordinal 3, never 4.
+        """
+        _open()
+        _compose({"memory": 100}, turn=1)
+        _refused(turn=2)
+        _refused(turn=2)
+        _compose({"memory": 40}, turn=3)
+        _flush()
+        rows = usage_mod.context_trace(SLOT, 14)["turns"]
+        assert [t["ordinal"] for t in rows] == [1, 3]
+
+    def test_a_rewound_turn_reuses_its_ordinal_not_a_new_one(self):
+        """A turn number is not monotonic within a unit: an edit-resend or a rewind
+        truncates the row list the panel numbers from, so a turn already counted recurs
+        at a lower number. That recurrence must reuse the turn's ORIGINAL ordinal, not
+        advance the counter again -- otherwise the rewound turn is relabelled and the
+        dropped-turn count inflates. Turns 1, 2, 3 compose (ordinals 1, 2, 3); turn 2
+        then composes AGAIN (the resend). Its row must read ordinal 2, never 4, and the
+        counter must not have advanced past 3.
+        """
+        _open()
+        _compose({"memory": 100}, turn=1)
+        _compose({"memory": 90}, turn=2)
+        _compose({"memory": 80}, turn=3)
+        # The edit-resend re-runs turn 2 in the same unit -- a lower turn number recurs.
+        _compose({"memory": 70}, turn=2)
+        _flush()
+        rows = usage_mod.context_trace(SLOT, 14)["turns"]
+        # The rendered row exposes no turn number; key on each composition's distinct
+        # memory block instead. Both compositions of turn 2 (90 and 70) carry ordinal 2;
+        # turn 3 keeps ordinal 3, and the counter never advanced past 3.
+        by_memory = {t["blocks"]["memory"]: t["ordinal"] for t in rows}
+        assert by_memory[100] == 1
+        assert by_memory[90] == 2
+        assert by_memory[70] == 2
+        assert by_memory[80] == 3
+        assert max(t["ordinal"] for t in rows) == 3
+
     #: The slot-fold cache's own ceiling, stated in ``projection.py`` against that
     #: cache's largest budgeted member (``radar``). A full context window has to fit
     #: under it or the cache's documented budget is wrong.
@@ -811,12 +1048,14 @@ class TestContextTraceWindowBounds:
         guard goes quiet. Comparing the two builds catches that as a failure instead:
         the moment the distinct build stops being distinct, the two measure the same.
         """
-        measured = _deep_bytes(_worst_case_window())
+        measured = _deep_bytes(_worst_case_window()) + _deep_bytes(_worst_case_turn_keys())
         assert measured < self.CACHE_MEMBER_CEILING, (
-            f"a full context window measures {measured:,} bytes, over the "
-            f"{self.CACHE_MEMBER_CEILING:,} slot-fold cache-member ceiling"
+            f"a full context window plus a full ordinal memo measures {measured:,} "
+            f"bytes, over the {self.CACHE_MEMBER_CEILING:,} slot-fold cache-member ceiling"
         )
-        shared = _deep_bytes(_worst_case_window(distinct_values=False))
+        shared = _deep_bytes(_worst_case_window(distinct_values=False)) + _deep_bytes(
+            _worst_case_turn_keys()
+        )
         assert measured > shared, (
             f"the window above measures {measured:,} bytes, no more than the "
             f"{shared:,} of one built with a single shared value -- so it is no "
@@ -839,6 +1078,17 @@ class TestContextTraceWindowBounds:
             "the row shape no longer holds, so re-derive it rather than keeping the "
             "comment"
         )
+
+
+def _worst_case_turn_keys() -> str:
+    """A FULL ordinal memo, the other large member of the ``usage`` fold state.
+
+    ``CONTEXT_ORDINAL_MEMO_LIMIT`` keys, each a 3-digit unit and a 7-digit turn: wider
+    than a real slot reaches (the turn is a row count, and the live list holds 10,000).
+    """
+    return "," + "".join(
+        f"{100 + n % 900}:{1_000_000 + n}," for n in range(crew_log.CONTEXT_ORDINAL_MEMO_LIMIT)
+    )
 
 
 def _worst_case_window(

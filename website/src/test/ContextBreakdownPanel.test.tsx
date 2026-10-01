@@ -55,6 +55,7 @@ const turn = (over: Partial<ContextTurn> = {}): ContextTurn => ({
   context_used: 2000,
   context_window: 200000,
   model: 'claude',
+  ordinal: 0,
   ...over,
 })
 
@@ -274,6 +275,96 @@ describe('ContextBreakdownPanel rendering', () => {
     expect(screen.getByText(`Turn ${MAX_CHART_TURNS + 5} · latest`)).toBeInTheDocument()
   })
 
+  it('counts every earlier turn from the first shown row ordinal', () => {
+    // 35 retained rows whose TRUE ordinals are 41..75 (40 turns ran before them). The
+    // chart draws the newest 30 (ordinals 46..75) and clips 5; the label must report
+    // all 45 earlier turns -- the 40 gone before the payload plus the 5 clipped here --
+    // derived from the first shown row's exact ordinal, not a uniform offset.
+    const many = Array.from({ length: MAX_CHART_TURNS + 5 }, (_, i) =>
+      turnOf({ your_message: 10 + i, memory: 100 }, { ordinal: 41 + i }),
+    )
+    render(<ContextBreakdownPanel trace={trace({ turns: many })} />)
+    expect(screen.getByText('45 earlier turns not shown')).toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: /^Turn \d+:/ })).toHaveLength(MAX_CHART_TURNS)
+    // The newest is turn 75, the oldest shown is 46.
+    expect(screen.getByText(/Turn 75 · latest/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^Turn 46:/ })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^Turn 45:/ })).toBeNull()
+  })
+
+  it('counts a regenerated turn once when two session-start rows share its ordinal', () => {
+    // An ordinal numbers a TURN, and one turn can own more than one row: a failed replay
+    // that regenerates turn 41 re-emits its session-start injection, so TWO start rows
+    // carry ordinal 41. They are ONE turn position shown above the chart, so exactly one
+    // is subtracted from the earlier-turn count. Counting ROWS subtracts two and reports
+    // 43 -- one fewer earlier turn than there are, and nothing on screen reveals it.
+    const regenerated = [
+      turnOf({ your_message: 120, memory: 30_000 }, { phase: 'session_start', ordinal: 41 }),
+      turnOf({ your_message: 120, memory: 30_000 }, { phase: 'session_start', ordinal: 41 }),
+      turnOf({ your_message: 10, memory: 100 }, { ordinal: 46 }),
+      turnOf({ your_message: 20, memory: 100 }, { ordinal: 47 }),
+      turnOf({ your_message: 30, memory: 100 }, { ordinal: 48 }),
+    ]
+    render(<ContextBreakdownPanel trace={trace({ turns: regenerated })} />)
+    expect(screen.getByText('44 earlier turns not shown')).toBeInTheDocument()
+  })
+
+  it('draws a retried turn once, from its newest attempt', () => {
+    // A retried or recomposed turn writes one row per attempt, all with the turn's one
+    // ordinal. Drawing rows would show two "Turn 9" columns and say "Last 3 turns" for two.
+    const retried = [
+      turnOf({ your_message: 10, memory: 100 }, { ordinal: 8 }),
+      turnOf({ your_message: 20, memory: 100 }, { ordinal: 9 }),
+      turnOf({ your_message: 25, memory: 400 }, { ordinal: 9 }),
+    ]
+    render(<ContextBreakdownPanel trace={trace({ turns: retried })} />)
+    expect(screen.getByText('Last 2 turns')).toBeInTheDocument()
+    const turn9 = screen.getAllByRole('button', { name: /^Turn 9:/ })
+    expect(turn9).toHaveLength(1)
+    // The newest attempt is the one kept: it is the third row, window-local index 3.
+    expect(turn9[0]).toHaveAttribute('data-turn', '3')
+    // The delta compares turn 9 with turn 8 (425 vs 110), never with its own hidden
+    // earlier attempt (425 vs 120).
+    const detail = screen.getByTestId('selected-turn-detail')
+    expect(within(detail).getByText(/\+315 vs previous/)).toBeInTheDocument()
+  })
+
+  it('reports earlier-hidden from the first row ordinal when the chart clips nothing', () => {
+    // Fewer rows than the chart cap, but 7 turns ran before them (ordinals 8, 9, 10):
+    // the count comes from the first row's ordinal, and the chart draws every row it has.
+    const few = [
+      turnOf({ your_message: 10, memory: 100 }, { ordinal: 8 }),
+      turnOf({ your_message: 20, memory: 100 }, { ordinal: 9 }),
+      turnOf({ your_message: 30, memory: 100 }, { ordinal: 10 }),
+    ]
+    render(<ContextBreakdownPanel trace={trace({ turns: few })} />)
+    expect(screen.getByText('7 earlier turns not shown')).toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: /^Turn \d+:/ })).toHaveLength(3)
+  })
+
+  it('shows each row EXACT ordinal, indexing the array window-local', () => {
+    // Three retained rows whose true ordinals are 41, 42, 43: the displayed label must
+    // show those exact numbers, while the array is still indexed by the window-local
+    // position (the earlier turns are not in it).
+    const few = [
+      turnOf({ your_message: 10, memory: 100 }, { ordinal: 41 }),
+      turnOf({ your_message: 20, memory: 200 }, { ordinal: 42 }),
+      turnOf({ your_message: 30, memory: 300 }, { ordinal: 43 }),
+    ]
+    render(<ContextBreakdownPanel trace={trace({ turns: few })} />)
+    const detail = screen.getByTestId('selected-turn-detail')
+    // Newest retained row is the 43rd turn, not the 3rd.
+    expect(within(detail).getByText(/Turn 43 · latest/)).toBeInTheDocument()
+    // The buttons are LABELLED by the true ordinal ...
+    const turn41 = screen.getByRole('button', { name: /^Turn 41:/ })
+    // ... but still IDENTIFIED window-local, so selecting it indexes the array at 1.
+    expect(turn41).toHaveAttribute('data-turn', '1')
+    fireEvent.click(turn41)
+    // Selecting the first retained row shows the 41st turn's detail, not the latest.
+    expect(within(detail).getByText('Turn 41')).toBeInTheDocument()
+    expect(within(detail).queryByText(/latest/)).toBeNull()
+  })
+
   it('carries neither a whole-window estimate nor a credits column', () => {
     render(
       <ContextBreakdownPanel
@@ -346,6 +437,29 @@ describe('session-start turns sit above the chart', () => {
       .filter(n => Number.isFinite(n))
     expect(Math.max(...ticks)).toBeLessThan(10_000)
     expect(screen.getByText(/shown above the chart so later turns stay readable/)).toBeInTheDocument()
+  })
+
+  it('announces the start row by its TRUE ordinal, matching what the row displays', () => {
+    // The chart's aria label names the selected turn. A session-start row is selected
+    // ABOVE the chart and is absent from the rows the chart draws, so the chart cannot
+    // look its ordinal up -- the selection key it receives is the window-local `n`.
+    // Announcing that would tell a screen-reader user a different number from the one
+    // printed on the row beside it, which is the only place the two can disagree.
+    const rows = [
+      turnOf({ your_message: 120, memory: 30_000 }, { phase: 'session_start', ordinal: 41 }),
+      turnOf({ your_message: 80, memory: 600 }, { ordinal: 42 }),
+      turnOf({ your_message: 80, memory: 1_000 }, { ordinal: 43 }),
+    ]
+    const { container } = render(<ContextBreakdownPanel trace={trace({ turns: rows })} />)
+    const row = container.querySelector('[data-start-row]') as HTMLElement
+    // Visible text and the selection key disagree on purpose: ordinal 41, window index 1.
+    expect(row.textContent).toContain('Turn 41 · session start')
+    expect(row).toHaveAttribute('data-turn', '1')
+
+    fireEvent.click(row)
+    const chart = container.querySelector('[role="img"]') as HTMLElement
+    expect(chart.getAttribute('aria-label')).toContain('Turn 41 is selected')
+    expect(chart.getAttribute('aria-label')).not.toContain('Turn 1 is selected')
   })
 
   it('selecting the start row drives the detail like any other turn', () => {

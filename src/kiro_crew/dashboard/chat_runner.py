@@ -13773,15 +13773,15 @@ async def _run_chat(
         # this path reads is the value the refusal branch already recorded against.
         # Recomputing it here would be the same expression twice.
 
-        # Append-only the session's log: what the request was configured as, what
-        # the gateway put in front of the model, and the body it accepted. All
-        # three name ``_crew_log_turn_no``, the one ordinal every entry of this
-        # turn uses, and all three are written BEFORE the dispatch gates below --
-        # so a refused turn still shows what was asked and what it would have
-        # cost, which is exactly the turn a reader most needs explained.
-        # The accepted input first, then the two facts DERIVED from it. Context is
-        # composed from this message, so a fold that read the composition first
-        # would see a derived fact before its cause.
+        # Append-only the session's log: the body the gateway accepted. This names
+        # ``_crew_log_turn_no``, the one ordinal every entry of this turn uses, and
+        # is written BEFORE the dispatch gates below -- so even a refused turn still
+        # shows what was asked, which is exactly the turn a reader most needs
+        # explained. The two facts DERIVED from this request (``request/configured``
+        # and ``context/composed``) are NOT written here: they are emitted past the
+        # gates (see the block below where ``on_request_configured`` /
+        # ``on_context_composed`` are called), because a refused dispatch assembled a
+        # prompt nothing ever saw and must not publish a composition for it.
         crew_log_emit.on_message_received(
             _crew_log_sid,
             _crew_log_turn_no,
