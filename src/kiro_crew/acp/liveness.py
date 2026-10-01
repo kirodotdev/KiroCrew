@@ -139,6 +139,9 @@ from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Protocol
 
 from kiro_crew import platform_compat
+from kiro_crew.platform_compat import (  # noqa: F401 - re-exported for existing importers
+    boottime_now,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -443,37 +446,6 @@ def established_inodes(proc_root: str, pid: int) -> set[str]:
             if len(parts) > 9 and parts[3] == "01":
                 inodes.add(parts[9])
     return inodes
-
-
-def boottime_now() -> float | None:
-    """Now, on the clock this host dates process starts against.
-
-    Linux: ``CLOCK_BOOTTIME`` counts time spent suspended, exactly as
-    ``/proc/uptime`` and the ``starttime`` field of ``/proc/<pid>/stat`` do.
-    ``time.monotonic()`` (``CLOCK_MONOTONIC``) does not, so the two MUST NOT be
-    mixed in one comparison: after a suspend of S seconds, a boot-clock age minus
-    a monotonic stamp places a process S seconds EARLIER than it really started,
-    which is how a live shell child comes to look like it predates its own
-    dispatch.
-
-    macOS: ``libproc`` reports a process's start as an absolute wall-clock
-    instant (``pbi_start_tvsec``), so the stamp is ``time.time()`` — the same
-    clock, suspend included. That clock can STEP (NTP correction after a VM
-    resume, an admin reset), and a backward step between the stamp and the
-    runtime's fork dates a live child before its own dispatch. The oracle pairs
-    this stamp with :func:`steady_now` and refuses to attribute by start time
-    once the two disagree (see :meth:`LivenessOracle._started_after_dispatch`);
-    the stamp alone cannot tell a step from a slow spawn.
-
-    Returns None where no such clock is available, which every caller must read
-    as "cannot attribute" rather than as a time.
-    """
-    try:
-        return time.clock_gettime(time.CLOCK_BOOTTIME)
-    except (AttributeError, OSError):  # pragma: no cover - platform dependent
-        if sys.platform == "darwin":
-            return time.time()
-        return None
 
 
 def steady_now() -> float | None:

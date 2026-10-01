@@ -2770,27 +2770,31 @@ async def api_lessons_create(request: web.Request) -> web.Response:
             candidates = await asyncio.to_thread(
                 vs.find_contradiction_candidates, rule, 0.4, 0.85, rule_emb, repo_scope
             )
-            # A second deletion route, and it needs the same tier guard write_lesson's
-            # own dedup scan carries: this sweep ends in delete_semantic, so an
-            # `on_topic` submission could retire a standing rule here even though the
-            # scan refuses to. A finding may retire only another finding; an unstated
-            # candidate is protected too, because injection serves it AS a standing
-            # rule and on a store predating the field every row is unstated.
+            # A second deletion route, and it ends in delete_semantic on a one-word
+            # LLM verdict. The invariant is on the CANDIDATE, not on the submission:
+            # a model-guessed contradiction may retire only a finding (on_topic). A
+            # standing (always) candidate is always protected, and an unstated
+            # candidate is protected too -- injection serves it AS a standing rule,
+            # and on a store predating the field every row is unstated.
             #
-            # Read the PERSISTED tier, not the submitted one. The tier is write-once,
-            # so a clause-only re-submit of a stored finding -- the ordinary
-            # enrichment this route documents below -- omits `applies`, which arrives
-            # as None while the row keeps `on_topic`. Gating on the submitted value
-            # therefore skipped the guard on exactly that input and let the sweep
-            # retire a contradictory standing rule, with no recovery: the
-            # "self-heals on the next learn_add" note covers a MISSED sweep, not a
-            # wrong deletion.
-            if result.applies == LESSON_APPLIES_ON_TOPIC:
-                candidates = [
-                    candidate
-                    for candidate in candidates
-                    if _candidate_applies(candidate) == LESSON_APPLIES_ON_TOPIC
-                ]
+            # So the filter is unconditional and reads the CANDIDATE's persisted tier
+            # via _candidate_applies, which fails safe to unstated (protected). The
+            # submission's tier is deliberately not consulted: a model verdict is not
+            # authority to delete a standing rule the user filed, whichever tier the
+            # submission carries. Gating on the submission (its old form,
+            # `if result.applies == on_topic`) fired only for a finding submission,
+            # so a standing or unstated submission skipped the guard and the sweep
+            # could tombstone a standing candidate the model called contradictory --
+            # with no recovery, since the "self-heals on the next learn_add" note
+            # below covers a MISSED sweep, not a wrong deletion. This is stricter
+            # than write_lesson's deterministic dedup scan, which may let a standing
+            # submission retire a finding, because that scan decides on text while
+            # this one decides on a guess.
+            candidates = [
+                candidate
+                for candidate in candidates
+                if _candidate_applies(candidate) == LESSON_APPLIES_ON_TOPIC
+            ]
             if candidates:
                 # Fire-and-forget via this module's _background_tasks
                 # pattern. The sweep only supersedes OTHER (older) lessons, never

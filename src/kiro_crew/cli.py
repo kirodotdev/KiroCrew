@@ -3236,6 +3236,16 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
         # keys off to decide whether to arm itself (see start_dashboard). Cheap
         # and gateway-only — other CLI subcommands are short-lived and skip it.
         faulthandler.enable()
+        # An in-app restart reaches this image through os.execv, and execve
+        # preserves ITIMER_REAL while resetting a caught SIGALRM to its default
+        # disposition: the predecessor cancels its stall alarm before it execs,
+        # and this clears any deadline that still arrived -- one this image
+        # never armed -- before boot spends the seconds the watchdog is not yet
+        # running. Only while SIGALRM is at its default disposition, the same
+        # ownership rule the watchdog applies when it arms.
+        from kiro_crew.dashboard.loop_watchdog import disarm_inherited_alarm
+
+        disarm_inherited_alarm()
         # Install crash breadcrumbs (atexit + excepthook) before asyncio.run
         # so any fatal exception writes to crash.log.
         # The asyncio loop handler is installed later inside run().

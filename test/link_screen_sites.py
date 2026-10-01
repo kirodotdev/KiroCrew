@@ -143,6 +143,7 @@ DECLARED_SITES = frozenset(
         ("seed.py", "publish_fixture_manifest_into_witnessed_dir"),
         ("seed.py", "seed"),
         ("sel.py", "SecurityEventLog._chain_lock"),
+        ("sel.py", "SecurityEventLog._chain_lock_target"),
         ("sel.py", "SecurityEventLog._ensure_segment_dir"),
         ("sel.py", "SecurityEventLog._load_or_create_hmac_key"),
         ("sel.py", "SecurityEventLog._open_rotation_lock"),

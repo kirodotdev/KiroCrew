@@ -15,6 +15,10 @@ from body_stream_helpers import attach_body
 from member_memory_helpers import declare_v2_store
 
 from kiro_crew.history import ConversationLog
+from kiro_crew.lesson_validation import (
+    LESSON_APPLIES_ALWAYS,
+    LESSON_APPLIES_ON_TOPIC,
+)
 from kiro_crew.providers.base import (
     EVENT_COMPLETE,
     EVENT_PERMISSION_REQUEST,
@@ -457,16 +461,22 @@ class TestApiLessonsCreateSchedulesSweep:
     """The handler seam: api_lessons_create registers a background task iff
     a V1 write lands and its contradiction scan finds candidates."""
 
-    def _request(self, state):
+    def _request(self, state, submitted_applies=None):
         state.conversation_log = ConversationLog()
         request = MagicMock()
         request.app = {"state": state}
         request.headers = {"X-Session-Key": "dashboard:ui"}
         body = {"rule": "a real rule", "category": "knowledge"}
+        # The submitted tier, as the learn_add tool / dashboard / CLI would send it.
+        # Absent (the default) is the clause-only re-submit / unstated case.
+        if submitted_applies is not None:
+            body["applies"] = submitted_applies
         attach_body(request, body)
         return request
 
-    async def _run(self, candidates, wrote=True, algorithm_version="v1"):
+    async def _run(
+        self, candidates, wrote=True, algorithm_version="v1", submitted_applies=None
+    ):
         from kiro_crew.dashboard.handlers import cron
 
         state = MagicMock()
@@ -478,27 +488,44 @@ class TestApiLessonsCreateSchedulesSweep:
         # A real result object, not a bare bool: the route reads the outcome to decide
         # whether to sweep AND to report what happened, and a MagicMock stand-in would
         # be truthy for every outcome -- which is exactly the conflation this seam
-        # guards against.
+        # guards against. ``applies`` mirrors the tier a real write persists for this
+        # submission, so the seam is exercised with the same result shape production
+        # produces.
         vs.write_lesson.return_value = (
-            LessonWriteResult(LessonWriteOutcome.INSERTED)
+            LessonWriteResult(LessonWriteOutcome.INSERTED, applies=submitted_applies)
             if wrote
             else LessonWriteResult(LessonWriteOutcome.REFUSED, "injection_blocked")
         )
+        sweep = AsyncMock()
         with patch.object(cron, "_get_memory", return_value=MagicMock(vector_store=vs)), \
              patch.object(cron, "_is_restricted_session", return_value=False), \
              patch.object(cron, "_sel"), \
-             patch.object(cron, "_resolve_and_supersede", new=AsyncMock()):
-            resp = await cron.api_lessons_create(self._request(state))
+             patch.object(cron, "_resolve_and_supersede", new=sweep):
+            resp = await cron.api_lessons_create(
+                self._request(state, submitted_applies=submitted_applies)
+            )
         assert resp.status == 200
         # Let any scheduled task settle so it doesn't leak a warning.
         tasks = list(state._background_tasks)
         for t in tasks:
             await t
         self._vs = vs
+        self._sweep = sweep
         return tasks
 
     async def test_schedules_when_candidates_found(self):
-        tasks = await self._run([{"key": "lesson.old", "rule": "r", "similarity": 0.6}])
+        # A finding (on_topic) candidate survives the unconditional filter, so the
+        # sweep is scheduled. The filter protects only standing/unstated candidates.
+        tasks = await self._run(
+            [
+                {
+                    "key": "lesson.old",
+                    "rule": "r",
+                    "similarity": 0.6,
+                    "applies": LESSON_APPLIES_ON_TOPIC,
+                }
+            ]
+        )
         assert len(tasks) == 1
 
     async def test_no_task_when_no_candidates(self):
@@ -531,6 +558,66 @@ class TestApiLessonsCreateSchedulesSweep:
         )
         assert tasks == [], "a refused write must not schedule the superseding sweep"
         self._vs.find_contradiction_candidates.assert_not_called()
+
+    @pytest.mark.parametrize("submitted_applies", [LESSON_APPLIES_ON_TOPIC, LESSON_APPLIES_ALWAYS, None])
+    async def test_standing_candidate_never_swept_regardless_of_submission(
+        self, submitted_applies
+    ):
+        """A contradiction verdict may retire only a finding, never a standing rule.
+
+        The sweep ends in ``delete_semantic``. The invariant is on the CANDIDATE,
+        not on the submission: a standing (``always``) candidate -- and an unstated
+        one, which every read path serves AS a standing rule -- is protected no
+        matter what tier the submission carries.
+
+        The candidate filter is unconditional. A standing-rule submission
+        (``applies=always``) or a clause-only re-submit of a stored finding
+        (``applies`` arrives ``None`` while the row keeps ``on_topic``) is filtered
+        identically to an ``on_topic`` submission, so the sweep never retires a
+        contradictory standing rule -- a deletion that would be silent, with no
+        ``superseded_by`` attribution and no ``restore_semantic``. This asserts the
+        standing candidate is filtered OUT of the list the sweep is called with for
+        an ``on_topic`` submission AND for the ``always``/no-``applies`` submissions.
+        """
+        standing = {
+            "key": "lesson.standing",
+            "rule": "always do X",
+            "similarity": 0.6,
+            "applies": LESSON_APPLIES_ALWAYS,
+        }
+        finding = {
+            "key": "lesson.finding",
+            "rule": "in repo Y do Z",
+            "similarity": 0.6,
+            "applies": LESSON_APPLIES_ON_TOPIC,
+        }
+        tasks = await self._run(
+            [standing, finding], submitted_applies=submitted_applies
+        )
+        # The route filtered before scheduling, so a finding remains to sweep.
+        assert len(tasks) == 1
+        self._sweep.assert_called_once()
+        swept_candidates = self._sweep.call_args.args[3]
+        swept_keys = {c["key"] for c in swept_candidates}
+        assert "lesson.standing" not in swept_keys, (
+            "a contradiction verdict must never retire a standing rule"
+        )
+        assert swept_keys == {"lesson.finding"}
+
+    async def test_unstated_candidate_never_swept(self):
+        """An unstated candidate is protected too (served AS a standing rule).
+
+        On a store predating the ``applies`` field every row is unstated;
+        ``_candidate_applies`` fails safe to unstated, the protected side. A
+        candidate carrying no tier must be filtered out even for an ``on_topic``
+        submission, leaving nothing to sweep.
+        """
+        unstated = {"key": "lesson.unstated", "rule": "some rule", "similarity": 0.6}
+        tasks = await self._run(
+            [unstated], submitted_applies=LESSON_APPLIES_ON_TOPIC
+        )
+        assert tasks == [], "an unstated candidate must not be swept"
+        self._sweep.assert_not_called()
 
 
 @pytest.mark.asyncio

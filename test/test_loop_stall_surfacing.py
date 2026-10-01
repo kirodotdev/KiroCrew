@@ -219,6 +219,7 @@ class TestLoopStallBudgetConfig:
         )
         watchdog.start()
         try:
+            # The alarm is armed for the 90 s managed budget.
             assert arms == [90]
         finally:
             watchdog.stop()

@@ -6147,6 +6147,33 @@ class TestProjectDirFile:
 class TestSeedDispatch:
     """Tests for --seed dispatch before gateway startup (coverlay: cli.py L624-627)."""
 
+    def test_gateway_dispatch_clears_an_inherited_stall_alarm_before_the_gateway_starts(
+        self, monkeypatch
+    ):
+        """An in-app restart reaches this image through ``os.execv``, which
+        preserves ``ITIMER_REAL``; the dispatch clears a deadline this image never
+        armed, once, and before the gateway coroutine exists."""
+        monkeypatch.setattr(sys, "argv", ["kirocrew", "gateway"])
+        order: list[str] = []
+        # A plain MagicMock, as the sibling tests use: ``patch`` would otherwise
+        # stand an AsyncMock in for the coroutine function, whose side effect runs
+        # only when awaited, and ``asyncio.run`` is patched out here.
+        mock_gateway = MagicMock(side_effect=lambda **_kw: order.append("gateway") or object())
+        with (
+            patch(
+                "kiro_crew.dashboard.loop_watchdog.disarm_inherited_alarm",
+                side_effect=lambda: order.append("disarm") or True,
+            ) as disarm,
+            patch("kiro_crew.cli_server._gateway", mock_gateway),
+            patch("kiro_crew.cli.asyncio.run"),
+        ):
+            from kiro_crew.cli import main
+
+            main()
+        disarm.assert_called_once_with()
+        mock_gateway.assert_called_once()
+        assert order == ["disarm", "gateway"]
+
     def test_seed_calls_seed_cmd(self, monkeypatch):
         """When --seed is provided, seed_cmd should be called before gateway."""
         monkeypatch.setattr(sys, "argv", ["kirocrew", "gateway", "--seed", "demo"])

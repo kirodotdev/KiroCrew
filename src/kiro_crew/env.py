@@ -1281,6 +1281,11 @@ def _mise_bin() -> str | None:
     inherited ``$PATH``. Try ``$PATH`` first, then the default install dir,
     then macOS Homebrew locations. Discovery must work before mise activation
     adds the user's toolchain directories to the gateway environment.
+
+    A candidate whose probe raises ``OSError`` is skipped like a missing one:
+    ``Path.is_file`` swallows only not-found errors, so a ``stat`` refused with
+    EACCES (a restricted ``/usr/local/bin`` or a sandboxed gateway) would
+    otherwise abort gateway boot from a lookup that is meant to be optional.
     """
     found = shutil.which("mise")
     if found:
@@ -1289,7 +1294,12 @@ def _mise_bin() -> str | None:
     if sys.platform == "darwin":
         candidates.extend([Path("/opt/homebrew/bin/mise"), Path("/usr/local/bin/mise")])
     for candidate in candidates:
-        if candidate.is_file() and os.access(candidate, os.X_OK):
+        try:
+            usable = candidate.is_file() and os.access(candidate, os.X_OK)
+        except OSError as exc:
+            logger.debug("mise candidate %s skipped: %s", candidate, type(exc).__name__)
+            continue
+        if usable:
             return str(candidate)
     return None
 

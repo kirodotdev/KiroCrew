@@ -47,7 +47,7 @@ The `config_bounds_clamped` event (`outcome=clamped`, `source=background`, `oper
 ## Integrity
 
 - HMAC-SHA256 chain: each entry signs over the previous entry's hash
-- HMAC key: `~/.kiro/crew/trust/sel_hmac.key` (32 random bytes, `chmod 600`, inside an owner-only `trust/` dir, `chmod 700`). The key deliberately lives OUTSIDE the log's directory: an actor who can rewrite the log dir must not also be able to read the key and re-sign a clean-looking chain that `verify_integrity()` accepts. A legacy key at `~/.kiro/crew/sel_hmac.key` is migrated in atomically (`os.replace`) on the next `SecurityEventLog` init — same key bytes, so every existing chain still verifies without re-signing; if BOTH paths exist, the LEGACY key wins and overwrites the destination: `trust/` was not deny-listed before the migration release, so a file already at the destination on a legacy install is untrustworthy (agent-plantable), while the legacy leaf was deny-list-protected all along; a linked `trust` dir or key file is likewise removed (link only, never its target) before use. `sel_hmac_key_path()` reports the RESOLVED path in use, so `session_pid_sig` follows automatically. A read-only config dir that blocks creating `trust/` keeps signing with the legacy file (chain continuity beats relocation). Rollback caveat: downgrading the binary after migration mints a fresh key at the legacy path; on re-upgrade that legacy key wins and replaces the trust-dir key, so chain entries signed BEFORE the downgrade will no longer verify — restore a consistent key from backup around a downgrade if chain continuity matters.
+- HMAC key: `~/.kiro/crew/trust/sel_hmac.key` (32 random bytes, `chmod 600`, inside an owner-only `trust/` dir, `chmod 700`). The key deliberately lives OUTSIDE the log's directory: an actor who can rewrite the log dir must not also be able to read the key and re-sign a clean-looking chain that `verify_integrity()` accepts. A legacy key at `~/.kiro/crew/sel_hmac.key` is migrated in atomically (`os.replace`) on the next `SecurityEventLog` init — same key bytes, so every existing chain still verifies without re-signing; if BOTH paths exist, the LEGACY key wins and overwrites the destination: `trust/` was not deny-listed before the migration release, so a file already at the destination on a legacy install is untrustworthy (agent-plantable), while the legacy leaf was deny-list-protected all along — with ONE shape excluded from that rule, which fails init closed instead of resolving either way: a legacy file too short to load as a key, sitting beside a destination that holds a usable one, is AMBIGUOUS and neither half may be acted on. Promoting the short legacy file would destroy the only copy of the key every existing record was signed with and then fail the length check on every later boot, so the loss is unrecoverable rather than merely wrong (a mixed-binary window can leave such a 0-byte file behind); ADOPTING the destination is no safer, because length is not trust — `trust/`, the legacy leaf, `security_events.jsonl` and `security_events.d` are ALL sandbox read-write leaves, so the audited agent can truncate the legacy key below the minimum, plant a long-enough destination whose bytes it knows, and forge whatever evidence a proof gate would consult, which would make every later SEL and session-identity MAC forgeable with no recovery path. With no operator-protected source to authenticate against, SEL does nothing and refuses: nothing is adopted, nothing is overwritten, both files survive for the operator, and the error names both paths and the remedy (restore from backup, or remove both to start a fresh chain). The refusal does not depend on what the log contains, so no branch of the decision can be unlocked by controlling the log. A short legacy file with no usable destination still reaches the length check exactly as it would without this carve-out; a linked `trust` dir or key file is likewise removed (link only, never its target) before use. `sel_hmac_key_path()` reports the RESOLVED path in use, so `session_pid_sig` follows automatically. A read-only config dir that blocks creating `trust/` keeps signing with the legacy file (chain continuity beats relocation). Rollback caveat: downgrading the binary after migration mints a fresh key at the legacy path; on re-upgrade that legacy key wins and replaces the trust-dir key, so chain entries signed BEFORE the downgrade will no longer verify — restore a consistent key from backup around a downgrade if chain continuity matters.
 - **Key + log are on the sensitive-path floor (`cdf82704`):** the `trust` directory (whole-dir entry), the legacy `sel_hmac.key` leaf, and `security_events.jsonl` are in `security._SENSITIVE_HOME_DIRS`, so the audited agent's `fs_read`/file-edit tools (gated by `is_sensitive_path()`) cannot read the key to forge the chain or rewrite the log. The gateway's own writer/reader (`sel.py`, `dashboard/session_health.py`) opens the files directly and bypasses that gate. Residual: the key still lives in the agent's home namespace — a deeper out-of-process signer is future hardening.
 - **Read paths pin the segment directory (#4999):** the read-side readers (`recent`, `verify_integrity`) open `security_events.d` itself through `_open_segment_dir` before enumerating; a directory that refuses to pin — planted link, non-directory, or vanished — contributes NO segments to any read (fail closed; a missing dir was already "no segments"), instead of being walked by name. Enumeration stays the bounded `_SEGMENT_SCAN_CAP` walk on every platform, but where the pin carries a descriptor it goes through `os.scandir(pin.fd)` — a path swap can neither redirect nor empty the scan (immune to the swap-mid-read-then-restore shape) — and only the identity-pin platform revalidates the directory's identity after the walk, failing closed on a mismatch. Where directory descriptors exist, every per-file open (`_open_segment` with `dir_fd`) also resolves RELATIVE to the pinned descriptor, so a swap after enumeration still cannot redirect a read; Windows has no directory descriptors, so its pin revalidates the directory's `lstat` `(st_dev, st_ino)` identity before each child open instead, with the residual between revalidations bounded by the rotation-time repair (`_ensure_segment_dir` unlinks a linked segment dir at rotation/prune). The per-file funnel (`O_NOFOLLOW`/`O_NONBLOCK`, descriptor `fstat` regular-file check, name↔descriptor identity) is unchanged, and the LIVE log is never pinned: its writer follows an operator's symlink, so its readers must too. Because the swap is itself tampering, `verify_integrity(detailed=True)` reports a THIRD outcome — `history_verifiable=False` with a `reason` — when the directory refused to pin (planted link, not a directory, an actual directory the OS refused to open, or one that vanished between the pin's `lstat` and its open — every pin failure except ABSENCE confirmed at first sight) or was replaced mid-verification, and the CLI (`kirocrew security verify`) and `GET /api/sel/verify` surface it (`Audit history UNVERIFIABLE` / `integrity: "unverifiable"`) instead of reporting intact over the live log alone; the CLI derives its live-log clause from the same pass's counts, so a tampered live log is reported as such rather than "intact". A directory that simply does not exist yet (fresh install) stays verifiable.
 - Verification: `verify_integrity()` walks the chain and reports tampered entries
@@ -169,11 +169,69 @@ singleton with its own cached chain tip, so two of them chaining off the same
 comes from an advisory lock on a sidecar file, `trust/security_events.lock`. The
 sidecar lives in the trust subdirectory (owner-only, inside the sensitive-path
 floor) so the audited agent cannot unlink or hold it out from under the writers;
-a linked or hard-linked sidecar is refused rather than followed. When the trust
-directory could not be created at init and the HMAC key fell back to its legacy
-location beside the log, the lock is taken on the legacy key file itself — the
-one sibling of the log the deny list has protected all along — rather than
-failing every append on a mkdir that cannot succeed.
+a linked or hard-linked sidecar is refused rather than followed.
+
+Which file is locked is resolved **per acquire**, and the rule every branch of
+that resolution obeys is that only a condition NO actor can flip between two
+writers' acquires may select a target — a target that differs across two
+concurrent writers is two flocks on two inodes, the fork the lock exists to
+prevent. On the healthy path it is the sidecar under `trust`, decided from one
+property of that DIRECTORY (whether it can be created, and whether it is a real
+directory rather than a link) and never from the sidecar path's own spelling of
+where the key lives: the key's location differs BETWEEN PROCESSES on one
+directory (an install whose migration fails keeps signing from the legacy
+location while a sibling that completed it reads the relocated one), so a lock
+path read off the key hands those two writers locks on DIFFERENT inodes, whereas
+a directory's permissions are a property of the filesystem that every writer
+reads the same answer from. A linked `trust`
+is refused as well as an uncreatable one: `mkdir(exist_ok=True)` cannot detect
+it, because its `EEXIST` check follows the link and reports the target as a
+usable directory, so the sidecar would be created inside storage the audited
+agent controls and could be swapped between two writers' acquires. In both
+cases the lock falls back to the legacy key file — opened WITHOUT `O_CREAT` so a
+0-byte key is never minted — rather than failing every append; where the
+fallback does not apply there is no protected file to serialize on and the
+failure surfaces, which `_flush_batch` turns into a rollback or a denied
+critical audit.
+
+What ADMITS that fallback is that this process RESOLVED its HMAC key at the
+legacy location (`_hmac_key_file`, settled once at init), never that a file
+merely EXISTS there. The existence test is not safe to gate on: `sel_hmac.key`
+is a sandbox read-write leaf just as `trust` is, so the audited agent can drop a
+file at the legacy path on an install whose trust dir is perfectly healthy, and
+the lock path never reads its bytes — so it could arm the fallback at will, then
+trigger one writer's refusal and leave that writer on the legacy key while its
+sibling held the sidecar. Keying on where this process actually signs means a
+planted file buys nothing, and it is the install-wide fact the fallback was
+always argued from: a process signing at the legacy location is one whose trust
+dir `_load_or_create_hmac_key` could not create or migrate out of, so the legacy
+key is what every writer there signs from. The legacy FILE is itself agent-
+writable, so on an install signing there the agent can replace it between two
+acquires and reach the same fork; that is deliberately undefended, because an
+agent that can rewrite the key signing the chain can forge any MAC on it
+directly, which is strictly more than forking it.
+
+That directory screen and the sidecar's own open are separate syscalls, so the
+screen alone leaves a window: `trust` is the one component below the log
+directory the sandbox grants the audited agent read-write, so it can replace the
+directory after the check, and BOTH writers' screens then pass truthfully while
+their opens land in different directories — two flocks on two inodes, the forked
+chain the lock exists to prevent, and invisible to a by-name screen. The
+directory is therefore PINNED by descriptor the moment its screen is still the
+truth (`_pin_lock_dir`: `O_DIRECTORY | O_NOFOLLOW | O_NONBLOCK`, a descriptor
+`fstat` directory check, and a name↔descriptor `(st_dev, st_ino)` identity check
+that makes the flag degradation safe), and the sidecar is opened RELATIVE to
+that descriptor — so the directory screened IS the directory the sidecar is
+opened inside, and a later swap of the name cannot redirect it. A pin refusal
+FAILS THE ACQUIRE and never selects another target, which is the one place the
+fallback above does not reach: the two screens before it are filesystem
+properties every writer reads alike, whereas the pin raises precisely when it
+catches `trust` being REPLACED mid-acquire — per-acquire, agent-triggered, and so
+able to be true for one writer and false for the next. Routing it into the
+fallback would hand those two writers different inodes on an install whose trust
+dir is healthy, so a detected swap has one safe answer: fail, and let
+audit-or-deny decide. Windows has no directory descriptors, so there the junction probe remains
+the only screen — the same platform split the read-side segment pin carries.
 
 The chain lock is taken **before** `threading.Lock`. The reverse order would let
 a cross-process wait stall the event loop indirectly: a writer thread holding the

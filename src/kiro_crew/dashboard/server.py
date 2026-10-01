@@ -6378,13 +6378,15 @@ async def start_dashboard(
     _heap_trim_maintainer = platform_compat.HeapTrimMaintainer()
 
     async def _loop_heartbeat() -> None:
-        # 5s (not 10s) so the watchdog's armed dump-then-exit timer is re-petted
-        # at a finer resolution. The timer fires exit_after seconds after the
-        # LAST beat, so the real silence the gateway tolerates before _exit is
+        # 5s (not 10s) so the watchdog's dump-then-exit alarm is re-armed at a
+        # finer resolution. The alarm fires exit_after seconds after the LAST
+        # beat, so the real silence the gateway tolerates before the exit is
         # ``exit_after - (time since last beat)`` — i.e. up to one interval less
         # than exit_after. A 5s interval keeps that worst case at ~20s (vs ~15s
         # at 10s), so genuinely-recoverable 15-20s stalls are less likely to be
-        # killed while still landing well under the Electron probe's kill window.
+        # ended while still landing well under the Electron probe's kill window.
+        # The alarm pauses while the host sleeps and this loop's clock does not
+        # advance either, so a laptop resume is not silence to the watchdog.
         interval = 5.0
         while True:
             t0 = time.monotonic()

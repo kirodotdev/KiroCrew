@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import signal
 import subprocess
 import sys
 import textwrap
@@ -134,6 +135,47 @@ class TestLauncherContract:
         monkeypatch.setattr(os, "access", lambda *_: True)
         with pytest.raises(ValueError, match="native Windows"):
             resolve_restart_launcher()
+
+    @pytest.mark.asyncio
+    async def test_the_restart_reaches_its_exec_with_the_stall_alarm_cancelled(
+        self, monkeypatch, tmp_path
+    ):
+        """``execve`` preserves ``ITIMER_REAL`` while it resets a caught ``SIGALRM``
+        to its default disposition, so the deadline the loop-stall watchdog armed on
+        its last heartbeat would end the successor gateway during its own boot, with
+        no dump and no log line.  The restart path must arrive at ``os.execv`` with
+        that timer already cancelled.  The timer is a stand-in so this never touches
+        the real ``ITIMER_REAL``, which the test worker's own timeout may own."""
+        timer = {"value": 0.0}
+        monkeypatch.setattr(
+            signal,
+            "setitimer",
+            lambda which, secs: timer.__setitem__("value", secs),
+            raising=False,
+        )
+        monkeypatch.setattr(signal, "getitimer", lambda which: (timer["value"], 0.0), raising=False)
+        monkeypatch.setattr(signal, "ITIMER_REAL", 99, raising=False)
+        # A stub launcher written here: ``os.execv`` is replaced below, so no byte
+        # of it ever runs; the resolver asks only for an absolute executable file
+        # (``.exe`` on Windows, where the execute bit does not exist).
+        launcher = tmp_path / ("kirocrew.exe" if platform_compat.IS_WINDOWS else "kirocrew")
+        launcher.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        platform_compat.chmod_safe(launcher, 0o700)
+        _compose(monkeypatch, str(launcher))
+        state = _state()
+        seen: list[tuple[float, float]] = []
+        monkeypatch.setattr(
+            os, "execv", lambda path, argv: seen.append(signal.getitimer(signal.ITIMER_REAL))
+        )
+        assert platform_compat.arm_process_alarm(25.0) is True  # the last heartbeat's deadline
+        assert (
+            await updates._restart_gateway(
+                state, resolver=Mock(side_effect=AssertionError("launcher path must win"))
+            )
+            is True
+        )
+        state.sessions.close_all.assert_awaited()
+        assert seen == [(0.0, 0.0)]
 
 
 # The fixture runs only probes, never a gateway listener, update installer or LLM.

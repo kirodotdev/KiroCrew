@@ -72,17 +72,35 @@ def _ensure_utf8_process_environment() -> None:
     os.environ.update(_UTF8_PROCESS_ENV)
 
 
+def _disarm_process_alarm_before_exec() -> None:
+    """Cancel any pending process alarm before ``execv`` replaces this image.
+
+    ``execve`` preserves interval timers (``ITIMER_REAL`` included) and resets
+    every caught signal to its default disposition.  A dump-then-exit deadline
+    the loop-stall watchdog armed in this image would therefore reach the
+    successor as a default-action ``SIGALRM`` it never armed -- during its own
+    boot, before its watchdog exists to replace the deadline -- and end it with
+    no dump and no log line.  No process-wide deadline may outlive the image
+    that armed it, so both exec seams cancel it here, with no await between the
+    cancel and the exec.  A no-op where the timer does not exist (Windows).
+    """
+    arm_process_alarm(0.0)
+
+
 def reexec_launcher(launcher: str, args: Sequence[str]) -> None:
     """Re-enter a validated stable launcher, preserving its dispatch pathname.
 
     The launcher, not the core, replaces version-specific environment values.
     Windows execv joins its arguments without quoting, so quote each token for
     the native CRT parser. POSIX receives the original argument vector directly.
+    The pending loop-stall alarm is cancelled immediately before the exec (see
+    :func:`_disarm_process_alarm_before_exec`).
     """
     _ensure_utf8_process_environment()
     argv = [launcher, *args]
     if IS_WINDOWS:
         argv = [subprocess.list2cmdline([arg]) for arg in argv]
+    _disarm_process_alarm_before_exec()
     os.execv(launcher, argv)
 
 
@@ -98,7 +116,9 @@ def reexec_python_module(module: str, args: Sequence[str], executable: str | Non
     it in the child.  A full ``argv[0]`` containing spaces is split before the
     module flag, so Python treats the path suffix as a script name.  The
     executable path passed separately to ``execv`` still selects the exact
-    interpreter; only its display name needs to be space-free.
+    interpreter; only its display name needs to be space-free.  The pending
+    loop-stall alarm is cancelled immediately before the exec (see
+    :func:`_disarm_process_alarm_before_exec`).
     """
     # Publish UTF-8 before exec so in-app gateway restarts (Tailnet, update,
     # stale-assets, explicit restart) cannot create a successor that inherits a
@@ -113,6 +133,7 @@ def reexec_python_module(module: str, args: Sequence[str], executable: str | Non
     # there would shadow the stdlib in the restarted process.
     argv = isolated_python_argv("-P", "-m", module, *args, executable=resolved)
     argv[0] = argv0
+    _disarm_process_alarm_before_exec()
     os.execv(resolved, argv)
 
 
@@ -9402,6 +9423,69 @@ def host_available_mib() -> int:
         mem = system_memory()  # GlobalMemoryStatusEx: (total, available)
         return (mem[1] // _MIB_BYTES) if mem else 0
     return 0
+
+
+# ---------------------------------------------------------------------------
+# Process alarm and the suspend-inclusive clock
+# ---------------------------------------------------------------------------
+
+
+def process_alarm_available() -> bool:
+    """Whether :func:`arm_process_alarm` can arm anything on this platform."""
+    return hasattr(signal, "setitimer") and hasattr(signal, "ITIMER_REAL")
+
+
+def arm_process_alarm(seconds: float) -> bool:
+    """Deliver ``SIGALRM`` to this process after *seconds*; ``0`` cancels.
+
+    ``setitimer(ITIMER_REAL)`` is the kernel's per-process countdown: it
+    needs no thread, no GIL and no root, and re-arming replaces the pending
+    deadline.  On Linux the kernel runs it on ``CLOCK_MONOTONIC``, which
+    stands still through a suspend, so a deadline armed before a sleep keeps
+    its remaining time on resume instead of firing the instant the host wakes
+    (``copy_signal`` initialises the process's ``real_timer`` on that clock).
+    macOS schedules it on the absolute mach timebase, which also stops during
+    sleep.  Returns ``False`` on a platform without the timer (Windows), where
+    the caller must do without a deadline of this kind.
+    """
+    if not process_alarm_available():
+        return False
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+    return True
+
+
+def boottime_now() -> float | None:
+    """Now, on the clock this host dates process starts against.
+
+    Linux: ``CLOCK_BOOTTIME`` counts time spent suspended, exactly as
+    ``/proc/uptime`` and the ``starttime`` field of ``/proc/<pid>/stat`` do.
+    ``time.monotonic()`` (``CLOCK_MONOTONIC``) does not, so the two MUST NOT be
+    mixed in one comparison: after a suspend of S seconds, a boot-clock age minus
+    a monotonic stamp places a process S seconds EARLIER than it really started,
+    which is how a live shell child comes to look like it predates its own
+    dispatch.  Read beside ``time.monotonic()`` across one interval, the
+    difference in their advance is the time the host spent suspended — the
+    reading the loop watchdog uses to name a resume.
+
+    macOS: ``libproc`` reports a process's start as an absolute wall-clock
+    instant (``pbi_start_tvsec``), so the stamp is ``time.time()`` — the same
+    clock, suspend included. That clock can STEP (NTP correction after a VM
+    resume, an admin reset), and a backward step between the stamp and the
+    runtime's fork dates a live child before its own dispatch. The liveness
+    oracle pairs this stamp with :func:`kiro_crew.acp.liveness.steady_now` and
+    refuses to attribute by start time once the two disagree (see
+    :meth:`kiro_crew.acp.liveness.LivenessOracle._started_after_dispatch`);
+    the stamp alone cannot tell a step from a slow spawn.
+
+    Returns None where no such clock is available, which every caller must read
+    as "cannot attribute" rather than as a time.
+    """
+    try:
+        return time.clock_gettime(time.CLOCK_BOOTTIME)
+    except (AttributeError, OSError):  # pragma: no cover - platform dependent
+        if sys.platform == "darwin":
+            return time.time()
+        return None
 
 
 # ---------------------------------------------------------------------------

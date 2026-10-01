@@ -491,7 +491,7 @@ def test_watchdog_armed_soft_dump_leaves_crash_sentinel_untouched(
 def test_watchdog_rearm_failure_restores_discoverable_soft_dump(
     dumps_dir: Path, monkeypatch
 ) -> None:
-    """A cancelled timer that cannot re-arm must degrade to the file fallback."""
+    """A cancelled alarm that cannot re-arm must degrade to the file fallback."""
     from kiro_crew.dashboard import loop_watchdog
 
     class _Clock:
@@ -534,7 +534,8 @@ def test_watchdog_rearm_failure_restores_discoverable_soft_dump(
         )
         wd.start()
         try:
-            wd.beat()
+            wd.beat()  # the re-arm raises here and is swallowed
+            assert arm_count == 2
             clock.advance(31.0)
             assert wd.check() is True
             assert targets == [dump_file, sys.stderr]
