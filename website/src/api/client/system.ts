@@ -27,11 +27,29 @@ export interface TunnelStatus {
   reason?: string
 }
 
+/** GET /api/system/leaked-runtimes: the reconciler's last reading of untracked runtimes. */
+export interface LeakedRuntimes {
+  supported: boolean
+  count: number
+  rss_bytes: number
+  runtimes: { pid: number; rss_bytes: number }[]
+}
+
+/** POST /api/system/leaked-runtimes/reclaim: what the one gated reclaim ended and kept. */
+export interface LeakedRuntimesReclaim {
+  killed: number[]
+  refused: { pid: number; reason: string }[]
+}
+
 export function createSystemEndpoints({ get, post, j }: ClientTransport) {
   const statusAndStorage = {
     status: () => fetch('/api/status').then(j),
     tunnelStatus: () => fetch('/api/tunnel/status').then(j) as Promise<TunnelStatus>,
     system: () => fetch('/api/system').then(j),
+    leakedRuntimes: () => get('/api/system/leaked-runtimes').then(j) as Promise<LeakedRuntimes>,
+    /** Owner-only; the body's `confirm` is what the route requires before it acts. */
+    reclaimLeakedRuntimes: () =>
+      post('/api/system/leaked-runtimes/reclaim', { confirm: true }).then(j) as Promise<LeakedRuntimesReclaim>,
     sessionStorage: () => get('/api/system/session-storage').then(j) as Promise<SessionStorageReport>,
     sessionStorageCleanup: (olderThanDays: number, dryRun = false) =>
       post('/api/system/session-storage/cleanup', { older_than_days: olderThanDays, dry_run: dryRun })

@@ -22,7 +22,7 @@ vi.mock('../utils/resizeImage', () => ({
 }))
 
 const API_KEY_ORDER = [
-  'status', 'tunnelStatus', 'system', 'sessionStorage',
+  'status', 'tunnelStatus', 'system', 'leakedRuntimes', 'reclaimLeakedRuntimes', 'sessionStorage',
   'sessionStorageCleanup', 'sessionStorageRestore', 'sessionStorageEmpty', 'sessionStorageEmptyStatus',
   'sessionInventory', 'sessionInventoryDetail', 'sessionInventoryTrash', 'sessionCrewLogProjections', 'sessionWorkProjection',
   'telemetryStartup', 'telemetryContextTrace', 'usageTurns', 'wakatimeStats',
