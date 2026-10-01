@@ -386,6 +386,46 @@ after `add_job` returns. Totalizing the invariant over all first-save fields
 (PR #331), which consolidates every first-save field into one
 `_build_job`/`_persist_add_locked` transaction.
 
+### App SDK create allowlist (`approval_mode` / `timeout_secs` / `timeout`)
+
+`CronSDK._add_job_kwargs` is a closed keyword allowlist shared by `add_job`,
+`add_job_async` and `add_job_if_absent_async`, so a field absent from it is a
+`TypeError` at the SDK boundary even when `CronService.add_job` accepts it. It
+threads `approval_mode`, `timeout_secs` and `timeout` alongside
+`timezone`/`skip_dates` (#15609, the same shape of gap #6020 closed for the
+calendar fields), each for a reason a follow-up `update_job` cannot serve:
+
+- **`approval_mode`** (`""` hook-based, or `"auto"`) decides whether the job's
+  tool calls auto-approve. Setting it in a second write leaves the job on disk
+  with hook-based approval until that write lands, and a due-scan in that
+  window runs it under a mode the app did not ask for. `add_job_if_absent_async`
+  — the method the `register_app_crons_with_service` bridge calls for every
+  manifest cron — returns `None` once the name is present, so an app correcting
+  the mode afterwards would skip the correction on every registration after the
+  first. Pinned by `test_cron_sdk.py::TestCronApprovalAndTimeoutFieldsAgainstRealService::test_an_auto_mode_job_runs_without_an_approval_prompt`,
+  which feeds the SDK-persisted job to the real gateway cron callback and
+  asserts `AUTO_APPROVE` with no approval callback for `"auto"` and
+  `HOOK_BASED` with one for `""`.
+- **`timeout_secs`** (the per-wake budget) is cross-validated against the
+  subprocess timeout only in `build_job`, at create. `apply_job_update`
+  range-checks it and does not re-run that cross-check, so setting it after the
+  fact skips the check that refuses a budget too short to cover its own
+  subprocess — the duplicate-launch hazard that check exists to prevent.
+- **`timeout`** is what makes `timeout_secs` usable on the command and script
+  jobs apps most often register: the cross-check compares the budget against
+  this value, falling back to 300s for a command and 30s for a script when it is
+  unset, so without it no app can create a command job with a budget under
+  305s. Pinned in both directions by
+  `::test_a_short_wake_budget_needs_its_subprocess_timeout`.
+
+Still absent from the allowlist, and deliberately not widened here: `model`,
+`member_id`, `minimal_context`, `hide_in_chat`, `strict_schedule`,
+`delete_after_run`, `at_ts` and `chat_folder_id`. `at_ts` with
+`delete_after_run` would give an app one-shot jobs, which interacts with the
+add-if-absent registration contract (a one-shot that deletes itself is absent
+again at the next registration) and needs its own decision rather than riding
+this fix.
+
 ### App-Manifest Cron `enabled` Flag (register-paused contract)
 
 App manifests (`app.json`) may declare crons with `"enabled": false` — a cron

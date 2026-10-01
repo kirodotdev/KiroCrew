@@ -256,6 +256,21 @@ For Python app hooks with an existing cron grant, use
 `update_job` and `update_job_async` reject `enabled` and `user_paused` arguments;
 use the toggle methods instead. Foreign and missing job IDs are refused.
 
+The `add_job*` methods accept `approval_mode`, `timeout_secs` and `timeout` at
+create time. Pass `approval_mode="auto"` for an unattended agent job: the
+default, `""`, is hook-based approval, so every tool call in the job's session
+waits on a prompt nobody is present to answer. Set it on the create call rather
+than in a follow-up `update_job` — the job is live from its first save, so a
+second write leaves a window in which a due-scan can run it under the wrong
+mode, and `add_job_if_absent_async` returns `None` once the name exists, which
+skips that follow-up on every registration after the first. `timeout_secs` is
+the per-wake execution budget (1..86400 seconds, default 1800) and `timeout`
+bounds only a script or command subprocess (default 30s for a script, 300s for
+a command). On a script or command job set the pair together: the create path
+refuses a wake budget that cannot cover the subprocess timeout plus cleanup,
+because a shorter budget cancels the executor future while the subprocess keeps
+running and the next wake launches a duplicate.
+
 ## Shared React Query
 
 Externalize `@tanstack/react-query` when bundling your app. The dashboard import

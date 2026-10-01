@@ -151,6 +151,17 @@ made updatable or newly validated here; their underlying service behavior is
 unchanged. Existing app cron permission
 and runtime execution checks remain required.
 
+`CronSDK`'s three create methods share one closed keyword allowlist
+(`_add_job_kwargs`), so the fields an app can set at create are exactly the ones
+that allowlist threads — a field `CronService.add_job` accepts but the allowlist
+omits is a `TypeError` at the SDK boundary, not a silent default. The allowlist
+carries `approval_mode`, `timeout_secs` and `timeout` in addition to the
+schedule, payload and calendar fields, so an app can register an unattended
+agent job (`approval_mode="auto"`) in the job's single locked first save instead
+of correcting it in a second write that a due-scan can beat. The rationale per
+field, the fields still deliberately omitted, and the tests pinning each one are
+in `learn-cron-dashboard.md` under "App SDK create allowlist".
+
 ## App Store source selection
 
 Discover's Sources rail filters the catalog shelf by namespaced source identity.
