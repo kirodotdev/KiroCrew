@@ -44,7 +44,7 @@ cannot disagree with what was sent.
 
 | # | Block | Fed by | Condition |
 |--:|---|---|---|
-| 1 | `[AGENT SYSTEM PROMPT]` | `config/prompt.md`; `_load_agent_prompt` for a custom agent | skipped on a slim resume |
+| 1 | `[AGENT SYSTEM PROMPT]` | `config/prompt.md`; `_load_agent_prompt` for a custom agent | skipped on a slim resume; with `agent.dedupe_agent_prompt` on, also skipped when the harness recorded the byte-identical prompt as its own system instruction (`template://<agent>#prompt`: KAS from the wire definition, kiro-cli from the inline prompt of the skill-view spec the runtime wrote for the agent the session was started or switched on) |
 | 2 | `[CRITICAL RULES]` | `_critical_rules_for` (runtime-conditional) | unless the agent sets `includeCrewContext: false` |
 | 3 | `[CURRENT DATE]` | `get_local_tz` + `KiroCrewConfig.timezone` | always |
 | 4 | `[CURRENT AGENT]` / `[RUNTIME]` | `_runtime_display_name`, trusted `runtime_source` from the dispatcher | when a session key exists |
@@ -264,6 +264,9 @@ re-adds, once:
    `_session_cap_figure` took when the session started, because the cap in force
    is derived from live host conditions and a second reading would hand the
    session a contract it never agreed to, differing in a number it never chose.
+   The same `agent.dedupe_agent_prompt` check as session start applies: a
+   contract the harness carries as its own system instruction survived the
+   compaction on its own and is not re-injected.
 
 If that turn does not land (cancelled, refused, errored), `rearm_reinjection` puts
 the flag back, so the context is never lost to a failed turn.

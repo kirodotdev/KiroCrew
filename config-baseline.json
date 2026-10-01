@@ -28,6 +28,7 @@
         "acp_backend": "",
         "member_acp_backend": "kas",
         "default_agent": "",
+        "dedupe_agent_prompt": false,
         "deepseek_env": {},
         "sweep_agents_backups": false,
         "sandbox": "auto",
@@ -340,6 +341,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""
+    },
+    {
+      "path": "agent.dedupe_agent_prompt",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Deliver the agent prompt once",
+      "help": "When true, a session whose harness already carries the agent spec's `prompt` as its own system instruction (kiro-cli reads it off disk for `--agent`; KAS has it inlined onto the wire) does not also receive the identical text in the [AGENT SYSTEM PROMPT] context block, at session start or after a compaction. Only a byte-identical copy is dropped: a prompt that uses {{MAX_SUBAGENTS}}, {{WIDGET_BLOCK}} or {bot_name} resolves differently and keeps the block, as does the managed default agent (its spec carries a stub) and every harness that projects no prompt (the block is its only copy). On kiro-cli the record is the inline prompt of the view spec the runtime wrote for the agent the session was started or switched on; a file:// prompt keeps its block. Off by default while the saving is validated. Read at session start and at each post-compaction re-injection, so a change applies to sessions started after it, and a running KAS session (whose record exists regardless) also follows it at its next compaction.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "agent.deepseek_env",

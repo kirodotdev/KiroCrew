@@ -2706,6 +2706,7 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
         acp_backend=_normalize_acp_backend(agent_data.get("acp_backend")),
         member_acp_backend=_normalize_acp_backend(agent_data.get("member_acp_backend", "kas")),
         default_agent=agent_data.get("default_agent", ""),
+        dedupe_agent_prompt=_safe_bool(agent_data.get("dedupe_agent_prompt", False), False),
         # Through the module alias rather than a new top-level import: the loader's
         # ``from ... import`` list is a FROZEN pre-split compatibility snapshot
         # (``test_config_module_boundaries.test_loader_reexports_historical_snapshot_by_identity``),

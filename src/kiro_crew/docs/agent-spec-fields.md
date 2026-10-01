@@ -198,8 +198,10 @@ underneath.
    the same channel `codex`, `opencode` and `goose` use, which is why `model` is
    the one field no mirror needs to carry. And `prompt` arrives as context text on
    every harness alike (`context.py` appends the `[AGENT SYSTEM PROMPT]` block for
-   a custom agent with no backend condition on it). What a mirror decides, and
-   these two therefore go without, is the MCP surface.
+   a custom agent with no backend condition on it; the opt-in
+   `agent.dedupe_agent_prompt` withholds only a block byte-identical to the prompt
+   a harness recorded as its own system instruction, which no mirror records). What
+   a mirror decides, and these two therefore go without, is the MCP surface.
 
 **No mirrored harness READS `resources`, and the two URI schemes under that one
 key survive that differently.** Neither is loaded natively: the harness is not

@@ -58,6 +58,7 @@ from kiro_crew.member_essential_context import (
     MemberEssentialContextError,
     member_context_identity,
     member_inherits_default_resources,
+    native_prompt_key,
     render_essentials,
 )
 from kiro_crew.members import (
@@ -4154,7 +4155,7 @@ class ContextBuilder:
                         (
                             (source, "")
                             if native.get(source) == body
-                            or native.get(f"template://{execution_template}#prompt") == body
+                            or native.get(native_prompt_key(execution_template)) == body
                             else (source, body)
                         )
                         for source, body in documents
@@ -5089,6 +5090,33 @@ class ContextBuilder:
         agent_prompt = self._resolve_prompt_templates(agent_prompt, session_key or "", cap_figure)
         return self._substitute_bot_name(agent_prompt)
 
+    @staticmethod
+    def _agent_prompt_delivered_natively(
+        agent: str | None,
+        agent_prompt: str,
+        context_provider: "ContextPromptProvider | None",
+    ) -> bool:
+        """Whether the harness already carries *agent_prompt* as its system instruction.
+
+        kiro-cli reads a spec's ``prompt`` off disk for ``--agent`` and KAS has it
+        inlined onto the wire, so on those harnesses the ``[AGENT SYSTEM PROMPT]``
+        block is a second copy of text the model receives on every request anyway.
+        The runtime records what the harness delivered as the
+        ``template://<agent>#prompt`` native context document, and only a
+        BYTE-IDENTICAL record withholds the block: a prompt whose template tokens
+        resolved to something else, the managed stub (recorded as the stub, never
+        as the contract it points at), a harness that projects no prompt and so
+        recorded nothing, and a provider with no record at all: every one of those
+        keeps the block. Opt-in via ``agent.dedupe_agent_prompt``; off, this is always
+        False and the block is delivered exactly as before.
+        """
+        if not agent_prompt or context_provider is None:
+            return False
+        if not getattr(KiroCrewConfig.load().agent, "dedupe_agent_prompt", False):
+            return False
+        native = context_provider.native_context_documents
+        return native.get(native_prompt_key(agent or "kirocrew")) == agent_prompt
+
     def build_message(
         self,
         text: str,
@@ -5321,7 +5349,9 @@ class ContextBuilder:
                     session_start=True,
                 )
             )
-            if agent_prompt:
+            if agent_prompt and not self._agent_prompt_delivered_natively(
+                agent, agent_prompt, context_provider
+            ):
                 parts.append(
                     f"[AGENT SYSTEM PROMPT]\n{agent_prompt}\n[END AGENT SYSTEM PROMPT]\n\n"
                 )
@@ -5523,6 +5553,9 @@ class ContextBuilder:
             # compaction that drops it leaves the session with no contract.
             # Trusted content (managed contract or the user's own persona),
             # so no marker scrub — the session-start path applies none either.
+            # A contract the harness carries as its own system instruction
+            # survived the compaction on its own, so the same check as session
+            # start decides whether the block comes back.
             _agent_prompt = self._resolve_agent_prompt(
                 agent,
                 project=project,
@@ -5532,7 +5565,9 @@ class ContextBuilder:
                 private_owner=bool(_private_owner),
                 session_start=False,
             )
-            if _agent_prompt:
+            if _agent_prompt and not self._agent_prompt_delivered_natively(
+                agent, _agent_prompt, context_provider
+            ):
                 parts.append(
                     f"[AGENT SYSTEM PROMPT]\n{_agent_prompt}\n[END AGENT SYSTEM PROMPT]\n\n"
                 )

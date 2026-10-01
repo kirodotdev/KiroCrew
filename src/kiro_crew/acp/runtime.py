@@ -156,7 +156,7 @@ from kiro_crew.agent_sdk.tool_search import (
 )
 from kiro_crew.agent_spec_format import NATIVE_SKILL_ALIAS_PREFIX
 from kiro_crew.browser_cli.launch import browser_session_env, browser_socket_env
-from kiro_crew.config import live
+from kiro_crew.config import KiroCrewConfig, live
 from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.constants import (
     KIROCREW_SPAWN_INSTANCE_ENV,
@@ -172,6 +172,7 @@ from kiro_crew.mcp_gateway.session_servers import (
     injection_server_names,
     pooled_session_servers,
 )
+from kiro_crew.member_essential_context import ESSENTIAL_MAX_CHARS, native_prompt_key
 from kiro_crew.metrics.events import (
     CHILD_PERMISSION_DENIED,
     CHILD_PERMISSION_ROUTED,
@@ -861,6 +862,41 @@ def _ref_spec_snapshot(agent: str | None, work_dir: str | Path) -> dict[str, Any
     except Exception:
         logger.debug("unresolved-ref guard: agent spec unreadable", exc_info=True)
         return None
+
+
+def _native_prompt_from_projection(projection: Any, agent: str) -> str | None:
+    """The prompt kiro-cli loaded for *agent*, read off the spawn's skill projection.
+
+    kiro-cli is started on the ALIAS spec the projection wrote for the agent
+    (``spawn()`` swaps ``--agent``), and ``NativeSkillProjection.specs`` holds the
+    exact view it wrote, so the prompt kiro-cli delivers as its system instruction
+    is in hand without touching the disk again -- no second observation of a
+    user-editable file, so a spec rewritten after the spawn cannot be mistaken for
+    what the harness loaded. Only an inline prompt is answered: a ``file://`` view
+    names a file kiro-cli read on its own, whose bytes are not in hand, so it keeps
+    its block. Bounded at the point of retention by :data:`ESSENTIAL_MAX_CHARS`, the
+    bound the member envelope already puts on this same population, because the
+    record lives on every handle. Opt-in with the dedupe knob: the record has a
+    second reader -- the V2 essentials envelope blanks a template prompt the backend
+    delivered natively -- and that reader must not move while the knob is off. Never
+    raises: an optimisation must not be able to fail a session start.
+    """
+    try:
+        if not getattr(KiroCrewConfig.load().agent, "dedupe_agent_prompt", False):
+            return None
+        view = projection.specs.get(agent)
+        prompt = view.get("prompt") if isinstance(view, dict) else None
+    except Exception:
+        logger.debug("native prompt record: projection or config unreadable", exc_info=True)
+        return None
+    if (
+        not isinstance(prompt, str)
+        or not prompt
+        or prompt.startswith("file://")
+        or len(prompt) > ESSENTIAL_MAX_CHARS
+    ):
+        return None
+    return prompt
 
 
 def _disable_check_scope(backend: str, work_dir: Any) -> Any:
@@ -7013,6 +7049,38 @@ class AcpRuntime:
         except Exception:
             logger.debug("unresolved-ref guard: evaluation failed", exc_info=True)
 
+    async def _record_native_prompt(
+        self, handle: AcpSessionHandle, active_agent: str, projection: Any
+    ) -> None:
+        """Record the prompt kiro-cli delivers as ``template://<agent>#prompt``.
+
+        *projection* is the skill projection whose view THIS session runs on -- the
+        one ``set_mode`` just activated, or the spawn's when the session runs the
+        process's launch agent (see ``_native_prompt_from_projection``). No
+        projection -- a harness that does not run on one, a spawn that fell back to
+        the authored agents -- records nothing, and so does a ``file://`` or
+        oversized prompt; in every such case the context block stays, which is the
+        safe answer. The record's reader is ``ContextBuilder``, which withholds a
+        byte-identical ``[AGENT SYSTEM PROMPT]`` block.
+        """
+        if projection is None or not active_agent:
+            return
+        prompt = await asyncio.to_thread(_native_prompt_from_projection, projection, active_agent)
+        if prompt is not None:
+            handle.native_context_documents[native_prompt_key(active_agent)] = prompt
+
+    def _session_projection(self, activated: bool) -> Any:
+        """The skill projection whose view a session just started runs on.
+
+        ``set_mode`` re-prepares and adopts a projection before activating the agent
+        (``_activate_mode_bracketed``), so an activated session runs the CURRENT one;
+        a session that ran no ``set_mode`` runs the process's launch agent on the
+        projection the spawn was started with. Either may be None where the host runs
+        no projection.
+        """
+        name = "_native_skill_projection" if activated else "_spawn_skill_projection"
+        return getattr(self, name, None)
+
     async def _finish_create_session(
         self,
         session_id: str,
@@ -7105,6 +7173,7 @@ class AcpRuntime:
         self._guard_unresolved_mcp_refs(handle, ref_spec, active_agent, mcp_servers)
 
         mode_switched = False
+        mode_activated = False
         staged_before_switch = 0
         # Set agent mode if specified. If set_mode raises, no handle is returned
         # to the caller, so terminate the session we just created above —
@@ -7168,6 +7237,7 @@ class AcpRuntime:
                 wire_registered=kas_agents is not None,
             )
             handle.active_agent = mode_agent
+            mode_activated = True
             # Whether set_mode actually SWITCHED modes: the servers that
             # initialized during session/new belong to the mode kiro-cli
             # started the session on. If the requested agent differs, those
@@ -7216,11 +7286,25 @@ class AcpRuntime:
         if active_agent == self._agent and str(session_work_dir) == str(self._work_dir):
             handle.native_context_documents.update(self._native_launch_sources)
         handle.native_context_documents.update(projected_sources)
+        # The prompt kiro-cli delivers for this session: the view of the projection
+        # set_mode just activated, or -- with no set_mode -- the spawn's view of the
+        # process's launch agent. Guarded like every other post-session/new await
+        # here: the helper never raises, so only a cancellation can reach the arm,
+        # and a session/new that already succeeded must not be left live with no
+        # handle returned.
+        if mode_activated or active_agent == self._agent:
+            try:
+                await self._record_native_prompt(
+                    handle, active_agent, self._session_projection(mode_activated)
+                )
+            except BaseException:
+                await self.terminate_session(session_id)
+                raise
         # Inline prompt bytes and file resources come from the same activated
         # wire definition. Conditional and indexed resources remain native.
         for definition in kas_agents or ():
             if definition.get("id") == active_agent and isinstance(definition.get("prompt"), str):
-                handle.native_context_documents[f"template://{active_agent}#prompt"] = definition[
+                handle.native_context_documents[native_prompt_key(active_agent)] = definition[
                     "prompt"
                 ]
 
@@ -7685,6 +7769,7 @@ class AcpRuntime:
         self._guard_unresolved_mcp_refs(handle, ref_spec, active_agent, wire_servers)
 
         mode_switched = False
+        mode_activated = False
         staged_before_switch = 0
         # Activate the agent (mirrors AcpClient step 4 — set_mode applies to a
         # resumed session too, not just fresh ones). If set_mode raises, the
@@ -7725,6 +7810,7 @@ class AcpRuntime:
                 wire_registered=kas_agents is not None,
             )
             handle.active_agent = mode_agent
+            mode_activated = True
             # See create_session: after a real mode switch, registration frames
             # staged during session/load describe the pre-switch roster.
             _ids, _current, _adv = parse_session_modes(resp)
@@ -7770,6 +7856,16 @@ class AcpRuntime:
         # processes a fresh session does, so it needs the same scan; without it
         # every descendant a resumed session created stays unrecorded. Guarded
         # for the same reason as create_session: session/load already succeeded.
+        # Same record as session/new (see _finish_create_session): a resumed
+        # session's later re-injection reads it, and the guard is the same.
+        if mode_activated or active_agent == self._agent:
+            try:
+                await self._record_native_prompt(
+                    handle, active_agent, self._session_projection(mode_activated)
+                )
+            except BaseException:
+                await self.terminate_session(resume_sid)
+                raise
         try:
             await self._snapshot_descendants()
         except BaseException:

@@ -883,6 +883,28 @@ class AgentConfig:
         default="",
         metadata=_meta("Default Agent", "Default agent name for new sessions."),
     )
+    dedupe_agent_prompt: bool = field(
+        default=False,
+        metadata=_meta(
+            "Deliver the agent prompt once",
+            "When true, a session whose harness already carries the agent spec's "
+            "`prompt` as its own system instruction (kiro-cli reads it off disk "
+            "for `--agent`; KAS has it inlined onto the wire) does not also "
+            "receive the identical text in the [AGENT SYSTEM PROMPT] context "
+            "block, at session start or after a compaction. Only a byte-identical "
+            "copy is dropped: a prompt that uses {{MAX_SUBAGENTS}}, "
+            "{{WIDGET_BLOCK}} or {bot_name} resolves differently and keeps the "
+            "block, as does the managed default agent (its spec carries a stub) "
+            "and every harness that projects no prompt (the block is its only "
+            "copy). On kiro-cli the record is the inline prompt of the view spec "
+            "the runtime wrote for the agent the session was started or switched "
+            "on; a file:// prompt keeps its block. Off by default while the saving is "
+            "validated. Read at session start and at each post-compaction "
+            "re-injection, so a change applies to sessions started after it, and "
+            "a running KAS session (whose record exists regardless) also follows "
+            "it at its next compaction.",
+        ),
+    )
     deepseek_env: dict[str, str] = field(
         default_factory=dict,
         metadata=_meta(

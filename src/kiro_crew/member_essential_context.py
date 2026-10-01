@@ -305,6 +305,12 @@ def resolve_template_path(template: str, project: str | None = None) -> Path | N
     return spec_path
 
 
+def native_prompt_key(template: str) -> str:
+    """The ``native_context_documents`` key under which a harness's own delivery of
+    *template*'s prompt is recorded -- one spelling for every writer and reader."""
+    return f"template://{template}#prompt"
+
+
 def resolve_relative_prompt_path(
     source: Path, spec_path: Path, project: str | None
 ) -> tuple[Path, Path] | None:
