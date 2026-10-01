@@ -1,4 +1,4 @@
-import { useEffect, useId, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { useReducedMotion } from '../../hooks/useReducedMotion'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
@@ -29,6 +29,7 @@ import { fmtDateTimeNumeric, fmtList } from '../../i18n/format'
 import { feedbackTracker } from '../../feedbackTracker'
 import type { UpdateState } from '../../hooks/useUpdateSubscription'
 import { gatewayStopCommand } from '../../hooks/useUpdateSubscription'
+import { useInstallDispatch } from '../../hooks/useInstallDispatch'
 import { foldStableStamp, sameBuildVersion } from '../../utils/displayVersion'
 import { bytesAreTheStableRelease as followedLanePublishesRunningBytes } from '../../utils/laneMembership'
 
@@ -351,15 +352,9 @@ export function AboutPanel() {
   // Explicit consent actions (macOS Software Update semantics): downloading
   // and installing each happen only when the user clicks.
   const downloadMutation = useMutation({ mutationFn: () => desktopApi!.download!() })
-  const installMutation = useMutation({ mutationFn: () => desktopApi!.install() })
-  // Install is a ONE-WAY door, so the control must never become actionable
-  // again. Note isSuccess, not just isPending: `update:install` resolves as soon
-  // as the install is DISPATCHED, and on macOS the platform installer then works
-  // for several more seconds before the app quits. Keying `disabled` on
-  // isPending alone lets the button re-arm during that window, so the user sees
-  // a clickable install-and-restart action followed by an unexplained quit -- which reads
-  // as a crash.
-  const installDispatched = installMutation.isPending || installMutation.isSuccess
+  // Install-and-restart, with its one-way latch and the reset for a refused or
+  // aborted handoff (see useInstallDispatch).
+  const { installMutation, dispatched: installDispatched, dispatchInstall } = useInstallDispatch(updateState)
   // An agent's pending request for THIS packaged install. Polled while on
   // desktop; the poll is also how the card leaves — a decline, an expiry, or
   // the install itself (which quits the app under this tab) all end it.
@@ -379,6 +374,13 @@ export function AboutPanel() {
   // download and let the `downloaded` state's Install button (or the
   // deferred-on-quit install) finish it — exactly as a manual click would.
   const [agentInstallArmed, setAgentInstallArmed] = useState(false)
+  const agentInstallArmedRef = useRef(false)
+  // The armed click has seen its download START (`downloading`, which the main
+  // process emits at once for a click it re-checks). What makes a later
+  // `checking` or `not-available` mean "that download was dropped" rather than
+  // the state the click was made from (see agentDownloadDropped).
+  const [agentArmSawDownload, setAgentArmSawDownload] = useState(false)
+  const agentArmSawDownloadRef = useRef(false)
   // Before dispatching the install, retire the request by the id the card
   // showed. The install quits the app; on relaunch into the new version, a
   // request left on disk would put the card straight back up asking for a
@@ -389,23 +391,52 @@ export function AboutPanel() {
     if (id) void api.dismissUpdateArm(id).catch(() => {})
   }
   const installFromAgentRequest = () => {
-    setAgentInstallArmed(true)
     if (updateState?.state === 'downloaded') {
+      // Installs now, so nothing is armed: an armed click left standing would
+      // re-fire on the next `downloaded` once the dispatch latch resets after a
+      // refused or aborted handoff, installing with nobody clicking.
       retireAgentRequest()
-      installMutation.mutate()
+      dispatchInstall()
     } else {
+      agentArmSawDownloadRef.current = false
+      agentInstallArmedRef.current = true
+      setAgentArmSawDownload(false)
+      setAgentInstallArmed(true)
       downloadMutation.mutate()
     }
   }
+  // Query-cache listeners run for every updater payload, before React Query
+  // batches observer renders. The refs preserve the event order for one armed
+  // click even when `downloading` and its cancellation share a render.
+  useEffect(() => queryClient.getQueryCache().subscribe(event => {
+    if (event.type !== 'updated'
+      || event.query.queryKey.length !== 1
+      || event.query.queryKey[0] !== 'update-state') return
+    const pushed = event.query.state.data as UpdateState | null | undefined
+    if (!agentInstallArmedRef.current) return
+    if (pushed?.state === 'downloading') {
+      agentArmSawDownloadRef.current = true
+      setAgentArmSawDownload(true)
+    } else if (agentArmSawDownloadRef.current
+      && (pushed?.state === 'not-available' || pushed?.state === 'checking')) {
+      agentInstallArmedRef.current = false
+      agentArmSawDownloadRef.current = false
+      setAgentInstallArmed(false)
+      setAgentArmSawDownload(false)
+    }
+  }), [queryClient])
   const agentDownloadLanded = agentInstallArmed && updateState?.state === 'downloaded'
   useEffect(() => {
     // The download the request card started has landed: finish it. One shot —
     // `agentInstallArmed` is cleared so a later, unrelated download does not
     // ride this click.
     if (!agentDownloadLanded || installDispatched) return
+    agentInstallArmedRef.current = false
+    agentArmSawDownloadRef.current = false
     setAgentInstallArmed(false)
+    setAgentArmSawDownload(false)
     retireAgentRequest()
-    installMutation.mutate()
+    dispatchInstall()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agentDownloadLanded, installDispatched])
   // A download the card started that then FAILED — the updater's own
@@ -413,9 +444,32 @@ export function AboutPanel() {
   // both request actions stay disabled with no way forward.
   const agentDownloadFailed = agentInstallArmed
     && (downloadMutation.isError || (updateState?.state === 'error' && updateState.phase === 'download'))
+  // A download the card asked for that the main process then DROPS must release the
+  // click too: it re-checks the feed first, and a retraction (`not-available`) or a
+  // channel switch (a fresh `checking`) ends that click without an error. A click
+  // left armed keeps both request actions disabled and installs the next build that
+  // downloads, hours later, with nobody clicking.
+  //
+  // Only AFTER the click's `downloading`: both states are also ones a click is made
+  // FROM (the card stays enabled through them), and from there the main process
+  // discovers first and then downloads. Read off the current state alone, that
+  // click would be released on the next render and its download would land with
+  // nothing left to install it.
   useEffect(() => {
-    if (agentDownloadFailed) setAgentInstallArmed(false)
-  }, [agentDownloadFailed])
+    if (!agentInstallArmed || updateState?.state !== 'downloading') return
+    agentArmSawDownloadRef.current = true
+    setAgentArmSawDownload(true)
+  }, [agentInstallArmed, updateState?.state])
+  const agentDownloadDropped = agentInstallArmed && agentArmSawDownload
+    && (updateState?.state === 'not-available' || updateState?.state === 'checking')
+  const agentDownloadEnded = agentDownloadFailed || agentDownloadDropped
+  useEffect(() => {
+    if (!agentDownloadEnded) return
+    agentInstallArmedRef.current = false
+    agentArmSawDownloadRef.current = false
+    setAgentInstallArmed(false)
+    setAgentArmSawDownload(false)
+  }, [agentDownloadEnded])
   // Failures the request card must SHOW (errors-use-error-notice): a poll that
   // keeps failing means an approval could land unseen; a refused download means
   // the click did nothing. The poll uses the same consecutive-failure threshold
@@ -639,7 +693,7 @@ export function AboutPanel() {
         </div>
         <div className="shrink-0">
           {ctaOwnedByRequest ? null : cardReady ? (
-            <Btn primary onClick={() => installMutation.mutate()} disabled={installDispatched}>
+            <Btn primary onClick={dispatchInstall} disabled={installDispatched}>
               <RefreshCw size={13} className={`lucide-inline ${installDispatched ? 'animate-spin' : ''}`} /> {installMutation.isSuccess
                 ? i18nT('pages.settings.aboutPanel.restarting')
                 : i18nT('pages.settings.aboutPanel.install_update_restart_app')}

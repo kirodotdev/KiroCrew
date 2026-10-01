@@ -173,6 +173,7 @@
       "auth-allowlist.js",
       "runtime/update/state-reporter.js",
       "runtime/update/managed-lane.js",
+      "runtime/update/freshness-gate.js",
       "runtime/update/feed-lane.js",
       "update-logger.js",
       "bundle-location.js",
