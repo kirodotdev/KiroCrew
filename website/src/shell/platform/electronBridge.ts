@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { isMacElectron } from '../../lib/electron'
+import { isMacElectron, MAC_FULLSCREEN_TOP_RESERVE_PX } from '../../lib/electron'
 
 /**
  * The shell's calls into the Electron preload bridge (`window.electronAPI`).
@@ -50,11 +50,28 @@ export function subscribeNativeNavigate(onPath: (path: string) => void): (() => 
  */
 export function useMacFullscreen() {
   const [macFullscreen, setMacFullscreen] = useState(false)
+  const [zoomFactor, setZoomFactor] = useState(1)
   useEffect(() => {
     if (!isMacElectron) return
     const api = (window as { electronAPI?: { onFullScreenChanged?: (cb: (fs: boolean) => void) => () => void } }).electronAPI
     return api?.onFullScreenChanged?.(setMacFullscreen)
   }, [])
+  // The strip AppKit keeps at the top of a fullscreen window is measured in
+  // screen points, while the reserve is laid out in CSS px, which native zoom
+  // scales. A zoom change resizes the CSS viewport, so re-read on 'resize'.
+  useEffect(() => {
+    const zoom = window.zoomAPI
+    if (!macFullscreen || !zoom) return
+    let alive = true
+    const sync = () => {
+      void zoom.get().then(f => { if (alive && f > 0) setZoomFactor(f) }).catch(() => {})
+    }
+    sync()
+    window.addEventListener('resize', sync)
+    return () => { alive = false; window.removeEventListener('resize', sync) }
+  }, [macFullscreen])
   const macInset = isMacElectron && !macFullscreen
-  return { macFullscreen, macInset }
+  // CSS px kept clear above the header, so the header sits below that strip.
+  const topReservePx = macFullscreen ? Math.round(MAC_FULLSCREEN_TOP_RESERVE_PX / zoomFactor) : 0
+  return { macFullscreen, macInset, topReservePx }
 }

@@ -73,6 +73,15 @@ export function pathForFile(file: File): string {
 export const TRAFFIC_LIGHT_INSET_PX = 84
 
 /**
+ * Top band kept clear while the window is in macOS native fullscreen. AppKit
+ * owns the top strip there: pointing at it slides the menu bar down over the
+ * window, so a control laid out at y=0 (the header and its crew switcher) can
+ * no longer be clicked. Shifting the dashboard down by the menu bar's height
+ * puts the header below that strip.
+ */
+export const MAC_FULLSCREEN_TOP_RESERVE_PX = 24
+
+/**
  * Whether the "Open in editor" affordance can work in this window.
  *
  * True only when the desktop shell's `fileOpenAPI` preload bridge is present.

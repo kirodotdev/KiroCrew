@@ -968,10 +968,11 @@ export default function App() {
   // (the native dashboard); a non-null id means a remote instance's embedded
   // dashboard is shown instead, so the Local pane is hidden (not unmounted).
   const activeInstanceId = useAppSelector(s => s.instances.activeId)
+  const { macFullscreen, macInset, topReservePx } = useMacFullscreen()
   const {
     focusMode, toggleFocusMode, focusActive, topPeek, railPeek, topPeekTrigger, topPeekSurface,
     railPeekTrigger, railPeekSurface, topChromeShown, localHeaderDragGaps,
-  } = useFocusChrome({ isMobile, navCollapsed, activeInstanceId })
+  } = useFocusChrome({ isMobile, navCollapsed, activeInstanceId, topReservePx })
   // Whether the shell's one-shot entrance animation has already played.
   //
   // The local pane is HIDDEN, not unmounted, while a remote instance tab is
@@ -1265,7 +1266,6 @@ export default function App() {
   const { kiroUsageOpen, setKiroUsageOpen, kiroUsageState, kiroCreditSurface, kiroAccountEntry, refetchKirocrewCfg } = useKiroUsageReadout()
   const metrics = useMetricsReadout(isMobile, updateAvailable)
   const { capsuleCollapsed, setCapsuleCollapsed, capsuleLayoutPulse, pulseCapsuleLayout, sysMetrics, metricsProbeRef, metricsGroupRef } = metrics
-  const { macFullscreen, macInset } = useMacFullscreen()
 
   const { devMode, devPageSeen } = useDeveloperMode(location.pathname)
   // Native app-menu navigation (Settings…, About) and the Crew Companion's "Open
@@ -1639,7 +1639,9 @@ export default function App() {
        which hides the bottom row (the chat composer) on phones.
        w-full, not w-screen: 100vw resolves independently of layout, so it can
        disagree with the `(max-width: 767px)` query this shell branches on. */
-    <div className="h-screen supports-[height:100dvh]:h-dvh w-full flex flex-col overflow-hidden bg-bg">
+    <div className="h-screen supports-[height:100dvh]:h-dvh w-full flex flex-col overflow-hidden bg-bg"
+      data-testid="app-frame"
+      style={topReservePx ? { paddingTop: topReservePx } : undefined}>
       {/* Embedded remote panes receive their switcher model from the parent via
           this bridge (option B) — no-op in the top-level dashboard. */}
       <EmbeddedHostBridge />
