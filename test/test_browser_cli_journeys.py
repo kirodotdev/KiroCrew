@@ -12,6 +12,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import threading
 import time
 from pathlib import Path
 
@@ -1010,7 +1011,7 @@ class TestViewSubprocessesReceiveNodeEnv:
             proc = view_mod._spawn(["/n/pw"], 9999)
 
         assert proc is not None
-        proof = getattr(proc, "_kirocrew_browser_view_binding")
+        proof = proc.binding
         assert proof.reported.wait(timeout=1), "listener-proof reader never consumed stdout"
 
         mock_popen.assert_called_once()
@@ -1030,7 +1031,9 @@ class TestViewSubprocessesReceiveNodeEnv:
         fake_proc = MagicMock()
         fake_proc.poll.return_value = None
         fake_proc.pid = 12345
-        view_mod._proc = fake_proc
+        view_mod._child = view_mod._Child(
+            proc=fake_proc, binding=view_mod._BindingProof(port=0, reported=threading.Event())
+        )
 
         with patch.object(view_mod.subprocess, "run") as mock_run:
             monkeypatch.setattr(
@@ -1044,8 +1047,7 @@ class TestViewSubprocessesReceiveNodeEnv:
         mock_run.assert_not_called()
 
         # Cleanup.
-        view_mod._proc = None
-        view_mod._info = None
+        view_mod._child = None
 
 
 class TestStopGuardsAgainstUnownedProcesses:
@@ -1060,8 +1062,7 @@ class TestStopGuardsAgainstUnownedProcesses:
 
         monkeypatch.setattr(view_mod, "cli_path", lambda: "/n/pw")
         # No owned process.
-        view_mod._proc = None
-        view_mod._info = None
+        view_mod._child = None
 
         with patch.object(view_mod.subprocess, "run") as mock_run:
             view_mod.stop()
@@ -1081,8 +1082,11 @@ class TestStopGuardsAgainstUnownedProcesses:
         fake_proc = MagicMock()
         fake_proc.poll.return_value = None
         fake_proc.pid = 55555
-        view_mod._proc = fake_proc
-        view_mod._info = view.ShowInfo(url="http://127.0.0.1:9999", port=9999)
+        view_mod._child = view_mod._Child(
+            proc=fake_proc,
+            binding=view_mod._BindingProof(port=0, reported=threading.Event()),
+            info=view.ShowInfo(url="http://127.0.0.1:9999", port=9999),
+        )
 
         reaped: list[int] = []
         monkeypatch.setattr(
@@ -1097,7 +1101,7 @@ class TestStopGuardsAgainstUnownedProcesses:
         # No global --kill issued; the owned child was reaped via its tree.
         mock_run.assert_not_called()
         assert 55555 in reaped
-        assert view_mod._proc is None
+        assert view_mod._child is None
 
     def test_stop_reaps_owned_child_even_when_tree_kill_raises(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1112,8 +1116,11 @@ class TestStopGuardsAgainstUnownedProcesses:
         fake_proc = MagicMock()
         fake_proc.poll.return_value = None
         fake_proc.pid = 66666
-        view_mod._proc = fake_proc
-        view_mod._info = view.ShowInfo(url="http://127.0.0.1:8888", port=8888)
+        view_mod._child = view_mod._Child(
+            proc=fake_proc,
+            binding=view_mod._BindingProof(port=0, reported=threading.Event()),
+            info=view.ShowInfo(url="http://127.0.0.1:8888", port=8888),
+        )
 
         def _exploding_kill(pid, sig=None):
             raise OSError("boom")
@@ -1127,8 +1134,7 @@ class TestStopGuardsAgainstUnownedProcesses:
         # stop() must not propagate the exception; the child is still cleared.
         view_mod.stop()
 
-        assert view_mod._proc is None
-        assert view_mod._info is None
+        assert view_mod._child is None
 
     def test_stop_is_idempotent_across_two_calls(self, monkeypatch: pytest.MonkeyPatch):
         from unittest.mock import MagicMock
@@ -1141,8 +1147,11 @@ class TestStopGuardsAgainstUnownedProcesses:
         fake_proc = MagicMock()
         fake_proc.poll.return_value = None
         fake_proc.pid = 77777
-        view_mod._proc = fake_proc
-        view_mod._info = view.ShowInfo(url="http://127.0.0.1:7777", port=7777)
+        view_mod._child = view_mod._Child(
+            proc=fake_proc,
+            binding=view_mod._BindingProof(port=0, reported=threading.Event()),
+            info=view.ShowInfo(url="http://127.0.0.1:7777", port=7777),
+        )
 
         kill_calls: list[int] = []
         monkeypatch.setattr(
@@ -1156,5 +1165,4 @@ class TestStopGuardsAgainstUnownedProcesses:
 
         # The tree kill fires only once (the first call); the second is a no-op.
         assert kill_calls == [77777]
-        assert view_mod._proc is None
-        assert view_mod._info is None
+        assert view_mod._child is None

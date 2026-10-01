@@ -47,7 +47,7 @@ import socket
 import subprocess
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, BinaryIO, Callable
 from urllib.parse import urlsplit
 
@@ -181,14 +181,30 @@ class _BindingProof:
             self.reported.clear()
 
 
+@dataclass
+class _Child:
+    """One spawned view server: its handle, spawn proof, and adopted ports.
+
+    :func:`_spawn` builds it and every prover reads it. The module's
+    :data:`_child` is replaced or cleared in one assignment under ``_lock``,
+    so no reader can pair one instance's handle with another's port.
+    """
+
+    proc: subprocess.Popen[bytes]
+    binding: _BindingProof
+    #: The child's OWN listening port, which is what ownership is proved against.
+    #: Distinct from ``info.port``: on the pinned path that is the operator's port,
+    #: served by our in-process relay, so it proves nothing about the child.
+    child_port: int | None = None
+    info: ShowInfo | None = None
+    #: ``(port, identity)`` left by :func:`_port_owner` for the recheck in
+    #: :func:`_verify_child_listener_gated`; written only under ``_proof_gate``.
+    owner_identity: tuple[int, platform_compat.ProcessDescendantIdentity] | None = None
+
+
 _lock = threading.Lock()
-_proc: subprocess.Popen[bytes] | None = None
-_info: ShowInfo | None = None
+_child: _Child | None = None
 _relay: "_Relay | None" = None
-#: The child's OWN listening port, which is what ownership is proved against.
-#: Distinct from ``_info.port``: on the pinned path that is the operator's port,
-#: served by our in-process relay, so it proves nothing about the child.
-_child_port: int | None = None
 #: Capability token for the dashboard's same-origin relay (``/browser-view/``),
 #: minted fresh for each view-server instance. The relay path carries it
 #: (``/browser-view/<token>/…``) and the relay handler constant-time-compares
@@ -527,35 +543,25 @@ _OWNER_FOREIGN = "foreign"
 _OWNER_UNPROVEN = "unproven"
 
 
-_PORT_OWNER_IDENTITY_PROOF_ATTR = "_kirocrew_browser_view_port_owner_identity"
-
-
 def _record_port_owner_identity_proof(
-    proc: subprocess.Popen[bytes],
+    child: _Child,
     port: int,
     identity: platform_compat.ProcessDescendantIdentity,
 ) -> None:
-    setattr(proc, _PORT_OWNER_IDENTITY_PROOF_ATTR, (port, identity))
+    child.owner_identity = (port, identity)
 
 
 def _take_port_owner_identity_proof(
-    proc: subprocess.Popen[bytes], port: int
+    child: _Child, port: int
 ) -> platform_compat.ProcessDescendantIdentity | None:
-    proof = getattr(proc, _PORT_OWNER_IDENTITY_PROOF_ATTR, None)
-    with contextlib.suppress(Exception):
-        delattr(proc, _PORT_OWNER_IDENTITY_PROOF_ATTR)
-    if (
-        not isinstance(proof, tuple)
-        or len(proof) != 2
-        or proof[0] != port
-        or not isinstance(proof[1], platform_compat.ProcessDescendantIdentity)
-    ):
+    proof, child.owner_identity = child.owner_identity, None
+    if proof is None or proof[0] != port:
         return None
     return proof[1]
 
 
-#: Single writer for the per-proc identity-proof slot. The slot protocol is
-#: record-then-take on the ``proc`` object, and :func:`_port_owner` OPENS by
+#: Single writer for the per-child identity-proof slot. The slot protocol is
+#: record-then-take on the child record, and :func:`_port_owner` OPENS by
 #: clearing any stale slot — so two provers interleaving clobber each other:
 #: B's clearing take lands inside A's record→take window, A reads ``None`` and
 #: returns a definitive FALSE for a live child, and the caller tears the view
@@ -693,24 +699,24 @@ def _structurally_blind_listener_attribution() -> bool:
     return _listener_lookup_functional() is False
 
 
-def _windows_port_owner(port: int, proc: subprocess.Popen[bytes]) -> str:
+def _windows_port_owner(port: int, child: _Child) -> str:
     """Classify *port* through owner-PID tables without invoking netstat."""
+    proc = child.proc
     root_observation = platform_compat.process_owns_loopback_listener(proc.pid, port)
     if root_observation is True:
-        proof = _process_binding_proof(proc)
-        root_identity = proof.root_identity if proof is not None else None
-        root_verdict = _root_process_identity_matches(proc, "after Windows root listener lookup")
+        root_identity = child.binding.root_identity
+        root_verdict = _root_process_identity_matches(child, "after Windows root listener lookup")
         if root_identity is None or root_verdict is False:
             return _OWNER_FOREIGN
         if root_verdict is None:
             return _OWNER_UNPROVEN
-        _record_port_owner_identity_proof(proc, port, root_identity)
+        _record_port_owner_identity_proof(child, port, root_identity)
         return _OWNER_CHILD
 
     control_observation = _listener_lookup_functional()
     if root_observation is None or control_observation is not True:
         return _OWNER_UNPROVEN
-    root_verdict = _root_process_identity_matches(proc, "after Windows control listener lookup")
+    root_verdict = _root_process_identity_matches(child, "after Windows control listener lookup")
     if root_verdict is not True:
         return _OWNER_UNPROVEN if root_verdict is None else _OWNER_FOREIGN
 
@@ -735,22 +741,22 @@ def _windows_port_owner(port: int, proc: subprocess.Popen[bytes]) -> str:
             continue
         if observation is True:
             root_verdict = _root_process_identity_matches(
-                proc, "after Windows descendant listener lookup"
+                child, "after Windows descendant listener lookup"
             )
             if root_verdict is not True:
                 return _OWNER_UNPROVEN if root_verdict is None else _OWNER_FOREIGN
-            _record_port_owner_identity_proof(proc, port, identity)
+            _record_port_owner_identity_proof(child, port, identity)
             return _OWNER_CHILD
         if observation is None:
             inconclusive = True
 
-    root_verdict = _root_process_identity_matches(proc, "after Windows listener verification")
+    root_verdict = _root_process_identity_matches(child, "after Windows listener verification")
     if root_verdict is not True:
         return _OWNER_UNPROVEN if root_verdict is None else _OWNER_FOREIGN
     return _OWNER_UNPROVEN if inconclusive else _OWNER_FOREIGN
 
 
-def _port_owner(port: int, proc: subprocess.Popen[bytes] | None) -> str:
+def _port_owner(port: int, child: _Child | None) -> str:
     """Who holds *port*: our child's tree, foreign, or undecidable on this host.
 
     :func:`_healthy` answers "is an HTTP server there", which is reachability,
@@ -779,14 +785,15 @@ def _port_owner(port: int, proc: subprocess.Popen[bytes] | None) -> str:
     leaves a port-bound proof for :func:`_verify_child_listener` to recheck.
     Bare-PID ancestry is never an ownership grant.
     """
-    if proc is None:
+    if child is None:
         return _OWNER_FOREIGN
-    _take_port_owner_identity_proof(proc, port)
-    root_verdict = _root_process_identity_matches(proc, "before listener lookup")
+    proc = child.proc
+    _take_port_owner_identity_proof(child, port)
+    root_verdict = _root_process_identity_matches(child, "before listener lookup")
     if root_verdict is not True:
         return _OWNER_UNPROVEN if root_verdict is None else _OWNER_FOREIGN
     if platform_compat.IS_WINDOWS:
-        return _windows_port_owner(port, proc)
+        return _windows_port_owner(port, child)
     if not platform_compat.listening_pid_tool_available():
         return _OWNER_UNPROVEN
     listeners, completed = platform_compat.probe_port_listeners(port)
@@ -812,7 +819,7 @@ def _port_owner(port: int, proc: subprocess.Popen[bytes] | None) -> str:
         identities = platform_compat.process_descendant_identities(proc.pid)
     if identities is None:
         return _OWNER_UNPROVEN
-    root_verdict = _root_process_identity_matches(proc, "after ancestry lookup")
+    root_verdict = _root_process_identity_matches(child, "after ancestry lookup")
     if root_verdict is not True:
         return _OWNER_UNPROVEN if root_verdict is None else _OWNER_FOREIGN
     if any(_process_start_identity(pid) != start_id for pid, start_id in owner_start_ids.items()):
@@ -820,8 +827,7 @@ def _port_owner(port: int, proc: subprocess.Popen[bytes] | None) -> str:
 
     candidates: list[platform_compat.ProcessDescendantIdentity] = []
     if proc.pid in owners:
-        proof = _process_binding_proof(proc)
-        root_identity = proof.root_identity if proof is not None else None
+        root_identity = child.binding.root_identity
         if root_identity is None:
             return _OWNER_FOREIGN
         candidates.append(root_identity)
@@ -840,7 +846,7 @@ def _port_owner(port: int, proc: subprocess.Popen[bytes] | None) -> str:
     if not confirming_completed:
         return _OWNER_UNPROVEN
     confirming_owners = platform_compat.loopback_owner_pids(confirming_listeners)
-    root_verdict = _root_process_identity_matches(proc, "after confirming listener lookup")
+    root_verdict = _root_process_identity_matches(child, "after confirming listener lookup")
     if root_verdict is not True:
         return _OWNER_UNPROVEN if root_verdict is None else _OWNER_FOREIGN
     for identity in stable_before:
@@ -848,7 +854,7 @@ def _port_owner(port: int, proc: subprocess.Popen[bytes] | None) -> str:
             identity.pid in confirming_owners
             and _process_descendant_start_identity(identity) == identity.start_time
         ):
-            _record_port_owner_identity_proof(proc, port, identity)
+            _record_port_owner_identity_proof(child, port, identity)
             return _OWNER_CHILD
     return _OWNER_UNPROVEN
 
@@ -1009,11 +1015,9 @@ def _drain_child_output(
         _log_drift()
 
 
-def _child_reported_port(proc: subprocess.Popen[bytes], port: int) -> int | None:
+def _child_reported_port(child: _Child, port: int) -> int | None:
     """Return this child's bound port when it matches the requested or resolved port."""
-    proof = getattr(proc, "_kirocrew_browser_view_binding", None)
-    if not isinstance(proof, _BindingProof):
-        return None
+    proof = child.binding
     reported_port = proof.reported_port()
     if reported_port is None:
         return None
@@ -1022,9 +1026,9 @@ def _child_reported_port(proc: subprocess.Popen[bytes], port: int) -> int | None
     return None
 
 
-def _child_reported_binding(proc: subprocess.Popen[bytes], port: int) -> bool:
+def _child_reported_binding(child: _Child, port: int) -> bool:
     """Whether this exact child reported a recognized listener address."""
-    return _child_reported_port(proc, port) is not None
+    return _child_reported_port(child, port) is not None
 
 
 def _process_start_identity(pid: int) -> str | None:
@@ -1056,15 +1060,10 @@ def _process_descendant_start_identity(
     return platform_compat.process_start_id_for_source(identity.pid, identity.source)
 
 
-def _process_binding_proof(proc: subprocess.Popen[bytes]) -> _BindingProof | None:
-    proof = getattr(proc, "_kirocrew_browser_view_binding", None)
-    return proof if isinstance(proof, _BindingProof) else None
-
-
-def _root_process_identity_matches(proc: subprocess.Popen[bytes], phase: str) -> bool | None:
+def _root_process_identity_matches(child: _Child, phase: str) -> bool | None:
     """Return match, mismatch, or unknown for the spawned root identity."""
-    proof = _process_binding_proof(proc)
-    captured = proof.root_identity if proof is not None else None
+    proc = child.proc
+    captured = child.binding.root_identity
     alive = _alive(proc)
     if captured is None or captured.pid != proc.pid or not alive:
         current = None
@@ -1087,9 +1086,8 @@ def _root_process_identity_matches(proc: subprocess.Popen[bytes], phase: str) ->
     return verdict
 
 
-def _listener_banner_reason(proc: subprocess.Popen[bytes]) -> str:
-    proof = _process_binding_proof(proc)
-    version = proof.cli_version if proof is not None else None
+def _listener_banner_reason(child: _Child) -> str:
+    version = child.binding.cli_version
     return (
         f"The browser CLI {version or 'unknown-version'} did not print a recognizable "
         "listener banner "
@@ -1119,7 +1117,7 @@ def _descendant_identity_matches(
 
 
 def _verify_child_listener(
-    proc: subprocess.Popen[bytes],
+    child: _Child,
     port: int,
     *,
     allow_report: bool,
@@ -1127,7 +1125,7 @@ def _verify_child_listener(
 ) -> tuple[bool | None, bool]:
     """Serialize and cache the listener proof; see :func:`_verify_child_listener_gated`.
 
-    All provers pass through here, so the per-proc identity-proof slot has
+    All provers pass through here, so the per-child identity-proof slot has
     exactly one writer at a time (``_proof_gate``) — the invariant holds for
     provers running outside ``_lock``, not only under it. Non-report verdicts
     are cached for :data:`_PROOF_CACHE_TTL_S` and shared single-flight:
@@ -1145,6 +1143,7 @@ def _verify_child_listener(
     and adoption wants a fresh proof anyway.
     """
     global _proof_cache
+    proc = child.proc
     if not allow_report:
         hit, verdict = _cached_listener_verdict(proc, port, proof_not_before)
         if hit:
@@ -1162,19 +1161,19 @@ def _verify_child_listener(
         # a caller's fence (its ps/lsof evidence gathered pre-fence) satisfy
         # that fence merely by finishing after it.
         proof_started = time.monotonic()
-        verdict, via_report = _verify_child_listener_gated(proc, port, allow_report=allow_report)
+        verdict, via_report = _verify_child_listener_gated(child, port, allow_report=allow_report)
         if not allow_report:
             _proof_cache = (id(proc), proc.pid, port, proof_started, verdict)
         return verdict, via_report
 
 
 def _verify_child_listener_gated(
-    proc: subprocess.Popen[bytes], port: int, *, allow_report: bool
+    child: _Child, port: int, *, allow_report: bool
 ) -> tuple[bool | None, bool]:
     """Verify this child owns *port* and say whether stdout was the proof.
 
     Callers hold ``_proof_gate`` (via :func:`_verify_child_listener`): the
-    proof protocol stashes evidence in a per-proc slot that
+    proof protocol stashes evidence in a per-child slot that
     :func:`_port_owner` clears on entry, so concurrent provers would clobber
     each other's record→take window into false definitive failures.
 
@@ -1185,13 +1184,14 @@ def _verify_child_listener_gated(
     structurally blind host and is never reused as current listener-ownership
     evidence.
     """
-    owner = _port_owner(port, proc)
-    fresh_report = _child_reported_binding(proc, port)
-    root_verdict = _root_process_identity_matches(proc, "after global ownership lookup")
+    proc = child.proc
+    owner = _port_owner(port, child)
+    fresh_report = _child_reported_binding(child, port)
+    root_verdict = _root_process_identity_matches(child, "after global ownership lookup")
     if root_verdict is not True:
         return root_verdict, False
     if owner == _OWNER_CHILD:
-        identity = _take_port_owner_identity_proof(proc, port)
+        identity = _take_port_owner_identity_proof(child, port)
         if identity is None:
             return False, False
         current = _process_descendant_start_identity(identity)
@@ -1205,7 +1205,7 @@ def _verify_child_listener_gated(
 
     per_process = platform_compat.process_owns_loopback_listener(proc.pid, port)
     if per_process is True:
-        return _root_process_identity_matches(proc, "after direct listener probe"), False
+        return _root_process_identity_matches(child, "after direct listener probe"), False
 
     descendants = platform_compat.process_descendant_identities(proc.pid)
     # The owner verdict stays UNPROVEN for both tiers. Capability is separate:
@@ -1235,10 +1235,10 @@ def _verify_child_listener_gated(
             inconclusive = True
             continue
         if per_process is True:
-            return _root_process_identity_matches(proc, "after descendant listener probe"), False
+            return _root_process_identity_matches(child, "after descendant listener probe"), False
         if per_process is None:
             inconclusive = True
-    root_verdict = _root_process_identity_matches(proc, "after listener verification")
+    root_verdict = _root_process_identity_matches(child, "after listener verification")
     if root_verdict is not True:
         return root_verdict, False
     if not inconclusive:
@@ -1261,48 +1261,50 @@ def _recorded_state() -> bool | None:
     Callers hold :data:`_lock`.
     """
     global _last_reason
-    if _proc is None or not _alive(_proc) or _info is None or _child_port is None:
+    child = _child
+    if child is None or not _alive(child.proc) or child.info is None or child.child_port is None:
         return False
-    root_verdict = _root_process_identity_matches(_proc, "before reuse health check")
+    child_port = child.child_port
+    root_verdict = _root_process_identity_matches(child, "before reuse health check")
     if root_verdict is not True:
         if root_verdict is None:
             if _last_reason != _OWNERSHIP_REASON:
                 logger.warning(
                     "browser view root identity is inconclusive before reuse on port %d; "
                     "keeping the process but withholding its URL",
-                    _child_port,
+                    child_port,
                 )
             _last_reason = _OWNERSHIP_REASON
             return None
         logger.warning(
             "browser view root identity changed before reuse on port %d",
-            _child_port,
+            child_port,
         )
         _last_reason = _OWNERSHIP_REASON
         return False
-    if not _healthy(_info.port):
-        reason = f"The browser view stopped answering on port {_info.port}"
+    if not _healthy(child.info.port):
+        reason = f"The browser view stopped answering on port {child.info.port}"
         if _last_reason != reason:
             logger.warning(
                 "live browser view process stopped answering on child port %d",
-                _child_port,
+                child_port,
             )
         _last_reason = reason
         return False
-    root_verdict = _root_process_identity_matches(_proc, "after reuse health check")
+    root_verdict = _root_process_identity_matches(child, "after reuse health check")
     if root_verdict is not True:
         if root_verdict is None:
             if _last_reason != _OWNERSHIP_REASON:
                 logger.warning(
                     "browser view root identity is inconclusive after reuse health check "
                     "on port %d; keeping the process but withholding its URL",
-                    _child_port,
+                    child_port,
                 )
             _last_reason = _OWNERSHIP_REASON
             return None
         logger.warning(
             "browser view root identity changed during reuse health check on port %d",
-            _child_port,
+            child_port,
         )
         _last_reason = _OWNERSHIP_REASON
         return False
@@ -1313,7 +1315,7 @@ def _recorded_state() -> bool | None:
     # verdict it records is what relay_target's immediately-following read
     # consumes — one proof run per poll, not two.
     verified, _via_report = _verify_child_listener(
-        _proc, _child_port, allow_report=False, proof_not_before=time.monotonic()
+        child, child_port, allow_report=False, proof_not_before=time.monotonic()
     )
     if verified is True:
         _last_reason = None
@@ -1322,7 +1324,7 @@ def _recorded_state() -> bool | None:
         if _last_reason != _OWNERSHIP_REASON:
             logger.warning(
                 "browser view process no longer proves ownership of child port %d",
-                _child_port,
+                child_port,
             )
         _last_reason = _OWNERSHIP_REASON
         return False
@@ -1333,7 +1335,7 @@ def _recorded_state() -> bool | None:
             logger.warning(
                 "browser view listener ownership cannot be re-proved on port %d; "
                 "keeping the process but withholding its URL",
-                _child_port,
+                child_port,
             )
         _last_reason = reason
         return None
@@ -1342,7 +1344,7 @@ def _recorded_state() -> bool | None:
         logger.warning(
             "browser view ownership of child port %d is inconclusive; keeping the process "
             "but withholding its URL",
-            _child_port,
+            child_port,
         )
     _last_reason = reason
     return None
@@ -1388,7 +1390,7 @@ def _reap(proc: subprocess.Popen[bytes]) -> None:
         proc.wait(timeout=_TERMINATE_GRACE_S)
 
 
-def _spawn(command: list[str], port: int) -> subprocess.Popen[bytes] | None:
+def _spawn(command: list[str], port: int) -> _Child | None:
     """Start the dashboard server, or ``None`` if it cannot be spawned.
 
     Stdout is a child-specific proof channel. Playwright prints its exact
@@ -1439,7 +1441,6 @@ def _spawn(command: list[str], port: int) -> subprocess.Popen[bytes] | None:
         root_identity=root_identity,
         cli_version=cli_version,
     )
-    setattr(proc, "_kirocrew_browser_view_binding", proof)
     stream = getattr(proc, "stdout", None)
     if stream is not None:
         reader = threading.Thread(
@@ -1453,7 +1454,7 @@ def _spawn(command: list[str], port: int) -> subprocess.Popen[bytes] | None:
             _close_process_pipes(proc)
             _reap(proc)
             return None
-    return proc
+    return _Child(proc=proc, binding=proof)
 
 
 def ensure_running(port: int | None = None) -> ShowInfo | None:
@@ -1481,24 +1482,23 @@ def ensure_running(port: int | None = None) -> ShowInfo | None:
     pinned port is already taken by something else, or the server did not
     become healthy within the startup budget. ``status()`` carries the reason.
     """
-    global _proc, _info, _relay, _last_reason, _child_port, _relay_token, _proof_cache
+    global _child, _relay, _last_reason, _relay_token, _proof_cache
     with _lock:
         # Ownership is re-proved on reuse, not just at startup. A child that is
         # alive but not listening leaves its port free for a squatter, and
         # without this the next call would hand that squatter back as the panel.
         recorded_state = _recorded_state()
         if recorded_state is True:
-            return _info
+            assert _child is not None
+            return _child.info
         if recorded_state is None:
             return None
-        if _proc is not None:
-            _reap(_proc)
-            _proc = None
-            _info = None
+        if _child is not None:
+            _reap(_child.proc)
+        _child = None
         if _relay is not None:
             _relay.close()
             _relay = None
-        _child_port = None
         _last_reason = None
         # The identity key (id(proc), pid, port) already prevents the
         # replacement from consuming this entry; cleared anyway so every
@@ -1536,8 +1536,8 @@ def ensure_running(port: int | None = None) -> ShowInfo | None:
                     return None
         else:
             requested_child_port = 0 if structurally_blind else _free_port()
-        proc = _spawn(command, requested_child_port)
-        if proc is None:
+        child = _spawn(command, requested_child_port)
+        if child is None:
             if relay is not None:
                 relay.close()
             if pin_listener is not None:
@@ -1545,7 +1545,8 @@ def ensure_running(port: int | None = None) -> ShowInfo | None:
                     pin_listener.close()
             _last_reason = "Couldn't start the browser view"
             return None
-        if not _root_process_identity_matches(proc, "after spawn"):
+        proc = child.proc
+        if not _root_process_identity_matches(child, "after spawn"):
             if relay is not None:
                 relay.close()
             if pin_listener is not None:
@@ -1576,7 +1577,7 @@ def ensure_running(port: int | None = None) -> ShowInfo | None:
                         pin_listener.close()
                 _last_reason = "The browser view stopped while it was starting"
                 return None
-            if not _root_process_identity_matches(proc, "during startup"):
+            if not _root_process_identity_matches(child, "during startup"):
                 logger.warning(
                     "browser view root identity changed during startup for requested port %d",
                     requested_child_port,
@@ -1590,7 +1591,7 @@ def ensure_running(port: int | None = None) -> ShowInfo | None:
                 _reap(proc)
                 return None
             if child_port is None:
-                reported_port = _child_reported_port(proc, requested_child_port)
+                reported_port = _child_reported_port(child, requested_child_port)
                 if type(reported_port) is not int or not 1 <= reported_port <= 65535:
                     time.sleep(_POLL_INTERVAL_S)
                     continue
@@ -1613,13 +1614,13 @@ def ensure_running(port: int | None = None) -> ShowInfo | None:
                 verified: bool | None
                 via_report: bool
                 root_identity_ok = _root_process_identity_matches(
-                    proc, "after startup health check"
+                    child, "after startup health check"
                 )
                 if not root_identity_ok:
                     verified, via_report = False, False
                 else:
                     verified, via_report = _verify_child_listener(
-                        proc, child_port, allow_report=True
+                        child, child_port, allow_report=True
                     )
                 if verified is False:
                     logger.warning(
@@ -1630,7 +1631,7 @@ def ensure_running(port: int | None = None) -> ShowInfo | None:
                     if relay is not None:
                         relay.close()
                     if not root_identity_ok or not _root_process_identity_matches(
-                        proc, "after failed startup ownership check"
+                        child, "after failed startup ownership check"
                     ):
                         _last_reason = _OWNERSHIP_REASON
                     else:
@@ -1654,16 +1655,17 @@ def ensure_running(port: int | None = None) -> ShowInfo | None:
                             child_port,
                             platform_compat.listening_pid_tool(),
                         )
-                    _proc = proc
                     _relay = relay
-                    _child_port = child_port
                     # New instance, new capability: rotating here (not lazily on
                     # first read) pins the token's lifetime to the instance whose
                     # surface it guards.
                     _relay_token = secrets.token_urlsafe(24)
                     assert public_port is not None
-                    _info = ShowInfo(url=f"http://{LOOPBACK_HOST}:{public_port}", port=public_port)
-                    return _info
+                    info = ShowInfo(url=f"http://{LOOPBACK_HOST}:{public_port}", port=public_port)
+                    _child = _Child(
+                        proc=proc, binding=child.binding, child_port=child_port, info=info
+                    )
+                    return info
             time.sleep(_POLL_INTERVAL_S)
 
         if child_port is None:
@@ -1671,7 +1673,7 @@ def ensure_running(port: int | None = None) -> ShowInfo | None:
                 "playwright-cli show did not report its child-selected loopback port "
                 "within the startup budget"
             )
-            _last_reason = _listener_banner_reason(proc)
+            _last_reason = _listener_banner_reason(child)
         elif saw_unproven_responder:
             logger.warning(
                 "cannot verify which process holds port %d and the spawned child "
@@ -1706,16 +1708,14 @@ def stop() -> None:
     independently-launched ``playwright-cli show`` session, destroying their
     unsaved work.
     """
-    global _proc, _info, _relay, _last_reason, _child_port, _relay_token, _proof_cache
+    global _child, _relay, _last_reason, _relay_token, _proof_cache
     with _lock:
-        if _proc is not None:
-            _reap(_proc)
+        if _child is not None:
+            _reap(_child.proc)
         if _relay is not None:
             _relay.close()
-        _proc = None
-        _info = None
+        _child = None
         _relay = None
-        _child_port = None
         _relay_token = None
         _last_reason = None
         # A verdict for the stopped instance must not outlive it. The key
@@ -1732,7 +1732,7 @@ _RELAY_TOKEN_PLACEHOLDER = "\x00none"
 
 
 def _relay_ownership_proof_for(
-    proc: subprocess.Popen[bytes],
+    child: _Child,
     child_port: int,
     *,
     proof_not_before: float | None = None,
@@ -1757,18 +1757,18 @@ def _relay_ownership_proof_for(
     have replaced it mid-proof. Deliberately no HTTP probe: this runs on the
     relay's per-request path.
     """
-    if not _alive(proc):
+    if not _alive(child.proc):
         return False
-    proof = _root_process_identity_matches(proc, "before relay target lookup")
+    proof = _root_process_identity_matches(child, "before relay target lookup")
     if proof is not True:
         return proof
     verdict, _via_report = _verify_child_listener(
-        proc, child_port, allow_report=False, proof_not_before=proof_not_before
+        child, child_port, allow_report=False, proof_not_before=proof_not_before
     )
     return verdict
 
 
-def _teardown_relay_state_if_current(proc: subprocess.Popen[bytes], child_port: int) -> None:
+def _teardown_relay_state_if_current(child: _Child, child_port: int) -> None:
     """Tear down relay state after a definitive proof failure — unless the
     state already moved on to a different instance.
 
@@ -1782,7 +1782,8 @@ def _teardown_relay_state_if_current(proc: subprocess.Popen[bytes], child_port: 
     if not _lock.acquire(timeout=_AUTHORIZE_ACQUIRE_TIMEOUT_S):
         return
     try:
-        if _proc is proc and _child_port == child_port:
+        current = _child
+        if current is not None and current.proc is child.proc and current.child_port == child_port:
             _teardown_relay_state_locked()
     finally:
         _lock.release()
@@ -1795,12 +1796,12 @@ def _teardown_relay_state_locked() -> None:
     recorded target and its capability token die before a squatter on the
     released child port can inherit either.
     """
-    global _info, _relay, _last_reason, _child_port, _relay_token, _proof_cache
+    global _child, _relay, _last_reason, _relay_token, _proof_cache
     if _relay is not None:
         _relay.close()
         _relay = None
-    _info = None
-    _child_port = None
+    if _child is not None:
+        _child = replace(_child, child_port=None, info=None)
     _relay_token = None
     _last_reason = _OWNERSHIP_REASON
     _proof_cache = None
@@ -1831,19 +1832,19 @@ def relay_target() -> tuple[int, str] | None:
     loopback and ours while the proof holds.
     """
     with _lock:
-        if _info is None or _relay_token is None:
+        child = _child
+        if child is None or child.info is None or _relay_token is None:
             return None
-        proc = _proc
-        child_port = _child_port
-        pair = (_info.port, _relay_token)
-        if proc is None or child_port is None:
+        child_port = child.child_port
+        pair = (child.info.port, _relay_token)
+        if child_port is None:
             _teardown_relay_state_locked()
             return None
-    proof = _relay_ownership_proof_for(proc, child_port)
+    proof = _relay_ownership_proof_for(child, child_port)
     if proof is True:
         return pair
     if proof is not None:
-        _teardown_relay_state_if_current(proc, child_port)
+        _teardown_relay_state_if_current(child, child_port)
     return None
 
 
@@ -1912,24 +1913,24 @@ def relay_authorize(
     if not _lock.acquire(timeout=_AUTHORIZE_ACQUIRE_TIMEOUT_S):
         return "busy", None
     try:
-        if _info is None or _relay_token is None:
+        child = _child
+        if child is None or child.info is None or _relay_token is None:
             return "view_down", None
         if not hmac.compare_digest(candidate, _relay_token):
             return "token_mismatch", None
-        proc = _proc
-        child_port = _child_port
-        public_port = _info.port
-        if proc is None or child_port is None:
+        child_port = child.child_port
+        public_port = child.info.port
+        if child_port is None:
             _teardown_relay_state_locked()
             return "ownership_unproven", None
     finally:
         _lock.release()
 
-    proof = _relay_ownership_proof_for(proc, child_port, proof_not_before=proof_not_before)
+    proof = _relay_ownership_proof_for(child, child_port, proof_not_before=proof_not_before)
     if proof is True:
         return "ok", public_port
     if proof is not None:
-        _teardown_relay_state_if_current(proc, child_port)
+        _teardown_relay_state_if_current(child, child_port)
     return "ownership_unproven", None
 
 
@@ -1953,11 +1954,11 @@ def status() -> dict[str, Any]:
                 "port": None,
                 "reason": "playwright-cli is not installed",
             }
-        if _recorded_state() is True and _info is not None:
+        if _recorded_state() is True and _child is not None and _child.info is not None:
             return {
                 "status": "running",
-                "url": _info.url,
-                "port": _info.port,
+                "url": _child.info.url,
+                "port": _child.info.port,
                 "reason": None,
             }
         return {

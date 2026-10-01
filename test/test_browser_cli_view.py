@@ -22,7 +22,11 @@ _REAL_PROCESS_OWNS_LOOPBACK_LISTENER = platform_compat.process_owns_loopback_lis
 
 
 class FakeProc:
-    """Stand-in for the supervised child; never touches a real process."""
+    """Stand-in for the supervised child; never touches a real process.
+
+    It also stands in for the ``_Child`` record ``_spawn`` returns (``proc``
+    is itself, ``binding`` its spawn proof), so prover tests hand it in directly.
+    """
 
     def __init__(self, alive: bool = True, pid: int = 424242, stdout: bytes = b"") -> None:
         self.pid = pid
@@ -38,7 +42,9 @@ class FakeProc:
             platform_compat.ProcessIdentitySource.ATOMIC,
         )
         setattr(proof, "cli_version", "0.1.99")
-        setattr(self, "_kirocrew_browser_view_binding", proof)
+        self.proc = self
+        self.binding = proof
+        self.owner_identity: object = None
 
     def poll(self) -> int | None:
         return None if self._alive else self.returncode
@@ -76,10 +82,8 @@ class _FakeClock:
 def reset_state(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[int]]:
     """Clear the module singleton and neutralize real process signalling."""
     signalled: list[int] = []
-    monkeypatch.setattr(mod, "_proc", None)
-    monkeypatch.setattr(mod, "_info", None)
+    monkeypatch.setattr(mod, "_child", None)
     monkeypatch.setattr(mod, "_relay", None)
-    monkeypatch.setattr(mod, "_child_port", None)
     monkeypatch.setattr(mod, "_last_reason", None)
     monkeypatch.setattr(mod, "_proof_cache", None, raising=False)
     monkeypatch.setattr(mod, "_listener_lookup_self_test_cache", None, raising=False)
@@ -116,10 +120,8 @@ def reset_state(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[int]]:
         lambda pid, sig=platform_compat.SIGTERM: signalled.append(pid) or True,
     )
     yield signalled
-    mod._proc = None
-    mod._info = None
+    mod._child = None
     mod._relay = None
-    mod._child_port = None
     mod._last_reason = None
 
 
@@ -180,6 +182,24 @@ def _stub_port_owner(
     )
 
 
+def _child_record(proc: FakeProc, port: int | None) -> mod._Child:
+    """The record ``ensure_running`` installs once it adopts *proc* on *port*."""
+    info = mod.ShowInfo(f"http://127.0.0.1:{port}", port) if port is not None else None
+    return mod._Child(proc=proc, binding=proc.binding, child_port=port, info=info)
+
+
+def _recorded_proc() -> FakeProc | None:
+    return mod._child.proc if mod._child is not None else None
+
+
+def _recorded_info() -> mod.ShowInfo | None:
+    return mod._child.info if mod._child is not None else None
+
+
+def _recorded_child_port() -> int | None:
+    return mod._child.child_port if mod._child is not None else None
+
+
 def _free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", 0))
@@ -192,9 +212,7 @@ def _record_relay_target(
     port: int,
     token: str = "relay-capability",
 ) -> None:
-    monkeypatch.setattr(mod, "_proc", proc)
-    monkeypatch.setattr(mod, "_info", mod.ShowInfo(f"http://127.0.0.1:{port}", port))
-    monkeypatch.setattr(mod, "_child_port", port)
+    monkeypatch.setattr(mod, "_child", _child_record(proc, port))
     monkeypatch.setattr(mod, "_relay_token", token)
 
 
@@ -210,8 +228,8 @@ def test_relay_target_invalidates_token_when_child_is_dead(
 
         assert mod.relay_target() is None
         assert mod._relay_token is None
-        assert mod._info is None
-        assert mod._child_port is None
+        assert _recorded_info() is None
+        assert _recorded_child_port() is None
         # The same live listener cannot inherit the dead child's capability.
         assert mod.relay_target() is None
 
@@ -230,9 +248,9 @@ def test_relay_target_preserves_state_when_ownership_is_inconclusive(
     )
 
     assert mod.relay_target() is None
-    assert mod._proc is proc
-    assert mod._info == mod.ShowInfo("http://127.0.0.1:45613", port)
-    assert mod._child_port == port
+    assert _recorded_proc() is proc
+    assert _recorded_info() == mod.ShowInfo("http://127.0.0.1:45613", port)
+    assert _recorded_child_port() == port
     assert mod._relay_token == "relay-capability"
 
 
@@ -280,15 +298,15 @@ def test_relay_authorize_never_probes_for_a_mismatched_token(
 
     assert mod.relay_authorize("WRONG-token") == ("token_mismatch", None)
     # A mismatch is not an ownership failure: recorded state survives intact.
-    assert mod._proc is proc
+    assert _recorded_proc() is proc
     assert mod._relay_token == "relay-capability"
-    assert mod._child_port == port
+    assert _recorded_child_port() == port
 
 
 def test_relay_authorize_answers_view_down_without_probing_when_nothing_recorded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(mod, "_info", None)
+    monkeypatch.setattr(mod, "_child", None)
     monkeypatch.setattr(mod, "_relay_token", None)
     monkeypatch.setattr(
         mod,
@@ -336,9 +354,9 @@ def test_relay_authorize_refuses_as_busy_instead_of_parking_on_a_held_lock(
     assert outcome == ("busy", None)
     assert elapsed < 1.0
     # Busy is a wait verdict, not a proof: recorded state survives intact.
-    assert mod._proc is proc
+    assert _recorded_proc() is proc
     assert mod._relay_token == "relay-capability"
-    assert mod._child_port == port
+    assert _recorded_child_port() == port
 
 
 def test_relay_authorize_returns_port_and_probes_after_token_match(
@@ -391,8 +409,8 @@ def test_relay_authorize_matched_token_dead_child_tears_down_and_invalidates(
 
         assert mod.relay_authorize("relay-capability") == ("ownership_unproven", None)
         assert mod._relay_token is None
-        assert mod._info is None
-        assert mod._child_port is None
+        assert _recorded_info() is None
+        assert _recorded_child_port() is None
         # The invalidated capability now compares against nothing: the same
         # token answers view_down, and the squatter never becomes reachable.
         assert mod.relay_authorize("relay-capability") == ("view_down", None)
@@ -414,9 +432,9 @@ def test_relay_authorize_matched_token_inconclusive_preserves_state(
     assert mod.relay_authorize("relay-capability") == ("ownership_unproven", None)
     # Withheld, not destroyed: a later request may retry once the proof can
     # complete.
-    assert mod._proc is proc
+    assert _recorded_proc() is proc
     assert mod._relay_token == "relay-capability"
-    assert mod._child_port == port
+    assert _recorded_child_port() == port
 
 
 def test_relay_authorize_refuses_invalid_candidates_instantly_while_lock_held(
@@ -511,9 +529,7 @@ def test_relay_authorize_definitive_failure_spares_a_replaced_instance(
 
     def _identity(child: object, phase: str) -> bool:
         # A restart completes while the old snapshot's proof is in flight.
-        mod._proc = replacement
-        mod._child_port = port + 1
-        mod._info = mod.ShowInfo(f"http://127.0.0.1:{port + 1}", port + 1)
+        mod._child = _child_record(replacement, port + 1)
         mod._relay_token = "fresh-capability"
         return False
 
@@ -521,9 +537,9 @@ def test_relay_authorize_definitive_failure_spares_a_replaced_instance(
 
     assert mod.relay_authorize("relay-capability") == ("ownership_unproven", None)
     # The replacement instance's recorded target survives intact.
-    assert mod._proc is replacement
+    assert _recorded_proc() is replacement
     assert mod._relay_token == "fresh-capability"
-    assert mod._child_port == port + 1
+    assert _recorded_child_port() == port + 1
 
 
 def test_concurrent_provers_are_serialized_and_share_one_proof(
@@ -602,9 +618,9 @@ def test_concurrent_relay_authorize_never_clobbers_the_proof_slot(
         thread.join(timeout=10)
     assert results == [("ok", port)] * 8
     # No clobber-induced teardown: the recorded target and token survive.
-    assert mod._proc is proc
+    assert _recorded_proc() is proc
     assert mod._relay_token == "relay-capability"
-    assert mod._child_port == port
+    assert _recorded_child_port() == port
 
 
 def test_listener_verdicts_are_cached_within_ttl_then_reproved(
@@ -1238,8 +1254,7 @@ def test_ensure_running_falls_back_to_ephemeral_when_unpinned(
     monkeypatch.setattr(mod, "_spawn", lambda cli, port: spawns.append(port) or FakeProc())
 
     for unset in (None, 0):
-        mod._proc = None
-        mod._info = None
+        mod._child = None
         info = mod.ensure_running(port=unset)
         assert info is not None and info.port == 51515, unset
 
@@ -1311,7 +1326,7 @@ def test_ensure_running_replaces_a_dead_process(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr(mod, "_spawn", lambda cli, port: spawns.append(port) or FakeProc())
 
     mod.ensure_running()
-    mod._proc = FakeProc(alive=False)
+    mod._child = _child_record(FakeProc(alive=False), None)
 
     assert mod.ensure_running() is not None
     assert len(spawns) == 2
@@ -1460,7 +1475,7 @@ def test_stop_reaps_child_even_when_kill_command_fails(
     mod.stop()
 
     assert 888 in reset_state
-    assert mod._proc is None
+    assert _recorded_proc() is None
 
 
 def test_status_unavailable_without_the_cli(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1513,9 +1528,7 @@ def test_structurally_blind_status_without_start_allowance_names_the_tool(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     proc = FakeProc(pid=4242)
-    mod._proc = proc
-    mod._info = mod.ShowInfo("http://127.0.0.1:45613", 45613)
-    mod._child_port = 45613
+    mod._child = _child_record(proc, 45613)
     monkeypatch.setattr(mod, "cli_path", lambda: "/n/pw")
     monkeypatch.setattr(mod, "_healthy", lambda port: True)
     monkeypatch.setattr(platform_compat, "listening_pid_tool", lambda: "lsof")
@@ -1537,16 +1550,14 @@ def test_structurally_blind_status_without_start_allowance_names_the_tool(
         "listener ownership cannot be re-proved on this host: "
         "GetExtendedTcpTable is absent or cannot attribute processes",
     ]
-    assert mod._proc is proc
+    assert _recorded_proc() is proc
 
 
 def test_capable_host_rechecks_owner_on_every_status(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     proc = FakeProc(pid=4242)
-    mod._proc = proc
-    mod._info = mod.ShowInfo("http://127.0.0.1:45613", 45613)
-    mod._child_port = 45613
+    mod._child = _child_record(proc, 45613)
     checks: list[tuple[FakeProc, int, bool]] = []
     monkeypatch.setattr(mod, "cli_path", lambda: "/n/pw")
     monkeypatch.setattr(mod, "_healthy", lambda port: True)
@@ -1555,7 +1566,7 @@ def test_capable_host_rechecks_owner_on_every_status(
         mod,
         "_verify_child_listener",
         lambda child, port, allow_report, proof_not_before=None: (
-            checks.append((child, port, allow_report)) or False,
+            checks.append((child.proc, port, allow_report)) or False,
             False,
         ),
     )
@@ -1618,7 +1629,7 @@ def test_posix_fallback_identity_rechecks_with_its_capture_source(
     proc = FakeProc(pid=10)
     root_lstart = "Mon Jan  1 00:00:00 2024"
     child_lstart = "Mon Jan  1 00:00:01 2024"
-    proof = getattr(proc, "_kirocrew_browser_view_binding")
+    proof = proc.binding
     proof.root_identity = platform_compat.ProcessDescendantIdentity(
         proc.pid,
         0,
@@ -1706,13 +1717,11 @@ def test_owner_disappearing_during_identity_walk_is_inconclusive_and_not_reaped(
         return verdict
 
     monkeypatch.setattr(mod, "_port_owner", _record_port_owner)
-    mod._proc = proc
-    mod._info = mod.ShowInfo("http://127.0.0.1:45613", 45613)
-    mod._child_port = 45613
+    mod._child = _child_record(proc, 45613)
 
     assert mod.ensure_running() is None
     assert verdicts == [mod._OWNER_UNPROVEN]
-    assert mod._proc is proc
+    assert _recorded_proc() is proc
     assert reset_state == []
 
 
@@ -2099,9 +2108,7 @@ def test_two_status_calls_run_one_self_test_after_the_target_probe(
             pass
 
     proc = FakeProc(pid=4242)
-    monkeypatch.setattr(mod, "_proc", proc)
-    monkeypatch.setattr(mod, "_info", mod.ShowInfo(f"http://127.0.0.1:{child_port}", child_port))
-    monkeypatch.setattr(mod, "_child_port", child_port)
+    monkeypatch.setattr(mod, "_child", _child_record(proc, child_port))
     monkeypatch.setattr(
         mod,
         "_structurally_blind_listener_attribution",
@@ -2219,7 +2226,7 @@ def test_blind_lookup_squatter_is_not_adopted_without_child_binding_proof(
     _stub_port_owner(monkeypatch, listener_pids=())
 
     assert mod.ensure_running() is None
-    assert mod._info is None
+    assert _recorded_info() is None
     assert proc.pid in reset_state
     assert mod.status()["url"] is None
 
@@ -2393,8 +2400,8 @@ def test_ensure_running_refuses_a_squatter_on_the_child_port(
     )
 
     assert mod.ensure_running() is None
-    assert mod._info is None
-    assert mod._child_port is None
+    assert _recorded_info() is None
+    assert _recorded_child_port() is None
     # The child we spawned is reaped rather than left holding nothing.
     assert proc.pid in reset_state
     status = mod.status()
@@ -2412,7 +2419,7 @@ def test_ensure_running_adopts_a_proven_child(monkeypatch: pytest.MonkeyPatch) -
     info = mod.ensure_running()
 
     assert info is not None
-    assert mod._child_port == info.port
+    assert _recorded_child_port() == info.port
 
 
 def test_ensure_running_adopts_when_tool_absent_but_child_reports_binding(
@@ -2633,15 +2640,13 @@ def test_recycled_descendant_identity_is_inconclusive_around_listener_probe(
         return pid == 9931
 
     monkeypatch.setattr(platform_compat, "process_owns_loopback_listener", _owns_listener)
-    mod._proc = proc
-    mod._info = mod.ShowInfo("http://127.0.0.1:45613", 45613)
-    mod._child_port = 45613
+    mod._child = _child_record(proc, 45613)
     monkeypatch.setattr(mod, "cli_path", lambda: None)
 
     with caplog.at_level("DEBUG"):
         assert mod.ensure_running() is None
 
-    assert mod._proc is proc
+    assert _recorded_proc() is proc
     assert reset_state == []
     assert any(
         "enumerated=(pid=9931, ppid=4242, start='old'), "
@@ -2727,15 +2732,15 @@ def test_root_identity_inconclusive_preserves_but_mismatch_reaps(
         "reason": mod._OWNERSHIP_REASON,
     }
     assert mod.ensure_running() is None
-    assert mod._proc is spawned[0]
-    assert mod._info == first
+    assert _recorded_proc() is spawned[0]
+    assert _recorded_info() == first
     assert reset_state == []
 
     starts[4242] = "recycled"
 
     assert mod.ensure_running() is not None
     assert [child.pid for child in spawned] == [4242, 4343]
-    assert mod._proc is spawned[1]
+    assert _recorded_proc() is spawned[1]
     assert reset_state == [4242]
 
 
@@ -2743,7 +2748,7 @@ def test_blind_port_zero_banner_authorizes_the_resolved_startup_port(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     proc = FakeProc(pid=4242)
-    proof = getattr(proc, "_kirocrew_browser_view_binding")
+    proof = proc.binding
     proof.record(42963)
     monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
     monkeypatch.setattr(platform_compat, "IS_LINUX", False)
@@ -2770,7 +2775,7 @@ def test_blind_port_zero_banner_authorizes_the_resolved_startup_port(
     assert proof.port == 0
     assert proof.reported_port() == 42963
     assert info == mod.ShowInfo("http://127.0.0.1:42963", 42963)
-    assert mod._proc is proc
+    assert _recorded_proc() is proc
 
 
 def test_structurally_blind_start_publishes_once_then_withholds_a_squatter(
@@ -2829,8 +2834,8 @@ def test_structurally_blind_start_publishes_once_then_withholds_a_squatter(
     }
     assert mod.ensure_running() is None
     assert spawn_ports == [0]
-    assert mod._proc is proc
-    assert mod._info == first
+    assert _recorded_proc() is proc
+    assert _recorded_info() == first
     assert reset_state == []
 
 
@@ -2890,8 +2895,8 @@ def test_structurally_blind_dead_child_respawns_from_a_fresh_report(
     }
     assert spawn_ports == [0, 0]
     assert [child.pid for child in spawned] == [4242, 4343]
-    assert mod._proc is spawned[1]
-    assert mod._info == second
+    assert _recorded_proc() is spawned[1]
+    assert _recorded_info() == second
     assert reset_state == [4242]
 
 
@@ -2911,9 +2916,9 @@ def test_replacement_spawn_invalidates_listener_self_test_cache(
     )
 
     assert mod.ensure_running() is not None
-    assert mod._proc is not None
-    mod._proc._alive = False
-    mod._proc.returncode = 1
+    assert _recorded_proc() is not None
+    _recorded_proc()._alive = False
+    _recorded_proc().returncode = 1
     assert mod.ensure_running() is not None
 
     assert invalidations == [None, None]
@@ -2949,7 +2954,7 @@ def test_transient_listener_probe_failure_still_degrades_without_reaping(
         "lsof at /usr/sbin/lsof did not attribute the gateway's own control "
         "listener; check its permissions/namespace"
     )
-    assert mod._proc is proc
+    assert _recorded_proc() is proc
     assert spawned == [proc]
     assert reset_state == []
 
@@ -3052,8 +3057,9 @@ def test_spawn_captures_root_start_identity(
     monkeypatch.setattr(platform_compat, "_process_lstart", _lstart)
     monkeypatch.setattr(mod, "_start_daemon_thread", lambda thread: True)
 
-    assert mod._spawn(["/n/pw"], 45613) is proc
-    proof = getattr(proc, "_kirocrew_browser_view_binding")
+    child = mod._spawn(["/n/pw"], 45613)
+    assert child is not None and child.proc is proc
+    proof = child.binding
     assert proof.root_identity == platform_compat.ProcessDescendantIdentity(
         proc.pid,
         0,
@@ -3064,7 +3070,7 @@ def test_spawn_captures_root_start_identity(
 
     source_reads.clear()
 
-    assert mod._root_process_identity_matches(proc, "test") is True
+    assert mod._root_process_identity_matches(child, "test") is True
     assert source_reads == expected_recheck_reads
 
 
@@ -3428,7 +3434,7 @@ def test_stop_clears_the_recorded_child_port(monkeypatch: pytest.MonkeyPatch) ->
 
     mod.stop()
 
-    assert mod._child_port is None
+    assert _recorded_child_port() is None
 
 
 @pytest.mark.parametrize(
@@ -3483,7 +3489,7 @@ def test_show_child_registers_in_the_gateway_owned_session_registry(
     proc = mod._spawn(["/n/pw"], 7777)
 
     assert proc is not None
-    proof = getattr(proc, "_kirocrew_browser_view_binding")
+    proof = proc.binding
     assert proof.reported.wait(timeout=1)
     assert proof.port == 7777
     assert proof.root_identity.source is expected_source
