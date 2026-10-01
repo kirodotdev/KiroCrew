@@ -163,7 +163,7 @@ _LOADER_SIGNATURES = {
     "_admit_snapshot_path": "(self, path: 'Path') -> 'bool'",
     "_adopt_catalog": "(self, project_key: 'str', rows: 'list[tuple[str, Path, str | None]]', fingerprints: 'dict[str, str]', *, complete: 'bool') -> 'None'",
     "_adopt_extra_paths": "(self, resolved_paths: 'list[Path]') -> 'None'",
-    "_append_project_skill_bodies": "(self, parts: 'list[str]', project_skills: 'list[dict]', project_dir: 'str | Path | None', budget: 'int | None') -> 'None'",
+    "_append_project_skill_bodies": "(self, parts: 'list[str]', project_skills: 'list[dict]', project_dir: 'str | Path | None', budget: 'int | None', pinned: 'set[str] | None' = None) -> '_delivery.SkippedProjectSkills'",
     "_archive_root": "(self) -> 'Path'",
     "_audit_project_skill_enforcement": "(self, project_dir: 'str | Path', key: 'str | None', allowed: 'bool') -> 'None'",
     "_auto_activity": "(self, key: 'str', path_str: 'str', meta: 'dict') -> 'tuple[int, float]'",

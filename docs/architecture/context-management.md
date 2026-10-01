@@ -405,10 +405,14 @@ transport protocol. MCP Tool Search discovers tool schemas, not skill bodies.
 2. **`skills.lazy_load`** (default true) selects the ranked `## Available Skills`
    index. False selects the shorter search pointer and up to eight usage-ranked
    names. Both use the same allowance; mapping never expands it.
-3. **Required instructions.** `always: true` bodies share an explicit 99,000-byte
-   startup capacity, including rendered headings and framing. An unavailable or
-   over-capacity required body fails context construction with an actionable error;
-   required instructions are never silently truncated or deferred.
+3. **Required instructions.** The operator's `always: true` bodies share an
+   explicit 99,000-byte startup capacity, including rendered headings and framing.
+   An unavailable or over-capacity required body fails context construction with an
+   actionable error; required instructions are never silently truncated or deferred.
+   A trusted project's `always: true` bodies have their own project skill budget
+   instead, so a checked-out repository cannot fail the session: one that does not
+   fit or cannot be read is left out with a warning, and an in-prompt notice names
+   it with its `skill_search` read pointer (within a bound; the rest are counted).
 4. **Activation.** Search considers metadata and body terms together, ranking
    overall query coverage before rarity and metadata preference. Incremental body
    indexing has a short work budget; incomplete results say so and can be retried.

@@ -5261,7 +5261,9 @@ class SkillsLoader:
     ) -> str:
         """Build a bounded directory over the agent's resolved available set.
 
-        Raises ``SkillContextCapacityError`` rather than trimming a required body.
+        Raises ``SkillContextCapacityError`` rather than trimming an operator's
+        required body; a project's ``always: true`` body that cannot be delivered
+        is skipped with a warning and an in-prompt notice instead.
         Contract and rationale: ``skill_runtime.delivery.get_context``.
         """
         return _delivery.get_context(
@@ -5292,10 +5294,14 @@ class SkillsLoader:
         project_skills: list[dict],
         project_dir: str | Path | None,
         budget: int | None,
-    ) -> None:
-        """Append confined bodies without reading beyond the section budget."""
+        pinned: set[str] | None = None,
+    ) -> _delivery.SkippedProjectSkills:
+        """Append confined bodies within the section budget; return what was skipped.
+
+        Each skipped key is also discarded from *pinned*, when given, in place.
+        """
         return _delivery._append_project_skill_bodies(
-            self, parts, project_skills, project_dir, budget
+            self, parts, project_skills, project_dir, budget, pinned
         )
 
     def _record_use(self, key: str) -> None:
