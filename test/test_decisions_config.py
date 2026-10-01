@@ -39,13 +39,19 @@ class TestDefaults:
         and a bound (how many quiet verdicts may pass before a tick fires anyway).
         None of them arms anything: the Jev lane still needs the keystone switch AND
         the ``nudge_evidence`` scope, checked by the seam, and the judge only runs at
-        all for a loop carrying its own brief."""
+        all for a loop carrying its own brief.
+
+        ``model_route_judge`` is held to it too: two addresses (which lane rates a
+        chat turn, and the model id that lane runs on) and no bound. Its Jev lane
+        needs the keystone switch, its small-model lane routes only a session the
+        owner armed, and what a turn can be routed TO is the tier map above it."""
         from dataclasses import fields
 
         assert {f.name for f in fields(DecisionsConfig)} == {
             "bucket",
             "history_budget_chars",
             "model_route",
+            "model_route_judge",
             "nudge_wake",
             "provider",
         }
@@ -78,6 +84,10 @@ class TestDefaults:
         assert nested == {
             "provider": {"endpoint", "api_key", "model", "timeout_ms"},
             "nudge_wake": {"provider", "llm_model", "quiet_streak_floor"},
+            # Two addresses and no bound: which lane rates a chat turn, and the model
+            # id that lane runs on. Neither arms anything -- the Jev lane still needs
+            # the keystone switch, and what a turn can be routed TO is the tier map.
+            "model_route_judge": {"provider", "llm_model"},
         }
 
     def test_the_provider_defaults_are_the_documented_ones(self):
@@ -145,6 +155,7 @@ class TestMigrationFromThePreviewSpelling:
             "bucket",
             "history_budget_chars",
             "model_route",
+            "model_route_judge",
             "nudge_wake",
             "provider",
         }

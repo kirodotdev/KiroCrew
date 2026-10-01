@@ -265,6 +265,25 @@ class TestFeedbackSchema:
         assert row["side"] == "baseline"
 
     @pytest.mark.asyncio
+    async def test_a_verdict_on_the_small_model_lane_is_filed_under_its_own_side(self, home, audit):
+        """``model.route`` on the ``llm`` lane rates a different judge than Jev.
+
+        The strip sends ``side="llm"`` for a row that lane wrote, and the row keeps it
+        as written: a small-model verdict folded under ``jev`` would score Jev for a
+        tier it never picked, so the side is neither refused nor blanked.
+        """
+        resp = await api_decisions_feedback(_request(body=_body(side="llm", verdict="wrong")))
+
+        assert resp.status == 200
+        rows = _rows(home)
+        assert len(rows) == 1
+        assert rows[0]["side"] == "llm"
+        assert rows[0]["verdict"] == "wrong"
+        allowed = [r for r in audit if r["outcome"] == "allowed"]
+        assert len(allowed) == 1
+        assert "side=llm" in allowed[0]["resources"]
+
+    @pytest.mark.asyncio
     async def test_an_overlong_turn_id_is_bounded(self, home, audit):
         """One malformed caller must not write an unbounded line into a shared file."""
         await api_decisions_feedback(_request(body=_body(turn_id="t" * 5000)))

@@ -316,10 +316,10 @@ describe('the recalled-memory fixture in the decisions spec', () => {
 describe('the feedback vocabulary in the decisions spec', () => {
   const prose = specFeedbackVocabulary()
 
-  it('spells the two sides and the three verdicts the client sends', () => {
+  it('spells the three sides and the three verdicts the client sends', () => {
     // These are the literals in `api.sendDecisionsFeedback`'s body. A respelling
     // on the server side lands here before it reaches a user.
-    for (const literal of ['"jev"', '"baseline"', '"right"', '"wrong"', 'null', 'turn_id', 'side', 'verdict']) {
+    for (const literal of ['"jev"', '"baseline"', '"llm"', '"right"', '"wrong"', 'null', 'turn_id', 'side', 'verdict']) {
       expect(prose, `the spec no longer spells ${literal}`).toContain(literal)
     }
   })
@@ -347,6 +347,7 @@ describe('the model-routing fixture in the decisions spec', () => {
       truncated: 0,
       applied: true,
       modelUsed: 'model-c',
+      lane: 'jev',
       error: null,
     })
   })
@@ -357,6 +358,8 @@ describe('the model-routing fixture in the decisions spec', () => {
       'p', 'latency_ms', 'history_chars', 'truncated', 'error',
       // What the turn RAN on, which is not always what was chosen.
       'applied', 'model_used',
+      // Which oracle answered: the point has two.
+      'lane',
     ]) {
       expect(Object.keys(fixture), `the spec fixture no longer carries ${key}`).toContain(key)
     }
@@ -373,6 +376,14 @@ describe('the model-routing fixture in the decisions spec', () => {
   it('needs the tier whole, so a broken producer draws nothing', () => {
     // The tier IS the answer; a record that cannot name it has no claim to print.
     expect(readModelRecord({ ...fixture, tier: '' })).toBeNull()
+  })
+
+  it('reads no lane off a row that predates the field, rather than guessing one', () => {
+    // Such a row was answered by Jev, the only lane there was, and the panel prints
+    // nothing for it: a name the record does not carry is not the reader's to add.
+    const { lane: _dropped, ...older } = fixture
+    expect(readModelRecord(older)!.lane).toBeNull()
+    expect(readModelRecord({ ...fixture, lane: 7 })!.lane).toBeNull()
   })
 
   it('accepts an empty model, which is the shipped unpinned state', () => {
