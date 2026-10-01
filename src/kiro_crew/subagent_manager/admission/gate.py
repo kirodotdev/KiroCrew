@@ -712,11 +712,10 @@ class _GateMixin(ManagerComponent):
             # ``wait`` is the same verdict as a label: it rides on the returned
             # record and on the ``subagent_queued`` event, so the UI and
             # ``POST /api/spawn`` can say a MEMORY deferral is one instead of
-            # rendering it as the capacity queue. It is published only by the
-            # emit that FOLLOWS a successful defer write (each branch below
-            # carries it to its own emit), so a row the store turned out not to
-            # hold -- refused, not queued -- leaves no label behind for the
-            # parent's other rows to wear.
+            # rendering it as the capacity queue. It is recorded only by the
+            # depth request that FOLLOWS the defer (each branch below carries it
+            # to its own request), so a row the store refused -- not queued --
+            # leaves no label behind for the parent's other rows to wear.
             queued = SubagentInfo(
                 id=agent_id,
                 task=_redacted_task,

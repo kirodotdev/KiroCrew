@@ -851,6 +851,7 @@ async def test_retained_report_payload_caps_text_bytes_and_redelivers(monkeypatc
             SubagentDelivery("held-b", 2.0, 0.2),
         ],
         _delivery_queued=True,
+        queued=True,
     )
     info.history = ["history" * 100_000]
     info.messages = ["message" * 100_000]
@@ -886,6 +887,7 @@ async def test_retained_report_payload_caps_text_bytes_and_redelivers(monkeypatc
     assert retained._digest_flush_only is info._digest_flush_only is True
     assert retained._digest_settle_deliveries == tuple(info._digest_settle_deliveries)
     assert retained._delivery_queued is info._delivery_queued is True
+    assert retained.queued is info.queued is True
     for field in ("result", "task", "error"):
         value = getattr(retained, field)
         assert len(value.encode("utf-8")) <= cap
@@ -916,6 +918,7 @@ async def test_retained_report_payload_caps_text_bytes_and_redelivers(monkeypatc
     assert redelivered._digest_flush_only is info._digest_flush_only
     assert redelivered._digest_settle_deliveries == info._digest_settle_deliveries
     assert redelivered._delivery_queued is info._delivery_queued
+    assert redelivered.queued is info.queued
     for field in ("result", "task", "error"):
         assert "[truncated " in getattr(redelivered, field)
     assert len(info.task.encode("utf-8")) > cap

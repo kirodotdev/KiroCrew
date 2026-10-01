@@ -104,10 +104,11 @@ STRICT_ON_LOOP_ENV = "KIROCREW_STRICT_ON_LOOP_TASK_STORE"
 #    can start it, and an await between those two is a race in either order.
 #
 # Those takes are on-loop and cannot simply be offloaded, so arming this from
-# ``KIROCREW_DEV_MODE`` would raise on a cancel or a Stop-all and the developer's
-# rational response -- unsetting that variable -- silences every OTHER surface's
-# guard too. Flip it back to True once both classes are either restructured or
-# inside a vetted ``allow_on_loop()`` block.
+# ``KIROCREW_DEV_MODE`` would raise on a cancel or a Stop-all -- a Stop all whose
+# unqueue raises leaves that row waiting and fails the request before it reaps
+# anything -- and the developer's rational response, unsetting that variable,
+# silences every OTHER surface's guard too. Flip it back to True once both
+# classes are either restructured or inside a vetted ``allow_on_loop()`` block.
 _ON_LOOP_DB_GUARD = OnLoopDBGuard(
     label="task store",
     remedy=(
@@ -159,6 +160,8 @@ _SQL_WAITING = "(" + ",".join(f"'{s}'" for s in sorted(WAITING)) + ")"
 #: A caller that subtracts the rows this process has registered as runs is left
 #: with exactly the accepted work no run exists for yet (``include_admitted``).
 _SQL_UNSTARTED = "(" + ",".join(f"'{s}'" for s in sorted(CLAIMABLE | {ADMITTED})) + ")"
+#: The ``children_only`` filter the dispatch reads and their wake share: nested rows.
+_SQL_CHILD_ONLY = " AND parent_id IS NOT NULL AND parent_id <> ''"
 
 
 class _CorruptStore(Exception):
@@ -657,10 +660,18 @@ class TaskStore:
         single worker keeps writes serialized without the loop thread ever
         holding the connection lock.
         """
+        return await self.post(fn, *args, **kwargs)
+
+    def post(self, fn: Callable[..., Any], /, *args: Any, **kwargs: Any) -> "asyncio.Future[Any]":
+        """Queue ``fn(*args, **kwargs)`` on the writer thread NOW; return its future.
+
+        :meth:`run` without the wait, for a caller that must not await before
+        the job is queued: the single worker runs jobs in submission order, so
+        a write posted here lands ahead of any job queued after this call
+        returns -- whichever task queues it, and however soon.
+        """
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(
-            self._writer_executor(), functools.partial(fn, *args, **kwargs)
-        )
+        return loop.run_in_executor(self._writer_executor(), functools.partial(fn, *args, **kwargs))
 
     @staticmethod
     def _on_running_loop_thread() -> bool:
@@ -1586,7 +1597,7 @@ class TaskStore:
         """Eligible (claimable now) row count per lane, for the fair dispatcher."""
         ts = self.now()
         excl_sql, excl_args = self._exclusion(exclude_ids)
-        child_sql = " AND parent_id IS NOT NULL AND parent_id <> ''" if children_only else ""
+        child_sql = _SQL_CHILD_ONLY if children_only else ""
         with self._lock:
             rows = (
                 self._c()
@@ -1629,7 +1640,7 @@ class TaskStore:
             return []
         ts = self.now()
         excl_sql, excl_args = self._exclusion(exclude_ids)
-        child_sql = " AND parent_id IS NOT NULL AND parent_id <> ''" if children_only else ""
+        child_sql = _SQL_CHILD_ONLY if children_only else ""
         lane_sql, lane_args = ("", [])
         if lanes is not None:
             lane_sql = f" AND lane IN ({', '.join('?' for _ in lanes)})"
@@ -1756,15 +1767,37 @@ class TaskStore:
         return [TaskRecord.from_row(r) for r in rows]
 
     @_typed_read
-    def next_eligible_at(self, kind: str) -> float | None:
-        """Earliest ``next_run_at`` among waiting rows of *kind*; None when none wait."""
+    def next_eligible_at(
+        self,
+        kind: str,
+        *,
+        exclude_ids: Sequence[str] = (),
+        children_only: bool = False,
+    ) -> float | None:
+        """When the earliest waiting row of *kind* that time alone holds back
+        becomes claimable; None when no row is held by time.
+
+        A row is held by time while it is deferred (``next_run_at``) or leased
+        (``lease_expires_at``), and claimable at the later of the two -- the
+        same eligibility the dispatch reads apply (``pending_lanes``,
+        ``fetch_dispatchable_fair``), over the same rows: one they may not
+        claim (excluded, or not a child on a ``children_only`` pass) has no
+        wake to offer them. A row with neither is not a wake: no time has to
+        pass for it, so a pass that found nothing left it out for a reason the
+        clock does not change. Read as "due at 0", it would re-arm that empty
+        pass at once, on every pass, for as long as the row is held.
+        """
+        excl_sql, excl_args = self._exclusion(exclude_ids)
+        child_sql = _SQL_CHILD_ONLY if children_only else ""
         with self._lock:
             row = (
                 self._c()
                 .execute(
-                    f"SELECT MIN(COALESCE(next_run_at, 0)) FROM tasks WHERE kind=? "
-                    f"AND state IN {_SQL_CLAIMABLE}",
-                    (kind,),
+                    "SELECT MIN(MAX(COALESCE(next_run_at, 0), COALESCE(lease_expires_at, 0))) "
+                    f"FROM tasks WHERE kind=? AND state IN {_SQL_CLAIMABLE} "
+                    "AND (next_run_at IS NOT NULL OR lease_expires_at IS NOT NULL)"
+                    f"{child_sql}{excl_sql}",
+                    [kind, *excl_args],
                 )
                 .fetchone()
             )

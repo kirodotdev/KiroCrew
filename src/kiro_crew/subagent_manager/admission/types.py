@@ -14,6 +14,13 @@ if TYPE_CHECKING:
 #: can tell "nothing was accepted, retry later" from a policy refusal.
 TASK_STORE_UNAVAILABLE_CODE = "task_store_unavailable"
 
+#: The shortest delay an admission re-check timer whose delay derives from
+#: ``admit_wait_secs`` or a row's wake is armed with: the pump's waiting-row
+#: wake and the retained-claim and boundary-cancel retries. A delay that reaches
+#: 0 would re-run the same pass on the next loop turn, which is a spin when that
+#: pass cannot make progress.
+MIN_RECHECK_DELAY_SECS = 0.05
+
 
 def tombstone_terminal_state(cause: str) -> str | None:
     """The terminal task state a tombstone cause proves, loaded on first use."""

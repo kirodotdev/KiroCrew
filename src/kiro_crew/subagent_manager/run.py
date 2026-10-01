@@ -6,6 +6,7 @@ import asyncio
 import logging as _logging
 import secrets as _secrets
 import time as _time
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from ..subagent_persistence import (
@@ -112,6 +113,47 @@ if TYPE_CHECKING:
         with_kill_failure,
         write_result_chunk,
     )
+
+#: Delayed re-reads armed, one after another, while the store cannot answer the
+#: queue depth; the last one that still fails says so at WARNING.
+_QUEUE_DEPTH_RETRIES = 3
+#: Seconds between those re-reads.
+_QUEUE_DEPTH_RETRY_SECS = 10.0
+#: The longest a burst of depth requests may keep discarding reads it overlapped
+#: before the latest read is published anyway (and read again behind it).
+_QUEUE_DEPTH_MAX_WITHHOLD_SECS = 1.0
+#: The burst's clock for that cap (monotonic; a seam for tests).
+_queue_depth_clock = _time.monotonic
+
+
+def _one_wave(batch_ids: set[str]) -> str:
+    """The one wave a frame answers for, or ``""`` when it answers for several."""
+    return next(iter(batch_ids)) if len(batch_ids) == 1 else ""
+
+
+@dataclass(slots=True, eq=False)
+class _PendingDepthEmit:
+    """The one in-flight ``subagent_queued`` emit (a burst) for a parent.
+
+    ``again`` is set by a request the burst's current read does not answer;
+    ``batch_ids`` collects the waves those requests named; ``attempt`` is the
+    retry budget already spent on an unreadable store; ``task`` runs the burst
+    (set right after construction, so it is left out of the repr).
+    """
+
+    batch_ids: set[str]
+    attempt: int
+    again: bool = False
+    task: asyncio.Task[None] = field(init=False, repr=False)
+
+
+@dataclass(slots=True, eq=False)
+class _PendingDepthRetry:
+    """The one armed delayed re-read for a parent whose depth read failed."""
+
+    handle: asyncio.TimerHandle
+    attempt: int
+    batch_ids: set[str]
 
 
 class RunEventCoordinator(ManagerComponent):
@@ -822,25 +864,41 @@ class RunEventCoordinator(ManagerComponent):
             except Exception:
                 logger.warning("on_event failed for %s/%s", etype, info.id, exc_info=True)
 
-    def _queued_depth_impl(self, parent_session_key: str, *, for_dispatch: bool = False) -> int:
+    def _queued_depth_impl(self, parent_session_key: str) -> int:
         """Number of spawns currently queued for *parent_session_key* (waiting
         behind the concurrency cap / stagger gate, not yet started).
 
-        *for_dispatch* is the chip's reading: a row the pump has popped and is
-        about to claim is not shown as waiting. Every other caller -- the
-        reset-deferral guards above all -- keeps the default and counts it, since
-        it is still this parent's accepted work until the claim lands."""
-        in_window = self._in_window_count(parent_session_key)
+        A row the pump has popped and is about to claim still counts: it is
+        this parent's accepted work until the claim lands, which is what the
+        reset-deferral guards ask. The chip's reading leaves it out
+        (:meth:`_read_queue_depth`)."""
+        in_window = self._window_depth(parent_session_key)
         # Rows queued in the store but outside the in-memory window are still
         # this parent's waiting work; the chip and the reset-deferral guards
         # must see them.
-        return in_window + self._manager._admission.taskq_overflow(
-            parent_session_key, for_dispatch=for_dispatch
+        return in_window + self._manager._admission.taskq_overflow(parent_session_key)
+
+    def _window_depth(self, parent_session_key: str) -> int:
+        """Unstarted spawns *parent_session_key* holds in the in-memory window.
+
+        A ``_resume_id`` entry is not one: it is a RESIDENT run asking for its
+        lane slot back, already counted where running runs are, and it leaves
+        the window without a depth emit (withdrawn by its run's ``finally``, or
+        popped by the pump once that run has ended). Counting it here would
+        leave "1 waiting to start" on the card for work that has started. An
+        approval-released start (``_startup_release``) has not started its run
+        yet, so it is still waiting and still counts.
+        """
+        resident = self._manager._admission.entry_is_resident_resume
+        return sum(
+            1
+            for q in self._manager._queue
+            if q.get("parent_session_key", "") == parent_session_key and not resident(q)
         )
 
     async def _queued_depth_async_impl(self, parent_session_key: str) -> int:
         """:meth:`_queued_depth_impl` with its store count on the writer thread."""
-        in_window = self._in_window_count(parent_session_key)
+        in_window = self._window_depth(parent_session_key)
         overflow = await self._manager._admission.taskq_overflow_async(parent_session_key)
         return in_window + overflow
 
@@ -959,80 +1017,176 @@ class RunEventCoordinator(ManagerComponent):
         *,
         wait: dict[str, Any] | None = None,
     ) -> None:
-        """Emit the current queued depth for *parent_session_key* as a
-        ``subagent_queued`` lifecycle event.
+        """Publish *parent_session_key*'s queued depth as a ``subagent_queued``
+        lifecycle event: the "N waiting to start" count on the parent's card.
 
-        The chip is otherwise driven only by agents that have actually started
-        (``subagent_spawn``), so agents sitting behind the concurrency cap /
-        stagger gate are invisible and the chip can appear late or flicker.
-        This advisory count lets the UI show "N waiting to start" the moment a
-        wave is accepted, and stay mounted across the staggered ramp.
-
-        *wait* is the gate's label for WHY the rows wait (``reason`` one of the
-        ``QUEUED_REASON_*`` kinds, plus ``available_gb`` / ``required_gb`` for the
-        memory kinds). The gate passes it on the emit that follows its verdict;
-        it is remembered per parent and rides on every later emit for that
-        parent -- the drain's, the claim path's (once a claimed row registers, so
-        a started row leaves the count), the cancel path's re-emits, and the
-        reconciling re-emits every terminal report and every Stop all send --
-        which carry no verdict of their own -- until the parent's depth reaches
-        0, when it is forgotten and the event is once again the bare
-        ``{"queued": 0}``. Absent on an event exactly when nothing was labelled,
-        so a client reading only the count is unaffected and one reading the
-        reason never sees a stale one.
-
-        Fire-and-forget: scheduled on the running loop; a no-op in sync/test
-        contexts without a loop (the count is advisory UI signal, not state).
+        *wait* is the gate's label for WHY the rows wait (a ``QUEUED_REASON_*``
+        ``reason``, plus ``available_gb`` / ``required_gb`` for the memory
+        kinds). It is recorded per parent with the request and rides on every
+        later non-zero frame for that parent until a depth-0 read that no
+        request overlapped forgets it; an overlapped 0 read is published bare
+        and keeps the label, since the overlapping request may have written it.
+        The request is coalesced per parent into a burst whose last frame is
+        read after its last request; a store that cannot be read publishes
+        nothing and is re-read later. The mechanics are specified in
+        ``subagent.md`` (the ``subagent_queued`` paragraph). Fire-and-forget,
+        and a no-op without a running loop: the count is an advisory UI signal.
         """
-        manager = self._manager
         if wait is not None:
-            manager._queue_wait[parent_session_key] = dict(wait)
+            self._manager._queue_wait[parent_session_key] = dict(wait)
+        self._request_queue_depth(parent_session_key, {batch_id} if batch_id else set())
+
+    def _live_depth_emit(self, parent_session_key: str) -> _PendingDepthEmit | None:
+        """The parent's burst while its task still runs (its entry is dropped
+        a loop turn after the task ends, by the done-callback)."""
+        emit = self._manager._queue_depth_emits.get(parent_session_key)
+        return emit if emit is not None and not emit.task.done() else None
+
+    def _request_queue_depth(
+        self, parent_session_key: str, batch_ids: set[str], attempt: int = 0
+    ) -> None:
+        """Join the parent's burst, or start one."""
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return  # no running loop (sync/test context) — advisory event skipped
-        info = SubagentInfo(
-            id="_queue",
-            task="",
-            parent_session_key=parent_session_key,
-            batch_id=batch_id,
-        )
-
-        def _extra(depth: int) -> dict[str, Any]:
-            if depth <= 0:
-                manager._queue_wait.pop(parent_session_key, None)
-                return {"queued": depth}
-            return {"queued": depth, **manager._queue_wait.get(parent_session_key, {})}
-
-        admission = manager._admission
-        store = admission.taskq_store()
-        if store is None or not type(admission).pump_off_loop:
-            depth = manager._queued_depth(parent_session_key, for_dispatch=True)
-            loop.create_task(manager._fire_event("subagent_queued", info, _extra(depth)))
+        manager = self._manager
+        emit = self._live_depth_emit(parent_session_key)
+        if emit is not None:
+            emit.again = True
+            emit.batch_ids |= batch_ids
+            # A fresh request restores the retry budget a failing burst spent.
+            emit.attempt = min(emit.attempt, attempt)
             return
-        # The store half of the count (rows outside the window) runs on the
-        # writer thread; the window half and the emit stay on the loop.
-        from kiro_crew.taskq import KIND_SUBAGENT
+        emit = _PendingDepthEmit(set(batch_ids), attempt)
+        emit.task = loop.create_task(self._queue_depth_burst(parent_session_key, emit))
+        manager._queue_depth_emits[parent_session_key] = emit
 
-        in_window = sum(
-            1 for q in manager._queue if q.get("parent_session_key", "") == parent_session_key
-        )
-        exclude_ids = admission.taskq_dispatch_excluded_ids()
-        live_store = store
+        def _forget(_done: asyncio.Task[None]) -> None:
+            if manager._queue_depth_emits.get(parent_session_key) is emit:
+                del manager._queue_depth_emits[parent_session_key]
 
-        async def _emit() -> None:
-            try:
-                overflow = await live_store.run(
-                    live_store.count_pending,
-                    KIND_SUBAGENT,
-                    exclude_ids=exclude_ids,
-                    session_key=parent_session_key,
+        # Dropped by the task's own completion, so a burst cancelled before
+        # its first step cannot leave later requests waiting on it.
+        emit.task.add_done_callback(_forget)
+
+    async def _queue_depth_burst(self, parent_session_key: str, emit: _PendingDepthEmit) -> None:
+        """Read until no request is left unanswered, publishing as it goes.
+
+        A read answers every request made before it started: it is queued on
+        the store's writer thread behind every write those requests followed
+        (a posted write is queued by the call that posts it), and it takes the
+        window and the exclusions as they stand then. A request made during a
+        read is not answered by it, so the read is discarded and the burst
+        reads again -- unless frames have been withheld for
+        :data:`_QUEUE_DEPTH_MAX_WITHHOLD_SECS`, when it is published first.
+        """
+        since = _queue_depth_clock()
+        while True:
+            emit.again = False
+            answering, emit.batch_ids = emit.batch_ids, set()
+            depth = await self._read_queue_depth(parent_session_key)
+            if emit.again and _queue_depth_clock() - since < _QUEUE_DEPTH_MAX_WITHHOLD_SECS:
+                emit.batch_ids |= answering
+                continue
+            overlapped = emit.again
+            if depth is None:
+                self._arm_queue_depth_retry(parent_session_key, emit.attempt, answering)
+            else:
+                self._disarm_queue_depth_retry(parent_session_key)
+                await self._publish_queue_depth(
+                    parent_session_key, depth, _one_wave(answering), forget_label=not overlapped
                 )
-            except Exception:
-                overflow = 0
-            await manager._fire_event("subagent_queued", info, _extra(in_window + int(overflow)))
+            if not emit.again:
+                return
+            # Asked during the read (past the withhold cap) or while the frame
+            # was being sent: not answered yet.
+            since = _queue_depth_clock()
 
-        loop.create_task(_emit())
+    async def _publish_queue_depth(
+        self, parent_session_key: str, depth: int, batch_id: str, *, forget_label: bool
+    ) -> None:
+        # Imported here: this helper is not an ``_impl``, so it keeps this
+        # module's namespace, where the facade's names are only type hints.
+        from ..subagent import SubagentInfo
+
+        manager = self._manager
+        if depth <= 0:
+            # Not on a read a request overlapped: that request may be the
+            # verdict which wrote the label, for a row the read predates.
+            if forget_label:
+                manager._queue_wait.pop(parent_session_key, None)
+            extra: dict[str, Any] = {"queued": depth}
+        else:
+            extra = {"queued": depth, **manager._queue_wait.get(parent_session_key, {})}
+        info = SubagentInfo(
+            id="_queue", task="", parent_session_key=parent_session_key, batch_id=batch_id
+        )
+        await manager._fire_event("subagent_queued", info, extra)
+
+    def _arm_queue_depth_retry(
+        self, parent_session_key: str, attempt: int, batch_ids: set[str]
+    ) -> None:
+        """Arm the parent's one delayed re-read after a read the store could
+        not answer: nothing else may ask again once the burst that asked is
+        over, so without it a card whose rows are really stopped during a
+        store lock keeps its old count until a reconnect. Bounded; an already
+        armed one is kept, with the fuller of the two budgets."""
+        from ..subagent import logger
+
+        manager = self._manager
+        if manager._shutting_down:
+            return
+        armed = manager._queue_depth_retries.get(parent_session_key)
+        if armed is not None:
+            armed.attempt = min(armed.attempt, attempt + 1)
+            armed.batch_ids |= batch_ids
+            return
+        if attempt >= _QUEUE_DEPTH_RETRIES:
+            logger.warning(
+                "queue depth for %s unreadable after %d retries; its card keeps its last count",
+                parent_session_key,
+                attempt,
+            )
+            return
+        handle = asyncio.get_running_loop().call_later(
+            _QUEUE_DEPTH_RETRY_SECS, self._fire_queue_depth_retry, parent_session_key
+        )
+        manager._queue_depth_retries[parent_session_key] = _PendingDepthRetry(
+            handle, attempt + 1, set(batch_ids)
+        )
+
+    def _fire_queue_depth_retry(self, parent_session_key: str) -> None:
+        manager = self._manager
+        retry = manager._queue_depth_retries.pop(parent_session_key, None)
+        if retry is None or manager._shutting_down:
+            return
+        self._request_queue_depth(parent_session_key, retry.batch_ids, retry.attempt)
+
+    def _disarm_queue_depth_retry(self, parent_session_key: str) -> None:
+        """A frame was published: the parent's armed re-read has been answered.
+
+        Cancelled while still registered, then dropped: the cancel chokepoint
+        recognizes a depth-retry timer by its entry in ``_queue_depth_retries``,
+        so popping first would log a false missing-marker ERROR."""
+        manager = self._manager
+        retry = manager._queue_depth_retries.get(parent_session_key)
+        if retry is not None:
+            manager._cancel_task_intentionally(retry.handle, reason="queue depth answered")
+            manager._queue_depth_retries.pop(parent_session_key, None)
+
+    async def _read_queue_depth(self, parent_session_key: str) -> int | None:
+        """The chip's depth now, or ``None`` when the store cannot say.
+
+        The window half (:meth:`_window_depth`) is taken on the loop
+        immediately before the store half snapshots its exclusion set, so a
+        row the refill moves into the window during the read is counted once
+        (in the store: the snapshot did not exclude it) and one the pump pops
+        is counted once (in the window half).
+        """
+        in_window = self._window_depth(parent_session_key)
+        overflow = await self._manager._admission.taskq_chip_overflow_async(parent_session_key)
+        return None if overflow is None else in_window + overflow
 
     def _warn_unusable_mcp_servers(self, info: SubagentInfo, client: LLMProvider) -> str:
         """Log ONE warning naming the MCP servers this run's session cannot use,

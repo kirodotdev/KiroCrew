@@ -218,8 +218,8 @@ def test_a_claimed_unregistered_row_is_counted_and_listed(tmp_path) -> None:
 
 
 def test_the_queued_count_includes_a_retained_claim(tmp_path) -> None:
-    """``taskq_overflow`` is the count every pending-work guard and the depth
-    chip read: a retained ``admitted`` row no run is registered for counts."""
+    """``taskq_overflow`` is the count every pending-work guard reads: a
+    retained ``admitted`` row no run is registered for counts."""
     import types
 
     from kiro_crew.subagent_manager.admission.taskq_bridge import _TaskqBridgeMixin
@@ -232,7 +232,6 @@ def test_the_queued_count_includes_a_retained_claim(tmp_path) -> None:
             _manager=types.SimpleNamespace(_agents={}),
             taskq_store=lambda: store,
             taskq_excluded_ids=lambda: [],
-            taskq_dispatch_excluded_ids=lambda: [],
         )
         fake._overflow_query = types.MethodType(_TaskqBridgeMixin._overflow_query, fake)
         assert _TaskqBridgeMixin.taskq_overflow(fake, "dash:vis") == 1
@@ -240,6 +239,40 @@ def test_the_queued_count_includes_a_retained_claim(tmp_path) -> None:
         # for it, so the count and the listing both leave it out.
         fake._manager._agents = {"adm1": object()}
         assert _TaskqBridgeMixin.taskq_overflow(fake, "dash:vis") == 0
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_the_chip_count_includes_a_retained_claim(tmp_path) -> None:
+    """The chip's own reader (``taskq_chip_overflow_async``) uses the same
+    "accepted, no run yet" definition as ``taskq_overflow``: a retained
+    ``admitted`` row counts until a run registers for it."""
+    import types
+
+    from kiro_crew.subagent_manager.admission.taskq_bridge import _TaskqBridgeMixin
+
+    store = _store(tmp_path)
+    try:
+        store.accept([_row("adm1")])
+        store.claim("adm1")
+
+        class _Bridge:
+            pump_off_loop = False
+            _manager = types.SimpleNamespace(_agents={})
+
+            def taskq_store(self):
+                return store
+
+            _overflow_query = _TaskqBridgeMixin._overflow_query
+
+            def taskq_chip_excluded_ids(self) -> list[str]:
+                return []
+
+        bridge = _Bridge()
+        assert await _TaskqBridgeMixin.taskq_chip_overflow_async(bridge, "dash:vis") == 1
+        bridge._manager._agents = {"adm1": object()}
+        assert await _TaskqBridgeMixin.taskq_chip_overflow_async(bridge, "dash:vis") == 0
     finally:
         store.close()
 

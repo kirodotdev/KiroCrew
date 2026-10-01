@@ -573,21 +573,60 @@ made; no gate reads it back. Two consumers:
 - The advisory `subagent_queued` lifecycle event (`_emit_queue_depth`) carries
   `reason` and, for the memory kinds, `available_gb` / `required_gb` beside
   `queued`. The label is remembered per parent (`_queue_wait`) so the drain's,
-  the claim path's (once a claimed row registers, so a started row leaves the
-  count), the cancel path's and the reconciling re-emits — which carry no
-  verdict of their own — keep it, and
-  forgotten at depth 0, where the event is once again the bare `{"queued": 0}`.
+  the claim path's, the cancel paths' and the terminal reports' requests —
+  which carry no verdict of their own — keep it. A frame at depth 0 is the
+  bare `{"queued": 0}`, and a 0 read no request overlapped forgets the label.
+  A 0 read that a request overlapped (published once the withhold cap passes)
+  keeps it: that request may be the verdict which wrote the label, for a row
+  the read predates, and the burst's next read answers it.
   The count is pushed, not polled, and the client otherwise resets it only from
-  a reconnect's snapshot, so three points re-publish the authoritative depth
-  whether or not it changed: every terminal report of a run that started
-  (right after its `subagent_done`), every `cancel_for_parent` (Stop all) and
-  every `cancel_for_boundary` (the stage's Cancel), including one that stopped
-  nothing. A queued-stop terminal — the synthetic record of a row stopped
-  before it started — does not re-publish: the stop that removed the row
-  already did, and its bulk caller ends with the trailing re-publish, so a Stop
-  all over N waiting rows costs one reconciling frame rather than N+1. A frame
-  the client missed or received out of order therefore cannot leave "N waiting
-  to start" on the card once the wave has settled.
+  a reconnect's snapshot, so the authoritative depth is re-published whether or
+  not it changed at every point a wave settles: every terminal report of a
+  run that started, every queued-stop report (the record of a waiting row
+  stopped before it started, whichever path removed the row — so that
+  terminal adds no request of its own), and every `cancel_for_parent` (Stop
+  all) and `cancel_for_boundary` (the stage's Cancel) that stopped nothing. A
+  frame the client missed or received out of order therefore cannot leave "N
+  waiting to start" on the card once the wave has settled.
+  **The emit is coalesced per parent into a burst.** At most one read is in
+  flight for a parent; a request while one is marks the burst to read again
+  instead of reading itself. A read answers every request made before it
+  started: it is queued on the store's writer thread behind every write those
+  requests followed (a posted write is queued by the call that posts it,
+  `_post_store_write` → `TaskStore.post`, not by a task that runs later), and
+  it takes the window and the exclusion set as they stand then. A read a
+  request overlapped is therefore not published, and the burst reads again —
+  unless it has withheld frames for `_QUEUE_DEPTH_MAX_WITHHOLD_SECS`, when it
+  publishes the read and then reads again. A request while a frame is being
+  sent is answered the same way. The last frame of a burst is always read after
+  its last request; intermediate frames are withheld by design. Stop all and a
+  stage Cancel therefore cost about one frame however many rows they stop; a
+  teardown and the pump ask one row at a time and can cost a frame per row. A
+  start the drain popped asks when it is popped and marked dispatching (which
+  already leaves it out) and again at its registration, so a pop read the store
+  could not answer is corrected by the start itself, not by the delayed
+  re-read. A frame's `batch_id` is the wave's when every request it answers named
+  the same one, and empty when they named several; its count is parent-wide
+  either way.
+  **The count is unstarted spawns only:** window entries that are not a
+  resident run's resume entry (`entry_is_resident_resume`; an
+  approval-released `_startup_release` start still counts) plus the store's
+  waiting rows outside the window (claimable rows and `admitted` ones no run is
+  registered for, such as a claim retained across an outage: the same
+  "accepted, no run yet" definition as `taskq_overflow`), less a row the pump
+  has popped and not yet claimed (`taskq_chip_excluded_ids`, the refill's never-claim set with one
+  part narrowed). A row a `spawn_async` caller is still admitting is left out
+  until the gate has queued it (`_admitting_waiting`, marked by that call as
+  the gate returns the queued record and before it awaits anything): the
+  refill must never claim it, but once it is deferred or behind the cap it is
+  waiting, and its own labelled request counts it. The count answers how
+  many spawns wait to START; the lanes API's census of what each lane holds
+  counts a resident run's resume entry as that lane's waiting work, a
+  different question. **A store that cannot be read publishes nothing** and
+  keeps the label (a false 0 would clear a card whose rows still wait), and
+  arms the parent's one delayed re-read, `_QUEUE_DEPTH_RETRY_SECS` later, up
+  to `_QUEUE_DEPTH_RETRIES` in a row; a frame published first disarms it, and
+  a fresh request restores the budget.
   One label per parent, last writer wins: it is the verdict on the most recent
   row the gate judged for that parent, not a per-row ledger. A parent holding a
   memory-deferred row and then a capacity-queued one shows `concurrency_limit`
@@ -1046,8 +1085,8 @@ queue entry owned by one parent session. A `_resume_id` entry is NOT one of
 those: it is a RESIDENT run asking for the lane slot it yielded back, filed
 under that run's own `_preassigned_id` and its parent key, so it matches both
 terms of the queued scan and is skipped there — exactly as the pump's grant
-loop, the refill's lane census, the eviction, the child reserve and
-`_conversation_busy` all separate it out. The running sweep stops such a run instead, where its intact `_agents`
+loop, the refill's lane census, the eviction, the child reserve,
+`_conversation_busy` and the queue depth (`_window_depth`) all separate it out. The running sweep stops such a run instead, where its intact `_agents`
 record still is: routing it through the queued-stop path publishes a synthetic
 `queued=True` "never started" terminal OVER that record, so the coroutine keeps
 executing, the parent is told the work never began, and `resume_grant` can never
@@ -1069,20 +1108,23 @@ authentication middleware's app claim is denied on the same fail-closed path.
 This bulk control remains a dashboard-only capability. The server resolves that
 slot's effective session key, including channel-linked chats, rather than
 accepting a client-supplied parent key. The in-chat Stop all control uses this
-endpoint and remains available for queued-only waves. It always ends by
-re-publishing the parent's queued depth (`_republish_queue_depth`, shared with
-`cancel_for_boundary`), so pressing it on a card whose count has gone stale
-repairs the card even when there was nothing left to stop. Each row it unqueues
-publishes the depth once, from `_unqueue`, whether the row sat in the in-memory
-window or only in the store; the synthetic queued-stop terminal that follows
-adds no frame of its own.
+endpoint and remains available for queued-only waves. Each row it stops asks
+for the depth in its queued-stop report; a queued pass that stopped none —
+nothing was left, or it failed or was cancelled first — asks itself, before
+any reap, so pressing it on a card whose count has gone stale repairs the card
+even when there was nothing left to stop. A queued pass that raises ends the
+call before the running sweep, and the request reports the failure: reaping
+first would free slots the pump fills at once with the very rows the failed
+pass did not reach. One row that fails does not stop the pass: a row whose
+unqueue raised is still waiting, so the pass goes on and then raises that
+failure; a row whose report raised was removed and counts as stopped.
 
 ### `cancel_for_boundary(parent_session_key, boundary_owner) -> (running, queued)`
 The dashboard captures and reserves the stage's full parent set before stopping
 its controller. If that reservation is refused, the controller's release seam
 keeps the marked boundary armed while live owners are stopped. Whether the scope
-was refused or settled, the call ends with the same single re-publish of the
-parent's queued depth that Stop all makes, so a Cancel that found nothing to
+was refused or settled, the call re-publishes the parent's queued depth before
+it reaps the live owners, as Stop all does, so a Cancel that found nothing to
 stop still repairs a stale "N waiting to start" count.
 
 Stops only work whose captured pair matches exactly: durable queued rows, live
@@ -1327,7 +1369,7 @@ An unmarked `CancelledError` (see intentional-cancel rule) triggers `_schedule_c
   3. **`_release_slot(info)` — SLOT accounting.** A one-shot token per `SubagentInfo`; the winner decrements `_running_count` once and drains the queue. Deliberately independent of both flags above: inferring slot ownership from `done` or `reaped` produced a double decrement in one interleaving and none at all in another. A leaked slot permanently starves the spawn queue, which matters far more at the 60-100 concurrent agents the scale work targets. The cancel-recovery respawn **re-arms** this token when it re-admits a slot (`_running_count += 1`), because the respawned run occupies a fresh slot and needs its own release.
   4. **`_claim_finalize(info)` — REPORT ownership** (`subagent_done` + the `_on_done` injection, plus wave-digest settling and the result.txt TTL bookkeeping). Granted to exactly one caller; contains no `await` so the check-and-set is atomic on the loop. It does **not** consult `info.done` — that was the last defect. It returns False while `_recovering` *without consuming itself*, so a pending respawn is not reported done and its respawned run can claim later.
 - **A claimed report is atomic, not merely exclusive.** The claim alone still lost outcomes when the claimer was cancelled mid-report. `_report_terminal` therefore runs on a strongly-referenced task under `asyncio.shield`, spawned by `_run` **before** its teardown awaits so the task is already live wherever a cancellation lands; the caller still receives `CancelledError` while the report completes. `cancel_all()` drains outstanding reports with a bounded timeout and then **cancels and gathers** any straggler, so none is left invoking `_on_done` against tearing-down state or killed by a closing loop. Because the awaiter is shielded, shutdown is bounded by that drain rather than the `_ON_DONE_TIMEOUT` injection cap. Enforced by `test_subagent_reap_race.py`.
-- **Failed report settlement is boundary-owned and bounded per scope.** Only a report with a non-empty `_stage_boundary_owner` enters the failure latch. Each `(parent_session_key, boundary_owner)` bucket retains at most 64 frozen compact `_ReportFailureSnapshot` rows—never live `SubagentInfo` records—and all rows share one 64 MiB `_REPORT_FAILURE_BYTE_BUDGET`; variable delivery text is capped at 64 KiB. `_ReportFailureSnapshot` captures exactly the fields read by `_report_terminal_impl`, the gateway `_subagent_done`, and their report helpers. `test_report_failure_snapshot_fields_match_terminal_consumers` derives that set from source and compares it to the dataclass, so a new consumer field cannot bypass redelivery. If the per-boundary row cap or process budget refuses a snapshot, the gateway-wired exact-scope resolver sets `StageBoundary.report_retention_refused` to `row_cap` or `byte_budget`. No manager-owned refusal sentinel, count, scope map, or collapsed record exists. Only that boundary fails closed; its exact discard clears the flag, while an unrelated discard changes nothing. Slot teardown captures only exact parent/owner pairs from the closing boundary generation, so sibling aliases keep their scopes. A snapshot carries exact run/parent/owner-generation identity, timing, terminal outcome, result location, wave state, delivery state, model provenance, stop classification, and every other source-enumerated terminal consumer field; variable delivery text is independently capped at 64 KiB. Redelivery reconstructs a temporary record. Retained rows can redeliver, while a refusal flag remains until exact boundary discard. Only that boundary stays failed closed; other boundaries remain independent. Explicit finished-run deletion first waits for any active terminal-report task, then redelivers debt for the matching live boundary or discards only that exact inactive boundary before record removal. A hard stop discards the owning stage boundary, while an ordinary non-Autopilot report is unowned, so neither can halt or advance a later stage.
+- **Failed report settlement is boundary-owned and bounded per scope.** Only a report with a non-empty `_stage_boundary_owner` enters the failure latch. Each `(parent_session_key, boundary_owner)` bucket retains at most 64 frozen compact `_ReportFailureSnapshot` rows—never live `SubagentInfo` records—and all rows share one 64 MiB `_REPORT_FAILURE_BYTE_BUDGET`; variable delivery text is capped at 64 KiB. `_ReportFailureSnapshot` captures exactly the fields read by `_report_terminal_impl`, the gateway `_subagent_done`, and their report helpers. `test_report_failure_snapshot_fields_match_terminal_consumers` derives that set from source and compares it to the dataclass, so a new consumer field cannot bypass redelivery. If the per-boundary row cap or process budget refuses a snapshot, the gateway-wired exact-scope resolver sets `StageBoundary.report_retention_refused` to `row_cap` or `byte_budget`. No manager-owned refusal sentinel, count, scope map, or collapsed record exists. Only that boundary fails closed; its exact discard clears the flag, while an unrelated discard changes nothing. Slot teardown captures only exact parent/owner pairs from the closing boundary generation, so sibling aliases keep their scopes. A snapshot carries exact run/parent/owner-generation identity, timing, terminal outcome, result location, wave state, delivery state, model provenance, stop classification, whether the run was stopped while still queued (`queued`, so a retried queued-stop report adds no depth frame of its own), and every other source-enumerated terminal consumer field; variable delivery text is independently capped at 64 KiB. Redelivery reconstructs a temporary record. Retained rows can redeliver, while a refusal flag remains until exact boundary discard. Only that boundary stays failed closed; other boundaries remain independent. Explicit finished-run deletion first waits for any active terminal-report task, then redelivers debt for the matching live boundary or discards only that exact inactive boundary before record removal. A hard stop discards the owning stage boundary, while an ordinary non-Autopilot report is unowned, so neither can halt or advance a later stage.
 - **An undelivered report abandoned at shutdown is made RECOVERABLE, not silently dropped.** The terminal record — including the tombstone — is written before delivery is attempted, and a tombstone is exactly what `list_orphans()` uses to EXCLUDE a folder from the next start's reconciliation. So cancelling a still-pending report at the drain deadline would leave an outcome that was never injected *and* invisible to the only path that could still inject it. `cancel_all()` therefore calls `clear_tombstone(id)` for each report it cancels, re-admitting that agent to the next start's orphan reconciliation (which finds `result.txt` and re-delivers). Extending the drain to `_ON_DONE_TIMEOUT` instead was rejected: it would hold gateway shutdown for up to 20 minutes on one wedged injection, which is the exact failure the bounded drain exists to prevent. Only reports cancelled **before** `_on_done` returned are re-admitted — `info._reported_to_parent` is set the moment the injection returns, so a cancellation in the later teardown/tombstone waits cannot cause a duplicate delivery on restart.
 - **Every reporter goes through the claim — including cancel-recovery failure.** There are more terminal paths than the two obvious ones: when a cancel-recovery respawn cannot happen, its `except` arm also finalizes the agent. That site previously fired `subagent_done` and `_on_done` directly, gated only on `done`/`reaped`, so a reaper racing a failed respawn delivered the outcome twice. It now takes `_claim_finalize` like every other reporter and reports through the shielded helper (which matters because `_force_reap` cancels that very task). `_resume_guarded`'s CancelledError arm writes only the RECORD and deliberately never reports — during shutdown the drain owns delivery.
 - **The reaped marker and the recovery cancel precede every `await` in `_force_reap`.** Both used to sit after the session teardown, which yields for up to `_RESET_TIMEOUT` (longer on the SIGKILL path). A recovery task whose bounded handshake expired inside that window observed `reaped == False` and respawned the run being killed — tools executing after a user Stop, strictly worse than a duplicate report.
@@ -1792,9 +1834,9 @@ Specified in [taskq.md](taskq.md); this section is the manager's side of it.
   wave), and `_sweep_digest_holds` — reached only for a hold already past
   `DIGEST_HOLD_SECS` — forces the partial digest out, so the price is a chunk that
   may race the wave-close flush rather than every finished sibling's result staying
-  undelivered for the length of the outage. The queue-depth chip is the only reader
-  for which the value is a number, and one advisory unit during an outage the log
-  already names is the price. `taskq_pending_ids_for` is the
+  undelivered for the length of the outage. The queue-depth chip does not take this
+  answer: its reader (`taskq_chip_overflow_async`) answers `None` and the chip
+  publishes nothing until a retry reads the store. `taskq_pending_ids_for` is the
   exception and stays `[]`: it enumerates ids to cancel, and inventing one would
   cancel a row nobody read. Pinned by
   `test_taskq_admission_integration.py::test_an_unreadable_overflow_keeps_the_attached_children_guard_closed`

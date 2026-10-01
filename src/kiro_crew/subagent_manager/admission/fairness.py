@@ -209,6 +209,16 @@ class _FairnessMixin(ManagerComponent):
         return self.lane_for_session(key)
 
     @staticmethod
+    def entry_is_resident_resume(params: Mapping[str, Any]) -> bool:
+        """A window entry that is a RESIDENT run asking for its lane slot back.
+
+        Not a spawn waiting to start: its run is already counted where running
+        runs are. An approval-released start (``_startup_release``) also carries
+        ``_resume_id`` but has not started its run, so it is not one of these.
+        """
+        return bool(params.get("_resume_id")) and not params.get("_startup_release")
+
+    @staticmethod
     def entry_is_child(params: Mapping[str, Any]) -> bool:
         from kiro_crew.taskq import lanes as _lanes
 
@@ -311,7 +321,7 @@ class _FairnessMixin(ManagerComponent):
         # already holds its slot: it waits on the in-startup bound, not on a
         # slot, so it does not arm the reserve.
         reserve_active = settings.child_reserve > 0 and (
-            any(p.get("_resume_id") and not p.get("_startup_release") for p in self._manager._queue)
+            any(self.entry_is_resident_resume(p) for p in self._manager._queue)
             or self.pending_children() > 0
         )
         return CapacityView(
@@ -348,11 +358,9 @@ class _FairnessMixin(ManagerComponent):
         if not view.any_slot:
             return None
         for idx, params in enumerate(queue):
-            if (
-                params.get("_resume_id")
-                and not params.get("_startup_release")
-                and not self._manager._boundary_cancellation_pending(params)
-            ):
+            if self.entry_is_resident_resume(
+                params
+            ) and not self._manager._boundary_cancellation_pending(params):
                 return idx
         roots_ok = view.root_slot
 

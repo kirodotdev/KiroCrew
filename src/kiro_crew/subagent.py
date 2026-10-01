@@ -198,6 +198,7 @@ from kiro_crew.subagent_manager.monitoring import (  # noqa: F401 - resolved by 
     orphan_resume_hint,
     tombstone_recovery_action,
 )
+from kiro_crew.subagent_manager.run import _PendingDepthEmit, _PendingDepthRetry
 from kiro_crew.subagent_persistence import (  # noqa: F401 - read_tombstone resolved by run.py via bind_component_globals
     DISMISSAL_FAILED,
     _agent_dir,
@@ -2951,6 +2952,7 @@ class _ReportFailureSnapshot:
     _stop_origin: str
     outcome: str
     partial: bool
+    queued: bool
     agent: str
     silent: bool
     conversation_key: str
@@ -2987,6 +2989,7 @@ class _ReportFailureSnapshot:
             _stop_origin=bounded(info._stop_origin),
             outcome=info.outcome,
             partial=bool(info.partial),
+            queued=bool(info.queued),
             agent=bounded(info.agent),
             silent=bool(info.silent),
             conversation_key=bounded(info.conversation_key),
@@ -3061,6 +3064,7 @@ class _ReportFailureSnapshot:
             stop_reason=self.stop_reason,
             stop_class=self.stop_class,
             partial=self.partial,
+            queued=self.queued,
         )
         info._report_failure_latched = True
         return info
@@ -3564,6 +3568,25 @@ class SubagentManager:
         # own, and without this memory each re-emit would flip a memory-deferred
         # wave back to the default (concurrency) text.
         self._queue_wait: dict[str, dict[str, Any]] = {}
+        # parent_session_key -> its one in-flight coalesced depth emit. An entry
+        # lives only while that emit's read task does (``_emit_queue_depth``;
+        # the task's own completion drops it), so it is bounded by the parents
+        # with a read in flight and needs no eviction when a parent ends.
+        self._queue_depth_emits: dict[str, _PendingDepthEmit] = {}
+        # parent_session_key -> its one armed delayed re-read after a depth read
+        # the store could not answer; cancelled by the next frame for that
+        # parent and at shutdown, so at most one per parent.
+        self._queue_depth_retries: dict[str, _PendingDepthRetry] = {}
+        # Rows a ``spawn_async`` caller is still admitting that the gate has
+        # already queued (deferred or behind the cap): the refill still leaves
+        # them to their caller, but the queue-depth chip counts them. Marked
+        # and cleared by that call alone (``_spawn_async_accepted``,
+        # ``spawn_async``'s ``finally``), so always a subset of
+        # ``_admitting_ids``.
+        self._admitting_waiting: set[str] = set()
+        # When the refill last reported a deferred row stuck past its wake
+        # (monotonic); the report is rate-limited (``_refill_schedule_wake``).
+        self._overdue_wake_warned_at: float = float("-inf")
         # Rows the pump has popped from the window but not yet claimed. Their
         # durable state is still QUEUED, so without this set every store-backed
         # depth read between pop and claim counts them as waiting.
@@ -5297,14 +5320,32 @@ class SubagentManager:
         # are where a concurrent drain could otherwise start it twice.
         admitting: set[str] = self.__dict__.setdefault("_admitting_ids", set())
         admitting.add(prepared.agent_id)
+        outcome: SubagentInfo | None = None
         try:
-            return await self._spawn_async_accepted(task, prepared, **kwargs)
+            outcome = await self._spawn_async_accepted(task, prepared, **kwargs)
+            return outcome
         finally:
-            # A pressure defer posted on the way out must be ON the row before
-            # the pump may refill it, or the next pass re-runs the gate on a
-            # row whose ``next_run_at`` is not set yet.
-            await self._admission.await_pending_defer(prepared.agent_id)
-            admitting.discard(prepared.agent_id)
+            try:
+                # A pressure defer posted on the way out must be ON the row
+                # before the pump may refill it, or the next pass re-runs the
+                # gate on a row whose ``next_run_at`` is not set yet. Shielded:
+                # a cancel of this call must not cancel that write too, or the
+                # row stays QUEUED with no ``next_run_at`` for good. A cancel
+                # ends this wait at once, but the write is already queued on the
+                # store's writer thread (posted by the call that deferred), ahead
+                # of every refill read the release below lets through.
+                await asyncio.shield(self._admission.await_pending_defer(prepared.agent_id))
+            finally:
+                # Whatever ended the wait, a cancel included: a row left marked
+                # here is skipped by the refill, Stop all and the chip forever.
+                waiting = prepared.agent_id in self._admitting_waiting
+                admitting.discard(prepared.agent_id)
+                self._admitting_waiting.discard(prepared.agent_id)
+                if waiting or outcome is None:
+                    # The row may still wait, and every pump pass during this
+                    # call left it out: the slot one of them would have given
+                    # it may be free already, with nothing left to ask again.
+                    self._drain_queue()
 
     async def _spawn_async_accepted(
         self, task: str, prepared: PreparedSpawn, **kwargs: Any
@@ -5349,6 +5390,12 @@ class SubagentManager:
         first: Any = self.spawn(**params, **common, _stop_before_claim=True)
         if not isinstance(first, ClaimPoint):
             if first is not None and first.queued and not first.done:
+                # The gate queued the row this call still holds (deferred, or
+                # behind the cap): the chip counts it from here on, while the
+                # refill still leaves it to this call. Marked before any await,
+                # so the read the verdict's depth request makes, a loop step
+                # later, already sees it.
+                self._admitting_waiting.add(prepared.agent_id)
                 await self._admission.taskq_child_registered_async(first)
             return first
         # The slot is reserved (ClaimPoint); the claim is awaited off-loop and
@@ -5358,6 +5405,9 @@ class SubagentManager:
             lambda claimed: self.spawn(**params, **common, _claimed=claimed),
             stop_params={**params, **common},
         )
+        if result is not None and result.queued and not result.done:
+            # The claim did not take the row and the gate queued it again.
+            self._admitting_waiting.add(prepared.agent_id)
         if result is not None and not result.done and result.id in self._agents:
             # Nested child of a parent blocked in spawn_sub_agents: the parent
             # yields its slot (taskq.waits, W3) with the store I/O off-loop.
@@ -5789,8 +5839,8 @@ class SubagentManager:
     async def _fire_event(self, etype: str, info: SubagentInfo, extra: dict | None = None) -> None:
         return await self._run_events._fire_event_impl(etype, info, extra)
 
-    def _queued_depth(self, parent_session_key: str, *, for_dispatch: bool = False) -> int:
-        return self._run_events._queued_depth_impl(parent_session_key, for_dispatch=for_dispatch)
+    def _queued_depth(self, parent_session_key: str) -> int:
+        return self._run_events._queued_depth_impl(parent_session_key)
 
     async def _queued_depth_async(self, parent_session_key: str) -> int:
         return await self._run_events._queued_depth_async_impl(parent_session_key)
@@ -6066,6 +6116,7 @@ class SubagentManager:
             for timer in (
                 getattr(self, "_boundary_cancel_retry_handle", None),
                 getattr(self, "_retained_claim_retry_handle", None),
+                *(retry.handle for retry in getattr(self, "_queue_depth_retries", {}).values()),
             )
         )
         followup_watcher = any(

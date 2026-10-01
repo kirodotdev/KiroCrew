@@ -321,13 +321,12 @@ class TerminalCoordinator(ManagerComponent):
         # count is advisory and otherwise only reset on a reconnect's snapshot;
         # without this, a missed or superseded frame leaves "N waiting to
         # start" and its wait reason on the card after every run has finished.
-        # A queued-stop terminal is excluded: it is the synthetic record of a
-        # row stopped before it started, and the stop that removed the row
-        # (``_unqueue``, the boundary settle, the pump's refused claim) has
-        # already published the depth without it -- a Stop all over N waiting
-        # rows would otherwise add N frames, each a store count read, all
-        # answering what the stop's own trailing re-publish already says.
-        # Guarded: an advisory emit must never cost the parent its completion.
+        # A queued-stop terminal is the exception: it is the synthetic record
+        # of a row stopped before it started, and the stop that removed the row
+        # has already asked for the depth (and a read that fails is retried),
+        # so another request would only discard that stop's read and queue a
+        # fresh one behind the stop's settle writes. Guarded: an advisory emit
+        # must never cost the parent its completion.
         if info.parent_session_key and not info.queued:
             try:
                 self._manager._emit_queue_depth(info.parent_session_key, info.batch_id)
