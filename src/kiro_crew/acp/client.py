@@ -13769,6 +13769,7 @@ _EXPORTS_BY_OWNER: dict[str, tuple[str, ...]] = {
     "kiro_crew.acp.runtime_models": (
         "advertised_model_ids",
         "resolve_pin_spelling",
+        "resolve_pin_spelling_on",
         "catalog_row_would_drop",
         "resolve_usable_model",
         "_MODEL_SUBSTITUTION_ADVISORY_RE",
@@ -13869,6 +13870,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         advertised_model_ids,
         catalog_row_would_drop,
         resolve_pin_spelling,
+        resolve_pin_spelling_on,
         resolve_usable_model,
     )
     from kiro_crew.acp.runtime_process_tree import (  # noqa: F401

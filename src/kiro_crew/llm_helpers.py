@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew import name_grant, permission_floor
 from kiro_crew.acp.client import AcpError, AcpPromptBusy, advertised_model_ids
 from kiro_crew.acp.types import EVENT_STEER_CONSUMED, TurnUsage
-from kiro_crew.agent_sdk.drivers.acp import resolve_pin_spelling
+from kiro_crew.agent_sdk.drivers.acp import resolve_pin_spelling_on
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.constants import (
     DENY_CAUSE_INVALID_NAME,
@@ -498,6 +498,8 @@ def next_fallback_candidate(
     chain: Sequence[str],
     active_model: str,
     advertised: Sequence[str] | None,
+    *,
+    backend: str = "",
 ) -> str | None:
     """First usable fallback candidate from *chain*, or ``None``.
 
@@ -531,7 +533,7 @@ def next_fallback_candidate(
         if not low or low == act:
             continue
         if adv:
-            served = resolve_pin_spelling(cand, adv)
+            served = resolve_pin_spelling_on(cand, adv, backend=backend)
             if not served:
                 logger.debug("model fallback: skipping %r (not advertised)", cand)
                 continue
@@ -543,7 +545,9 @@ def next_fallback_candidate(
     return None
 
 
-def _fallback_wire_spelling(candidate: str, advertised: Sequence[str] | None) -> str:
+def _fallback_wire_spelling(
+    candidate: str, advertised: Sequence[str] | None, *, backend: str = ""
+) -> str:
     """The spelling of *candidate* to send on the wire and keep in records.
 
     A chain entry stays in its OWN spelling for ``FallbackState`` bookkeeping
@@ -558,7 +562,7 @@ def _fallback_wire_spelling(candidate: str, advertised: Sequence[str] | None) ->
     (empty/unknown fails open, matching :func:`next_fallback_candidate`).
     """
     ids = [a for a in (advertised or []) if isinstance(a, str) and a.strip()]
-    return (resolve_pin_spelling(candidate, ids) if ids else "") or candidate
+    return (resolve_pin_spelling_on(candidate, ids, backend=backend) if ids else "") or candidate
 
 
 @dataclass
@@ -580,10 +584,12 @@ class FallbackState:
     primary: str = ""
     walked: list[str] = dataclass_field(default_factory=list)
 
-    def next_candidate(self, active_model: str, advertised: Sequence[str] | None) -> str | None:
+    def next_candidate(
+        self, active_model: str, advertised: Sequence[str] | None, *, backend: str = ""
+    ) -> str | None:
         """Advance to and return the next usable candidate, or ``None``."""
         remaining = self.chain[self.pos :]
-        cand = next_fallback_candidate(remaining, active_model, advertised)
+        cand = next_fallback_candidate(remaining, active_model, advertised, backend=backend)
         if cand is None:
             self.pos = len(self.chain)
             return None
@@ -668,13 +674,14 @@ async def advance_fallback_candidate(
     set_model_fn = resolve_substitute_set_model(provider)
     if set_model_fn is None:
         return None
+    backend = provider_backend(provider)
     while True:
-        cand = fb_state.next_candidate(fb_state.primary or active, advertised)
+        cand = fb_state.next_candidate(fb_state.primary or active, advertised, backend=backend)
         if cand is None:
             return None
         # The chain's own spelling drove the walk bookkeeping; the wire and
         # every served-model comparison below use the advertised spelling.
-        wire = _fallback_wire_spelling(cand, advertised)
+        wire = _fallback_wire_spelling(cand, advertised, backend=backend)
         if wire.strip().lower() == (active or "").strip().lower():
             # With a marker-seeded primary, the chain can still name the
             # CURRENTLY-failing fallback the session sits on — retrying it is
@@ -854,6 +861,24 @@ def provider_advertised_ids(provider: Any) -> list[str]:
         return advertised_model_ids(getter())
     except Exception:
         return []
+
+
+def provider_backend(provider: Any) -> str:
+    """The provider's ACP backend id, ``""`` when unknown.
+
+    Lets the fallback walk fold a bare pair-id chain entry (e.g. a codex pin)
+    to its advertised wire spelling via :func:`resolve_pin_spelling_on`, the
+    same backend-aware fold the cold-start, substitute and warm-pool wire
+    sites apply; an unknown backend keeps the generic (backend-less) fold.
+    """
+    for attr in ("backend",):
+        try:
+            val = getattr(provider, attr, "")
+        except Exception:  # pragma: no cover - exotic property getters
+            val = ""
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+    return ""
 
 
 def provider_active_model(provider: Any) -> str:

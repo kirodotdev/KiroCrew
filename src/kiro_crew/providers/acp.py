@@ -22,7 +22,7 @@ from kiro_crew.acp.client import (
     advertised_model_ids,
     catalog_row_would_drop,
     model_is_unusable,
-    resolve_pin_spelling,
+    resolve_pin_spelling_on,
     sandbox_init_failure_for_runtime,
 )
 from kiro_crew.acp.runtime import AcpRuntime, AcpRuntimeError
@@ -1411,11 +1411,17 @@ class AcpProvider(LLMProvider):
                     # A literal miss can be a stale `<namespace>::` qualifier on a
                     # model the backend fully serves: resolve to the advertised
                     # spelling and send THAT — same fold the display verdict uses,
-                    # so chip and wire agree. Try the fold FIRST, against the
-                    # snapshot we already have: a qualifier-only miss resolves
-                    # here with no wire traffic and must not pay a throwaway
-                    # session/new on every cold start.
-                    _send_model = resolve_pin_spelling(configured_model, _advertised)
+                    # so chip and wire agree. It can also be a BARE pin on a harness
+                    # that advertises only ``<model>[<effort>]`` rows while its
+                    # ``model`` option takes the bare id, and the backend-aware
+                    # resolver answers that with the model the operator pinned,
+                    # leaving the adapter to own the effort. Try the fold FIRST,
+                    # against the snapshot we already have: a qualifier-only miss
+                    # resolves here with no wire traffic and must not pay a
+                    # throwaway session/new on every cold start.
+                    _send_model = resolve_pin_spelling_on(
+                        configured_model, _advertised, backend=self._client.backend
+                    )
                     if not _send_model:
                         # The fold found nothing, so this looks like a genuine
                         # miss — but the snapshot was captured seconds ago at
@@ -1441,7 +1447,9 @@ class AcpProvider(LLMProvider):
                         except Exception:
                             pass
                         if model_is_unusable(configured_model, _advertised):
-                            _send_model = resolve_pin_spelling(configured_model, _advertised)
+                            _send_model = resolve_pin_spelling_on(
+                                configured_model, _advertised, backend=self._client.backend
+                            )
                         else:
                             _send_model = configured_model
                 if not _send_model and not _foreign_scope:

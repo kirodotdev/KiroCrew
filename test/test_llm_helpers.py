@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from kiro_crew.acp.client import AcpError, AcpPromptBusy
-from kiro_crew.acp.types import STOP_REASON_CANCELLED, TurnUsage
+from kiro_crew.acp.types import ACP_BACKEND_CODEX, STOP_REASON_CANCELLED, TurnUsage
 from kiro_crew.llm_helpers import (
     FALLBACK_CANDIDATE_ATTEMPTS,
     TURN_FALLBACK_ATTR,
@@ -801,6 +801,27 @@ class TestNextFallbackCandidate:
         chain = ["ns::model-y"]
         adv = ["ns::model-y", "model-y"]
         assert next_fallback_candidate(chain, "x", adv) == "ns::model-y"
+
+    def test_bare_pair_id_entry_folds_on_a_pair_id_backend(self) -> None:
+        # A pair-id harness (codex) stores a chain entry in its BARE spelling,
+        # while the session advertises ``<model>[effort]`` rows. With the
+        # backend known, the bare entry widens to an advertised row and is
+        # selected (returning the chain's own bare spelling for walk
+        # bookkeeping) instead of being skipped as "not advertised".
+        chain = ["openai.gpt-6-astra"]
+        adv = ["openai.gpt-6-astra[high]", "openai.gpt-6-astra[max]"]
+        assert (
+            next_fallback_candidate(chain, "x", adv, backend=ACP_BACKEND_CODEX)
+            == "openai.gpt-6-astra"
+        )
+
+    def test_bare_pair_id_entry_without_backend_keeps_verbatim_filter(self) -> None:
+        # The empty-backend contract: with no backend, the generic fold answers
+        # "" for the bare id against bracketed rows, so the entry is skipped --
+        # exactly the pre-fix behaviour, unchanged for non-wire callers.
+        chain = ["openai.gpt-6-astra"]
+        adv = ["openai.gpt-6-astra[high]", "openai.gpt-6-astra[max]"]
+        assert next_fallback_candidate(chain, "x", adv) is None
 
 
 class TestConfiguredFallbackChain:

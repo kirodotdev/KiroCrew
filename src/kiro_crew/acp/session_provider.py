@@ -32,6 +32,7 @@ from kiro_crew.acp.client import (
     model_is_unusable,
     registration_rate_limited_error,
     registration_throttle_line,
+    resolve_pin_spelling_on,
 )
 from kiro_crew.acp.mcp_session_report import McpSessionReport
 from kiro_crew.acp.runtime import AcpRuntime, AcpRuntimeDead, AcpRuntimeError, AcpSessionHandle
@@ -1137,14 +1138,26 @@ class AcpSessionProvider(LLMProvider):
         """
         advertised = advertised_model_ids(self._handle.available_models)
         if model_is_unusable(model_id, advertised):
-            # A user's explicit pick must earn a FRESH probe, not be refused on a
-            # recent no-evidence failure the picker read path may have cached
-            # (force=True skips the failure/empty attempt-clock replay).
-            fresh = advertised_model_ids(
-                await self._guarded(self._handle.refresh_available_models(force=True))
-            )
-            if model_is_unusable(model_id, fresh or advertised):
-                raise AcpModelUnavailable(model_id, fresh or advertised)
+            # A pair-id harness (e.g. codex-acp) stores a pin in its BARE
+            # spelling while the advertised rows carry a ``[effort]`` suffix, so
+            # the bare id reads as unadvertised here even though it is the exact
+            # spelling the harness's config-option write accepts. Ask the
+            # backend-aware resolver: a non-empty answer means this pin resolves
+            # to a real served model for this backend, so it is usable — let the
+            # handle do the wire translation rather than hard-killing a provider
+            # on a pin the harness routinely stores. Only refuse when the
+            # resolver also finds nothing, after a fresh probe.
+            if not resolve_pin_spelling_on(model_id, advertised, backend=self.backend):
+                # A user's explicit pick must earn a FRESH probe, not be refused
+                # on a recent no-evidence failure the picker read path may have
+                # cached (force=True skips the failure/empty attempt-clock replay).
+                fresh = advertised_model_ids(
+                    await self._guarded(self._handle.refresh_available_models(force=True))
+                )
+                if not resolve_pin_spelling_on(
+                    model_id, fresh, backend=self.backend
+                ) and model_is_unusable(model_id, fresh or advertised):
+                    raise AcpModelUnavailable(model_id, fresh or advertised)
         await self._guarded(self._handle.set_model(model_id))
 
     async def set_mode(self, agent_name: str) -> None:
