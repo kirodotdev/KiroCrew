@@ -2966,3 +2966,284 @@ test("without the opt-in a client-only launch spawns nothing and does not wait",
   assert.strictEqual(await supervisor.start(), false);
   assert.strictEqual(spawnCalls.length, 0);
 });
+
+
+// A gateway already holds the port. `owner` decides what ps reports for its
+// pid; `healthy` decides whether it answers HTTP; `lockPid` is what this app's
+// own data folder records in gateway.lock and `holdsLock` whether the listener
+// has that file open. `rebinds` makes a service manager bring the port back
+// right after the stop. Timers resolve at once, so the grace window is counted
+// in polls without waiting on the clock.
+function stuckHolderHarness({
+  owner = OWN_GATEWAY_COMMAND, healthy = false, lockPid = 4242, holdsLock = true,
+  response = 0, ppid = 500, stopFails = false, rebinds = false, swapAfterDialog = false,
+  replacedBy = 0, pidAfterDialog = 0, lockRealPath = "", exitsDuringDialog = false,
+  refusedForPid = 0, platform = "linux",
+} = {}) {
+  const execCalls = [];
+  const dialogs = [];
+  const state = { listening: true, quits: 0 };
+  const http = healthy
+    ? {
+      get(url, _options, callback) {
+        const req = new EventEmitter();
+        req.destroy = () => {};
+        queueMicrotask(() => {
+          const res = new EventEmitter();
+          res.statusCode = 200;
+          res.resume = () => {};
+          callback(res);
+          res.emit("data", JSON.stringify(url.endsWith("/api/ready")
+            ? { ready: true }
+            : { app: "kirocrew", version: "0.6.0" }));
+          res.emit("end");
+        });
+        return req;
+      },
+    }
+    : rejectingHttp();
+  const instance = harness({
+    processRef: {
+      platform, arch: "arm64", env: { KIROCREW_PORT: "9999" }, resourcesPath: "/virtual/resources",
+      kill(_pid, signal) {
+        if (signal === 0) { const error = new Error("gone"); error.code = "ESRCH"; throw error; }
+        throw new Error("the supervisor must never signal the stuck gateway itself");
+      },
+    },
+    fsMod: {
+      constants: { X_OK: 1 },
+      mkdirSync() {},
+      accessSync() { const error = new Error("not found"); error.code = "ENOENT"; throw error; },
+      existsSync() { return false; },
+      openSync() { return 41; },
+      closeSync() {},
+      readFileSync(file) {
+        if (file === "/virtual/kirocrew-home/gateway.lock") {
+          return `${state.dialogShown && pidAfterDialog ? pidAfterDialog : lockPid}\n`;
+        }
+        throw new Error(`unexpected filesystem read: ${file}`);
+      },
+      realpathSync(file) {
+        if (lockRealPath && file === "/virtual/kirocrew-home/gateway.lock") return lockRealPath;
+        return file;
+      },
+    },
+    httpMod: http,
+    timers: {
+      setTimeoutFn(fn) { queueMicrotask(fn); return 0; },
+      clearTimeoutFn() {},
+      setIntervalFn() { return 0; },
+      clearIntervalFn() {},
+    },
+    execFileFn(file, args, options, callback) {
+      execCalls.push({ file: String(file), args, options });
+      if (String(file).endsWith("lsof") && args.includes("-p")) {
+        const ours = holdsLock && !state.swapped;
+        const pid = args[args.indexOf("-p") + 1];
+        const lockPath = lockRealPath || "/virtual/kirocrew-home/gateway.lock";
+        callback(null, ours ? `p${pid}\nn${lockPath}\n` : `p${pid}\nn/virtual/other-home/gateway.lock\n`, "");
+        return;
+      }
+      if (String(file).endsWith("lsof") && replacedBy && state.stopped) {
+        callback(null, `${replacedBy}\n`, "");
+        return;
+      }
+      if (String(file).endsWith("lsof") && exitsDuringDialog && state.dialogShown && !args.includes("-p")) {
+        callback(null, "", "");
+        return;
+      }
+      if (String(file).endsWith("lsof") && refusedForPid && state.refused && !args.includes("-p")) {
+        callback(null, `${refusedForPid}\n`, "");
+        return;
+      }
+      if (String(file).endsWith("lsof") && pidAfterDialog && state.dialogShown) {
+        callback(null, `${pidAfterDialog}\n`, "");
+        return;
+      }
+      if (String(file).endsWith("lsof")) {
+        callback(null, state.listening ? "4242\n" : "", "");
+        // The first two post-stop readings see the port free (the replaced-pid
+        // check, then the port-free wait); the service rebinds after that.
+        if (rebinds && state.stopped) {
+          state.postStopProbes = (state.postStopProbes || 0) + 1;
+          if (state.postStopProbes >= 2) state.listening = true;
+        }
+        return;
+      }
+      if (file === "/bin/ps") {
+        callback(null, args.includes("ppid=") ? `${ppid}\n` : `${owner}\n`, "");
+        return;
+      }
+      if (args.includes("stop") && refusedForPid) {
+        state.refused = true;
+        callback(Object.assign(new Error("exit 1"), { code: 1 }), "", "Port 5476 is held by another pid");
+        return;
+      }
+      if (args.includes("stop")) {
+        state.stopped = true;
+        if (stopFails) {
+          callback(Object.assign(new Error("exit 1"), { code: 1 }), "", "refused");
+          return;
+        }
+        state.listening = false;
+        callback(null, "Stopped gateway on port 5476", "");
+        return;
+      }
+      callback(new Error(`unexpected command: ${file}`));
+    },
+    dialog: {
+      async showMessageBox(options) {
+        dialogs.push(options);
+        state.dialogShown = true;
+        if (swapAfterDialog) state.swapped = true;
+        return { response };
+      },
+    },
+    requestQuit: () => { state.quits += 1; },
+  });
+  const stopCalls = () => execCalls.filter((call) => call.args.includes("stop"));
+  return { ...instance, execCalls, dialogs, stopCalls, state };
+}
+
+test("a stuck gateway for this data folder is stopped through the CLI, then the bundled backend starts", async () => {
+  const built = stuckHolderHarness();
+  assert.equal(await built.supervisor.start(), true);
+  assert.equal(built.dialogs.length, 1, "one dialog offers the restart");
+  assert.equal(built.dialogs[0].message, "The gateway is not responding.");
+  assert.deepEqual(built.dialogs[0].buttons, ["Stop and restart", "Quit"]);
+  assert.match(built.dialogs[0].detail, /has not answered for at least 15 seconds/);
+  assert.match(built.dialogs[0].detail, /Stop and restart stops that gateway and starts a fresh one\. Anything the stuck gateway was still doing is stopped with it\./);
+  assert.doesNotMatch(built.dialogs[0].detail, /kirocrew stop/, "the app runs the stop; the user is not told to type it");
+  const stops = built.stopCalls();
+  assert.equal(stops.length, 1, "the lock-checked CLI stop ran once");
+  assert.deepEqual(stops[0].args.slice(-5), ["stop", "--port", "5476", "--expect-pid", "4242"],
+    "the stop is pinned to the pid the grace window proved");
+  assert.equal(stops[0].options.env.KIROCREW_HOME, "/virtual/kirocrew-home");
+  assert.equal(stops[0].options.env.KIROCREW_PORT, undefined);
+  assert.equal(built.spawnCalls.length, 1, "the bundled backend starts after the stop");
+  assert.deepEqual(built.spawnCalls[0][1].slice(0, 4), ["gateway", "--no-open", "--port", "5476"]);
+});
+
+test("declining the stuck-gateway restart quits without stopping or spawning", async () => {
+  const built = stuckHolderHarness({ response: 1 });
+  assert.equal(await built.supervisor.start(), false);
+  assert.equal(built.dialogs.length, 1);
+  assert.equal(built.stopCalls().length, 0);
+  assert.equal(built.spawnCalls.length, 0);
+  assert.equal(built.state.quits, 1);
+});
+
+test("a service that brings the stopped gateway back is re-validated, not spawned over", async () => {
+  const built = stuckHolderHarness({ ppid: 1, rebinds: true });
+  assert.equal(await built.supervisor.start(), true);
+  assert.match(built.dialogs[0].detail, /If a background service restarts it automatically, Kiro Crew connects to it once it answers\./);
+  assert.equal(built.stopCalls().length, 1);
+  assert.equal(built.spawnCalls.length, 0, "no second backend races the service's respawn");
+  assert.ok(built.logs.some((line) => line.includes("re-bound after the stop")));
+});
+
+test("a holder that changes while the dialog is open is re-validated, never stopped", async () => {
+  const built = stuckHolderHarness({ swapAfterDialog: true });
+  await built.supervisor.start();
+  assert.equal(built.dialogs.length, 1);
+  assert.equal(built.stopCalls().length, 0, "the stop needs a fresh proof after the choice");
+  assert.ok(built.logs.some((line) => line.includes("changed holder while the dialog was open")));
+});
+
+test("a service that rebinds before the port is seen free is re-validated, not reported as a failed stop", async () => {
+  const built = stuckHolderHarness({ ppid: 1, replacedBy: 5151 });
+  assert.equal(await built.supervisor.start(), true);
+  assert.equal(built.stopCalls().length, 1);
+  assert.equal(built.spawnCalls.length, 0);
+  assert.ok(built.logs.some((line) => line.includes("taken by a new pid 5151")));
+});
+
+test("a same-home replacement started while the dialog is open is never stopped", async () => {
+  const built = stuckHolderHarness({ pidAfterDialog: 6060 });
+  await built.supervisor.start();
+  assert.equal(built.dialogs.length, 1);
+  assert.equal(built.stopCalls().length, 0, "only the pid the grace window judged may be stopped");
+  assert.ok(built.logs.some((line) => line.includes("changed holder while the dialog was open")));
+});
+
+test("a stuck gateway that exits while the dialog is open is replaced by the bundled backend", async () => {
+  const built = stuckHolderHarness({ exitsDuringDialog: true });
+  assert.equal(await built.supervisor.start(), true);
+  assert.equal(built.stopCalls().length, 0, "nothing is left to stop");
+  assert.equal(built.spawnCalls.length, 1, "the free port is spawned into, not adopted as empty");
+});
+
+test("a CLI refusal because another pid took the port re-validates, not a failed stop", async () => {
+  const built = stuckHolderHarness({ refusedForPid: 7070 });
+  assert.equal(await built.supervisor.start(), true);
+  assert.equal(built.stopCalls().length, 1);
+  assert.ok(built.logs.some((line) => line.includes("was taken by pid 7070 before the stop")));
+  assert.equal(built.spawnCalls.length, 0, "the new holder is re-validated, not spawned over");
+});
+
+test("on macOS a stuck gateway gets the manual command and Quit, never a stop", async () => {
+  const built = stuckHolderHarness({ platform: "darwin" });
+  assert.equal(await built.supervisor.start(), false);
+  assert.equal(built.dialogs.length, 1);
+  assert.equal(built.dialogs[0].message, "The gateway is not responding.");
+  assert.deepEqual(built.dialogs[0].buttons, ["Quit"]);
+  assert.match(built.dialogs[0].detail, /Run this command in Terminal:\nkirocrew stop --port 5476\n/);
+  assert.equal(built.stopCalls().length, 0, "macOS has no pidfd, so the app never runs the stop");
+  assert.equal(built.spawnCalls.length, 0);
+  assert.equal(built.state.quits, 1);
+});
+
+test("on macOS a service-owned stuck gateway's manual dialog carries the service note", async () => {
+  const built = stuckHolderHarness({ platform: "darwin", ppid: 1 });
+  await built.supervisor.start();
+  assert.match(built.dialogs[0].detail, /If the gateway starts again automatically, stop or update the service that restarts it\./);
+  assert.equal(built.stopCalls().length, 0);
+});
+
+test("a symlinked data folder is matched by the lock file's real path", async () => {
+  const built = stuckHolderHarness({ lockRealPath: "/private/virtual/kirocrew-home/gateway.lock" });
+  assert.equal(await built.supervisor.start(), true);
+  assert.equal(built.dialogs.length, 1);
+  assert.equal(built.stopCalls().length, 1);
+});
+
+test("a reused pid that does not hold this data folder's lock is never stopped", async () => {
+  const built = stuckHolderHarness({ holdsLock: false });
+  await built.supervisor.start();
+  assert.equal(built.dialogs.length, 0);
+  assert.equal(built.stopCalls().length, 0);
+  assert.equal(built.spawnCalls.length, 1);
+});
+
+test("an ssh forward on the port is never stopped: no dialog, today's spawn path", async () => {
+  const built = stuckHolderHarness({ owner: FOREIGN_COMMAND });
+  await built.supervisor.start();
+  assert.equal(built.dialogs.length, 0);
+  assert.equal(built.stopCalls().length, 0);
+  assert.equal(built.spawnCalls.length, 1);
+});
+
+test("a gateway for another data folder is never stopped", async () => {
+  const built = stuckHolderHarness({ lockPid: 777 });
+  await built.supervisor.start();
+  assert.equal(built.dialogs.length, 0);
+  assert.equal(built.stopCalls().length, 0);
+  assert.equal(built.spawnCalls.length, 1);
+});
+
+test("a healthy gateway for this data folder is reused with no dialog and no stop", async () => {
+  const built = stuckHolderHarness({ healthy: true });
+  assert.equal(await built.supervisor.start(), true);
+  assert.equal(built.dialogs.length, 0);
+  assert.equal(built.stopCalls().length, 0);
+  assert.equal(built.spawnCalls.length, 0);
+  assert.ok(built.logs.some((line) => line.includes("reusing existing gateway")));
+});
+
+test("a failed CLI stop surfaces a start failure instead of spawning into the held port", async () => {
+  const built = stuckHolderHarness({ stopFails: true });
+  assert.equal(await built.supervisor.start(), false);
+  assert.equal(built.stopCalls().length, 1);
+  assert.equal(built.spawnCalls.length, 0);
+  assert.ok(built.logs.some((line) => line.includes("kirocrew stop --port 5476` failed")));
+});

@@ -1271,6 +1271,15 @@ that must not change, because the SPA's per-origin `localStorage` is keyed on it
 
 `kirocrew stop [--port PORT]` stops a running gateway:
 
+`kirocrew stop --port PORT --expect-pid PID` is a narrower stop for a caller
+that already identified the gateway (the desktop app's stuck-gateway restart).
+It skips the steps below: it opens a pidfd on `PID`, checks that `PID` is the
+sole listener on `PORT`, looks like a Kiro Crew gateway and is the live holder
+of this home's `gateway.lock`, re-checks the listener, then sends SIGTERM
+through the pidfd. Any failed check, and any host without both
+`os.pidfd_open` and `signal.pidfd_send_signal` (macOS, Windows), refuses with
+no signal and exit 1. Without `--expect-pid` the command is unchanged:
+
 1. If a systemd/launchd service is active **and** the caller did not pass
    `--port` explicitly (see Service Management), stop it via the service
    manager and return — without this branch, SIGTERM-by-port would be

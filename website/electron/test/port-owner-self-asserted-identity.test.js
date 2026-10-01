@@ -62,13 +62,23 @@ const OCCUPANCY_SITES = [
     times: 1,
   },
   {
-    what: "the boot and liveness service-rebind waits, textually identical",
+    what: "the boot, liveness and stuck-gateway service-rebind waits, textually identical",
     code: 'isPortBound: async () => (await probeGatewayPortBinding(PORT)) !== "free",',
-    times: 2,
+    times: 3,
   },
   {
     what: "drain completion; carries an identity comparison on the same line",
     code: 'if (localOwner !== "service" || (await probeGatewayPortBinding(PORT)) === "free") {',
+    times: 1,
+  },
+  {
+    what: "stuck-gateway stop: the port emptied on its own, so spawn instead of adopting nothing",
+    code: 'const portNowFree = async () => (await probeGatewayPortBinding(PORT)) === "free";',
+    times: 1,
+  },
+  {
+    what: "unresponsive holder: nothing holds the port, so spawn as before",
+    code: 'if ((await probeGatewayPortBinding(PORT)) !== "bound") return "spawn";',
     times: 1,
   },
 ];
@@ -118,8 +128,23 @@ const IDENTITY_SITES = [
     times: 1,
   },
   {
-    what: "stale-bundle warning: a service manager needs the extra recovery step",
-    code: 'const recovery = localOwner === "service"',
+    what: "existing-gateway dialog: a service manager needs the extra recovery step",
+    code: 'const serviceNote = localOwner === "service"',
+    times: 1,
+  },
+  {
+    what: "unresponsive holder: probe who holds the port that failed its health check",
+    code: 'const localOwner = await probeGatewayPortOwner(PORT);',
+    times: 1,
+  },
+  {
+    what: "stuck-gateway stop: only a service-managed holder can be replaced by a new pid",
+    code: 'if (localOwner !== "service") return false;',
+    times: 1,
+  },
+  {
+    what: "unresponsive holder: only a positively local Kiro Crew holder is offered a stop",
+    code: 'if (localOwner !== "kirocrew" && localOwner !== "service") return "spawn";',
     times: 1,
   },
   {
@@ -128,9 +153,9 @@ const IDENTITY_SITES = [
     times: 1,
   },
   {
-    what: "boot: a service-managed holder may be rebound by its manager",
+    what: "boot drain and stuck-gateway stop: a service-managed holder may be rebound by its manager",
     code: 'if (localOwner === "service") {',
-    times: 1,
+    times: 2,
   },
   {
     what: "liveness: re-validate whoever rebound the port through the boot decision",

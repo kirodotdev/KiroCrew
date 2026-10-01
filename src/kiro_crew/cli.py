@@ -2331,6 +2331,16 @@ Examples:
             "non-default port."
         ),
     )
+    stop_parser.add_argument(
+        "--expect-pid",
+        type=int,
+        default=None,
+        help=(
+            "Stop only if this pid is the sole listener on --port AND holds this "
+            "home's gateway.lock; otherwise refuse and signal nothing. For callers "
+            "that already identified the gateway they mean to stop."
+        ),
+    )
 
     # restart — service-aware: restarts the systemd/launchd service if active,
     # otherwise SIGTERMs the foreground gateway and respawns it detached so the
@@ -3506,7 +3516,7 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
     elif args.command == "stop":
         from kiro_crew.cli_server import _stop
 
-        _stop(args.port)
+        _stop(args.port, expect_pid=args.expect_pid)
     elif args.command == "restart":
         from kiro_crew.cli_server import _restart
 

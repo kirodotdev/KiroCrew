@@ -553,8 +553,28 @@ Quit. The warning explains how to stop the old gateway before reopening the
 app; it adds service guidance only when the listener is service-classified.
 Unknown owners, remote tunnels, separate CLI installs, same or newer versions,
 Windows, and moved AppImages keep the existing reuse behavior. The shell does
-not restart or force-stop a stale gateway automatically. Otherwise it locates
-the backend binary via
+not restart or force-stop a stale gateway automatically.
+
+When nothing answers the first health check but the port is still held, the
+shell checks whether the sole listener is a local Kiro Crew gateway for this
+app's data folder: `gateway.lock` must name its pid, and that pid must have
+`gateway.lock` open. If that gateway keeps failing its health check for 15
+seconds, the same dialog offers Stop and restart or Quit. Stop and restart runs
+`kirocrew stop --port <port> --expect-pid <pid>` with the pid it proved, never a
+raw kill. Right before the signal, the CLI re-reads the listener and this data
+folder's `gateway.lock`, and refuses (signalling nothing) unless that pid still
+holds both. The signal goes through a pidfd opened before the checks, so it
+cannot reach a recycled pid. Only Linux has a pidfd: on macOS the same dialog
+instead names the `kirocrew stop --port <port>` command and offers only Quit,
+and `--expect-pid` itself refuses wherever no pidfd exists. The shell then waits for the port to clear and starts the bundled
+backend. When a service
+manager brings the gateway straight back, the shell re-checks the new holder
+instead of starting a second one. A failed stop surfaces the start-failure
+dialog, naming the pid still holding the port, instead of spawning into it. SSH
+forwards, other data folders, unknown owners and Windows keep the existing spawn
+path, and a gateway that answers inside the window is reused as before.
+
+With no gateway to reuse, the shell locates the backend binary via
 [`find-bin.js`](../../website/electron/find-bin.js), spawns it as `kirocrew
 gateway --no-open`, polls `/api/status`, and loads the dashboard once it is
 healthy.

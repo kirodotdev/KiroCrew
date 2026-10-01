@@ -482,7 +482,97 @@ def _verified_loopback_gateway_pids(port: int) -> list[int]:
     return [pid]
 
 
-def _stop(cli_port: int | None = None) -> None:
+def _stop_expected_pid(port: int, expect_pid: int) -> None:
+    """SIGTERM ``expect_pid`` only while it is provably this home's gateway on ``port``.
+
+    Three facts are read here, immediately before the signal: ``expect_pid`` is
+    the sole listener on ``port``, it looks like a Kiro Crew gateway, and it is the
+    live holder of this home's ``gateway.lock``. A caller that identified a
+    gateway earlier names it by pid, so a listener that replaced it in between
+    -- another home's gateway, or a fresh one -- is refused instead of stopped.
+
+    The signal is pinned to the process those checks examined, not to its number:
+    a pidfd is opened before the checks and the signal goes through it, so a pid
+    recycled after the checks cannot receive it. Where no pidfd exists (macOS,
+    Windows) the stop refuses. Every refusal signals nothing and exits 1.
+    """
+
+    def refuse(reason: str, message: str) -> NoReturn:
+        sel().log_api_access(
+            caller="cli",
+            operation="gateway_stop",
+            outcome="denied",
+            source="cli",
+            resources=f"port={port} expect_pid={expect_pid} reason={reason}",
+        )
+        print(f"❌ {message} Not signalling anything.")
+        sys.exit(1)
+
+    def check_listener() -> None:
+        listeners = platform_compat.find_listening_pids(port)
+        if listeners != [expect_pid]:
+            shown = ", ".join(str(p) for p in listeners) or "nothing"
+            refuse(
+                "listener_mismatch",
+                f"Port {port} is held by {shown}, not by the expected pid {expect_pid}.",
+            )
+
+    pidfd_open = getattr(os, "pidfd_open", None)
+    pidfd_send_signal = getattr(signal, "pidfd_send_signal", None)
+    if platform_compat.IS_WINDOWS or pidfd_open is None or pidfd_send_signal is None:
+        refuse(
+            "unpinnable_platform",
+            "--expect-pid needs a pidfd (Linux) to pin the process it stops.",
+        )
+    if expect_pid <= 0:
+        refuse("invalid_pid", f"Pid {expect_pid} is not a process id.")
+    try:
+        pidfd = pidfd_open(expect_pid)
+    except ProcessLookupError:
+        refuse("process_already_exited", f"Pid {expect_pid} has already exited.")
+    except OverflowError:
+        refuse("invalid_pid", f"Pid {expect_pid} is not a process id.")
+    except OSError as exc:
+        refuse("identity_unavailable", f"Cannot pin pid {expect_pid} ({exc}).")
+    try:
+        check_listener()
+        if not _is_kirocrew_process(expect_pid):
+            refuse("not_kirocrew", f"Pid {expect_pid} does not look like a Kiro Crew gateway.")
+        try:
+            holder = lock_holder(config_dir())
+        except LockProbeError as exc:
+            refuse("lock_probe_indeterminate", f"{exc}.")
+        if holder.pid != expect_pid or not holder.alive:
+            refuse(
+                "lock_holder_mismatch",
+                f"Pid {expect_pid} does not hold this home's gateway lock.",
+            )
+        check_listener()
+        try:
+            pidfd_send_signal(pidfd, signal.SIGTERM)
+        except ProcessLookupError:
+            refuse("process_already_exited", f"Pid {expect_pid} has already exited.")
+        except PermissionError:
+            refuse("permission_denied", f"No permission to stop pid {expect_pid}.")
+    finally:
+        os.close(pidfd)
+
+    for _ in range(10):  # up to 1s, so the port is freed
+        time.sleep(0.1)
+        if _pid_exited(expect_pid):
+            break
+    sel().log_api_access(
+        caller="cli",
+        operation="gateway_stop",
+        outcome="allowed",
+        source="cli",
+        resources=f"pids=[{expect_pid}] port={port} via=expect_pid",
+    )
+    print(f"✅ Sent SIGTERM to gateway (pid {expect_pid}).")
+    _stop_mcp_gateway_daemon()
+
+
+def _stop(cli_port: int | None = None, *, expect_pid: int | None = None) -> None:
     """Stop a running KiroCrew gateway.
 
     Accepts the raw CLI ``--port`` value (``None`` when not passed).
@@ -493,7 +583,16 @@ def _stop(cli_port: int | None = None) -> None:
     - ``cli_port is not None``: user explicitly targeted a port, so we
       bypass the service short-circuit and SIGTERM the gateway bound to
       that port directly.
+
+    ``expect_pid`` (CLI ``--expect-pid``, only together with ``--port``) narrows
+    the stop to that one pid; see :func:`_stop_expected_pid`.
     """
+    if expect_pid is not None:
+        if cli_port is None:
+            print("❌ --expect-pid needs --port. Not signalling anything.")
+            sys.exit(2)
+        _stop_expected_pid(resolve_client_port(cli_port), expect_pid)
+        return
     port = resolve_client_port(cli_port)
     if cli_port is None and service_controller.stop_service():
         sel().log_api_access(

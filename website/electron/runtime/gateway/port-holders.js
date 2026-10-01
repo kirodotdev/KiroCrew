@@ -172,6 +172,24 @@ function createPortHolders({
     });
   }
 
+  // Whether `pid` has `file` open, from lsof's own view of the process. A pid
+  // recorded in a lock file can be reused; an open descriptor on that exact
+  // path cannot be left behind by a process that has exited. Resolves false on
+  // any probe failure, so an unreadable host never authorises a stop.
+  function lsofHoldsFile(pid, file) {
+    return new Promise((resolve) => {
+      execFile(
+        resolveLsof(),
+        ["-nP", "-a", "-p", String(pid), "-Fn"],
+        { timeout: 5000 },
+        (error, stdout) => {
+          if (error && !stdout) { resolve(false); return; }
+          resolve(String(stdout || "").split("\n").some((line) => line === `n${file}`));
+        },
+      );
+    });
+  }
+
   function psCommand(pid) {
     return new Promise((resolve) => {
       execFile(
@@ -246,6 +264,7 @@ function createPortHolders({
     posixDescendantPids,
     winListenPids,
     lsofListenPids,
+    lsofHoldsFile,
     psCommand,
     psPpid,
     snapshotGatewayPortPids,

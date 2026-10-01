@@ -101,6 +101,14 @@ const INSTALLING_PROBE_MS = 5_000;
 // Painting and closing in the same tick would give the line at most one frame.
 const INSTALLING_COMPLETE_LINGER_MS = 700;
 const ADOPTED_RECOVERY_WAIT_MS = 30_000;
+// How long a gateway that holds the port for this app's own data folder may
+// go on failing its health check at launch before the user is offered to stop
+// and restart it. Long enough that a gateway still importing on a slow disk
+// answers first; short enough that a wedged one is not a blank splash.
+const STUCK_GATEWAY_GRACE_MS = 15_000;
+const STUCK_GATEWAY_POLL_MS = 1_000;
+// `kirocrew stop --port` sends SIGTERM and waits for the port itself.
+const STUCK_GATEWAY_STOP_TIMEOUT_MS = 30_000;
 // loadFile query that tells loading.html it is being painted by a reconnect
 // path rather than a cold boot, so it can offer its exit control at once
 // (loading.html reads `reconnect=1`). A query, not an IPC send: the splash
@@ -275,6 +283,7 @@ function createGatewaySupervisor({
     posixDescendantPids,
     winListenPids,
     lsofListenPids,
+    lsofHoldsFile,
     psCommand,
     psPpid,
     snapshotGatewayPortPids,
@@ -773,6 +782,198 @@ function createGatewaySupervisor({
     return command.startsWith(bundleRoot);
   }
 
+  /**
+   * The one dialog about a local gateway this app found already holding its
+   * port. `stale` is a same-family gateway older than this app; `stuck` is a
+   * gateway for this app's own data folder that keeps failing its health check.
+   * Both name the same lock-checked command, so the copy is built in one place.
+   *
+   * @returns {Promise<"continue"|"stop-restart"|"quit">}
+   */
+  async function askAboutExistingGateway(kind, { localOwner, oldVersion = "" }) {
+    const stopCommand = `kirocrew stop --port ${PORT}`;
+    const serviceNote = localOwner === "service"
+      ? "\nIf the gateway starts again automatically, stop or update the service that restarts it."
+      : "";
+    if (kind === "stuck") {
+      const { response } = await dialog.showMessageBox({
+        type: "warning",
+        message: "The gateway is not responding.",
+        detail: `A Kiro Crew gateway for this data folder is running on port ${PORT} but has not answered for at least ${Math.round(STUCK_GATEWAY_GRACE_MS / 1000)} seconds.\n\nStop and restart stops that gateway and starts a fresh one. Anything the stuck gateway was still doing is stopped with it.${serviceNote ? "\nIf a background service restarts it automatically, Kiro Crew connects to it once it answers." : ""}`,
+        buttons: ["Stop and restart", "Quit"],
+        defaultId: 0,
+        cancelId: 1,
+      });
+      return response === 0 ? "stop-restart" : "quit";
+    }
+    if (kind === "stuck-manual") {
+      // No pidfd here to pin the stop to the checked process, so the app
+      // does not stop it. It names the lock-checked command instead.
+      await dialog.showMessageBox({
+        type: "warning",
+        message: "The gateway is not responding.",
+        detail: `A Kiro Crew gateway for this data folder is running on port ${PORT} but has not answered for at least ${Math.round(STUCK_GATEWAY_GRACE_MS / 1000)} seconds.\n\nTo fix it, quit Kiro Crew.\nRun this command in Terminal:\n${stopCommand}${serviceNote}\nThen reopen Kiro Crew.`,
+        buttons: ["Quit"],
+        defaultId: 0,
+        cancelId: 0,
+      });
+      return "quit";
+    }
+    const { response } = await dialog.showMessageBox({
+      type: "warning",
+      message: "The gateway is still running an older version.",
+      detail: `This app is version ${app.getVersion()}. The gateway is still running version ${oldVersion}.\n\nContinue will try to connect to the existing gateway; updated features may be unavailable.\n\nTo finish the update, quit Kiro Crew.\nRun this command in Terminal:\n${stopCommand}${serviceNote}\nThen reopen Kiro Crew.`,
+      buttons: ["Continue with existing gateway", "Quit"],
+      defaultId: 0,
+      cancelId: 0,
+    });
+    return response === 1 ? "quit" : "continue";
+  }
+
+  // The single LISTEN pid on PORT when it holds this app's own data folder,
+  // else 0. Two facts, both required: gateway.lock names that pid, and that
+  // pid has gateway.lock open right now. The recorded pid alone survives its
+  // writer, so a reused pid serving another home would match it; the open
+  // descriptor is what ties the listener to THIS home. lsof reports the
+  // kernel-resolved path, so a symlinked home is compared by its real path.
+  // POSIX only: Windows has no lsof, and an unproven holder keeps today's
+  // spawn path.
+  async function sameHomeGatewayPid() {
+    if (IS_WIN) return 0;
+    const pids = await snapshotGatewayPortPids(PORT);
+    if (pids?.length !== 1) return 0;
+    const lockFile = path.join(KIROCREW_HOME, "gateway.lock");
+    let recorded = NaN;
+    try {
+      recorded = parseInt(String(fs.readFileSync(lockFile, "utf8")).trim(), 10);
+    } catch {
+      return 0;
+    }
+    if (!Number.isInteger(recorded) || recorded !== pids[0]) return 0;
+    let realLock = lockFile;
+    try { realLock = fs.realpathSync(lockFile); } catch { /* compare the literal path */ }
+    const held = await lsofHoldsFile(pids[0], lockFile)
+      || (realLock !== lockFile && await lsofHoldsFile(pids[0], realLock));
+    return held ? pids[0] : 0;
+  }
+
+  // Run the CLI's own stop for PORT, pinned to the pid this app proved. With
+  // --expect-pid the CLI re-reads the listener and this home's gateway.lock
+  // right before the signal and refuses, signalling nothing, unless that pid
+  // still holds both -- so a gateway that replaced it is never stopped. POSIX
+  // only: its one caller is behind sameHomeGatewayPid.
+  function runGatewayStop(pid) {
+    const { KIROCREW_PORT: _ignored, ...cleanEnv } = processObj.env;
+    return new Promise((resolve) => {
+      execFile(resolveGatewayBin(), ["stop", "--port", String(PORT), "--expect-pid", String(pid)], {
+        timeout: STUCK_GATEWAY_STOP_TIMEOUT_MS,
+        windowsHide: true,
+        env: { ...cleanEnv, KIROCREW_HOME },
+      }, (error, stdout, stderr) => {
+        const output = `${stdout || ""}${stderr || ""}`.trim();
+        if (error) glog(`stuck gateway: \`kirocrew stop --port ${PORT}\` failed: ${error.message}${output ? ` — ${output.slice(0, 200)}` : ""}`);
+        else glog(`stuck gateway: \`kirocrew stop --port ${PORT}\` finished${output ? ` — ${output.slice(0, 200)}` : ""}`);
+        resolve(!error);
+      });
+    });
+  }
+
+  /**
+   * Launch found the port held but no health answer. Today's answer is to
+   * spawn anyway. That stays the answer for every holder except one: a local
+   * Kiro Crew gateway for this app's own data folder that keeps failing its
+   * health check past the grace window. That one is offered a stop-and-restart.
+   *
+   * @returns {Promise<"spawn"|"healthy"|"abort"|{stopFailed:number[]}>}
+   */
+  async function resolveUnresponsiveHolder() {
+    if (!runLocalGateway || getRemoteHostConfig(store, PORT)?.host) return "spawn";
+    if ((await probeGatewayPortBinding(PORT)) !== "bound") return "spawn";
+    const localOwner = await probeGatewayPortOwner(PORT);
+    if (localOwner !== "kirocrew" && localOwner !== "service") return "spawn";
+    const provenPid = await sameHomeGatewayPid();
+    if (!provenPid) return "spawn";
+    sendStatus("Waiting for the existing gateway to respond…");
+    // Counted in polls rather than read off the clock, so the injected timer
+    // fully decides how long this waits.
+    for (let waited = 0; waited < STUCK_GATEWAY_GRACE_MS; waited += STUCK_GATEWAY_POLL_MS) {
+      await new Promise((resolve) => setTimeoutFn(resolve, STUCK_GATEWAY_POLL_MS));
+      try { await checkBackend(); return "healthy"; }
+      catch { /* still not answering */ }
+    }
+    glog(`stuck gateway: :${PORT} is held by this data folder's gateway (owner=${localOwner}) and failed its health check for ${STUCK_GATEWAY_GRACE_MS}ms — offering stop and restart`);
+    // `kirocrew stop --expect-pid` pins its signal with a pidfd, which only
+    // Linux has. Elsewhere the app names the command and stops nothing.
+    if (processObj.platform !== "linux") {
+      await askAboutExistingGateway("stuck-manual", { localOwner });
+      return "abort";
+    }
+    const choice = await askAboutExistingGateway("stuck", { localOwner });
+    if (choice !== "stop-restart") return "abort";
+    // The dialog can stay open for minutes. Prove the holder again right
+    // before the stop, and require the same pid the grace window judged: a
+    // replacement (even one for this home, restarted by a service) has never
+    // been shown to be stuck, so it goes through the ordinary decision.
+    // A port that emptied meanwhile (the stuck gateway exited on its own) is
+    // free to spawn into; any other holder goes through the ordinary decision.
+    const portNowFree = async () => (await probeGatewayPortBinding(PORT)) === "free";
+    if ((await sameHomeGatewayPid()) !== provenPid) {
+      if (await portNowFree()) {
+        glog(`stuck gateway: :${PORT} emptied while the dialog was open — starting the bundled backend`);
+        return "spawn";
+      }
+      glog(`stuck gateway: :${PORT} changed holder while the dialog was open — re-validating instead of stopping`);
+      return "healthy";
+    }
+    sendStatus("Stopping the previous gateway…");
+    const incumbentPids = await snapshotGatewayPortPids(PORT);
+    if (!(await runGatewayStop(provenPid))) {
+      // The CLI refuses when the proven pid no longer holds the port. That is
+      // a failed stop only if the proven pid is still there.
+      if (await portNowFree()) {
+        glog(`stuck gateway: :${PORT} emptied before the stop — starting the bundled backend`);
+        return "spawn";
+      }
+      const holders = await snapshotGatewayPortPids(PORT);
+      if (holders?.length && !holders.includes(provenPid)) {
+        glog(`stuck gateway: :${PORT} was taken by pid ${holders.join(", ")} before the stop — re-validating the new holder`);
+        return "healthy";
+      }
+      return { stopFailed: incumbentPids || [] };
+    }
+    // A fast service manager can rebind before the port is ever seen free.
+    // A different listener pid is that new gateway, not a failed stop.
+    const takenByNewPid = async () => {
+      if (localOwner !== "service") return false;
+      const holders = await snapshotGatewayPortPids(PORT);
+      if (!holders?.length || holders.some((pid) => (incumbentPids || []).includes(pid))) return false;
+      glog(`stuck gateway: :${PORT} was taken by a new pid ${holders.join(", ")} after the stop — re-validating the new holder`);
+      return true;
+    };
+    if (await takenByNewPid()) return "healthy";
+    if (!(await waitForPortFree())) {
+      if (await takenByNewPid()) return "healthy";
+      return { stopFailed: incumbentPids || [] };
+    }
+    if (localOwner === "service") {
+      // A service manager may bring the gateway straight back. Give it the
+      // same bounded rebind grace the drain path does, then re-validate the
+      // new holder through the ordinary decision instead of spawning over it.
+      sendStatus("Waiting for the gateway to restart…");
+      const verdict = await waitForServiceRebind({
+        isPortBound: async () => (await probeGatewayPortBinding(PORT)) !== "free",
+        sleep: (ms) => new Promise((resolve) => setTimeoutFn(resolve, ms)),
+      });
+      if (verdict === "rebound") {
+        glog(`stuck gateway: :${PORT} re-bound after the stop — re-validating the new holder`);
+        return "healthy";
+      }
+    }
+    await waitForIncumbentExit(incumbentPids, "stuck gateway");
+    glog(`stuck gateway: :${PORT} released — starting the bundled backend`);
+    return "spawn";
+  }
+
   async function resolveGatewayConflict(rebindDepth = 0) {
     const health = await fetchHealthInfo();
     // A remote host configured for this port makes the holder a tunnel by
@@ -817,19 +1018,10 @@ function createGatewaySupervisor({
     }
     if (decision.action === "warn-stale") {
       glog(`bundled gateway ${decision.oldVersion} predates app ${app.getVersion()} — warning before reuse`);
-      const stopGateway = `Run this command in Terminal:\nkirocrew stop --port ${PORT}`;
-      const recovery = localOwner === "service"
-        ? `${stopGateway}\nIf the gateway starts again automatically, stop or update the service that restarts it.`
-        : stopGateway;
-      const { response } = await dialog.showMessageBox({
-        type: "warning",
-        message: "The gateway is still running an older version.",
-        detail: `This app is version ${app.getVersion()}. The gateway is still running version ${decision.oldVersion}.\n\nContinue will try to connect to the existing gateway; updated features may be unavailable.\n\nTo finish the update, quit Kiro Crew.\n${recovery}\nThen reopen Kiro Crew.`,
-        buttons: ["Continue with existing gateway", "Quit"],
-        defaultId: 0,
-        cancelId: 0,
+      const choice = await askAboutExistingGateway("stale", {
+        localOwner, oldVersion: decision.oldVersion,
       });
-      if (response === 1) return "abort";
+      if (choice === "quit") return "abort";
     }
     if (decision.action === "reuse" || decision.action === "warn-stale") {
       // Adopt-or-wait. Only a positive shutting-down verdict refuses adoption;
@@ -965,36 +1157,67 @@ function createGatewaySupervisor({
         resolve(false);
       };
 
+      // A responder on the port goes through the identity and readiness
+      // decision, whether it answered at once or inside the stuck-holder grace.
+      const adoptOrSpawn = async () => {
+        const outcome = await resolveGatewayConflict();
+        if (outcome === "reuse") { resolve(true); return; }
+        if (outcome === "foreign-holder") {
+          // No `canStartHere`: the dialog decides the button from
+          // canOfferLocalStart, and with no crew on this port that answer is
+          // unconditional, so a copy of it here would be state nobody reads.
+          gatewayStartFailure = {
+            port: PORT,
+            localStartBlocked: "foreign-holder",
+          };
+          resolve(false);
+          return;
+        }
+        if (outcome === "probe-failed") {
+          gatewayStartFailure = {
+            error: `could not verify the previous gateway process on port ${PORT}`,
+          };
+          resolve(false);
+          return;
+        }
+        if (outcome === "abort") {
+          quitApp();
+          resolve(false);
+          return;
+        }
+        spawnUnlessClientOnly();
+      };
+
+      // Nothing answered. Only a stuck gateway for this data folder changes
+      // the answer from spawning; every other holder keeps today's path.
+      const recoverOrSpawn = async () => {
+        let outcome = "spawn";
+        try { outcome = await resolveUnresponsiveHolder(); }
+        catch (error) {
+          glog(`stuck gateway: holder check failed (${error && error.message}) — spawning as before`);
+        }
+        if (outcome === "healthy") { await adoptOrSpawn(); return; }
+        if (outcome === "abort") {
+          quitApp();
+          resolve(false);
+          return;
+        }
+        if (outcome && outcome.stopFailed) {
+          const pidHint = outcome.stopFailed.length
+            ? ` Process ${outcome.stopFailed.join(", ")} still holds it. To end it, run this in Terminal, then try again:\nkill -TERM ${outcome.stopFailed.join(" ")}`
+            : " End the process that holds it, then try again.";
+          gatewayStartFailure = {
+            error: `could not stop the gateway that is not responding on port ${PORT}.${pidHint}`,
+          };
+          resolve(false);
+          return;
+        }
+        spawnUnlessClientOnly();
+      };
+
       ensureManagedTunnel()
         .then(() => checkBackend())
-        .then(async () => {
-          const outcome = await resolveGatewayConflict();
-          if (outcome === "reuse") { resolve(true); return; }
-          if (outcome === "foreign-holder") {
-            // No `canStartHere`: the dialog decides the button from
-            // canOfferLocalStart, and with no crew on this port that answer is
-            // unconditional, so a copy of it here would be state nobody reads.
-            gatewayStartFailure = {
-              port: PORT,
-              localStartBlocked: "foreign-holder",
-            };
-            resolve(false);
-            return;
-          }
-          if (outcome === "probe-failed") {
-            gatewayStartFailure = {
-              error: `could not verify the previous gateway process on port ${PORT}`,
-            };
-            resolve(false);
-            return;
-          }
-          if (outcome === "abort") {
-            quitApp();
-            resolve(false);
-            return;
-          }
-          spawnUnlessClientOnly();
-        })
+        .then(adoptOrSpawn, recoverOrSpawn)
         .catch(() => { spawnUnlessClientOnly(); });
     });
   }
