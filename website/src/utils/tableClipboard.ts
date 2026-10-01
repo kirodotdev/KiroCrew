@@ -52,6 +52,21 @@ const MD_META = /[\\`*_[\]<>~&@]/g
 const AUTOLINK_SCHEME = /:\/\//g
 const AUTOLINK_WWW = /\bwww\./gi
 
+/** `text` as a CommonMark inline code span. A backtick inside the code needs
+ *  a longer fence. Padding is needed in two cases: a backtick at either end
+ *  (it would fuse with the fence), and a space at BOTH ends, because CommonMark
+ *  strips one space from each end of a span that begins and ends with one --
+ *  so `` ` a ` `` would re-parse as `a`. The extra pair of spaces is what gets
+ *  stripped, leaving the original. Shared with the chat selection copy. */
+export function markdownCodeSpan(text: string): string {
+  const runs = text.match(/`+/g) ?? []
+  const fence = '`'.repeat(Math.max(0, ...runs.map(r => r.length)) + 1)
+  const touchesFence = text.startsWith('`') || text.endsWith('`')
+  const spaceBounded = text.length > 0 && text.trim().length > 0 && text.startsWith(' ') && text.endsWith(' ')
+  const pad = touchesFence || spaceBounded ? ' ' : ''
+  return `${fence}${pad}${text}${pad}${fence}`
+}
+
 function escapeMarkdownText(text: string): string {
   return text.replace(MD_META, ch => `\\${ch}`).replace(AUTOLINK_SCHEME, '\\://').replace(AUTOLINK_WWW, m => `${m.slice(0, 3)}\\.`)
 }
@@ -73,19 +88,7 @@ function inlineText(node: ElementContent, inCode = false): string {
     return typeof alt === 'string' ? escapeMarkdownText(alt) : ''
   }
   if (tag === 'code') {
-    const inner = node.children.map(c => inlineText(c, true)).join('')
-    // A backtick inside the code needs a longer fence, exactly as CommonMark
-    // specifies for inline code spans. Padding is needed in two cases: a
-    // backtick at either end (it would fuse with the fence), and a space at
-    // BOTH ends, because CommonMark strips one space from each end of a span
-    // that begins and ends with one -- so `` ` a ` `` would re-parse as `a`.
-    // The extra pair of spaces is what gets stripped, leaving the original.
-    const runs = inner.match(/`+/g) ?? []
-    const fence = '`'.repeat(Math.max(0, ...runs.map(r => r.length)) + 1)
-    const touchesFence = inner.startsWith('`') || inner.endsWith('`')
-    const spaceBounded = inner.length > 0 && inner.trim().length > 0 && inner.startsWith(' ') && inner.endsWith(' ')
-    const pad = touchesFence || spaceBounded ? ' ' : ''
-    return `${fence}${pad}${inner}${pad}${fence}`
+    return markdownCodeSpan(node.children.map(c => inlineText(c, true)).join(''))
   }
   const inner = node.children.map(c => inlineText(c, inCode)).join('')
   if (tag === 'a') {
