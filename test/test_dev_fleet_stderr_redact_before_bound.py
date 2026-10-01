@@ -47,6 +47,16 @@ class TestRebaseConflictTailIsRedactedBeforeTheBound:
         rebase_calls: list[list[str]] = []
 
         async def _git(path: str, *args: str, **kw: object) -> str | None:
+            # ``_rebase_locked`` re-resolves the base branch first, which reads the
+            # remote's LIVE advertised HEAD and resets the positive verdict before
+            # probing. Answer that probe so the base resolves STATED (positive) on its
+            # own merits: the resolver clears ``_BASE_BRANCH_POSITIVE`` up front, so a
+            # value planted directly on the module would not survive to the gate. This
+            # test is about the conflict output's redaction.
+            if args[:1] == ("remote",):
+                return "origin"
+            if args[:1] == ("ls-remote",) and args[-1] == "HEAD":
+                return "ref: refs/heads/main\tHEAD\n<sha>\tHEAD\n"
             return ""
 
         async def _run_cmd(cmd: list[str], **kw: object) -> tuple[int, str, str]:
@@ -57,10 +67,9 @@ class TestRebaseConflictTailIsRedactedBeforeTheBound:
         monkeypatch.setattr(repository, "_git", _git)
         monkeypatch.setattr(runtime, "_run_cmd", _run_cmd)
 
-        async def _remote() -> str:
-            return "origin"
-
-        monkeypatch.setattr(repository, "_upstream_remote", _remote)
+        # The rebase fetches/rebases from the remote the snapshot verified against
+        # (here 'origin', from the stubbed ls-remote), so _run_cmd is reached only by
+        # the rebase itself.
         out = await worktree_ops._rebase_locked({"path": str(tmp_path)})
         assert rebase_calls, "the rebase was never attempted, so this exercised nothing"
         return out

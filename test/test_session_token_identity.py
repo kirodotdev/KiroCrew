@@ -43,7 +43,7 @@ def test_tool_policy_tracks_signed_session_rekeys_instead_of_stale_parent(cfg, m
     monkeypatch.setattr(mcp_shared, "_last_failure_time", 0.0)
     monkeypatch.setattr(mcp_shared, "_last_startup_race_time", 0.0)
     monkeypatch.setattr(mcp_shared, "resolve_client_port_src", lambda port: (5476, "config"))
-    monkeypatch.setattr(mcp_shared, "read_local_secret", lambda port: "synthetic-secret")
+    monkeypatch.setattr(mcp_shared, "read_local_secret", lambda port, **_kw: "synthetic-secret")
     monkeypatch.setattr(mcp_shared, "sel", Mock())
     requested = []
 

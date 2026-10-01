@@ -2285,11 +2285,41 @@ async def _rebase_locked(target: dict) -> dict:
             **_fields,
             "error": "worktree has uncommitted changes" + _detail,
         }
-    remote = await repository._upstream_remote()
-    if await repository._git(path, "fetch", remote, repository.BASE_BRANCH, timeout=90) is None:
-        return {"ok": False, "error": f"git fetch {remote} {repository.BASE_BRANCH} failed"}
+    # Re-resolved HERE, not inherited from discovery. Discovery latches once per
+    # process (`_DISCOVERY_DONE`), so a base resolved at startup is the only answer the
+    # process would ever hold -- and a refusal would then not clear until a restart. A
+    # few short git reads on an operation that already fetches is what makes that
+    # promise true.
+    #
+    # Resolved into LOCALS, never into the shared `repository.BASE_BRANCH` global.
+    # `_sync_start_locked` checks `HEAD == BASE_BRANCH` and then re-reads that global
+    # across several awaits before it fetches and merges; a rebase mutating the global
+    # in that window (default main->trunk) would make the sync fetch and merge a base
+    # it never validated, holding only `_wt_lock` and never `_SYNC_LOCK`. Keeping the
+    # answer local removes the shared mutable state the two operations contended over,
+    # rather than serializing two unrelated subsystems under one lock: this rebase acts
+    # only on the base it itself resolved, and the sync's global is left untouched.
+    base_branch, base_positive, base_remote = await repository._resolve_base_snapshot()
+    if base_branch is None:
+        base_branch = repository.BASE_BRANCH
+    # Before the fetch, and before anything is rewritten: a base branch nobody stated
+    # is a guess, and this is the one operation here that cannot be undone from its own
+    # result -- a clean replay onto the wrong base returns ok and names no rollback.
+    # The dirt gate above already refuses on the cheaper hazard. Checked against the
+    # LOCAL snapshot, so the verdict is about the base this rebase will act on.
+    base_refusal = repository.base_branch_mutation_refusal(base_branch, base_positive)
+    if base_refusal is not None:
+        return {"ok": False, "error": base_refusal}
+    # The SAME remote the snapshot verified the base against -- not a remote re-derived
+    # from `branch.<base>.remote`, which can name a different one (`origin` advertises
+    # `main` while `branch.main.remote = upstream`) and let a clean replay rewrite the
+    # worktree onto a base the positive verdict never checked. Base and remote are one
+    # snapshot; the fetch and the rebase use its remote.
+    remote = base_remote
+    if await repository._git(path, "fetch", remote, base_branch, timeout=90) is None:
+        return {"ok": False, "error": f"git fetch {remote} {base_branch} failed"}
     rc, stdout, stderr = await runtime._run_cmd(
-        ["git", "-C", path, "rebase", f"{remote}/{repository.BASE_BRANCH}"],
+        ["git", "-C", path, "rebase", f"{remote}/{base_branch}"],
         timeout=180,
         mode="strict",
     )

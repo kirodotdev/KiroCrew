@@ -124,6 +124,12 @@ async function gatewayToken() {
  * then 401 forever, reproducing this exact bug on a delay. Sent as a
  * `Cookie` header it is checked against `session_exp` instead (hours, not
  * minutes) — the same field the browser itself relies on.
+ *
+ * The request is addressed at the URL it was built from. Nothing here re-derives
+ * a destination: the gateway holds every loopback family the configured name
+ * resolves to, and the credential was only minted at all because that coverage
+ * was verified first (`listenerSecretsFor`), so the name the URL already carries
+ * can reach no one else.
  */
 function withGatewayAuth(url, auth) {
   if (!auth || !auth.value) return { url, headers: {} };

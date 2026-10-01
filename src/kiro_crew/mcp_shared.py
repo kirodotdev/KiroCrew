@@ -737,14 +737,17 @@ def _resolve_tool_policy(
 
     try:
         port, _source = resolve_client_port_src(None)
-        api_base = f"http://localhost:{port}"
+        api_base = f"http://127.0.0.1:{port}"
 
         # Credential for the port this function DIALS (parsed just above), not for
         # whichever gateway an ambient lookup would name -- those can differ on a
-        # multi-gateway host, which is the desync being closed.
+        # multi-gateway host, which is the desync being closed. The v4 loopback
+        # LITERAL (matching the dial) reaches one family, so a single-family
+        # gateway (v4-only or a wildcard/container bind) still authenticates; the
+        # ambiguous ``localhost`` would demand both families and 403 such a gateway.
         secret = ""
         try:
-            secret = read_local_secret(port)
+            secret = read_local_secret(port, dial_host="127.0.0.1")
         except Exception:
             pass
 

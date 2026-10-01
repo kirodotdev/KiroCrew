@@ -370,10 +370,18 @@ def _secret_for_base(base: str) -> str:
     pre-restart secret is the desync that helper exists to close.
 
     The port comes from the base being dialled rather than a fresh resolution,
-    so the credential and the target cannot name different gateways.
+    so the credential and the target cannot name different gateways. The HOST is
+    taken from that same base, so the credential is resolved for the exact
+    listener this base addresses (``read_local_secret`` prefers the address-keyed
+    entry and fails closed): a port names a SET of listeners, and pairing the
+    read to the dialled host is what keeps the secret from reaching a co-resident
+    that merely holds the port.
     """
     try:
-        return read_local_secret(int(base.rsplit(":", 1)[-1]))
+        authority = base.split("//", 1)[-1].split("/", 1)[0]
+        host = authority.rsplit(":", 1)[0]
+        port = int(authority.rsplit(":", 1)[-1])
+        return read_local_secret(port, dial_host=host)
     except Exception:
         return ""
 
@@ -488,10 +496,14 @@ def _internal_secret() -> str:
 
     Thin wrapper over ``config.loader.read_local_secret``, which owns the
     per-listener-then-shared order. The port is passed rather than re-resolved
-    because ``_api_port`` already resolved and cached it for this process.
+    because ``_api_port`` already resolved and cached it for this process. The
+    dial host is the IPv4 loopback literal every ``_api_base`` in this module
+    addresses, so the credential is resolved for that listener and refuses when
+    the address-keyed entry is absent rather than falling back to the port-keyed
+    read.
     """
     try:
-        return read_local_secret(_api_port())
+        return read_local_secret(_api_port(), dial_host="127.0.0.1")
     except Exception:
         return ""
 

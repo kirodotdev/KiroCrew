@@ -301,7 +301,7 @@ function createGatewaySupervisor({
     waitForPortFree,
     waitForIncumbentExit,
   });
-  const { fetchRemoteToken, fetchLocalToken } = createTokenSources({
+  const { fetchRemoteToken, mintLocalToken } = createTokenSources({
     store,
     port: PORT,
     backendUrl: BACKEND_URL,
@@ -735,7 +735,7 @@ function createGatewaySupervisor({
     // an unidentified payload, a same-family gateway, a dev-family one, and a
     // cross-family one whose LISTEN owner is not ours -- and a gateway reached
     // through `ssh -L` answers with a perfectly ordinary same-family payload, so
-    // a gate on one reason value misses four. `fetchLocalToken` then posts this
+    // a gate on one reason value misses four. `mintLocalToken` then posts this
     // machine's `.local_secret` to it, because the mint only requires a literal
     // loopback origin and a tunnel's local end is one. The header goes out before
     // any 403 is seen, so there is no recovery after the fact.
@@ -1826,7 +1826,7 @@ function createGatewaySupervisor({
       // just before local mint accepts that secret, so retry only an own-gateway
       // 403; foreign/SSH gateways can never be minted from this machine.
       for (let attempt = 0; ; attempt += 1) {
-        let token = await fetchLocalToken(targetBackendUrl);
+        let token = await mintLocalToken(targetBackendUrl);
         if (!token) {
           ({ token } = await fetchRemoteToken(new URL(targetBackendUrl).port));
         }
@@ -2235,7 +2235,7 @@ function createGatewaySupervisor({
   return Object.freeze({
     start: startGateway,
     connect: showLoadingThenConnect,
-    fetchLocalToken,
+    mintLocalToken,
     fetchRemoteToken,
     entryUrl: dashboardEntryUrl,
     probePrimaryPortOwner,

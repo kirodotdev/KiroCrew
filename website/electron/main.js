@@ -402,7 +402,7 @@ windows = createWindowLifecycle({
   port: PORT,
   glog,
   readInternalSecret,
-  fetchLocalToken: (...args) => gateway.fetchLocalToken(...args),
+  mintLocalToken: (...args) => gateway.mintLocalToken(...args),
   fetchRemoteToken: (...args) => gateway.fetchRemoteToken(...args),
   isQuitting: () => isQuitting,
   requestQuit,
@@ -495,10 +495,17 @@ async function offerRelocationIfUnupdatable() {
 async function fetchMochiGatewayAuth(backendUrl = BACKEND_URL) {
   // Keep the dashboard established credential order: local secret, explicit
   // SSH host, then a token borrowed from the already-authenticated session.
-  const localValue = await gateway.fetchLocalToken(backendUrl);
+  // Every credential here is delivered to `backendUrl` as written, which is what
+  // keeps the shell on one origin and its renderer on one storage bucket. What
+  // makes that address safe for a locally minted token is the mint's own refusal:
+  // `localhost` names both loopback families, so mintLocalToken() produces
+  // nothing unless this gateway holds every family that host resolves to.
+  const localValue = await gateway.mintLocalToken(backendUrl);
   if (localValue) return { value: localValue, viaCookie: false };
   const { token: remoteValue } = await gateway.fetchRemoteToken(new URL(backendUrl).port);
-  if (remoteValue) return { value: remoteValue, viaCookie: false };
+  if (remoteValue) {
+    return { value: remoteValue, viaCookie: false };
+  }
   const borrowed = await borrowSessionToken({
     electronSession: session.defaultSession,
     backendUrl,
@@ -581,7 +588,7 @@ app.whenReady().then(async () => {
   try {
     initCrewCompanion({
       backendUrl: BACKEND_URL,
-      fetchLocalToken: (...args) => gateway.fetchLocalToken(...args),
+      mintLocalToken: (...args) => gateway.mintLocalToken(...args),
       glog,
       getDashboardWindow: () => windows.focusedDashboardWindow() || null,
     });

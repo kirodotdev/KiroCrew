@@ -306,13 +306,19 @@ def _internal_secret(port: int) -> str:
     Returns an empty string if the file is missing or unreadable; the
     server then rejects the request with 403, which is the correct
     failure mode.
+
+    Dials the IPv4 loopback LITERAL, matching the ``http://127.0.0.1`` bases its
+    callers construct: a literal reaches one family, so the credential pairs with
+    the address actually dialled and an ordinary single-family gateway (v4-only or
+    a wildcard/container bind) still authenticates. The ambiguous ``localhost``
+    would demand BOTH families and refuse such a gateway.
     """
-    return read_local_secret(port)
+    return read_local_secret(port, dial_host="127.0.0.1")
 
 
 def _spawn(args: argparse.Namespace) -> None:
     """Dispatch spawn subcommands: run, list."""
-    base = f"http://localhost:{args.port}"
+    base = f"http://127.0.0.1:{args.port}"
     action = getattr(args, "spawn_action", None)
 
     if action == "list":
@@ -4101,7 +4107,7 @@ def _artifact(args: argparse.Namespace) -> None:
     """List, save, view, update, or delete artifacts."""
     cfg = KiroCrewConfig.load()
     _host, port = parse_dashboard_url(cfg.dashboard.url)
-    base = f"http://localhost:{port}"
+    base = f"http://127.0.0.1:{port}"
 
     action = getattr(args, "artifact_action", None) or "list"
 

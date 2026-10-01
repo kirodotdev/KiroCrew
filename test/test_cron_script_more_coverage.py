@@ -523,7 +523,7 @@ class TestScriptContextPost:
 
         req = captured["req"]
         # Full-value comparison: a prefix check would also match another host.
-        assert req.full_url == "http://localhost:7788/api/send-message"
+        assert req.full_url == "http://127.0.0.1:7788/api/send-message"
         assert req.get_method() == "POST"
         assert req.get_header("X-internal-secret") == "tok"
         assert req.get_header("X-session-key") == "cron:abc"
@@ -922,12 +922,12 @@ class TestPathAndSecretResolution:
 
     def test_internal_secret_prefers_the_environment(self, monkeypatch):
         monkeypatch.setenv("KIROCREW_INTERNAL_SECRET", "env-secret")
-        monkeypatch.setattr(cron_script, "read_local_secret", lambda port: "file-secret")
+        monkeypatch.setattr(cron_script, "read_local_secret", lambda port, **_kw: "file-secret")
         assert _resolve_internal_secret(5476) == "env-secret"
 
     def test_internal_secret_falls_back_to_the_local_secret_file(self, monkeypatch):
         monkeypatch.delenv("KIROCREW_INTERNAL_SECRET", raising=False)
-        monkeypatch.setattr(cron_script, "read_local_secret", lambda port: "file-secret")
+        monkeypatch.setattr(cron_script, "read_local_secret", lambda port, **_kw: "file-secret")
         assert _resolve_internal_secret(5476) == "file-secret"
 
     def test_internal_secret_reads_the_port_it_is_given(self, monkeypatch):
@@ -938,7 +938,7 @@ class TestPathAndSecretResolution:
         monkeypatch.delenv("KIROCREW_INTERNAL_SECRET", raising=False)
         seen = {}
 
-        def _fake_read(port):
+        def _fake_read(port, **_kw):
             seen["port"] = port
             return "file-secret"
 
@@ -1009,7 +1009,9 @@ class TestRunScriptSandboxed:
         # the boot-time 403 this fix addresses.
         monkeypatch.setenv("KIROCREW_INTERNAL_SECRET", "stale-env-secret")
         monkeypatch.setattr(cron_script, "_resolve_dial_port", lambda: 7788)
-        monkeypatch.setattr(cron_script, "read_local_secret", lambda port: "stale-file-secret")
+        monkeypatch.setattr(
+            cron_script, "read_local_secret", lambda port, **_kw: "stale-file-secret"
+        )
         # Use the real credential path (the fixture stubs it) so the provider
         # actually competes with env/file derivation.
         monkeypatch.setattr(cron_script, "_resolve_internal_secret", _resolve_internal_secret)
@@ -1024,7 +1026,7 @@ class TestRunScriptSandboxed:
         # order. env present -> env wins.
         monkeypatch.setattr(cron_script, "_resolve_dial_port", lambda: 7788)
         monkeypatch.setenv("KIROCREW_INTERNAL_SECRET", "env-wins")
-        monkeypatch.setattr(cron_script, "read_local_secret", lambda port: "file-loses")
+        monkeypatch.setattr(cron_script, "read_local_secret", lambda port, **_kw: "file-loses")
         # Use the real derivation (the fixture stubs it).
         monkeypatch.setattr(cron_script, "_resolve_internal_secret", _resolve_internal_secret)
         script_run.proc = _FakeProc(comm_results=[('{"status": "ok"}\n', "")])

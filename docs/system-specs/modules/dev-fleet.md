@@ -17,9 +17,10 @@ Gateway session auth (token/cookie) gates the proxy entrance as with all builtin
    dropping records git flags `prunable` (checkout directory deleted without a
    `git worktree prune`); the primary checkout is never dropped, since it anchors `is_main`
 2. **Pod integration** — spin up/down/restart isolated pod instances per worktree
-3. **Pull+Build sync** — pull origin/main and rebuild (venv + frontend dist)
+3. **Pull+Build sync** — pull the resolved base branch and rebuild (venv + frontend dist)
 4. **Prune** — safely remove merged/empty worktrees with PR-shipped verification
-5. **Rebase** — rebase feature branches onto main with conflict detection + abort
+5. **Rebase** — rebase feature branches onto the resolved base branch with conflict
+   detection + abort (refused while that base is a guess — see Base Branch Resolution)
 6. **GitHub PR status** — TTL-cached `gh pr list` queries for merge state
 7. **Make Live** — repoint the live gateway at another worktree via a
    live-target pointer file (no service definition is ever mutated)
@@ -215,7 +216,7 @@ verification. Route names below are relative to that prefix.
 | `/apps/dev-fleet/api/pod/token` | `{name}` | Mint a dashboard token for the pod |
 | `/apps/dev-fleet/api/pod/provision` | `{name}` | Start async venv+dist build (returns `{run_id}`) |
 | `/apps/dev-fleet/api/pod/provision/dismiss` | `{name, run_id}` | Forget a terminal provision failure when the run id still matches |
-| `/apps/dev-fleet/api/rebase` | `{name}` | Rebase worktree onto origin/main |
+| `/apps/dev-fleet/api/rebase` | `{name}` | Rebase worktree onto `{remote}/{base branch}` |
 
 Two routes are served by the **gateway process** rather than the backend, under the
 in-gateway namespace `/api/apps/dev-fleet/` (`gateway_routes.py`, mounted by the
@@ -1680,13 +1681,31 @@ overrides every config file, including an agent-writable repo-local one.
 Two different jobs live in that one dict, and they are worth keeping apart:
 
 - **Config-driven execution.** `GIT_ALLOW_PROTOCOL` / `GIT_PROTOCOL_FROM_USER`
-  make git itself refuse `ext::` and custom remote helpers; the four
+  make git itself refuse `ext::` and custom remote helpers; the nine
   `GIT_CONFIG_KEY_*` / `VALUE_*` pairs disable `core.fsmonitor` and
-  `core.hooksPath`, reset `credential.helper` to empty, and pin `core.sshCommand`
-  to plain `ssh`. Each of those is a config key a repo can set to name a program
-  git will spawn. (The operator's own *global* credential helpers are re-pinned
-  after the reset — see `_GIT_TRUSTED_HELPERS` — because a global config is
-  operator-owned rather than part of the repo attack surface.)
+  `core.hooksPath`, reset `credential.helper` to empty, pin `core.sshCommand`
+  to plain `ssh`, pin all four signature-program spellings, and turn
+  `log.showSignature` off. Each of those is a config key a repo can set to name a
+  program git will spawn. (The operator's own *global* credential helpers are
+  re-pinned after the reset — see `_GIT_TRUSTED_HELPERS` — because a global config
+  is operator-owned rather than part of the repo attack surface.)
+
+  Signature **verification** is the third execution vector, and a plain read
+  reaches it: `[log] showSignature=true` makes every `git log` verify what it
+  prints, and verification execs the program named by `gpg.program`. All four
+  spellings are pinned because `gpg.<format>.program` selects per format and
+  `gpg.openpgp.program` is a synonym that *overrides* the bare key — pinning one
+  leaves the other as an unpinned way to name the same exec. The trigger is pinned
+  beside the programs, because a program name is a value and this is a place not
+  to depend on one.
+- **What git writes on a read.** `GIT_OPTIONAL_LOCKS=0` is also not a config key.
+  `git status` refreshes the index's stat cache and saves it back under
+  `index.lock`, so a command that is a read to its caller is a **write** to the
+  repository. Every fleet render runs one per row, so without this the fleet
+  contends with the operator's own git for the lock on the ordinary path. Pinned on
+  the env chokepoint rather than as `--no-optional-locks` per call site, so the argv
+  this module builds keeps naming just its subcommand and a read added later
+  inherits it.
 - **Which object graph git answers from.** `GIT_NO_REPLACE_OBJECTS=1` is not a
   config key and is not about code execution. A `refs/replace/<oid>` ref
   substitutes one object for another in *every* read, so `log`,
@@ -1697,8 +1716,102 @@ Two different jobs live in that one dict, and they are worth keeping apart:
   from a grafted walk is simply wrong. `git replace` is a legitimate local
   operation, so this is a correctness pin first and a tamper pin second. It is
   therefore an env var in its own right and **not** one of the counted config
-  pairs: `GIT_CONFIG_COUNT` stays at 4. `platform/update_governance.py` and
-  `auto_improvement`'s clone setup pin it for the same reason.
+  pairs, as `GIT_OPTIONAL_LOCKS` is not: `GIT_CONFIG_COUNT` counts only the config
+  pairs, and the loader that appends the operator's trusted helpers starts its own
+  numbering from that count rather than from a literal.
+  `platform/update_governance.py` and `auto_improvement`'s clone setup pin
+  `GIT_NO_REPLACE_OBJECTS` for the same reason.
+
+## Base Branch Resolution
+
+`repository.BASE_BRANCH` is the resolved checkout's **own** default branch, not the
+literal `main`. It is resolved once per discovery attempt, in the order the answer is
+trustworthy, and from **one** remote only:
+
+| Tier | Source | Stated or guessed |
+|---|---|---|
+| 1 | the remote's **live** advertised `HEAD` (`ls-remote --symref` on `origin`, or the sole remote under any name) | **stated** |
+| 2 | the first of `_LOCAL_BASE_CANDIDATES` (`main`, `master`) that exists | guessed | <!-- wokeignore:rule=master -->
+| 3 | the branch the checkout is on | guessed |
+
+Only tier 1 states anything, and it asks the remote what its `HEAD` is **now** rather
+than trusting the local `refs/remotes/origin/HEAD` tracking ref — that ref is recorded
+once by `clone` or a manual `git remote set-head` and is never refreshed by `fetch`, so
+after the remote's default moves it names a branch the remote has stopped defaulting to.
+A conventional name merely *existing* locally is likewise not the repository declaring
+its default: a `main` left behind by a rename to `trunk` is the ordinary residue of that
+rename, and a hand-added or unreachable remote advertises no `HEAD` to confirm against —
+so "stale candidate, no remote answer" is a pairing of two normal dev-box states rather
+than an exotic one. Trusting tier 2 would let a rebase rewrite a worktree onto
+`origin/main` while the real base is `trunk`, and the fetch cannot catch it, because
+that stale `main` is still a fetchable ref.
+
+The remote whose live HEAD earns tier 1 is resolved in **two passes**, because the
+remote the rebase must fetch from is `branch.<base>.remote` — which cannot be read
+until the base is known. The first pass reads the remote the checkout is CONFIGURED to
+track — `git config branch.<checked-out>.remote`, knowable up front — falling back to
+`origin` (or a sole remote under another name) only when none is configured, and
+resolves a PROVISIONAL base against that remote's advertised HEAD. Once that base is
+named, the second pass reads the base's OWN configured remote (`branch.<base>.remote`):
+if it names a different remote, the base is RE-VERIFIED against that remote's advertised
+HEAD, and only a match earns the positive (paired with that remote); if that remote
+cannot confirm, the answer is NOT positive and a rebase refuses. Reading the base's own
+remote removes a guess: a fork whose checkout tracks `origin` (advertising `main`) while
+the base `main` tracks `upstream` is an ordinary dev-box state, and pairing the base
+with `origin` there would rebase onto `origin/main` — a base the configured upstream
+never stated — rewriting the worktree's commits with no undo. The checked-out branch's
+remote is only a PROXY for the base's remote; the base's own remote is the authoritative
+statement, read second once the base names it. The local candidates need no remote at
+all.
+
+Every tier's answer passes `_plausible_branch_name` before it can reach an argv: a
+leading `-` would be read as an option, and `..` is the range separator every
+consumer interpolates around. A resolution that finds nothing leaves the value at
+`main`, which is what every consumer read before any repository was known.
+
+`_BASE_BRANCH_POSITIVE` records whether the repository **stated** its default or this
+module guessed it, and `base_branch_mutation_refusal()` is the one place that reads it.
+Reads are served either way — being wrong about the label costs a row's caption. Rebase
+refuses on a guess, before the fetch: it rewrites a worktree's commits onto
+`{remote}/{base}` and returns `ok` with no rollback path once the replay is clean.
+
+`_rebase_locked` **re-resolves** the base branch immediately before reading that gate,
+into a **local** snapshot (`repository._resolve_base_snapshot()`, returning
+`(base, positive, remote)`) rather than the shared `BASE_BRANCH` global. The remote is
+part of that snapshot: the positive verdict is earned from one remote's advertised
+`HEAD`, so the rebase fetches and replays from THAT same remote. That remote is the
+base's OWN configured remote (`branch.<base>.remote`) whenever it names one that
+differs from the checkout's — read on the snapshot's second pass, once the base is
+known — so a fork whose checkout tracks `origin` while `branch.main.remote = upstream`
+verifies and rebases onto `upstream`'s base, not `origin`'s, and a clean replay cannot
+rewrite the worktree onto a base the verdict never verified. Discovery latches once per process, so
+a base resolved at startup would be the only answer the process ever holds — which would
+make a refusal permanent for the process. Resolving locally also keeps the rebase off
+the global that `_sync_start_locked` reads across its own awaits: a sync checks
+`HEAD == BASE_BRANCH` and later re-reads it before it fetches and merges, so a rebase
+mutating that global mid-flight (default `main` → `trunk`) would make the sync merge a
+base it never validated — the rebase holds only its worktree lock, never `_SYNC_LOCK`.
+Because the resolver reads the remote's **live** `HEAD`, a checkout whose remote
+publishes a default is served on its next attempt once that remote is reachable, with
+no manual step and no locally recorded ref to go stale. A few short git reads on an
+operation that already fetches is what makes that promise true.
+
+## Remote URL Derivations
+
+`runtime.remote_url_locator()` is the one home of what may be derived from a git
+remote URL: everything before a `?` or `#`. It lives in `runtime` because
+`fleet_state` imports `repository`, so the reverse import would be a cycle — and a
+rule that cannot be shared gets copied, which is what left three derivation sites each
+carrying their own suffix pattern.
+
+`git remote set-url` accepts a query and smart-HTTP transports honour it, so an
+operator's own remote can legitimately hold `?access_token=…`. No derivation wants
+that credential: one becomes the browser base rendered into an issue-link `href`, the
+others become an `owner/repo` handed to `gh --repo` in child argv. The cut must
+**precede** any pattern anchored on `$`, because a retained query sits between a
+trailing `.git` and the end of the string — so the suffix the pattern means to strip
+survives *and* the token rides into the result, and one remote derives a different
+name than the same remote written without a query.
 
 ## Output Redaction
 

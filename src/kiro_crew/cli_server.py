@@ -177,7 +177,7 @@ def _token(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     port = resolve_client_port(args.port)
-    secret = read_local_secret(port)
+    secret = read_local_secret(port, dial_host=_CLI_LOOPBACK)
     if not secret:
         print("❌ Gateway not running — start it with: kirocrew gateway", file=sys.stderr)
         sys.exit(1)
@@ -316,7 +316,7 @@ def _emit_session_urls(port: int, token: str) -> None:
 
 def _logout(port: int) -> None:
     """Revoke all dashboard sessions by calling the gateway's /api/logout endpoint."""
-    secret = read_local_secret(port)
+    secret = read_local_secret(port, dial_host=_CLI_LOOPBACK)
     if not secret:
         print("❌ Gateway not running — start it with: kirocrew gateway")
         sys.exit(1)
@@ -363,7 +363,7 @@ def _request_gateway_shutdown(port: int) -> bool:
     refusal, malformed response, or transport failure returns ``False`` so the
     caller retains the existing no-target diagnostic.
     """
-    secret = run_marker.read_secret(port)
+    secret = read_local_secret(port, dial_host=_CLI_LOOPBACK)
     if not secret:
         return False
     request = urllib.request.Request(
@@ -1190,7 +1190,7 @@ def _print_token_url(port: int) -> None:
     deadline = time.monotonic() + _RESTART_READY_TIMEOUT
     while time.monotonic() < deadline:
         try:
-            secret = read_local_secret(port)
+            secret = read_local_secret(port, dial_host=_CLI_LOOPBACK)
             if not secret:
                 time.sleep(_RESTART_READY_POLL_INTERVAL)
                 continue
@@ -2261,7 +2261,7 @@ def _update_approve() -> None:
     # by /api/token/local). Reading the secret is itself host-local evidence,
     # the same class as the nonce file. An absent secret still works on a
     # default loopback install where no token auth runs.
-    secret = read_local_secret(port)
+    secret = read_local_secret(port, dial_host="127.0.0.1")
     if secret:
         headers["X-Internal-Secret"] = secret
     req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
@@ -2321,7 +2321,7 @@ def _file_delivery_approve() -> None:
     # Same local-secret / unix-socket authentication as _update_approve: reading
     # the secret is itself host-local evidence, and an absent secret still works
     # on a default loopback install where no token auth runs.
-    secret = read_local_secret(port)
+    secret = read_local_secret(port, dial_host="127.0.0.1")
     if secret:
         headers["X-Internal-Secret"] = secret
     req = urllib.request.Request(url, data=payload, headers=headers, method="POST")

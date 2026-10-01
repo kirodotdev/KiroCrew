@@ -68,6 +68,37 @@ test("every local-gateway request built from gatewayToken() routes through withG
   );
 });
 
+test("withGatewayAuth never re-bases a request onto a derived origin", () => {
+  // The request goes to the URL it was built from. A credential is minted only
+  // after the coverage requirement confirms this gateway holds every loopback
+  // family the configured name resolves to (`listenerSecretsFor`), so the name
+  // already on the URL can reach no one else -- and re-deriving a destination is
+  // what would move the document off its own storage origin.
+  const start = MAIN.indexOf("function withGatewayAuth(");
+  assert.ok(start !== -1, "withGatewayAuth must exist");
+  const body = MAIN.slice(start, MAIN.indexOf("\n}", start));
+  assert.ok(
+    !/auth\.origin/.test(body),
+    "withGatewayAuth must not consume an origin from its auth object",
+  );
+  assert.ok(
+    !/new URL\(built\.pathname/.test(body),
+    "withGatewayAuth must not rebuild the request onto another origin",
+  );
+  assert.ok(
+    /\$\{url\}\$\{sep\}token=/.test(body),
+    "the token is appended to the URL as built",
+  );
+  // Order still matters: the cookie credential returns before any query append,
+  // because it is already scoped by the cookie jar and must not also be inlined.
+  const cookieBranch = body.indexOf("if (auth.viaCookie)");
+  const queryAppend = body.indexOf("token=${encodeURIComponent");
+  assert.ok(
+    cookieBranch !== -1 && cookieBranch < queryAppend,
+    "the cookie credential must return before the token is appended",
+  );
+});
+
 test("gatewayToken() fails closed to an empty credential, never a fabricated one", () => {
   const start = MAIN.indexOf("async function gatewayToken(");
   assert.ok(start !== -1, "gatewayToken must exist");

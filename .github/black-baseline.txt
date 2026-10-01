@@ -37,7 +37,6 @@ src/kiro_crew/apps/builtins/code_review_sage/sage_lib/learning.py
 src/kiro_crew/apps/builtins/code_review_sage/sage_lib/pipeline.py
 src/kiro_crew/apps/builtins/code_review_sage/sage_lib/report.py
 src/kiro_crew/apps/builtins/code_review_sage/sage_lib/results.py
-src/kiro_crew/apps/builtins/code_review_sage/sage_lib/review_driver.py
 src/kiro_crew/apps/builtins/code_review_sage/sage_lib/review_pool.py
 src/kiro_crew/apps/builtins/code_review_sage/sage_lib/store.py
 src/kiro_crew/apps/builtins/code_review_sage/tests/fixtures.py
@@ -536,7 +535,6 @@ test/test_design_tweak_queue_routes.py
 test/test_design_tweak_relay_paths.py
 test/test_dev_fleet_app.py
 test/test_dev_fleet_node_toolchain.py
-test/test_dev_fleet_repo_accessor.py
 test/test_dev_fleet_server_more_coverage.py
 test/test_diagnostics.py
 test/test_display_time_redaction.py
@@ -600,7 +598,6 @@ test/test_image_artifacts.py
 test/test_inbound_unbind_notice.py
 test/test_installer_distro.py
 test/test_installer_node_floor.py
-test/test_instance_credential_pairing.py
 test/test_instances_search_federation.py
 test/test_interactions_shortcut.py
 test/test_ios_simulator_preview_skill.py
@@ -689,7 +686,6 @@ test/test_mcp_probe_warn_once.py
 test/test_mcp_registry_governance.py
 test/test_mcp_seed.py
 test/test_mcp_shareability.py
-test/test_mcp_shared.py
 test/test_mcp_shared_cache.py
 test/test_mcp_shared_cancelled_bound.py
 test/test_mcp_skill_registry.py

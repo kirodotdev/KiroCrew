@@ -49,9 +49,11 @@ Second consumer — port discovery:
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 
 from kiro_crew import platform_compat
@@ -94,8 +96,38 @@ def secret_file_name(port: int) -> str:
     pod's credential out of the pod's own isolated home, which :func:`secret_path`
     cannot name because it resolves against the CALLING process's data home. The
     name is produced here so the reader and the writer share one spelling.
+
+    Names a PORT, which is a set of listeners rather than one: several addresses
+    can carry the same port number, so a reader that must know WHICH listener it
+    reached wants :func:`listener_secret_file_name` instead.
     """
     return f"{_MARKER_PREFIX}{int(port)}{_SECRET_SUFFIX}"
+
+
+def encode_bind_address(host: str) -> str:
+    """Filename-safe spelling of the bind address *host*.
+
+    ``:`` is legal in an IPv6 literal and illegal in a Windows filename, so it is
+    the one character that has to change. The mapping is injective over IP
+    literals, which draw on hex digits, ``.`` and ``:`` alone, so two different
+    addresses can never collide on one file name -- which is the whole property
+    the caller is buying.
+    """
+    return host.replace(":", "_")
+
+
+def listener_secret_file_name(port: int, host: str) -> str:
+    """File name of the credential for the listener at *host* on *port*.
+
+    A listener is an address AND a port. One port number can carry several
+    listeners at once -- ``KIROCREW_BIND=::1`` binds the v6 loopback and leaves
+    IPv4 ``127.0.0.1:<port>`` free for anything else to take -- so a name keyed
+    by port alone names a SET, and a reader resolving it can be handed the
+    credential of a listener it never spoke to. Keying the name by both makes
+    that unrepresentable: the reader asks for the address it dialled and either
+    gets that listener's credential or nothing.
+    """
+    return f"{_MARKER_PREFIX}{int(port)}-{encode_bind_address(host)}{_SECRET_SUFFIX}"
 
 
 def _start_path_for(path: Path) -> Path:
@@ -255,6 +287,18 @@ def secret_path(port: int) -> Path:
     return _run_dir() / secret_file_name(port)
 
 
+def listener_secret_path(port: int, host: str) -> Path:
+    """Path of the credential for the listener at *host* on *port*.
+
+    Sits beside :func:`secret_path` in the same owner-only ``run/`` dir and is
+    written ``0600`` the same way. The two hold the same value for the same
+    gateway generation and differ only in what their names identify: this one
+    names ONE listener, which is what a client that dialled a specific address
+    needs in order to know the credential belongs to the party it reached.
+    """
+    return _run_dir() / listener_secret_file_name(port, host)
+
+
 def read_secret(port: int) -> str:
     """Internal-API credential recorded for *port*, or ``""`` when absent.
 
@@ -266,6 +310,182 @@ def read_secret(port: int) -> str:
     ``port_resolution._gateway_owns_port``'s job.
     """
     return _read_sidecar(port, _SECRET_SUFFIX)
+
+
+#: The loopback families a dialled host can land on, and the bind addresses that
+#: cover each. The Python twin of ``LOOPBACK_FAMILY_BINDS`` in
+#: ``website/electron/local-token.js`` -- the two must agree on what covers a
+#: family, because the same publisher feeds both readers. ``0.0.0.0``/``::`` are
+#: the wildcard binds a gateway may hold; ``::`` counts as v6 ONLY, since whether
+#: a v6 wildcard also accepts v4-mapped connections depends on the host's
+#: ``IPV6_V6ONLY`` and counting it for v4 would be a guess in the permissive
+#: direction.
+_LOOPBACK_FAMILY_BINDS: dict[str, tuple[str, ...]] = {
+    "v4": ("127.0.0.1", "0.0.0.0"),
+    "v6": ("::1", "::"),
+}
+
+#: Hostnames that name a SET of listeners rather than one: they resolve to BOTH
+#: loopback families on an ordinary host, so dialling one can land on either
+#: listener. Mirrors ``AMBIGUOUS_LOOPBACK_NAMES`` in ``local-token.js``.
+_AMBIGUOUS_LOOPBACK_NAMES = frozenset({"localhost", "kirocrew.localhost"})
+
+
+def _dial_families(host: str) -> tuple[str, ...] | None:
+    """Loopback families the dial *host* can reach, or ``None`` if it is not a
+    loopback target a local secret may be sent to.
+
+    The Python twin of ``dialTarget`` in ``local-token.js`` for the host half.
+    An ambiguous name reaches BOTH families (so a safe dial requires the gateway
+    to hold both); a literal reaches exactly one. Any other host -- a real
+    hostname, a public address -- is not a loopback target, so ``None`` is
+    returned and the caller refuses rather than reading a local credential for a
+    party that is not on this machine. A bracketed IPv6 literal (``[::1]``) is
+    accepted in the spelling a URL host carries.
+    """
+    if not host:
+        return None
+    if host in _AMBIGUOUS_LOOPBACK_NAMES:
+        return ("v4", "v6")
+    if host == "127.0.0.1":
+        return ("v4",)
+    if host in ("::1", "[::1]"):
+        return ("v6",)
+    return None
+
+
+def read_listener_secret(port: int, host: str) -> str:
+    """Credential safe to send to the listener a caller dials at *host*:*port*,
+    or ``""`` to refuse.
+
+    The address-keyed reader, and the Python twin of ``listenerSecretsFor`` in
+    ``website/electron/local-token.js`` -- the two implement the SAME predicate
+    against the SAME files the publisher writes
+    (``run/gateway-<port>-<address>.secret``), because a credential paired to a
+    listener is only as safe as its weakest reader. The rule:
+
+        every family the dialled host can reach must be covered by an entry, and
+        one secret must appear under every family.
+
+    A literal host is one family, which is the pre-per-port behaviour narrowed to
+    that address. An ambiguous name (``localhost``) is both families, and that is
+    what makes the name safe to dial: if the gateway holds v4 AND v6 on this
+    port, then whichever family the resolver picks, the party reached is the
+    gateway that published the credential; a co-resident cannot be on either,
+    because the gateway is.
+
+    Refuses (``""``) rather than narrows on a single missing family: if the
+    gateway bound only v4 and something else holds ``[::1]:<port>``, dialling
+    ``localhost`` may reach that squatter, so no secret goes out. Refuses too when
+    *host* is not a loopback target at all.
+
+    Presence alone fails OPEN: nothing deletes a sidecar but a graceful shutdown,
+    so a SIGKILLed generation that held both families leaves one entry behind, a
+    co-resident takes that address, the gateway restarts binding one family, and
+    a presence test would call the other family "covered" by the DEAD
+    generation's file and send the LIVE secret to the squatter. The INTERSECTION
+    is what makes coverage a fact about the live generation: one generation
+    writes the same freshly-minted secret under every address it bound, so a
+    secret appearing under an address in every reachable family proves one
+    generation holds them all, and a stale file carries a different value and
+    drops out of the intersection.
+
+    Reads only local disk; the peer is never consulted and never believed.
+    Read-only: never creates ``run/`` (mirrors :func:`read_secret`).
+    """
+    families = _dial_families(host)
+    if families is None:
+        return ""  # not a loopback target: refuse
+    per_family: list[set[str]] = []
+    for family in families:
+        candidates: set[str] = set()
+        for bind_address in _LOOPBACK_FAMILY_BINDS[family]:
+            # EVERY present entry is a candidate, not just the first: a crashed
+            # generation can leave a stale entry beside the live one, and stopping
+            # at the stale secret would refuse a gateway reachable through the
+            # wildcard entry beside it. A refused candidate must not end the walk.
+            secret = _read_listener_sidecar(port, bind_address)
+            if secret:
+                candidates.add(secret)
+        # One uncovered family the dialled host can reach is enough to refuse: the
+        # resolver may hand the caller exactly that listener.
+        if not candidates:
+            return ""
+        per_family.append(candidates)
+    shared = set.intersection(*per_family)
+    if not shared:
+        return ""
+    # A single generation writes ONE secret under every address it bound, so the
+    # intersection is normally a singleton. If a race left two, either is the live
+    # generation's own value (both were minted by it), so any is safe; sort for a
+    # deterministic answer.
+    return sorted(shared)[0]
+
+
+def _read_listener_sidecar(port: int, host: str) -> str:
+    """Stripped contents of the listener-keyed credential for *host*:*port*, or
+    ``""``.
+
+    Read-only sibling of :func:`_read_sidecar` for the address-keyed name. It
+    composes the path against ``run/`` directly rather than through
+    :func:`listener_secret_path` so a reader that merely looks for a gateway does
+    not MATERIALISE ``run/`` (:func:`listener_secret_path` goes through
+    :func:`_run_dir`). An unreadable or absent file reads as ``""``.
+    """
+    try:
+        return (
+            (config_dir() / RUN_DIR_NAME / listener_secret_file_name(int(port), host))
+            .read_text(encoding="utf-8")
+            .strip()
+        )
+    except (OSError, ValueError):
+        return ""
+
+
+def has_listener_entries(port: int) -> bool | None:
+    """Whether ANY ``run/gateway-<port>-<address>.secret`` exists for *port*.
+
+    A THREE-valued answer, because a caller falling back on it must distinguish
+    "proven absent" from "could not tell":
+
+    * ``False`` -- **no listener entry exists at all**, proven by a successful
+      enumeration that found none. The gateway serving this port predates the
+      per-listener publish (an older gateway, or one that could not name its
+      bound address, which suppresses the write). There is no OTHER listener's
+      credential on this port to be confused with, so a caller may safely fall
+      back to the port-keyed read -- that is the pre-per-listener world, not the
+      desync this feature closes.
+
+    * ``True`` -- **entries exist but** (as the caller already found from
+      :func:`read_listener_secret` returning ``""``) **none covers the dialled
+      family**. A gateway published for some addresses and NOT the one being
+      dialled, so the port-keyed read could hand back a DIFFERENT listener's
+      credential -- the exact desync. A caller must fail closed here.
+
+    * ``None`` -- **could not enumerate** (``run/`` exists but the glob raised).
+      Absence is UNPROVEN: an unreadable ``run/`` might well hold the very entry
+      that would forbid the fallback, while the port-keyed and home-wide files
+      (which live outside ``run/``) stay readable and sendable. So a caller must
+      treat ``None`` exactly like ``True`` -- fail closed, never fall back on an
+      error it cannot see past. Only a proven-empty ``False`` re-opens the
+      fallback.
+
+    Read-only: never creates ``run/`` (a client merely looking for a gateway must
+    materialise no state), so it globs the directory directly rather than through
+    :func:`listener_secret_paths`, whose call is read-only too but whose name
+    invites the confusion that this is about paths rather than existence.
+    """
+    try:
+        d = config_dir() / RUN_DIR_NAME
+    except OSError:
+        return None
+    if not d.is_dir():
+        return False
+    prefix = f"{_MARKER_PREFIX}{int(port)}-"
+    try:
+        return any(p.is_file() for p in d.glob(f"{prefix}*{_SECRET_SUFFIX}"))
+    except OSError:
+        return None
 
 
 def _read_start_token(pid_path: Path) -> str:
@@ -442,6 +662,122 @@ def gateway_launcher_path() -> str | None:
     return None
 
 
+#: How long a marker-lock acquire waits before giving up.
+#:
+#: Deliberately the same number as the shutdown's own wait for a stalled marker
+#: write (``_MARKER_WRITE_WAIT_SECS`` in the gateway), because that is the
+#: timescale this lock sits inside rather than a new one: shutdown already treats
+#: 5 seconds as the point at which a boot write is presumed stalled, so a lock
+#: that waited longer could turn a write which WOULD have landed inside that
+#: window into one that misses it, and a lock that waited less could refuse a
+#: peer that shutdown still considers live.
+#:
+#: A legitimate hold is three ``atomic_write`` calls or a handful of unlinks --
+#: single-digit milliseconds even on a slow filesystem -- so this is ~three orders
+#: of magnitude of headroom and never refuses a real contender. The ceiling
+#: matters because BOTH holders are latency-sensitive: the graceful path is
+#: flushing live state when it runs, and waiting on a wedged peer there costs the
+#: flush. ``platform_compat._LOCK_TIMEOUT_SECS`` (300s) is the ceiling for long
+#: critical sections and would be that hang.
+_MARKER_LOCK_TIMEOUT_SECS = 5.0
+
+
+def marker_lock_path(port: int) -> Path:
+    """Path of the per-port lock serialising marker reads against marker writes.
+
+    One lock per PORT, because the port is what two generations contend for: the
+    outgoing gateway's cleanup and the incoming one's publication are the two
+    sides, and they are never the same process.
+    """
+    return _run_dir() / f"{_MARKER_PREFIX}{int(port)}.lock"
+
+
+@contextlib.contextmanager
+def _marker_lock(port: int) -> Iterator[bool]:
+    """Hold the per-port marker lock for the block; yield whether it was taken.
+
+    This exists because a CHECK and the WRITE it authorises must not be separable.
+    Reading the pid record, deciding the record names someone else, and then
+    writing is three steps, and a successor can publish between the first and the
+    third -- at which point the decision was true when it was made and false when
+    it was acted on. Holding the lock across all three is what makes the decision
+    still true at the moment it is used.
+
+    Yields False rather than raising when the lock cannot be taken, and every
+    caller treats False as "do nothing". That is the fail-closed direction for
+    both callers, and they get there from opposite starting points:
+
+    * A write that does not happen costs this generation its discovery marker,
+      which is worth nothing to a process that does not hold the port.
+    * A delete that does not happen leaves a stale entry, which costs one refused
+      round trip -- the credential is scoped to a generation, so it cannot
+      authenticate against a later listener. Deleting WITHOUT the lock is the
+      unsafe direction: that is precisely how a shutdown eats its successor's
+      record.
+
+    Never raises. A data home on a filesystem with no working locks (some network
+    mounts) yields False forever, which degrades to the two costs above rather
+    than to an unserialised write.
+    """
+    fd: int | None = None
+    guard = None
+    try:
+        # O_RDWR | O_CREAT, never O_TRUNC: truncating before the lock is held lets
+        # a contender observe the file empty mid-section (GH-9248), which is why
+        # platform_compat.open_lock_file exists and why this mirrors it.
+        fd = os.open(os.fspath(marker_lock_path(port)), os.O_RDWR | os.O_CREAT, 0o600)
+        guard = platform_compat.file_lock(fd, exclusive=True, timeout=_MARKER_LOCK_TIMEOUT_SECS)
+        guard.__enter__()
+    except (OSError, ValueError, RuntimeError):
+        if guard is not None:
+            guard = None
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            fd = None
+        logger.debug("Could not take the marker lock for port %s; doing nothing.", port)
+        yield False
+        return
+    try:
+        yield True
+    finally:
+        try:
+            guard.__exit__(None, None, None)
+        except Exception:
+            pass
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+
+def _record_names_another_live_gateway(port: int, pid: int) -> bool:
+    """True when *port*'s pid record names a LIVE process that is not *pid*.
+
+    The proof is the start identity, not the pid number: a pid alone cannot be
+    told apart from the same number recycled onto an unrelated process after a
+    crash left the sidecar behind. So the recorded token must still match what
+    :func:`pid_start_token` reports for that pid, and an EMPTY token counts as
+    unproven rather than as a wildcard -- that is the same rule
+    :func:`clear_late_marker_write` applies, for the same reason.
+
+    False on every unprovable reading, which is the direction that fails safe
+    HERE: this gates a gateway's own boot-time write, and a boot that refuses to
+    record its marker on a doubt loses port discovery for the rest of its life.
+    The case being excluded is narrow and specific -- a successor already holds
+    the port and has published -- so only a positive proof of it declines.
+    """
+    record = read_pid_record_path(pid_path(port))
+    if record is None:
+        return False
+    recorded_pid, recorded_token = record
+    if recorded_pid == pid or not recorded_token:
+        return False
+    return pid_start_token(recorded_pid) == recorded_token
+
+
 def write_marker(port: int) -> None:
     """Best-effort: record that this gateway serves *port*, plus its pid.
 
@@ -488,14 +824,46 @@ def write_marker(port: int) -> None:
             "No venv kirocrew launcher next to %s — writing port-only run-marker", sys.executable
         )
     pid = os.getpid()
-    try:
-        atomic_write(marker_path(port), (launcher + "\n") if launcher else "", mode=0o600)
-        token = pid_start_token(pid)
-        atomic_write(_start_path_for(pid_path(port)), (token + "\n") if token else "", mode=0o600)
-        atomic_write(pid_path(port), _pid_record(pid), mode=0o600)
-        logger.info("Wrote gateway run-marker for port %s -> %s", port, launcher or "(port only)")
-    except Exception as e:  # best-effort — never break startup on a marker write
-        logger.warning("Could not write gateway run-marker for port %s: %s", port, e)
+    with _marker_lock(port) as locked:
+        if not locked:
+            # No lock, no write. The check below would be unserialised, which is
+            # exactly the race the lock exists to close -- and an unwritten marker
+            # costs this generation only its own discovery entry.
+            logger.info(
+                "Not writing the run-marker for port %s: the marker lock is unavailable.",
+                port,
+            )
+            return
+        if _record_names_another_live_gateway(port, pid):
+            # A boot-path write that stalled (a slow fs, a suspended VM) can land
+            # after this generation gave up the port and a SUCCESSOR bound it and
+            # published. Writing then replaces that successor's pid record with
+            # this process's own, and every client that checks the record before
+            # trusting the port is told the wrong owner. Declining costs this
+            # generation its discovery marker, which is worth nothing to a process
+            # that does not hold the port.
+            #
+            # The check and the writes below are ONE critical section. Separated,
+            # a successor can publish between them, so the decision would be true
+            # when made and false when acted on -- and the write would then be the
+            # very overwrite this check exists to prevent.
+            logger.info(
+                "Not writing the run-marker for port %s: the pid record names another live gateway.",
+                port,
+            )
+            return
+        try:
+            atomic_write(marker_path(port), (launcher + "\n") if launcher else "", mode=0o600)
+            token = pid_start_token(pid)
+            atomic_write(
+                _start_path_for(pid_path(port)), (token + "\n") if token else "", mode=0o600
+            )
+            atomic_write(pid_path(port), _pid_record(pid), mode=0o600)
+            logger.info(
+                "Wrote gateway run-marker for port %s -> %s", port, launcher or "(port only)"
+            )
+        except Exception as e:  # best-effort — never break startup on a marker write
+            logger.warning("Could not write gateway run-marker for port %s: %s", port, e)
     prune_markers(keep_port=port)
 
 
@@ -562,25 +930,251 @@ def prune_markers(*, keep_port: int) -> None:
         logger.info("Pruned stale gateway run-marker for port %s", port)
 
 
+def listener_secret_paths(port: int) -> list[Path]:
+    """Every listener-keyed credential recorded for *port*, whatever the address.
+
+    The address is part of the name, so a reader that knows which address it
+    dialled can name its own entry directly. A caller that must act on ALL of
+    them -- cleanup, which knows a generation is gone but not which addresses it
+    bound -- cannot, and enumerating is the only honest answer. Read-only: never
+    creates ``run/``.
+    """
+    try:
+        d = config_dir() / RUN_DIR_NAME
+        if not d.is_dir():
+            return []
+        prefix = f"{_MARKER_PREFIX}{int(port)}-"
+        return sorted(p for p in d.glob(f"{prefix}*{_SECRET_SUFFIX}") if p.is_file())
+    except OSError:
+        return []
+
+
+#: Listener addresses THIS process published a credential for, per port. Written
+#: by :func:`note_published_listener` at publication time and read only by
+#: :func:`clear_marker`, which must delete its own entries and no one else's.
+#: In-process rather than on disk on purpose: the only caller of ``clear_marker``
+#: is the owning gateway's own graceful shutdown, so the knowledge is already
+#: here, and a file recording it would itself need an ownership proof.
+_PUBLISHED_LISTENERS: dict[int, set[str]] = {}
+
+
+def note_published_listener(port: int, address: str) -> None:
+    """Record that this process published a listener credential for *address*.
+
+    Called after the write succeeds, so a failed publication leaves nothing to
+    delete. Idempotent, and quietly ignores an empty address -- the caller
+    suppresses the listener-keyed write in that case too.
+    """
+    if not address:
+        return
+    _PUBLISHED_LISTENERS.setdefault(int(port), set()).add(address)
+
+
+def published_listeners(port: int) -> frozenset[str]:
+    """Addresses this process published a listener credential for on *port*."""
+    return frozenset(_PUBLISHED_LISTENERS.get(int(port), ()))
+
+
+def withdraw_published_listener(port: int, address: str) -> bool:
+    """Retract ONE address's listener credential: unlink it and forget it.
+
+    The exact inverse of :func:`note_published_listener`, and the reason it
+    exists separately from :func:`clear_marker` is that the two answer different
+    questions. ``clear_marker`` says "this generation is going away", so it takes
+    every address at once along with the marker, the pid and the port-keyed
+    credential. This says "this generation has let go of THIS address" while it
+    keeps serving the others -- a state a whole-generation teardown cannot
+    express, and calling ``clear_marker`` to reach one sidecar would delete the
+    live listener's own credential and the marker a supervisor reads.
+
+    Both halves matter and the in-memory half is the one easy to omit. Unlinking
+    the file alone leaves ``_PUBLISHED_LISTENERS`` asserting coverage this
+    process lacks, and that set is what a later ``clear_marker`` deletes from --
+    so the stale entry would survive as a claim about an address someone else may
+    by then hold. Dropping both keeps the invariant every consumer reads: a
+    listener sidecar on disk means its generation holds that address NOW.
+
+    Scoped by the same ownership rule ``clear_marker`` follows: an address this
+    process never published is not deleted, because the file under that name then
+    belongs to somebody else -- two gateways in one data home can hold the same
+    port on different addresses, and unlinking a sibling's entry costs it every
+    client that had already read it. Returns whether the credential is retracted,
+    so a caller can log the real outcome rather than its intent.
+
+    FAIL CLOSED when the filesystem refuses, in both directions, because what a
+    failed unlink leaves behind is a readable credential for an address this
+    generation does not hold -- and a client's coverage test is an INTERSECTION
+    over the secret, so that one surviving file re-admits the live family's own
+    secret and the mint sends it to whoever took the address (see
+    ``listenerSecretsFor`` in ``website/electron/local-token.js``). A sharing
+    violation or an unavailable share is ordinary on Windows, which is the only
+    platform the listener guards arm on, so this path is reached by accident
+    rather than by extremity:
+
+    * **Truncate what cannot be unlinked.** An empty sidecar covers no family --
+      the reader skips a blank secret -- so emptying the file removes the address
+      from the intersection and the mint refuses instead of misdirecting the
+      secret. That is the same degradation the rest of this feature accepts: one
+      explicit sign-in.
+    * **Keep the claim when neither works.** A credential still on disk is one a
+      later ``clear_marker`` must delete, and ``clear_marker`` deletes only what
+      ``published_listeners`` still names. Discarding the claim would make the
+      file permanently unreachable by this process; keeping it means shutdown
+      finishes the retraction this call could not.
+    """
+    if not address:
+        return False
+    key = int(port)
+    addresses = _PUBLISHED_LISTENERS.get(key)
+    if addresses is None or address not in addresses:
+        return False
+    path = listener_secret_path(key, address)
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        if not _blank_listener_secret(path):
+            # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure - the arguments are the sidecar PATH, its bind address and its port; the secret is never read here, let alone logged  # noqa: E501
+            logger.error(
+                "Could not retract the listener credential at %s for [%s]:%d; the claim "
+                "is kept so shutdown deletes it, but until then a client dialling a name "
+                "that resolves there can still read it.",
+                path,
+                address,
+                key,
+                exc_info=True,
+            )
+            return False
+        # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure - the arguments are the sidecar PATH, its bind address and its port; the secret is never read here, let alone logged  # noqa: E501
+        logger.warning(
+            "Could not unlink the listener credential at %s for [%s]:%d, so it was "
+            "emptied instead: a blank sidecar covers no family, and a client dialling a "
+            "name that resolves there signs in explicitly.",
+            path,
+            address,
+            key,
+        )
+    addresses.discard(address)
+    if not addresses:
+        _PUBLISHED_LISTENERS.pop(key, None)
+    return True
+
+
+def _blank_listener_secret(path: Path) -> bool:
+    """Empty a listener credential in place. True when the file carries no secret.
+
+    The fallback for an unlink the filesystem refused. Opening for write can fail
+    for the same reason the unlink did, so the answer is a fact about the file
+    rather than about the attempt -- a caller that reads True may treat the
+    address as uncovered.
+    """
+    try:
+        with open(path, "w", encoding="utf-8"):
+            pass
+    except OSError:
+        pass
+    try:
+        return path.stat().st_size == 0
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+
+
 def clear_marker(port: int) -> None:
-    """Best-effort removal of the run-marker, pid sidecar, start identity and credential.
+    """Best-effort removal of the run-marker, pid sidecar, start identity and credentials.
 
     The start identity goes with the pid it attests: on its own it names nothing,
     and leaving it beside a pid file a later gateway rewrites is exactly the
     stale-token pairing the freshness check exists to refuse.
 
-    The credential goes too: it names a generation that does not own the port,
-    so leaving it behind would let a client authenticate with a value the next
-    owner never had. A crash still leaves all four (nothing runs), which is why
-    every consumer verifies ownership rather than trusting presence.
+    The credentials go too -- the port-keyed one, and the listener-keyed entries
+    THIS PROCESS published (:func:`note_published_listener`). Each names a
+    generation that does not own the port, so leaving one behind would let a
+    client authenticate with a value the next owner never had.
+
+    Scoped to this process's own entries rather than every entry naming the port,
+    because a port and a listener are not the same thing: two gateways in one data
+    home can hold the same port on different addresses, and enumerating by port
+    would delete the OTHER one's credential while it is still serving -- answering
+    403 to every client that had already read it. What cannot be proven is not
+    deleted.
+
+    An entry this process did not publish is therefore left in place, and that is
+    safe rather than merely conservative: a client reading a stale entry is
+    refused by the gateway and moves on to the next candidate for that family
+    (see the walk in ``listenerSecretsFor``), so the cost is one wasted round trip
+    -- while deleting a live sibling's entry costs that sibling every client it
+    had. A crash leaves everything (nothing runs), which is why every consumer
+    verifies ownership rather than trusting presence.
     """
     for path in (
         marker_path(port),
         pid_path(port),
         _start_path_for(pid_path(port)),
         secret_path(port),
+        *(listener_secret_path(port, address) for address in published_listeners(port)),
     ):
         try:
             path.unlink(missing_ok=True)
         except OSError:
             pass
+    _PUBLISHED_LISTENERS.pop(int(port), None)
+
+
+def clear_late_marker_write(port: int) -> bool:
+    """Undo a :func:`write_marker` that landed after shutdown had already cleared.
+
+    Answers True when files were removed, False when the pid record names another
+    process and nothing was touched.
+
+    What separates this from :func:`clear_marker` is WHEN each one runs.
+    ``clear_marker`` runs while the shutting-down gateway still holds its
+    listener, so no other process can have published under these names yet, and
+    clearing by location is therefore clearing its own. This runs from a detached
+    thread at an arbitrary later point, which may be after the listener is free
+    and a replacement gateway has bound the port and published its own state. At
+    that point a location does not identify an owner, so the action is scoped
+    twice, and the two scopes cover different things:
+
+    * Never a credential, whatever the pid record says. This is the
+      unconditional half, and it is the one that matters: the late write this
+      exists to undo creates no credential, so deleting one reaches past the
+      mistake being corrected, and deleting a successor's would answer 403 to
+      every client that had already read it.
+    * Only while the pid record names THIS process, which declines the marker,
+      pid and start identity of a gateway that is not this one. Its reach is
+      narrower than it looks, and the limit is worth stating: a late
+      :func:`write_marker` rewrites that record with this process's own pid, so
+      after a write that landed the answer is True by construction. What the
+      check covers is every path where the write did NOT land -- it is
+      best-effort and swallows its own failures -- plus any caller that reaches
+      here without writing first. It cannot undo a clobber that already
+      happened, and a pid read taken BEFORE the write cannot substitute for it:
+      the successor appears after that read, so the value it returns is this
+      port's previous occupant, not its next one. Keeping a successor's marker
+      intact means guarding the WRITE, which is a change on the gateway boot
+      path rather than here.
+
+    An unreadable pid record answers False for the same reason: an owner that
+    cannot be established is treated as somebody else's.
+    """
+    with _marker_lock(port) as locked:
+        if not locked:
+            # No lock, no delete. This is the fail-closed direction HERE: a
+            # surviving marker costs one refused round trip, while deleting
+            # unserialised is how this function eats a successor's record -- the
+            # very outcome it exists to avoid.
+            return False
+        try:
+            if read_pid(port) != os.getpid():
+                return False
+        except Exception:
+            return False
+        # Inside the lock with the check, so no successor can publish between
+        # reading the record and acting on it.
+        for path in (marker_path(port), pid_path(port), _start_path_for(pid_path(port))):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        return True

@@ -107,6 +107,14 @@ def toggle_app(
     pass ``None`` and send no body at all.
     """
     port, _evidence_backed = resolve_client_port_ex(None)
+    # This request travels the owner-only Unix SOCKET (unix_socket_urlopen below),
+    # not TCP loopback -- the http://127.0.0.1 base is only the nominal URL on the
+    # request line. So the credential is NOT paired to a dialled TCP address: pass
+    # no dial_host and read the port-keyed secret. Threading a dial_host here would
+    # make read_local_secret demand a listener sidecar for a TCP family the gateway
+    # need never publish (a bind to a specific interface or ``::`` has no
+    # 127.0.0.1 entry), returning "" for a live socket and silently dropping
+    # uninstall to its file-only path while the backend keeps running.
     secret = read_local_secret(port)
     if not secret:
         return None

@@ -108,9 +108,9 @@ class TestSuccessCaching:
         monkeypatch.setattr(mcp_shared, "loopback_urlopen", urlopen)
         assert mcp_shared._resolve_excluded_tools() == {"blocked"}
         request = urlopen.call_args.args[0]
-        assert request.full_url == f"http://localhost:{expected_port}/api/session-tool-policy"
+        assert request.full_url == f"http://127.0.0.1:{expected_port}/api/session-tool-policy"
         assert request.get_header("X-internal-secret") == "synthetic-bound-secret"
-        secret.assert_called_once_with(expected_port)
+        secret.assert_called_once_with(expected_port, dial_host="127.0.0.1")
 
     def test_first_call_queries_gateway_then_caches(
         self, fake_sel, patch_session_setup, monkeypatch

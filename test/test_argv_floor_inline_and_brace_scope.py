@@ -791,6 +791,7 @@ class TestInlinePayloadNamesTheMintSurface:
             "start_api_server": "WRITES a fresh secret at gateway start; returns the app",
             "_cron_dispatch": "presents the secret to the gateway for a CLI verb; returns an exit code",
             "_call_tool_inner": "presents the secret to the gateway for an MCP tool; returns tool text",
+            "has_listener_entries": "reports WHETHER listener sidecars exist for a port (a bool/None); never reads or returns a credential value",
         }
         reached_names = {name for _, name in readers}
         assert set(not_readers) <= reached_names, set(not_readers) - reached_names

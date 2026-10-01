@@ -31,12 +31,21 @@ _DEFAULT_PORT = 5476
 _BIND_LOCAL = "127.0.0.1"
 _BIND_ALL = "0.0.0.0"
 
-# Loopback hostnames that all resolve to the same machine but are *distinct
+# Loopback host NAMES that all resolve to the same machine but are *distinct
 # browser origins* (origin = scheme://host:port). The dashboard SPA stores user
 # settings (theme, zoom, layout, ...) in per-origin localStorage, so a user who
 # reaches the dashboard on more than one of these names gets a separate, empty
 # settings bucket each time — settings appear to "reset". We canonicalize
 # navigations among this set onto a single host (see should_canonicalize_host).
+#
+# The literal addresses are here because this gateway holds BOTH loopback
+# families on its port (see _start_secondary_loopback_site): every name and
+# literal in this set therefore reaches the same listener, so converging them is
+# a spelling change and nothing more. The credential question is handled where it
+# actually arises -- a request CARRYING one is never redirected at all, whatever
+# it names, because a 302 preserves the query (see should_canonicalize_host). That
+# gate does not depend on which families are bound, which matters because the
+# second bind is best-effort and degrades.
 _CANONICALIZABLE_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "kirocrew.localhost"})
 
 
@@ -369,19 +378,27 @@ def should_canonicalize_host(
     *,
     method: str,
     sec_fetch_dest: str | None,
+    carries_credential: bool = False,
 ) -> bool:
     """Return True if a request should be 302-redirected to *canonical_host*.
 
-    Converges loopback aliases (127.0.0.1 / localhost / kirocrew.localhost) onto
-    a single origin so the SPA's per-origin localStorage settings are not split
-    across hostnames (see _CANONICALIZABLE_LOOPBACK_HOSTS). Conservative on every
-    axis so it can never touch a request that isn't a same-machine top-level
-    page navigation:
+    Converges the loopback names AND literals (localhost / kirocrew.localhost /
+    127.0.0.1 / ::1) onto a single origin so the SPA's per-origin localStorage
+    settings are not split across spellings. Converging the literals is safe
+    because this gateway holds both loopback families on its port, so every
+    spelling in that set reaches the same listener (see
+    _CANONICALIZABLE_LOOPBACK_HOSTS). Conservative on every axis so it can never
+    touch a request that isn't a same-machine top-level page navigation:
 
     * only GET/HEAD (never a mutating request),
     * only true top-level document navigations (``Sec-Fetch-Dest: document`` —
       absent/empty/websocket/XHR are left alone, so APIs and WebSockets and
       sub-resource fetches are never redirected),
+    * only when the request carries no credential: a 302 preserves the query, so
+      redirecting a ``?token=`` navigation would hand that bearer to whatever
+      answers the canonical name. The caller decides what counts as a credential;
+      a request bearing one is served where it was sent, and the settings bucket
+      loses a redirect it was never entitled to at that price,
     * only when both the request host and the canonical host are in the
       canonicalizable loopback set (real hostnames / reverse-proxy vhosts are
       never redirected),
@@ -393,6 +410,8 @@ def should_canonicalize_host(
     if method not in ("GET", "HEAD"):
         return False
     if sec_fetch_dest != "document":
+        return False
+    if carries_credential:
         return False
     host = _host_without_port(request_host or "")
     if host not in _CANONICALIZABLE_LOOPBACK_HOSTS:

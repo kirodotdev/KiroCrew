@@ -5451,6 +5451,17 @@ class DashboardState:
         # status the gateway uses when it cannot. Armed after the site binds,
         # detached on cleanup; annotated here for mypy.
         self._listener_guard: "ListenerGuard | None" = None
+        # Guard for the SECOND loopback family's listener (see
+        # server._arm_secondary_listener_guard). Its own slot rather than sharing
+        # the one above: guards chain on the loop's exception handler, so both
+        # must be held, and both must be detached in the reverse of the order
+        # they were armed.
+        self._secondary_listener_guard: "ListenerGuard | None" = None
+        # Which listener sidecar each guarded listener owns, keyed "primary" /
+        # "secondary", as (port, address, secret). Written after publication and
+        # read by the guards' lifecycle hooks, which withdraw the claim while the
+        # address is not held and re-publish it once a rebind lands.
+        self._listener_sidecars: dict[str, tuple[int, str, str]] = {}
         # Prevent-sleep inhibitor + its poll task. Held to prevent GC and
         # released/cancelled on shutdown; annotated here so the assignments in
         # start_dashboard type-check under mypy.

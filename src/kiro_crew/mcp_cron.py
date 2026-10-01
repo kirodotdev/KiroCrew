@@ -2220,7 +2220,7 @@ def _fetch_history_stats(job_ids: list[str]) -> tuple[dict[str, dict[str, Any]],
         port = resolve_serving_port()
     except Exception as exc:  # pragma: no cover - resolver is defensive already
         return {}, f"cannot resolve the gateway port ({type(exc).__name__})"
-    secret = read_local_secret(port)
+    secret = read_local_secret(port, dial_host="127.0.0.1")
     if not secret:
         return {}, "no gateway credential on this host, so run history cannot be read"
 
