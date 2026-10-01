@@ -104,16 +104,18 @@ template on the default crew's workspace and memory, so no cron contract changes
 The chrome follows the same one-kind rule, decided on the unfiltered roster so a
 filter that narrows to one group keeps its header; the `role="group"` label stays
 for assistive technology either way. Callers that do not opt in, and any name-only
-roster, render flat as before. Temporarily,
-`HIDE_CREWMATE_CHOICES` in `useAgents.ts` withholds from `choices` every member row
-a listed template already COVERS (`withoutCoveredCrewmates`): a template of the same
-name is listed, or the member has no memory of its own (`memory_store` is `default`)
-and runs a listed template, which is the identical binding (the built-in `default`
-crew is this case). A crewmate no template covers stays pickable: one made by hand
-with its own memory, and one running its own private copy, which the catalog never
-lists as a template. Withholding those left the agent unreachable from any chat,
-since neither group offered it. The folded `agents` list and the request contract
-below are unaffected, and turning the flag off restores the two groups.
+roster, render flat as before. Unless the config key
+`dashboard.crewmates_in_agent_picker` is on (off by default, read from the shared
+`/api/config/kirocrew` query), `useAgents.ts` withholds from `choices` every member
+row a listed template already COVERS (`withoutCoveredCrewmates`): a template of the
+same name is listed, or the member has no memory of its own (`memory_store` is
+`default`) and runs a listed template, which is the identical binding (the built-in
+`default` crew is this case). A crewmate no template covers stays pickable: one made
+by hand with its own memory, and one running its own private copy, which the catalog
+never lists as a template. Withholding those left the agent unreachable from any
+chat, since neither group offered it. Turning the key on lists every member and
+restores the two groups; the folded `agents` list and the request contract below
+are unaffected either way.
 A pick sends `agent_kind` with the name on slot create and on
 `/api/chat/slots/{slot}/agent`; the slot stores the committed kind, persists it with
 the other slot-owned metadata (`SLOT_OWNED_META_KEYS`, so a restart restores a

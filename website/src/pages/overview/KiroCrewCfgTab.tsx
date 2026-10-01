@@ -380,7 +380,7 @@ export default function KiroCrewCfgTab() {
         {/* The Settings-side writer of the default crewmate. The Crewmates tab
             only marks it with a badge; the chat composer's ★ writes the same
             setting but only for the agent a session is bound to, and the picker
-            withholds covered crewmates while HIDE_CREWMATE_CHOICES is on — so without
+            withholds covered crewmates unless dashboard.crewmates_in_agent_picker is on — so without
             this row a user with several crewmates could not pick which one new
             sessions start as.
             Rendered whenever any crewmate exists — the roster badge deep-links

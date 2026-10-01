@@ -93,7 +93,7 @@ describe('AgentDropdownList namespaces (member vs template)', () => {
   })
 
   it('drops the header and the templates hint when the list holds one kind only', () => {
-    // With crewmates withheld (HIDE_CREWMATE_CHOICES) the list is templates
+    // With crewmates withheld (the default picker) the list is templates
     // only. A header then separates nothing and the hint contrasts a template
     // against a crewmate the list never shows, so both go; the accessible
     // group label stays, and the rows keep their grouped rendering (no origin

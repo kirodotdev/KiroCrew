@@ -1,6 +1,6 @@
 /**
- * Screenshot harness for the chat agent picker while `HIDE_CREWMATE_CHOICES` is
- * on: the pop-up lists templates only, with no group header and no templates
+ * Screenshot harness for the chat agent picker while crewmates are hidden
+ * (`dashboard.crewmates_in_agent_picker` is not `true`): the pop-up lists templates only, with no group header and no templates
  * hint.
  *
  * Runs the REAL built SPA (website/dist) behind the shared `serveDist` server and

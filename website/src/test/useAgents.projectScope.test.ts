@@ -26,14 +26,28 @@
  * without changing its *arguments*.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { renderHook, waitFor } from '@testing-library/react'
+import { renderHook as rtlRenderHook, waitFor } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { createElement, type ReactNode } from 'react'
 import { useAgents } from '../hooks/useAgents'
 
 vi.mock('../api/client', () => ({
   api: {
     agentCatalog: vi.fn(),
+    // useAgents reads dashboard.crewmates_in_agent_picker from the shared
+    // config query; an empty config keeps the default templates-only picker.
+    kirocrewConfig: vi.fn(() => Promise.resolve({})),
   },
 }))
+
+// useAgents reads the shared ['kirocrewConfig'] query, so every render needs a
+// QueryClient. Same call shape as RTL's renderHook.
+const renderHook = ((cb: never, opts?: Record<string, unknown>) => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const wrapper = ({ children }: { children: ReactNode }) =>
+    createElement(QueryClientProvider, { client }, children)
+  return rtlRenderHook(cb, { ...opts, wrapper })
+}) as typeof rtlRenderHook
 
 const { api } = await import('../api/client')
 const mockApi = api as unknown as {

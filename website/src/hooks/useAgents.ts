@@ -1,17 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { api } from '../api/client'
 import type { KiroCrewAgent } from '../components/AgentSelector'
-
-/**
- * TEMPORARY: keep crewmates a listed template already covers out of the chat
- * agent pop-up (see `withoutCoveredCrewmates`). Only the picker's
- * `choices` list is affected -- the folded `agents` list (cron, channel, project
- * bindings, the keyboard cycle) still sees every name, so a slot already
- * running a member keeps working and nothing is written. Flip to `false` to
- * restore the two-group pop-up; the only other touch is
- * `test/useAgents.hideCrewmates.test.tsx`, which pins the flag on.
- */
-export const HIDE_CREWMATE_CHOICES = true
 
 /**
  * Reads the execution-choice catalog (`GET /api/agents/catalog`): configured
@@ -33,11 +23,13 @@ export const HIDE_CREWMATE_CHOICES = true
  *   context (the roster is then global-only and cannot go stale this way).
  *
  * @returns `choices` — the catalog rows a namespace-aware picker (the chat agent
- *   pop-up) renders, keyed by (selection_kind, name). While
- *   `HIDE_CREWMATE_CHOICES` is on, a member row is withheld when a listed
- *   template reaches the same binding; a crewmate no template covers (made by
- *   hand, or running its own private copy) stays pickable. With the flag off, a member and a template of one name are two
- *   rows here, and picking one sends its kind.
+ *   pop-up) renders, keyed by (selection_kind, name). Unless the gateway's
+ *   `dashboard.crewmates_in_agent_picker` config is `true` (read from the shared
+ *   `['kirocrewConfig']` query, like `useCrewmateThreadsFlag`), a member row is
+ *   withheld when a listed template reaches the same binding (see
+ *   `withoutCoveredCrewmates`); a crewmate no template covers stays pickable.
+ *   With the key on, every member is listed, a member and a template of one name
+ *   are two rows here, and picking one sends its kind.
  * @returns `agents` — the same catalog folded to ONE row per name for the
  *   name-only consumers (the schedule form's `agent_id`, the channel and project
  *   pages, the keyboard cycle). A member wins the fold because the backend's
@@ -60,6 +52,14 @@ export const HIDE_CREWMATE_CHOICES = true
 export function useAgents(refreshTrigger: number, sessionKey?: string, projectDir?: string) {
   const [choices, setChoices] = useState<KiroCrewAgent[]>([])
   const [defaultAgent, setDefaultAgent] = useState('')
+  // Closed until the config says otherwise: a missing or failed read keeps
+  // the templates-only pop-up the gateway ships with.
+  const memberChoicesQuery = useQuery<{ dashboard?: { crewmates_in_agent_picker?: boolean } }, Error, boolean>({
+    queryKey: ['kirocrewConfig'],
+    queryFn: () => api.kirocrewConfig(),
+    select: (c) => c?.dashboard?.crewmates_in_agent_picker === true,
+  })
+  const memberChoices = memberChoicesQuery.data === true
   const [error, setError] = useState(false)
   const [reloading, setReloading] = useState(false)
   const [reloadTick, setReloadTick] = useState(0)
@@ -113,15 +113,16 @@ export function useAgents(refreshTrigger: number, sessionKey?: string, projectDi
   // Filtered AFTER the fold, so hiding a member from the pop-up never changes
   // which row a bare name resolves to for the name-only consumers.
   const pickerChoices = useMemo(
-    () => (HIDE_CREWMATE_CHOICES ? withoutCoveredCrewmates(choices) : choices),
-    [choices],
+    () => (memberChoices ? choices : withoutCoveredCrewmates(choices)),
+    [choices, memberChoices],
   )
 
   return { agents, choices: pickerChoices, defaultAgent, error, reload, reloading }
 }
 
 /**
- * The pop-up's rows while `HIDE_CREWMATE_CHOICES` is on. A crewmate is withheld
+ * The pop-up's rows while `dashboard.crewmates_in_agent_picker` is off (the
+ * default). A crewmate is withheld
  * only when a listed template already reaches the same thing:
  *
  * - a template of the SAME name is listed, or

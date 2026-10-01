@@ -1,21 +1,24 @@
 /**
- * While `HIDE_CREWMATE_CHOICES` is on, the chat agent pop-up withholds a member
- * row only when a listed template already reaches the same binding. A crewmate
- * no template covers -- made by hand with its own memory, or running its own
- * private copy -- must stay pickable, or it cannot be chosen from a chat at all. The folded `agents` list is NOT
- * filtered -- cron, channel and project bindings still see every name, and a
- * bare name still resolves member-first -- so hiding a crewmate from the picker
- * can never change what a name-only consumer dispatches.
+ * Unless the gateway's `dashboard.crewmates_in_agent_picker` config (read from
+ * the shared `['kirocrewConfig']` query) is `true`, the chat agent pop-up
+ * withholds a member row only when a listed template already reaches the same
+ * binding. A crewmate no template covers -- made by hand with its own memory, or
+ * running its own private copy -- must stay pickable, or it cannot be chosen from
+ * a chat at all. With the key on, every member is listed. Either way the folded
+ * `agents` list is NOT filtered -- cron, channel and project bindings still see
+ * every name, and a bare name still resolves member-first -- so the picker
+ * setting can never change what a name-only consumer dispatches.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { waitFor } from '@testing-library/react'
 import { renderHookWithProviders } from './helpers'
-import { HIDE_CREWMATE_CHOICES, useAgents, withoutCoveredCrewmates } from '../hooks/useAgents'
+import { useAgents, withoutCoveredCrewmates } from '../hooks/useAgents'
 import { api } from '../api/client'
 
 vi.mock('../api/client', () => ({
   api: {
     agentCatalog: vi.fn(),
+    kirocrewConfig: vi.fn(),
   },
 }))
 
@@ -31,29 +34,53 @@ const catalog = [
   { name: 'tuned', kiro_agent: 'tuned-copy', workspace: 'default', memory_store: 'member-tuned', description: 'mine', source: 'kirocrew', selection_kind: 'member' },
 ]
 
-const agentsApi = vi.mocked(api.agentCatalog)
+const COVERED_HIDDEN = [
+  ['template', 'reviewer'],
+  ['template', 'atlas'],
+  ['template', 'kirocrew'],
+  ['member', 'my-helper'],
+  ['member', 'tuned'],
+]
 
-describe('useAgents hides crewmates from the picker while the flag is on', () => {
+const agentsApi = vi.mocked(api.agentCatalog)
+const configApi = vi.mocked(api.kirocrewConfig)
+
+describe('useAgents keeps covered crewmates out of the picker unless the config allows them', () => {
   beforeEach(() => {
     agentsApi.mockReset()
+    configApi.mockReset()
     agentsApi.mockResolvedValue({ agents: catalog, default_agent: 'default' } as never)
   })
 
-  it('withholds only crewmates a listed template covers, and keeps every template', async () => {
-    // The temporary hide is what this file pins; when the flag is turned off
-    // the two-group behaviour is covered by AgentDropdownList.test.tsx.
-    expect(HIDE_CREWMATE_CHOICES).toBe(true)
-
+  it.each([
+    ['absent', {}],
+    ['false', { dashboard: { crewmates_in_agent_picker: false } }],
+    ['a non-boolean', { dashboard: { crewmates_in_agent_picker: 'yes' } }],
+  ])('withholds only covered crewmates from `choices` when the key is %s', async (_label, cfg) => {
+    configApi.mockResolvedValue(cfg as never)
     const { result } = renderHookWithProviders(() => useAgents(0))
+    await waitFor(() => expect(configApi).toHaveBeenCalled())
     await waitFor(() => expect(result.current.choices).toHaveLength(5))
 
-    expect(result.current.choices.map(c => [c.selection_kind, c.name])).toEqual([
-      ['template', 'reviewer'],
-      ['template', 'atlas'],
-      ['template', 'kirocrew'],
-      ['member', 'my-helper'],
-      ['member', 'tuned'],
-    ])
+    expect(result.current.choices.map(c => [c.selection_kind, c.name])).toEqual(COVERED_HIDDEN)
+  })
+
+  it('withholds only covered crewmates from `choices` when the config read fails', async () => {
+    configApi.mockRejectedValue(new Error('offline'))
+    const { result } = renderHookWithProviders(() => useAgents(0))
+    await waitFor(() => expect(configApi).toHaveBeenCalled())
+    await waitFor(() => expect(result.current.agents).toHaveLength(6))
+    expect(result.current.choices.map(c => [c.selection_kind, c.name])).toEqual(COVERED_HIDDEN)
+  })
+
+  it('offers every member and template in `choices` when the key is true', async () => {
+    configApi.mockResolvedValue({ dashboard: { crewmates_in_agent_picker: true } } as never)
+    const { result } = renderHookWithProviders(() => useAgents(0))
+    await waitFor(() => expect(result.current.choices).toHaveLength(7))
+
+    expect(result.current.choices.map(c => [c.selection_kind, c.name])).toEqual(
+      catalog.map(c => [c.selection_kind, c.name]),
+    )
   })
 
   it('withholds a same-name crewmate and an identity-less one on a listed template', () => {
@@ -73,7 +100,8 @@ describe('useAgents hides crewmates from the picker while the flag is on', () =>
     expect(rows.map(r => r.name)).toEqual(['orphan'])
   })
 
-  it('leaves the folded name-only `agents` list member-first and complete', async () => {
+  it.each([false, true])('leaves the folded name-only `agents` list member-first and complete (key=%s)', async (enabled) => {
+    configApi.mockResolvedValue({ dashboard: { crewmates_in_agent_picker: enabled } } as never)
     const { result } = renderHookWithProviders(() => useAgents(0))
     await waitFor(() => expect(result.current.agents).toHaveLength(6))
 

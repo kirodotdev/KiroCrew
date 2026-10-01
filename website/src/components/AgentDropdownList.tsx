@@ -211,7 +211,7 @@ export default function AgentDropdownList({ agents, activeAgent, activeKind, def
   }
   const grouped = agents.some(a => a.selection_kind)
   // A header earns its place only when it separates something. With one kind
-  // in the list (every crewmate covered under `HIDE_CREWMATE_CHOICES`, or an install
+  // in the list (every crewmate covered while `dashboard.crewmates_in_agent_picker` is off, or an install
   // with no templates) the header and the templates hint would name a
   // distinction the list does not draw, so both are dropped; the `role="group"`
   // label stays for assistive technology, which does not read the chrome.

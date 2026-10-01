@@ -7011,6 +7011,7 @@
         "restore_sessions": false,
         "dynamic_dashboard_cards": false,
         "crewmate_threads": false,
+        "crewmates_in_agent_picker": false,
         "qr_session_until_restart": true,
         "qr_session_persist_across_restart": false,
         "restore_window_minutes": 30,
@@ -7251,6 +7252,20 @@
       "tags": [],
       "label": "Reply threads on crewmate chat messages",
       "help": "Let any message in a crewmate's chat carry its own reply thread, opened in the side panel while the main chat stays visible. Off by default: the thread routes answer not-found, no thread frame is sent, and the dashboard draws no Reply in thread control. Takes effect on the next request; no restart.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "dashboard.crewmates_in_agent_picker",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Crewmates in the chat agent picker",
+      "help": "List crewmates in the chat composer's agent picker, beside the agent templates, so a chat can be switched onto a crewmate (and its own workspace and memory) without opening it from the Crew page. Off by default: the picker lists templates plus any crewmate no listed template already covers. Takes effect when the dashboard is reloaded; no gateway restart.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
