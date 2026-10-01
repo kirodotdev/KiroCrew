@@ -472,6 +472,7 @@ class _PumpMixin(ManagerComponent):
         """Give back the slot a ``ClaimPoint`` reserved for a row that did not start."""
         self._manager._running_count = max(0, int(self._manager._running_count) - 1)
         self._manager._startup_reservations = max(0, int(self._manager._startup_reservations) - 1)
+        self._manager._claim_prices.pop(agent_id, None)
         _glue_logger.debug("taskq: reservation for %s released", agent_id)
 
     def _drain_queue_sync_impl(

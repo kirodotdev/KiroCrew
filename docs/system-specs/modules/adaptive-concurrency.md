@@ -112,14 +112,15 @@ times: an increase needs a measured `free_mem_mb` at or above the pressure line
 (an unreadable reading, `-1`, fails open, as it does everywhere else the
 sample is unmeasurable -- `classify` treats it as clear), corroborated
 pressure at the critical line halves the cap, and the spawn gate defers every
-cold start that would not leave `spawn_min_memory_gb` plus the running dedicated
-agents' unobserved growth free (`_startup_memory_reserve_gb`: a start that has
-not settled -- the next one, a claim awaiting registration, a dedicated worker
-fewer than two sweeps have measured -- is priced at the configured start cost
-`agent.subagent_cost_gb` (0.5 GB by default), never a learned p90 or a live peak,
-less what it already holds; a settled worker owes nothing, since its memory is
-already inside the free-memory reading; yielded parents included -- see
-`subagent.md`). CPU
+start that would not leave `spawn_min_memory_gb` free after its own price and
+the running agents' unobserved growth (`_startup_memory_reserve_gb`: a start that
+has not settled -- the next one, a claim awaiting registration, a worker fewer
+than two sweeps have measured -- owes the price it was admitted at, a dedicated
+projection from the measured default or the learned settled RSS and never below
+`agent.subagent_cost_gb`, or that less the process a shared start skips; never a
+whole-run peak, in full until it settles; a settled worker owes nothing, since
+its memory is already inside the free-memory reading; yielded parents included --
+see `subagent.md`). CPU
 over-commit only slows work, and slowness is exactly the pressure the loop
 already backs off from. `compute_max_subagents` therefore sizes the AUTO ceiling
 from memory alone as well; `agent.subagent_cpu_cost_cores` is deprecated and

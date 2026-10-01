@@ -908,6 +908,248 @@ class TestSampleLiveCosts:
 
 
 # ---------------------------------------------------------------------------
+# Settled-runtime reading: what a dedicated runtime holds once it is up, which
+# the admission gate's dedicated start projection learns from; the cap divisor
+# is unchanged.
+# ---------------------------------------------------------------------------
+
+
+class TestSettledRuntimeReading:
+    def _agent(self, **kw):
+        from kiro_crew.subagent import SubagentInfo
+
+        info = SubagentInfo(id=kw.pop("id", "a1"), task="t", agent="kirocrew")
+        info._pid = 4242
+        for k, v in kw.items():
+            setattr(info, k, v)
+        return info
+
+    @staticmethod
+    def _sample(rss_kb: int = -1, jiffies: int = 0):
+        from kiro_crew.platform_compat import SubtreeSample
+
+        return SubtreeSample(rss_kb, jiffies, None, None)
+
+    @staticmethod
+    def _tool():
+        from kiro_crew.acp.liveness import ToolCallState
+
+        return ToolCallState(title="bash", command="pytest", dispatch_ts=0.0, dispatch_boot_ts=0.0)
+
+    def test_the_first_clean_post_startup_reading_is_held(self, monkeypatch) -> None:
+        """Captured once after the session answered with no tool in flight, then
+        held: it must not climb to a later build peak the way ``peak_rss_gb`` does."""
+        m = _mgr(running=1, max_concurrent=16, last_ts=0.0)
+        info = self._agent(_first_stream_started=1.0)
+        m._agents = {"a1": info}
+        rss = iter([int(0.5 * 1024 * 1024), int(132.3 * 1024 * 1024)])
+        monkeypatch.setattr(
+            subagent, "_proc_subtree_sample", lambda pid, **kw: self._sample(rss_kb=next(rss))
+        )
+        m._sample_live_costs()
+        m._sample_live_costs()
+
+        assert info.peak_rss_gb == pytest.approx(132.3, abs=0.1)
+        assert info.settled_rss_gb == pytest.approx(0.5, abs=0.01)
+        assert info._settled_rss_generation == info._rss_generation
+
+    def test_nothing_is_captured_during_startup(self, monkeypatch) -> None:
+        m = _mgr(running=1, max_concurrent=16, last_ts=0.0)
+        info = self._agent()  # its own session has not answered yet
+        m._agents = {"a1": info}
+        monkeypatch.setattr(
+            subagent,
+            "_proc_subtree_sample",
+            lambda pid, **kw: self._sample(rss_kb=int(0.5 * 1024 * 1024)),
+        )
+        m._sample_live_costs()
+        assert info.settled_rss_gb == 0.0
+        assert info.peak_rss_gb == pytest.approx(0.5, abs=0.01)
+
+    def test_a_sweep_with_a_tool_in_flight_is_skipped(self, monkeypatch) -> None:
+        m = _mgr(running=1, max_concurrent=16, last_ts=0.0)
+        info = self._agent(_first_stream_started=1.0, _inflight_tool=self._tool())
+        m._agents = {"a1": info}
+        rss = iter([int(132.3 * 1024 * 1024), int(0.5 * 1024 * 1024)])
+        monkeypatch.setattr(
+            subagent, "_proc_subtree_sample", lambda pid, **kw: self._sample(rss_kb=next(rss))
+        )
+        m._sample_live_costs()
+        assert info.settled_rss_gb == 0.0
+        info._inflight_tool = None
+        m._sample_live_costs()
+        assert info.settled_rss_gb == pytest.approx(0.5, abs=0.01)
+
+    def test_a_tool_that_cleared_during_the_read_voids_it(self, monkeypatch) -> None:
+        m = _mgr(running=1, max_concurrent=16, last_ts=0.0)
+        info = self._agent(_first_stream_started=1.0, _inflight_tool=self._tool())
+        m._agents = {"a1": info}
+
+        def _read(pid, **kw):
+            subagent.SubagentManager._clear_tool_dispatch(info)
+            return self._sample(rss_kb=int(132.3 * 1024 * 1024))
+
+        monkeypatch.setattr(subagent, "_proc_subtree_sample", _read)
+        m._sample_live_costs()
+        assert info.settled_rss_gb == 0.0
+
+    def test_a_tool_that_started_and_finished_during_the_read_voids_it(self, monkeypatch) -> None:
+        """Quiet at both ends is not quiet across the read: a tool that came and
+        went while the subtree was walked was inside it (``_stall_gen`` moved)."""
+        m = _mgr(running=1, max_concurrent=16, last_ts=0.0)
+        info = self._agent(_first_stream_started=1.0)
+        m._agents = {"a1": info}
+
+        def _read(pid, **kw):
+            info._inflight_tool = self._tool()
+            subagent.SubagentManager._clear_tool_dispatch(info)
+            return self._sample(rss_kb=int(132.3 * 1024 * 1024))
+
+        monkeypatch.setattr(subagent, "_proc_subtree_sample", _read)
+        m._sample_live_costs()
+        assert info._inflight_tool is None
+        assert info.settled_rss_gb == 0.0
+
+    def test_the_reading_is_taken_in_pss_when_the_host_has_it(self, monkeypatch) -> None:
+        """Summed RSS counts pages a tree of processes shares once per process."""
+        m = _mgr(running=1, max_concurrent=16, last_ts=0.0)
+        info = self._agent(_first_stream_started=1.0)
+        m._agents = {"a1": info}
+        from kiro_crew.platform_compat import SubtreeSample
+
+        asked: list[bool] = []
+
+        def _walk(pid, **kw):
+            asked.append(kw.get("pss", False))
+            return SubtreeSample(int(1.45 * 1024 * 1024), 0, None, None, int(0.9 * 1024 * 1024))
+
+        monkeypatch.setattr(subagent, "_proc_subtree_sample", _walk)
+        m._sample_live_costs()
+        assert asked == [True], "PSS comes from the sweep's one walk"
+        assert info.peak_rss_gb == pytest.approx(1.45, abs=0.01)
+        assert info.settled_rss_gb == pytest.approx(0.9, abs=0.01)
+        m._sample_live_costs()
+        assert asked == [True, False], "once captured, no costly PSS read"
+
+    def test_a_dedicated_run_hosting_shared_children_is_not_captured(self, monkeypatch) -> None:
+        """Its tree holds its children's per-session MCP servers too."""
+        m = _mgr(running=2, max_concurrent=16, last_ts=0.0)
+        parent = self._agent(_first_stream_started=1.0)
+        child = self._agent(id="c1", _session_sharing=True, parent_session_key="subagent:a1")
+        m._agents = {"a1": parent, "c1": child}
+        monkeypatch.setattr(
+            subagent,
+            "_proc_subtree_sample",
+            lambda pid, **kw: self._sample(rss_kb=int(2.5 * 1024 * 1024)),
+        )
+        m._sample_live_costs()
+        assert parent.settled_rss_gb == 0.0
+
+    def test_a_shared_session_is_never_captured(self, monkeypatch) -> None:
+        """A shared pid's tree holds the other tenants and the parent's own tools."""
+        m = _mgr(running=1, max_concurrent=16, last_ts=0.0)
+        info = self._agent(_first_stream_started=1.0, _session_sharing=True)
+        m._agents = {"a1": info}
+        monkeypatch.setattr(
+            subagent,
+            "_proc_subtree_sample",
+            lambda pid, **kw: self._sample(rss_kb=int(3.0 * 1024 * 1024)),
+        )
+        m._sample_live_costs()
+        assert info.peak_rss_gb == pytest.approx(3.0, abs=0.01)
+        assert info.settled_rss_gb == 0.0
+
+    @pytest.mark.asyncio
+    async def test_a_respawn_keeps_the_reading_until_its_replacement(self, monkeypatch) -> None:
+        """The real cancel-recovery respawn re-arms capture through the generation
+        bump without discarding the dead process's reading."""
+        import asyncio
+        from unittest.mock import AsyncMock
+
+        from test_subagent_reap_race import _info, _make_manager, _noop_reset
+
+        mgr = _make_manager()
+        mgr._sessions.reset = _noop_reset
+        info = _info(
+            _session_sharing=False,
+            started=time.time() - 5.0,
+            _pid=4242,
+            _first_stream_started=1.0,
+            settled_rss_gb=0.5,
+            _settled_rss_generation=0,
+            peak_rss_gb=132.3,
+            last_rss_gb=132.3,
+            _rss_samples=7,
+        )
+        mgr._agents[info.id] = info
+        mgr._running_count = 1
+        gen_before = info._rss_generation
+        mgr._run = AsyncMock()
+
+        async def _arm() -> None:
+            mgr._schedule_cancel_recovery(info)
+
+        await asyncio.create_task(_arm())
+        recovery = mgr._tasks.get(f"{info.id}:recovery")
+        assert recovery is not None, "recovery task was not registered"
+        await asyncio.wait_for(recovery, timeout=5)
+
+        assert info._rss_generation == gen_before + 1
+        assert info._rss_samples == 0
+        assert info.settled_rss_gb == pytest.approx(0.5, abs=0.01)
+        assert info._settled_rss_generation == gen_before
+
+        assert not info.done and info._pid, "respawned run must be live for a sweep"
+        mgr._agents = {info.id: info}
+        monkeypatch.setattr(
+            subagent,
+            "_proc_subtree_sample",
+            lambda pid, **kw: self._sample(rss_kb=int(0.6 * 1024 * 1024)),
+        )
+        mgr._sample_live_costs()
+        assert info.settled_rss_gb == pytest.approx(0.6, abs=0.01)
+        assert info._settled_rss_generation == info._rss_generation
+
+    def test_record_cost_keeps_the_peak_and_adds_the_settled_reading(self, monkeypatch) -> None:
+        m = _mgr(running=1, max_concurrent=16, last_ts=0.0)
+        info = self._agent(peak_rss_gb=132.3, settled_rss_gb=0.5, peak_cpu_cores=4.0)
+        calls: list = []
+        monkeypatch.setattr(subagent, "append_cost_sample", lambda *a, **k: calls.append((a, k)))
+        m._learned_settled_dirty = False
+        m._record_cost(info)
+        assert calls == [(("kirocrew", 132.3, 4.0), {"shared": False, "settled_gb": 0.5})]
+        assert m._learned_settled_dirty is True, "a new settled reading re-arms the refresh"
+
+    def test_the_settled_map_is_refreshed_whole_or_merged_when_the_read_is_partial(
+        self, monkeypatch
+    ) -> None:
+        m = _mgr(running=1, max_concurrent=16, last_ts=0.0)
+        m._learned_settled_gb = {"kept": 1.0, "kirocrew": 0.4}
+        monkeypatch.setattr(
+            subagent, "read_learned_costs_checked", lambda *a, **k: ({"kirocrew": 0.6}, False)
+        )
+        m._learned_settled_dirty = True
+        m._refresh_learned_settled()
+        assert m._learned_settled_gb == {"kept": 1.0, "kirocrew": 0.6}
+        monkeypatch.setattr(
+            subagent, "read_learned_costs_checked", lambda *a, **k: ({"kirocrew": 0.7}, True)
+        )
+        m._refresh_learned_settled()
+        assert m._learned_settled_gb == {"kept": 1.0, "kirocrew": 0.6}, "clean: not re-read"
+        m._learned_settled_dirty = True
+        m._refresh_learned_settled()
+        assert m._learned_settled_gb == {"kirocrew": 0.7}
+
+        def _boom(*_a, **_k):
+            raise OSError("unreadable")
+
+        monkeypatch.setattr(subagent, "read_learned_costs_checked", _boom)
+        m._learned_settled_dirty = True
+        m._refresh_learned_settled()
+        assert m._learned_settled_gb == {"kirocrew": 0.7}, "a failed read keeps the map"
+
+
+# ---------------------------------------------------------------------------
 # Container / cgroup hardening (Stage 8, dynamic-subagent-sizing.md §9)
 # ---------------------------------------------------------------------------
 

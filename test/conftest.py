@@ -2007,7 +2007,7 @@ def named_cron_caller(monkeypatch):
 
 
 #: Comfortably clear of both memory guards ``SubagentManager.spawn`` runs: the
-#: absolute floor (``agent.spawn_min_memory_gb``, 4 GB) and the posture tier
+#: absolute floor (``agent.spawn_min_memory_gb``, 2 GB after a start of up to 1 GB) and the posture tier
 #: (``agent.resource_critical_gb``, 2 GB).
 _HEALTHY_AVAILABLE_GB = 8.0
 

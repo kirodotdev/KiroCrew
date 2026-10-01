@@ -8131,3 +8131,51 @@ class TestOpenLockFileForSweep:
         with pytest.raises(OSError):
             pc.open_lock_file_for_sweep(r"C:\agents\alias.lock")
         assert closed == [0x1234]
+
+
+class TestProcSubtreePss:
+    """The PSS option of the subtree walker, on a synthetic tree and synthetic
+    ``smaps_rollup`` files, so it runs the same on every host."""
+
+    @staticmethod
+    def _host(monkeypatch, files: dict[int, str], tree: dict[int, list[int]]) -> None:
+        import builtins
+        import io
+
+        monkeypatch.setattr(pc, "IS_LINUX", True)
+        monkeypatch.setattr(pc, "_proc_children", lambda pid: tree.get(pid, []))
+        real_open = builtins.open
+        rollups = {f"/proc/{pid}/smaps_rollup": body for pid, body in files.items()}
+
+        def _open(path, *args, **kwargs):
+            if path in rollups:
+                return io.StringIO(rollups[path])
+            if str(path).endswith("/smaps_rollup"):
+                raise FileNotFoundError(path)
+            return real_open(path, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "open", _open)
+
+    def test_the_subtree_pss_is_summed_from_one_walk(self, monkeypatch) -> None:
+        self._host(
+            monkeypatch,
+            {10: "Rss: 900 kB\nPss: 100 kB\n", 11: "Pss: 20 kB\n", 12: "Pss: 3 kB\n"},
+            {10: [11, 12]},
+        )
+        sample = pc.proc_subtree_sample(10, rss=False, jiffies=False, pss=True)
+        assert sample.pss_kb == 123
+
+    def test_an_unreadable_child_adds_nothing(self, monkeypatch) -> None:
+        self._host(monkeypatch, {10: "Pss: 100 kB\n", 12: "garbage\n"}, {10: [11, 12]})
+        assert pc.proc_subtree_sample(10, rss=False, jiffies=False, pss=True).pss_kb == 100
+
+    def test_an_unreadable_root_or_a_non_linux_host_reads_as_unmeasured(self, monkeypatch) -> None:
+        self._host(monkeypatch, {11: "Pss: 20 kB\n"}, {10: [11]})
+        assert pc.proc_subtree_sample(10, rss=False, jiffies=False, pss=True).pss_kb == -1
+        assert pc.proc_subtree_sample(None, pss=True).pss_kb == -1
+        monkeypatch.setattr(pc, "IS_LINUX", False)
+        assert pc.proc_subtree_sample(11, rss=False, jiffies=False, pss=True).pss_kb == -1
+
+    def test_pss_is_read_only_when_asked(self, monkeypatch) -> None:
+        self._host(monkeypatch, {10: "Pss: 100 kB\n"}, {})
+        assert pc.proc_subtree_sample(10, rss=False, jiffies=False).pss_kb == -1

@@ -181,7 +181,7 @@ class TestTheHostPinSurvivesTheTestsOwnPatches:
     file is pinned, looks pinned, and is not pinned where it matters.
 
     Measured on a macos-15 nightly backend shard reading 2.58 GB available,
-    under the 4.5 GB floor: ``test_taskq_admission_integration.py``'s drain
+    under the 4.5 GB floor then in force: ``test_taskq_admission_integration.py``'s drain
     deferred a second time. The only failure text was
     ``assert 'queued' == 'starting'``; nothing named memory, and the whole
     nightly publish chain was skipped behind it.

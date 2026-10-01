@@ -19,7 +19,7 @@ import time
 from collections.abc import Awaitable, Callable, Container, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Any, Literal, Optional, Protocol
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Optional, Protocol
 
 from kiro_crew.acp.liveness import (
     VERDICT_DEAD,
@@ -75,6 +75,8 @@ from kiro_crew.config.loader import DEFAULT_MODEL, KiroCrewConfig
 from kiro_crew.config.paths import data_home
 from kiro_crew.config.sections import SESSION_START_TIMEOUT_MIN, AgentConfig
 from kiro_crew.constants import (
+    DEFAULT_SPAWN_MIN_MEMORY_GB,
+    DEFAULT_SUBAGENT_COST_GB,
     DEFAULT_SUBAGENT_MAX_TURNS,
     SUBAGENT_COMPLETION_PREFIX,
     SUBAGENT_TIMEOUT_SECS,
@@ -171,8 +173,11 @@ from kiro_crew.subagent_completion_meta import (
 )
 from kiro_crew.subagent_cost import (
     append_cost_sample,
+    cap_buckets,
     compact_cost_log,
+    learned_settled_for,
     read_learned_cost,
+    read_learned_costs_checked,
 )
 from kiro_crew.subagent_manager import (
     CancellationCoordinator,
@@ -1109,6 +1114,15 @@ _RESET_TIMEOUT = 30.0  # max seconds for session reset in finally block
 # the record with the kill named UNDECIDED, never clean (``_report_terminal``).
 _TEARDOWN_REPORT_GRACE = 30.0
 _RECOVERY_SLOT_WAIT_SECS = 60.0
+# A start admitted at the shared price that turns dedicated re-checks the
+# memory floor before launching its process; below it, it waits at most this
+# long (re-reading every ``_DEDICATED_TOPUP_POLL_SECS``) and then starts anyway
+# with a warning: an admitted run is never failed on capacity.
+_DEDICATED_TOPUP_WAIT_SECS = 60.0
+_DEDICATED_TOPUP_POLL_SECS = 2.0
+# How long one off-loop host-memory read may wait for the shared executor before
+# the poller takes the same reading synchronously instead.
+_HOST_READ_OFF_LOOP_SECS = 2.0
 _REPORT_DRAIN_TIMEOUT = (
     30.0  # max seconds cancel_all() waits for shielded terminal reports to drain
 )
@@ -1236,34 +1250,38 @@ def _resolved_model_of(client: object) -> str:
     return "" if model == DEFAULT_MODEL else model
 
 
-def _subagent_default_model() -> str:
+def _subagent_default_model(cfg: Any = None) -> str:
     """Explicit sub-agent model pin (``agent.role_models['subagent']``), or ``""``.
 
     Returns ``""`` when the sub-agent role is unpinned so the caller OMITS the
     model kwarg and keeps deferring to the provider's configured default —
     rather than forcing the chat default on as an explicit override (which also
     breaks callers/mocks that don't expect the kwarg). Only a deliberate pin
-    overrides. Never raises.
+    overrides. Never raises. *cfg* is a config the caller already loaded, so a
+    caller holding one does not load it again here.
     """
     try:
         from kiro_crew.config.loader import KiroCrewConfig, normalize_agent_model
 
-        return normalize_agent_model(KiroCrewConfig.load().agent.role_models.get("subagent", ""))
+        cfg = cfg if cfg is not None else KiroCrewConfig.load()
+        model = normalize_agent_model(cfg.agent.role_models.get("subagent", ""))
+        return model if isinstance(model, str) else ""
     except Exception:
         return ""
 
 
-def _subagent_default_effort() -> str:
+def _subagent_default_effort(cfg: Any = None) -> str:
     """Explicit sub-agent effort pin (``agent.role_efforts['subagent']``), or ``""``.
 
     Returns ``""`` when unpinned so the caller omits ``reasoning_effort_override``
     and the factory's default effort applies. Only a deliberate pin overrides.
-    Never raises.
+    Never raises. *cfg* as for :func:`_subagent_default_model`.
     """
     try:
         from kiro_crew.config.loader import KiroCrewConfig
 
-        val = KiroCrewConfig.load().agent.role_efforts.get("subagent", "")
+        cfg = cfg if cfg is not None else KiroCrewConfig.load()
+        val = cfg.agent.role_efforts.get("subagent", "")
         return val if isinstance(val, str) else ""
     except Exception:
         return ""
@@ -1449,7 +1467,7 @@ def _timeout_context(
 
 
 def check_memory_available(
-    min_gb: float = 4.0, *, path: str = "/proc/meminfo"
+    min_gb: float = DEFAULT_SPAWN_MIN_MEMORY_GB, *, path: str = "/proc/meminfo"
 ) -> tuple[bool, float]:
     """Check if enough memory is available to spawn a subagent.
 
@@ -1502,20 +1520,21 @@ def check_memory_available(
 # between separate copies.
 
 
-def _proc_subtree_sample(pid: Optional[int]) -> platform_compat.SubtreeSample:
+def _proc_subtree_sample(pid: Optional[int], *, pss: bool = False) -> platform_compat.SubtreeSample:
     """One walk of *pid*'s subtree, carrying all four readings the sweep needs.
 
     Thin adapter over :func:`platform_compat.proc_subtree_sample` that supplies
     the needle this module counts by: ``STUB_MODULE``, the module path the
     rewriter itself puts on the stub launch line. So ``sample.matched`` is the
     stub count here, and the shared walker stays free of gateway vocabulary
-    while this module stays free of a second walk.
+    while this module stays free of a second walk. ``pss`` adds the settled
+    capture's summed PSS to the same walk (costly; only while a capture is due).
 
     Blocking: reads a handful of ``/proc`` entries per process in the subtree, so
     it belongs on an executor thread, never on the event loop (see
     ``_reaper_loop`` -> ``_sample_live_costs``).
     """
-    return platform_compat.proc_subtree_sample(pid, counts=True, needles=(STUB_MODULE,))
+    return platform_compat.proc_subtree_sample(pid, counts=True, needles=(STUB_MODULE,), pss=pss)
 
 
 def _subtree_cpu_jiffies(pid: int, *, pids: Optional[list[int]] = None) -> int:
@@ -2006,22 +2025,160 @@ def _host_mem_term(cfg: KiroCrewConfig) -> int | None:
     if avail_gb <= 0:
         return None
     buf = 1.0 - agent.subagent_mem_buffer_pct / 100.0
-    mem_cost = read_learned_cost("mem_gb") or agent.subagent_cost_gb or 0.5
+    mem_cost = read_learned_cost("mem_gb") or agent.subagent_cost_gb or DEFAULT_SUBAGENT_COST_GB
     pool_size = cfg.session.pool_size
     return math.floor((avail_gb * buf - pool_size * mem_cost) / mem_cost)
 
 
-# Sweeps that must have measured a dedicated worker before it counts as settled
-# (its RSS already inside the free-memory reading) rather than warming (still
-# owing the configured start price). One reading can land mid-growth (a runtime
+# Sweeps that must have measured a live row before it counts as settled (its
+# memory already inside the free-memory reading) rather than warming (still
+# owing its admitted start price). One reading can land mid-growth (a runtime
 # started just before a sweep reads at a fraction of its size); two readings an
 # interval apart bound that exposure to one ``_REAPER_INTERVAL``.
 _RSS_SAMPLES_TO_SETTLE = 2
+# A row whose own session answered this long ago counts as settled even when no
+# sweep could measure it: macOS and Windows have no ``/proc`` subtree reading, so
+# ``_rss_samples`` never advances there, and the native free-memory reading
+# already holds the runtime by then. Two sweep intervals, the same exposure the
+# sample count bounds where it can be read.
+_SETTLE_AFTER_SECS = 2 * _REAPER_INTERVAL
 
 
-def _live_dedicated(agents: list[SubagentInfo]) -> tuple[list[SubagentInfo], list[SubagentInfo]]:
-    live = [info for info in agents if not info.done and not info.queued]
-    return live, [info for info in live if not info._session_sharing]
+# A start that takes a session on its parent's running runtime skips the process
+# a dedicated start launches -- the kiro-cli launcher and chat process and their
+# first-session warm-up -- but NOT the agent's MCP servers: kiro-cli starts a
+# fresh copy of every declared server for each session, shared or not. Measured
+# on kiro-cli 2.26.1, the skipped part is ~0.35 GiB (subagent.md, *Memory
+# guard*), so a shared start is priced at the dedicated projection less that,
+# never below ``_SHARED_START_MIN_GB``: strictly above 0, so no admitted start
+# is priced as free.
+_SHARED_START_SAVING_GB = 0.35
+_SHARED_START_MIN_GB = 0.05
+# What a dedicated start of a bucket with no learned settled figure yet is
+# reserved at: a ``kiro-cli acp`` process (2.26.1) driven through Kiro Crew's own
+# initialize / session/new shape with the default agent's MCP roster measured
+# 0.80 GiB of process-tree USS after its first session, ~0.96 GiB with the
+# gateway's own per-session MCP stubs at their real size; rounded up. A fresh
+# install is exactly the low-memory host the floor protects, so its first
+# starts must not be priced at a guess (subagent.md, *Memory guard*).
+_UNLEARNED_DEDICATED_START_GB = 1.0
+# The most a learned settled figure may raise a dedicated start's price. A bucket
+# priced out of admission runs no dedicated starts and so never relearns, so a
+# few mis-measured readings must not lock it out for good: this bounds the bar
+# such a bucket meets at the floor plus 2 GiB. A heavy MCP roster measured
+# ~1.5 GiB, under it.
+_SETTLED_PROJECTION_CEILING_GB = 2.0
+
+
+def _shared_start_price_gb(dedicated_gb: float) -> float:
+    """Price of a start that will share its parent's runtime, given its bucket's
+    dedicated projection: that projection less the process it does not launch."""
+    return max(_SHARED_START_MIN_GB, dedicated_gb - _SHARED_START_SAVING_GB)
+
+
+def _selection_kind(info: SubagentInfo) -> str:
+    """``"template"`` or ``"member"``: how *info*'s run selects what it executes.
+
+    An explicit ``agent`` is always a template selection (a crew spawn naming
+    one keeps its member identity in ``execution_context`` instead); otherwise
+    the admitted execution context decides. Raises when neither exists: a run
+    with no admitted execution never reaches a start (``_run_inner`` refuses it
+    first), and the admission gate reads an unknown answer as dedicated.
+    """
+    if info.agent:
+        return "template"
+    if info.execution_context is None:
+        raise ValueError(f"subagent {info.id} has no admitted execution context")
+    return info.execution_context.selection_kind
+
+
+class _SharingPlan(NamedTuple):
+    """How one run will start: the ONE decision the run and admission both read.
+
+    ``shared`` is True only when the run takes the shared-runtime arm; the
+    other fields are the run's effective model / effort pins, which force the
+    dedicated arm when set and which the run hands its provider.
+    """
+
+    eff_model: str
+    eff_effort: str
+    shared: bool
+
+
+def _dedicated_start_price_gb(
+    cost_gb: float, settled_gb: Mapping[str, float] | None, bucket: str
+) -> float:
+    """What a dedicated start of *bucket* is reserved at.
+
+    ``max(cost, learned settled)`` once the bucket has a learned settled figure
+    (``settled_gb`` via :func:`kiro_crew.subagent_cost.read_learned_costs_checked`, three
+    readings at least), else ``max(cost, _UNLEARNED_DEDICATED_START_GB)``.
+    ``cost_gb`` (``agent.subagent_cost_gb``) is the floor of the price, and a
+    learned figure never raises it past ``_SETTLED_PROJECTION_CEILING_GB``. The
+    settled figure is what such a runtime holds once it is up -- kiro-cli plus
+    its MCP servers, before its work grows the tree -- so a burst of dedicated
+    starts is reserved at what each will actually settle at, not at a start
+    price it outgrows unreserved. Never the whole-run peak.
+    """
+    learned = learned_settled_for(settled_gb, bucket)
+    if learned is None or not math.isfinite(learned):
+        projected = _UNLEARNED_DEDICATED_START_GB
+    else:
+        projected = min(learned, _SETTLED_PROJECTION_CEILING_GB)
+    return max(max(0.0, cost_gb), projected)
+
+
+def _spawn_memory_floor_and_cost(agent_cfg: Any = None) -> tuple[float, float]:
+    """``(spawn_min_memory_gb, max(0, subagent_cost_gb))``, never raising.
+
+    *agent_cfg* is an ``AgentConfig`` the caller already loaded; without one it
+    is loaded here. Unreadable values fall back to the shipped defaults, so the
+    gate and the dedicated top-up can never price from different fallbacks.
+    """
+    try:
+        if agent_cfg is None:
+            agent_cfg = KiroCrewConfig.load().agent
+        return float(agent_cfg.spawn_min_memory_gb), max(0.0, float(agent_cfg.subagent_cost_gb))
+    except Exception:
+        return DEFAULT_SPAWN_MIN_MEMORY_GB, DEFAULT_SUBAGENT_COST_GB
+
+
+async def _host_available_gb_off_loop(min_gb: float) -> float:
+    """The floor's host reading (GiB, -1 when unmeasurable), taken off the loop.
+
+    For a caller that POLLS it (the dedicated top-up): the Linux reader walks
+    cgroup files. Each read has its own bound, ``_HOST_READ_OFF_LOOP_SECS``,
+    independent of the caller's wait, and a pool that does not answer in time
+    or cannot start a thread falls back to the same synchronous read the
+    admission gate makes on every spawn, so the caller always gets a real
+    answer. *min_gb* is passed through for the reader's own comparison, which
+    the caller does not use: it decides against a need it recomputes after.
+    """
+    try:
+        _ok, avail = await asyncio.wait_for(
+            asyncio.to_thread(check_memory_available, min_gb=min_gb),
+            timeout=_HOST_READ_OFF_LOOP_SECS,
+        )
+    except (asyncio.TimeoutError, RuntimeError):
+        _ok, avail = check_memory_available(min_gb=min_gb)
+    return avail
+
+
+def _row_settled(info: SubagentInfo, now: float) -> bool:
+    """Whether *info*'s memory is already inside the free-memory reading.
+
+    Two sweeps measured it, or (where nothing can measure it) its current
+    process's own session answered ``_SETTLE_AFTER_SECS`` ago, on the monotonic
+    clock so a laptop's sleep does not settle every row at once.
+    """
+    if info._rss_samples >= _RSS_SAMPLES_TO_SETTLE:
+        return True
+    answered = info._first_stream_mono
+    return (
+        answered is not None
+        and info._first_stream_generation == info._rss_generation
+        and now - answered >= _SETTLE_AFTER_SECS
+    )
 
 
 def _startup_memory_reserve_gb(
@@ -2029,35 +2186,52 @@ def _startup_memory_reserve_gb(
     *,
     running_count: int,
     cost_gb: float,
+    next_start_gb: float | None = None,
+    settled_gb: Mapping[str, float] | None = None,
+    claim_prices: Iterable[float] = (),
+    now: float | None = None,
 ) -> float:
-    """Memory promised to cold dedicated starts but not observed in RSS yet.
+    """Memory promised to starts but not observed in RSS yet.
 
-    Include the next start and claims awaiting registration. Queued and terminal
-    rows promise nothing; a yielded parent still owns its process. Confirmed
-    shared sessions do not launch another process and incur no dedicated-start
-    reservation. Until sharing is known, a row is priced as a warming
-    dedicated start, since it may yet become one.
+    Three terms: the next start (*next_start_gb*, default ``cost_gb``), claims
+    awaiting registration (each at the price its admission checked, from
+    *claim_prices*, else ``cost_gb``), and every live row that has not settled
+    yet. Queued and terminal rows promise nothing; a yielded parent still owns
+    its process.
 
-    Every start is priced at ``cost_gb`` (``agent.subagent_cost_gb``): what a
-    runtime needs to START, not what the work it later runs may grow to. A
-    run's peak RSS is its whole process subtree -- test suites, builds and MCP
-    servers it launched included -- so pricing the next start at a learned p90
-    or a live peak held ordinary spawns at 10 GB+ on a laptop while the start
-    itself needs a fraction of that.
+    A row owes its admitted price (``_start_price_gb``: the shared price
+    (:func:`_shared_start_price_gb`) for a start predicted to share, the
+    dedicated projection otherwise) in full until it settles
+    (:func:`_row_settled`); a settled row owes nothing, since its memory is
+    already inside the free-memory reading. No credit is taken for the RSS a
+    warming row already shows: the sweep reads summed VmRSS, which counts a
+    tree's shared pages once per process and so runs ~1.5x the PSS the prices
+    are in, and a shared row's reading is a share of a runtime others use. A
+    dedicated row with no admitted price owes the dedicated projection for its
+    bucket (:func:`_dedicated_start_price_gb`); a shared one with none, nothing.
 
-    A dedicated worker fewer than ``_RSS_SAMPLES_TO_SETTLE`` sweeps have
-    measured owes ``cost_gb`` less whatever RSS it already holds; a settled one
-    owes nothing, since its memory is already inside the free-memory reading.
+    The projection is never the whole-run peak or a whole-tree p90: a run's
+    peak RSS is its whole process subtree -- test suites, builds and MCP
+    servers it launched included -- so pricing a start at it held ordinary
+    spawns at 10 GB+ on a laptop while the runtime itself needs a fraction.
     """
-    live, dedicated = _live_dedicated(agents)
+    clock = time.monotonic() if now is None else now
+    live = [info for info in agents if not info.done and not info.queued]
     cost = max(0.0, cost_gb)
     unregistered = max(0, running_count - sum(not info._slot_released for info in live))
-    gaps = sum(
-        max(0.0, cost - info.last_rss_gb)
-        for info in dedicated
-        if info._rss_samples < _RSS_SAMPLES_TO_SETTLE
-    )
-    return cost * (1 + unregistered) + gaps
+    claimed = [max(0.0, price) for price in claim_prices][:unregistered]
+    gaps = 0.0
+    for info in live:
+        if _row_settled(info, clock):
+            continue
+        price = info._start_price_gb
+        if price is None and not info._session_sharing:
+            price = _dedicated_start_price_gb(
+                cost, settled_gb, _cost_bucket(info.agent, info.execution_context)
+            )
+        gaps += max(0.0, price or 0.0)
+    next_start = cost if next_start_gb is None else max(0.0, next_start_gb)
+    return next_start + sum(claimed) + cost * (unregistered - len(claimed)) + gaps
 
 
 def _cost_bucket(agent: str, execution: Any) -> str:
@@ -2066,7 +2240,9 @@ def _cost_bucket(agent: str, execution: Any) -> str:
     The explicit ``agent`` when the spawn named one, else the template the run
     actually executes (``execution.template_id`` -- an agent-less spawn inherits
     its parent's), so an inherited heavy template builds its OWN bucket instead
-    of mixing into the default one. ``_record_cost`` is the only caller. Empty
+    of mixing into the default one. ONE function for the write
+    (``_record_cost``) and the reads that price a start against it (the gate,
+    the reserve, the dedicated top-up), so the two sides cannot key apart. Empty
     when neither is known; the store normalizes that to its default agent.
     """
     if agent:
@@ -2441,6 +2617,11 @@ class SubagentInfo:
     # from spawn until its process is reset. The adaptive controller reads it
     # as the floor of this run's progress.
     _first_stream_started: float | None = None
+    # The same moment on the monotonic clock, and the ``_rss_generation`` of the
+    # process it belongs to: the reserve's time-based settle reads these, so a
+    # wall-clock step or a respawned process never settles a warming row.
+    _first_stream_mono: float | None = None
+    _first_stream_generation: int = -1
     # ``runtime_global`` frames this execution received while still in
     # startup; named in the startup reap's error. Reset with the marker.
     _startup_cotenant_frames: int = 0
@@ -2456,6 +2637,26 @@ class SubagentInfo:
     # periodically by the reaper loop and folded into the cost store at exit.
     peak_rss_gb: float = 0.0
     peak_cpu_cores: float = 0.0
+    # Settled-runtime reading: the first quiet subtree sample of a DEDICATED
+    # process after its own session answered, with no tool in flight across the
+    # read. What the runtime holds once it is up, before its work grows the tree;
+    # persisted as the cost store's ``settled_gb``, which the admission gate's
+    # dedicated start projection learns from. ``_settled_rss_generation`` ties it
+    # to the process it measured, so a respawn re-captures (cancellation.py).
+    settled_rss_gb: float = 0.0
+    _settled_rss_generation: int = -1
+    # GiB the admission gate reserved this start at: the shared price when it was
+    # predicted to share its parent's runtime, else the dedicated projection.
+    # ``_startup_memory_reserve_gb`` charges it in full until the row
+    # settles. None = priced at the dedicated projection (a row the gate did not
+    # build, e.g. a recovered one).
+    _start_price_gb: float | None = None
+    # True while ``_start_price_gb`` is the SHARED price: the one row a
+    # dedicated launch must top up first (``_ensure_dedicated_start_priced``).
+    _start_priced_shared: bool = False
+    # True while this row waits its turn for the dedicated top-up's re-check;
+    # the row holding the turn does not count waiters queued behind it.
+    _topup_waiting: bool = False
     # Most-recent sample of the same two signals. The peaks answer "how big can
     # this agent get" (what sizing needs); a live task-manager surface needs "how
     # big is it right now", which a high-water mark cannot express — it never
@@ -3182,6 +3383,21 @@ class SubagentManager:
         self._completion_keep = completion_keep
         self._completion_keep_chars = completion_keep_chars
         self._running_count = 0
+        # Learned settled RSS per cost bucket (GiB), the dedicated start
+        # projection's input. Replaced whole, off the loop, by the reaper's cost
+        # sweep (``_refresh_learned_settled``); the gate only reads it, so it
+        # never opens the cost log on the event loop.
+        self._learned_settled_gb: dict[str, float] = {}
+        # Set when a run records a settled reading (and at start), so the sweep
+        # re-reads the cost log only when it can have changed what the map holds.
+        self._learned_settled_dirty = True
+        # Claims admitted but not registered yet: (checked price, priced shared),
+        # keyed by run id. Set with the ClaimPoint reservation, popped by the
+        # re-entry that registers it or ``release_reservation``.
+        self._claim_prices: dict[str, tuple[float, bool]] = {}
+        # One start admitted at the shared price re-checks the floor at a time,
+        # so waiters do not each count the others' raised prices and all hold.
+        self._dedicated_topup_lock = asyncio.Lock()
         # Strong refs to in-flight shielded terminal reports (see
         # `_spawn_terminal_report`); drained in `cancel_all`.
         self._report_tasks: set[asyncio.Task] = set()  # type: ignore[type-arg]
@@ -3827,6 +4043,9 @@ class SubagentManager:
 
     def _sample_live_costs(self) -> None:
         return self._monitor._sample_live_costs_impl()
+
+    def _refresh_learned_settled(self) -> None:
+        return self._monitor._refresh_learned_settled_impl()
 
     def _record_cost(self, info: SubagentInfo) -> None:
         return self._monitor._record_cost_impl(info)
@@ -4649,6 +4868,8 @@ class SubagentManager:
         if info._first_stream_started is not None:
             return
         info._first_stream_started = time.time()
+        info._first_stream_mono = time.monotonic()
+        info._first_stream_generation = info._rss_generation
         if info.turns == 0:
             self._note_startup_progress(info)
 
@@ -5563,6 +5784,12 @@ class SubagentManager:
     def _should_use_session_sharing(self, info: SubagentInfo) -> bool:
         return self._run_events._should_use_session_sharing_impl(info)
 
+    def _sharing_plan(self, info: SubagentInfo, *, cfg: Any = None) -> _SharingPlan:
+        return self._run_events._sharing_plan_impl(info, cfg=cfg)
+
+    async def _ensure_dedicated_start_priced(self, info: SubagentInfo) -> None:
+        return await self._run_events._ensure_dedicated_start_priced_impl(info)
+
     async def _create_shared_session(
         self, info: SubagentInfo, session_key: str, agent: str
     ) -> "LLMProvider":
@@ -5807,6 +6034,10 @@ class SubagentManager:
 # existing integrations patch ``kiro_crew.subagent.*`` after manager creation.
 _COMPONENT_GLOBAL_BINDINGS = (
     AcpSessionProvider,
+    DEFAULT_SPAWN_MIN_MEMORY_GB,
+    cap_buckets,
+    learned_settled_for,
+    read_learned_costs_checked,
     Any,
     CONTEXT_GROUP_LESSONS,
     CONTEXT_GROUP_MEMORY,

@@ -216,6 +216,17 @@ SUBAGENT_TIMEOUT_SECS = 10800
 # run that makes little progress or spends a long time inside one tool.
 DEFAULT_SUBAGENT_MAX_TURNS = 1000
 
+# Memory (GiB) that must remain available AFTER a subagent start is admitted:
+# the default of ``agent.spawn_min_memory_gb``. One number for the config
+# default, the loader fallback, the admission gate's fallback and
+# ``check_memory_available``'s default, so a later change cannot move some of
+# them and leave the others behind.
+DEFAULT_SPAWN_MIN_MEMORY_GB = 2.0
+
+# Default of ``agent.subagent_cost_gb``: the least a dedicated subagent start is
+# priced at, and the auto cap's per-agent fallback. Same one-source reason.
+DEFAULT_SUBAGENT_COST_GB = 0.5
+
 # Load-time clamp for ``agent.subagent_timeout_secs``. Same reason as the other
 # resource knobs in ``_SECURITY_BOUNDED_FIELDS``: the value governs how long one
 # subagent may hold a concurrency slot, so an inflated on-disk value (a direct

@@ -102,7 +102,7 @@ compose multiplicatively with the row above them.
 |---|---|---|---|---|
 | `SubagentManager._max_concurrent` (`resolve_max_subagents`) | active subagent runs, gateway-wide | auto (`compute_max_subagents`, floor 3) | queue in memory | base |
 | `subagent_spawn_stagger_secs` | subagent starts | 0.25s | queue | — |
-| `check_memory_available` (spawn floor) | new subagent spawns | `spawn_min_memory_gb` 4.0 plus the warming-start reserve (`subagent_cost_gb` 0.5 per warming dedicated start, or the learned per-run cost or a live dedicated peak when higher); Q8 moves the floor to 3.0 | DEFER to the durable queue; legacy spawns REFUSE | — |
+| `check_memory_available` (spawn floor) | new subagent spawns | `spawn_min_memory_gb` 2.0 (Q9), required to remain AFTER the start, plus the start reserve: each warming start at the price it was admitted at (dedicated: `max(subagent_cost_gb, learned settled RSS or the measured 1.0 GB default)`; shared: that less 0.35 GB), each in full until it settles | DEFER to the durable queue; legacy spawns REFUSE | — |
 | `cached_admission_check` / `admission_check` (posture gate) | new subagent spawns (cached read), cron firings (uncached read) | `resource_critical_gb` 2.0 | DEFER to the durable queue; interval and one-shot (`every` / `at`) cron firings wait for the next admitted tick (cron-expression jobs are not deferred); legacy spawns REFUSE | — |
 | `_COLD_START_MAX_CONCURRENT` (`_ColdStartAdmission`) | runtime spawn+`initialize`, per event loop | 2 | wait | — (does not cover `session/new` on an existing runtime) |
 | `_SESSION_NEW_TIMEOUT` / `session_start_timeout_secs` | one `session/new` | 90s | `AcpRequestTimeout` → dedicated-process fallback | amplifies ×(1 runtime + N stubs) |

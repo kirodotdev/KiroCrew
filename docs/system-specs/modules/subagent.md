@@ -98,6 +98,13 @@ pool default changes.
 |----------|-------|---------|
 | `_MAX_CONCURRENT` | 3 | Legacy fallback / auto-size floor. `agent.max_subagents` defaults to `0` = auto-size the cap (floor 3, ceiling `agent.subagent_auto_max`, default 32); a positive value pins a fixed cap. The cap is re-derived on every config reload, not only at boot — see [`reconfigure`](#reconfigurecfg-apply_limitscfg-max_concurrentnone-live-config). Session-shared subagents are cost-sampled as the runtime's measured RSS divided by the live shared-session count on that PID (`_live_shared_count`), so the memory term no longer binds and the cap rises to the provider-concurrency ceiling. |
 | `_TIMEOUT_SECS` | 10800 | Hard timeout per subagent (3 hours), from `constants.SUBAGENT_TIMEOUT_SECS` |
+| `DEFAULT_SPAWN_MIN_MEMORY_GB` | 2.0 | Default of `agent.spawn_min_memory_gb`, from `constants.DEFAULT_SPAWN_MIN_MEMORY_GB`: GiB that must remain available AFTER an admitted start. The one source for the dataclass default, the loader fallback, the gate's fallback and `check_memory_available`'s default |
+| `_UNLEARNED_DEDICATED_START_GB` | 1.0 | Dedicated start price for a cost bucket with no learned settled figure yet: the default `kirocrew` agent's measured first-session tree (kiro-cli 2.26.1, USS, its MCP roster included), rounded up. See *Memory guard* |
+| `_SETTLED_PROJECTION_CEILING_GB` | 2.0 | The most a learned settled figure may raise a dedicated start's price |
+| `_SETTLE_AFTER_SECS` | 120 | A row whose own session answered this long ago counts as settled where no sweep can measure it (macOS, Windows) |
+| `_SHARED_START_SAVING_GB` | 0.35 | What a start that shares its parent's runtime does not launch (the kiro-cli process and its first-session warm-up, measured); a shared start is priced at the dedicated projection less this, never below `_SHARED_START_MIN_GB` (0.05). See *Memory guard* |
+| `_RSS_SAMPLES_TO_SETTLE` | 2 | Sweeps before a dedicated worker counts as settled and owes nothing |
+| `_DEDICATED_TOPUP_WAIT_SECS` | 60 | Longest a start admitted at the shared price waits for the floor before launching a dedicated process anyway (polls every `_DEDICATED_TOPUP_POLL_SECS`, 2 s) |
 | `_ON_DONE_TIMEOUT` | 1200 | Outer cap: max total seconds for semaphore wait + injection (20 minutes) |
 | `INJECTION_TIMEOUT` | 900 | Inner cap: max seconds for a single `stream_and_collect` call (15 minutes); default `_DEFAULT_INJECTION_TIMEOUT = 900.0`, tunable via `KIROCREW_INJECTION_TIMEOUT` (float seconds, clamped to `_ON_DONE_TIMEOUT`) |
 | `_RESET_TIMEOUT` | 30 | Max seconds for session reset in finally block |
@@ -176,28 +183,142 @@ Windows. A known cgroup bound still applies when the Linux host reading fails.
 Auto-sizing and the runtime gate are independent guards; readings fail open
 only when neither host memory nor a finite cgroup limit is available.
 
-When enabled, the per-spawn guard adds `_startup_memory_reserve_gb` to that
-floor. Every warming start -- the next one, a claim awaiting registration, a
-dedicated worker fewer than `_RSS_SAMPLES_TO_SETTLE` (2) sweeps have measured --
-is priced at `subagent_cost_gb` less the RSS it already holds; a settled worker
-owes nothing, since its memory is already inside the free-memory reading.
-Yielded parents retain their reservation; queued/terminal rows and confirmed
-shared sessions contribute none. The claim re-entry uses the reservation taken
-before its await.
+#### Memory guard: what must remain after the start
 
-The start price is deliberately the configured START cost, never a learned p90
-or a live peak: a run's sampled RSS is its whole process subtree, so its peak
-includes the test suites, builds and MCP servers it launched, not what a start
-needs. Pricing the next start at that figure held ordinary spawns at 10 GB+ on a
-laptop. Raising `agent.subagent_cost_gb` is the operator's knob when runtimes
-settle heavier than 0.5 GB. A settled kiro-cli runtime measured about
-0.3-0.6 GB resident on a macOS host and 0.47 GB on Linux with no MCP servers;
-with a roster of ~17 MCP-server processes it settled at ~1.5 GB on Linux.
-Raise `agent.subagent_cost_gb` toward that figure when agents carry a heavy
-MCP roster. A cancel-recovery respawn
-resets the run's sample count and last reading
-and bumps `_rss_generation`, which the sweep re-checks after its off-loop `/proc`
-read so a reading of the dead process cannot settle the new one.
+`agent.spawn_min_memory_gb` (default `DEFAULT_SPAWN_MIN_MEMORY_GB`, 2.0 GiB) is the
+memory that must remain available AFTER a start is admitted; `0` disables the
+floor and the reserve together. When enabled, the per-spawn guard adds
+`_startup_memory_reserve_gb` to it, so a start is admitted only if
+`available − Σ outstanding start prices − price(this start) ≥ spawn_min_memory_gb`.
+Below that a durable spawn waits in the queue (`low_memory`); a capacity verdict
+never fails it. The governance, cwd and memory-identity checks that run earlier
+in the same gate are refusals and stay refusals.
+
+**Prices.** Decided per start (`_spawn_memory_floor_and_cost` reads the floor and
+`subagent_cost_gb` for every caller) and carried on the row as `_start_price_gb`,
+so every later admission charges a row at the price it was admitted at:
+
+- **Dedicated, or undecided.** The dedicated projection for the start's cost
+  bucket (`_cost_bucket`, `_dedicated_start_price_gb`): the bucket's learned
+  settled RSS once it has three readings, capped at
+  `_SETTLED_PROJECTION_CEILING_GB`, else `_UNLEARNED_DEDICATED_START_GB`; never
+  below `agent.subagent_cost_gb`. The cap exists because a bucket priced out of
+  admission runs no dedicated starts and so never relearns: a few mis-measured
+  readings would otherwise lock it out for good. A non-finite learned figure is
+  ignored. These are internal admission prices with no config key of their own.
+- **Shared.** A start that will take a session on its parent's runtime launches
+  no kiro-cli process, but it does launch the agent's MCP servers: kiro-cli
+  starts a fresh copy of every declared server for each session, shared or not.
+  So it is priced at the dedicated projection less `_SHARED_START_SAVING_GB`, the
+  process it skips, never below `_SHARED_START_MIN_GB`
+  (`_shared_start_price_gb`), and flagged `_start_priced_shared`. Whether it will
+  share is the run's own decision, `_sharing_plan`: template execution, not
+  `keep`, `_should_use_session_sharing` (whose last term is the backend's opt-in
+  `is_session_sharing_eligible`), and no per-spawn or `agent.role_models` /
+  `agent.role_efforts` pin for `subagent`. `_run_inner` takes the shared arm from
+  the same plan, so the price cannot follow a copy of the rule. Only a real
+  `True` prices a start shared; an unknown answer is priced dedicated. Native
+  subtasks (kiro-cli `use_subagent` and similar) never reach this gate.
+
+At defaults with nothing warming or learned: a shared start needs 2.65 GiB
+free, the first dedicated start 3.0 GiB, a second while the first warms
+4.0 GiB.
+
+**What each outstanding start owes.** The next start its own price. A claim
+admitted but not registered yet (a `ClaimPoint` awaiting the taskq writer) is
+charged the price its admission checked (`_claim_prices`), and the re-entry that
+registers it stores that same price rather than computing a new one nobody
+tested; a retained claim keeps its price for as long as it holds its slot; any
+other unregistered slot is charged `subagent_cost_gb`. A live row owes its price
+IN FULL until it settles (`_row_settled`): two sweeps measured it, or, where
+nothing can measure it (macOS and Windows have no `/proc` subtree reading), its
+current process's own session answered `_SETTLE_AFTER_SECS` (two sweep
+intervals) ago on the monotonic clock (`_first_stream_mono`, tied to the
+process's `_rss_generation`, so a laptop's sleep or a respawn never settles a
+warming row). No credit is taken for the RSS a warming row already shows: the
+sweep reads summed VmRSS, which counts a tree's shared pages once per process
+and runs ~1.5x the PSS the prices are in, and a shared row's reading is a share
+of a runtime others use (its MCP servers also start after it binds). That
+double-counts a warming row's memory for at most two sweeps, toward reserving
+more. A settled row owes nothing, since its memory is already inside the
+free-memory reading. A dedicated row with no admitted price owes the dedicated
+projection; a shared one, nothing.
+Yielded parents retain their reservation; queued/terminal rows contribute none.
+A row parked at the spawn-approval prompt is registered and owes its price while
+it waits for an answer.
+
+What the prices are measured against (a `kiro-cli acp` 2.26.1 process driven
+with Kiro Crew's own `initialize` / `session/new` shape, sessions added one at a
+time, process-tree USS/PSS, which count shared code pages once): an extra session
+on a running runtime costs ~0.01 GiB with no MCP servers and ~0.45-0.6 GiB with
+the default `kirocrew` agent's roster, every server a fresh process per session;
+a dedicated start costs that plus ~0.2-0.35 GiB for its own process, ~0.96 GiB in
+all. **The prices are projections**, from those measured defaults until a bucket
+has learned its own settled size. A bucket lighter than the default agent (few or
+no MCP servers) is over-priced until it learns; an install that only ever runs
+shared starts never learns (shared runs are not captured), and neither does one
+on macOS or Windows (no subtree reading), so both stay at the measured defaults.
+Learning a per-session shared price is a follow-up, not part of this guard.
+
+**The learned settled size** is what a dedicated runtime holds once it is up. The
+reaper's sweep captures one reading per process (`settled_rss_gb`): the first
+subtree sample after the run's own session answered (`_first_stream_started`)
+with no tool in flight before the off-loop read, none after it and no activity
+during it (`_stall_gen` unchanged). It is read in PSS
+(`platform_compat.proc_subtree_sample(..., pss=True)`, summed `smaps_rollup`), the unit the
+unlearned price is measured in, because summed VmRSS counts the code pages a tree
+of node / MCP-server processes shares once per process and reads ~1.6x high; the
+RSS figure stands in only where PSS cannot be read. Not captured: a shared run,
+whose pid's tree holds the other tenants and the parent's own tools, and a
+dedicated run whose own children share its runtime, whose tree holds their
+per-session servers. `_record_cost` writes it as the cost record's `settled_gb`
+beside the whole-run peak `mem_gb`, which the auto cap still reads unchanged. The
+admission side reads the per-bucket p90 of dedicated `settled_gb` (at least three
+readings) from `_learned_settled_gb`, which the reaper refreshes off the loop at
+start and after every sweep; the gate never opens the cost log. A start is never
+priced at the whole-run peak or a whole-tree p90: a run's peak RSS is its whole
+process subtree, test suites, builds and MCP servers it launched included, and
+pricing the next start at that held ordinary spawns at 10 GB+ on a laptop.
+`_inflight_tool` holds one tool, so a second overlapping tool can still be inside
+a "quiet" reading; that over-counts, toward reserving more. A cancel-recovery
+respawn resets the run's sample count and last reading and bumps
+`_rss_generation`, which the sweep re-checks after its off-loop `/proc` read so a
+reading of the dead process cannot settle the new one; the dead process's settled
+reading stands until the new one is captured.
+
+**A shared price is topped up before the start turns dedicated.** A start
+admitted at the shared price can still launch a process: `_create_shared_session`
+fails with the shared runtime unavailable (not a `session/new` timeout, which
+never takes that path), or the plan has changed by the time the run starts
+(parent gone, sharing turned off, a role pin set while the row waited). Before
+that process spawns, `_ensure_dedicated_start_priced` raises the row's price to
+the dedicated projection, so every later admission charges it, and re-checks the
+floor with this row at that price. The plain dedicated arm also clears a
+`_session_sharing` flag left by an earlier shared attempt of the same run, which
+would otherwise hand the process's teardown to the shared arm. Only a row
+flagged `_start_priced_shared` is topped up; a dedicated admission whose bucket
+learned a higher figure since was checked at its own price and is not re-checked.
+Below the floor the start waits with its start clock frozen, re-reading every
+`_DEDICATED_TOPUP_POLL_SECS` off the loop (`_host_available_gb_off_loop`: one read
+waits at most `_HOST_READ_OFF_LOOP_SECS` for the executor, else it is taken on the
+loop as the gate takes it, so an unanswered read is never read as "below the
+floor"; the fit is decided on the loop against the need recomputed after the
+read), one such start at a time (`_dedicated_topup_lock`;
+the one holding the turn does not count the ones queued behind it, which have
+launched nothing), for at most `_DEDICATED_TOPUP_WAIT_SECS`; then it starts anyway
+with a WARNING and a `dedicated_start_below_floor` SEL row. The start clock
+restarts when the wait ends, a cancel included.
+
+**What the floor guarantees, honestly.** Admission never takes the host below
+the floor at the prices above, and the prices are projections. The floor is not
+above `resource_critical_gb` (both 2.0 at defaults, and posture counts equal as
+critical), so a host admission has filled to the floor reads `critical`: cron
+defers its firings and the adaptive controller cuts its cap until 4 GiB is free.
+That is the posture tier doing its job at the line; dropping posture for spawns
+and the adaptive memory rules is separate work. It does not shed
+running work: a settled child that runs builds or tests can still push the host
+below it. And a start admitted shared whose runtime then dies may, after its
+bounded wait, launch a dedicated process below the floor rather than fail.
 
 The adaptive growth bound is the user's ceiling itself (`user_max_concurrent`),
 with no static host prediction under it: the controller climbs on live pressure
@@ -271,7 +392,7 @@ invariants:
   decides fill RATE, not concurrency: a cap of N fills in N x
   `subagent_spawn_stagger_secs`, so the stagger is never the bound on how many
   run. It is a smoothing interval and not the memory guard — every spawn
-  still clears `spawn_min_memory_gb` and the host budget, and the adaptive
+  still has to leave `spawn_min_memory_gb` free after its start and clear the host budget, and the adaptive
   controller cuts the cap on corroborated pressure. Raise it on a host (or
   against a provider) where overlapping cold starts, not the cap, are the
   bottleneck.
@@ -424,7 +545,7 @@ Admission order (`subagent_manager/admission/gate.py::spawn_impl`):
 2. For persistent work, **persist** the row in the task store (write-before-ack; see § Durable task
    queue). A store write failure is a refusal with
    `error_code="task_store_unavailable"`; the id is never handed out as accepted.
-3. Memory floor (`spawn_min_memory_gb`) and posture gate (`admission_gate`,
+3. Memory floor (`spawn_min_memory_gb`, what must remain after the start's price; see *Memory guard*) and posture gate (`admission_gate`,
    `cached_admission_check`): with a persistent row, **defer** (row stays `queued`,
    `next_run_at = now + admit_wait_secs`, pump wake-up armed, caller gets a
    `queued` id); without one, refuse as before.

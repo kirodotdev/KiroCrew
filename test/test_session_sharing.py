@@ -552,6 +552,41 @@ class TestSessionSharingFallback:
         assert info._shared_provider is None
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("eligible", [True, False], ids=["fallback", "dedicated-arm"])
+    async def test_a_dedicated_start_is_repriced_before_its_process_launches(self, eligible):
+        """Admission may have priced the start shared; both dedicated launches --
+        the fallback from a dead shared runtime and the plain dedicated arm --
+        reserve the process BEFORE ``get_or_create`` starts it."""
+        sessions = _mock_sessions(sharing_eligible=eligible)
+        sessions.get_subagent_runtime = AsyncMock(side_effect=AcpRuntimeDead("process died"))
+        order: list[str] = []
+        launch = sessions.get_or_create
+
+        async def _launch(*a, **kw):
+            order.append("launch")
+            return await launch(*a, **kw)
+
+        sessions.get_or_create = AsyncMock(side_effect=_launch)
+        manager = SubagentManager(
+            sessions=sessions,
+            ctx_builder=_mock_ctx_builder_auto(),
+            is_yolo=lambda: True,
+        )
+
+        async def _reprice(info):
+            order.append("reprice")
+
+        manager._ensure_dedicated_start_priced = _reprice  # type: ignore[method-assign]
+
+        with _cfg_patch(session_sharing=True), \
+             patch("kiro_crew.subagent.Stats"), \
+             patch("kiro_crew.subagent.sel"):
+            info = manager.spawn("test task", parent_session_key="dashboard:slot1")
+            await _wait_until_done(info)
+
+        assert order[:2] == ["reprice", "launch"]
+
+    @pytest.mark.asyncio
     async def test_fallback_on_create_session_error(self):
         """When create_session fails, falls back to legacy path."""
         sessions = _mock_sessions(sharing_eligible=True)

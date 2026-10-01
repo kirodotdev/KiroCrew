@@ -1735,8 +1735,8 @@ class TestSpawnMemoryGuard:
         assert info is not None
         assert info.done is True
         assert "2.5" in info.error
-        assert "4" in info.error
-        assert "0.5 GB per warming start" in info.error
+        assert "need 5.0 GB" in info.error  # the 4.0 floor plus this start
+        assert "1.00 GB for this start" in info.error
         mock_sel.return_value.log_tool_invocation.assert_called_once()
         call_kwargs = mock_sel.return_value.log_tool_invocation.call_args[1]
         assert call_kwargs["outcome"] == "refused_low_memory"

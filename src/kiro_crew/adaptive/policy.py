@@ -37,7 +37,8 @@ Rules, with fixed tuning constants owned by this module:
   pressure line (an unreadable host, ``free_mem_mb < 0``, fails open here as
   it does for the spawn gate's own guard), a decrease fires at the critical
   line, and the spawn gate defers every cold start that would not leave
-  ``spawn_min_memory_gb`` plus the running agents' unobserved growth free.
+  ``spawn_min_memory_gb`` free after its own start price and the running agents'
+  unobserved growth.
 
   * **Slow start**, until this process meets its first corroborated pressure or
     pause: ``x2`` per clean sample window (``slow_start_clean_secs``, 5 s),

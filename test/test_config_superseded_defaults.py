@@ -706,6 +706,7 @@ SUBAGENT_ENTRY = next(
 TURN_ENTRY = next(
     e for e in SD.SUPERSEDED_DEFAULTS if e.dotted_key == "agent.chat_turn_timeout_secs"
 )
+FLOOR_ENTRY = next(e for e in SD.SUPERSEDED_DEFAULTS if e.dotted_key == "agent.spawn_min_memory_gb")
 
 
 def test_only_unpinned_broken_budgets_adopt_themselves():
@@ -732,6 +733,10 @@ def test_only_unpinned_broken_budgets_adopt_themselves():
     assert adopting == {
         "agent.subagent_timeout_secs",
         "agent.chat_turn_timeout_secs",
+        # A stored 4.0 floor holds every subagent in the queue on a 16 GB host;
+        # the admission tests' 4.0 inputs set a floor, they do not pin a stored
+        # 4.0 as supported, and the opt-out is 0, not the old default.
+        "agent.spawn_min_memory_gb",
     }
     # Each of these has its stored value pinned as supported by a named test
     # elsewhere in the suite; adopting one turns that suite red, which is how this
@@ -1267,6 +1272,40 @@ def test_load_adopts_the_stale_timeout_on_disk_and_in_memory(tmp_path, monkeypat
     assert "kirocrew config set agent.subagent_timeout_secs 1800" in notices[0]
 
 
+def test_load_adopts_the_stale_spawn_floor_once_and_keeps_what_is_set_back(tmp_path, monkeypatch):
+    """A materialized 4.0 floor follows the 2.0 default once; a 4.0 set back stays.
+
+    The 4.0 floor is what kept subagents queued on 16 GB hosts, so the stale value
+    must not survive an upgrade -- but an operator who restores it afterwards chose
+    it, and the ledger is what tells the two apart.
+    """
+    _point_home(tmp_path, monkeypatch)
+    _write_config(tmp_path, {"agent": {"spawn_min_memory_gb": 4.0}})
+
+    cfg = KiroCrewConfig.load()
+
+    assert cfg.agent.spawn_min_memory_gb == 2.0
+    assert "spawn_min_memory_gb" not in _on_disk(tmp_path).get("agent", {})
+    assert SD.adopted_superseded() == {"agent.spawn_min_memory_gb": 4.0}
+
+    _write_config(tmp_path, {"agent": {"spawn_min_memory_gb": 4.0}})
+    assert KiroCrewConfig.load().agent.spawn_min_memory_gb == 4.0
+    assert _on_disk(tmp_path)["agent"]["spawn_min_memory_gb"] == 4.0
+
+
+@pytest.mark.parametrize("stored", [3.0, 4, 0.0])
+def test_a_chosen_spawn_floor_is_not_the_stale_default(tmp_path, monkeypatch, stored):
+    """3.0 and 0.0 are choices, and an int 4 was typed, never materialized as 4.0."""
+    _point_home(tmp_path, monkeypatch)
+    _write_config(tmp_path, {"agent": {"spawn_min_memory_gb": stored}})
+
+    cfg = KiroCrewConfig.load()
+
+    assert cfg.agent.spawn_min_memory_gb == stored
+    assert _on_disk(tmp_path)["agent"]["spawn_min_memory_gb"] == stored
+    assert SD.adopted_superseded() == {}
+
+
 def test_a_deliberately_chosen_value_survives_the_adoption(tmp_path, monkeypatch):
     """Only the exact old default is adopted; any other number is a real choice."""
     _point_home(tmp_path, monkeypatch)
@@ -1431,4 +1470,7 @@ def test_the_registered_new_defaults_match_the_live_dataclass_defaults():
     )
     assert AgentConfig.__dataclass_fields__["chat_turn_timeout_secs"].default == (
         TURN_ENTRY.new_default
+    )
+    assert AgentConfig.__dataclass_fields__["spawn_min_memory_gb"].default == (
+        FLOOR_ENTRY.new_default
     )

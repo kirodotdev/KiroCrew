@@ -52,9 +52,14 @@ def _cost_log_path() -> Path:
 
 
 def append_cost_sample(
-    agent: str, mem_gb: float, cpu_cores: float, *, shared: bool = False
+    agent: str,
+    mem_gb: float,
+    cpu_cores: float,
+    *,
+    shared: bool = False,
+    settled_gb: float = 0.0,
 ) -> None:
-    """Append one ``{agent, mem_gb, cpu_cores, ts[, shared]}`` line (atomic O_APPEND).
+    """Append one ``{agent, mem_gb, cpu_cores, ts[, shared][, settled_gb]}`` line.
 
     ``shared`` marks a run that executed as a session inside a shared runtime:
     its figures are that runtime's readings divided by the sessions sharing it,
@@ -62,8 +67,15 @@ def append_cost_sample(
     one window per ``(agent, shared)`` so shared samples never evict an agent's
     dedicated history. Written only when true, so the record shape of a
     dedicated run is unchanged; a record without the field reads as dedicated.
+
+    ``settled_gb`` is the run's settled-runtime reading (the first quiet subtree
+    sample after its own session answered, with no tool in flight), which the
+    admission gate's dedicated start projection learns from
+    (:func:`read_learned_costs_checked` on ``settled_gb``, dedicated only). Written only when measured, so
+    a record without it contributes nothing there. ``mem_gb`` stays the
+    whole-run peak the auto cap reads.
     """
-    if mem_gb <= 0 and cpu_cores <= 0:
+    if mem_gb <= 0 and cpu_cores <= 0 and settled_gb <= 0:
         return  # nothing was measured
     rec: dict[str, object] = {
         "agent": agent or _DEFAULT_AGENT,  # normalize empty → default agent
@@ -73,6 +85,8 @@ def append_cost_sample(
     }
     if shared:
         rec["shared"] = True
+    if settled_gb > 0:
+        rec["settled_gb"] = round(float(settled_gb), 4)
     line = (json.dumps(rec, ensure_ascii=False) + "\n").encode("utf-8")
     path = _cost_log_path()
     try:
@@ -174,6 +188,7 @@ def _group_by_agent(
     key: str,
     *,
     window: int = _DEFAULT_WINDOW,
+    dedicated_only: bool = False,
 ) -> dict[str, list[float]]:
     """Bucket the values of *key* by agent, bounded WHILE streaming.
 
@@ -182,10 +197,14 @@ def _group_by_agent(
     bucket (a bounded deque -- exactly the tail the percentile reads) and at
     most ``_PARSE_BUCKET_CEILING`` buckets, first seen first kept; a record for
     a further bucket is counted and dropped, and one WARNING names the overflow.
+    ``dedicated_only`` skips records marked ``shared``: a shared run's reading is
+    a share of a runtime other sessions also used, not one process's size.
     """
     by_agent: dict[str, deque[float]] = {}
     overflow = 0
     for rec in samples:
+        if dedicated_only and rec.get("shared") is True:
+            continue
         agent = str(rec.get("agent") or _DEFAULT_AGENT)
         if len(agent) > _BUCKET_KEY_CAP:
             continue  # not an agent name; the log is agent-writable
@@ -209,6 +228,36 @@ def _group_by_agent(
     return {agent: list(vals) for agent, vals in by_agent.items()}
 
 
+def read_learned_costs_checked(
+    key: str,
+    *,
+    dedicated_only: bool = False,
+    window: int = _DEFAULT_WINDOW,
+    min_samples: int = _DEFAULT_MIN_SAMPLES,
+    percentile: float = _DEFAULT_PERCENTILE,
+) -> tuple[dict[str, float], bool]:
+    """Per-agent p90 of the last ``window`` samples for *key*, plus completeness.
+
+    Agents with fewer than ``min_samples`` are omitted; empty when nothing
+    qualifies. The log is streamed, never held whole; a refused record ends the
+    read and the buckets seen up to it are what this returns, with the bool
+    (:class:`_ReadStatus`'s ``complete``) saying so. ``dedicated_only`` skips
+    shared runs' records. ``settled_gb`` read this way is the per-bucket settled
+    runtime size the admission gate prices a dedicated start at; ``mem_gb`` is
+    the whole-run peak that sizes the sub-agent cap.
+    """
+    status = _ReadStatus()
+    by_agent = _group_by_agent(
+        _iter_samples(status), key, window=window, dedicated_only=dedicated_only
+    )
+    out = {
+        agent: _percentile(vals, percentile)
+        for agent, vals in by_agent.items()
+        if len(vals) >= min_samples
+    }
+    return cap_buckets(out), status.complete
+
+
 def read_learned_costs(
     key: str,
     *,
@@ -216,20 +265,24 @@ def read_learned_costs(
     min_samples: int = _DEFAULT_MIN_SAMPLES,
     percentile: float = _DEFAULT_PERCENTILE,
 ) -> dict[str, float]:
-    """Per-agent p90 of the last ``window`` samples for *key*, agents with fewer
-    than ``min_samples`` omitted. Empty when nothing qualifies.
+    """:func:`read_learned_costs_checked` without the completeness flag.
 
-    Feeds :func:`read_learned_cost`, which sizes the sub-agent cap. The log is
-    streamed, never held whole; a refused record ends the read and the buckets
-    seen up to it are what this returns (:class:`_ReadStatus`).
+    Feeds :func:`read_learned_cost`, which sizes the sub-agent cap.
     """
-    by_agent = _group_by_agent(_iter_samples(_ReadStatus()), key, window=window)
-    out: dict[str, float] = {}
-    for agent, vals in by_agent.items():
-        if len(vals) < min_samples:
-            continue
-        out[agent] = _percentile(vals, percentile)
-    return cap_buckets(out)
+    return read_learned_costs_checked(
+        key, window=window, min_samples=min_samples, percentile=percentile
+    )[0]
+
+
+def learned_settled_for(costs: Mapping[str, float] | None, bucket: str) -> float | None:
+    """The learned settled RSS (GiB) for ONE bucket, or None; never another's.
+
+    *bucket* is :func:`kiro_crew.subagent._cost_bucket`'s key; empty normalizes to
+    the default agent exactly as :func:`append_cost_sample` does on write.
+    """
+    if not costs:
+        return None
+    return costs.get(bucket or _DEFAULT_AGENT)
 
 
 def cap_buckets(costs: Mapping[str, float]) -> dict[str, float]:

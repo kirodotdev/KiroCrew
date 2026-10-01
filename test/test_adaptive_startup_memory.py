@@ -21,7 +21,12 @@ import kiro_crew.subagent as subagent_mod
 from kiro_crew.adaptive.controller import AdaptiveController, HostSample
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.resource_status import POSTURE_AMPLE, AdmissionDecision
-from kiro_crew.subagent import SubagentInfo, SubagentManager, _startup_memory_reserve_gb
+from kiro_crew.subagent import (
+    _UNLEARNED_DEDICATED_START_GB,
+    SubagentInfo,
+    SubagentManager,
+    _startup_memory_reserve_gb,
+)
 from kiro_crew.subagent_manager.admission import SpawnAdmissionCoordinator
 
 
@@ -55,21 +60,27 @@ def test_startup_memory_guard_respects_container_headroom(monkeypatch):
     assert subagent_mod.check_memory_available(min_gb=4.5) == (False, 3.0)
 
 
+_D = _UNLEARNED_DEDICATED_START_GB  # an unpriced warming row's price, nothing learned
+
+
 @pytest.mark.parametrize(
     ("rows", "running", "expected"),
     [
         ([], 0, 0.5),
         ([], 2, 1.5),  # Claimed starts not registered yet plus the next start.
-        ([{"last_rss_gb": 0.1}], 1, 0.9),
-        ([{"last_rss_gb": 0.5}], 1, 0.5),  # Observed RSS already reduced free memory.
-        ([{"last_rss_gb": 0.1, "_slot_released": True}], 0, 0.9),
+        # A warming row owes its price in full: the summed-RSS reading it shows
+        # is not in the unit the price is, so it is not credited.
+        ([{"last_rss_gb": 0.1}], 1, 0.5 + _D),
+        ([{"last_rss_gb": 0.5}], 1, 0.5 + _D),
+        ([{"last_rss_gb": 0.1, "_slot_released": True}], 0, 0.5 + _D),
         ([{"_session_sharing": True, "peak_rss_gb": 4.0}], 1, 0.5),
         ([{"_session_sharing": True}, {"_session_sharing": True}], 2, 0.5),
         ([{"done": True}, {"queued": True}], 0, 0.5),
-        # A warming worker owes the start cost less what it holds -- never its
-        # peak: a run's peak is its whole subtree (suites, builds), not a start.
-        ([{"last_rss_gb": 0.6, "peak_rss_gb": 0.8}], 1, 0.5),
-        ([{"last_rss_gb": 1.0, "peak_rss_gb": 7.5, "_rss_samples": 1}], 1, 0.5),
+        # Never its peak: a run's peak is its whole subtree (suites, builds).
+        ([{"last_rss_gb": 0.6, "peak_rss_gb": 0.8}], 1, 0.5 + _D),
+        ([{"last_rss_gb": 1.0, "peak_rss_gb": 7.5, "_rss_samples": 1}], 1, 0.5 + _D),
+        # A row admitted at a price owes THAT price, whatever the default is.
+        ([{"last_rss_gb": 0.1, "_start_price_gb": 0.65}], 1, 0.5 + 0.65),
         # A settled worker owes nothing: its memory is already in the reading.
         ([{"last_rss_gb": 0.1, "peak_rss_gb": 7.5, "_rss_samples": 2}], 1, 0.5),
     ],
@@ -189,9 +200,10 @@ def test_startup_reserve_cannot_discount_claims(cost_gb, running, expected):
     assert _startup_memory_reserve_gb([], running_count=running, cost_gb=cost_gb) == expected
 
 
-@pytest.mark.parametrize(("cost_gb", "expected"), [(-8.0, 0.0), (0.0, 0.0), (0.5, 0.5)])
+@pytest.mark.parametrize(("cost_gb", "expected"), [(-8.0, _D), (0.0, _D), (0.5, 0.5 + _D)])
 def test_a_measured_peak_never_prices_a_start(cost_gb, expected):
-    """A run's peak is its whole subtree (suites, builds), not what a start needs."""
+    """A run's peak is its whole subtree (suites, builds), not what a start needs:
+    the 0.8 GB peak is never charged, only the projection."""
     info = SubagentInfo(id="live", task="work", peak_rss_gb=0.8, last_rss_gb=0.6)
     assert _startup_memory_reserve_gb([info], running_count=1, cost_gb=cost_gb) == pytest.approx(
         expected
