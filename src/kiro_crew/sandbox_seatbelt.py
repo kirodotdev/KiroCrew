@@ -68,7 +68,7 @@ def _build_seatbelt_profile(
 
     home = str(Path.home())
     # Source the sensitive-dir lists from the active PlatformContext (Default
-    # adapter == today's module globals; internal companion adds .midway/.ada).
+    # adapter == today's module globals; an internal companion adds its own paths).
     if sandbox_level == "standard":
         dirs = _STANDARD_DIRS
     elif sandbox_level == "cc":

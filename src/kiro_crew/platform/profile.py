@@ -10,7 +10,7 @@ Precedence (first match wins):
      the cheap, authoritative signal: capability comes from the installed
      companion, so its presence is what actually matters.
   3. Identity signal: a present SSO-marker directory (``KIROCREW_SSO_MARKER_PATH``,
-     default ``~/.midway``), but ONLY when the opt-in ``KIROCREW_SSO_PROFILE_PROBE``
+     default ``_DEFAULT_SSO_MARKER_NAME`` under ``~``), but ONLY when the opt-in ``KIROCREW_SSO_PROFILE_PROBE``
      env var (or the legacy ``KIROCREW_MIDWAY_PROFILE_PROBE``, still set by
      already-deployed launchers) is truthy.  A cheap filesystem stat (no
      subprocess) that flags an enterprise host which has NOT installed the

@@ -93,7 +93,7 @@ def _build_launcher_script(
     uid = os.getuid()
     gid = os.getgid()
     # Source the sensitive-dir lists from the active PlatformContext so the
-    # The internal companion can extend them (+ .midway/.ada).  The Default adapter
+    # an internal companion can extend them with its own paths.  The Default adapter
     # returns ``list(_STRICT_DIRS)`` / ``list(_CC_DIRS)``, so standalone is
     # unchanged.  ``_STANDARD_DIRS`` is not an extension point (no interface
     # method) and stays on the module global.
