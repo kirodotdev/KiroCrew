@@ -57,7 +57,7 @@ import { useKirocrewConfigReader } from '../hooks/useKirocrewConfigReader'
 import { useImeGuard } from '../hooks/useImeGuard'
 import { useScrollEdgesY } from '../hooks/useScrollEdges'
 import { useAppSelector, useAppDispatch, store } from '../store'
-import { PANE_HYDRATE_LIMIT, capturePendingAskId, confirmOptimisticSend, resolveOptimisticSteer, selectSlotMessages, selectSendConfirmed, selectSlotStreamState, selectSlotRunEpoch, selectComposerBusy, hydrateSlotMessages, appendSlotMessage, requestStop, syncSlotRunningFromServer, setAgentSwitchNotice, pendingQuestionFor } from '../store/chatSlice'
+import { PANE_HYDRATE_LIMIT, capturePendingAskId, confirmOptimisticSend, resolveOptimisticSteer, selectSlotMessages, selectSendConfirmed, selectSlotStreamState, selectSlotRunEpoch, selectComposerBusy, hydrateSlotMessages, appendSlotMessage, requestStop, syncSlotRunningFromServer, setAgentSwitchNotice, stageToMainComposer, pendingQuestionFor } from '../store/chatSlice'
 import { handleStopPress, isEscalationState } from '../utils/stopDebounce'
 import { deriveFollowUpOptions } from '../app-sdk/protocol'
 import { appendFollowUpOption, removeFollowUpOption, type OwnedSuffix } from '../lib/followUpToggle'
@@ -401,6 +401,19 @@ export default function ChatPane({
 
   const allMessages = useAppSelector((s) => selectSlotMessages(s, slotKey))
   const activeSlot = useAppSelector((s) => s.chat.activeSlot)
+  // Consume a Side Chat → composer hand-off staged for THIS pane's slot. Keyed
+  // by slot so a member's hand-off merges into that member's own composer and
+  // is never picked up by the dashboard ChatPage (which guards on its active
+  // slot too). Merge into the live composer — never replace — mirroring the
+  // pane's own draft-recovery seam; the user sends when they choose.
+  const mainComposerAppend = useAppSelector((s) => s.chat.mainComposerAppend)
+  useEffect(() => {
+    if (!mainComposerAppend || mainComposerAppend.slot !== slotKey) return
+    const text = mainComposerAppend.text
+    dispatch(stageToMainComposer(null))
+    const carried = carryIntoComposer(text, [])
+    setInput((cur) => mergeCarriedDraft(cur, carried))
+  }, [mainComposerAppend, slotKey, dispatch, carryIntoComposer])
   const streamState = useAppSelector((s) => selectSlotStreamState(s, slotKey))
   const running = streamState !== 'idle'
   // Per-slot context-window usage for the input-bar ring (mirrors ChatPage; the
