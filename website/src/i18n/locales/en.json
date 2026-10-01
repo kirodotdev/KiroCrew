@@ -4230,7 +4230,6 @@
     },
     "autoNudgePopover": {
       "close": "Close",
-      "cycle": "· cycle",
       "describe_what_you_want_the_agent_to_accomplish": "Describe what you want the agent to accomplish…",
       "give_the_agent_a_goal_and_it_will_keep_working_t": "Set a goal for the agent. {{productName}} sends the agent a nudge with that goal at the interval below until the goal is complete or the cycle limit is reached.",
       "goal_description": "Goal description",
@@ -4239,7 +4238,6 @@
       "max_cycles_0": "Max cycles (0 = ∞)",
       "max_cycles_0_infinite": "Max cycles (0 = infinite)",
       "set_a_goal": "Set a goal",
-      "stop_loop": "Stop loop",
       "watches_next": "next",
       "watches_note": "They wake the agent only on a real signal. Manage them on the Schedule page.",
       "watches_title": "Zero-token watches"
