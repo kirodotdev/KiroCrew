@@ -953,6 +953,23 @@ exception already propagating would discard the very `CancelledError` the
 teardown exists to clean up after — and `gc.collect()` is nested inside its own
 `finally` so a raising shutdown cannot skip it.
 
+Before `provider.start()`, `_chat` runs the bundled audit hook's size sweep once
+(`shell_audit_log.rotate_shell_audit_log` on the resolved data home, via
+`asyncio.to_thread`). The default `postToolUse` hook appends every
+`execute_bash` call to `<data home>/audit.log` from inside kiro-cli, whichever
+process launched it, and the sweep that bounds that file otherwise runs only on
+the gateway's session cleanup loop (see [session.md](session.md), "Shell audit
+log cap") — which this process never starts, so an install that only ever runs
+`kirocrew chat` would never rotate it. Running the sweep at chat start, before
+the backend that will append is spawned, bounds the live file on entry to every
+session; on such an install it overshoots the cap by at most one session's shell
+activity. The sweep never raises by contract, a file under the cap costs one
+`stat` and creates nothing, and the data home is resolved in this process — with
+`data_home()`, the resolve-only helper, since `config_dir()` re-runs
+start-of-process maintenance and is barred from async code (#1057, guarded by
+`test/test_no_config_dir_in_async.py`) — because `KIROCREW_HOME` is what the
+hook's own path expansion reads.
+
 ### Context Tracking
 
 After each message, checks `provider.context_usage_pct()`:

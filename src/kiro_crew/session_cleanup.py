@@ -204,6 +204,9 @@ class CleanupDeps:
     cleanup_stale_sandbox_profiles: Callable[[], int]
     prune_session_pid_mappings: Callable[[], int]
     prune_member_pid_bindings: Callable[[], int]
+    # Rotates the bundled shell-audit hook's ``audit.log`` once it reaches its
+    # cap; answers whether this call moved it aside. See ``shell_audit_log``.
+    rotate_shell_audit_log: Callable[[], bool]
     prune_pycache: Callable[[], tuple[int, int]]
     collect_active_pids: ActivePidCollector
     periodic_pid_sweep: PeriodicPidSweep
@@ -1062,6 +1065,7 @@ class SessionCleanup:
             await self._sweep_sandbox_artifacts()
             await self._sweep_session_pid_mappings()
             await self._sweep_member_pid_bindings()
+            await self._sweep_shell_audit_log()
             await self._maybe_prune_pycache()
             await self._sweep_periodic_pids()
             await self._sweep_untracked_mcps()
@@ -1177,6 +1181,35 @@ class SessionCleanup:
         except Exception as exc:
             self._deps.logger.debug(
                 "member-memory pid binding sweep failed: %s",
+                type(exc).__name__,
+            )
+
+    async def _sweep_shell_audit_log(self) -> None:
+        """Bound the bundled shell-audit hook's ``audit.log``.
+
+        The hook in ``config/defaults.json`` is one shell append with no size
+        check, so nothing on the writing side ever bounds the file. The bound is
+        ``shell_audit_log.rotate_shell_audit_log`` (one ``.1`` generation at a
+        named cap, try-locked, never raises); it needs a caller on a bounded
+        cadence, which is what this tick is -- the same cadence that retracts
+        session-pid mappings, capped by :data:`MAX_TICK_INTERVAL_SECS`, so the
+        live file can overshoot the cap by at most one tick's worth of shell
+        activity. On the maintenance executor for the same reason as its
+        siblings: the data home is same-uid agent-writable, and a stat plus a
+        rename over such a path is filesystem work the event loop must not do.
+        """
+        try:
+            rotated = await asyncio.get_running_loop().run_in_executor(
+                self._deps.get_maintenance_executor(),
+                self._deps.rotate_shell_audit_log,
+            )
+            if rotated:
+                self._deps.logger.info(
+                    "Periodic sweep: rotated the shell audit log; one previous generation kept"
+                )
+        except Exception as exc:
+            self._deps.logger.debug(
+                "shell audit log sweep failed: %s",
                 type(exc).__name__,
             )
 

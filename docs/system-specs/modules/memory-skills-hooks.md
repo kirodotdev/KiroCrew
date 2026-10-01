@@ -5192,6 +5192,14 @@ default event rather than the one the document named.
 
 Merge rules (implemented in `_merge_kiro_hooks()` in `agent_materialization/kiro_hooks.py`):
 - Bundled hooks from `config/defaults.json` are always present and always first
+- The bundled `postToolUse` audit hook is one shell append to
+  `<data home>/audit.log` and bounds nothing itself; the gateway bounds that file
+  from the session cleanup loop (`shell_audit_log.rotate_shell_audit_log`, 8 MiB
+  cap, one `.1` generation — see [session.md](session.md), "Shell audit log cap"),
+  and standalone `kirocrew chat`, which spawns the same hook with no cleanup loop,
+  runs the same sweep once at every start (see [cli.md](cli.md), "Interactive
+  Mode"), so the shipped command stays byte-identical and a user-authored hook is
+  untouched
 - User hooks are appended per event type after bundled hooks
 - Deduped by `(command, matcher)` tuple — same hook won't fire twice
 - Malformed entries (missing `command`, non-dict, non-list) are skipped with warning

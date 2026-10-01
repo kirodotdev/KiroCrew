@@ -9,7 +9,11 @@ at roughly twice the cap while one generation of history is kept.
 
 :func:`rotate_jsonl_at` owns that rotation step. Each call site keeps its
 own append, record shape, size cap, and error contract, because those
-differ per log; what they share is exactly the rotate-by-rename.
+differ per log; what they share is exactly the rotate-by-rename. One caller
+has no append of its own: :mod:`kiro_crew.shell_audit_log` applies the same
+rename to the plain-text ``audit.log`` a shell hook appends to, from a
+periodic sweep rather than from the writer, because the writer is a shell
+command this package does not run.
 
 :func:`bounded_records` and :func:`strict_records` own the matching bound on
 the READ side. A file's total size being rotated does not bound one RECORD:

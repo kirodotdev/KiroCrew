@@ -1187,8 +1187,8 @@ against sweep completeness, and are torn down at `close_all`.
   monkeypatch seams remain observable: `idle_expiry`, `orphan_mcp`,
   `reap_agent_scopes`, `rss_threshold`, `stuck_turn`, and `bg_drain_reap`.
   `SessionCleanup._cleanup_loop` then directly coordinates the session-root,
-  sandbox-artifact, session-pid-mapping, bytecode-cache, periodic tracked-PID,
-  and untracked-MCP sweeps.
+  sandbox-artifact, session-pid-mapping, member-pid-binding, shell-audit-log,
+  bytecode-cache, periodic tracked-PID, and untracked-MCP sweeps.
 - **Runtime reconciler** (`runtime_reconcile.py`): its kill arm is bounded by
   `session.reconcile_max_kills`, re-read from the live config on every tick. The
   field's ceiling equals its default, so it can only lower the shipped budget and
@@ -3706,6 +3706,55 @@ a trust root on its own; publication therefore also writes a
   each pass is capped at `_LEGACY_PID_BINDING_PRUNE_BUDGET` (2000) so a
   six-figure backlog drains over passes instead of monopolising one maintenance
   task.
+- **Shell audit log cap** (`SessionCleanup._sweep_shell_audit_log` →
+  `shell_audit_log.rotate_shell_audit_log`): the bundled `postToolUse` hook in
+  `config/defaults.json` records every `execute_bash` call by appending a stamp
+  line, the hook-event JSON kiro-cli hands it on stdin (the tool call — its
+  command and, on this event, its result) and a blank line to
+  `<data home>/audit.log`, and the command bounds nothing — measured at 4.4 MB
+  over about five weeks on a default install, one file, no sibling generation.
+  The bound is applied from the gateway side, not the hook: the shipped command
+  stays byte-identical (no portable in-shell `stat` dance, no Python start per
+  shell tool call through a helper the hook would have to find, no change for a
+  user who authored their own hook), and the sweep reuses
+  `jsonl_util.rotate_jsonl_at` — rename to ONE `.1` generation replacing any
+  older one, a non-blocking try-lock so two rotators cannot both rotate, a
+  rename rather than a truncate so the hook's `>>` keeps working and no record is
+  cut mid-write, never raises. An over-cap file that stays over the cap after the
+  attempt — the `.1` slot blocked by a planted directory, a sharing violation
+  that never clears — is logged at WARNING, since the primitive
+  swallows its own failure by contract and nothing else would tell a stuck bound
+  from a file under the cap; the line is throttled to one per
+  `shell_audit_log.SHELL_AUDIT_LOG_WARN_INTERVAL_SECS` (an hour) per data home,
+  not one per attempt, because the tick retries for the gateway's whole life and
+  a blocked slot does not clear itself, and it names the usual causes rather than
+  a determined one (the primitive reports no reason, only that the file is still
+  over the cap). The cap is `shell_audit_log.SHELL_AUDIT_LOG_MAX_BYTES`
+  (8 MiB: about nine and a half weeks of the measured rate before the first
+  rotation, roughly four months of history on disk with the kept generation).
+  The steady-state bound on disk is that cap plus at most one tick interval of
+  shell activity of overshoot on the live file, times two generations; the first
+  rotation on an install that already carries an oversized file moves that whole
+  file aside as `.1`, whatever its size, and the next rotation replaces it, so the
+  bound holds from the second rotation on. This is the retention change the issue
+  asked for: a default install's shell audit trail becomes finite — the live file
+  plus one previous generation — where it was unbounded, and history older than
+  the kept generation is discarded at each rotation. The step runs on every
+  cleanup tick, under the same `MAX_TICK_INTERVAL_SECS` ceiling as the sweeps
+  above, so an oversized file is bounded by the first tick after the loop starts;
+  there is no separate start-of-loop pass, since one would gain at most one tick
+  interval inside the overshoot the design already accepts. It runs on the
+  maintenance executor for the same `no-blocking-call-on-event-loop` reason (the
+  data home is same-uid agent-writable). A file under the cap costs one `stat`
+  and creates nothing — the primitive's lock file appears only when a rotation
+  is actually attempted — so a fresh data home gains no files from this sweep.
+  The cleanup loop is not the file's only guardian: the hook runs inside
+  kiro-cli whichever process launched it, and standalone `kirocrew chat` spawns
+  the same agent with no cleanup loop, so `cli_chat._chat` runs the same sweep
+  once at every chat start, before the backend is spawned (see
+  [cli.md](cli.md), "Interactive Mode"); an install that never runs a gateway is
+  bounded by its next chat start, overshooting by at most one session's shell
+  activity. Not an LLM-facing capability: no MCP tool and no CLI command expose it.
 - **Member execution routing**: the ordinary session/run owner record carries
   the immutable member/store snapshot. Strict MCP caller identity still uses
   the existing transport token and signed `session_pid` publication. No separate

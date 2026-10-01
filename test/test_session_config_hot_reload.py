@@ -91,6 +91,7 @@ _TICK_SWEEPS = (
     "_sweep_session_roots",
     "_sweep_sandbox_artifacts",
     "_sweep_session_pid_mappings",
+    "_sweep_shell_audit_log",
     "_maybe_prune_pycache",
     "_sweep_periodic_pids",
     "_sweep_untracked_mcps",

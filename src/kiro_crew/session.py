@@ -248,6 +248,7 @@ from kiro_crew.session_pid import (
 )
 from kiro_crew.session_pool import WarmPoolDeps, WarmSessionPool
 from kiro_crew.session_scope_reap import reap_abandoned_agent_scopes
+from kiro_crew.shell_audit_log import rotate_shell_audit_log
 from kiro_crew.stats import Stats
 from kiro_crew.watchdog import CleanupHook, SessionWatchdog
 
@@ -1337,6 +1338,10 @@ class SessionManager:
             ),
             prune_session_pid_mappings=lambda: _prune_stale_session_pid_files(),
             prune_member_pid_bindings=lambda: prune_legacy_member_pid_bindings(),
+            # Same resolved home as the sandbox sweep, for the same reason: the
+            # step runs on the maintenance pool, and the hook's own expansion of
+            # ``${KIROCREW_HOME:-$HOME/.kiro/crew}`` is this path.
+            rotate_shell_audit_log=lambda: rotate_shell_audit_log(data_home),
             prune_pycache=lambda: prune_pycache(),
             collect_active_pids=lambda sessions: _collect_active_pids(
                 cast(dict[Any, Any], sessions)
