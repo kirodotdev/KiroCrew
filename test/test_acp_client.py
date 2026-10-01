@@ -13890,3 +13890,26 @@ class TestCreateRaceLoserPoll:
         assert loser._claude_settings_authored is False
         assert loser._permission_surface_governed is False
         assert path.read_text(encoding="utf-8") == winners_payload
+
+
+def test_resolve_spawn_agent_argv_converts_a_refusal_to_acperror(tmp_path):
+    """A projection ``errors`` entry (an unreadable/excluded spec) makes
+    ``spawn_agent`` raise a bare ``ValueError``. Raised raw out of ``_spawn`` it
+    would escape ``ensure_ready``'s transport ladder uncaught, skipping cleanup;
+    the helper must convert it to ``AcpError`` (which the ladder catches) while
+    keeping the actionable message, and pass a resolvable name straight through."""
+    from kiro_crew.acp.skill_projection import NativeSkillProjection
+
+    client = AcpClient(work_dir=tmp_path, agent="ghost")
+    client._native_skill_projection = NativeSkillProjection(
+        aliases={}, errors={"ghost": "its spec could not be read"}
+    )
+    with pytest.raises(AcpError) as excinfo:
+        client._resolve_spawn_agent_argv()
+    assert "its spec could not be read" in str(excinfo.value)
+    assert isinstance(excinfo.value.__cause__, ValueError)
+
+    # A resolvable launch name passes through unchanged (no raise).
+    client._agent = "fine"
+    client._native_skill_projection = NativeSkillProjection(aliases={})
+    assert client._resolve_spawn_agent_argv() == "fine"
