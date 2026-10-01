@@ -2437,13 +2437,6 @@ class CrewLog:
         "_last_seq",
         "_needs_newline",
         "_lease_key",
-        # The ``weakref.finalize`` that releases this handle's lease when the
-        # object is dropped. Held so :meth:`release_ownership` can run it
-        # DETERMINISTICALLY -- dropping the last reference frees the lease only
-        # once the cyclic collector runs the finalizer, and a caller retiring
-        # this handle (a test boundary, a cache eviction) cannot wait for a GC
-        # pass it does not control. See :meth:`_adopt_lease`.
-        "_lease_finalizer",
         # Weak-referenceable so this handle being dropped is what releases its
         # write ownership. See :meth:`_claim`.
         "__weakref__",
@@ -2467,7 +2460,6 @@ class CrewLog:
         self._last_seq = last_seq
         self._needs_newline = needs_newline
         self._lease_key: str | None = None
-        self._lease_finalizer: "weakref.finalize | None" = None
         if lease_key is not None:
             # A reference already taken on this handle's behalf -- the repair an
             # ``open`` ran before the instance existed. Adopting it here is what
@@ -2740,36 +2732,7 @@ class CrewLog:
         that is about to append.
         """
         self._lease_key = key
-        self._lease_finalizer = weakref.finalize(self, release_lease, key)
-
-    def release_ownership(self) -> None:
-        """Release this handle's write lease NOW, without waiting for a GC pass.
-
-        Dropping the last reference to a handle frees its lease through the
-        ``weakref.finalize`` :meth:`_adopt_lease` armed -- but only once the
-        cyclic collector RUNS that finalizer, and a handle reachable only through
-        a reference cycle (the member event-log service holds one: its projection
-        registry keeps a bound method back to it) is never freed by refcount, so
-        the release waits for a generational GC pass. That wait is invisible on
-        POSIX -- an advisory lock on a torn-down directory harms nothing and the
-        next acquire against a fresh path just works -- but on Windows the still-open
-        descriptor keeps a mandatory lock on the file and pins its directory open,
-        so the directory cannot be removed and a later write under the same
-        inherited process fails. A caller retiring this handle deterministically
-        (a test boundary, a cache eviction that is not GC-driven) runs the
-        finalizer itself instead.
-
-        ``weakref.finalize`` is idempotent and atomic: calling the finalizer here
-        runs ``release_lease`` exactly once and marks it dead, so the later GC-time
-        call it would have made is a no-op. Safe to call more than once and safe on
-        a handle that never took a lease (a pure reader), where there is nothing to
-        run.
-        """
-        finalizer = self._lease_finalizer
-        if finalizer is not None:
-            finalizer()
-        self._lease_finalizer = None
-        self._lease_key = None
+        weakref.finalize(self, release_lease, key)
 
     # -- write -------------------------------------------------------------- #
 
