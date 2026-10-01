@@ -176,11 +176,21 @@ Slack Socket Mode → events.py (dispatch) → handler.py → SessionManager →
 ### Slack App OAuth Contract
 
 The bundled `slack-manifest.yaml` is the setup source of truth. Its bot scopes
-are `app_mentions:read`, `channels:history`, `channels:read`, `chat:write`,
-`commands`, `files:read`, `files:write`, `groups:history`, `groups:read`,
-`im:history`, `im:read`, `im:write`, `reactions:write`, and `users:read`.
-`message.groups` is subscribed alongside `message.channels` so private-channel
-turns and thread continuation are delivered.
+are `app_mentions:read`, `assistant:write`, `channels:history`, `channels:read`,
+`chat:write`, `commands`, `files:read`, `files:write`, `groups:history`,
+`groups:read`, `im:history`, `im:read`, `im:write`, `reactions:write`, and
+`users:read`. `message.groups` is subscribed alongside `message.channels` so
+private-channel turns and thread continuation are delivered.
+`test/test_slack_manifest_scopes.py` pins this set exactly (both directions), so
+a scope or event change must be a deliberate edit there.
+
+The manifest declares the app as a Slack **Agent** through the `features.agent_view`
+block. That is what makes `assistant:write` valid and puts the app in the Agents
+sidebar, the top-bar quick access and split view, and it is the prerequisite for the
+agent-session lifecycle (see Agent sessions below). It replaces the deprecated
+`assistant_view`, which Slack retires in Feb 2027. On top of the message and mention
+events, the manifest subscribes to the agent-session bot events `app_context_changed`,
+`agent_session_stopped` and `agent_session_title_changed`.
 
 The manifest also requests user scopes `channels:history`, `channels:read`,
 `groups:history`, `groups:read`, `im:history`, `im:read`, `mpim:history`,
@@ -360,6 +370,54 @@ Testable interface for Slack Web API:
 - `delete_message(channel, ts)`
 - `add_reaction(channel, ts, emoji)`
 - `remove_reaction(channel, ts, emoji)`
+
+### Agent sessions (`agents.sessions.*`)
+
+Session status and title go through `agents.sessions.setStatus` and
+`agents.sessions.rename` (`SESSION_STATUS_{ACTIVE,PROCESSING,SUSPENDED,CLOSED}` in
+`slack/client.py`), in place of the deprecated `assistant.threads.setStatus` and
+`setTitle` that Slack retires in Feb 2027. Callers do not change:
+`set_thread_status(channel, thread_ts, text)` is a compatibility shim that maps empty
+text to `active` and any other text to `processing` (the agent-session loading UX
+shows a fixed "Working..." indicator, so the free text is no longer rendered), and
+`set_thread_title` delegates to `rename_session`.
+`set_session_status(channel, thread_ts_or_None, status)` omits `thread_ts` for a
+session channel (a code channel), where the whole channel is one session and Slack
+rejects `thread_ts`.
+
+While a turn waits on a tool approval, the transport renderer sets the session to
+`suspended` (paused, needs the user), and sets it back to working as soon as the turn
+produces output again; the end-of-turn clear returns it to `active`. Every status call
+is best-effort and never fails the turn.
+
+Every agent-session event (`agent_session_stopped`, `agent_session_title_changed`,
+`app_context_changed`) goes through `events._dispatch_agent_session_event` first, which
+applies the same per-workspace origin gate as a message (`check_message_origin`) before
+any handler runs. The workspace id is the `event_callback` envelope's `team_id`, which
+wins over any id on the event itself; an event with no workspace id is refused
+(`missing_team_id`), and one from a workspace outside `slack.allowed_enterprise_ids` is
+refused as `enterprise_origin_mismatch`. Both are dropped and logged under
+`slack.<event type>`, so a workspace removed from the allowlist mid-turn cannot stop or
+retitle a live session. With no allowlist configured the gate is default-open, as for
+messages.
+
+When the user clicks Slack's native stop button, `agent_session_stopped` fires and
+`events._handle_agent_session_stopped` shares `!stop`'s session resolution and stop
+core (`_resolve_stop_target` and `_stop_session`), so a single-session DM stops its
+flat `slack:<channel>` key and a dashboard-linked DM thread stops its owner session,
+exactly as `!stop` does. It records the user stop, cancels the turn, clears the queue,
+drops pending items and finishes the streams named in `streaming_message_ts`. Only an
+allowed user can stop a turn; anyone else is refused and logged
+(`slack.agent_session_stopped`, `unauthorized sender`). A session without a thread keys
+on its first streaming message. A single-session DM turn posted at channel root carries
+neither a thread nor a stream and still stops its flat `slack:<channel>` key; outside a
+single-session DM such an event addresses no session and is a no-op. Following Slack's
+guidance, it makes no further `agents.sessions.*` call for that context; Slack updates
+the status itself. `agent_session_title_changed` is recorded in the SEL audit log and
+otherwise ignored (there is no local copy of session titles). `app_context_changed`
+stays subscribed because Slack's agent setup guide lists it among the bot events an
+`agent_view` app subscribes to; the gateway does not act on it, since the message
+events carry the context it uses.
 
 ## Per-Channel Activation Modes
 
@@ -1059,7 +1117,7 @@ Config example (remote access via URL):
 - Owner-locked via `KIROCREW_OWNER_ID` in `.env` (supports W/U prefix cross-matching)
 - **Enterprise Grid validation** (`slack/enterprise.py`): Two-layer defence against data exfiltration to personal/external Slack workspaces:
   1. **Startup gate**: `validate_enterprise()` calls `auth.test` with the bot token, verifies `enterprise_id` matches the configured production (`E0123ABC456`) or sandbox (`E0456DEF789`) grid. Caches `team_id` and `enterprise_id` in memory. Clears cache before each validation attempt so re-validation failures are fail-closed. Gateway refuses to connect if validation fails.
-  2. **Per-message gate**: `check_message_origin()` compares each incoming event's `team` field against the cached `team_id`. Catches `.env` hot-swap while running. Zero-cost in-memory string comparison, no API call. Deny-by-default: empty `team` field is rejected.
+  2. **Per-message gate**: `check_message_origin()` compares each incoming event's `team` field against the cached `team_id`. The agent-session lifecycle events pass the same gate before they are handled (see Agent sessions). Catches `.env` hot-swap while running. Zero-cost in-memory string comparison, no API call. Deny-by-default: empty `team` field is rejected.
   - Configurable extra IDs via `slack.allowed_enterprise_ids` in config.json (for additional subsidiary grids)
   - **One list, two id spaces — Enterprise Grid needs BOTH kinds in it.** `auth.test` returns an org-level `enterprise_id` (`E…`) *and* the install workspace's `team_id` (`T…`), while each inbound event carries the child workspace `team_id` it was sent in. The startup gate checks `enterprise_id or team_id`, so on Grid the **org id** must be listed or validation refuses and Slack is disabled; the per-message gate only ever compares the event's **workspace id**, which an `E…` entry can never equal, so **every child workspace id** must be listed or its messages are denied. Supplying either kind alone fails, and the two failures look nothing alike: workspace-ids-only refuses loudly at boot, while org-id-only passes validation (`Enterprise validation OK`) and then denies every DM — armed, because any entry leaves default-open, with nothing inbound able to match. `_diagnose_allowlist_id_spaces()` warns at load time for the org-id-only case (SEL `error=allowlist_admits_no_inbound_workspace`), and the startup refusal names the missing org id for the other, so neither state is silent or points at the wrong remedy. Both are DIAGNOSTIC: admission is unchanged, because treating an `E…` entry as org-wide admission would widen the allowlist this gate exists to keep narrow.
   - **Corrupt-config fail-closed**: `KiroCrewConfig.load()` degrades a torn/corrupt `config.json` (or `config.local.json` overlay) to a defaults object rather than raising, so `slack.allowed_enterprise_ids` would come back empty. `_load_allowed_team_ids()` positively detects that degraded read (a config file that exists on disk but does not parse) and fails CLOSED -- the allowlist stays enforced and admits NO origin (not even the just-validated workspace, which would answer the allowlist's own question) so startup is refused, and the degradation is SEL-audited (`operation=slack.allowed_team_ids_load`, `error=config_load_degraded_fail_closed`) -- instead of silently reverting to default-open. A genuinely unconfigured allowlist (no config file, or a clean file listing none) stays default-open.

@@ -969,6 +969,31 @@ class TestOnEventDispatch:
         assert route.await_args.kwargs["is_mention"] is False
 
     @pytest.mark.asyncio
+    async def test_agent_session_stop_from_disallowed_workspace_never_dispatches(
+        self, monkeypatch, _mock_sel
+    ):
+        """The listener origin-checks a lifecycle event before its handler runs."""
+        from kiro_crew.slack import enterprise
+
+        monkeypatch.setattr(enterprise, "_allowlist_configured", True)
+        monkeypatch.setattr(enterprise, "_allowed_team_ids", {"T_OK"})
+        orch = _socket_orch()
+        on_event = await _install_on_event(orch, ev.SeenCache())
+        event = {"type": "agent_session_stopped", "channel": "C1", "user": "U1"}
+        with patch(
+            "kiro_crew.slack.events._handle_agent_session_stopped", new_callable=AsyncMock
+        ) as stop:
+            await on_event(_client(), _req("events_api", {"event": event, "team_id": "T_GONE"}))
+            await _drain(orch)
+            stop.assert_not_awaited()
+            assert _mock_sel.log_api_access.call_args.kwargs["error"] == (
+                "enterprise_origin_mismatch"
+            )
+            await on_event(_client(), _req("events_api", {"event": event, "team_id": "T_OK"}))
+            await _drain(orch)
+        stop.assert_awaited_once_with(orch, event)
+
+    @pytest.mark.asyncio
     async def test_app_mention_sets_is_mention(self):
         orch = _socket_orch()
         on_event = await _install_on_event(orch, ev.SeenCache())

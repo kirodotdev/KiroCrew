@@ -78,6 +78,9 @@ class _RecSlack:
     async def set_thread_status(self, channel, thread_ts, status):
         self.calls.append(("set_thread_status", {"status": status}))
 
+    async def set_session_status(self, channel, thread_ts, status):
+        self.calls.append(("set_session_status", {"thread_ts": thread_ts, "status": status}))
+
     async def post_blocks(self, channel, blocks, text, thread_ts=None, **kw):
         self.calls.append(("post_blocks", {"blocks": blocks}))
         return self._ts()
@@ -407,6 +410,19 @@ class TestSlackRendererMapping:
         }
         assert f"{TOOL_APPROVE_ACTION_PREFIX}rq1" in all_ids
         assert provider.approved == ["rq1"]
+
+    def test_prompt_choice_sets_suspended_status(self):
+        # Slack code-channels docs: `suspended` = paused, needs user input (a tool
+        # approval). Posting the approval prompt must flip the session status.
+        rec = _RecSlack()
+        decider = SlackApprovalDecider()
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False, decider=decider)
+        asyncio.run(
+            renderer.on_prompt_choice([{"id": "grep", "label": "grep"}], "rq1", tool_title="grep")
+        )
+        statuses = [kw["status"] for m, kw in rec.calls if m == "set_session_status"]
+        assert "suspended" in statuses
+        assert renderer._suspended is True
 
     def test_the_approval_card_names_the_tool_not_the_answer(self):
         """The card promises a tool name, so an option LABEL must not fill it in.

@@ -19,6 +19,13 @@ features:
     home_tab_enabled: true
     messages_tab_enabled: true
     messages_tab_read_only_enabled: false
+  # Declares the app as a Slack Agent: adds it to the Agents sidebar, the
+  # top-bar quick access and split view, and enables the agent-session lifecycle
+  # (status, title, stop button) the gateway drives via agents.sessions.*.
+  # Enabling it is what makes assistant:write valid. agent_view supersedes the
+  # deprecated assistant_view.
+  agent_view:
+    agent_description: Your personal AI agent. Chat, run multi-step tasks unattended, schedule jobs, and keep memory across sessions.
   bot_user:
     display_name: KiroCrew-{{ALIAS}}
     always_online: true
@@ -32,6 +39,9 @@ oauth_config:
   scopes:
     bot:
       - app_mentions:read
+      # Required by the agent_view feature above; grants agents.sessions.* so the
+      # gateway can set session status/title and show a native stop button.
+      - assistant:write
       - channels:history
       - channels:read
       - chat:write
@@ -67,6 +77,15 @@ settings:
       - message.groups
       - app_mention
       - app_home_opened
+      # Agent-session events (agent_view): app_context_changed reports what the
+      # user is viewing; agent_session_stopped fires when the user clicks the
+      # native stop button; agent_session_title_changed fires when a user
+      # renames a session. The gateway handles stop and title-change.
+      # app_context_changed is in Slack's list of events an agent_view app
+      # subscribes to, so it stays subscribed; the gateway does not act on it.
+      - app_context_changed
+      - agent_session_stopped
+      - agent_session_title_changed
       - file_change
       - member_joined_channel
   interactivity:
