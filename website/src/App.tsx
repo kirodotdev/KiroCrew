@@ -138,6 +138,7 @@ import { RUN_IN_TERMINAL_OPENING_GRACE_MS } from './utils/fenceShell'
 import { confirmRestoredPanelTerminals, reconcileRestoredPanelTerminals } from './hooks/usePanelTabs'
 import { withDeadline } from './lib/withDeadline'
 import { toggleTerminalByChord } from './lib/terminalChordFocus'
+import { useRunInTerminalBridge } from './hooks/useRunInTerminalBridge'
 import { useTerminalPoppedOut, focusPopout as focusTerminalPopout } from './utils/terminalPopout'
 import { setTerminalEnabledFlag } from './utils/terminalRegistry'
 import MigrationCheck from './components/MigrationCheck'
@@ -1861,6 +1862,20 @@ export default function App() {
   const activeSlotProject = useAppSelector(selectActiveSlotProject)
   const terminalPosition = useTerminalPosition()
   const navigate = useNavigate()
+  const [terminalError, setTerminalError] = useState<string | null>(null)
+
+  // "Run in terminal" (chat code blocks, app panels): open a tab in the
+  // app-wide dock panel and run the command there, starting in the selected
+  // session's project. Shell-level because the dock is shell-level — mounted on
+  // every route, so a request from /apps/<id> or /projects is answered too.
+  // Popout and embed windows render their own tree without the dock panel, so
+  // there the bridge answers `ok: false` at once instead of minting a tab
+  // nothing renders — the requester shows its failure state immediately.
+  useRunInTerminalBridge(
+    activeSlotProject,
+    !isPopout && !isEmbed,
+    message => setTerminalError(message),
+  )
 
   // Main-dashboard role for the artifact popout nav-intent handshake: perform
   // navigation intents forwarded from popout windows (activity-timeline
@@ -5568,6 +5583,22 @@ export default function App() {
       document.body
     )}
     <KiroAccountModal open={kiroUsageOpen} onClose={() => setKiroUsageOpen(false)} usage={kiroUsageState} />
+    {/* Terminal dispatch failures are shell-level, so their primary error
+        surface must remain visible across route changes instead of living only
+        in the notification centre. This banner can overlay an artifact page
+        with unsaved edits, so it intentionally offers dismiss only: navigating
+        to chat through Ask Agent would discard that draft. */}
+    {terminalError && (
+      <div className="fixed left-1/2 top-safe-offset-3 z-[80] w-[min(640px,calc(100vw-1.5rem))] -translate-x-1/2 rounded-lg bg-card shadow-xl">
+        <ErrorNotice
+          title={i18nT('components.runInTerminalBtn.couldn_t_run_in_terminal')}
+          message={terminalError}
+          onDismiss={() => setTerminalError(null)}
+          askAgent={false}
+          testId="run-in-terminal-error"
+        />
+      </div>
+    )}
     <QuickSearchSurface
       owners={slotOwners}
       open={commandPalette.open}

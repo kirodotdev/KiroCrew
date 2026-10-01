@@ -14,7 +14,7 @@
  * catches a regression back to a constant.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { screen, waitFor, act } from '@testing-library/react'
+import { screen, waitFor, act, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { server } from '../../integration/mocks/server'
@@ -22,6 +22,11 @@ import { renderWithProviders } from './helpers'
 import App from '../App'
 import { setTerminalEnabledFlag } from '../utils/terminalRegistry'
 import { __resetBottomTerminal, openBottomTerminal } from '../hooks/useBottomTerminal'
+
+const bridge = vi.hoisted(() => ({ onError: undefined as ((message: string) => void) | undefined }))
+vi.mock('../hooks/useRunInTerminalBridge', () => ({
+  useRunInTerminalBridge: (_cwd: string | undefined, _hasDock: boolean, onError: (message: string) => void) => { bridge.onError = onError },
+}))
 
 // Same isolation as App.terminalEnabledFlag.test.tsx: stub the routed pages and
 // the api client so App mounts without real network, and additionally stub
@@ -98,6 +103,23 @@ describe('App nav rail — Terminal row reflects the docked panel state', () => 
   afterEach(() => {
     __resetBottomTerminal()
     setTerminalEnabledFlag(false)
+  })
+
+  it('shows shell dispatch failures outside chat and dismisses without navigation', async () => {
+    const user = userEvent.setup()
+    renderWithProviders(<App />, { route: '/logs' })
+    expect(screen.queryByTestId('chat-page')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('run-in-terminal-error')).not.toBeInTheDocument()
+
+    act(() => { bridge.onError?.('Shell readiness could not be checked; the terminal was kept open.') })
+    const notice = screen.getByTestId('run-in-terminal-error')
+    expect(notice).toHaveAttribute('role', 'alert')
+    expect(notice).toHaveTextContent("Couldn't run in terminal")
+    expect(notice).toHaveTextContent('the terminal was kept open')
+    expect(within(notice).queryByRole('button', { name: /ask.*agent/i })).not.toBeInTheDocument()
+    await user.click(within(notice).getByRole('button', { name: /dismiss/i }))
+    expect(screen.queryByTestId('run-in-terminal-error')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('chat-page')).not.toBeInTheDocument()
   })
 
   it('is unlit and aria-pressed=false while the panel is closed', async () => {
