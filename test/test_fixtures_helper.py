@@ -358,3 +358,21 @@ def test_seeded_home_importable_without_pytest(
     # Smoke: the CM still works end-to-end.
     with fresh.seeded_home("empty") as home:
         assert (home / "fixture.yaml").is_file()
+
+
+def test_every_fixture_hook_event_is_one_the_loader_accepts() -> None:
+    """A fixture hook with an unknown event is skipped by the loader as invalid.
+
+    The loader keys on the runtime value (``"Stop"``), not the Python constant
+    name (``"HOOK_EVENT_STOP"``), so a fixture spelled with the constant name
+    seeds a hook that never loads and logs a warning on every start.
+    """
+    import json
+
+    from kiro_crew.hooks import HOOK_EVENTS_ALL
+
+    hook_files = sorted(_FIXTURES.glob("*/hooks.json"))
+    assert hook_files, "no fixture ships a hooks.json; the guard checks nothing"
+    for path in hook_files:
+        for hook in json.loads(path.read_text(encoding="utf-8"))["hooks"]:
+            assert hook["event"] in HOOK_EVENTS_ALL, f"{path}: bad event {hook['event']!r}"
