@@ -1,15 +1,14 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Package, X, CheckCircle } from 'lucide-react'
 import { useAppSelector } from '../../store'
 import { api } from '../../api/client'
 import { updateAffordance } from '../../utils/updateAffordance'
 import { isNewSection } from '../../utils/releaseVersion'
 import { safeSetItem } from '../../utils/safeStorage'
-import { Toggle } from '../../components/ui'
-import ErrorNotice from '../../components/ErrorNotice'
 import Clickable from '../../components/Clickable'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
 import { InAppUpdateFlow } from '../../pages/settings/AboutPanel'
+import WhatsNewAutoUpdateToggle from '../../components/WhatsNewAutoUpdateToggle'
 import { i18nT } from '../../i18n/t'
 
 /**
@@ -17,16 +16,13 @@ import { i18nT } from '../../i18n/t'
  * sections this launch owes, and whether it has decided yet), Update Now and its
  * failure, and the overlay's open state while an update runs.
  */
-export function useUpdateFlow(refetchKirocrewCfg: () => Promise<{ data?: unknown; isSuccess: boolean }>) {
+export function useUpdateFlow() {
   const updateProgress = useAppSelector(s => s.dashboard.updateProgress)
   // Can the GATEWAY replace its own code? False on a wheel install and on a
   // desktop bundle, where `POST /api/update` answers 400/409.
   const canApplyUpdate = useAppSelector(s => s.dashboard.status?.update_can_apply)
   const canArmUpdate = useAppSelector(s => s.dashboard.status?.update_can_arm)
   const updateCommand = useAppSelector(s => s.dashboard.status?.update_command) || ''
-  // A policy-pinned command owns updates here and can update on its own, so
-  // the popup shows the policy note; Settings keeps the switch.
-  const updatesManagedByCommand = useAppSelector(s => s.dashboard.status?.update_managed_by) === 'command'
   const updateTargetVersion = useAppSelector(
     s => s.dashboard.status?.update_latest_version_display
       || s.dashboard.status?.update_latest_version
@@ -49,26 +45,9 @@ export function useUpdateFlow(refetchKirocrewCfg: () => Promise<{ data?: unknown
   // asynchronously, so "no changelog is showing" is not the same claim as "no
   // changelog is going to show" — the startup-video gate needs the second one.
   const [changelogDecided, setChangelogDecided] = useState(false)
-  const [autoUpdate, setAutoUpdate] = useState(true)
-  const [autoUpdateError, setAutoUpdateError] = useState('')
-  const autoUpdateTouched = useRef(false)
   const [fullChangelog, setFullChangelog] = useState('')
   const [showFull, setShowFull] = useState(false)
   const [updateError, setUpdateError] = useState('')
-  // The update modal's toggle starts at a guess (`true`), so each time the modal
-  // opens it reads the saved `auto_update` fresh. A click made while that read
-  // is in flight wins over it, and only a read that succeeded is applied.
-  useEffect(() => {
-    if (!showChangelog) return
-    let live = true
-    autoUpdateTouched.current = false
-    void refetchKirocrewCfg().then(r => {
-      if (!live || autoUpdateTouched.current) return
-      const saved = (r.data as { auto_update?: unknown } | undefined)?.auto_update
-      if (r.isSuccess && typeof saved === 'boolean') setAutoUpdate(saved)
-    })
-    return () => { live = false }
-  }, [showChangelog, refetchKirocrewCfg])
   // Close update modal when progress clears (simulation complete or cancelled)
   useEffect(() => {
     if (!updateProgress && (updating || showUpdateModal)) {
@@ -113,7 +92,7 @@ export function useUpdateFlow(refetchKirocrewCfg: () => Promise<{ data?: unknown
       // No qualifying section means this build's release has no notes yet, which
       // is the normal state on a dev build. Say nothing: the modal exists to
       // deliver notes, and one carrying someone else's is worse than none.
-      if (text) { setChanges(text); setAutoUpdateError(''); setShowChangelog(true) }
+      if (text) { setChanges(text); setShowChangelog(true) }
     }).then(() => {
       // Stamp the version ONLY on a response we actually read. The old `finally`
       // stamped it either way, so a single failed fetch retired that version's
@@ -148,18 +127,18 @@ export function useUpdateFlow(refetchKirocrewCfg: () => Promise<{ data?: unknown
   }, [])
   return {
     updating, setUpdating, showUpdateModal, setShowUpdateModal, changes, showChangelog, setShowChangelog,
-    changelogDecided, autoUpdate, setAutoUpdate, autoUpdateTouched, autoUpdateError, setAutoUpdateError, fullChangelog,
+    changelogDecided, fullChangelog,
     setFullChangelog, showFull, setShowFull, updateError, setUpdateError, handleUpdate, version, affordance,
-    updateCommand, updatesManagedByCommand, updateTargetVersion,
+    updateCommand, updateTargetVersion,
   }
 }
 
 /** The changelog dialog a version change opens, with the update offer beneath the notes. */
 export function ChangelogModal({ flow, updateAvailable }: { flow: ReturnType<typeof useUpdateFlow>; updateAvailable: boolean }) {
   const {
-    updating, changes, showChangelog, setShowChangelog, autoUpdate, setAutoUpdate, autoUpdateTouched, autoUpdateError, setAutoUpdateError,
+    updating, changes, showChangelog, setShowChangelog,
     fullChangelog, setFullChangelog, showFull, setShowFull, handleUpdate, version, affordance, updateCommand,
-    updatesManagedByCommand, updateTargetVersion,
+    updateTargetVersion,
   } = flow
   if (!(showChangelog && !updating)) return null
   return (
@@ -203,16 +182,7 @@ export function ChangelogModal({ flow, updateAvailable }: { flow: ReturnType<typ
         ) : (
           <div className="text-sm text-muted py-4 text-center"><CheckCircle className="lucide-inline" /> {i18nT('app.you_re_on_the_latest_version')}</div>
         )}
-        {updatesManagedByCommand ? (
-          <p className="text-[13px] text-muted mt-4 pt-3 border-t border-border">{i18nT('pages.settings.aboutPanel.updates_managed_by_policy')}</p>
-        ) : (
-          <div className="flex items-center justify-between mt-4 pt-3 border-t border-border">
-            <span className="text-[13px] text-muted">{i18nT('app.auto_update_on_restart')}</span>
-            <Toggle checked={autoUpdate} label={i18nT('app.auto_update_on_restart')}
-              onChange={async next => { autoUpdateTouched.current = true; setAutoUpdate(next); setAutoUpdateError(''); try { await api.setAutoUpdate(next) } catch (e) { autoUpdateTouched.current = false; setAutoUpdate(!next); setAutoUpdateError(String(e instanceof Error ? e.message : e)) } }} />
-          </div>
-        )}
-        {autoUpdateError && <ErrorNotice className="mt-3" askAgent title={i18nT('pages.overview.agentCfgTab.save_failed')} message={autoUpdateError} onHandoff={() => setShowChangelog(false)} />}
+        <WhatsNewAutoUpdateToggle onHandoff={() => setShowChangelog(false)} />
         <div className="mt-3 pt-3 border-t border-border">
           <button className="text-[13px] text-muted cursor-pointer hover:text-text transition-colors bg-transparent border-none p-0 font-body" onClick={async () => {
             if (!showFull) { if (!fullChangelog) { const d = await api.changelog(); setFullChangelog(d.content || '') }; setShowFull(true) } else { setShowFull(false) }

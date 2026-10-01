@@ -13,6 +13,8 @@
  * read must degrade to "no usage history", never break the launcher.
  */
 
+import { resolveLegacyHighlightId } from '../../hooks/useSettingHighlight'
+
 const STORAGE_KEY = 'mc-command-bar-frecency'
 
 /** Days after which a single use counts half as much. */
@@ -37,6 +39,20 @@ function isUsageEntry(v: unknown): v is UsageEntry {
   return typeof e.count === 'number' && typeof e.last === 'number'
 }
 
+/** The row id of a settings registry entry is this prefix plus its id. */
+export const SETTING_ROW_PREFIX = 'setting:'
+
+/**
+ * A settings row's id follows its label, so a relabelled row reads (and the
+ * next save writes) its old history under the id it has now, through the same
+ * legacy-id table its deep links use.
+ */
+function currentRowId(id: string): string {
+  return id.startsWith(SETTING_ROW_PREFIX)
+    ? SETTING_ROW_PREFIX + resolveLegacyHighlightId(id.slice(SETTING_ROW_PREFIX.length))
+    : id
+}
+
 /** Read the usage map. Returns an empty map on absent or unreadable storage. */
 export function loadUsage(): UsageMap {
   let raw: string | null = null
@@ -53,7 +69,7 @@ export function loadUsage(): UsageMap {
     for (const [id, entry] of Object.entries(parsed as Record<string, unknown>)) {
       if (isUsageEntry(entry)) out[id] = { count: entry.count, last: entry.last }
     }
-    return out
+    return renameUsageIds(out, currentRowId)
   } catch {
     return {}
   }
@@ -65,6 +81,21 @@ function saveUsage(map: UsageMap): void {
   } catch {
     // A full or read-only store costs ranking quality, nothing else.
   }
+}
+
+/**
+ * The same map with each id passed through `rename`, merging two entries that
+ * land on one id (counts add, the later use wins). A renamed row keeps the
+ * habit it built up under its old id.
+ */
+function renameUsageIds(map: UsageMap, rename: (id: string) => string): UsageMap {
+  const out: UsageMap = {}
+  for (const [id, entry] of Object.entries(map)) {
+    const to = rename(id)
+    const prev = out[to]
+    out[to] = prev ? { count: prev.count + entry.count, last: Math.max(prev.last, entry.last) } : entry
+  }
+  return out
 }
 
 /**

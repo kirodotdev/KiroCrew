@@ -32,7 +32,7 @@ export type OptimisticPathMutation<TVars, TData> = {
   /** The value the overlay shows at that path while the request is in flight. */
   displayValue: (vars: TVars) => unknown
   /** Token-guarded success write of the ACCEPTED value into the cached object. */
-  applyToCache: (cached: unknown, vars: TVars) => unknown
+  applyToCache: (cached: unknown, vars: TVars, data: TData) => unknown
   /** Failure report, invoked only when this mutation still owns its path. */
   onFailure?: (err: unknown, vars: TVars) => void
   /** A fresh attempt began on `path` — clear that path's stale failure state. */
@@ -129,7 +129,7 @@ export function useOptimisticConfigPaths(qc: QueryClient) {
       cfg.onSupersede?.(path)
       return token
     },
-    onSuccess: (_data: TData, vars: TVars, token: number) => {
+    onSuccess: (data: TData, vars: TVars, token: number) => {
       const path = cfg.path(vars)
       // Only the path's LATEST save may write its accepted value: with A→B
       // in flight on one path and B settling first, A's later settle would
@@ -137,7 +137,7 @@ export function useOptimisticConfigPaths(qc: QueryClient) {
       // stale A displayed while the server holds B.
       if (mountedRef.current && latestTokenRef.current[path] === token) {
         const cached = qc.getQueryData(cfg.queryKey)
-        if (cached !== undefined) qc.setQueryData(cfg.queryKey, cfg.applyToCache(cached, vars))
+        if (cached !== undefined) qc.setQueryData(cfg.queryKey, cfg.applyToCache(cached, vars, data))
       }
       return qc.invalidateQueries({ queryKey: cfg.queryKey })
     },

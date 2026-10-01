@@ -75,6 +75,25 @@ describe('rankRootRows', () => {
     expect(rankRootRows(rows, 'restart', {}, 0).map(r => r.id)).toEqual(['a'])
   })
 
+  it("ranks a row with its own matcher by that matcher alone", () => {
+    const own = row({ id: 'own', title: 'Restart', keywords: ['reboot'], match: q => (q === 'zzq' ? { score: 7, indices: [1], field: 'title' } : null) })
+    expect(rankRootRows([own], 'restart', {}, 0)).toEqual([])
+    expect(rankRootRows([own], 'reboot', {}, 0)).toEqual([])
+    const [hit] = rankRootRows([own], 'zzq', {}, 0)
+    expect([hit.score, hit.indices, hit.matchField]).toEqual([7, [1], 'title'])
+  })
+
+  it('prices and draws an own-matcher hit off the title like any other row', () => {
+    const viaSynonym = row({ id: 'kw', title: 'Mode', match: () => ({ score: 100, indices: [], field: 'keyword', matchedKeyword: 'theme' }) })
+    const [kw] = rankRootRows([viaSynonym], 'theme', {}, 0)
+    expect([kw.score, kw.matchField, kw.matchedKeyword]).toEqual([60, 'keyword', 'theme'])
+
+    const viaDetail = row({ id: 'sub', title: 'Mode', subtitle: 'Display · Light or dark', match: () => ({ score: 30, indices: [], field: 'subtitle', discounted: true }) })
+    const [sub] = rankRootRows([viaDetail], 'Dark', {}, 0)
+    // Already discounted by the matcher, so not discounted twice.
+    expect([sub.score, sub.matchField, sub.subtitleIndices]).toEqual([30, 'subtitle', [19, 20, 21, 22]])
+  })
+
   it('returns highlight indices for a title match and none for an alias match', () => {
     const rows = [row({ id: 'a', title: 'Restart', keywords: ['reboot'] })]
     expect(rankRootRows(rows, 'res', {}, 0)[0].indices).toEqual([0, 1, 2])

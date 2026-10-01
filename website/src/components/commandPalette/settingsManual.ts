@@ -166,18 +166,6 @@ export const SETTINGS_MANUAL: ManualSettingEntry[] = [
     occurrence: 1,
   },
   {
-    // Gateway auto-update / update-notification toggle. Its rendered label is a
-    // ternary (self-update-capable installs read "Auto-update on restart"), which
-    // the extractor cannot resolve; indexed under the notify wording so it does
-    // not collide with the desktop SettingsToggle's generated entry.
-    id: 'about.update-notifications',
-    labelKey: 'pages.settings.aboutPanel.notify_when_an_update_is_available',
-    tab: 'about',
-    type: 'toggle',
-    occurrence: 1,
-    configKey: 'auto_update',
-  },
-  {
     // Per-channel notification mute + priority overrides: rows are fetched at
     // runtime (channel names are data), so one entry covers the Sources card.
     id: 'notifications.sources',

@@ -245,6 +245,8 @@ export interface UpdateCheckResult {
   remediation?: { kind?: string; message?: string; command?: string } | null
   current_version?: string
   auto_update?: boolean
+  /** Whether config.local.json sets `auto_update`, so the switch cannot change it. */
+  overlay_override?: boolean
   minimum_version_enforced?: string
   update_required?: boolean
   /** Legacy alias some older payloads carried; `latest_version` is authoritative. */

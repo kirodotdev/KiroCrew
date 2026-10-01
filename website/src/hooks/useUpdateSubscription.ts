@@ -2,6 +2,7 @@ import { useEffect } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { useAppDispatch } from '../store'
 import { setDesktopUpdateAvailable } from '../store/dashboardSlice'
+import { updateInfoQuery } from '../api/updateInfoQuery'
 
 export type UpdateState = globalThis.UpdateState
 
@@ -62,7 +63,9 @@ export function useUpdateSubscription() {
     let disposed = false
     // Best-effort replay: a failure here (old preload, IPC teardown) just
     // leaves the pre-replay behaviour, so it must never throw out of the hook.
-    api.getInfo?.().then(info => {
+    // Through the shared query, so this one IPC also serves every later
+    // ['update-info'] reader (About, the What's-new modal, settings search).
+    queryClient.fetchQuery({ ...updateInfoQuery, retry: false }).then(info => {
       if (disposed) return
       const last = info?.lastState
       if (!last) return

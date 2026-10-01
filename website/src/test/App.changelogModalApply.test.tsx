@@ -14,7 +14,7 @@
  * are stubbed the same way the other App.* tests stub them.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, waitFor, fireEvent, within } from '@testing-library/react'
+import { screen, waitFor, fireEvent, within, act } from '@testing-library/react'
 import { i18nT } from '../i18n/t'
 import { renderWithProviders } from './helpers'
 import type { RootState } from '../store'
@@ -118,6 +118,8 @@ const wheelState = (over: Record<string, unknown> = {}) => {
   }
 }
 
+const GATEWAY_LABEL = i18nT('pages.settings.aboutPanel.automatic_updates')
+
 describe('changelog modal apply affordance', () => {
   beforeEach(() => {
     // A DIFFERENT last-seen version is what opens the modal on mount.
@@ -130,10 +132,9 @@ describe('changelog modal apply affordance', () => {
     armStatus.mockReset()
     setAutoUpdate.mockReset()
     setAutoUpdate.mockResolvedValue({})
-    // No config by default, so the other cases keep the shell they were written
-    // against; the auto-update seeding case supplies one.
     kirocrewConfig.mockReset()
-    kirocrewConfig.mockRejectedValue(new Error('no config in this test'))
+    kirocrewConfig.mockResolvedValue({ auto_update: true })
+    delete window.updateAPI
     armStatus.mockResolvedValue({
       armed: true, expires_in: 590, approve_command: 'kirocrew update approve',
     })
@@ -196,72 +197,6 @@ describe('changelog modal apply affordance', () => {
     expect(screen.queryByTestId('modal-update-command')).toBeNull()
   })
 
-  it.each([
-    ['command', false],
-    ['', true],
-  ])('shows the auto-update toggle only when updates are not command-managed (%j)', async (managedBy, shown) => {
-    renderWithProviders(<App />, {
-      route: '/chat',
-      preloadedState: wheelState({ update_managed_by: managedBy }),
-    })
-
-    await screen.findByTestId('modal-update-command')
-    const label = i18nT('app.auto_update_on_restart')
-    expect(screen.queryByText(label) !== null).toBe(shown)
-    const note = i18nT('pages.settings.aboutPanel.updates_managed_by_policy')
-    expect(screen.queryByText(note) !== null).toBe(!shown)
-  })
-
-  it('reverts the auto-update toggle and shows the error when saving fails', async () => {
-    setAutoUpdate.mockRejectedValueOnce(new Error('zzq save refused'))
-    renderWithProviders(<App />, { route: '/chat', preloadedState: wheelState() })
-
-    const toggle = await screen.findByRole('switch', { name: i18nT('app.auto_update_on_restart') })
-    expect(toggle).toHaveAttribute('aria-checked', 'true')
-    fireEvent.click(toggle)
-
-    expect(await screen.findByText('zzq save refused')).toBeInTheDocument()
-    expect(toggle).toHaveAttribute('aria-checked', 'true')
-  })
-
-  it('shows the saved auto-update OFF when the modal opens by itself', async () => {
-    // The modal opens on mount (last-seen version differs). The toggle must show
-    // the saved config value, not its `true` starting guess.
-    kirocrewConfig.mockResolvedValue({ auto_update: false })
-    renderWithProviders(<App />, { route: '/chat', preloadedState: wheelState() })
-
-    const toggle = await screen.findByRole('switch', { name: i18nT('app.auto_update_on_restart') })
-    await waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'false'))
-    expect(setAutoUpdate).not.toHaveBeenCalled()
-  })
-
-  it('keeps a click made while the saved setting is still being read', async () => {
-    let answer: (v: unknown) => void = () => {}
-    kirocrewConfig.mockImplementation(() => new Promise(resolve => { answer = resolve }))
-    renderWithProviders(<App />, { route: '/chat', preloadedState: wheelState() })
-
-    const toggle = await screen.findByRole('switch', { name: i18nT('app.auto_update_on_restart') })
-    fireEvent.click(toggle)
-    await waitFor(() => expect(setAutoUpdate).toHaveBeenCalledWith(false))
-    answer({ auto_update: true })
-    await waitFor(() => expect(kirocrewConfig).toHaveBeenCalled())
-    await new Promise(r => setTimeout(r, 50))
-    expect(toggle).toHaveAttribute('aria-checked', 'false')
-  })
-
-  it('applies the saved setting that lands after a click whose save failed', async () => {
-    let answer: (v: unknown) => void = () => {}
-    kirocrewConfig.mockImplementation(() => new Promise(resolve => { answer = resolve }))
-    setAutoUpdate.mockRejectedValueOnce(new Error('zzq save refused'))
-    renderWithProviders(<App />, { route: '/chat', preloadedState: wheelState() })
-
-    const toggle = await screen.findByRole('switch', { name: i18nT('app.auto_update_on_restart') })
-    fireEvent.click(toggle)
-    expect(await screen.findByText('zzq save refused')).toBeInTheDocument()
-    answer({ auto_update: false })
-    await waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'false'))
-  })
-
   it('offers nothing to click when there is no verdict yet', async () => {
     // `null` is "no answer", not "no update" — a check that never completed must
     // not be rendered as an available update with an action attached.
@@ -273,5 +208,119 @@ describe('changelog modal apply affordance', () => {
     await waitFor(() => expect(screen.getByTestId('chat-page')).toBeTruthy())
     expect(screen.queryByText('Update Now')).toBeNull()
     expect(screen.queryByTestId('modal-update-command')).toBeNull()
+  })
+})
+
+describe('changelog modal auto-update switch', () => {
+  // Which rows a window gets, and how each reads and writes, is
+  // `components/WhatsNewAutoUpdateToggle.test.tsx`. These cases are the shell's
+  // half: the modal mounts the row, reads the saved value fresh each time it
+  // opens, and its hand-off closes it.
+  beforeEach(() => {
+    localStorage.setItem('mc-last-version', '0.2.0rc8')
+    statusOverride.value = {}
+    setAutoUpdate.mockReset()
+    setAutoUpdate.mockImplementation(async (enabled: boolean) => ({ ok: true, auto_update: enabled }))
+    kirocrewConfig.mockReset()
+    delete window.updateAPI
+  })
+
+  /** A gateway whose update loop installs (`update_auto_effect: 'install'`). */
+  const installing = () => wheelState({ update_auto_effect: 'install' })
+  const live = () => expect(screen.getByRole('switch', { name: GATEWAY_LABEL })).not.toHaveAttribute('aria-disabled')
+
+  it('shows the saved OFF when the modal opens by itself', async () => {
+    kirocrewConfig.mockResolvedValue({ auto_update: false })
+    renderWithProviders(<App />, { route: '/chat', preloadedState: installing() })
+
+    await waitFor(live)
+    expect(screen.getByRole('switch', { name: GATEWAY_LABEL })).toHaveAttribute('aria-checked', 'false')
+    expect(setAutoUpdate).not.toHaveBeenCalled()
+  })
+
+  it('reads the saved value again when the modal opens, so a change made elsewhere shows', async () => {
+    // The shell's own config read answers first; the value has changed by the
+    // time the modal opens.
+    // The shipped client never lets a query go stale on its own, so nothing but
+    // the read on open would fetch again.
+    kirocrewConfig.mockResolvedValueOnce({ auto_update: true }).mockResolvedValue({ auto_update: false })
+    renderWithProviders(<App />, { route: '/chat', preloadedState: installing(), queryDefaults: { staleTime: Infinity } })
+
+    await waitFor(() => expect(screen.getByRole('switch', { name: GATEWAY_LABEL })).toHaveAttribute('aria-checked', 'false'))
+    expect(kirocrewConfig.mock.calls.length).toBeGreaterThan(1)
+  })
+
+  it('keeps a click made while that read is still in flight', async () => {
+    // The open read is in flight when the click's save answers. That read
+    // predates the write, so it is dropped and read again; the old value it
+    // carried must not land over the click.
+    const reads: Array<(v: unknown) => void> = []
+    kirocrewConfig.mockResolvedValueOnce({ auto_update: true })
+      .mockImplementation(() => new Promise(resolve => { reads.push(resolve) }))
+    renderWithProviders(<App />, { route: '/chat', preloadedState: installing() })
+
+    await waitFor(live)
+    await waitFor(() => expect(reads.length).toBeGreaterThan(0))
+    const toggle = screen.getByRole('switch', { name: GATEWAY_LABEL })
+    fireEvent.click(toggle)
+    await waitFor(() => expect(setAutoUpdate).toHaveBeenCalledWith(false))
+    await waitFor(() => expect(reads.length).toBeGreaterThan(1))
+    await act(async () => {
+      reads[0]({ auto_update: true })
+      reads[reads.length - 1]({ auto_update: false })
+    })
+    expect(toggle).toHaveAttribute('aria-checked', 'false')
+  })
+
+  it('applies the saved value a read finds after a click whose save failed', async () => {
+    kirocrewConfig.mockResolvedValue({ auto_update: true })
+    setAutoUpdate.mockRejectedValueOnce(new Error('zzq save refused'))
+    renderWithProviders(<App />, { route: '/chat', preloadedState: installing() })
+
+    await waitFor(live)
+    const toggle = screen.getByRole('switch', { name: GATEWAY_LABEL })
+    // The read after the failure is what the gateway holds; it shows, and the
+    // failure notice goes with it, because that value is the one the click asked for.
+    kirocrewConfig.mockResolvedValue({ auto_update: false })
+    fireEvent.click(toggle)
+    await waitFor(() => expect(setAutoUpdate).toHaveBeenCalledWith(false))
+    await waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'false'))
+    expect(screen.queryByText('zzq save refused')).toBeNull()
+  })
+
+  it("closes the modal for the agent hand-off from the row's failure notice", async () => {
+    kirocrewConfig.mockRejectedValue(new Error('zzq config unreadable'))
+    renderWithProviders(<App />, { route: '/chat', preloadedState: installing() })
+
+    expect(await screen.findByText(i18nT('pages.settings.aboutPanel.auto_update_setting_unavailable'))).toBeInTheDocument()
+    const dialog = screen.getByRole('dialog', { name: i18nT('app.changelog') })
+    fireEvent.click(within(dialog).getByRole('button', { name: i18nT('components.askAgent.ask_the_agent') }))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: i18nT('app.changelog') })).toBeNull())
+  })
+
+  it('is the only update dialog while it is open', async () => {
+    // The proactive update popup offers the same action; it waits for this one.
+    kirocrewConfig.mockResolvedValue({ auto_update: true })
+    const rendered = renderWithProviders(<App />, {
+      route: '/chat',
+      preloadedState: wheelState({ update_auto_effect: 'install', update_can_arm: true, update_latest_version: '9.9.9' }),
+    })
+
+    expect(await screen.findByTestId('in-app-update-action')).toBeInTheDocument()
+    await waitFor(live)
+    // The popup is a React.lazy chunk that opens only once its snooze record
+    // has been read; wait for both, so its absence can only be the hold.
+    await act(async () => { await import('../components/UpdateFoundModal') })
+    const { queryClient } = rendered
+    await waitFor(() => expect(queryClient.getQueryState(['mc-config-update-nudge'])?.status).toBe('success'))
+    const popup = () => screen.queryByRole('dialog', { name: i18nT('components.updateFoundModal.update_available') })
+    expect(popup()).toBeNull()
+    expect(screen.getAllByTestId('in-app-update-action')).toHaveLength(1)
+
+    // Closing What's new is what lets the popup take its turn. Past the
+    // React.lazy boundary of UpdateFoundModal, so the wait is the long one.
+    fireEvent.click(screen.getByRole('button', { name: i18nT('app.close') }))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: i18nT('app.changelog') })).toBeNull())
+    await waitFor(() => expect(popup()).not.toBeNull(), { timeout: 5000 })
   })
 })

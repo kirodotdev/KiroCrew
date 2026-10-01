@@ -49,6 +49,14 @@ describe('UpdateModal', () => {
     expect(container.firstChild).toBeNull()
   })
 
+  it("waits while What's new is open, then takes its turn", async () => {
+    const rendered = renderWithProviders(<UpdateModal held />)
+    await act(async () => { rendered.queryClient.setQueryData(['update-state'], downloaded) })
+    expect(dialog()).toBeNull()
+    rendered.rerender(<UpdateModal />)
+    expect(dialog()).toBeInTheDocument()
+  })
+
   it('renders nothing while the download is still in flight', async () => {
     const { container } = await mount({ state: 'downloading', version: '9.9.9' })
     expect(container.firstChild).toBeNull()

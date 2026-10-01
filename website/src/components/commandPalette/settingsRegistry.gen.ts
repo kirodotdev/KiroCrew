@@ -6,21 +6,23 @@ import type { SettingEntry } from './settingsTypes'
 export const SETTINGS_REGISTRY: SettingEntry[] = 
 [
   {
-    "id": "about.auto-update-on-restart",
-    "label": "Auto-update on restart",
-    "labelKey": "pages.settings.aboutPanel.auto_update_on_restart",
-    "tab": "about",
-    "type": "toggle",
-    "occurrence": 1
-  },
-  {
-    "id": "about.update-notifications",
-    "labelKey": "pages.settings.aboutPanel.notify_when_an_update_is_available",
+    "id": "about.automatic-updates",
+    "label": "Automatic updates",
+    "labelKey": "pages.settings.aboutPanel.automatic_updates",
+    "description": "Where this install can update itself, installs a new release once no work is running and restarts the gateway.",
     "tab": "about",
     "type": "toggle",
     "occurrence": 1,
-    "configKey": "auto_update",
-    "label": "Notify when an update is available"
+    "configKey": "auto_update"
+  },
+  {
+    "id": "about.install-app-updates-automatically",
+    "label": "Install app updates automatically",
+    "labelKey": "pages.settings.aboutPanel.install_app_updates_automatically",
+    "description": "Downloads new versions in the background and installs them the next time you quit the app.",
+    "tab": "about",
+    "type": "toggle",
+    "occurrence": 1
   },
   {
     "id": "about.update-channel",
