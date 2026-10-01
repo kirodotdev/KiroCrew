@@ -37,7 +37,7 @@ from kiro_crew.decisions import consent as consent_mod
 from kiro_crew.decisions import gate as gate_mod
 from kiro_crew.decisions import log as log_mod
 from kiro_crew.decisions.gate import DECISION_POINT_NAMES, decide, in_bucket, is_enabled
-from kiro_crew.decisions.types import Answer, Choice
+from kiro_crew.decisions.types import Answer, Choice, Noul, Score
 
 # ---------------------------------------------------------------------------
 # Fixtures and doubles
@@ -822,6 +822,23 @@ class TestScrub:
         assert oracle.entered is False
         assert log_home()[0]["scrubbed"] is True
 
+    @pytest.mark.parametrize(
+        "make",
+        [
+            lambda key: Noul(id="q", prompt="yes?", true_means=f"the key is {key}"),
+            lambda key: Noul(id="q", prompt="yes?", false_means=f"the key is {key}"),
+            lambda key: Score(id="q", prompt="how?", levels=["fine", f"the key is {key}"]),
+        ],
+        ids=["noul-true", "noul-false", "score-level"],
+    )
+    def test_a_credential_in_a_noul_or_score_rubric_is_found(self, install_impl, log_home, make):
+        """Every rubric field the wire carries is scanned, whatever its type."""
+        oracle = install_impl(_ExplodingOracle())
+        questions = [make(_AWS_KEY_SAMPLES[0])]
+        assert asyncio.run(decide(POINT, "clean state", questions, config=_config())) is None
+        assert oracle.entered is False
+        assert log_home()[0]["scrubbed"] is True
+
     def test_a_scanner_that_itself_fails_refuses(self, install_impl, log_home, monkeypatch):
         """An external request cannot be cleared by a scan that did not complete."""
         oracle = install_impl(_ExplodingOracle())
@@ -969,6 +986,20 @@ class TestErrors:
             (Choice(id="q", prompt="?", options=["A"]), Answer(id="q", value="A", p=True)),
             # An answer keyed to a question that was not asked.
             (Choice(id="q", prompt="?", options=["A"]), Answer(id="other", value="A", p=0.5)),
+            # A Noul whose value is not a probability.
+            (Noul(id="q", prompt="?"), Answer(id="q", value=1.2, p=0.9)),
+            (Noul(id="q", prompt="?"), Answer(id="q", value=True, p=0.9)),
+            (Noul(id="q", prompt="?"), Answer(id="q", value="yes", p=0.9)),
+            # A Score outside its own level range, or not a number.
+            (Score(id="q", prompt="?", levels=["lo", "hi"]), Answer(id="q", value=1.5, p=0.9)),
+            (Score(id="q", prompt="?", levels=["lo", "hi"]), Answer(id="q", value=-0.1, p=0.9)),
+            (Score(id="q", prompt="?", levels=["lo", "hi"]), Answer(id="q", value="hi", p=0.9)),
+            (
+                Score(id="q", prompt="?", levels=["lo", "hi"]),
+                Answer(id="q", value=float("nan"), p=0.9),
+            ),
+            # A Score with fewer than two levels has no valid value at all.
+            (Score(id="q", prompt="?", levels=["only"]), Answer(id="q", value=0.0, p=0.9)),
         ],
     )
     def test_an_out_of_domain_answer_is_recorded_as_an_error(
@@ -981,6 +1012,40 @@ class TestErrors:
         install_impl(_Fixed())
         assert asyncio.run(decide(POINT, "hi", [question], config=_config())) is None
         assert log_home()[0]["error"] == gate_mod.ERROR_INVALID_RESULT
+
+    @pytest.mark.parametrize(
+        "question,answer",
+        [
+            (Noul(id="q", prompt="?"), Answer(id="q", value=0.2, p=0.8)),
+            (Noul(id="q", prompt="?"), Answer(id="q", value=1, p=1.0)),
+            (Score(id="q", prompt="?", levels=["a", "b", "c"]), Answer(id="q", value=1.05, p=0.95)),
+            (Score(id="q", prompt="?", levels=["a", "b", "c"]), Answer(id="q", value=2, p=1.0)),
+        ],
+    )
+    def test_an_in_domain_noul_or_score_answer_is_returned(self, install_impl, question, answer):
+        class _Fixed:
+            async def ask(self, state, questions):
+                return {question.id: answer}
+
+        install_impl(_Fixed())
+        assert asyncio.run(decide(POINT, "hi", [question], config=_config())) == {"q": answer}
+
+    def test_a_choice_value_does_not_satisfy_a_noul_or_score(self):
+        """Each type is checked against its own domain; no type borrows another's."""
+        assert not gate_mod._answers_are_valid(
+            {"q": Answer(id="q", value="A", p=0.9)}, [Noul(id="q", prompt="?")]
+        )
+        assert not gate_mod._answers_are_valid(
+            {"q": Answer(id="q", value=0.5, p=0.9)}, [Choice(id="q", prompt="?", options=["A"])]
+        )
+
+    def test_a_question_of_no_known_type_is_out_of_domain_not_an_exception(self):
+        """``_answers_are_valid`` runs outside ``decide``'s ``try``, so it must not raise."""
+        stranger = SimpleNamespace(id="q", prompt="?")
+        assert (
+            gate_mod._answers_are_valid({"q": Answer(id="q", value="A", p=0.5)}, [stranger])
+            is False
+        )
 
     def test_cancellation_propagates_and_writes_no_row(self, install_impl, log_home):
         """A caller going away is not a provider failure."""

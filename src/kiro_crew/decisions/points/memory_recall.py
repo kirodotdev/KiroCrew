@@ -155,9 +155,9 @@ MAX_MESSAGE_CHARS = 2000
 #: fragment is what answers it. Applied AFTER redaction — see :func:`scrubbed`.
 MAX_SNIPPET_CHARS = 200
 
-#: The two answers one candidate may carry. A Choice rather than a score because
-#: ``Choice`` is the only question type ``impl_jev`` speaks; the probability the
-#: threshold is applied to is the one the provider reports for the chosen option.
+#: The two answers one candidate may carry, as one two-option ``Choice``; the
+#: probability the threshold is applied to is the one the provider reports for
+#: the chosen option.
 KEEP_OPTION = "keep"
 DROP_OPTION = "drop"
 KEEP_OPTIONS = [KEEP_OPTION, DROP_OPTION]

@@ -34,14 +34,8 @@ the main session (:data:`OUTCOME_MIN_P`) and never guesses quiet.
 Three CHOICE questions, not noul and score
 ------------------------------------------
 The design this implements asked for a ``noul`` (nullable boolean) and a
-``score``. This build's seam speaks ``choice`` and nothing else, in three places:
-``types.Question`` is an alias of ``Choice``, ``impl_jev._to_wire`` raises on any
-other question class, and ``gate._answers_are_valid`` requires the answer value
-to be a string drawn from the question's own options. Adding two wire types would
-widen a trust boundary six merged points already share, against a response shape
-no test here can speak for.
-
-The decomposition is lossless for the mapping below. ``needs_owner`` over
+``score``. The point asks three ``Choice`` questions instead, and the
+decomposition is lossless for the mapping below. ``needs_owner`` over
 ``{wake, quiet}`` is exactly the ``noul``, with the probability of ``wake``
 playing the nullable boolean's role: with two options the chosen one is the
 argmax, so a ``wake`` answer already carries ``p >= 0.5``, and the bar is applied

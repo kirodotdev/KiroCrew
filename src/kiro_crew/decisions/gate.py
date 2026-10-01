@@ -54,7 +54,18 @@ from kiro_crew.config.sections import (
 )
 from kiro_crew.decisions import consent as _consent
 from kiro_crew.decisions import log as _log
-from kiro_crew.decisions.types import Answer, Answers, Question, is_model_id
+from kiro_crew.decisions.types import (
+    SCORE_MAX_LEVELS,
+    SCORE_MIN_LEVELS,
+    Answer,
+    Answers,
+    Choice,
+    Noul,
+    Question,
+    Score,
+    is_model_id,
+    question_texts,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -215,9 +226,31 @@ def _answers_are_valid(answers: Answers, questions: list[Question]) -> bool:
             return False
         if not _probability(answer.p):
             return False
-        if not isinstance(answer.value, str) or answer.value not in question.options:
+        if not _value_in_domain(answer.value, question):
             return False
     return True
+
+
+def _value_in_domain(value: object, question: object) -> bool:
+    """Whether *value* lies in *question*'s own domain, by question type.
+
+    One branch per type, so a type with no ``options`` never reaches the
+    ``Choice`` check, and a question of any other class is out of domain rather
+    than an exception: this runs outside ``decide``'s ``try``, so a raise here
+    would reach the caller instead of becoming the ``None`` a refusal is.
+    """
+    if isinstance(question, Choice):
+        return isinstance(value, str) and value in question.options
+    if isinstance(question, Noul):
+        return _probability(value)
+    if isinstance(question, Score):
+        levels = len(question.levels)
+        if not SCORE_MIN_LEVELS <= levels <= SCORE_MAX_LEVELS:
+            return False
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return False
+        return math.isfinite(value) and 0.0 <= value <= levels - 1
+    return False
 
 
 def _snapshot() -> Any:
@@ -755,8 +788,7 @@ def _scan_text(state: dict | str, questions: list[Question], model: str = "") ->
             rendered = repr(state)
     parts = [rendered, model]
     for question in questions:
-        parts.append(str(getattr(question, "prompt", "") or ""))
-        parts.extend(str(option) for option in getattr(question, "options", ()) or ())
+        parts.extend(question_texts(question))
     return "\n".join(parts)
 
 

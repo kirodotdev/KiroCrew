@@ -28,7 +28,7 @@ import pytest
 
 from kiro_crew.config.sections import DecisionsConfig, NudgeWakeConfig
 from kiro_crew.decisions import gate, impl_llm
-from kiro_crew.decisions.types import Choice
+from kiro_crew.decisions.types import Choice, Noul, Score
 
 #: The judge's own questions. Every one is a ``Choice``, which is the only type the
 #: shipped wire speaks (``impl_jev._to_wire`` refuses anything else), so the RFC's
@@ -291,6 +291,75 @@ class TestNoModelTextEscapes:
             impl_llm.parse_answers(text.replace("ELEPHANT-CANARY-9931", self.SECRET), QUESTIONS)
         assert self.SECRET not in str(caught.value)
         assert self.SECRET not in repr(caught.value)
+
+
+YES_NO = Noul(id="off_path", prompt="Is this page off the path?", true_means="it is off the path")
+QUALITY = Score(
+    id="quality", prompt="How complete is the answer?", levels=["none", "partial", "full"]
+)
+TYPED = [YES_NO, QUALITY]
+
+
+def _typed(noul: object = 0.3, score: object = None) -> str:
+    import json
+
+    if score is None:
+        score = {"probabilities": {"0": 0.1, "1": 0.3, "2": 0.6}}
+    return json.dumps({"off_path": noul, "quality": score})
+
+
+class TestNoulAndScoreParse:
+    """The two non-Choice types: one wire shape each, and nothing else."""
+
+    def test_noul_is_a_bare_probability_of_yes(self) -> None:
+        answers = impl_llm.parse_answers(_typed(noul=0.3), TYPED)
+        assert answers["off_path"].value == pytest.approx(0.3)
+        assert answers["off_path"].p == pytest.approx(0.7)
+
+    def test_score_value_is_the_weighted_level_and_p_the_likeliest(self) -> None:
+        answers = impl_llm.parse_answers(_typed(), TYPED)
+        assert answers["quality"].value == pytest.approx(0.0 * 0.1 + 1 * 0.3 + 2 * 0.6)
+        assert answers["quality"].p == pytest.approx(0.6)
+
+    def test_what_the_parser_accepts_the_gate_accepts(self) -> None:
+        answers = impl_llm.parse_answers(_typed(), TYPED)
+        assert gate._answers_are_valid(answers, TYPED) is True
+
+    @pytest.mark.parametrize(
+        "noul",
+        [{"noul": 0.3}, 1.2, -0.1, True, "0.3", None],
+        ids=["object", "above-1", "below-0", "bool", "string", "null"],
+    )
+    def test_a_noul_that_is_not_a_bare_probability_is_refused(self, noul: object) -> None:
+        with pytest.raises(impl_llm.LlmProtocolError):
+            impl_llm.parse_answers(_typed(noul=noul), TYPED)
+
+    @pytest.mark.parametrize(
+        "score",
+        [
+            1.2,
+            {"probabilities": {"0": 0.4, "2": 0.6}},
+            {"probabilities": {"0": 0.2, "1": 0.2, "2": 0.2}},
+            {"probabilities": {"0": 0.1, "1": 0.3, "2": 0.6, "3": 0.0}},
+            {"probabilities": {"0": 0.1, "1": 0.3, "2": 0.6}, "score": 1.5},
+            {"probabilities": {"0": True, "1": 0.0, "2": 0.0}},
+        ],
+        ids=["bare-number", "partial", "not-normalised", "extra-level", "extra-key", "bool"],
+    )
+    def test_a_score_that_is_not_one_complete_distribution_is_refused(self, score: object) -> None:
+        with pytest.raises(impl_llm.LlmProtocolError):
+            impl_llm.parse_answers(_typed(score=score), TYPED)
+
+    def test_the_prompt_describes_each_type_and_its_rubric(self) -> None:
+        prompt = impl_llm.render_prompt("evidence", TYPED + [WAKE])
+        assert "type: yes/no" in prompt and "yes means: it is off the path" in prompt
+        assert "type: score" in prompt and "0: none, 1: partial, 2: full" in prompt
+        assert "type: two-option" in prompt
+
+    def test_a_choice_only_prompt_does_not_mention_the_other_types(self) -> None:
+        """A point that asks only Choice questions is told nothing about the others."""
+        prompt = impl_llm.render_prompt("evidence", QUESTIONS)
+        assert "yes/no" not in prompt and "score question" not in prompt
 
 
 class TestPromptRendering:

@@ -42,14 +42,16 @@ from kiro_crew.decisions.gate import (
     judge_evidence_scope_granted,
     timeout_secs,
 )
-from kiro_crew.decisions.types import Answer, Answers, Choice, Question
+from kiro_crew.decisions.types import Answer, Answers, Choice, Noul, Question, Score
 
 __all__ = [
     "DECISION_POINT_NAMES",
     "Answer",
     "Answers",
     "Choice",
+    "Noul",
     "Question",
+    "Score",
     "decide",
     "history_budget_chars",
     "is_enabled",
