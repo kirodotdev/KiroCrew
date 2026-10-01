@@ -38,6 +38,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 _REAL_OPEN = builtins.open
+_REAL_TRUSTED_SYSTEM_BIN_QUIET = sb.platform_compat.trusted_system_bin_quiet
 
 
 class _FakeUserManager:
@@ -116,6 +117,7 @@ def fake_manager(tmp_path, monkeypatch):
     monkeypatch.setattr(sb, "open", _open, raising=False)
     monkeypatch.setattr(sb.shutil, "which", _which)
     monkeypatch.setattr(sb.platform_compat, "trusted_system_bin", _trusted)
+    monkeypatch.setattr(sb.platform_compat, "trusted_system_bin_quiet", _trusted)
     # The slice-level reconcile shells out to systemctl; it is not under test.
     monkeypatch.setattr(sb, "_reconcile_slice_memory_high_off_thread", lambda: None)
     monkeypatch.setattr(sb, "_cgroup_limits_from_config", lambda: (8192, 8192, 50, 0))
@@ -307,6 +309,40 @@ def test_a_probe_refresh_never_walks_path(fake_manager, monkeypatch):
     assert sb._probe_cgroup_scope() == (True, "ok")
     clock[0] += sb._CGROUP_SCOPE_PROBE_TTL_SECONDS + 1
     assert sb._probe_cgroup_scope() == (True, "ok")
+
+
+def test_a_probe_miss_never_walks_path(fake_manager, monkeypatch, tmp_path):
+    """No trusted ``systemd-run``: the miss must not fall through to a PATH walk.
+
+    ``trusted_system_bin``'s miss diagnostic calls ``shutil.which``; on the
+    event loop that can hang on a stalled mount just like a direct PATH lookup.
+    """
+    empty_bin = tmp_path / "no-bin"
+    empty_bin.mkdir()
+
+    def _no_path_walk(*_args, **_kwargs):
+        raise AssertionError("the probe walked PATH")
+
+    monkeypatch.setattr(
+        sb.platform_compat, "trusted_system_bin_quiet", _REAL_TRUSTED_SYSTEM_BIN_QUIET
+    )
+    monkeypatch.setattr(sb.platform_compat, "_TRUSTED_SYSTEM_BIN_DIRS", (str(empty_bin),))
+    monkeypatch.setattr(sb.platform_compat, "_UNPINNED_TOOL_PROBED", set())
+    monkeypatch.setattr(sb.platform_compat.shutil, "which", _no_path_walk)
+
+    available, reason = sb._probe_cgroup_scope()
+
+    assert available is False
+    assert "trusted system directory" in reason
+
+
+@pytest.mark.parametrize("address", ["unix:path=%00", "unix:path=/run/x%00y", "unix:path="])
+def test_a_bus_address_naming_no_socket_never_breaks_a_spawn(fake_manager, monkeypatch, address):
+    """A decoded NUL cannot name a socket; it is skipped, not passed to ``os.stat``."""
+    monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", address)
+
+    assert sb._probe_cgroup_scope() == (True, "ok")  # the XDG_RUNTIME_DIR bus is live
+    assert _is_scope_wrapped(sb.cgroup_scope_argv(["true"]))
 
 
 def test_unchanged_session_reuses_the_cached_probe(fake_manager, monkeypatch):
