@@ -104,6 +104,11 @@ INTERNAL_STUB_PREFIXES: tuple[str, ...] = ("__app_call__", TOOL_SURFACE_STUB_PRE
 #   {"ts": epoch_ms_int, "method": "tools/call", "dur_ms": 2.34,
 #    "pool": "example-mcp::kirocrew::...", "pid": 12345, "ok": true}
 #
+# ``ok`` is false for either failure shape: a JSON-RPC ``error`` response, or
+# a tools/call ``result`` carrying ``isError: true`` (the tool ran and
+# reported its own failure). A failed tool call also emits one WARNING line to
+# the gateway log naming the server, tool, session and a truncated error.
+#
 # Ring-buffer-free — we trust log rotation on the consumer side.
 _METRICS_PATH = os.environ.get("MCP_GATEWAY_CALL_METRICS_PATH")
 
@@ -428,6 +433,120 @@ def _is_success_response(msg: dict[str, Any]) -> bool:
     server never actually delivered, so lease transitions treat it as a
     refusal (fail closed)."""
     return "error" not in msg and "result" in msg
+
+
+# Maximum length of the error string carried in the per-call failure WARNING.
+# The point is a greppable breadcrumb an operator can anchor on, not the whole
+# payload; a multi-KB tool error would otherwise push the useful fields
+# (server, tool, session) off the end of a wrapped log line.
+_TOOL_ERROR_LOG_MAX = 300
+
+# Upper bound on the untrusted error prefix handed to ``redact`` before the
+# final ``_TOOL_ERROR_LOG_MAX`` truncation. Far larger than the logged cap (so
+# redaction still sees enough context to match a secret spanning a few hundred
+# bytes) but small enough that the credential/exfiltration scan on the shared
+# stdout pump is bounded regardless of the frame size.
+_TOOL_ERROR_PRESCAN_MAX = 8192
+
+
+def _tool_call_error_text(msg: dict[str, Any]) -> Optional[str]:
+    """Return a truncated error string when ``msg`` is a FAILED tool-call
+    response, else ``None``.
+
+    Two distinct wire shapes mean "this tool call failed":
+
+    * a JSON-RPC ``error`` object — the server could not run the tool at all;
+    * a ``result`` carrying ``isError: true`` — the tool ran and reported a
+      failure in its own content (the MCP ``CallToolResult`` error channel).
+
+    Both reach the model as a failed call. A plain ``"error" not in msg``
+    check misses the second shape (``isError`` lives inside ``result``), so
+    this recognises both and extracts a short, greppable description for the
+    breadcrumb.
+
+    Returns ``None`` for a settled success and for a malformed frame carrying
+    neither ``error`` nor ``result`` (nothing to attribute as a failure).
+    """
+    err = msg.get("error")
+    if isinstance(err, dict):
+        text = err.get("message")
+        if not isinstance(text, str) or not text:
+            text = json.dumps(err, separators=(",", ":"))
+    elif isinstance(err, str) and err:
+        text = err
+    else:
+        result = msg.get("result")
+        if not isinstance(result, dict) or result.get("isError") is not True:
+            return None
+        text = _mcp_result_error_text(result)
+    # ``text`` is untrusted server output. Slice it to a bounded prefix FIRST
+    # (well above ``_TOOL_ERROR_LOG_MAX``) so the credential/exfiltration
+    # ``redact`` pass — the same one the backend stderr pump applies — runs on
+    # a few KiB rather than a frame bounded only by ``READ_BUFFER_LIMIT_BYTES``;
+    # this routing happens on the shared stdout pump, so an O(payload) scan here
+    # would add head-of-line latency to every co-pooled session's frames.
+    # ``_collapse_nonprintable`` then maps every control character (newlines,
+    # escapes, NUL included) to a space so the value cannot forge a second log
+    # line or clear the operator's terminal, and the record stays one line.
+    if len(text) > _TOOL_ERROR_PRESCAN_MAX:
+        text = text[:_TOOL_ERROR_PRESCAN_MAX]
+    text = _collapse_nonprintable(redact(text))
+    if len(text) > _TOOL_ERROR_LOG_MAX:
+        text = text[: _TOOL_ERROR_LOG_MAX - 1] + "\u2026"
+    return text
+
+
+def _mcp_result_error_text(result: dict[str, Any]) -> str:
+    """Best-effort human string from an ``isError: true`` CallToolResult.
+
+    An MCP tool error is reported in the result's ``content`` list (text parts
+    carry the message); fall back to a compact JSON dump when no text part is
+    present so there is always something to log."""
+    content = result.get("content")
+    if isinstance(content, list):
+        parts = [
+            part["text"]
+            for part in content
+            if isinstance(part, dict) and isinstance(part.get("text"), str)
+        ]
+        if parts:
+            return " ".join(parts)
+    return json.dumps(result, separators=(",", ":"))
+
+
+# A caller/server-supplied identifier (tool name, session key, server name)
+# interpolated into the failed-tool-call WARNING. Cap it so a long name cannot
+# push the structured fields off a wrapped log line.
+_MCP_IDENT_LOG_MAX = 120
+
+
+def _collapse_nonprintable(value: str) -> str:
+    """Replace every non-printable character (and whitespace run) with a single
+    space.
+
+    ``str.split()`` only recognises Python's whitespace set, so an escape
+    (``\\x1b``), NUL, BEL or DEL would otherwise survive into the log line and
+    could clear the terminal or overwrite preceding records. Map every
+    character ``str.isprintable()`` rejects to a space, then collapse runs.
+    """
+    return " ".join("".join(ch if ch.isprintable() else " " for ch in value).split())
+
+
+def _log_safe_identifier(value: str, fallback: str = "?") -> str:
+    """Make a caller/server-supplied identifier safe to interpolate into a log
+    line.
+
+    A tool name or session key is caller input (``params.name`` on a
+    tools/call) and a server name is operator/registry input; any of them could
+    carry a newline (forging a second gateway/dashboard log entry), a terminal
+    escape, or a credential/exfiltration URL. Run the module's ``redact`` pass,
+    map every non-printable character to a space, cap the length, and fall back
+    to ``fallback`` when nothing printable remains.
+    """
+    cleaned = _collapse_nonprintable(redact(value))
+    if len(cleaned) > _MCP_IDENT_LOG_MAX:
+        cleaned = cleaned[: _MCP_IDENT_LOG_MAX - 1] + "\u2026"
+    return cleaned or fallback
 
 
 # Deadline for the out-of-band ``resources/read`` round-trip. On timeout the
@@ -2045,15 +2164,35 @@ class Backend:
                 # I/O offloaded to a thread) yields the shared stdout pump,
                 # adding head-of-line latency to co-pooled sessions whenever
                 # the metrics volume is slow. Schedule it off the hot path.
+                #
+                # ``error_text`` is non-None for BOTH failure shapes (a
+                # JSON-RPC ``error`` and a ``result`` with ``isError: true``),
+                # so a tool that ran and reported its own failure is scored
+                # ``ok: false`` here rather than counted as a success.
+                error_text = _tool_call_error_text(msg)
                 self._spawn_metric_task({
                     "ts": int(time.time() * 1000),
                     "method": pending.method,
                     "dur_ms": round(time.monotonic() * 1000.0 - pending.t_start_ms, 3),
                     "pool": self.pool_key.human_readable(),
                     "pid": self.pid,
-                    "ok": "error" not in msg,
+                    "ok": error_text is None,
                     "stub": pending.stub_uuid,
                 })
+                if error_text is not None and pending.method == "tools/call":
+                    # One greppable breadcrumb per failed tool call (isError or
+                    # a JSON-RPC error), so an operator searching gateway.log
+                    # for an MCP outage finds the failing call rather than only
+                    # the session's lifecycle lines. WARNING matches the
+                    # severity of the per-session claim-push outcomes logged on
+                    # this seam.
+                    logger.warning(
+                        "mcp tool call failed: server=%s tool=%s session=%s error=%s",
+                        _log_safe_identifier(self.pool_key.server_name),
+                        _log_safe_identifier(pending.tool_name),
+                        _log_safe_identifier(pending.session_key),
+                        error_text,
+                    )
             if pending.stub_uuid == "__init__":
                 await self._on_upstream_initialize(msg)
                 return

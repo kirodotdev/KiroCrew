@@ -1164,7 +1164,9 @@ class TestRendererRollsOffASealedBubble:
         r = _renderer(c)
         # A transform that lengthens the slice, as `cards` or `grid` would.
         monkeypatch.setattr(
-            WeComRenderer, "_render_slice", lambda self, body, *, final: body + "<<PADDING>>"
+            WeComRenderer,
+            "_render_slice",
+            lambda self, body, *, final, seams=None: body + "<<PADDING>>",
         )
         await r.on_turn_start()
         await r.on_text_chunk("ABCDE")

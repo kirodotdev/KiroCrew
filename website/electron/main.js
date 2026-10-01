@@ -15,6 +15,7 @@ const os = require("os");
 const path = require("path");
 
 const { findConfiguredDashboardPort } = require("./data-home");
+const { defaultedPort } = require("./gateway-auth-hint");
 const {
   classifyBundleLocation,
   containingDirForBundle,
@@ -42,6 +43,7 @@ const { exitImmersiveModes } = require("./blocking-prompt");
 const { createMetricsRecorder } = require("./perf-metrics");
 const { initMochi, shutdownMochi } = require("./mochi/index");
 const { borrowSessionToken } = require("./mochi-session-token");
+const { clearCacheOnUpgrade } = require("./upgrade-cache");
 const {
   initCrewCompanion,
   shutdownCrewCompanion,
@@ -407,6 +409,7 @@ windows = createWindowLifecycle({
   isQuitting: () => isQuitting,
   requestQuit,
   connectWindow: (...args) => gateway.connect(...args),
+  syncTunnel: () => gateway.syncTunnel(),
 });
 
 const ipcRegistrar = createIpcRegistrar({
@@ -502,7 +505,7 @@ async function fetchMochiGatewayAuth(backendUrl = BACKEND_URL) {
   // nothing unless this gateway holds every family that host resolves to.
   const localValue = await gateway.mintLocalToken(backendUrl);
   if (localValue) return { value: localValue, viaCookie: false };
-  const { token: remoteValue } = await gateway.fetchRemoteToken(new URL(backendUrl).port);
+  const { token: remoteValue } = await gateway.fetchRemoteToken(defaultedPort(backendUrl));
   if (remoteValue) {
     return { value: remoteValue, viaCookie: false };
   }
@@ -534,6 +537,17 @@ app.whenReady().then(async () => {
   // The crash reporter and the keep-alive safety net above are armed; from
   // here on an exception is recovered, not fatal.
   releaseEarlyBootGuard();
+
+  // A managed SSH forward does not survive sleep; reopen it on wake. A no-op
+  // unless this launch is keeping one.
+  try {
+    electron.powerMonitor.on("resume", () => {
+      glog("power: resumed from sleep");
+      gateway.reopenTunnel();
+    });
+  } catch (error) {
+    glog("power: could not watch for resume: " + (error && error.message));
+  }
 
   const frameDecision = windows.platform.linuxFrameDecision;
   if (frameDecision) {
@@ -576,6 +590,18 @@ app.whenReady().then(async () => {
 
   await gateway.start();
   await gateway.connect(mainWindow);
+  // The gateway now answers and the dashboard is loading. After an upgrade, drop
+  // the old build's cached copies and connect again: a fresh navigation replaces
+  // the pending one, where a reload would replay the uncommitted splash.
+  const cleared = await clearCacheOnUpgrade({
+    session: session.defaultSession,
+    store,
+    appVersion: app.getVersion(),
+    probe: () => fetch(BACKEND_URL + "/api/health", { signal: AbortSignal.timeout(2000) })
+      .then((response) => (response.ok ? response.json() : null)).catch(() => null),
+    log: glog,
+  });
+  if (cleared && !mainWindow.isDestroyed()) await gateway.connect(mainWindow);
 
   // Optional companion surfaces start only after the primary gateway handoff.
   // Both are best-effort and must never block an otherwise usable dashboard.

@@ -7,6 +7,7 @@ import gc
 import hashlib
 import itertools
 import json
+import logging
 import os
 import shutil
 import stat
@@ -512,7 +513,8 @@ def _metadata_file(agents, prepared, name="custom"):
 
 
 def _spec_with_injected_env(value, extra=None):
-    env = {"INJECTION_ID": value, **(extra or {})}
+    # The launcher's per-launch nonce key, which volatile_env_keys() names.
+    env = {"AIM_CREDS_AGENT_INJECTION": value, **(extra or {})}
     return json.dumps(
         {"name": "custom", "mcpServers": {"injected": {"command": "helper", "env": env}}}
     )
@@ -527,7 +529,7 @@ def test_a_rewritten_env_value_reuses_the_alias(native_tree):
     prepared = projection.prepare_native_skill_projection(project)
     assert prepared.agent("custom") == first
     view = json.loads(_alias_file(agents, prepared).read_text(encoding="utf-8"))
-    assert view["mcpServers"]["injected"]["env"]["INJECTION_ID"] == "second-write"
+    assert view["mcpServers"]["injected"]["env"]["AIM_CREDS_AGENT_INJECTION"] == "second-write"
     aliases = [
         p for p in agents.iterdir() if p.name.startswith(projection.NATIVE_SKILL_ALIAS_PREFIX)
     ]
@@ -563,7 +565,7 @@ def test_project_agents_differing_only_in_env_values_never_share_an_alias(
         views[name] = (prepared.agent("custom"), _alias_file(agents, prepared))
     assert views["one"][0] != views["two"][0]
     first = json.loads(views["one"][1].read_text(encoding="utf-8"))
-    assert first["mcpServers"]["injected"]["env"]["INJECTION_ID"] == "token-one"
+    assert first["mcpServers"]["injected"]["env"]["AIM_CREDS_AGENT_INJECTION"] == "token-one"
 
 
 def test_generated_view_keeps_lifecycle_ownership_out_of_the_agent_spec(native_tree):
@@ -3474,3 +3476,836 @@ def test_reader_follows_a_live_global_preference_under_the_overlay(native_tree):
     assert projection.inherits_default_resources(project) is False
     settings.write_text('{"chat.disableInheritingDefaultResources":false}', encoding="utf-8")
     assert projection.inherits_default_resources(project) is True
+
+
+class TestSettingsReadRetry:
+    """A transiently refused ``cli.json`` read must not fail a new chat.
+
+    The gated read of a healthy settings file answers ``None`` when a writer
+    renames a new file over the one that was opened, or when the sensitive-path
+    resolver misses its budget under load. ``_settings`` retries through
+    a bounded retry; a read that stays refused still
+    raises.
+    """
+
+    @staticmethod
+    def _flaky_reader(monkeypatch, refusals):
+        real = projection.safe_read_file_bytes
+        calls = []
+
+        def flaky(raw):
+            calls.append(raw)
+            return None if len(calls) <= refusals else real(raw)
+
+        monkeypatch.setattr(projection, "safe_read_file_bytes", flaky)
+        return calls
+
+    def test_one_refusal_then_bytes_prepares_the_projection(self, native_tree, monkeypatch):
+        home, agents, project = native_tree
+        (agents / "custom.json").write_text('{"name":"custom"}', encoding="utf-8")
+        global_settings = home / "settings" / "cli.json"
+        global_settings.parent.mkdir(parents=True)
+        global_settings.write_text("{}", encoding="utf-8")
+        monkeypatch.setattr(
+            projection,
+            "_settings_read_sleep",
+            lambda secs: pytest.fail(f"paused {secs}s for a re-check"),
+        )
+        calls = self._flaky_reader(monkeypatch, refusals=1)
+
+        prepared = projection.prepare_native_skill_projection(project)
+
+        assert prepared is not None and prepared.agent("custom")
+        assert calls[0] == calls[1] == str(global_settings)
+
+    def test_rollback_with_one_refusal_still_restores(self, native_tree, monkeypatch):
+        # KIROCREW_NATIVE_SKILL_PROJECTION=0 still reads the workspace cli.json
+        # during rollback, so the retry must cover that path too.
+        _home, agents, project = native_tree
+        (agents / "custom.json").write_text('{"name":"custom"}', encoding="utf-8")
+        settings = project / ".kiro/settings/cli.json"
+        settings.parent.mkdir(parents=True)
+        settings.write_text("{}", encoding="utf-8")
+        projection.prepare_native_skill_projection(project)
+        monkeypatch.setattr(projection, "_settings_read_sleep", lambda secs: None)
+        monkeypatch.setenv("KIROCREW_NATIVE_SKILL_PROJECTION", "0")
+        self._flaky_reader(monkeypatch, refusals=1)
+
+        assert projection.prepare_native_skill_projection(project) is None
+        assert json.loads(settings.read_text(encoding="utf-8")) == {}
+
+    def test_a_refusal_that_clears_after_the_pause_is_read(self, tmp_path, monkeypatch):
+        path = tmp_path / "cli.json"
+        path.write_text('{"a": 1}', encoding="utf-8")
+        slept = []
+        monkeypatch.setattr(projection, "_settings_read_sleep", slept.append)
+        calls = self._flaky_reader(monkeypatch, refusals=2)
+
+        assert projection._settings(path) == {"a": 1}
+        assert len(calls) == 3
+        assert slept == [2.0]
+
+    def test_a_read_that_stays_refused_still_raises(self, native_tree, monkeypatch):
+        home, agents, project = native_tree
+        (agents / "custom.json").write_text('{"name":"custom"}', encoding="utf-8")
+        global_settings = home / "settings" / "cli.json"
+        global_settings.parent.mkdir(parents=True)
+        global_settings.write_text("{}", encoding="utf-8")
+        slept = []
+        monkeypatch.setattr(projection, "_settings_read_sleep", slept.append)
+        calls = self._flaky_reader(monkeypatch, refusals=10**6)
+
+        with pytest.raises(ValueError, match="Cannot read Kiro settings"):
+            projection.prepare_native_skill_projection(project)
+        # First attempt, immediate re-check, one pause, final attempt.
+        assert len(calls) == 3
+        assert slept == [2.0]
+
+    def test_a_missing_file_reads_empty_without_retry(self, tmp_path, monkeypatch):
+        calls = self._flaky_reader(monkeypatch, refusals=10**6)
+        assert projection._settings(tmp_path / "absent.json") == {}
+        assert calls == []
+
+    def test_an_empty_file_is_not_mistaken_for_absence(self, tmp_path):
+        path = tmp_path / "cli.json"
+        path.write_bytes(b"")
+        with pytest.raises(ValueError):
+            projection._settings(path)
+
+    @pytest.mark.asyncio
+    async def test_on_the_event_loop_one_attempt_runs_and_never_pauses(self, tmp_path, monkeypatch):
+        path = tmp_path / "cli.json"
+        path.write_text("{}", encoding="utf-8")
+        monkeypatch.setattr(
+            projection,
+            "_settings_read_sleep",
+            lambda secs: pytest.fail(f"paused {secs}s on the loop"),
+        )
+        calls = self._flaky_reader(monkeypatch, refusals=1)
+
+        with pytest.raises(ValueError, match="Cannot read Kiro settings"):
+            projection._settings(path)
+        assert len(calls) == 1
+
+
+class TestLockedSettingsReadNeverPauses:
+    """A read under the projection's cross-process locks never sleeps.
+
+    Contenders for the alias and ``cli.json`` locks give up after 2 s, so a 2 s
+    pause while holding them would drop a concurrent spawn's projection.
+    """
+
+    def test_locked_read_rechecks_once_and_never_pauses(self, native_tree, monkeypatch):
+        _home, agents, project = native_tree
+        (agents / "custom.json").write_text('{"name":"custom"}', encoding="utf-8")
+        settings = project / ".kiro/settings/cli.json"
+        settings.parent.mkdir(parents=True)
+        settings.write_text("{}", encoding="utf-8")
+        real = projection.safe_read_file_bytes
+        refused = []
+
+        def refuse_local_once(raw):
+            if raw == str(settings) and not refused:
+                refused.append(raw)
+                return None
+            return real(raw)
+
+        monkeypatch.setattr(projection, "safe_read_file_bytes", refuse_local_once)
+        monkeypatch.setattr(
+            projection,
+            "_settings_read_sleep",
+            lambda secs: pytest.fail(f"paused {secs}s while holding the projection locks"),
+        )
+
+        prepared = projection.prepare_native_skill_projection(project)
+
+        assert refused == [str(settings)]
+        assert prepared is not None and prepared.agent("custom")
+
+    def test_locked_read_that_stays_refused_raises_without_pausing(self, tmp_path, monkeypatch):
+        path = tmp_path / "cli.json"
+        path.write_text("{}", encoding="utf-8")
+        calls = []
+
+        def refused(raw):
+            calls.append(raw)
+            return None
+
+        monkeypatch.setattr(projection, "safe_read_file_bytes", refused)
+        monkeypatch.setattr(
+            projection, "_settings_read_sleep", lambda secs: pytest.fail(f"paused {secs}s")
+        )
+        with pytest.raises(ValueError, match="Cannot read Kiro settings"):
+            projection._settings(path, may_pause=False)
+        assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("refreshed_alias", ["same", "changed", None])
+async def test_set_mode_sends_the_fresh_alias_never_a_changed_spawn_one(
+    monkeypatch, tmp_path, refreshed_alias
+):
+    """``set_mode`` names the alias just prepared, never an older one.
+
+    The alias kiro-cli loaded at spawn may hold a generation of the spec an edit
+    has since revoked grants from, so a changed view sends the FRESH alias (the
+    reload, retry and refusal for a host that has not loaded it are pinned in
+    test_acp_set_mode_projection_fallback.py). A re-preparation that could not run
+    (``None``) fails the start and sends nothing. Either way the adopted projection
+    still recognises the spawn alias inbound.
+    """
+    import types
+
+    SPAWN_ALIAS = projection.NATIVE_SKILL_ALIAS_PREFIX + "1" * 24
+    CHANGED_ALIAS = projection.NATIVE_SKILL_ALIAS_PREFIX + "2" * 24
+    OTHER_ALIAS = projection.NATIVE_SKILL_ALIAS_PREFIX + "3" * 24
+
+    import kiro_crew.agent as agent_module
+    from kiro_crew.acp import runtime as runtime_module
+
+    spawn = projection.NativeSkillProjection({"crew": SPAWN_ALIAS})
+    if refreshed_alias == "same":
+        fresh = projection.NativeSkillProjection({"crew": SPAWN_ALIAS, "other": OTHER_ALIAS})
+    elif refreshed_alias == "changed":
+        fresh = projection.NativeSkillProjection({"crew": CHANGED_ALIAS})
+    else:
+        fresh = None
+    monkeypatch.setattr(projection, "prepare_native_skill_projection", lambda *a, **k: fresh)
+    monkeypatch.setattr(agent_module, "require_fresh_derived_spec", lambda *a, **k: None)
+    monkeypatch.setattr(agent_module, "require_unchanged_derived_spec", lambda *a, **k: None)
+
+    sent: list[dict] = []
+    terminated: list[str] = []
+
+    class Stub:
+        _native_skill_projection = spawn
+        _spawn_skill_projection = spawn
+        _work_dir = tmp_path
+        # The bracket's own projection-ordering helpers, borrowed unchanged.
+        _skill_projection_lock = runtime_module.AcpRuntime._skill_projection_lock
+        _issue_skill_projection_generation = (
+            runtime_module.AcpRuntime._issue_skill_projection_generation
+        )
+        _adopted_skill_projection_generation = (
+            runtime_module.AcpRuntime._adopted_skill_projection_generation
+        )
+        _adopt_skill_projection = runtime_module.AcpRuntime._adopt_skill_projection
+        _superseding_alias = runtime_module.AcpRuntime._superseding_alias
+        _refuse_if_view_superseded = runtime_module.AcpRuntime._refuse_if_view_superseded
+        _refuse_if_view_unverified = runtime_module.AcpRuntime._refuse_if_view_unverified
+        _note_unadopted_skill_projection = (
+            runtime_module.AcpRuntime._note_unadopted_skill_projection
+        )
+        _unadopted_skill_projection_generation = (
+            runtime_module.AcpRuntime._unadopted_skill_projection_generation
+        )
+
+        async def terminate_session(self, sid):
+            terminated.append(sid)
+
+        async def _send_and_await(self, method, params, timeout=None, *, translate=True):
+            sent.append(
+                self._native_skill_projection.request(method, params) if translate else params
+            )
+            return {}
+
+    stub = Stub()
+    activate = types.MethodType(runtime_module.AcpRuntime._activate_mode_bracketed, stub)
+    if fresh is None:
+        with pytest.raises(runtime_module.AcpRuntimeError, match="could not be prepared"):
+            await activate("sid", "crew", budget=5.0, payload_snapshot=None, wire_registered=False)
+        assert sent == [] and terminated == ["sid"]
+        assert stub._native_skill_projection is spawn
+        return
+    await activate("sid", "crew", budget=5.0, payload_snapshot=None, wire_registered=False)
+
+    assert not terminated
+    assert sent[0]["modeId"] == fresh.aliases["crew"]
+    assert stub._native_skill_projection is fresh
+    listed = fresh.frame({"availableModes": [{"id": SPAWN_ALIAS}]})
+    assert listed["availableModes"] == [{"id": "crew"}]
+
+
+def test_announce_alias_rewrites_the_same_bytes_in_place(native_tree, monkeypatch):
+    """The rescan nudge is a data write to the published inode that leaves its
+    bytes unchanged, never a rename, and never touches a name this module does
+    not mint or bytes that moved under it."""
+    _home, agents, _project = native_tree
+    alias = projection.NATIVE_SKILL_ALIAS_PREFIX + "c" * 24
+    path = agents / f"{alias}.json"
+    path.write_bytes(b'{"name": "x"}')
+    inode = path.stat().st_ino
+    writes: list[int] = []
+    real_write = os.write
+    monkeypatch.setattr(
+        projection.os, "write", lambda fd, data: writes.append(len(data)) or real_write(fd, data)
+    )
+
+    projection.announce_alias(alias)
+    assert path.read_bytes() == b'{"name": "x"}' and path.stat().st_ino == inode
+    assert writes == [len(b'{"name": "x"}')]
+
+    writes.clear()
+    projection.announce_alias("not-an-alias")
+    projection.announce_alias(projection.NATIVE_SKILL_ALIAS_PREFIX + "d" * 24)  # absent
+    assert writes == []
+
+
+def test_announce_alias_never_raises_on_a_failing_close(native_tree, monkeypatch):
+    """A network filesystem can report a deferred write error at close; the
+    rescan nudge is best effort and must not fail the session start behind it."""
+    _home, agents, _project = native_tree
+    alias = projection.NATIVE_SKILL_ALIAS_PREFIX + "e" * 24
+    (agents / f"{alias}.json").write_bytes(b'{"name": "x"}')
+    real_close = os.close
+
+    def failing_close(fd):
+        real_close(fd)
+        raise OSError(5, "deferred write error")
+
+    monkeypatch.setattr(projection.os, "close", failing_close)
+    projection.announce_alias(alias)
+
+
+# ── a launcher that rewrites every spec on each launch ──
+
+
+def _launcher_spec(nonce, extra_env=None):
+    """An authored spec as a credential-broker launcher leaves it: a fresh nonce
+    stamped into one MCP server's ``env`` on every launch."""
+    env = {"BROKER_URL": "${BROKER_URL}", "AIM_CREDS_AGENT_INJECTION": nonce, **(extra_env or {})}
+    return {
+        "name": "custom",
+        "tools": ["@broker"],
+        "mcpServers": {"broker": {"command": "broker", "args": ["serve"], "env": env}},
+    }
+
+
+def _launcher_reserialize(path, nonce=None):
+    """Rewrite *path* the way that launcher does: a different serializer and,
+    optionally, its own fresh nonce, published by rename (a new inode)."""
+    spec = json.loads(path.read_text(encoding="utf-8"))
+    if nonce is not None:
+        spec["mcpServers"]["broker"]["env"]["AIM_CREDS_AGENT_INJECTION"] = nonce
+    staged = path.with_name(path.name + ".launcher")
+    staged.write_text(json.dumps(spec, indent=2).replace('": ', '" : '), encoding="utf-8")
+    os.replace(staged, path)
+
+
+def _aliases_on_disk(agents):
+    return sorted(p.name for p in agents.glob(f"{projection.NATIVE_SKILL_ALIAS_PREFIX}*.json"))
+
+
+def test_a_relaunched_env_nonce_keeps_one_alias_name_per_agent(native_tree):
+    """Two preparations whose source differs only by a re-stamped ``env`` value
+    must yield ONE alias -- a new name per spawn is a name kiro-cli has never
+    loaded and a file the directory keeps."""
+    _home, agents, project = native_tree
+    source = agents / "custom.json"
+    source.write_text(json.dumps(_launcher_spec(str(uuid.uuid4()))), encoding="utf-8")
+    first = projection.prepare_native_skill_projection(project)
+    nonce = str(uuid.uuid4())
+    source.write_text(json.dumps(_launcher_spec(nonce)), encoding="utf-8")
+    second = projection.prepare_native_skill_projection(project)
+
+    assert second.agent("custom") == first.agent("custom")
+    assert _aliases_on_disk(agents) == [f"{first.agent('custom')}.json"]
+    # The file still carries the value as authored now: only the NAME ignores it.
+    view = json.loads(_alias_file(agents, second).read_text(encoding="utf-8"))
+    assert view["mcpServers"]["broker"]["env"]["AIM_CREDS_AGENT_INJECTION"] == nonce
+
+
+def test_an_added_env_variable_is_still_a_different_view(native_tree):
+    """Only env VALUES leave the identity; which variables a server gets is part
+    of what the agent is."""
+    _home, agents, project = native_tree
+    source = agents / "custom.json"
+    source.write_text(json.dumps(_launcher_spec("n1")), encoding="utf-8")
+    first = projection.prepare_native_skill_projection(project).agent("custom")
+    source.write_text(json.dumps(_launcher_spec("n1", {"EXTRA": "1"})), encoding="utf-8")
+    second = projection.prepare_native_skill_projection(project).agent("custom")
+
+    assert first != second
+
+
+def test_a_reserialized_alias_is_current_and_is_not_rewritten(native_tree):
+    """The launcher re-serializes every alias too. That changes no part of
+    the spec, so the next preparation must keep the file (and its sidecar)
+    rather than rewrite every alias under the shared lock."""
+    _home, agents, project = native_tree
+    (agents / "custom.json").write_text(json.dumps(_launcher_spec("n1")), encoding="utf-8")
+    prepared = projection.prepare_native_skill_projection(project)
+    alias, meta = _alias_file(agents, prepared), _metadata_file(agents, prepared)
+    _launcher_reserialize(alias)
+    before = (alias.stat().st_ino, meta.stat().st_ino, alias.read_bytes())
+
+    again = projection.prepare_native_skill_projection(project)
+
+    assert again.agent("custom") == prepared.agent("custom")
+    assert (alias.stat().st_ino, meta.stat().st_ino, alias.read_bytes()) == before
+
+
+def test_a_changed_env_value_is_still_republished(native_tree):
+    """The currency check ignores serialization, never values: an operator who
+    changes an ``env`` value must see kiro-cli given the new one."""
+    _home, agents, project = native_tree
+    source = agents / "custom.json"
+    source.write_text(json.dumps(_launcher_spec("n1")), encoding="utf-8")
+    prepared = projection.prepare_native_skill_projection(project)
+    alias = _alias_file(agents, prepared)
+    _launcher_reserialize(alias)
+    source.write_text(json.dumps(_launcher_spec("n2")), encoding="utf-8")
+
+    projection.prepare_native_skill_projection(project)
+
+    env = json.loads(alias.read_text(encoding="utf-8"))["mcpServers"]["broker"]["env"]
+    assert env["AIM_CREDS_AGENT_INJECTION"] == "n2"
+
+
+def test_a_relaunched_alias_stays_owned_and_is_reclaimed_as_a_pair(native_tree, monkeypatch):
+    """The sidecar binds the alias's identity, not only its bytes: an alias the
+    launcher re-serialized AND re-stamped is still this home's, so the recorded
+    prune removes alias and sidecar together, with no legacy age wait."""
+    _home, agents, project = native_tree
+    source = agents / "custom.json"
+    source.write_text(json.dumps(_launcher_spec("n1", {"V": "1"})), encoding="utf-8")
+    old = projection.prepare_native_skill_projection(project)
+    alias, meta = _alias_file(agents, old), _metadata_file(agents, old)
+    _launcher_reserialize(alias, nonce=str(uuid.uuid4()))
+    assert projection._managed_metadata_for_alias(agents, alias, alias.read_bytes()) is not None
+    del old
+    gc.collect()
+    _hold_the_prune_clock(monkeypatch)
+    source.write_text(json.dumps(_launcher_spec("n1", {"V": "1", "W": "2"})), encoding="utf-8")
+
+    projection.prepare_native_skill_projection(project)
+
+    assert not alias.exists() and not meta.exists()
+
+
+def _publish_pre_view_digest(agents, name):
+    """The pair as a build before this change wrote it: the sidecar binds the
+    alias BYTES only, the shape the launcher incident left on disk."""
+    alias = agents / f"{name}.json"
+    raw = json.dumps(
+        {"name": name, "resources": [], "mcpServers": {"kirocrew-core": {"command": "x"}}}
+    )
+    alias.write_text(raw, encoding="utf-8")
+    md = agents / projection._PROJECTION_METADATA_DIR_NAME
+    md.mkdir(exist_ok=True)
+    sidecar = md / f"{name}.json"
+    sidecar.write_text(
+        json.dumps(
+            {
+                projection._MANAGED_MARKER: projection._MANAGED_MARKER_VALUE,
+                projection._MANAGED_CREW_HOME: _crew_home_id(),
+                projection._MANAGED_ALIAS_SHA256: hashlib.sha256(raw.encode()).hexdigest(),
+            }
+        ),
+        encoding="utf-8",
+    )
+    return alias, sidecar
+
+
+def _backdate(path, secs=3600.0):
+    old = time.time() - secs
+    os.utime(path, (old, old))
+
+
+def test_a_reserialized_byte_bound_pair_is_removed_together(native_tree):
+    """Re-serializing an alias whose sidecar binds only its bytes sends the prune
+    down the moved-bytes path, which removes the alias and the sidecar together
+    instead of stranding the sidecar."""
+    _home, agents, _project = native_tree
+    control_alias, control_sidecar = _publish_pre_view_digest(
+        agents, projection.NATIVE_SKILL_ALIAS_PREFIX + "a" * 24
+    )
+    _backdate(control_alias)
+    assert projection._reclaim_prune_candidate(agents, control_alias, _crew_home_id())
+    assert not control_alias.exists() and not control_sidecar.exists()
+
+    alias, sidecar = _publish_pre_view_digest(
+        agents, projection.NATIVE_SKILL_ALIAS_PREFIX + "b" * 24
+    )
+    alias.write_text(
+        json.dumps(json.loads(alias.read_text()), indent=2).replace('": ', '" : '),
+        encoding="utf-8",
+    )
+    _backdate(alias)
+
+    assert projection._reclaim_prune_candidate(agents, alias, _crew_home_id())
+    assert not alias.exists()
+    assert not sidecar.exists(), "the ownership sidecar was stranded"
+
+
+def test_a_reserialized_alias_whose_sidecar_names_another_home_is_kept(native_tree):
+    """The pair removal is ownership-checked: another data home's record is that
+    home's to retire, bytes moved or not."""
+    _home, agents, _project = native_tree
+    alias, sidecar = _publish_pre_view_digest(
+        agents, projection.NATIVE_SKILL_ALIAS_PREFIX + "c" * 24
+    )
+    record = json.loads(sidecar.read_text())
+    record[projection._MANAGED_CREW_HOME] = "/some/other/crew-home"
+    sidecar.write_text(json.dumps(record), encoding="utf-8")
+    alias.write_text(json.dumps(json.loads(alias.read_text()), indent=2), encoding="utf-8")
+    _backdate(alias)
+
+    assert not projection._reclaim_prune_candidate(agents, alias, _crew_home_id())
+    assert alias.exists() and sidecar.exists()
+
+
+def _orphan_sidecar(agents, digest, home=None):
+    stem = projection.NATIVE_SKILL_ALIAS_PREFIX + digest
+    md = agents / projection._PROJECTION_METADATA_DIR_NAME
+    md.mkdir(exist_ok=True)
+    path = md / f"{stem}.json"
+    path.write_text(
+        json.dumps(
+            {
+                projection._MANAGED_MARKER: projection._MANAGED_MARKER_VALUE,
+                projection._MANAGED_CREW_HOME: home or _crew_home_id(),
+                projection._MANAGED_ALIAS_SHA256: "0" * 64,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return stem, path
+
+
+def test_the_prune_sweeps_this_homes_sidecars_whose_alias_is_gone(native_tree, monkeypatch):
+    """A backlog of sidecars with no alias drains:
+    an orphan of THIS home goes; another home's orphan, a sidecar whose alias is
+    still there, and a file that is not a sidecar stay."""
+    _home, agents, project = native_tree
+    (agents / "custom.json").write_text('{"name":"custom"}', encoding="utf-8")
+    _hold_the_prune_clock(monkeypatch)
+    _stem, ours = _orphan_sidecar(agents, "1" * 24)
+    _stem, foreign = _orphan_sidecar(agents, "2" * 24, home="/some/other/crew-home")
+    kept_stem, kept = _orphan_sidecar(agents, "3" * 24)
+    (agents / f"{kept_stem}.json").write_text('{"name":"operator-owned"}', encoding="utf-8")
+    md = agents / projection._PROJECTION_METADATA_DIR_NAME
+    stray = md / "notes.json"
+    stray.write_text("{}", encoding="utf-8")
+
+    live = projection.prepare_native_skill_projection(project)
+
+    assert not ours.exists()
+    assert foreign.exists() and kept.exists() and stray.exists()
+    assert _metadata_file(agents, live).exists(), "the live pair lost its record"
+
+
+def test_the_boot_drain_retires_an_orphaned_sidecar_backlog_in_bounded_batches(
+    native_tree, monkeypatch
+):
+    """Sidecar-only batches count as progress, so the drain does not stop after
+    the first per-batch cap while orphans remain; the return value stays the
+    alias count it always was."""
+    _home, agents, _project = native_tree
+    monkeypatch.setattr(projection, "_SIDECAR_SWEEP_MAX_PER_RUN", 3)
+    monkeypatch.setattr(projection, "_DRAIN_BATCH_PAUSE_SECS", 0)
+    _hold_the_prune_clock(monkeypatch)
+    orphans = [_orphan_sidecar(agents, f"{n:024x}")[1] for n in range(10)]
+
+    assert projection.drain_stale_aliases() == 0
+
+    assert not any(p.exists() for p in orphans)
+
+
+def test_an_alias_publication_is_announced_by_a_same_bytes_in_place_write(native_tree, monkeypatch):
+    """kiro-cli reloads its agents directory on a data write and never on the
+    rename ``atomic_write`` publishes with, so the publication must end
+    in a write to the published inode that leaves its bytes unchanged."""
+    _home, agents, project = native_tree
+    (agents / "custom.json").write_text('{"name":"custom"}', encoding="utf-8")
+    seen = []
+    real_announce = projection._announce_publication
+
+    def observed(path, data):
+        backdated = path.stat().st_mtime_ns - 10**9
+        os.utime(path, ns=(backdated, backdated))
+        inode = path.stat().st_ino
+        real_announce(path, data)
+        after = path.stat()
+        seen.append(
+            (
+                path.name,
+                after.st_ino == inode,
+                path.read_bytes() == data,
+                after.st_mtime_ns > backdated,
+            )
+        )
+
+    monkeypatch.setattr(projection, "_announce_publication", observed)
+    prepared = projection.prepare_native_skill_projection(project)
+
+    assert seen == [(f"{prepared.agent('custom')}.json", True, True, True)]
+
+
+def test_the_announcement_never_writes_bytes_the_file_does_not_already_hold(tmp_path):
+    """Racing a foreign rewrite, the announcement must leave the file alone: it
+    only ever rewrites bytes identical to the ones already there."""
+    path = tmp_path / "alias.json"
+    path.write_bytes(b'{"name":"theirs"}')
+    old = time.time() - 3600
+    os.utime(path, (old, old))
+
+    projection._announce_publication(path, b'{"name":"mine!!"}')
+
+    assert path.read_bytes() == b'{"name":"theirs"}'
+    assert abs(path.stat().st_mtime - old) < 1
+
+
+def _alias_lock(agents, digest, *, age_secs=3600.0, content=b""):
+    path = agents / f"{projection.NATIVE_SKILL_ALIAS_PREFIX}{digest}.lock"
+    path.write_bytes(content)
+    if age_secs:
+        old = time.time() - age_secs
+        os.utime(path, (old, old))
+    return path
+
+
+def test_leftover_alias_lock_files_are_swept_only_when_provably_residue(native_tree, monkeypatch):
+    """An external rewriter leaves an empty ``<alias>.lock`` beside every spec it
+    locks (1,661 beside 23 aliases on one host). One whose alias is gone and that
+    is older than the legacy age is residue; a fresh one, one beside a live
+    alias, a non-empty one, and any other ``.lock`` stay."""
+    _home, agents, project = native_tree
+    (agents / "custom.json").write_text('{"name":"custom"}', encoding="utf-8")
+    _hold_the_prune_clock(monkeypatch)
+    residue = _alias_lock(agents, "4" * 24)
+    fresh = _alias_lock(agents, "5" * 24, age_secs=0)
+    non_empty = _alias_lock(agents, "6" * 24, content=b"pid 1")
+    beside_alias = _alias_lock(agents, "7" * 24)
+    (agents / f"{projection.NATIVE_SKILL_ALIAS_PREFIX}{'7' * 24}.json").write_text(
+        '{"name":"x"}', encoding="utf-8"
+    )
+    authored_lock = agents / "custom.lock"
+    authored_lock.write_bytes(b"")
+    old = time.time() - 3600
+    os.utime(authored_lock, (old, old))
+
+    projection.prepare_native_skill_projection(project)
+
+    assert not residue.exists()
+    assert fresh.exists() and non_empty.exists() and beside_alias.exists()
+    assert authored_lock.exists()
+
+
+def test_the_residue_census_counts_orphans_locks_and_external_rewrites(native_tree):
+    _home, agents, project = native_tree
+    (agents / "custom.json").write_text('{"name":"custom"}', encoding="utf-8")
+    prepared = projection.prepare_native_skill_projection(project)
+    assert projection.census_projection_residue(agents) == {
+        "sidecars": 1,
+        "orphan_sidecars": 0,
+        "alias_locks": 0,
+        "rewritten": 0,
+        "truncated": 0,
+    }
+    _orphan_sidecar(agents, "8" * 24)
+    _alias_lock(agents, "9" * 24)
+    # Not residue by the sweeper's rule: too young, not empty, or beside an alias.
+    _alias_lock(agents, "a" * 24, age_secs=0)
+    _alias_lock(agents, "b" * 24, content=b"held")
+    (agents / f"{prepared.agent('custom')}.lock").write_bytes(b"")
+    alias = _alias_file(agents, prepared)
+    alias.write_text(json.dumps(json.loads(alias.read_text()), indent=2), encoding="utf-8")
+
+    assert projection.census_projection_residue(agents) == {
+        "sidecars": 2,
+        "orphan_sidecars": 1,
+        "alias_locks": 1,
+        "rewritten": 1,
+        "truncated": 0,
+    }
+
+
+# ── display-only text kiro-cli copies into every session reply ──
+
+
+def test_an_alias_view_leaves_out_the_welcome_message_and_keeps_a_short_description(
+    native_tree, caplog
+):
+    """kiro-cli ships every agent's description and welcomeMessage in each
+    session/new reply; an alias is a second copy of an agent the host already
+    lists, so it must not double that text. The authored spec keeps it (Kiro Crew
+    renders the welcomeMessage from there), and the source is named in a warning."""
+    _home, agents, project = native_tree
+    source = agents / "custom.json"
+    welcome = "release notes\n" * 9000  # ~126 KB, the shape of an agent package's notes
+    spec = {
+        "name": "custom",
+        "tools": ["read"],
+        "description": "d" * 5000,
+        "welcomeMessage": welcome,
+    }
+    source.write_text(json.dumps(spec), encoding="utf-8")
+    projection._DISPLAY_TEXT_WARNED.clear()
+
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.acp.skill_projection"):
+        prepared = projection.prepare_native_skill_projection(project)
+
+    view = json.loads(_alias_file(agents, prepared).read_text(encoding="utf-8"))
+    assert "welcomeMessage" not in view
+    assert len(view["description"]) == projection._ALIAS_DESCRIPTION_MAX_CHARS
+    assert json.loads(source.read_text(encoding="utf-8"))["welcomeMessage"] == welcome
+    warnings = [r.getMessage() for r in caplog.records if "welcomeMessage" in r.getMessage()]
+    assert warnings and "'custom'" in warnings[0] and source.as_posix() in warnings[0]
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.acp.skill_projection"):
+        projection.prepare_native_skill_projection(project)
+    assert not [r for r in caplog.records if "welcomeMessage" in r.getMessage()]
+
+
+def test_a_small_description_reaches_the_alias_unchanged(native_tree):
+    _home, agents, project = native_tree
+    spec = {"name": "custom", "tools": ["read"], "description": "Reviews pull requests."}
+    (agents / "custom.json").write_text(json.dumps(spec), encoding="utf-8")
+    prepared = projection.prepare_native_skill_projection(project)
+    view = json.loads(_alias_file(agents, prepared).read_text(encoding="utf-8"))
+    assert view["description"] == "Reviews pull requests."
+
+
+def test_the_display_budget_names_the_readers_frame_limit():
+    from kiro_crew.acp import runtime
+
+    assert projection._STDOUT_FRAME_LIMIT_BYTES == runtime._STDOUT_BUFFER_LIMIT
+
+
+def test_the_display_text_warning_escapes_what_it_read_from_disk(caplog, monkeypatch):
+    """Agent names and paths come from files another program wrote; a newline in
+    one must not forge a second log record, and a huge one stays bounded."""
+    projection._DISPLAY_TEXT_WARNED.clear()
+    name = "evil\nWARNING forged record" + "x" * 1000
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.acp.skill_projection"):
+        projection._warn_on_display_text({name: (64 * 1024, "/p/evil\n.json")})
+    messages = [r.getMessage() for r in caplog.records]
+    assert messages and all("\n" not in m for m in messages)
+    assert all(len(m) < 2000 for m in messages)
+
+
+def test_the_display_text_warning_memory_is_bounded(monkeypatch):
+    monkeypatch.setattr(projection, "_DISPLAY_TEXT_WARNED_MAX", 4)
+    projection._DISPLAY_TEXT_WARNED.clear()
+    for n in range(20):
+        projection._warn_on_display_text({f"a{n}": (64 * 1024 + n, f"/p/a{n}.json")})
+    assert len(projection._DISPLAY_TEXT_WARNED) <= 4
+
+
+def test_the_display_text_warning_cap_holds_per_insertion(caplog, monkeypatch):
+    """A single batch larger than the bound (257 large specs against 256) must not
+    insert past it; the rest are counted in one line instead of named."""
+    projection._DISPLAY_TEXT_WARNED.clear()
+    sizes = {f"a{n}": (64 * 1024, f"/p/a{n}.json") for n in range(257)}
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.acp.skill_projection"):
+        projection._warn_on_display_text(sizes)
+    assert len(projection._DISPLAY_TEXT_WARNED) == projection._DISPLAY_TEXT_WARNED_MAX
+    assert any("1 more agent(s)" in r.getMessage() for r in caplog.records)
+    projection._DISPLAY_TEXT_WARNED.clear()
+
+
+def _credential_spec(token, nonce):
+    return {
+        "name": "custom",
+        "tools": ["@broker"],
+        "mcpServers": {
+            "broker": {
+                "command": "broker",
+                "env": {"TOKEN": token, "AIM_CREDS_AGENT_INJECTION": nonce},
+            }
+        },
+    }
+
+
+def test_a_rotated_credential_names_a_new_alias_but_a_launch_nonce_does_not(
+    native_tree, monkeypatch
+):
+    """A rotated credential must name an alias kiro-cli has not loaded -- the old
+    name would activate its loaded copy, old credential and all -- and two launch
+    contexts never share one; only the volatile nonce changing reuses the alias."""
+    monkeypatch.delenv("KIROCREW_SKILL_VIEW_VOLATILE_ENV", raising=False)
+    _home, agents, project = native_tree
+    source = agents / "custom.json"
+    source.write_text(json.dumps(_credential_spec("t1", "n1")), encoding="utf-8")
+    first = projection.prepare_native_skill_projection(project).agent("custom")
+    source.write_text(json.dumps(_credential_spec("t1", "n2")), encoding="utf-8")
+    assert projection.prepare_native_skill_projection(project).agent("custom") == first
+    source.write_text(json.dumps(_credential_spec("t2", "n2")), encoding="utf-8")
+    assert projection.prepare_native_skill_projection(project).agent("custom") != first
+
+
+def test_recognise_admits_only_alias_names_and_registered_agent_names():
+    earlier = projection.NativeSkillProjection({})
+    earlier._recognised.update(
+        {
+            projection.NATIVE_SKILL_ALIAS_PREFIX + "a" * 24: "ops",
+            projection.NATIVE_SKILL_ALIAS_PREFIX + "b" * 24: "evil\x1b]0;x\x07" + "y" * 5000,
+            "not-an-alias": "ops",
+        }
+    )
+    current = projection.NativeSkillProjection({})
+    current.recognise(earlier)
+    assert current._recognised == {projection.NATIVE_SKILL_ALIAS_PREFIX + "a" * 24: "ops"}
+
+
+def test_the_census_leaves_an_alias_too_large_to_hash_whole_unjudged(native_tree, monkeypatch):
+    """A partial read's digest proves nothing: an unchanged alias past the read
+    bound must not be reported as rewritten by another program."""
+    _home, agents, project = native_tree
+    (agents / "custom.json").write_text('{"name":"custom"}', encoding="utf-8")
+    projection.prepare_native_skill_projection(project)
+    monkeypatch.setattr(projection, "_CENSUS_ALIAS_MAX_BYTES", 4)
+    assert projection.census_projection_residue(agents)["rewritten"] == 0
+
+
+def test_the_churning_census_is_bounded_at_insertion():
+    """A spec with an enormous env map, or enormous key names, costs a bounded
+    amount: labels are cut, and a group keeps a fixed number of them."""
+    churning: dict = {}
+    view = {"mcpServers": {"s": {"env": {f"{n:04d}" + "K" * 5000: str(n) for n in range(500)}}}}
+    projection._note_env_values(churning, ("ops", "/a.json"), view)
+    labels = churning[("ops", "/a.json")]
+    assert len(labels) == projection._CHURNING_KEYS_PER_GROUP_MAX
+    assert all(len(label) <= projection._CHURNING_LABEL_MAX_CHARS for label in labels)
+    for n in range(projection._CHURNING_GROUPS_MAX + 10):
+        projection._note_env_values(churning, (f"a{n}", "/x.json"), view)
+    assert len(churning) == projection._CHURNING_GROUPS_MAX
+
+
+def test_a_lock_file_a_launcher_still_holds_is_never_swept(native_tree, tmp_path):
+    """An old, empty ``<stem>.lock`` with no alias beside it is residue only while
+    nobody holds it: a launcher holding it would otherwise lose its lock inode to
+    the sweep, and the next launcher's rewrites would race its own."""
+    _home, agents, _project = native_tree
+    held = _alias_lock(agents, "7" * 24)
+    free = _alias_lock(agents, "8" * 24)
+    fd = os.open(held, os.O_RDWR | getattr(os, "O_BINARY", 0))
+    try:
+        assert projection.platform_compat.try_acquire_lock(fd, exclusive=True)
+        removed = projection._sweep_orphan_alias_locks(agents, deadline=time.monotonic() + 30)
+    finally:
+        os.close(fd)
+    assert held.exists() and not free.exists()
+    assert removed == 1
+
+
+def test_the_churning_census_bounds_the_group_key_it_retains(native_tree):
+    """The group key comes from a sidecar another program may have written; its
+    agent and source strings are cut like the labels are."""
+    _home, agents, project = native_tree
+    spec = {"name": "custom", "mcpServers": {"s": {"command": "s", "env": {"K": "v"}}}}
+    (agents / "custom.json").write_text(json.dumps(spec), encoding="utf-8")
+    prepared = projection.prepare_native_skill_projection(project)
+    sidecar = agents / projection._PROJECTION_METADATA_DIR_NAME / f"{prepared.agent('custom')}.json"
+    record = json.loads(sidecar.read_text(encoding="utf-8"))
+    record[projection._MANAGED_AGENT] = "x" * 5000
+    record[projection._MANAGED_SOURCE] = "/" + "y" * 5000
+    sidecar.write_text(json.dumps(record), encoding="utf-8")
+    churning: dict = {}
+    projection.census_projection_residue(agents, churning)
+    assert churning
+    assert all(
+        len(part) <= projection._CHURNING_LABEL_MAX_CHARS for key in churning for part in key
+    )

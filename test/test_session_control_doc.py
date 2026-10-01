@@ -141,7 +141,7 @@ def test_the_page_matches_the_session_control_group_and_the_channel_block(
     from kiro_crew.channel import CHANNEL_AGENT_BLOCKED_TOOLS
     from kiro_crew.mcp_dashboard import SESSION_CONTROL_TOOLS
 
-    assert len(SESSION_CONTROL_TOOLS) == 13
+    assert len(SESSION_CONTROL_TOOLS) == 14
     for tool in SESSION_CONTROL_TOOLS:
         assert f"`{tool}`" in doc_text
         assert tool in CHANNEL_AGENT_BLOCKED_TOOLS, (
@@ -282,6 +282,7 @@ def test_the_documented_limits_match_their_constants(doc_text: str) -> None:
     from kiro_crew.dashboard.create_rate_limit import (
         MAX_FOLDER_CREATES_PER_WINDOW,
         MAX_SESSION_CREATES_PER_WINDOW,
+        MAX_TAG_COLUMN_CREATES_PER_WINDOW,
         MAX_TAG_CREATES_PER_WINDOW,
         WINDOW_SECS,
     )
@@ -292,6 +293,7 @@ def test_the_documented_limits_match_their_constants(doc_text: str) -> None:
     assert f"**{MAX_SESSION_CREATES_PER_WINDOW}** session" in doc_text
     assert f"**{MAX_FOLDER_CREATES_PER_WINDOW}** folder" in doc_text
     assert f"**{MAX_TAG_CREATES_PER_WINDOW}** tag" in doc_text
+    assert f"**{MAX_TAG_COLUMN_CREATES_PER_WINDOW}** board-column" in doc_text
     assert (
         f"{MAX_LIVE_SLOTS} live sessions, {MAX_SLOTS_PER_CREATOR} per creator, "
         f"{MAX_CHAT_FOLDERS} folders" in doc_text

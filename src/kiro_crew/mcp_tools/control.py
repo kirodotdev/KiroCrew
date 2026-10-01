@@ -436,8 +436,15 @@ def schemas() -> list[dict[str, Any]]:
                     },
                     "max_agent_turns": {
                         "type": "integer",
-                        "minimum": 1,
+                        "minimum": 0,
                         "maximum": MAX_MONITOR_AGENT_TURNS,
+                        "description": (
+                            "How many times this watch may wake its session. Omit it, or "
+                            "pass 0, for no wake ceiling: the watch is then retired by its "
+                            "runtime, token and provider-error budgets instead. Pass a "
+                            "positive number only when a count of wakes is itself the "
+                            "thing you want bounded."
+                        ),
                     },
                     "max_tokens": {
                         "type": "integer",
@@ -744,8 +751,13 @@ def schemas() -> list[dict[str, Any]]:
                     "objective": {"type": "string", "enum": sorted(publicly_armable_objectives())},
                     "max_agent_turns": {
                         "type": "integer",
-                        "minimum": 1,
+                        "minimum": 0,
                         "maximum": MAX_MONITOR_AGENT_TURNS,
+                        "description": (
+                            "New wake ceiling for a structured monitor. 0 removes the "
+                            "ceiling, leaving the runtime, token and provider-error "
+                            "budgets as the watch's only bounds."
+                        ),
                     },
                     "max_tokens": {
                         "type": "integer",
@@ -1091,6 +1103,10 @@ def wait(name: str, args: dict[str, Any]) -> str:
     # staleness watchdog alone would need.
     _next_ping = mcp_core.time.monotonic()
     ended_early = False
+    # Slot key of the session that ended this sleep through session_end_wait,
+    # or "" for the End-wait button / a steer. Only read from a reply that named
+    # this wait, so it cannot describe someone else's sleep.
+    ended_by = ""
     # Publish wait metadata ONLY under an authoritative identity, and refuse
     # to honour `end_wait` without one.
     #
@@ -1156,6 +1172,7 @@ def wait(name: str, args: dict[str, Any]) -> str:
             # somebody else's wait.
             if _identified and isinstance(reply, dict) and reply.get("end_wait") == wait_id:
                 ended_early = True
+                ended_by = str(reply.get("end_wait_by") or "")[:128]
                 break
             _next_ping = now + _ping_secs
         mcp_core.time.sleep(min(_ping_secs, remaining))
@@ -1183,6 +1200,11 @@ def wait(name: str, args: dict[str, Any]) -> str:
     # the response of a cancelled call, so raising here would leave kiro-cli
     # waiting on a tool result that never arrives until the 600s stall
     # watchdog kills the session. Ending a wait early continues the turn.
+    if ended_early and ended_by:
+        return (
+            f"Wait ended early by session `{ended_by}` (session_end_wait) after "
+            f"{waited}s of {seconds}s. Resuming: {reason_safe}"
+        )
     if ended_early:
         return (
             f"Wait ended early by the user after {waited}s of {seconds}s. "
@@ -1732,7 +1754,14 @@ def monitor_watch(name: str, args: dict[str, Any]) -> str:
             args.get("max_runtime_secs")
             or min(DEFAULT_MONITOR_RUNTIME_SECS, runtime_ceiling_secs())
         ),
-        "max_agent_turns": int(args.get("max_agent_turns") or DEFAULT_MONITOR_AGENT_TURNS),
+        # Tested for None rather than truthiness: 0 is the unlimited sentinel here
+        # and is falsy, so `or` would silently replace an explicit "no ceiling"
+        # with the default. The siblings keep `or` because 0 is invalid for them.
+        "max_agent_turns": (
+            DEFAULT_MONITOR_AGENT_TURNS
+            if args.get("max_agent_turns") is None
+            else int(args["max_agent_turns"])
+        ),
         "max_tokens": int(args.get("max_tokens") or DEFAULT_MONITOR_TOKENS),
         "max_provider_errors": int(
             args.get("max_provider_errors") or DEFAULT_MONITOR_PROVIDER_ERRORS

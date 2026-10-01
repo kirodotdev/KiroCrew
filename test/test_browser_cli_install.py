@@ -6,6 +6,7 @@ import contextlib
 import json
 import os
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -17,6 +18,9 @@ from kiro_crew.browser_cli import install as mod
 # restore THIS (re-reading ``mod._required_revisions`` there would just re-bind
 # the stub to itself, silently leaving every test on the fallback path).
 _REAL_REQUIRED_REVISIONS = mod._required_revisions
+# The real cache resolver, captured for the same reason: the autouse fixture
+# below points ``_browsers_cache_dir`` at a scratch directory.
+_REAL_BROWSERS_CACHE_DIR = mod._browsers_cache_dir
 
 
 @pytest.fixture(autouse=True)
@@ -53,15 +57,22 @@ def isolated_browser_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> P
 
 @pytest.fixture(autouse=True)
 def _default_no_os_deps(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Default every test to a host with no OS-package step.
+    """Default every test to a host with no OS-library remedy.
 
-    The browser step now asks :mod:`kiro_crew.browser_cli.os_deps` what this host
-    allows, and the answer is read from the DEVELOPER's ``/etc/os-release``
-    otherwise -- which would make the argv assertions here pass on macOS and fail
-    on Ubuntu. Tests that care about the flag opt in explicitly.
+    The browser step asks :mod:`kiro_crew.browser_cli.os_deps` for its remedy,
+    and the answer is read from the DEVELOPER's ``/etc/os-release`` otherwise --
+    which would make the detail assertions here pass on macOS and fail on
+    Ubuntu. Tests that care about the hint or the flag opt in explicitly.
     """
     monkeypatch.setattr(mod.os_deps, "with_deps_supported", lambda: False)
-    monkeypatch.setattr(mod.os_deps, "missing_deps_hint", lambda: "")
+    monkeypatch.setattr(mod.os_deps, "missing_deps_hint", lambda engine="chromium": "")
+
+
+def _complete(directory: Path) -> Path:
+    """Create a browser build directory the way a finished download leaves it."""
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / mod._INSTALLATION_MARKER).write_text("")
+    return directory
 
 
 def _wire(
@@ -233,10 +244,10 @@ def test_detect_browser_ok_requires_chromium_build(
     assert mod.detect()["browser_ok"] is False
 
     # A non-chromium engine is not enough: attach/extension mode is chromium-only.
-    (isolated_browser_cache / "firefox-1489").mkdir()
+    _complete(isolated_browser_cache / "firefox-1489")
     assert mod.detect()["browser_ok"] is False
 
-    (isolated_browser_cache / "chromium-1200").mkdir()
+    _complete(isolated_browser_cache / "chromium-1200")
     assert mod.detect()["browser_ok"] is True
 
 
@@ -396,7 +407,7 @@ def test_install_adds_with_deps_only_where_the_host_honours_it(
 ) -> None:
     """``--with-deps`` drives the system package manager, and Playwright's
     implementation of it is apt-only, so the flag is gated on the host family
-    rather than on "is Linux"."""
+    rather than on "is Linux". The engine is always named explicitly."""
     monkeypatch.setattr(mod.os_deps, "with_deps_supported", lambda: True)
     apt_calls = _wire(monkeypatch, {"npm": "/n/npm", "playwright-cli": "/n/pw"})
     mod.install()
@@ -414,21 +425,18 @@ def test_install_falls_back_without_deps_when_the_package_step_is_refused(
 ) -> None:
     """A refused ``apt-get`` must not cost the operator the browser.
 
-    ``--with-deps`` shells out to
-    ``apt-get`` as root, sudo policy refuses it, and because the flag and the
-    download are one CLI invocation the download failed too -- even though it
-    needs no privilege at all.
+    ``--with-deps`` shells out to ``apt-get`` as root, sudo policy refuses it,
+    and because the flag and the download are one CLI invocation the download
+    failed too -- even though it needs no privilege at all. The remedy rides only
+    on the retry, the attempt a human has to act on.
     """
     monkeypatch.setattr(mod.os_deps, "with_deps_supported", lambda: True)
-    monkeypatch.setattr(mod.os_deps, "missing_deps_hint", lambda: "run this: sudo apt-get ...")
-    calls = _wire(
-        monkeypatch,
-        {"npm": "/n/npm", "playwright-cli": "/n/pw"},
-        # Keyed on argv[0], so this fails BOTH browser attempts and the skills
-        # step too; the with-deps branch is distinguished below by argv content.
+    monkeypatch.setattr(
+        mod.os_deps, "missing_deps_hint", lambda engine="chromium": "run this: sudo apt-get ..."
     )
+    calls = _wire(monkeypatch, {"npm": "/n/npm", "playwright-cli": "/n/pw"})
 
-    def fake_run(argv: list[str], timeout: float) -> tuple[int, str, str]:
+    def fake_run(argv: list[str], timeout: float, **_kw: Any) -> tuple[int, str, str]:
         calls.append(list(argv))
         if "--with-deps" in argv:
             return (
@@ -453,10 +461,50 @@ def test_install_falls_back_without_deps_when_the_package_step_is_refused(
     ]
     # The refused attempt stays visible rather than being swallowed...
     assert result["steps"][2]["ok"] is False
+    assert result["steps"][2]["hint"] == ""
     # ...but it must not veto an install the retry completed.
     assert result["steps"][3]["ok"] is True
     assert ["/n/pw", "install-browser", "chromium", "--with-deps"] in calls
     assert ["/n/pw", "install-browser", "chromium"] in calls
+
+
+def test_a_failed_retry_after_a_refused_with_deps_carries_the_engine_hint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When both attempts fail, the last step decides the job, so it is the one
+    that must name the engine's remedy."""
+    monkeypatch.setattr(mod.os_deps, "with_deps_supported", lambda: True)
+    monkeypatch.setattr(
+        mod.os_deps, "missing_deps_hint", lambda engine="chromium": f"install-deps {engine}"
+    )
+    _wire(monkeypatch, {"npm": "/n/npm", "playwright-cli": "/n/pw"}, {"/n/pw": (1, "", "boom")})
+
+    steps = mod.install_browser("firefox")["steps"]
+
+    assert [s["name"] for s in steps] == [
+        "install-browser-firefox",
+        "install-browser-firefox-no-deps",
+    ]
+    assert steps[0]["hint"] == ""
+    assert steps[1]["hint"] == "install-deps firefox"
+
+
+def test_the_browser_step_hint_is_asked_for_the_engine_it_downloads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A Chromium package list does not make Firefox launch, so the remedy is
+    composed per engine."""
+    asked: list[str] = []
+
+    def hint(engine: str = "chromium") -> str:
+        asked.append(engine)
+        return f"hint for {engine}"
+
+    monkeypatch.setattr(mod.os_deps, "missing_deps_hint", hint)
+    _wire(monkeypatch, {"npm": "/n/npm", "playwright-cli": "/n/pw"})
+    mod.install()
+    mod.install_browser("webkit")
+    assert asked == ["chromium", "webkit"]
 
 
 def test_a_zero_exit_carrying_the_host_validation_warning_is_a_failure(
@@ -469,7 +517,9 @@ def test_a_zero_exit_carrying_the_host_validation_warning_is_a_failure(
     error arrives at the user's first browse as an opaque stack trace. The step
     must fail, and must carry the remedy.
     """
-    monkeypatch.setattr(mod.os_deps, "missing_deps_hint", lambda: "sudo dnf install -y nss")
+    monkeypatch.setattr(
+        mod.os_deps, "missing_deps_hint", lambda engine="chromium": "sudo dnf install -y nss"
+    )
     warning = (
         "Playwright Host validation warning: \n"
         "Host system is missing dependencies to run browsers.\n"
@@ -539,45 +589,15 @@ def test_an_ordinary_zero_exit_browser_step_still_succeeds(
     ]
 
 
-def test_install_still_fails_when_the_no_deps_retry_also_fails(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The fallback is a retry, not a guarantee: a real download failure stays fatal.
-
-    Also pins WHERE the remedy lands. It belongs on the retry, which is the
-    attempt that actually ran without the package step; putting it on the
-    with-deps attempt would hang a remediation command on a failure the retry may
-    well have recovered from.
-    """
-    monkeypatch.setattr(mod.os_deps, "with_deps_supported", lambda: True)
-    monkeypatch.setattr(mod.os_deps, "missing_deps_hint", lambda: "sudo dnf install -y nss")
-    calls = _wire(
-        monkeypatch,
-        {"npm": "/n/npm", "playwright-cli": "/n/pw"},
-        {"/n/pw": (1, "", "network unreachable")},
-    )
-
-    result = mod.install()
-
-    assert result["ok"] is False
-    assert [s["name"] for s in result["steps"]] == [
-        "npm-install-global",
-        "stage-node",
-        "install-browser",
-        "install-browser-no-deps",
-    ]
-    assert "sudo dnf install -y nss" not in result["steps"][2]["stderr"]
-    assert "sudo dnf install -y nss" in result["steps"][3]["stderr"]
-    assert all("--skills" not in argv for argv in calls)
-
-
 def test_a_failed_browser_step_carries_the_manual_remedy(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """On a host whose libraries only root can install, the failure detail must
     carry the command that resolves it -- the settings panel shows that detail
     verbatim, so this is the whole remediation surface."""
-    monkeypatch.setattr(mod.os_deps, "missing_deps_hint", lambda: "sudo dnf install -y nss")
+    monkeypatch.setattr(
+        mod.os_deps, "missing_deps_hint", lambda engine="chromium": "sudo dnf install -y nss"
+    )
     _wire(
         monkeypatch,
         {"npm": "/n/npm", "playwright-cli": "/n/pw"},
@@ -592,26 +612,32 @@ def test_a_failed_browser_step_carries_the_manual_remedy(
     assert "sudo dnf install -y nss" in detail
 
 
-def test_the_remedy_survives_a_stderr_long_enough_to_hit_the_cap(
+def test_the_remedy_and_stderr_tail_survive_output_long_enough_to_hit_the_cap(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The hint is appended AFTER truncation. Appending before it would let a
-    verbose package manager push the one actionable line out of view."""
-    monkeypatch.setattr(mod.os_deps, "missing_deps_hint", lambda: "sudo dnf install -y nss")
+    """The library list and remedy stay visible after verbose download output."""
+    hint = "sudo dnf install -y nss"
+    monkeypatch.setattr(mod.os_deps, "missing_deps_hint", lambda engine="chromium": hint)
+    stderr = "x" * 50_000 + "\nMissing libraries:\n    libgtk-4.so.1"
     _wire(
         monkeypatch,
         {"npm": "/n/npm", "playwright-cli": "/n/pw"},
-        {"/n/pw": (1, "", "x" * 50_000)},
+        {"/n/pw": (1, "", stderr)},
     )
 
     result = mod.install()
 
-    assert "sudo dnf install -y nss" in result["steps"][-1]["stderr"]
+    step = result["steps"][-1]
+    assert step["hint"] == hint
+    assert "Missing libraries:\n    libgtk-4.so.1" in step["stderr"]
+    assert step["stderr"].endswith(hint)
 
 
 def test_a_successful_step_carries_no_remedy(monkeypatch: pytest.MonkeyPatch) -> None:
     """The hint is failure-only: on a green install it would read as a warning."""
-    monkeypatch.setattr(mod.os_deps, "missing_deps_hint", lambda: "sudo dnf install -y nss")
+    monkeypatch.setattr(
+        mod.os_deps, "missing_deps_hint", lambda engine="chromium": "sudo dnf install -y nss"
+    )
     _wire(monkeypatch, {"npm": "/n/npm", "playwright-cli": "/n/pw"})
 
     result = mod.install()
@@ -756,8 +782,8 @@ class TestPerEngineDownloads:
     def test_engines_are_reported_individually(self, monkeypatch, tmp_path):
         cache = tmp_path / "ms-playwright"
         cache.mkdir(exist_ok=True)
-        (cache / "chromium-1208").mkdir()
-        (cache / "webkit-2248").mkdir()
+        _complete(cache / "chromium-1208")
+        _complete(cache / "webkit-2248")
         monkeypatch.setattr(mod, "_browsers_cache_dir", lambda: cache)
 
         assert mod.browsers_present() == {
@@ -811,35 +837,23 @@ class TestPerEngineDownloads:
         assert result["ok"] is False
         assert result["steps"][0]["name"] == "resolve-binary"
 
-    def test_a_refused_package_step_falls_back_to_a_plain_retry(self, monkeypatch, tmp_path):
-        """The per-engine path shares `_download_browser` with `install()`, so a
-        host that refuses the package manager must not cost it the download here
-        either."""
-        monkeypatch.setattr(mod.os_deps, "with_deps_supported", lambda: True)
+    def test_install_browser_reports_its_stages_around_the_download(self, monkeypatch, tmp_path):
         fake_cli = tmp_path / "playwright-cli"
         fake_cli.write_text("")
         monkeypatch.setattr(mod, "cli_path", lambda: str(fake_cli))
         monkeypatch.setattr(mod, "cli_command", lambda cli=None: [cli or str(fake_cli)])
-
-        seen: list[list[str]] = []
+        events: list[str] = []
 
         def fake_run(argv, timeout):
-            seen.append(list(argv))
-            if "--with-deps" in argv:
-                return (1, "", "not allowed to execute ... as root")
+            events.append("spawn:" + argv[-1])
             return (0, "", "")
 
         monkeypatch.setattr(mod, "_run", fake_run)
 
-        result = mod.install_browser("firefox")
+        result = mod.install_browser("firefox", on_stage=events.append)
 
         assert result["ok"] is True
-        assert [s["name"] for s in result["steps"]] == [
-            "install-browser-firefox",
-            "install-browser-firefox-no-deps",
-        ]
-        assert [str(fake_cli), "install-browser", "firefox", "--with-deps"] in seen
-        assert [str(fake_cli), "install-browser", "firefox"] in seen
+        assert events == ["downloading_browser", "spawn:firefox", "finishing"]
 
     def test_the_engine_still_reaches_argv_once_on_a_host_without_the_flag(
         self, monkeypatch, tmp_path
@@ -887,6 +901,39 @@ class TestFailureDetailIsRedactedAtTheSource:
         monkeypatch.setattr(mod, "_run", lambda argv, timeout: (1, "", "x" * 50_000))
         step = mod._step("npm-install-global", ["npm", "install"], 1.0)
         assert len(step["stderr"]) <= mod._STDERR_CAP
+
+    @pytest.mark.parametrize(
+        ("rc", "reason"),
+        [
+            (mod.INTERRUPTED_RC, mod._INTERRUPTED_REASON),
+            (mod.TIMEOUT_RC, "timed out after 1s: pw install-browser chromium"),
+        ],
+        ids=["interrupted", "timed-out"],
+    )
+    def test_an_interrupted_or_timed_out_step_carries_no_missing_deps_hint(
+        self, monkeypatch, rc, reason
+    ):
+        """A stopped or expired download did not fail for want of OS libraries,
+        so the remediation line must not be attached to it."""
+        hint = "sudo dnf install -y nss"
+        monkeypatch.setattr(mod, "_run", lambda argv, timeout: (rc, "", reason))
+
+        step = mod._step("install-browser", ["pw", "install-browser", "chromium"], 1.0, hint=hint)
+
+        assert step["ok"] is False
+        assert step["returncode"] == rc
+        assert step["hint"] == ""
+        assert hint not in step["stderr"]
+        assert step["stderr"] == reason
+
+    def test_an_ordinary_failure_still_ends_with_the_hint(self, monkeypatch):
+        hint = "sudo dnf install -y nss"
+        monkeypatch.setattr(mod, "_run", lambda argv, timeout: (1, "", "Missing libraries"))
+
+        step = mod._step("install-browser", ["pw", "install-browser", "chromium"], 1.0, hint=hint)
+
+        assert step["hint"] == hint
+        assert step["stderr"] == f"Missing libraries\n\n{hint}"
 
     def test_credential_straddling_truncation_boundary_is_still_redacted(self, monkeypatch, caplog):
         """A URL credential whose ``@`` anchor sits past the display cap.
@@ -1510,7 +1557,7 @@ class TestRequiredRevisionMatch:
         monkeypatch.setattr(
             mod, "_required_revisions", _REAL_REQUIRED_REVISIONS
         )  # use the real one
-        (isolated_browser_cache / "chromium-1232").mkdir()
+        _complete(isolated_browser_cache / "chromium-1232")
 
         assert mod.browsers_present()["chromium"] is True
         assert mod._browser_present() is True
@@ -1524,7 +1571,7 @@ class TestRequiredRevisionMatch:
         launcher = _install_root(root, _MANIFEST)
         _wire(monkeypatch, {mod.CLI_BIN: launcher})
         monkeypatch.setattr(mod, "_required_revisions", _REAL_REQUIRED_REVISIONS)
-        (isolated_browser_cache / "chromium-1208").mkdir()
+        _complete(isolated_browser_cache / "chromium-1208")
 
         assert mod.browsers_present()["chromium"] is False
         assert mod._browser_present() is False
@@ -1541,7 +1588,7 @@ class TestRequiredRevisionMatch:
         launcher = _install_root(root, _MANIFEST)
         monkeypatch.setattr(mod, "cli_path", lambda: launcher)
         monkeypatch.setattr(mod, "_required_revisions", _REAL_REQUIRED_REVISIONS)
-        (isolated_browser_cache / "chromium_headless_shell-1232").mkdir()
+        _complete(isolated_browser_cache / "chromium_headless_shell-1232")
 
         assert mod.browsers_present()["chromium"] is False
         assert mod._browser_present() is False
@@ -1570,7 +1617,7 @@ class TestRequiredRevisionMatch:
         launcher = _install_root(tmp_path / "cli-root", _MANIFEST)
         monkeypatch.setattr(mod, "cli_path", lambda: launcher)
         monkeypatch.setattr(mod, "_required_revisions", _REAL_REQUIRED_REVISIONS)
-        (isolated_browser_cache / "chromium_1232").mkdir()
+        _complete(isolated_browser_cache / "chromium_1232")
 
         assert mod.browsers_present()["chromium"] is False
         assert mod._browser_present() is False
@@ -1584,8 +1631,8 @@ class TestRequiredRevisionMatch:
         launcher = _install_root(root, _MANIFEST)
         monkeypatch.setattr(mod, "cli_path", lambda: launcher)
         monkeypatch.setattr(mod, "_required_revisions", _REAL_REQUIRED_REVISIONS)
-        (isolated_browser_cache / "firefox-1534").mkdir()
-        (isolated_browser_cache / "webkit-9999").mkdir()
+        _complete(isolated_browser_cache / "firefox-1534")
+        _complete(isolated_browser_cache / "webkit-9999")
 
         present = mod.browsers_present()
         assert present["firefox"] is True
@@ -1613,7 +1660,7 @@ class TestRequiredRevisionMatch:
         )
         monkeypatch.setattr(mod, "cli_path", lambda: launcher)
         monkeypatch.setattr(mod, "_required_revisions", _REAL_REQUIRED_REVISIONS)
-        (isolated_browser_cache / "chromium-1232").mkdir()
+        _complete(isolated_browser_cache / "chromium-1232")
 
         assert mod.browsers_present()["chromium"] is (required_rev == "1232")
 
@@ -1629,7 +1676,7 @@ class TestRevisionDegradation:
         dir still reads ready rather than flipping to broken."""
         monkeypatch.setattr(mod, "_browsers_manifest_path", lambda: None)
         monkeypatch.setattr(mod, "_required_revisions", _REAL_REQUIRED_REVISIONS)
-        (isolated_browser_cache / "chromium-1208").mkdir()
+        _complete(isolated_browser_cache / "chromium-1208")
 
         assert mod.browsers_present()["chromium"] is True
         assert mod._browser_present() is True
@@ -1648,7 +1695,7 @@ class TestRevisionDegradation:
         launcher.write_text("#!/bin/sh\n", encoding="utf-8")
         monkeypatch.setattr(mod, "cli_path", lambda: str(launcher))
         monkeypatch.setattr(mod, "_required_revisions", _REAL_REQUIRED_REVISIONS)
-        (isolated_browser_cache / "chromium-1208").mkdir()
+        _complete(isolated_browser_cache / "chromium-1208")
 
         assert _REAL_REQUIRED_REVISIONS() is None
         assert mod.browsers_present()["chromium"] is True
@@ -1662,8 +1709,8 @@ class TestRevisionDegradation:
         launcher = _install_root(root, {"browsers": [{"name": "chromium", "revision": "1232"}]})
         monkeypatch.setattr(mod, "cli_path", lambda: launcher)
         monkeypatch.setattr(mod, "_required_revisions", _REAL_REQUIRED_REVISIONS)
-        (isolated_browser_cache / "chromium-1208").mkdir()  # stale -> not ready
-        (isolated_browser_cache / "webkit-2248").mkdir()  # no required rev -> present
+        _complete(isolated_browser_cache / "chromium-1208")  # stale -> not ready
+        _complete(isolated_browser_cache / "webkit-2248")  # no required rev -> present
 
         present = mod.browsers_present()
         assert present["chromium"] is False
@@ -1878,7 +1925,7 @@ class TestManifestResolution:
         wrapper.write_text("#!/bin/sh\n", encoding="utf-8")
         monkeypatch.setattr(mod, "cli_path", lambda: str(wrapper))
         monkeypatch.setattr(mod, "_required_revisions", _REAL_REQUIRED_REVISIONS)
-        (isolated_browser_cache / "chromium-1232").mkdir()
+        _complete(isolated_browser_cache / "chromium-1232")
 
         assert mod.browsers_present()["chromium"] is True
 
@@ -2369,3 +2416,532 @@ class TestSystemGatewayCommand:
         assert command is None
         assert reason is not None and "no fixed non-writable Node" in reason
         assert str(attacker) not in reason
+
+
+class TestInstallStages:
+    """``install`` reports real stage transitions through ``on_stage``."""
+
+    def test_install_reports_each_stage_before_the_step_it_names(self, monkeypatch):
+        events: list[str] = []
+        calls = _wire(monkeypatch, {"npm": "/n/npm", "playwright-cli": "/n/pw"})
+        original = mod._run
+
+        def recording_run(argv, timeout):
+            events.append("spawn:" + ("npm" if argv[0] == "/n/npm" else argv[1]))
+            return original(argv, timeout)
+
+        monkeypatch.setattr(mod, "_run", recording_run)
+
+        result = mod.install(on_stage=events.append)
+
+        assert result["ok"] is True
+        assert calls
+        assert events == [
+            "installing_cli",
+            "spawn:npm",
+            "downloading_browser",
+            "spawn:install-browser",
+            "installing_skills",
+            "spawn:install",
+            "finishing",
+        ]
+
+    def test_a_failing_stage_callback_does_not_stop_the_install(self, monkeypatch):
+        _wire(monkeypatch, {"npm": "/n/npm", "playwright-cli": "/n/pw"})
+
+        def boom(stage: str) -> None:
+            raise RuntimeError("loop closed")
+
+        assert mod.install(on_stage=boom)["ok"] is True
+
+    def test_a_failed_download_reports_no_later_stage(self, monkeypatch):
+        events: list[str] = []
+        _wire(
+            monkeypatch,
+            {"npm": "/n/npm", "playwright-cli": "/n/pw"},
+            {"/n/pw": (1, "", "network unreachable")},
+        )
+
+        assert mod.install(on_stage=events.append)["ok"] is False
+        assert events == ["installing_cli", "downloading_browser"]
+
+
+class TestCacheResolutionMatchesPlaywright:
+    """``_browsers_cache_dir`` mirrors playwright-core's ``registryDirectory``."""
+
+    @pytest.fixture(autouse=True)
+    def _real_resolver(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        monkeypatch.setattr(mod, "_browsers_cache_dir", _REAL_BROWSERS_CACHE_DIR)
+        for name in (
+            "PLAYWRIGHT_BROWSERS_PATH",
+            "npm_config_playwright_browsers_path",
+            "npm_package_config_playwright_browsers_path",
+            "XDG_CACHE_HOME",
+            "LOCALAPPDATA",
+            "INIT_CWD",
+            "npm_config_init_cwd",
+            "npm_package_config_init_cwd",
+        ):
+            monkeypatch.delenv(name, raising=False)
+        monkeypatch.setattr(mod.Path, "home", lambda: tmp_path / "home")
+
+    @staticmethod
+    def _platform(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
+        for flag in ("IS_LINUX", "IS_MACOS", "IS_WINDOWS"):
+            monkeypatch.setattr(mod.platform_compat, flag, flag == name)
+
+    def test_linux_honours_xdg_cache_home(self, monkeypatch, tmp_path):
+        self._platform(monkeypatch, "IS_LINUX")
+        monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg"))
+        assert mod._browsers_cache_dir() == tmp_path / "xdg" / "ms-playwright"
+
+    def test_linux_without_xdg_uses_the_home_cache(self, monkeypatch, tmp_path):
+        self._platform(monkeypatch, "IS_LINUX")
+        monkeypatch.setenv("XDG_CACHE_HOME", "")
+        assert mod._browsers_cache_dir() == tmp_path / "home" / ".cache" / "ms-playwright"
+
+    def test_macos_uses_library_caches(self, monkeypatch, tmp_path):
+        self._platform(monkeypatch, "IS_MACOS")
+        monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "ignored"))
+        expected = tmp_path / "home" / "Library" / "Caches" / "ms-playwright"
+        assert mod._browsers_cache_dir() == expected
+
+    def test_windows_falls_back_to_appdata_local_without_localappdata(self, monkeypatch, tmp_path):
+        self._platform(monkeypatch, "IS_WINDOWS")
+        expected = tmp_path / "home" / "AppData" / "Local" / "ms-playwright"
+        assert mod._browsers_cache_dir() == expected
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+        assert mod._browsers_cache_dir() == tmp_path / "local" / "ms-playwright"
+
+    def test_an_unknown_platform_is_unknown_not_missing(self, monkeypatch):
+        self._platform(monkeypatch, "none")
+        assert mod._browsers_cache_dir() is None
+        assert set(mod.browser_status().values()) == {mod.STATUS_UNKNOWN}
+
+    def test_an_absolute_override_is_used_as_is(self, monkeypatch, tmp_path):
+        self._platform(monkeypatch, "IS_LINUX")
+        monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(tmp_path / "custom"))
+        assert mod._browsers_cache_dir() == tmp_path / "custom"
+
+    def test_the_npm_config_projection_is_read_like_playwright_does(self, monkeypatch, tmp_path):
+        self._platform(monkeypatch, "IS_LINUX")
+        monkeypatch.setenv("npm_config_playwright_browsers_path", str(tmp_path / "npmcfg"))
+        assert mod._browsers_cache_dir() == tmp_path / "npmcfg"
+
+    def test_a_relative_override_resolves_against_the_working_directory(
+        self, monkeypatch, tmp_path
+    ):
+        self._platform(monkeypatch, "IS_LINUX")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", "rel/browsers")
+        assert mod._browsers_cache_dir() == tmp_path / "rel" / "browsers"
+        monkeypatch.setenv("INIT_CWD", str(tmp_path / "init"))
+        assert mod._browsers_cache_dir() == tmp_path / "init" / "rel" / "browsers"
+
+    def test_zero_means_the_serving_core_packages_local_browsers(self, monkeypatch, tmp_path):
+        self._platform(monkeypatch, "IS_LINUX")
+        core = tmp_path / "node_modules" / "playwright-core"
+        core.mkdir(parents=True)
+        (core / "browsers.json").write_text('{"browsers": []}')
+        monkeypatch.setattr(mod, "_browsers_manifest_path", lambda: core / "browsers.json")
+        monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", "0")
+        assert mod._browsers_cache_dir() == core / ".local-browsers"
+
+    def test_zero_without_an_attributable_core_is_unknown(self, monkeypatch):
+        self._platform(monkeypatch, "IS_LINUX")
+        monkeypatch.setattr(mod, "_browsers_manifest_path", lambda: None)
+        monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", "0")
+        assert mod._browsers_cache_dir() is None
+        assert set(mod.browser_status().values()) == {mod.STATUS_UNKNOWN}
+
+
+class TestBrowserStatus:
+    """``downloaded`` / ``missing`` / ``unknown`` are read without launching anything."""
+
+    @staticmethod
+    def _require(monkeypatch, revisions: dict[str, str]) -> None:
+        monkeypatch.setattr(mod, "_required_revisions", lambda: dict(revisions))
+        monkeypatch.setattr(mod, "_revision_overrides", lambda: {})
+
+    def test_a_directory_without_the_completion_marker_is_missing(
+        self, monkeypatch, isolated_browser_cache
+    ):
+        self._require(monkeypatch, {"chromium": "1232"})
+        (isolated_browser_cache / "chromium-1232" / "chrome-linux64").mkdir(parents=True)
+        status = mod.browser_status()
+        assert status["chromium"] == mod.STATUS_MISSING
+        assert mod.detect()["browser_ok"] is False
+        _complete(isolated_browser_cache / "chromium-1232")
+        assert mod.browser_status()["chromium"] == mod.STATUS_DOWNLOADED
+
+    def test_the_presence_fallback_also_requires_the_marker(self, isolated_browser_cache):
+        (isolated_browser_cache / "firefox-1500").mkdir()
+        assert mod.browser_status()["firefox"] == mod.STATUS_MISSING
+
+    def test_the_presence_fallback_does_not_count_the_headless_shell(self, isolated_browser_cache):
+        _complete(isolated_browser_cache / "chromium_headless_shell-1232")
+        assert mod.browser_status()["chromium"] == mod.STATUS_MISSING
+
+    def test_the_presence_fallback_counts_a_complete_special_build(self, isolated_browser_cache):
+        # No revision is attributable (the fixture's default), and the only WebKit
+        # in the cache is the override directory playwright-core wrote for this
+        # host. Presence-only means it counts; a `missing` here would be permanent.
+        (isolated_browser_cache / "webkit_mac14_special-2251").mkdir()
+        assert mod.browser_status()["webkit"] == mod.STATUS_MISSING
+        _complete(isolated_browser_cache / "webkit_mac14_special-2251")
+        assert mod.browser_status()["webkit"] == mod.STATUS_DOWNLOADED
+        assert mod.browsers_present()["webkit"] is True
+
+    def test_an_absent_cache_directory_is_a_confirmed_absence(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(mod, "_browsers_cache_dir", lambda: tmp_path / "never-created")
+        assert set(mod.browser_status().values()) == {mod.STATUS_MISSING}
+
+    def test_an_unreadable_cache_is_unknown(self, monkeypatch, isolated_browser_cache):
+        def refuse(self):
+            raise PermissionError("denied")
+
+        monkeypatch.setattr(mod.Path, "iterdir", refuse)
+        assert set(mod.browser_status().values()) == {mod.STATUS_UNKNOWN}
+        assert mod.detect()["browsers"] == {"chromium": False, "firefox": False, "webkit": False}
+
+    def test_an_unreadable_marker_is_unknown(self, monkeypatch, isolated_browser_cache):
+        self._require(monkeypatch, {"chromium": "1232"})
+        (isolated_browser_cache / "chromium-1232").mkdir()
+        real_is_file = mod.Path.is_file
+
+        def is_file(self):
+            if self.name == mod._INSTALLATION_MARKER:
+                raise PermissionError("denied")
+            return real_is_file(self)
+
+        monkeypatch.setattr(mod.Path, "is_file", is_file)
+        assert mod.browser_status()["chromium"] == mod.STATUS_UNKNOWN
+
+    def test_a_host_override_revision_is_matched_by_its_special_directory(
+        self, monkeypatch, isolated_browser_cache
+    ):
+        monkeypatch.setattr(mod, "_required_revisions", lambda: {"webkit": "2365"})
+        monkeypatch.setattr(mod, "_revision_overrides", lambda: {"webkit": {"mac14": "2251"}})
+        monkeypatch.setattr(mod, "_playwright_host_platform", lambda: "mac14")
+        _complete(isolated_browser_cache / "webkit_mac14_special-2251")
+        assert mod.browser_status()["webkit"] == mod.STATUS_DOWNLOADED
+
+    def test_a_complete_plain_build_on_a_host_the_override_names_reads_unknown_not_missing(
+        self, monkeypatch, isolated_browser_cache
+    ):
+        # The port says this host takes the special build, yet the installer wrote
+        # and completed the plain required-revision directory. Only playwright-core
+        # decides which directory it writes, so this is evidence the port is wrong
+        # about the host, not that the cache is empty.
+        monkeypatch.setattr(mod, "_required_revisions", lambda: {"webkit": "2365"})
+        monkeypatch.setattr(
+            mod, "_revision_overrides", lambda: {"webkit": {"ubuntu20.04-x64": "2092"}}
+        )
+        monkeypatch.setattr(mod, "_playwright_host_platform", lambda: "ubuntu20.04-x64")
+        _complete(isolated_browser_cache / "webkit-2365")
+        assert mod.browser_status()["webkit"] == mod.STATUS_UNKNOWN
+        assert mod.browsers_present()["webkit"] is False
+        # An incomplete special directory beside it (an interrupted download of
+        # the build the port predicted) does not turn the complete plain one into
+        # a confident `missing` either.
+        (isolated_browser_cache / "webkit_ubuntu20.04-x64_special-2092").mkdir()
+        assert mod.browser_status()["webkit"] == mod.STATUS_UNKNOWN
+
+    def test_an_incomplete_plain_build_on_a_host_the_override_names_is_still_missing(
+        self, monkeypatch, isolated_browser_cache
+    ):
+        monkeypatch.setattr(mod, "_required_revisions", lambda: {"webkit": "2365"})
+        monkeypatch.setattr(
+            mod, "_revision_overrides", lambda: {"webkit": {"ubuntu20.04-x64": "2092"}}
+        )
+        monkeypatch.setattr(mod, "_playwright_host_platform", lambda: "ubuntu20.04-x64")
+        (isolated_browser_cache / "webkit-2365").mkdir()
+        assert mod.browser_status()["webkit"] == mod.STATUS_MISSING
+        # A plain build of the WRONG revision is not evidence about this host.
+        _complete(isolated_browser_cache / "webkit-2300")
+        assert mod.browser_status()["webkit"] == mod.STATUS_MISSING
+
+    def test_a_complete_special_build_for_another_host_reads_unknown_not_missing(
+        self, monkeypatch, isolated_browser_cache
+    ):
+        # Special directories exist only where playwright-core's own platform
+        # logic put them, so one this host key did not predict says the port
+        # may be stale, not that the cache is empty.
+        monkeypatch.setattr(mod, "_required_revisions", lambda: {"webkit": "2365"})
+        monkeypatch.setattr(
+            mod, "_revision_overrides", lambda: {"webkit": {"ubuntu20.04-x64": "2092"}}
+        )
+        monkeypatch.setattr(mod, "_playwright_host_platform", lambda: "ubuntu24.04-x64")
+        _complete(isolated_browser_cache / "webkit_ubuntu20.04-x64_special-2092")
+        assert mod.browser_status()["webkit"] == mod.STATUS_UNKNOWN
+        assert mod.browsers_present()["webkit"] is False
+
+    def test_an_unmatched_special_build_also_reads_unknown_when_this_host_wanted_a_special(
+        self, monkeypatch, isolated_browser_cache
+    ):
+        monkeypatch.setattr(mod, "_required_revisions", lambda: {"webkit": "2365"})
+        monkeypatch.setattr(
+            mod,
+            "_revision_overrides",
+            lambda: {"webkit": {"ubuntu20.04-x64": "2092", "debian11-x64": "2092"}},
+        )
+        monkeypatch.setattr(mod, "_playwright_host_platform", lambda: "debian11-x64")
+        _complete(isolated_browser_cache / "webkit_ubuntu20.04-x64_special-2092")
+        assert mod.browser_status()["webkit"] == mod.STATUS_UNKNOWN
+
+    def test_an_incomplete_special_build_for_another_host_is_still_missing(
+        self, monkeypatch, isolated_browser_cache
+    ):
+        monkeypatch.setattr(mod, "_required_revisions", lambda: {"webkit": "2365"})
+        monkeypatch.setattr(
+            mod, "_revision_overrides", lambda: {"webkit": {"ubuntu20.04-x64": "2092"}}
+        )
+        monkeypatch.setattr(mod, "_playwright_host_platform", lambda: "ubuntu24.04-x64")
+        (isolated_browser_cache / "webkit_ubuntu20.04-x64_special-2092").mkdir()
+        assert mod.browser_status()["webkit"] == mod.STATUS_MISSING
+
+    def test_a_special_build_of_one_engine_does_not_make_another_unknown(
+        self, monkeypatch, isolated_browser_cache
+    ):
+        self._require(monkeypatch, {"chromium": "1232", "webkit": "2365"})
+        _complete(isolated_browser_cache / "webkit_ubuntu20.04-x64_special-2092")
+        status = mod.browser_status()
+        assert status["chromium"] == mod.STATUS_MISSING
+        assert status["webkit"] == mod.STATUS_UNKNOWN
+
+    def test_a_complete_plain_build_counts_on_a_host_no_override_names(
+        self, monkeypatch, isolated_browser_cache
+    ):
+        # An override for some other platform must not demote a complete build.
+        monkeypatch.setattr(mod, "_required_revisions", lambda: {"webkit": "2365"})
+        monkeypatch.setattr(
+            mod,
+            "_revision_overrides",
+            lambda: {"webkit": {"mac14": "2251", "ubuntu20.04-x64": "2092"}},
+        )
+        _complete(isolated_browser_cache / "webkit-2365")
+        for host in ("mac15-arm64", "ubuntu24.04-x64", "win64"):
+            monkeypatch.setattr(mod, "_playwright_host_platform", lambda h=host: h)
+            assert mod.browser_status()["webkit"] == mod.STATUS_DOWNLOADED
+
+    def test_detect_reports_status_beside_the_boolean_projection(
+        self, monkeypatch, isolated_browser_cache
+    ):
+        self._require(monkeypatch, {"chromium": "1232", "firefox": "1549", "webkit": "2365"})
+        _complete(isolated_browser_cache / "chromium-1232")
+        (isolated_browser_cache / "firefox-1549").mkdir()
+        result = mod.detect()
+        assert result["browser_status"] == {
+            "chromium": "downloaded",
+            "firefox": "missing",
+            "webkit": "missing",
+        }
+        assert result["browsers"] == {"chromium": True, "firefox": False, "webkit": False}
+        assert result["browser_ok"] is True
+
+
+_POSIX_ONLY = pytest.mark.skipif(os.name == "nt", reason="POSIX process groups")
+
+
+def _pid_gone(pid: int, deadline_s: float = 5.0) -> bool:
+    """Whether *pid* has exited (a zombie awaiting its reaper counts as exited)."""
+    import time
+
+    end = time.monotonic() + deadline_s
+    while time.monotonic() < end:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        with contextlib.suppress(OSError):
+            stat_line = Path(f"/proc/{pid}/stat").read_text()
+            if stat_line.rsplit(")", 1)[1].split()[0] == "Z":
+                return True
+        time.sleep(0.05)
+    return False
+
+
+def _tree_script(pid_file: Path) -> list[str]:
+    """A child that starts a grandchild and records its pid and start identity."""
+    import sys
+
+    code = (
+        "import subprocess, sys, time\n"
+        "from kiro_crew import platform_compat\n"
+        "g = subprocess.Popen(\n"
+        "    [sys.executable, '-c', 'import time; time.sleep(60)'],\n"
+        f"    cwd={str(pid_file.parent)!r},\n"
+        ")\n"
+        "start_id = platform_compat.get_process_start_id(g.pid)\n"
+        f"open({str(pid_file)!r}, 'w').write(f'{{g.pid}}:{{start_id or \"\"}}')\n"
+        "time.sleep(60)\n"
+    )
+    return [sys.executable, "-c", code]
+
+
+def _read_pid_identity(pid_file: Path) -> tuple[int, str | None]:
+    """Read the child-captured grandchild pid and stable start identity."""
+    pid_text, start_id = pid_file.read_text().split(":", 1)
+    return int(pid_text), start_id or None
+
+
+class TestInstallerChildrenAreTerminable:
+    """A timeout or a gateway shutdown ends the installer's whole process tree."""
+
+    @_POSIX_ONLY
+    def test_a_timeout_kills_the_grandchild_too(self, tmp_path):
+        import signal
+
+        pid_file = tmp_path / "grandchild.pid"
+        pid: int | None = None
+        start_id: str | None = None
+        try:
+            rc, _out, err = mod._run(_tree_script(pid_file), 3.0, cwd=str(tmp_path))
+            assert rc == 124
+            assert "timed out" in err
+            assert pid_file.exists()
+            pid, start_id = _read_pid_identity(pid_file)
+            assert _pid_gone(pid)
+        finally:
+            if (
+                pid is not None
+                and start_id is not None
+                and mod.platform_compat.get_process_start_id(pid) == start_id
+            ):
+                with contextlib.suppress(ProcessLookupError):
+                    os.kill(pid, signal.SIGKILL)
+                _pid_gone(pid)
+
+    @_POSIX_ONLY
+    def test_terminating_the_scope_kills_a_running_child_tree(self, tmp_path):
+        import signal
+        import threading
+        import time
+
+        pid_file = tmp_path / "grandchild.pid"
+        pid: int | None = None
+        start_id: str | None = None
+        scope = mod.InstallScope()
+        outcome: list[tuple[int, str, str]] = []
+        worker = threading.Thread(
+            target=lambda: outcome.append(
+                mod.run_in_scope(
+                    scope,
+                    mod._run,
+                    _tree_script(pid_file),
+                    60.0,
+                    cwd=str(tmp_path),
+                )
+            )
+        )
+        started = time.monotonic()
+        try:
+            worker.start()
+            while not pid_file.exists() and time.monotonic() - started < 10:
+                time.sleep(0.05)
+            assert pid_file.exists(), "child never started"
+            pid, start_id = _read_pid_identity(pid_file)
+
+            assert scope.terminate() == 1
+            worker.join(10)
+            assert not worker.is_alive()
+            assert outcome and outcome[0][0] == mod.INTERRUPTED_RC
+            assert time.monotonic() - started < 30
+            assert _pid_gone(pid)
+        finally:
+            scope.terminate()
+            if worker.ident is not None:
+                worker.join(10)
+            if (
+                pid is not None
+                and start_id is not None
+                and mod.platform_compat.get_process_start_id(pid) == start_id
+            ):
+                with contextlib.suppress(ProcessLookupError):
+                    os.kill(pid, signal.SIGKILL)
+                _pid_gone(pid)
+
+    def test_a_terminated_scope_spawns_nothing(self, monkeypatch):
+        spawned: list[object] = []
+        monkeypatch.setattr(mod.subprocess, "Popen", lambda *a, **k: spawned.append(a))
+        scope = mod.InstallScope()
+        scope.terminate()
+
+        rc, _out, err = mod.run_in_scope(scope, mod._run, ["npm", "install"], 10.0)
+
+        assert rc == mod.INTERRUPTED_RC
+        assert "interrupted" in err
+        assert spawned == []
+
+    def test_the_scope_is_thread_local_and_restored(self):
+        scope = mod.InstallScope()
+        assert mod._current_scope() is None
+        assert mod.run_in_scope(scope, mod._current_scope) is scope
+        assert mod._current_scope() is None
+
+    def test_a_child_outside_any_scope_is_not_adopted(self, tmp_path):
+        import sys
+
+        rc, out, _err = mod._run([sys.executable, "-c", "print('ok')"], 20.0)
+        assert (rc, out.strip()) == (0, "ok")
+
+
+class TestPlaywrightHostPlatform:
+    """The port of playwright-core's ``calculatePlatform``."""
+
+    def _host(self, monkeypatch, *, system, release="", machine="x86_64", os_release=None):
+        monkeypatch.delenv("PLAYWRIGHT_HOST_PLATFORM_OVERRIDE", raising=False)
+        monkeypatch.setattr(mod.platform_compat, "IS_MACOS", system == "mac")
+        monkeypatch.setattr(mod.platform_compat, "IS_LINUX", system == "linux")
+        monkeypatch.setattr(mod.platform_compat, "IS_WINDOWS", system == "win")
+        monkeypatch.setattr(mod.platform, "release", lambda: release)
+        monkeypatch.setattr(mod.platform, "machine", lambda: machine)
+
+        def fake_os_release():
+            if os_release is None:
+                raise OSError("absent")
+            return os_release
+
+        monkeypatch.setattr(mod.platform, "freedesktop_os_release", fake_os_release)
+        return mod._playwright_host_platform()
+
+    def test_the_environment_override_wins(self, monkeypatch):
+        monkeypatch.setenv("PLAYWRIGHT_HOST_PLATFORM_OVERRIDE", "debian11-x64")
+        assert mod._playwright_host_platform() == "debian11-x64"
+
+    def test_macos_keys(self, monkeypatch):
+        assert self._host(monkeypatch, system="mac", release="17.7.0") == "mac10.13"
+        assert self._host(monkeypatch, system="mac", release="19.6.0") == "mac10.15"
+        assert self._host(monkeypatch, system="mac", release="23.4.0") == "mac14"
+        assert (
+            self._host(monkeypatch, system="mac", release="23.4.0", machine="arm64")
+            == "mac14-arm64"
+        )
+        # Clamped at the last stable major, as Playwright does.
+        assert self._host(monkeypatch, system="mac", release="30.0.0") == "mac15"
+
+    def test_windows_is_win64(self, monkeypatch):
+        assert self._host(monkeypatch, system="win") == "win64"
+
+    def test_linux_keys(self, monkeypatch):
+        def linux(distro, version, machine="x86_64"):
+            return self._host(
+                monkeypatch,
+                system="linux",
+                machine=machine,
+                os_release={"ID": distro, "VERSION_ID": version},
+            )
+
+        assert linux("ubuntu", "20.04") == "ubuntu20.04-x64"
+        assert linux("ubuntu", "22.04", "aarch64") == "ubuntu22.04-arm64"
+        assert linux("ubuntu", "26.04") == "ubuntu26.04-x64"
+        assert linux("linuxmint", "21") == "ubuntu22.04-x64"
+        assert linux("debian", "11") == "debian11-x64"
+        assert linux("debian", "10") == "ubuntu24.04-x64"
+        assert linux("fedora", "42") == "ubuntu24.04-x64"
+
+    def test_an_unsupported_linux_arch_is_unknown(self, monkeypatch):
+        assert self._host(monkeypatch, system="linux", machine="riscv64") == "<unknown>"
+
+    def test_no_os_release_falls_back_like_playwright(self, monkeypatch):
+        assert self._host(monkeypatch, system="linux") == "ubuntu24.04-x64"

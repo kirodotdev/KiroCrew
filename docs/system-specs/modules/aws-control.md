@@ -919,10 +919,12 @@ The grant is stored PER ACCOUNT as `sessionsIncludeLayerB` in the app's state
 document, `backup.json`, which sits inside the `apps/aws-control/data` directory
 registered in `security._CREW_SECRET_LEAVES` -- the read+write keystone floor,
 beside the `nightly` bit. It is deliberately NOT a `config.json` key.
-`config.json` is writable by any auto-approved agent shell, so a permission
-honoured from there is one a prompt-injected agent can grant itself, and an
-unredacted archive already in a bucket cannot be recalled; an authorization whose
-subject can write it is not an authorization. The sole writer is the owner-gated
+`config.json` is an ordinary settings file: the sandbox seals it read-only against
+an in-sandbox agent shell, but every general settings writer (the config PATCH,
+`kirocrew config set`) still reaches it without an owner gate, so a permission
+honoured from there is one settings edit away from being granted by something other
+than the owner, and an unredacted archive already in a bucket cannot be recalled;
+an authorization that lives beside ordinary settings is not an authorization. The sole writer is the owner-gated
 `POST /api/apps/aws-control/backup/{account}/layer-b`, which opens the state file
 directly rather than through the agent file gate. The grant is per account
 because the risk it prices is the destination bucket, so granting it for one
@@ -1578,11 +1580,15 @@ it and writing the original back -- under `create=True` it only deletes -- and t
 reaches every holder, so such a patch never passes `create=True` and a thread started
 inside it is joined before the patch ends. The contract test pins
 that every module holding a name holds the same object, that a write, a delete and
-their undo reach all of them, that every name in its frozen inventory resolves, that a
-star import carries exactly the inventory's public names, and that `_run_sequence`, the
-one name an owner rebinds through `global`, is read live from `ledger`. Every part logs
-through the facade's logger name, and each lock object has one identity, so log routing
-and the lock order above hold across the parts.
+their undo reach all of them, that `mock.patch` and `monkeypatch.setattr` nested up to
+four deep, in any mix, unwind on every holder as they do on a flat module, that no test
+passes `create=True` to a patch of a name the facade forwards to a part except the one
+allowlisted premise case, that every name in its frozen inventory resolves, that a star
+import carries exactly the inventory's public names, that `_run_sequence`, the one
+name an owner rebinds through `global`, is read live from `ledger`, and that no test
+module writes into a part's namespace apart from the contract test's own premise cases.
+Every part logs through the facade's logger name, and each lock object has one identity,
+so log routing and the lock order above hold across the parts.
 
 ## Dashboard surface
 
@@ -1831,9 +1837,13 @@ with one, or an assignment chain to any of them. A write passing `create` as any
 `False` or `raising` as anything but `True`, or naming an attribute the source does not fix, is
 refused, and one deliberate demonstration is exempt by file and enclosing test. The
 standard-library names the one-module builder bound stay bound in the facade, so each still
-resolves there. Run as `python -m packaging.build` the facade is `__main__`, so it resolves its
-owners against `__package__` rather than `__name__`; run by file path (`python .../build.py`)
-it has no package to resolve them against and refuses with exit status 2, naming the
+resolves there. Importing the facade imports every owner at the end of its body, not on a
+first read: an owner binds what it imports by name when it first runs (`pipeline/scan.py` takes
+`redact_credentials` from `kiro_crew.security`), and a first read inside a test's patch of that
+source would leave the owner holding the patched value for the rest of the process. Run as
+`python -m packaging.build` the facade is `__main__`, so it resolves its owners against
+`__package__` rather than `__name__`; run by file path (`python .../build.py`) it has no package
+to resolve them against, so it imports none and refuses with exit status 2, naming the
 `python -m` entry.
 
 The suites in `crew/packaging/tests/` load a throwaway copy of the whole package
@@ -1844,6 +1854,9 @@ builder file. `test_pipeline_composition.py` pins the frozen name inventory, the
 against the owners' own definitions, that the facade's own code reads no forwarded name as a
 bare global, that a loaded owner is read and written without calling
 `importlib.import_module`, the layer order, the late-binding rule and the write rule above.
+`test/test_packaging_build_refactor_facade.py` pins, in a fresh interpreter, that importing
+the facade has loaded every owner before a test can patch `kiro_crew.security`, and that both
+entries above still hold.
 
 ## The crew container runtime
 

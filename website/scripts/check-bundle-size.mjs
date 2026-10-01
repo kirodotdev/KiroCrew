@@ -223,7 +223,25 @@ export const CHUNK_BUDGETS = {
   // Route-only pages (settings, capabilities, schedule, artifacts, apps, ...) load
   // through React.lazy in their own chunks, so this chunk holds the shell and the
   // chat route; the ceiling keeps the ~5% margin the lines above prescribe.
-  App: 1978 * KB, // measured 1,929,378 B with route-only pages lazy (~5% headroom)
+  // F06 chat-input composition (#15284): +16.8 KB unmangled owner property names; measured 2,027,630 B
+  // Re-measured 2026-09-30 on pristine main @ 2d4278a18: the analyze build emits
+  // this chunk at 2,041,857 B (1994.0 KB) against the 1990 KB (2,037,760 B)
+  // ceiling -- 4,097 B over on main's own tip, so the gate fails on the merge ref
+  // of every open backend-only PR (#15235, #13650) rather than on a new library
+  // or surface, the same recurrence the notes above document. Attribution is
+  // measured, not assumed: main @ 0322c3375 (before the six website/src commits of
+  // the last six hours) builds this chunk at 2,024,935 B (433 modules), 12.8 KB
+  // UNDER budget; main @ 867d7a46d, the ChatInput owner split (#15284), alone
+  // builds it at 2,041,733 B (451 modules) -- +16,798 B, already 3,973 B over --
+  // and the five later website commits net only +124 B on top. So the growth is
+  // #15284's own first-party code (the chat-input owner modules and their
+  // unmangled property names, part of the always-loaded chat-route shell, not a
+  // lazy-loadable surface); its pre-merge note above measured 2,027,630 B, ~14 KB
+  // below what the chunk actually built to after merge, so the 1990 KB ceiling was
+  // set from a stale-low pre-merge build and never had headroom. Back to the ~5%
+  // convention over the true merged measurement (2,041,857 B * 1.05 = 2,143,950 B),
+  // so ordinary first-party growth does not re-trip this on the next PR.
+  App: 2094 * KB, // measured 2,041,857 B on main @ 2d4278a18 with route-only pages lazy (~5% headroom)
 
   // Markdown/math/syntax rendering stack (katex, highlight.js, remark/rehype)
   // -- one deliberate `codeSplitting` group, see vite.config.ts.

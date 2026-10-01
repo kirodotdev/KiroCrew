@@ -413,8 +413,12 @@ def test_execution_namespace_controls_member_prompt_identity(env, entrypoint, se
     env.forbidden.assert_not_called()
 
 
-def _delegate_expectations(prompt: str, store: str) -> None:
-    """The subset a template-selected delegate on a member's store receives.
+def _delegate_expectations(prompt: str, store: str, *, template_instructions: bool = True) -> None:
+    """The subset a member turn with the desk WITHHELD receives.
+
+    Shared by the template-selected delegate and the member selection off its
+    desk (a plain chat on the alias, a cron or channel turn): the two arms of
+    ``_desk_withheld``, one section shape.
 
     Identity, `[PERMANENT RULES]`, the store's anchors and the selected template's
     own instructions stay; the desk protocol and the briefing do not, in any of
@@ -427,7 +431,8 @@ def _delegate_expectations(prompt: str, store: str) -> None:
     assert "[PERMANENT RULES" in prompt
     assert "Do not publish drafts." in prompt
     assert "Preference anchor" in prompt
-    assert "Execution task instructions." in prompt
+    if template_instructions:
+        assert "Execution task instructions." in prompt
     assert "[HOW YOU WORK]" not in prompt
     assert "Front desk vs workshop" not in prompt
     assert "[CURRENT ASSIGNMENT" not in prompt
@@ -501,17 +506,20 @@ def test_template_selected_delegate_session_start_withholds_the_desk_protocol(en
 
 
 @pytest.mark.parametrize("entrypoint", ["message", "session"])
-def test_member_selected_by_name_still_gets_its_whole_desk(env, entrypoint):
-    """The counterpart: a MEMBER selection keeps all four layers, protocol included."""
+def test_member_at_its_desk_gets_its_whole_desk(env, entrypoint):
+    """The counterpart: a member turn the caller names as the DESK keeps all four
+    layers, protocol included. ``member=`` is what the dashboard passes for a
+    ``mode == "member"`` slot -- the pinned DM thread."""
     from kiro_crew.execution_context import resolve_member_execution
 
     execution = resolve_member_execution(KiroCrewConfig.load(), "writer")
-    options = dict(execution_context=execution, project=str(env.project))
+    options = dict(execution_context=execution, project=str(env.project), member="writer")
     if entrypoint == "message":
         prompt, _ = env.builder.build_message("Continue", True, **options)
     else:
         prompt = env.builder.build_session_context(**options)
     assert "You are writer." in prompt
+    assert "This DM thread is your durable working relationship" in prompt
     assert "[HOW YOU WORK]" in prompt
     assert "Front desk vs workshop" in prompt
     assert "[PERMANENT RULES" in prompt
@@ -520,10 +528,52 @@ def test_member_selected_by_name_still_gets_its_whole_desk(env, entrypoint):
     env.forbidden.assert_not_called()
 
 
+@pytest.mark.parametrize("entrypoint", ["message", "session"])
+@pytest.mark.parametrize(
+    "fresh, options",
+    [
+        (True, {}),
+        (False, {}),
+        (False, {"needs_reinjection": True}),
+        (True, {"resumed": True}),
+        (True, {"minimal_context": True}),
+    ],
+)
+def test_member_selected_off_its_desk_keeps_identity_and_rules_but_not_the_desk(
+    env, entrypoint, fresh, options
+):
+    """A member SELECTION with no desk argument is not the member's desk.
+
+    An ordinary dashboard chat that resolved to a crew alias -- every plain chat
+    lands on the stock ``default`` alias this way -- a cron turn or a channel turn
+    carries the member's record and therefore its identity, rules and memory, but
+    no caller named it as the member's DM thread. It gets exactly what a delegate
+    gets: identity and `[PERMANENT RULES]`, no `[HOW YOU WORK]`, no briefing (so
+    nothing tells it to rewrite the briefing file), and no sentence describing a
+    DM thread it is not in. Pinned on every lifecycle the section is rebuilt for
+    and on both entry points.
+    """
+    from kiro_crew.execution_context import resolve_member_execution
+
+    execution = resolve_member_execution(KiroCrewConfig.load(), "writer")
+    base = dict(execution_context=execution, project=str(env.project))
+    if entrypoint == "message":
+        prompt, _ = env.builder.build_message(
+            "Continue", fresh, "dashboard:chat-1-123", **base, **options
+        )
+    else:
+        if not fresh:
+            pytest.skip("build_session_context is the session-start entry point")
+        prompt = env.builder.build_session_context(**base, **options)
+    _delegate_expectations(prompt, env.store, template_instructions=False)
+    assert "This DM thread is your durable working relationship" not in prompt
+    env.forbidden.assert_not_called()
+
+
 def test_a_delegate_with_memory_withheld_gets_no_layer_four_placeholder_either(env):
     """The scope notice explains a member's missing layer 4; a delegate has none.
 
-    With the memory group withheld, the member selected by name is told why its
+    With the memory group withheld, the member AT ITS DESK is told why its
     briefing is missing and not to fill the gap; the delegate on the same store
     keeps identity and rules and gets no `[CURRENT ASSIGNMENT` line of any kind.
     """
@@ -533,7 +583,11 @@ def test_a_delegate_with_memory_withheld_gets_no_layer_four_placeholder_either(e
     config = KiroCrewConfig.load()
     options = dict(project=str(env.project), context_groups=frozenset({CONTEXT_GROUP_PROJECT}))
     member_prompt, _ = env.builder.build_message(
-        "Continue", True, execution_context=resolve_member_execution(config, "writer"), **options
+        "Continue",
+        True,
+        execution_context=resolve_member_execution(config, "writer"),
+        member="writer",
+        **options,
     )
     assert "withheld by this turn's memory/privacy scope]" in member_prompt
     delegate_prompt, _ = env.builder.build_message(
@@ -591,8 +645,11 @@ def test_a_member_with_no_persisted_id_keeps_its_rules_when_session_create_names
     identity and, the part that matters, no `[PERMANENT RULES]`. The arm keeps the
     selection and changes only the template (the record
     `test_explicit_template_child_of_a_member_with_no_persisted_id_keeps_its_selection`
-    pins through the arm itself), so the child stays that member with its rules
-    and, the limit this states, its whole desk.
+    pins through the arm itself), so the child stays that member with its rules.
+    It does NOT keep the desk: no caller names a delegate as the member's
+    DM thread, so the surface half of ``_desk_withheld`` withholds the protocol
+    and the briefing without the record having to say "this member, under that
+    template".
     """
     from dataclasses import replace
 
@@ -621,7 +678,9 @@ def test_a_member_with_no_persisted_id_keeps_its_rules_when_session_create_names
     assert "[PERMANENT RULES" in prompt
     assert "Scribe: keep every draft." in prompt
     assert "Execution task instructions." in prompt
-    assert "[HOW YOU WORK]" in prompt
+    assert "[HOW YOU WORK]" not in prompt
+    assert "[CURRENT ASSIGNMENT" not in prompt
+    assert "This DM thread" not in prompt
     env.forbidden.assert_not_called()
 
 

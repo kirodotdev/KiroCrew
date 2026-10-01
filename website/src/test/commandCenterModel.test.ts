@@ -165,6 +165,22 @@ describe('command center projection', () => {
     expect(model.nodes.filter(n => n.kind === 'workflow').map(n => n.ref)).toEqual(['done'])
     expect(model.nodes.find(n => n.id === 'workflow:done')?.state).toBe('done')
   })
+  it('rests a paused workflow but keeps planning workflows and pending workers unsettled', () => {
+    const workflow = (status: string) => buildCommandCenter(sources({ workflows: [
+      { run_id: status, session_key: 'dashboard:root', status },
+    ] }))
+    const paused = workflow('paused')
+    // Still labelled as waiting, but no tile counts it, so it cannot pin the dock.
+    expect(paused.nodes.find(n => n.id === 'workflow:paused')?.state).toBe('waiting')
+    expect(paused.settled).toBe(true)
+    expect(workflow('pausing').settled).toBe(true)
+    expect(workflow('planning').settled).toBe(false)
+    expect(workflow('finished').settled).toBe(true)
+    // A queued worker also reads `waiting` and is the task's own unfinished work.
+    const pending = buildCommandCenter(sources({ subagents: { root: { w: agent('w', { status: 'pending' }) } } }))
+    expect(pending.nodes.find(n => n.id === 'subagent:w')?.state).toBe('waiting')
+    expect(pending.settled).toBe(false)
+  })
   it('uses a real todo denominator when there is no work board', () => {
     const model = buildCommandCenter(sources({ slots: [slot('root', { todo: { description: 'Plan', tasks: [{ id: '1', text: 'Build', completed: true }, { id: '2', text: 'Test', completed: false }], total: 2, completed: 1, current: 'Test' } })] }))
     expect(model.progress).toEqual({ done: 1, total: 2, source: 'todo' })
@@ -188,5 +204,43 @@ describe('command center projection', () => {
       { slot: 'child', card_id: 'card', questions: [] },
     ] }))
     expect(model.attention.map(a => a.id)).toEqual(['question:root:card', 'question:child:card'])
+  })
+
+  it.each([
+    ['delegated work before live subagent frames arrive', { subagents_running: true }],
+    ['a queued message', { queue_depth: 1 }],
+    ['orchestration outside the active turn', { orchestrating: true }],
+  ] satisfies [string, Partial<ChatSlot>][])('keeps an idle turn unsettled while %s remains', (_description, activity) => {
+    const model = buildCommandCenter(sources({ slots: [slot('root', activity)] }))
+    expect(model.nodes[0].state).toBe('running')
+    expect(model.settled).toBe(false)
+  })
+
+  it('settles only when every run rests, the plan is complete and the board omitted nothing', () => {
+    const done = { item_id: 'a', title: 'a', state: 'accepted' }
+    expect(buildCommandCenter(sources({ work: { items: [done] } })).settled).toBe(true)
+    // A rejected item rests without counting as done; the board is still finished.
+    expect(buildCommandCenter(sources({ work: { items: [done, { item_id: 'r', title: 'r', state: 'rejected' }] } })).settled).toBe(true)
+    expect(buildCommandCenter(sources({ work: { items: [done], omitted: 1 } })).settled).toBe(false)
+    expect(buildCommandCenter(sources({ work: { items: [done, { item_id: 'b', title: 'b', state: 'dispatched' }] } })).settled).toBe(false)
+    expect(buildCommandCenter(sources({ slots: [slot('root', { todo: { tasks: [{ id: '1', text: 'x', completed: false }], total: 1, completed: 0 } }), slot('child', { created_by: 'root' })] })).settled).toBe(false)
+    // A board supplies the progress number, but the plan is still tested on its own.
+    const halfDone = slot('root', { todo: { tasks: [{ id: '1', text: 'x', completed: true }, { id: '2', text: 'y', completed: false }], total: 2, completed: 1 } })
+    expect(buildCommandCenter(sources({ slots: [halfDone, slot('child', { created_by: 'root' })], work: { items: [done] } })).settled).toBe(false)
+    expect(buildCommandCenter(sources({ subagents: { root: { w: agent('w') } } })).settled).toBe(false)
+    expect(buildCommandCenter(sources({ subagents: { root: { w: agent('w', { status: 'done' }) } } })).settled).toBe(true)
+    expect(buildCommandCenter(sources({ approvals: [{ id: 'p', slot: 'child' }] })).settled).toBe(false)
+  })
+})
+
+
+describe('effectiveApprovalMode', () => {
+  it('reads a live app-armed scoped grant as trust, like the chat header', async () => {
+    const { effectiveApprovalMode } = await import('../pages/chat/command-center/model')
+    const { slotApprovalMode } = await import('../utils/slotApprovalMode')
+    const slot = { key: 'crew', messages: 0, running: false, trust: false, trust_scope: 'app:issue-radar' }
+    expect(effectiveApprovalMode('normal', slot)).toBe('trust')
+    expect(effectiveApprovalMode('normal', slot)).toBe(slotApprovalMode('normal', slot))
+    expect(effectiveApprovalMode('normal', { ...slot, trust_scope: '' })).toBe('normal')
   })
 })

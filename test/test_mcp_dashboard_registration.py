@@ -353,6 +353,9 @@ class TestWhatThisSetGrants:
     #: Pinning. Same posture as tag assignment: one metadata flag on a live
     #: session the caller may already file and tag, nothing deleted.
     PIN_TOOLS = {"chat_session_pin"}
+    #: Board columns. Same posture as the tag tools: read, append and reorder;
+    #: no delete and no retag, so nothing the person put on the board is lost.
+    COLUMN_TOOLS = {"chat_tag_column_list", "chat_tag_column_create", "chat_tag_column_move"}
     #: The session-control half. Granted by the SAME assignment as the folder
     #: half — see ``test_session_driving_tools_ship_with_the_folder_tools`` for
     #: why the two classes ride together rather than in two servers.
@@ -360,6 +363,9 @@ class TestWhatThisSetGrants:
         "session_create",
         "session_fork",
         "session_stop",
+        # Wakes a created session from `wait` through the same parked request
+        # the End-wait button writes; nothing discarded, same target fence.
+        "session_end_wait",
         "session_set_model",
         "session_close",
         "session_revive",
@@ -378,7 +384,7 @@ class TestWhatThisSetGrants:
         "session_read_message",
         "session_summary",
     }
-    GRANTED_TOOLS = FOLDER_TOOLS | TAG_TOOLS | PIN_TOOLS | SESSION_TOOLS
+    GRANTED_TOOLS = FOLDER_TOOLS | TAG_TOOLS | COLUMN_TOOLS | PIN_TOOLS | SESSION_TOOLS
 
     def test_the_set_is_exactly_the_folder_tools(self) -> None:
         from kiro_crew import mcp_dashboard

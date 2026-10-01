@@ -20,11 +20,17 @@
       "/opt/lib/codex-acp/index.js"
     ],
     "env_added": {
+      "CODEX_SQLITE_HOME": "<scratch>",
       "DISABLE_MCP_CONFIG_FILTERING": "true",
       "KIROCREW_RUNTIME_PYTHON": "<interpreter>",
+      "KIROCREW_SCRATCH": "<scratch>",
       "KIROCREW_SPAWNED": "1",
       "KIROCREW_SPAWN_INSTANCE": "<spawn-instance>",
-      "PATH": "<augmented-path>"
+      "KIRO_CHAT_LOG_FILE": "<scratch-log>",
+      "PATH": "<augmented-path>",
+      "TEMP": "<scratch>",
+      "TMP": "<scratch>",
+      "TMPDIR": "<scratch>"
     },
     "env_removed": [],
     "served_by": "AcpRuntime"

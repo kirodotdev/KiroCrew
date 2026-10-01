@@ -3778,7 +3778,7 @@ STAGE_DELIVERY_KINDS = frozenset((SUBAGENT_COMPLETION_KIND, SYNTHETIC_RECOVERY_K
 
 
 def owned_stage_delivery_entry(boundary: Any, entries: list[dict]) -> dict | None:
-    """Return the first stage-delivery entry owned by *boundary* (S1)."""
+    """Return the first stage-delivery entry owned by *boundary*."""
     return next(
         (
             entry

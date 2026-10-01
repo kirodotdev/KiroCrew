@@ -55,42 +55,36 @@ with one identity, so callers import from here.
 from __future__ import annotations
 
 import hashlib
+import importlib
 import json
 import logging
 import os
 import re
-import tempfile
+import sys as _sys
+import tempfile  # noqa: F401 - facade surface
 import threading
-import unicodedata
-import uuid
-from dataclasses import asdict, dataclass, field
-from dataclasses import fields as fields_of
+import unicodedata  # noqa: F401 - facade surface
+import uuid  # noqa: F401 - facade surface
+from dataclasses import asdict, dataclass, field  # noqa: F401 - facade surface
+from dataclasses import fields as fields_of  # noqa: F401 - facade surface
 from datetime import datetime, timezone
 from pathlib import Path
-from types import MappingProxyType
-from typing import Any, Callable, Iterator
+from types import MappingProxyType, ModuleType  # noqa: F401 - facade surface
+from typing import Mapping  # noqa: F401 - facade surface
+from typing import TYPE_CHECKING, Any, Callable, Iterator
 from typing import List as _List
-from typing import Mapping
 
 from kiro_crew import hooks, pinned_fs, platform_compat
 from kiro_crew.artifact_source import is_verifiable_root
 from kiro_crew.artifact_store import comments as _threads
 from kiro_crew.artifact_store import records as _records
 from kiro_crew.artifact_store import rules as _rules
-from kiro_crew.artifact_store.comments import filter_comments_for_forward
-from kiro_crew.artifact_store.folders import (  # noqa: F401 — re-export for API compatibility
-    _NO_GENERATIONS,
-    FOLDER_PATH_SEP,
-    MAX_FOLDER_DEPTH,
-    ArtifactFolderStore,
+from kiro_crew.artifact_store.comments import (  # noqa: F401 - facade surface
+    filter_comments_for_forward,
 )
-from kiro_crew.artifact_store.images import (  # noqa: F401 — re-export for API compatibility
-    _IMAGE_MIME_EXT,
-    _sniff_image_dimensions,
-    _sniff_jpeg_dimensions,
-    _sniff_webp_dimensions,
-)
-from kiro_crew.artifact_store.model import (
+from kiro_crew.artifact_store.folders import ArtifactFolderStore
+from kiro_crew.artifact_store.images import _IMAGE_MIME_EXT, _sniff_image_dimensions
+from kiro_crew.artifact_store.model import (  # noqa: F401 - facade surface
     EXPECT_ABSENT,
     Artifact,
     ArtifactAlreadyExistsError,
@@ -105,29 +99,11 @@ from kiro_crew.artifact_store.model import (
     ImageMetadata,
     _ExpectAbsent,
 )
-from kiro_crew.artifact_store.records import ALLOWED_EVENT_TYPES
 from kiro_crew.artifact_store.rules import (  # noqa: F401 — re-export for API compatibility
-    _EXT_KIND_MAP,
-    _HARDCODED_COLOR_RE,
-    _HREF_ATTR_RE,
-    _HTML_SNIFF_MARKERS,
-    _MD_HEADING_RE,
-    _SLUG_NORMALIZE_RE,
-    _SLUG_RE,
-    _SVG_ROOT_RE,
-    _TAG_RE,
-    ALLOWED_KINDS,
-    ALLOWED_SOURCES,
-    DOC_EXTENSIONS,
-    MAX_DESCRIPTION_LEN,
-    MAX_NAME_LEN,
-    MAX_SOURCE_PATH_LEN,
-    MAX_TAGS,
     USER_SELECTABLE_KINDS,
     _infer_kind,
     _markdown_misclassification_reason,
     _session_touched,
-    _strip_session_scope,
     _validate_description,
     _validate_kind,
     _validate_name,
@@ -142,7 +118,7 @@ from kiro_crew.artifact_store.rules import (  # noqa: F401 — re-export for API
 )
 from kiro_crew.config.loader import KiroCrewConfig, config_dir
 from kiro_crew.constants import ARTIFACT_MAX_CONTENT_BYTES
-from kiro_crew.deploy.webapp_types import (
+from kiro_crew.deploy.webapp_types import (  # noqa: F401 - facade surface
     WebAppArchitecture,
     WebAppCost,
     WebAppDeployTarget,
@@ -152,7 +128,7 @@ from kiro_crew.deploy.webapp_types import (
     webapp_metadata_from_dict,
 )
 from kiro_crew.metrics.events import ARTIFACTS_CREATED, emit_counter
-from kiro_crew.publish_provider import DEFAULT_PROVIDER
+from kiro_crew.publish_provider import DEFAULT_PROVIDER  # noqa: F401 - facade surface
 from kiro_crew.security import (
     canonical_path_refusal,
     is_sensitive_canonical_path,
@@ -160,99 +136,78 @@ from kiro_crew.security import (
     is_unverifiable_path_refusal,
     sensitive_path_refusal,
 )
-from kiro_crew.slugs import slug_hash_fallback
+from kiro_crew.slugs import slug_hash_fallback  # noqa: F401 - facade surface
 
-# The facade's whole star-import surface, the names its owner modules define included.
-__all__ = [
-    "ALLOWED_EVENT_TYPES",
-    "ALLOWED_KINDS",
-    "ALLOWED_SOURCES",
-    "ARTIFACTS_CREATED",
-    "ARTIFACT_MAX_CONTENT_BYTES",
-    "Any",
-    "Artifact",
-    "ArtifactAlreadyExistsError",
-    "ArtifactComment",
-    "ArtifactError",
-    "ArtifactFolderStore",
-    "ArtifactNotFoundError",
-    "ArtifactPublication",
-    "ArtifactReplacedError",
-    "ArtifactStillPublishedError",
-    "ArtifactStore",
-    "ArtifactValidationError",
-    "Callable",
-    "DEFAULT_PROVIDER",
-    "DOC_EXTENSIONS",
-    "EXPECT_ABSENT",
-    "FOLDER_PATH_SEP",
-    "ForkMetadata",
-    "ImageMetadata",
-    "Iterator",
-    "KiroCrewConfig",
-    "MAX_AUTO_WIDGET_ARTIFACTS",
-    "MAX_COMMENTS_PER_ARTIFACT",
-    "MAX_CONTENT_BYTES",
-    "MAX_DESCRIPTION_LEN",
-    "MAX_EVENTS_PER_ARTIFACT",
-    "MAX_FOLDER_DEPTH",
-    "MAX_NAME_LEN",
-    "MAX_SOURCE_PATH_LEN",
-    "MAX_TAGS",
-    "MAX_VERSIONS",
-    "Mapping",
-    "MappingProxyType",
-    "Path",
-    "USER_SELECTABLE_KINDS",
-    "WebAppArchitecture",
-    "WebAppCost",
-    "WebAppDeployTarget",
-    "WebAppLifecycle",
-    "WebAppMetadata",
-    "WebAppTeardown",
-    "annotations",
-    "asdict",
-    "canonical_path_refusal",
-    "config_dir",
-    "dataclass",
-    "datetime",
-    "detect_editor_kind",
-    "emit_counter",
-    "field",
-    "fields_of",
-    "filter_comments_for_forward",
-    "get_default_folder_store",
-    "get_default_store",
-    "has_unthemed_hardcoded_colors",
-    "hashlib",
-    "hooks",
-    "is_document_path",
-    "is_sensitive_canonical_path",
-    "is_sensitive_path",
-    "is_unverifiable_path_refusal",
-    "is_verifiable_root",
-    "json",
-    "logger",
-    "logging",
-    "os",
-    "pinned_fs",
-    "re",
-    "sensitive_path_refusal",
-    "slug_hash_fallback",
-    "slug_is_well_formed",
-    "slugify",
-    "tempfile",
-    "threading",
-    "timezone",
-    "unicodedata",
-    "uuid",
-    "webapp_metadata_from_dict",
-]
+# ── Forwarded names ──────────────────────────────────────────────────────────
+# Rule data an owner's own code reads has ONE binding, in that owner. This module
+# forwards those names instead of holding a copy of them: a read here answers with
+# the owner's binding, and a write or a delete here (``monkeypatch``, ``mock.patch``)
+# reaches it, so one patch through either module steers every reader. Both resolve
+# the owner from ``sys.modules`` and import only on a miss.
+
+#: Forwarded name -> the dotted module that DEFINES it. Read by ``__getattr__``, so
+#: this module binds none of these names in its own namespace.
+_EXPORTS: dict[str, str] = {
+    "FOLDER_PATH_SEP": "kiro_crew.artifact_store.folders",
+    "MAX_FOLDER_DEPTH": "kiro_crew.artifact_store.folders",
+    "_NO_GENERATIONS": "kiro_crew.artifact_store.folders",
+    "_sniff_jpeg_dimensions": "kiro_crew.artifact_store.images",
+    "_sniff_webp_dimensions": "kiro_crew.artifact_store.images",
+    "ALLOWED_EVENT_TYPES": "kiro_crew.artifact_store.records",
+    "ALLOWED_KINDS": "kiro_crew.artifact_store.rules",
+    "ALLOWED_SOURCES": "kiro_crew.artifact_store.rules",
+    "DOC_EXTENSIONS": "kiro_crew.artifact_store.rules",
+    "MAX_DESCRIPTION_LEN": "kiro_crew.artifact_store.rules",
+    "MAX_NAME_LEN": "kiro_crew.artifact_store.rules",
+    "MAX_SOURCE_PATH_LEN": "kiro_crew.artifact_store.rules",
+    "MAX_TAGS": "kiro_crew.artifact_store.rules",
+    "_EXT_KIND_MAP": "kiro_crew.artifact_store.rules",
+    "_HARDCODED_COLOR_RE": "kiro_crew.artifact_store.rules",
+    "_HREF_ATTR_RE": "kiro_crew.artifact_store.rules",
+    "_HTML_SNIFF_MARKERS": "kiro_crew.artifact_store.rules",
+    "_MD_HEADING_RE": "kiro_crew.artifact_store.rules",
+    "_SLUG_NORMALIZE_RE": "kiro_crew.artifact_store.rules",
+    "_SLUG_RE": "kiro_crew.artifact_store.rules",
+    "_SVG_ROOT_RE": "kiro_crew.artifact_store.rules",
+    "_TAG_RE": "kiro_crew.artifact_store.rules",
+    "_strip_session_scope": "kiro_crew.artifact_store.rules",
+}
+
+
+def _module(dotted: str) -> ModuleType:
+    """Return a module from where modules are stored, importing it only on a miss.
+
+    ``sys.modules`` is read first, so a caller that rebinds ``importlib.import_module``
+    for its own reasons cannot reroute these names, and a purged and reimported owner
+    is seen at once.
+    """
+    try:
+        return _sys.modules[dotted]
+    except KeyError:
+        return importlib.import_module(dotted)
+
+
+# Hidden from type checkers, which resolve each forwarded name from the typed imports
+# at the end of this module instead of accepting any name at all.
+if not TYPE_CHECKING:
+
+    def __getattr__(name: str) -> Any:
+        """Read a forwarded name from the module that owns it (:pep:`562`)."""
+        if name not in _EXPORTS:
+            raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+        return getattr(_module(_EXPORTS[name]), name)
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(_EXPORTS))
+
 
 logger = logging.getLogger(__name__)
 
-# The classes keep naming this module as their home, so tracebacks, qualified type
-# names in logs and pickled references read the same whichever owner defines them.
+# The errors keep naming this module as their home, so a traceback and a logged error
+# type read the same whichever owner raises them; ``inspect.getsource`` cannot find
+# them through that name. Every other moved class keeps its owner's name, so the
+# source lookup finds its definition.
 for _moved in (
     ArtifactError,
     ArtifactNotFoundError,
@@ -260,13 +215,6 @@ for _moved in (
     ArtifactValidationError,
     ArtifactStillPublishedError,
     ArtifactReplacedError,
-    _ExpectAbsent,
-    ForkMetadata,
-    ArtifactPublication,
-    ArtifactComment,
-    ImageMetadata,
-    Artifact,
-    ArtifactFolderStore,
 ):
     _moved.__module__ = __name__
 del _moved
@@ -1879,7 +1827,7 @@ class ArtifactStore:
         if not artifact_id:
             return None
 
-        from kiro_crew.publish_provider import DEFAULT_PROVIDER
+        from kiro_crew.publish_provider import DEFAULT_PROVIDER  # noqa: F811
 
         def _provider_ok(rec_provider: str) -> bool:
             # No provider filter → id-only match. Exact provider match → ok.
@@ -2687,3 +2635,77 @@ def get_default_folder_store() -> "ArtifactFolderStore":
                 path=config_dir() / ArtifactFolderStore._FILE
             )
         return _default_folder_store
+
+
+class _ReExportModule(ModuleType):
+    """Send a write or a delete of a forwarded name to the module that owns it.
+
+    Binding the name here instead would shadow the owner permanently, since
+    ``__getattr__`` runs only for a name this module does not hold, and a test harness
+    restoring the value it read would install it here for the life of the process.
+    Forwarding leaves one value to patch and one to put back, so ``monkeypatch`` and
+    ``mock.patch`` restore exactly, nested in either order: ``mock.patch`` exits by
+    deleting the name and then, finding it gone, writing its original back. With
+    ``create=True`` it skips that write, so the owner would lose the name;
+    ``test_artifacts_refactor_create_guard`` refuses such a patch.
+    """
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name in _EXPORTS:
+            setattr(_module(_EXPORTS[name]), name, value)
+        else:
+            super().__setattr__(name, value)
+
+    def __delattr__(self, name: str) -> None:
+        if name in _EXPORTS:
+            delattr(_module(_EXPORTS[name]), name)
+        else:
+            super().__delattr__(name)
+
+
+# Installed last, so forwarding is live for every caller but never runs while this
+# module is still binding its own names.
+_sys.modules[__name__].__class__ = _ReExportModule
+
+#: Imported only to run the forwarding, so a star import leaves them out.
+_MACHINERY = frozenset({"ModuleType", "TYPE_CHECKING", "importlib"})
+
+# A star import reads this list and never reaches ``__getattr__``. Derived from what
+# this module binds and the forwarding table, so it is not a third list to keep in step.
+__all__ = sorted(
+    name
+    for name in set(globals()) | set(_EXPORTS)
+    if not name.startswith("_") and name not in _MACHINERY
+)
+
+
+if TYPE_CHECKING:  # every forwarded name, for type checkers and IDEs
+    from kiro_crew.artifact_store.folders import (  # noqa: F401
+        _NO_GENERATIONS,
+        FOLDER_PATH_SEP,
+        MAX_FOLDER_DEPTH,
+    )
+    from kiro_crew.artifact_store.images import (  # noqa: F401
+        _sniff_jpeg_dimensions,
+        _sniff_webp_dimensions,
+    )
+    from kiro_crew.artifact_store.records import ALLOWED_EVENT_TYPES  # noqa: F401
+    from kiro_crew.artifact_store.rules import (  # noqa: F401
+        _EXT_KIND_MAP,
+        _HARDCODED_COLOR_RE,
+        _HREF_ATTR_RE,
+        _HTML_SNIFF_MARKERS,
+        _MD_HEADING_RE,
+        _SLUG_NORMALIZE_RE,
+        _SLUG_RE,
+        _SVG_ROOT_RE,
+        _TAG_RE,
+        ALLOWED_KINDS,
+        ALLOWED_SOURCES,
+        DOC_EXTENSIONS,
+        MAX_DESCRIPTION_LEN,
+        MAX_NAME_LEN,
+        MAX_SOURCE_PATH_LEN,
+        MAX_TAGS,
+        _strip_session_scope,
+    )

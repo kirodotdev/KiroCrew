@@ -1,16 +1,20 @@
 import type { ChatSlot, SubagentActivity } from '../../../types'
+import { slotApprovalMode } from '../../../utils/slotApprovalMode'
 import type { ApprovalModeKey } from '../../../components/ApprovalModePicker'
 import { i18nT } from '../../../i18n/t'
 import { fmtNumber } from '../../../i18n/format'
 import { slotChannelNamespace } from '../../../utils/channelOrigin'
+import { deriveToolCallTitle, parseToolArgs } from '../../../utils/toolCallTitle'
 
 export type RunState = 'running' | 'idle' | 'done' | 'blocked' | 'waiting' | 'needs_input' | 'stopped'
 export const APPROVAL_MODE_KEYS: Record<ApprovalModeKey, string> = {
   normal: 'components.approvalModePicker.normal_label', trust_reads: 'components.approvalModePicker.reads_label',
   trust: 'components.approvalModePicker.trust_label', yolo: 'components.approvalModePicker.yolo_label',
 }
+/** The chat header's own mode rule, so the two never disagree: a live
+ * app-armed scoped grant auto-approves too, and reads as trust. */
 export function effectiveApprovalMode(globalMode: string, slot?: ChatSlot): ApprovalModeKey {
-  return globalMode === 'yolo' ? 'yolo' : slot?.trust ? 'trust' : slot?.trust_reads ? 'trust_reads' : 'normal'
+  return slotApprovalMode(globalMode, slot)
 }
 export interface RunNode {
   id: string
@@ -54,6 +58,15 @@ export interface AttentionItem {
   approval?: PendingApproval
   approvalMode?: ApprovalModeKey
   native?: boolean
+}
+/** The command an approval asks about, as the transcript would title it. Empty
+ * when the inventory carried no tool input to title. */
+export function approvalTitle(approval: PendingApproval): string {
+  const input = approval.tool_input
+  return deriveToolCallTitle({
+    toolName: approval.tool, title: approval.tool || '',
+    rawInput: parseToolArgs(input) ?? (typeof input === 'string' ? { command: input } : input),
+  }).title
 }
 export interface WorkItem {
   item_id: string
@@ -161,9 +174,11 @@ export function buildCommandCenter(source: CommandCenterSources) {
       addAttention({ id: `session-input:${s.key}`, slot: s.key, kind: 'open_session' })
     }
   }
+  // A turn can be idle while delegated or orchestrated work is active, or while
+  // a queued message waits to run; those slot flags keep the session running.
   const nodes: RunNode[] = slots.map((s, index) => ({
     id: `session:${s.key}`, kind: 'session', ref: s.key, slot: s.key, title: s.title && s.title !== s.key ? s.title : '', ordinal: index + 1,
-    state: s.needs_input || s.pending_approval ? 'needs_input' : s.running ? 'running' : 'idle',
+    state: s.needs_input || s.pending_approval ? 'needs_input' : s.running || s.subagents_running || s.orchestrating || (s.queue_depth ?? 0) > 0 ? 'running' : 'idle',
     detail: s.todo?.current || undefined,
   }))
   const agentIds = new Set<string>()
@@ -179,8 +194,12 @@ export function buildCommandCenter(source: CommandCenterSources) {
   for (const w of source.workflows) {
     const slot = slotKey(w.session_key || '')
     if (!keys.has(slot)) continue
+    // A paused workflow is resumable, so its label is "waiting" rather than
+    // stopped; planning is active work even before execution starts.
     nodes.push({ id: `workflow:${w.run_id}`, kind: 'workflow', ref: w.run_id, slot, title: w.name && w.name !== w.run_id ? w.name : '', ordinal: nodes.length + 1,
-      state: w.status === 'finished' ? 'done' : w.status === 'failed' ? 'blocked' : w.status === 'cancelled' ? 'stopped' : w.status === 'running' ? 'running' : 'idle',
+      state: w.status === 'finished' ? 'done' : w.status === 'failed' ? 'blocked' : w.status === 'cancelled' ? 'stopped'
+        : w.status === 'paused' || w.status === 'pausing' ? 'waiting'
+          : w.status === 'running' || w.status === 'planning' || w.status === 'planned' ? 'running' : 'idle',
       detail: w.last_log, error: w.error || undefined })
   }
   const workItems = (source.work?.items || []).map(w => ({ ...w,
@@ -194,9 +213,23 @@ export function buildCommandCenter(source: CommandCenterSources) {
     : !workItems.length && todo?.tasks.length
       ? { done: todo.tasks.filter(t => t.completed).length, total: todo.tasks.length, source: 'todo' as const }
       : null
+  const RESTING: RunState[] = ['idle', 'done', 'stopped']
+  // A paused workflow waits on nobody and no tile counts or lists it, so it
+  // rests; a pending subagent or a work item's open question also reads
+  // `waiting`, but those are still the task's own unfinished work.
+  const atRest = (node: { kind?: RunNode['kind']; state: RunState }) => RESTING.includes(node.state) || (node.kind === 'workflow' && node.state === 'waiting')
   return { nodes, attention, workItems, progress,
     running: nodes.filter(n => n.state === 'running').length,
     blocked: nodes.filter(n => n.state === 'blocked').length + workItems.filter(w => w.state === 'blocked').length,
+    // Nothing runs, waits or asks, and every counted item rests. An idle session
+    // with an open plan is NOT settled: the plan is the thing the dock still has
+    // to show, so the plan is tested on its own whether or not a work board
+    // supplies the progress number. A board that omitted entries is not settled
+    // either: the items it did not return may be the open ones. The board needs
+    // no done-over-total test: `done` counts acceptances, so a rejected or
+    // abandoned item rests without ever counting, and `workItems.every` covers it.
+    settled: attention.length === 0 && !source.work?.omitted && nodes.every(atRest)
+      && workItems.every(atRest) && (!todo?.tasks.length || todo.tasks.every(t => t.completed)),
   }
 }
 

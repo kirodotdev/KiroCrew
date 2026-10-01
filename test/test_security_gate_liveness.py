@@ -127,7 +127,17 @@ def _url_payload_command(n: int) -> str:
 #: Three incomplete dumps in a row log one warning, so a host whose table never
 #: reads can be told apart from a target that is really this machine.
 #:
-#: Re-pinned again, from 27,942, for ``command_invokes_git`` in ``readonly_bash.py``
+#: Re-pinned from 27,942 for the NUL blanking in ``inline_payload._lex``: one line
+#: that swaps each NUL for a space before tokenizing, plus the docstring saying why.
+#: CPython 3.12 raises ``SystemError`` for a NUL after an indented block, which
+#: escaped the lexer and crashed the gate on an ordinary ``b'\0'`` in a payload.
+#: No new rule and no new matching pass.
+#: Raised again, from 27,948, by one line: the ``vouched-executions`` entry in
+#: ``_SENSITIVE_HOME_DIRS``. Each file there is the gateway's restart-surviving
+#: word that a session may reach its member's private store, so no file tool may
+#: write it. The fuller reason lives beside its ``sandbox._CREW_HIDDEN_LEAVES`` mask.
+#:
+#: Re-pinned again, from 27,949, for ``command_invokes_git`` in ``readonly_bash.py``
 #: plus the ``_SEGMENT_SEPARATOR_RE`` constant it shares with ``_classify_bash``.
 #: Heartbeat has no approver, ever, and excludes every git invocation from its
 #: read-only shell trust because git reads ``.git/config`` (``core.fsmonitor``,
@@ -143,7 +153,7 @@ def _url_payload_command(n: int) -> str:
 #: added here fails this gate and has to be re-pinned deliberately, with its reason
 #: written above. The guards that detect a monolith growing back are the per-file cap
 #: and the facade's share below, and both must stay untouched.
-_PACKAGE_LINE_BUDGET = 27_987
+_PACKAGE_LINE_BUDGET = 27_994
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

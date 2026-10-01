@@ -48,10 +48,12 @@ WINDOW_SECS = 300.0
 #: so that budget only has to absorb retries and a nested tree. A tag vocabulary is
 #: a handful of workflow states, so tags share the folder budget: enough to seed
 #: a board in one turn, far below what an unattended loop would need to grow
-#: ``tags.json`` without bound.
+#: ``tags.json`` without bound. Board columns are one per workflow state for the
+#: same reason, so they get the same budget.
 MAX_SESSION_CREATES_PER_WINDOW = 20
 MAX_FOLDER_CREATES_PER_WINDOW = 10
 MAX_TAG_CREATES_PER_WINDOW = 10
+MAX_TAG_COLUMN_CREATES_PER_WINDOW = 10
 
 #: How often stale buckets are swept, so the map cannot grow without bound across
 #: the many distinct session keys a long-lived gateway sees.
@@ -64,11 +66,13 @@ _last_sweep = 0.0
 SESSION_CREATE = "session_create"
 FOLDER_CREATE = "folder_create"
 TAG_CREATE = "tag_create"
+TAG_COLUMN_CREATE = "tag_column_create"
 
 _BUDGETS = {
     SESSION_CREATE: MAX_SESSION_CREATES_PER_WINDOW,
     FOLDER_CREATE: MAX_FOLDER_CREATES_PER_WINDOW,
     TAG_CREATE: MAX_TAG_CREATES_PER_WINDOW,
+    TAG_COLUMN_CREATE: MAX_TAG_COLUMN_CREATES_PER_WINDOW,
 }
 
 

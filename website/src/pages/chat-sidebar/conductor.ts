@@ -10,6 +10,26 @@ import { isPeerRow, sessionRowIdentity } from './rowIdentity'
 import { readConductorExpanded, CONDUCTOR_EXPANDED_LS_KEY } from './persistence'
 import type { ChatSlot } from '../../types'
 
+/**
+ * The creator a row cites, as the (origin, slot key) pair the lane resolves it in, or
+ * null when the row cites nobody it could nest under.
+ *
+ * `parent.key` is a bare slot key in the key space of the row's OWN gateway, so it is
+ * resolved among rows of the same `peer_id`. `parent.hub_key` is the one half the hub
+ * stamps in ITS key space: a peer row whose creator is a peer slot this hub drives
+ * cites the LOCAL row driving it (the peer's own key for that creator never crosses
+ * the wire), so it is resolved among local rows -- origin `undefined`. Every reader
+ * that asks "does this creator exist" or "which row is it" goes through this, so the
+ * two halves cannot be resolved in different spaces by different readers.
+ */
+export function citedCreatorOf(row: Pick<Slot, 'parent' | 'peer_id'>): { origin: string | undefined; key: string } | null {
+  const hubKey = row.parent?.hub_key
+  if (typeof hubKey === 'string' && hubKey !== '') return { origin: undefined, key: hubKey }
+  const cited = row.parent?.key
+  if (cited == null || cited === '') return null
+  return { origin: row.peer_id, key: cited }
+}
+
 /** Re-reads the slots while the lineage projection seeds; whether any row has a creator. */
 export function useLineageSeed({ localSlots, dispatch, allRows }: {
   localSlots: Slot[]
@@ -150,7 +170,8 @@ export function useConductorLane({ conductorLaneActive, allRows, allLiveSlots, i
    * merely concealed has a creator that is open and running, so the same glyph would
    * state something false about a live session. Read against the population before any
    * concealment, a present creator means the lane is simply not nesting -- which is what
-   * `citesParent` says.
+   * `citesParent` says. Looked up with the pair `citedCreatorOf` gives, so a hub-stamped
+   * `hub_key` is checked among local rows and a peer `key` among its own origin's.
    */
   const citedCreatorExists = useMemo(() => {
     const byOrigin = new Map<string | undefined, Set<string>>()
@@ -229,7 +250,10 @@ export function useConductorLane({ conductorLaneActive, allRows, allLiveSlots, i
     // slot key in the key space of the CHILD's own gateway, so the creator is the row
     // carrying that key with the SAME origin. Resolving through this index rather than
     // composing the qualified form keeps that format the server's alone, and makes a
-    // peer row unable to nest under a local row whose key merely matches.
+    // peer row unable to nest under a local row whose key merely matches. The one
+    // citation that DOES cross origins is `parent.hub_key`, which the hub stamps in its
+    // own key space (see `citedCreatorOf`): it resolves among local rows, so a worker
+    // a remote-executed lead opened on the peer hangs from the lead's local row.
     //
     // Nested by origin rather than keyed on one joined string: there is then no
     // separator, so no peer id or slot key containing it can be read as the wrong pair.
@@ -245,9 +269,9 @@ export function useConductorLane({ conductorLaneActive, allRows, allLiveSlots, i
     return buildLineage(conductorRows, {
       identityOf: sessionRowIdentity,
       parentIdentityOf: s => {
-        const cited = s.parent?.key
-        if (cited == null) return null
-        return byOrigin.get(s.peer_id)?.get(cited) ?? null
+        const cited = citedCreatorOf(s)
+        if (cited === null) return null
+        return byOrigin.get(cited.origin)?.get(cited.key) ?? null
       },
     })
   }, [conductorLaneActive, conductorRows])

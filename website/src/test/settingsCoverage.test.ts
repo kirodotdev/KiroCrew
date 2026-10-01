@@ -60,9 +60,11 @@ function readPanel(file: string): string {
  * an unlisted file fails, so the choice is always conscious.
  */
 const UNMAPPED_PANELS: Record<string, string> = {
+  'BrowserInstallStatus.tsx': 'read-only install progress region BrowserPanel mounts above its sections, zero controls',
   'ChannelDisabledPanel.tsx': 'informational placeholder (locked/loading/error states), zero controls',
   'ChannelFolderBackfill.tsx': 'one action button shared by the channel panels; files existing conversations into the folder the OWNING panel configures, and holds no setting of its own',
   'ChannelsPanel.tsx': 'list-detail shell routing to per-channel panels; carries no controls of its own',
+  'DecisionsProviderPicker.tsx': 'the Decisions card\'s provider choice writes a preset id through the owner-only PUT /api/decisions/provider, not a config path, so there is no configKey to index; it is reached through the card the developer.decisions-jev entry deep-links to',
   'DiscordPanel.tsx': 'thin BotChannelSpec wrapper; BotChannelPanel fans its entries out to channel=discord',
   'TelegramPanel.tsx': 'thin BotChannelSpec wrapper; BotChannelPanel fans its entries out to channel=telegram',
   'FeishuPanel.tsx': 'thin BotChannelSpec wrapper; BotChannelPanel fans its entries out to channel=feishu',
@@ -158,13 +160,13 @@ const WAIVED_BARE_CONTROLS: Record<string, { counts: BareCounts; reason: string 
       'gateway auto-update Toggle has a ternary label (manual: about.update-notifications); ' +
       'the two channel SegmentedControls share manual: about.update-channel',
   },
-  'BrowserPanel.tsx': {
-    counts: { Input: 1 },
-    reason: 'attach-token credential field with Save/Clear semantics (manual: browser.attach-token)',
-  },
   'ChatPanel.tsx': {
     counts: { Input: 2 },
     reason: "LinkPatternsEditor's per-row pattern/url fields — part of a composite the extractor indexes whole (chat.text-link-patterns)",
+  },
+  'ConnectBrowserSection.tsx': {
+    counts: { Input: 1 },
+    reason: 'attach-token credential field with Save/Clear semantics (manual: browser.attach-token)',
   },
   'DecisionsCard.tsx': {
     counts: { input: 1 },
@@ -173,6 +175,14 @@ const WAIVED_BARE_CONTROLS: Record<string, { counts: BareCounts; reason: string 
       "NotificationsPanel's volume does; it is reached through the card the " +
       'developer.decisions-jev entry deep-links to, and a manual entry for it would ' +
       'advertise a row that the capabilities.decisions ceiling can withdraw',
+  },
+  'DecisionsProviderPicker.tsx': {
+    counts: { input: 2 },
+    reason:
+      'the provider radio group and the local-server port field: neither is a config ' +
+      'path (the choice is written through the owner-only provider route as a preset ' +
+      'id and a port), and both sit inside the card the developer.decisions-jev entry ' +
+      'deep-links to',
   },
   'DisplayPanel.tsx': {
     counts: { SimpleSelect: 1, Input: 1 },

@@ -55,8 +55,9 @@ import { useSelectionQuoteAsk } from '../chat-core/composer/selectionActions'
 import { addNotification, removeNotificationByTs } from '../store/notificationsSlice'
 import { onTerminalReady, sendToTerminalSession, sendRawToTerminalSession, getTerminalShell, getTerminalFenceShells } from '../utils/terminalRegistry'
 import { runInTerminalText, RUN_IN_TERMINAL_READY_DEADLINE_MS, RUN_IN_TERMINAL_OPENING_GRACE_MS } from '../utils/fenceShell'
-import { addTab as addDockTerminal, removeTab as removeDockTerminal, hasTab as hasDockTerminal } from '../hooks/useBottomTerminal'
-import { isPopoutOpen as isTerminalPopoutOpen } from '../utils/terminalPopout'
+import { addTab as addDockTerminal, removeTab as removeDockTerminal, hasTab as hasDockTerminal, reuseCurrentTab as reuseDockTerminal } from '../hooks/useBottomTerminal'
+import { isPopoutOpen as isTerminalPopoutOpen, focusPopout as focusTerminalPopout } from '../utils/terminalPopout'
+import { copyToClipboard } from '../utils/clipboard'
 import { disposeTerminalSession, useDeleteTerminalSession } from '../components/CliPanel'
 import { interceptSlashCommand, isInterceptedSlashCommand } from './chat/ChatInput'
 import { triggerRefresh, updateSlot, slotIsRemoteBound, sseSlotTitle } from '../store/dashboardSlice'
@@ -270,7 +271,8 @@ import { anchorForSlot, loadLayout, sessionSlots } from '../hooks/splitLayoutSto
 import { modelSupportsEffort } from '../lib/effort'
 import { mcpAppTabTitle } from '../lib/mcpAppSrcdoc'
 import { countCompletedTurns } from '../lib/completedTurns'
-import { displayModel, pinIsWithheld } from '../lib/model'
+import { displayModel, modelChipMarker, pinIsWithheld } from '../lib/model'
+import { useSettingsDefaultModel } from '../hooks/useSettingsDefaultModel'
 import { slotApprovalMode } from '../utils/slotApprovalMode'
 import FollowUpCard from '../components/FollowUpCard'
 import FolderSuggestionCard from './chat/FolderSuggestionCard'
@@ -334,6 +336,7 @@ import { loadChatConfig, CONTENT_WIDTH, type ChatConfig } from './chat/ChatSetti
 import { scaleContentWidth } from './chat/contentWidth'
 import SessionFlyout, { TOGGLE_RECT } from './chat/SessionFlyout'
 import { focusComposer, focusComposerAfter, revealComposer } from './chat/composerFocus'
+import { isStaleProjectDirError, resolveFolderAgent, resolveFolderProjectDir } from '../utils/folderAgent'
 import { useHoverIntent } from '../hooks/useHoverIntent'
 import { useKnowledgeFetch, extractKnowledgeQuery, expandKnowledgeBlock } from './chat/useKnowledgeFetch'
 import { KnowledgePicker } from './chat/KnowledgePicker'
@@ -2284,6 +2287,42 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // event time, so it is declared before the controller and refreshed every render.
   const currentProjectRef = useRef<string | undefined>(undefined)
   currentProjectRef.current = slots.find(s => s.key === activeSlot)?.project || undefined
+
+  // Opt-in "reuse the current terminal" for Run-in-terminal
+  // (dashboard.terminal.reuse_current, default off — the fresh-shell default is
+  // unchanged). Read from the shared kirocrewConfig query and mirrored onto a
+  // ref because the run-in-terminal handler below installs once ([]-deps) and
+  // reads it at event time, not at mount. Only a literal `true` turns it on —
+  // the same "one literal decides it" rule the completion toggle uses, so a
+  // hand-edited non-boolean cannot half-enable it.
+  const { data: terminalCfg, isError: terminalCfgIsError, isPending: terminalCfgIsPending } = useQuery<{ dashboard?: { terminal?: { reuse_current?: boolean } } }>({
+    queryKey: ['kirocrewConfig'],
+    queryFn: () => api.kirocrewConfig(),
+    staleTime: 30_000,
+  })
+  const terminalReuseRef = useRef(false)
+  terminalReuseRef.current = terminalCfg?.dashboard?.terminal?.reuse_current === true
+  // The handler installs once ([]-deps) and reads at event time, so the query's
+  // UNSETTLED state is mirrored onto a ref too. Until the initial read settles
+  // we cannot know whether reuse was saved on, and collapsing an unknown to the
+  // fresh-tab EXECUTE path would run a command a reuse-on user expected only to
+  // be copied — the exact harm this setting removes. So an unsettled read takes
+  // the copy-never-run path (benign if reuse was actually off: the user just
+  // pastes it themselves) rather than executing on a guess. `isPending` is true
+  // only before the first result (data or error) arrives.
+  const terminalCfgUnsettledRef = useRef(false)
+  terminalCfgUnsettledRef.current = terminalCfgIsPending === true
+  // The run-in-terminal handler installs once ([]-deps) and reads at event
+  // time, so the query's FAILED state is mirrored onto a ref too. A read
+  // failure is distinct from a legitimately-off setting: when the config could
+  // not be read we cannot know whether reuse was on, so the handler surfaces
+  // that read failure through ErrorNotice (errors-use-error-notice) rather than
+  // silently collapsing a saved reuse-on into the fresh-tab path with nothing
+  // on screen. `isError` only after the query has actually errored, so a
+  // pending first load still takes the silent-default branch, not a false alarm.
+  const terminalCfgReadFailedRef = useRef(false)
+  terminalCfgReadFailedRef.current = terminalCfgIsError === true
+
   const resources = useChatPageResourcesController({
     activeSlot,
     activeSlotRef,
@@ -3536,6 +3575,14 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // future payload change) can resolve to a non-array, and `= []` only covers
   // undefined — which crashed the whole chat page on `.find`.
   const chatFolders: ChatFolder[] = Array.isArray(chatFoldersRaw) ? chatFoldersRaw : NO_CHAT_FOLDERS
+  // Folder data is usable whenever the cache holds it: a failed background
+  // refetch sets `error` but keeps the last good `data`, and the mobile
+  // new-chat button must keep resolving against that data.
+  const chatFoldersLoaded = chatFoldersRaw !== undefined
+  // One create at a time from the mobile new-chat button: the ref blocks a
+  // second tap synchronously, the state disables the button until it settles.
+  const mobileNewSessionInFlightRef = useRef(false)
+  const [mobileNewSessionBusy, setMobileNewSessionBusy] = useState(false)
   // The sidebar's folder sort mode, for the folder-suggestion card's option list:
   // the card draws the same tree the sidebar draws and must list it in the same
   // order. Read here (shared kirocrewConfig query) so the card stays pure. The
@@ -3569,6 +3616,16 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // Refs so the "run in terminal" listener (registered once) always sees the
   // live panel controller + this chat's working directory.
   const tabsCtlRef = useRef(tabsCtl); tabsCtlRef.current = tabsCtl
+  // Stable, so the memoized dock does not re-render on every streamed chunk.
+  // Close the find pane FIRST, as revealAppInPanel / handleFileOpen /
+  // handleOpenDiff do: the find pane owns the right-hand dock exclusively
+  // (shouldMountSidePanel returns false while it is open), so without the close
+  // the dashboard would open behind a pane the user cannot see past. `close()`
+  // is safe with nothing open.
+  const openCommandCenter = useCallback(() => {
+    search.close(); dispatch(openActivityPanel()); tabsCtlRef.current.openView('command-center')
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `search.close` is a useCallback([]) in useMessageSearch; the object around it is rebuilt every render
+  }, [dispatch, search.close])
 
   /** Bring an app's panel tab back — focusing it if open, re-creating it if the
    *  user closed it (`openApp` upserts).
@@ -4301,6 +4358,71 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       const reqId: string = detail.reqId
       const lang: string | undefined = typeof detail.lang === 'string' ? detail.lang : undefined
       if (typeof code !== 'string' || !code) return
+      // Opt-in reuse focuses the terminal tab the user selected and copies the
+      // command for a manual paste. Sending raw bytes into a live terminal is
+      // unsafe: a partially typed shell command or a foreground program owns
+      // stdin, so appending `text + "\\n"` could merge and execute unrelated
+      // input. The dashboard has no shell-prompt protocol that can prove an
+      // empty, idle prompt, so manual paste is the safe boundary. With no
+      // existing terminal to focus, fall through and mint a fresh tab, where
+      // this dispatch owns the entire input stream and can safely send.
+      if (terminalReuseRef.current || terminalCfgUnsettledRef.current) {
+        // Reuse-on ALWAYS copies — never runs. The confirm dialog it shows
+        // promises a copy for manual paste (RunInTerminalConfirm willCopy), and
+        // the action must match that promise unconditionally: a fall-through to
+        // minting a fresh tab and sending the bytes would EXECUTE a command the
+        // dialog said would only be copied. The same copy-never-run path also
+        // covers the UNSETTLED initial-read window: until the config query
+        // settles we cannot know whether reuse was saved on, and copying on an
+        // unknown is the non-destructive choice (a reuse-off user merely pastes
+        // it themselves), whereas executing on an unknown is the harm removed.
+        //
+        // Focusing an existing tab is a best-effort nicety, so try to reuse one
+        // and, if it lives in a popped-out window, raise that window — but the
+        // copy proceeds whether or not a reusable tab exists. `reuseCurrentTab`
+        // returns null when there is no settled tab to focus; that is not a
+        // reason to run, only a reason to skip the focus step.
+        const reusedId = reuseDockTerminal()
+        // Raise the popped-out window whenever a tab was reused: the main-window
+        // BroadcastChannel map (isTerminalPopoutOpen) is not synchronously
+        // correct across a main-window reload — in the beacon-only window it
+        // reads false though the popout is live — so gating the focus on it
+        // leaves the reused window behind. focusTerminalPopout is a no-op when
+        // no popout exists, so an unconditional call on a real reuse is safe.
+        if (reusedId) focusTerminalPopout()
+        // With a focused tab, fence-transform for that shell; with none, copy
+        // the command verbatim (no target shell to transform for).
+        const text = reusedId
+          ? runInTerminalText(code, lang, getTerminalShell(reusedId), getTerminalFenceShells(reusedId))
+          : code
+        void copyToClipboard(text).then(copied => {
+          // A refused copy is a user-facing failure, not a transient icon:
+          // route it through ErrorNotice (errors-use-error-notice) so the
+          // command the user asked to run is not silently lost.
+          if (!copied) {
+            showActionError(i18nT('pages.chatPage.run_in_terminal_copy_failed_error'))
+          }
+          window.dispatchEvent(new CustomEvent('mc:run-in-terminal-result', {
+            detail: { reqId, ok: copied, copied },
+          }))
+        })
+        return
+      }
+      // When reuse is off — whether the user set it off, or its config query is
+      // still loading so the saved value is not yet known — the command opens a
+      // fresh terminal. That fresh tab IS the shipped default, so no notice
+      // fires for the off/pending case: a reuse-downgrade notice there would
+      // assert a reuse preference the off-majority never set (a pending query is
+      // indistinguishable from a genuinely-off setting).
+      //
+      // A config-read FAILURE is different, and is the errors-use-error-notice
+      // case: the read errored, so a saved reuse-on is being silently ignored
+      // with nothing on screen. Surface that read failure through ErrorNotice
+      // (the query's isError reaching a user-facing notice), then still run in a
+      // fresh tab so the command the user asked for is not dropped.
+      if (terminalCfgReadFailedRef.current) {
+        showActionError(i18nT('pages.chatPage.run_in_terminal_config_read_failed_error'))
+      }
       const sessionId = addDockTerminal(currentProjectRef.current ?? undefined)
       let settled = false
       const emit = (ok: boolean) => {
@@ -4308,7 +4430,14 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         settled = true
         window.dispatchEvent(new CustomEvent('mc:run-in-terminal-result', { detail: { reqId, ok } }))
       }
-      if (!sessionId) { emit(false); return }
+      if (!sessionId) {
+        // F3: no fresh tab could be minted (the terminal cap is full). The
+        // command is neither copied nor run, so say so through ErrorNotice
+        // rather than leaving only the button's error glyph
+        // (errors-use-error-notice).
+        showActionError(i18nT('pages.chatPage.run_in_terminal_no_tab_error'))
+        emit(false); return
+      }
       // The shell is known only once `ready` has arrived, which is exactly when
       // this fires — so read it here, not at dispatch time.
       const unsub = onTerminalReady(sessionId, () => {
@@ -4641,6 +4770,16 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     displayModels,
     _modelsDegraded,
     currentSlot?.model_withheld,
+  )
+  // The chip says `default` only for the Settings default; a model picked for
+  // the user (Auto router, withheld pin's fallback) is marked `auto` instead.
+  const chipDefault = useSettingsDefaultModel(_slotAgentName, remoteCrew.isRemote, codexPairModels)
+  const modelMarker = modelChipMarker(
+    currentSlot?.model || '',
+    shownModel,
+    _pinShownModel,
+    chipDefault.settingsDefault,
+    chipDefault.agentPinned,
   )
   // Context-window fallback for a peer-bound session BEFORE its first turn. Once a
   // turn has run the real number arrives with the relayed `context_usage` frame and
@@ -5103,6 +5242,38 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       setRegenerating(false)
     })
   }, [activeSlot, slotRunning, activeSlotRemoteBound, messages, dispatch])
+
+  // ⌘↑ / Ctrl+Up: open the LAST user message in the existing
+  // Edit & resend editor. The chord itself is claimed by the composer
+  // (`ChatInput` / `LexicalComposerInput`), which only fires from an empty
+  // composer, so this handler's job is eligibility (the same gates the row's
+  // `canEdit` affordance uses) and finding the target row: the newest
+  // `role === 'user'` message — agent turns, tool cards and system/steering
+  // rows are skipped by the role filter alone. `editLast` carries a rising
+  // sequence number plus the target's identity (index AND ts) so only the
+  // matching `UserMessage` row reacts and a re-render never re-opens the
+  // editor over an in-progress draft. The row ACKNOWLEDGES consumption via
+  // `onEditConsumed` (which nulls this state): a persisted request must never
+  // survive a row remount, or the rising-edge mount would replay the editor
+  // after Escape + session-switch and invite an accidental resend.
+  const [editLast, setEditLast] = useState<{ seq: number; ts: string; index: number } | null>(null)
+  // Backs `editLast.seq` with a counter that survives consumption — deriving
+  // it from `editLast` itself (nulled by `onEditConsumed`) would restart at 1
+  // after every consumed request, colliding with a mounted row's already-seen
+  // `lastEditRequestRef` and silently dropping the next press.
+  const editSeqRef = useRef(0)
+  // True only while `renderFarmItem` builds an off-screen measurement row. The
+  // farm draws through the same `renderMessage` as the live transcript, so
+  // without this a farm-rendered `UserMessage` would receive the pending edit
+  // request, consume it (nulling `editLast`) and measure its editor instead of
+  // the bubble — the live row never opens and a wrong height gets cached.
+  // Read synchronously while the elements are created, so a ref is enough.
+  const farmPassRef = useRef(false)
+  const handleEditConsumed = useCallback(() => setEditLast(null), [])
+  // Same for a session switch: the request is slot-scoped intent, so leaving
+  // the slot discards any unconsumed request instead of letting a later,
+  // unrelated remount treat it as fresh.
+  useEffect(() => { setEditLast(null) }, [activeSlot])
 
   const searchCtxValue = useMemo(() => ({
     term: search.term,
@@ -6175,6 +6346,24 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     setTimeout(() => setHighlightTs(null), 3000)
     return true
   }, [messages, navToDisplayIndex, setHighlightTs])
+  // ⌘↑ / Ctrl+Up target resolution, placed next to the virtualizer seam it
+  // depends on: the transcript is virtualized, so the newest user message can
+  // sit OUTSIDE the mounted window (a long agent reply just streamed past it)
+  // and no `UserMessage` row would exist to see the rising edge. Scroll the
+  // target into view FIRST and raise the request in the same pass — the row
+  // then receives the request at mount and acknowledges it on consumption.
+  const handleEditLastRequest = useCallback(() => {
+    if (!activeSlot || slotRunning || regenerating || activeSlotRemoteBound) return
+    const msgs = messagesRef.current
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      if (msgs[i].role !== 'user') continue
+      const di = messageToDisplayIdxRef.current.get(i)
+      if (di === undefined) return
+      navToDisplayIndex(di, { behavior: 'auto', align: 'center' })
+      setEditLast({ seq: ++editSeqRef.current, ts: msgs[i].ts || '', index: i })
+      return
+    }
+  }, [activeSlot, slotRunning, regenerating, activeSlotRemoteBound, navToDisplayIndex])
   const handleJumpToPinnedMessage = useCallback((messageTs: string, mid: string | undefined, { origin }: { origin: PendingJumpOrigin }) => {
     if (jumpToLoadedPinnedMessage(messageTs, mid)) return
     if (activeSlot && (!cursorIsForActiveSlot || (slotHasMore && slotOldestIndex > 0))) {
@@ -6562,6 +6751,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               messageTs={m.ts || ''}
               onEditResend={handleEditResend}
               doubleClickToEdit={chatConfig.doubleClickToEdit}
+              editRequest={!farmPassRef.current && editLast && editLast.index === i && editLast.ts === (m.ts || '') ? editLast.seq : undefined}
+              onEditConsumed={farmPassRef.current ? undefined : handleEditConsumed}
               slotKey={activeSlot || undefined}
               slotTitle={activeSlotTitle}
               mode={mode}
@@ -6716,7 +6907,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       bubble,
     ])
     return { renderers, fallback: bubble }
-  }, [slotRunning, handleFileOpen, handleArtifactOpen, selectSessionTab, sessionTitles, connected, handleFork, handleQuote, handleAsk, chatConfig, activeSlot, regenerating, activeSlotRemoteBound, handleRegenerate, handleEditResend, slotHasMore, loadingOlder, cursorIsForActiveSlot, slotOldestIndex, handleLoadEarlier, renderUserContentCb, highlightTs, activeSlotTitle, mode, embedded, popout, handleOpenDiff, handlePlanFromHere, planTaskId, artifactPaths, automationId, toolDisclosure, setToolDisclosureFor, linkPreviewsOn, socialShareOn, voiceRecoverySlot, handleSubagentPanelOpen, isPinned, handleTogglePinForMessage, showRefusedPress, transcriptHot, revealAppInPanel, continuable, interrupted, continuing, handleContinue, openModelPickerFromError, openDefaultModelSetting, openKiroSignIn, openMemberCapabilities, handleFolderOpen, handleSpeak, handleApplyPlan, mcpAppPanel, redactionCoachTs])
+  }, [slotRunning, handleFileOpen, handleArtifactOpen, selectSessionTab, sessionTitles, connected, handleFork, handleQuote, handleAsk, chatConfig, activeSlot, regenerating, activeSlotRemoteBound, handleRegenerate, handleEditResend, editLast, handleEditConsumed, slotHasMore, loadingOlder, cursorIsForActiveSlot, slotOldestIndex, handleLoadEarlier, renderUserContentCb, highlightTs, activeSlotTitle, mode, embedded, popout, handleOpenDiff, handlePlanFromHere, planTaskId, artifactPaths, automationId, toolDisclosure, setToolDisclosureFor, linkPreviewsOn, socialShareOn, voiceRecoverySlot, handleSubagentPanelOpen, isPinned, handleTogglePinForMessage, showRefusedPress, transcriptHot, revealAppInPanel, continuable, interrupted, continuing, handleContinue, openModelPickerFromError, openDefaultModelSetting, openKiroSignIn, openMemberCapabilities, handleFolderOpen, handleSpeak, handleApplyPlan, mcpAppPanel, redactionCoachTs])
 
   const renderMessage = useCallback((i: number, m: ChatMessage) => {
     // Key identity rules (clientTs preference + streaming->assistant role
@@ -6787,7 +6978,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // measurement equals the height the row will really mount at. Group rows
   // whose members are all permissions render null in the transcript; the farm
   // mirrors that so their measured height is the wrapper's own (near-zero).
-  const renderFarmItem = useCallback((i: number): React.ReactNode => {
+  const buildFarmItem = useCallback((i: number): React.ReactNode => {
     const item = renderedDisplayItems[i]
     if (!item) return null
     if (item.kind === 'turn') {
@@ -6814,6 +7005,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       </div>
     )
   }, [renderedDisplayItems, renderTurnItem, chatConfig.collapseAllSteps, appToolCallIds, approve, toggleAct, stableMsgKey, renderMessage])
+  const renderFarmItem = useCallback((i: number): React.ReactNode => {
+    farmPassRef.current = true
+    try { return buildFarmItem(i) } finally { farmPassRef.current = false }
+  }, [buildFarmItem])
 
   /**
    * Mobile sessions drawer, as ONE value rather than an open flag plus a
@@ -7441,6 +7636,77 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     </button>
   )
 
+  // Mobile "new session here" (session menu item): creates a session in the SAME folder as
+  // the one on screen, so starting a sibling chat does not require opening the
+  // sessions drawer. Resolves agent and project like the drawer's folder "+"
+  // (createChatInFolderMutation): nearest folder default_agent, then the global
+  // default; nearest folder project_dir; the defaultAutopilot preference picks
+  // the mode; a stale folder project dir gets the drawer's own message
+  // (isStaleProjectDirError). The create itself stays here rather than in
+  // createChatInFolderMutation on purpose: that mutation lives inside
+  // ChatSidebar with board-column, tab and attempt state this button has none
+  // of. An unfiled session creates an unfiled sibling, like the flyout's
+  // New. A filed session waits for the folder list: resolving against a
+  // pending or failed query would silently drop the folder's agent and project.
+  const mobileNewFolderId = currentSlot?.folder_id || null
+  const mobileNewFolder = mobileNewFolderId ? chatFolders.find(f => f.id === mobileNewFolderId) : undefined
+  // Disabled only while the folder list is still loading, so a tap cannot
+  // create the session before the folder's agent and project are known. Once
+  // the list has settled the button is live: a failed load is reported on tap
+  // (instead of leaving a dead button a touch user gets no tooltip for), and a
+  // folder id that no longer names a folder is treated as unfiled, the way the
+  // drawer files such a session.
+  const mobileNewSessionReady = !mobileNewFolderId || chatFoldersLoaded || !!chatFoldersError
+  const mobileNewSessionHere = async () => {
+    if (!mobileNewSessionReady || mobileNewSessionInFlightRef.current) return
+    // One notice for both failures below. The body stays the raw error text,
+    // which is the key the error journal matches for the notice's ask-agent
+    // hand-off; the title names what failed.
+    const fail = (error: unknown, title = i18nT('pages.chatPage.could_not_start_a_new_session')) =>
+      showActionError(errMessage(error) || i18nT('pages.chatPage.unknown_error'), title)
+    if (mobileNewFolderId && !chatFoldersLoaded) return fail(chatFoldersError)
+    const folderId = mobileNewFolder ? mobileNewFolderId : ''
+    const effectiveMode = loadChatConfig().defaultAutopilot ? 'orchestrator' : (mode || '')
+    const agent = folderId
+      ? resolveFolderAgent(chatFolders, folderId, defaultAgent)
+      : (defaultAgent || undefined)
+    const project = folderId ? resolveFolderProjectDir(chatFolders, folderId) : undefined
+    mobileNewSessionInFlightRef.current = true
+    setMobileNewSessionBusy(true)
+    try {
+      await dispatch(createSlot({
+        agent,
+        mode: effectiveMode,
+        ...(folderId ? { folder_id: folderId } : {}),
+        ...(project ? { project } : {}),
+      })).unwrap()
+    } catch (error) {
+      // Same stale-project-dir sentence as the drawer's folder `+`, as the
+      // notice title: it is the one create failure the user can fix, so name
+      // the missing path.
+      return fail(error, folderId && isStaleProjectDirError(error)
+        ? i18nT('pages.chatSidebar.folder_project_dir_missing', { path: project ?? '' })
+        : undefined)
+    } finally {
+      mobileNewSessionInFlightRef.current = false
+      setMobileNewSessionBusy(false)
+    }
+    // Touch devices skip focus by design (no keyboard pop); this only matters
+    // for a narrow desktop window, where the caret should follow the create.
+    focusComposer()
+  }
+  const mobileNewSessionLabel = mobileNewFolder
+    ? i18nT('pages.chatSidebar.new_chat_in_name', { name: mobileNewFolder.name })
+    : i18nT('pages.chat.sessionFlyout.new_chat')
+  // The item leads the session (chevron) menu on the phone. It is not a third
+  // control beside the sessions toggle: the bar's centre cell holds two
+  // (AUTOSDE `max-two-buttons-per-row`, narrow-viewport.md).
+  const mobileNewSessionItem = {
+    label: mobileNewSessionLabel,
+    disabled: !mobileNewSessionReady || mobileNewSessionBusy,
+    onSelect: () => { void mobileNewSessionHere() },
+  }
+
   // Unchanged from the inline WelcomeView handler; shared with the composer memory chip.
   const switchMemoryMode = async (newMode: MemoryMode) => {
     if (!activeSlot) return
@@ -7867,6 +8133,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   // trailing ⋯ menu (below), the phone's window menu; the same
                   // row in two adjacent menus read as two different actions.
                   omitPopout
+                  newSessionHere={embedMode !== 'chat' ? mobileNewSessionItem : undefined}
                   triggerLabel={
                     <>
                       {currentSlot?.memory_mode === 'incognito' && <EyeOff size={13} className="lucide-inline shrink-0 text-warn" aria-label={i18nT('pages.chatPage.incognito_memory_writes_disabled')} />}
@@ -8005,6 +8272,13 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
             ? i18nT('pages.chatPage.effort_options_unavailable') : ''}
           className="mx-4 mt-2 mb-0 animate-rise"
           testId="effort-capabilities-error"
+        />
+        {/* No hand-off: navigating away would discard the unsent composer draft. */}
+        <ErrorNotice
+          message={activeSlot && chipDefault.failed
+            ? i18nT('pages.settings.chatPanel.failed_to_load_config') : ''}
+          className="mx-4 mt-2 mb-0 animate-rise"
+          testId="model-default-error"
         />
         <ErrorNotice
           title={actionError?.title}
@@ -8265,6 +8539,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   onRename={activeSlot ? () => setEditingTitleSlot(activeSlot) : undefined}
                   mode={effectiveMode}
                   sidebarOnScreen={sidebarOnScreen}
+                  newSessionHere={embedMode !== 'chat' && isMobile ? mobileNewSessionItem : undefined}
                 />
                 </div>
                 {/* Shared with every split-view pane header (#9727). The editor
@@ -8652,14 +8927,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   calls and goes stale when the user clicks a tab in the panel. */}
               {!(activityOpen && !search.isOpen && tabsCtl.tabs.find(t => t.id === tabsCtl.activeId)?.kind === 'subagents') && <SubagentProgressBar slot={activeSlot} />}
               {!(activityOpen && !search.isOpen && tabsCtl.tabs.find(t => t.id === tabsCtl.activeId)?.kind === 'workflows') && <WorkflowProgressBar slot={activeSlot} />}
-              {/* Close the find pane FIRST, as revealAppInPanel / handleFileOpen /
-                  handleOpenDiff do: the find pane owns the right-hand dock
-                  exclusively (shouldMountSidePanel returns false while it is
-                  open), and the card persists its one-time dismissal before
-                  calling this -- so without the close the card would be gone
-                  for good while the dashboard opened behind a pane the user
-                  cannot see past. `close()` is safe with nothing open. */}
-              <CommandCenterDock slot={activeSlot} onOpen={() => { search.close(); dispatch(openActivityPanel()); tabsCtl.openView('command-center') }} />
+              <CommandCenterDock slot={activeSlot} onOpen={openCommandCenter} />
               <SubagentDeliveryProgress count={systemDeliveryCount} />
               <QueueStack messages={queuedMessages} onCancel={handleCancelQueued} onInterrupt={handleInterruptQueued} onEdit={handleEditQueued} onReorder={handleReorderQueued} pendingIds={queuePendingIds} fuseBelow={followUpOptions.length === 0 && !knowledgeFetch.pendingKnowledge} />
               </div>
@@ -9097,9 +9365,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               agentIsInheritedDefault={!currentSlot?.agent && !!effectiveDefaultAgent}
               agentSource={effectiveAgents.find(a => a.name === activeAgentName)?.source}
               modelName={shownModel}
-              // The served default is shown exactly when the pin alone would
-              // have read `auto`; that is the inherited case the marker names.
-              modelIsInheritedDefault={shownModel !== 'auto' && shownModel !== _pinShownModel}
+              modelIsInheritedDefault={modelMarker === 'default'}
+              modelIsAutoChosen={modelMarker === 'auto'}
               // The turn's model is Jev's to pick exactly when the routing gate
               // says so: the slot names no model, and the preview is on. Reads the
               // slot's RAW model, not `shownModel` -- that one substitutes the
@@ -9194,6 +9461,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               }}
               isQueued={slotStopping}
               stopState={currentSlot?.stop_state}
+              compacting={!!currentSlot?.compacting}
+              stopDeclined={!!currentSlot?.stop_declined}
               approvalMode={displayMode}
               providerId={provider.id}
               reasoningEffort={effectiveEffort}
@@ -9221,6 +9490,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               onOptimizeResult={handleOptimizeResult}
               memoryMode={currentSlot?.memory_mode ?? 'persistent'}
               sentMessages={sentMessages}
+              onEditLastRequest={handleEditLastRequest}
               sendOnEnter={isMobile ? 'ctrl-enter' : chatConfig.sendOnEnter}
               followUpOptions={followUpOptions}
               followUpPicked={followUpPicked}

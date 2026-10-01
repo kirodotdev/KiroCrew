@@ -33,9 +33,10 @@ from kiro_crew import pinned_fs, platform_compat
 from kiro_crew.acp import session_mcp
 from kiro_crew.agent_discovery import SCOPE_PROJECT, _read_agent_spec, list_agents
 from kiro_crew.agent_spec_format import NATIVE_SKILL_ALIAS_PREFIX
-from kiro_crew.atomic_write import atomic_write
+from kiro_crew.atomic_write import atomic_write, on_event_loop
 from kiro_crew.config.paths import data_home, kiro_agents_dir, kiro_home, project_agents_dir
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes
+from kiro_crew.security import _PATH_RESOLVE_TIMEOUT_SECS
 from kiro_crew.validation import is_registered_agent_name
 from kiro_crew.workspace_cli_settings import workspace_cli_settings_lock
 
@@ -157,6 +158,125 @@ _MANAGED_CREW_HOME = "x-kirocrew-home"
 _MANAGED_AGENT = "x-kirocrew-agent"
 _MANAGED_SOURCE = "x-kirocrew-source"
 _MANAGED_ALIAS_SHA256 = "x-kirocrew-alias-sha256"
+# The digest of the alias's IDENTITY view (:func:`_alias_identity`), recorded next
+# to the byte digest. A launcher that re-serializes every spec in the agents
+# directory, or stamps a fresh VOLATILE value (:func:`volatile_env_keys`) into an
+# MCP server's ``env``, changes the
+# bytes but not what the alias is, so ownership survives it where the byte digest
+# alone does not. Sidecars written without this key carry only the byte digest
+# and are judged by it.
+_MANAGED_VIEW_SHA256 = "x-kirocrew-view-sha256"
+# Ownership sidecars one prune may reclaim when their alias is already gone.
+# Metadata only -- no kiro-cli cost rides on it -- so a modest ceiling that the
+# boot drain multiplies by its batch count is enough to retire a backlog.
+_SIDECAR_SWEEP_MAX_PER_RUN = 256
+
+# Display-only fields kiro-cli copies out of EVERY agent spec in the directory into
+# each ``session/new`` / ``session/load`` reply (its per-agent info: name,
+# description, source, welcomeMessage). A projected alias is a second copy of an
+# agent the host already lists, so its copy of that text only doubles the reply,
+# and past the stdout frame limit the reply is dropped. Kiro Crew renders an
+# agent's welcomeMessage from the AUTHORED spec (agent_discovery), never from an
+# alias, so the alias leaves it out and keeps a short description.
+_ALIAS_DROPPED_DISPLAY_FIELDS = ("welcomeMessage",)
+_ALIAS_DESCRIPTION_MAX_CHARS = 512
+# Warn when an authored spec's display text alone is this large: kiro-cli sends it
+# in every session reply however Kiro Crew projects it, so the fix is at the source.
+_DISPLAY_TEXT_WARN_BYTES = 32 * 1024
+# ... and when the whole directory's display text approaches the frame limit.
+_DISPLAY_TEXT_TOTAL_WARN_BYTES = 4 * 1024 * 1024
+_DISPLAY_TEXT_WARNED: set[tuple[str, int]] = set()  # (sha256 of path, size)
+_DISPLAY_TEXT_WARNED_MAX = 256
+# The ACP readers' stdout frame limit (``acp.runtime._STDOUT_BUFFER_LIMIT``; a test
+# pins the two equal). Not imported: this module is imported by the runtime.
+_STDOUT_FRAME_LIMIT_BYTES = 10 * 1024 * 1024
+
+
+def _loggable(value: str) -> str:
+    """*value* (an agent name or path read from disk) as one bounded, escaped token."""
+    return repr(value[:_LOGGED_NAME_MAX_CHARS])
+
+
+_LOGGED_NAME_MAX_CHARS = 240
+
+
+def _display_text_bytes(spec: dict[str, Any]) -> int:
+    """UTF-8 bytes of the display-only text kiro-cli ships for *spec* per session reply."""
+    total = 0
+    for key in ("description", *_ALIAS_DROPPED_DISPLAY_FIELDS):
+        value = spec.get(key)
+        if isinstance(value, str):
+            total += len(value.encode("utf-8", "replace"))
+    return total
+
+
+def _strip_alias_display_text(view: dict[str, Any]) -> None:
+    """Keep an alias view's per-session-reply footprint small (see above)."""
+    for key in _ALIAS_DROPPED_DISPLAY_FIELDS:
+        view.pop(key, None)
+    description = view.get("description")
+    if isinstance(description, str) and len(description) > _ALIAS_DESCRIPTION_MAX_CHARS:
+        view["description"] = description[: _ALIAS_DESCRIPTION_MAX_CHARS - 1] + "\u2026"
+
+
+def _warn_on_display_text(sizes: dict[str, tuple[int, str]]) -> None:
+    """Name the agents whose display text inflates every session reply; once per size.
+
+    *sizes* maps agent name to (display bytes, source path). The source path names
+    the package that installed the spec, which is who can trim it.
+    """
+    large = sorted(
+        (
+            (size, name, path)
+            for name, (size, path) in sizes.items()
+            if size >= _DISPLAY_TEXT_WARN_BYTES
+        ),
+        reverse=True,
+    )
+    omitted = 0
+    for size, name, path in large:
+        entry = (hashlib.sha256(path.encode("utf-8", "replace")).hexdigest(), size)
+        if entry in _DISPLAY_TEXT_WARNED:
+            continue
+        if len(_DISPLAY_TEXT_WARNED) >= _DISPLAY_TEXT_WARNED_MAX:
+            # The bound holds per insertion: past it, the rest are only counted.
+            omitted += 1
+            continue
+        _DISPLAY_TEXT_WARNED.add(entry)
+        logger.warning(
+            "skill projection: agent %s (%s) carries %d KB of description/welcomeMessage "
+            "text; kiro-cli sends it for every agent in every session/new reply, which "
+            "Kiro Crew drops past %d MB. Skill-view aliases leave it out; trim it at the source.",
+            _loggable(name),
+            _loggable(path),
+            size // 1024,
+            _STDOUT_FRAME_LIMIT_BYTES // (1024 * 1024),
+        )
+    if omitted:
+        logger.warning(
+            "skill projection: %d more agent(s) carry over %d KB of description/"
+            "welcomeMessage text each (not named: the warning memory is full)",
+            omitted,
+            _DISPLAY_TEXT_WARN_BYTES // 1024,
+        )
+    total = sum(size for size, _path in sizes.values())
+    key = ("<total>", total)
+    if (
+        total >= _DISPLAY_TEXT_TOTAL_WARN_BYTES
+        and key not in _DISPLAY_TEXT_WARNED
+        and len(_DISPLAY_TEXT_WARNED) < _DISPLAY_TEXT_WARNED_MAX
+    ):
+        _DISPLAY_TEXT_WARNED.add(key)
+        logger.warning(
+            "skill projection: the agents directory carries %d KB of description/"
+            "welcomeMessage text across %d agent(s), near the %d MB session/new reply "
+            "limit; largest: %s",
+            total // 1024,
+            len(sizes),
+            _STDOUT_FRAME_LIMIT_BYTES // (1024 * 1024),
+            ", ".join(f"{_loggable(name)} ({size // 1024} KB)" for size, name, _path in large[:3])
+            or "-",
+        )
 
 
 # Every view name this process has published, mapped to the agent it projects.
@@ -325,6 +445,12 @@ async def resolve_source_agent(name: str) -> str:
     return await asyncio.to_thread(source_agent_name, name)
 
 
+# How many earlier aliases one projection keeps translating inbound. A process
+# publishes a new alias only when an agent's view changes, so this is far above
+# any real run; it bounds a process whose specs are edited without end.
+_RECOGNISED_ALIASES_MAX = 1024
+
+
 @dataclass
 class NativeSkillProjection:
     """Translate transport identities while Crew keeps the authored agent name."""
@@ -334,6 +460,47 @@ class NativeSkillProjection:
     errors: dict[str, str] = field(default_factory=dict)
     search_agents: set[str] = field(default_factory=set)
     _lease_finalizer: Any = field(default=None, repr=False, compare=False)
+    # Aliases an EARLIER projection of this process published, alias -> agent. The
+    # host may still hold them (every alias it loaded at spawn, say), so inbound
+    # frames keep translating them back even after this projection renamed the
+    # agent; only outbound requests use ``aliases``.
+    _recognised: dict[str, str] = field(default_factory=dict, repr=False, compare=False)
+    _recognition_overflow_warned: bool = field(default=False, repr=False, compare=False)
+
+    def recognise(self, earlier: "NativeSkillProjection") -> None:
+        """Keep translating the aliases *earlier* knew in inbound frames, up to a bound.
+
+        Called with the spawn projection FIRST, so its aliases -- the ones the host
+        is guaranteed to hold -- are the last to be refused once the bound is met.
+        Only alias-shaped names mapped to admissible agent names are kept, so the
+        count bound bounds the memory too.
+        """
+        dropped = 0
+        for alias, name in (
+            *((a, n) for n, a in earlier.aliases.items()),
+            *earlier._recognised.items(),
+        ):
+            if alias in self._recognised:
+                continue
+            if len(self._recognised) >= _RECOGNISED_ALIASES_MAX:
+                dropped += 1
+                continue
+            # The registered agent-name grammar bounds each retained name and admits
+            # no control character; an alias is a fixed-length digest name.
+            if not _admissible_source_agent(name) or not _LEGACY_ALIAS_NAME_RE.fullmatch(alias):
+                continue
+            self._recognised.setdefault(alias, name)
+        if dropped and not self._recognition_overflow_warned:
+            # Once per projection: the bound is a backstop, and past it the oldest
+            # aliases this process published stop translating in inbound frames.
+            self._recognition_overflow_warned = True
+            logger.warning(
+                "skill projection: %d earlier skill-view alias(es) not recognised past the "
+                "%d-alias bound; a mode the host still lists only under one of them will "
+                "not be offered until the gateway restarts",
+                dropped,
+                _RECOGNISED_ALIASES_MAX,
+            )
 
     def agent(self, name: str) -> str:
         if is_skill_view_name(name):
@@ -369,18 +536,33 @@ class NativeSkillProjection:
         return params
 
     def frame(self, frame: dict[str, Any]) -> dict[str, Any]:
-        reverse = {alias: name for name, alias in self.aliases.items()}
+        reverse = {**self._recognised, **{alias: name for name, alias in self.aliases.items()}}
 
         def visit(value: Any, field: str = "") -> Any:
             if isinstance(value, dict):
                 return {key: visit(item, key) for key, item in value.items()}
             if isinstance(value, list):
                 if field == "availableModes":
-                    value = [
-                        item
-                        for item in value
-                        if isinstance(item, dict) and item.get("id") in reverse
-                    ]
+                    # A mode stays listed when the host advertises ANY name this
+                    # process knows the agent by: one of its aliases, or the
+                    # authored id of a projected agent (listed while the host has
+                    # not loaded the alias, so the start reaches set_mode and its
+                    # actionable refusal instead of "not installed"). Each agent is
+                    # listed once; unprojected host agents stay hidden.
+                    kept: list[Any] = []
+                    listed: set[str] = set()
+                    for item in value:
+                        if not isinstance(item, dict):
+                            continue
+                        mode_id = item.get("id")
+                        name = reverse.get(mode_id) if isinstance(mode_id, str) else None
+                        if name is None and mode_id in self.aliases:
+                            name = mode_id
+                        if name is None or name in listed:
+                            continue
+                        listed.add(name)
+                        kept.append(item)
+                    value = kept
                 return [visit(item) for item in value]
             if field in {"id", "name", "agentName", "modeId", "currentModeId"} and isinstance(
                 value, str
@@ -913,12 +1095,57 @@ def _scan_projection_leases(directory: Path) -> tuple[set[str], bool]:
     return live_aliases, scan_capped or scan_expired
 
 
-def _settings(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        return {}
-    raw = safe_read_file_bytes(str(path))
+_ABSENT_SETTINGS = object()
+
+#: Pauses before the retries of a refused ``cli.json`` read, in seconds; the
+#: first attempt runs before any of them. A healthy file is refused transiently
+#: in two ways: a writer renames a new file over the one that was opened (the
+#: descriptor check then names the unlinked inode), which clears on an immediate
+#: re-check, and a saturated sensitive-path resolver, which clears once a
+#: candidate resolution has had its full budget. No other refusal changes with
+#: time inside one call, so more pauses would only delay the fail-closed answer.
+_SETTINGS_READ_RETRY_PAUSES: tuple[float, ...] = (0.0, _PATH_RESOLVE_TIMEOUT_SECS)
+
+#: The pause primitive of :func:`_settings`, held as a module attribute so a test
+#: can replace it without touching the shared ``time`` module.
+_settings_read_sleep = time.sleep
+
+
+def _settings(path: Path, *, may_pause: bool = True) -> dict[str, Any]:
+    """Read one Kiro ``cli.json`` through the credential gate; absence reads ``{}``.
+
+    Off the event loop a refused read is retried on
+    :data:`_SETTINGS_READ_RETRY_PAUSES`: one immediate re-check, then one pause
+    and a final attempt. Every attempt re-runs the whole gate, so a path that
+    stays refused still raises. On a thread running an event loop exactly one
+    attempt runs, because each attempt is several bounded path resolutions and a
+    pause there stalls every session the gateway serves.
+
+    ``may_pause=False`` keeps the immediate re-check but drops the pause, for a
+    caller holding a cross-process lock whose contenders give up after the same
+    2 s: sleeping there would make a concurrent spawn lose its lock instead.
+    """
+
+    def read_once() -> bytes | object | None:
+        if not path.exists():
+            return _ABSENT_SETTINGS
+        return safe_read_file_bytes(str(path))
+
+    raw = read_once()
+    if raw is None and not on_event_loop():
+        for pause in _SETTINGS_READ_RETRY_PAUSES:
+            if pause and not may_pause:
+                break
+            if pause:
+                _settings_read_sleep(pause)
+            raw = read_once()
+            if raw is not None:
+                break
     if raw is None:
         raise ValueError(f"Cannot read Kiro settings at {path}")
+    if not isinstance(raw, bytes):
+        # The absence sentinel: the file does not exist.
+        return {}
     data = json.loads(raw)
     if not isinstance(data, dict):
         raise ValueError(f"Kiro settings must be an object: {path}")
@@ -1003,6 +1230,28 @@ def _restore_inheritance(path: Path, local: dict[str, Any]) -> None:
 def _managed_marker(spec: object) -> bool:
     """Return whether a generated spec carries this lifecycle's marker."""
     return isinstance(spec, dict) and spec.get(_MANAGED_MARKER) == _MANAGED_MARKER_VALUE
+
+
+def _canonical_json(value: object) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _view_digest(view: dict[str, Any]) -> str:
+    """The sha256 of *view*'s identity (:func:`_alias_identity`), serialization-free.
+
+    What the ownership sidecar binds besides the exact bytes, so a launcher that
+    re-serializes an alias or re-stamps an ``env`` value in it does not strand
+    the pair. The identity is the one the alias is NAMED by.
+    """
+    return hashlib.sha256(_canonical_json(_alias_identity(view)).encode()).hexdigest()
+
+
+def _parsed_spec(raw: bytes) -> dict[str, Any] | None:
+    try:
+        spec = json.loads(raw)
+    except (ValueError, TypeError, RecursionError):
+        return None
+    return spec if isinstance(spec, dict) else None
 
 
 _UNLINK_WARNING_LOCK = threading.Lock()
@@ -1194,11 +1443,17 @@ def _managed_metadata_for_alias(
                 metadata = json.loads(metadata_raw)
             except (ValueError, TypeError, RecursionError):
                 return None
-            if (
-                not _managed_marker(metadata)
-                or metadata.get(_MANAGED_ALIAS_SHA256) != hashlib.sha256(alias_raw).hexdigest()
-            ):
+            if not _managed_marker(metadata):
                 return None
+            if metadata.get(_MANAGED_ALIAS_SHA256) != hashlib.sha256(alias_raw).hexdigest():
+                # The bytes moved. Still ours when the record binds the view's
+                # IDENTITY and the file still says that: a launcher that
+                # re-serialized it or re-stamped an ``env`` value changed no
+                # part of what this module published.
+                recorded_view = metadata.get(_MANAGED_VIEW_SHA256)
+                alias_spec = _parsed_spec(alias_raw) if isinstance(recorded_view, str) else None
+                if alias_spec is None or _view_digest(alias_spec) != recorded_view:
+                    return None
             return (
                 metadata,
                 metadata_path,
@@ -1211,6 +1466,206 @@ def _managed_metadata_for_alias(
     # is therefore unrecorded, and `_is_legacy_projected_view` decides it from
     # the name shape and the view's own form instead.
     return None
+
+
+def _sidecar_record(
+    directory: Path, stem: str
+) -> tuple[dict[str, Any] | None, Path, tuple[int, int] | None]:
+    """``(record, path, identity)`` of the ownership sidecar named *stem*, digest unchecked.
+
+    ``record`` is the parsed sidecar when it is a regular, non-link, bounded,
+    well-formed file carrying this lifecycle's marker; ``identity`` is set when
+    ANY entry exists by that name (so a caller can tell "absent" from
+    "present but not provably ours"). Unlike :func:`_managed_metadata_for_alias`
+    this does not bind the record to alias bytes: it answers who wrote the
+    record, for the two callers that need exactly that -- a pair whose alias
+    bytes moved, and a sidecar whose alias is gone.
+    """
+    metadata_dir = directory / _PROJECTION_METADATA_DIR_NAME
+    path = metadata_dir / f"{stem}.json"
+    directory_info = pinned_fs.lstat_by_name(metadata_dir)
+    if directory_info is None:
+        return None, path, None
+    if platform_compat.is_link_or_junction(metadata_dir) or not stat.S_ISDIR(
+        directory_info.st_mode
+    ):
+        return None, path, (directory_info.st_dev, directory_info.st_ino)
+    info = pinned_fs.lstat_by_name(path)
+    if info is None:
+        return None, path, None
+    identity = (info.st_dev, info.st_ino)
+    if platform_compat.is_link_or_junction(path) or not stat.S_ISREG(info.st_mode):
+        return None, path, identity
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            opened = os.fstat(fd)
+            raw = os.read(fd, _PROJECTION_LEASE_MAX_BYTES + 1)
+        finally:
+            os.close(fd)
+    except OSError:
+        return None, path, identity
+    if (opened.st_dev, opened.st_ino) != identity or len(raw) > _PROJECTION_LEASE_MAX_BYTES:
+        return None, path, identity
+    record = _parsed_spec(raw)
+    if not _managed_marker(record):
+        return None, path, identity
+    return record, path, identity
+
+
+def _sweep_orphan_sidecars(
+    directory: Path, crew_home_id: str, *, skip: set[str], deadline: float
+) -> int:
+    """Remove this home's ownership sidecars whose alias is already gone.
+
+    A sidecar outlived its alias whenever something other than the recorded
+    pair removal took the alias: an older build's unrecorded path unlinked the
+    alias alone, and so does an operator deleting ``kirocrew-skill-view-*.json``
+    by hand. Each one is metadata only, but the directory is walked by
+    kiro-cli's own directory scans, so the backlog is not free.
+
+    A sidecar is removed only when its stem has the shape this module derives,
+    nothing this call keeps or any live lease names it (*skip*), no alias by
+    that name exists (any doubt reads as present), and the record carries the
+    marker AND names THIS data home -- another home's record is that home's to
+    retire. Runs under the publication lock, so no publisher can be mid-pair.
+    Bounded by the same entry-walk limit as the alias walk, a random start
+    offset, :data:`_SIDECAR_SWEEP_MAX_PER_RUN` and *deadline*. Returns how many
+    it removed.
+    """
+    metadata_dir = directory / _PROJECTION_METADATA_DIR_NAME
+    info = pinned_fs.lstat_by_name(metadata_dir)
+    if (
+        info is None
+        or platform_compat.is_link_or_junction(metadata_dir)
+        or not stat.S_ISDIR(info.st_mode)
+    ):
+        return 0
+    stems: list[str] = []
+    walked = 0
+    try:
+        with os.scandir(metadata_dir) as entries:
+            for entry in entries:
+                if walked >= _PROJECTION_PRUNE_WORK_LIMIT:
+                    break
+                walked += 1
+                if not entry.name.endswith(".json"):
+                    continue
+                stem = entry.name[: -len(".json")]
+                if _LEGACY_ALIAS_NAME_RE.fullmatch(stem) and stem not in skip:
+                    stems.append(stem)
+    except OSError:
+        logger.debug("skill projection: cannot scan %s for sidecars", metadata_dir, exc_info=True)
+        return 0
+    offset = _prune_start_offset(len(stems))
+    removed = 0
+    for stem in stems[offset:] + stems[:offset]:
+        if removed >= _SIDECAR_SWEEP_MAX_PER_RUN or time.monotonic() >= deadline:
+            break
+        if _path_exists(directory / f"{stem}.json"):
+            continue
+        record, path, identity = _sidecar_record(directory, stem)
+        if record is None or identity is None or record.get(_MANAGED_CREW_HOME) != crew_home_id:
+            continue
+        if _path_exists(directory / f"{stem}.json"):
+            continue
+        if _unlink_projection_lease_if_unchanged(path, identity, what="ownership sidecar"):
+            removed += 1
+    if removed:
+        logger.info("skill projection: removed %d ownership sidecar(s) with no alias", removed)
+    return removed
+
+
+_ALIAS_LOCK_SUFFIX = ".lock"
+
+
+def _unlink_unheld_lock_file(path: Path, identity: tuple[int, int]) -> bool:
+    """Remove the lock file at *path* only while nobody holds it, and only that inode.
+
+    A launcher may still hold (or re-take) an old ``<stem>.lock``; unlinking it then
+    would let the next launcher lock a fresh inode while the first still holds the
+    old one, and their rewrites would race. So the file is opened without
+    following links, its identity checked, and an exclusive lock taken without
+    waiting: a held lock is left alone, and the unlink happens while ours is held.
+
+    The open is :func:`platform_compat.open_lock_file_for_sweep`, not a bare
+    ``os.open``: on Windows a CRT descriptor omits ``FILE_SHARE_DELETE``, so our
+    own verification handle would block the very ``unlink`` below with a sharing
+    violation and the sweep would leave genuine residue behind. The helper opens
+    with delete-sharing on Windows so the unlink lands while the handle (and its
+    lock) is still held, matching POSIX, where an open fd never blocks an unlink.
+    """
+    try:
+        fd = platform_compat.open_lock_file_for_sweep(path)
+    except OSError:
+        return False
+    try:
+        opened = os.fstat(fd)
+        if (opened.st_dev, opened.st_ino) != identity or opened.st_size != 0:
+            return False
+        if not platform_compat.try_acquire_lock(fd, exclusive=True):
+            return False
+        return _unlink_projection_lease_if_unchanged(path, identity, what="orphaned alias lock")
+    except OSError:
+        return False
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+
+def _sweep_orphan_alias_locks(directory: Path, *, deadline: float) -> int:
+    """Remove empty ``<alias>.lock`` files left beside aliases that are gone.
+
+    This module never creates one. A launcher that rewrites every spec in the
+    agents directory takes a per-file lock named ``<stem>.lock`` next to each
+    spec and leaves it behind (one host: 1,661 of them beside 23 aliases). For an
+    authored agent that is the launcher's file; for a skill-view alias the name is
+    in THIS module's namespace and outlives the alias it guarded, so each prune of
+    an alias strands one. Only that residue is removed: the exact derived name
+    shape, a regular EMPTY file, no ``<stem>.json`` beside it, and older than the
+    legacy reclaim age so a launcher pass that is still running is never raced.
+    The same walk limit, random start, per-run ceiling and *deadline* as the
+    sidecar sweep bound it. Returns how many it removed.
+    """
+    names: list[str] = []
+    walked = 0
+    try:
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                if walked >= _PROJECTION_PRUNE_WORK_LIMIT:
+                    break
+                walked += 1
+                if entry.name.endswith(_ALIAS_LOCK_SUFFIX) and _LEGACY_ALIAS_NAME_RE.fullmatch(
+                    entry.name[: -len(_ALIAS_LOCK_SUFFIX)]
+                ):
+                    names.append(entry.name)
+    except OSError:
+        logger.debug("skill projection: cannot scan %s for alias locks", directory, exc_info=True)
+        return 0
+    offset = _prune_start_offset(len(names))
+    removed = 0
+    for name in names[offset:] + names[:offset]:
+        if removed >= _SIDECAR_SWEEP_MAX_PER_RUN or time.monotonic() >= deadline:
+            break
+        path = directory / name
+        spec = directory / f"{name[: -len(_ALIAS_LOCK_SUFFIX)]}.json"
+        info = pinned_fs.lstat_by_name(path)
+        if (
+            info is None
+            or platform_compat.is_link_or_junction(path)
+            or not stat.S_ISREG(info.st_mode)
+            or info.st_size != 0
+            or time.time() - info.st_mtime < _LEGACY_RECLAIM_MIN_AGE_SECS
+            or _path_exists(spec)
+        ):
+            continue
+        if _unlink_unheld_lock_file(path, (info.st_dev, info.st_ino)):
+            removed += 1
+    if removed:
+        logger.info("skill projection: removed %d orphaned alias lock file(s)", removed)
+    return removed
 
 
 def _prune_start_offset(count: int) -> int:
@@ -1276,7 +1731,9 @@ def _projection_prune_candidates(directory: Path, skip: set[str]) -> Iterator[Pa
         logger.debug("skill projection: cannot scan %s to prune aliases", directory, exc_info=True)
 
 
-def _prune_stale_managed_aliases(directory: Path, crew_home_id: str, *, keep: set[str]) -> int:
+def _prune_stale_managed_aliases(
+    directory: Path, crew_home_id: str, *, keep: set[str], sweep_sidecars: bool = True
+) -> int:
     """Remove aliases owned by this Kiro Crew data home that no projection uses.
 
     Runs while the publication lock is held, so a deletion cannot land on an alias
@@ -1290,7 +1747,12 @@ def _prune_stale_managed_aliases(directory: Path, crew_home_id: str, *, keep: se
     one rewrite and nothing else. Aliases are keyed on the agent's view, so a new
     one appears when an agent's spec changes, not once per run.
 
-    Returns how many aliases it removed.
+    With *sweep_sidecars* (the default) the rest of the same time budget then
+    retires this home's ownership sidecars whose alias is gone
+    (:func:`_sweep_orphan_sidecars`) and the empty ``<alias>.lock`` residue an
+    external rewriter left beside gone aliases (:func:`_sweep_orphan_alias_locks`);
+    the boot drain sweeps on its own instead, so it can count them. Returns how
+    many aliases it removed.
     """
     # ONE bounded lease scan per prune, under the held publication lock, rather
     # than one full scan per candidate (which multiplied the candidate cap by the
@@ -1347,6 +1809,9 @@ def _prune_stale_managed_aliases(directory: Path, crew_home_id: str, *, keep: se
             reclaimed += 1
     if reclaimed > 0:
         logger.info("skill projection: reclaimed %d unused alias(es)", reclaimed)
+    if sweep_sidecars:
+        _sweep_orphan_sidecars(directory, crew_home_id, skip=skip, deadline=deadline)
+        _sweep_orphan_alias_locks(directory, deadline=deadline)
     return reclaimed
 
 
@@ -1369,13 +1834,23 @@ def drain_stale_aliases() -> int:
     if pinned_fs.lstat_by_name(directory) is None:
         return 0
     total = 0
+    sidecars = 0
     idle_batches = 0
     for batch in range(_DRAIN_MAX_BATCHES):
         if batch:
             time.sleep(_DRAIN_BATCH_PAUSE_SECS)
+        swept = 0
         try:
             with _projection_alias_lock(directory):
-                reclaimed = _prune_stale_managed_aliases(directory, crew_home_id, keep=set())
+                reclaimed = _prune_stale_managed_aliases(
+                    directory, crew_home_id, keep=set(), sweep_sidecars=False
+                )
+                # Its own budget, the size of one prune walk's: a batch holds
+                # the lock for at most two walks' worth, both bounded.
+                sweep_deadline = time.monotonic() + _PRUNE_MAX_SECONDS_PER_RUN
+                swept = _sweep_orphan_sidecars(
+                    directory, crew_home_id, skip=_active_aliases(), deadline=sweep_deadline
+                ) + _sweep_orphan_alias_locks(directory, deadline=sweep_deadline)
         except OSError as exc:
             # A concurrent spawn holding the lock, or a lock-file fault; either
             # way an idle batch, so a fault ends the drain at the idle bound.
@@ -1385,7 +1860,8 @@ def drain_stale_aliases() -> int:
             logger.warning("skill projection: drain failed", exc_info=True)
             break
         total += reclaimed
-        idle_batches = 0 if reclaimed else idle_batches + 1
+        sidecars += swept
+        idle_batches = 0 if reclaimed or swept else idle_batches + 1
         if idle_batches >= _DRAIN_IDLE_BATCHES:
             break
     else:
@@ -1395,8 +1871,13 @@ def drain_stale_aliases() -> int:
             _DRAIN_MAX_BATCHES,
             total,
         )
-    if total > 0:
-        logger.info("skill projection: boot drain removed %d unused alias(es)", total)
+    if total > 0 or sidecars > 0:
+        logger.info(
+            "skill projection: boot drain removed %d unused alias(es) and %d orphaned "
+            "ownership sidecar(s) or alias lock file(s)",
+            total,
+            sidecars,
+        )
     return total
 
 
@@ -1418,6 +1899,42 @@ def _reclaim_prune_candidate(directory: Path, path: Path, crew_home_id: str) -> 
         return False
     managed = _managed_metadata_for_alias(directory, path, raw)
     if managed is None:
+        record, sidecar_path, sidecar_identity = _sidecar_record(directory, path.stem)
+        if sidecar_identity is not None:
+            # A sidecar IS there; it just does not bind these bytes. That is not
+            # the pre-lifecycle case below, whose premise is that no record
+            # exists: a launcher re-serialized an alias this home
+            # published before its record carried the view digest. Every build
+            # that writes a sidecar also holds a lease for as long as it uses the
+            # alias, so the caller's lease gate already covers the publish-to-
+            # spawn window the legacy age exists for, and the pair goes together
+            # -- but only when the record names THIS home and the file is still
+            # a projected view. Anything else (another home's record, a record
+            # that is not provably ours) keeps the alias.
+            if (
+                record is None
+                or record.get(_MANAGED_CREW_HOME) != crew_home_id
+                or not _is_legacy_projected_view(path, raw)
+            ):
+                return False
+            current = pinned_fs.lstat_by_name(path)
+            if current is None or (current.st_dev, current.st_ino) != identity:
+                return False
+            try:
+                current_raw = safe_read_file_bytes(str(path))
+            except FileTooLargeError:
+                return False
+            if current_raw != raw:
+                return False
+            if _sidecar_record(directory, path.stem) != (record, sidecar_path, sidecar_identity):
+                return False
+            if _unlink_alias_if_unchanged(path, identity):
+                _unlink_projection_lease_if_unchanged(
+                    sidecar_path, sidecar_identity, what="ownership sidecar"
+                )
+                logger.debug("skill projection: pruned re-serialized alias %s", path.name)
+                return True
+            return False
         # No ownership record at all. A pre-lifecycle build wrote this, so
         # the recorded-pair proof is unavailable and the re-preparation
         # contract carries the removal instead (see _is_legacy_projected_view).
@@ -1622,10 +2139,190 @@ def census_projected_aliases(directory: Path) -> dict[str, int]:
     return counts
 
 
+def census_projection_residue(
+    directory: Path, churning: dict[tuple[str, str], dict[str, set[str]]] | None = None
+) -> dict[str, int]:
+    """Count what the projection leaves around its aliases, touching nothing.
+
+    The companion of :func:`census_projected_aliases` for the files that are
+    not aliases, read-only and bounded by the same retention ceiling. Returns:
+
+    ``sidecars`` / ``orphan_sidecars``
+        ownership sidecars in the metadata directory, and of those how many
+        name an alias that is not on disk;
+    ``alias_locks``
+        empty ``<alias>.lock`` files beside the aliases -- never written by this
+        module; an external rewriter leaves one per spec it locked;
+    ``rewritten``
+        aliases whose bytes differ from the digest their own sidecar recorded:
+        another program is rewriting the agents directory. That is the
+        precondition of both the unbounded alias growth and the "not installed"
+        failure, so a non-zero count is worth seeing before a user reports it;
+    ``truncated``
+        1 when a walk hit :data:`_CENSUS_MAX_ALIASES`, making the rest floors.
+    """
+    counts = {
+        "sidecars": 0,
+        "orphan_sidecars": 0,
+        "alias_locks": 0,
+        "rewritten": 0,
+        "truncated": 0,
+    }
+    aliases: set[str] = set()
+    lock_names: list[str] = []
+    try:
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                if len(aliases) + len(lock_names) >= _CENSUS_MAX_ALIASES:
+                    counts["truncated"] = 1
+                    break
+                if not entry.name.startswith(NATIVE_SKILL_ALIAS_PREFIX):
+                    continue
+                if entry.name.endswith(".json") and entry.is_file(follow_symlinks=False):
+                    aliases.add(entry.name[: -len(".json")])
+                elif entry.name.endswith(_ALIAS_LOCK_SUFFIX) and entry.is_file(
+                    follow_symlinks=False
+                ):
+                    lock_names.append(entry.name)
+    except OSError:
+        return counts
+    # Residue by the sweeper's own rule (_sweep_orphan_alias_locks): empty, older
+    # than the legacy age, and no alias beside it. A live or non-empty lock is not.
+    for name in lock_names:
+        info = pinned_fs.lstat_by_name(directory / name)
+        if (
+            info is not None
+            and stat.S_ISREG(info.st_mode)
+            and info.st_size == 0
+            and time.time() - info.st_mtime >= _LEGACY_RECLAIM_MIN_AGE_SECS
+            and name[: -len(_ALIAS_LOCK_SUFFIX)] not in aliases
+        ):
+            counts["alias_locks"] += 1
+    metadata_dir = directory / _PROJECTION_METADATA_DIR_NAME
+    try:
+        with os.scandir(metadata_dir) as entries:
+            for entry in entries:
+                if counts["sidecars"] >= _CENSUS_MAX_ALIASES:
+                    counts["truncated"] = 1
+                    break
+                if not entry.name.endswith(".json") or not entry.is_file(follow_symlinks=False):
+                    continue
+                stem = entry.name[: -len(".json")]
+                if not _LEGACY_ALIAS_NAME_RE.fullmatch(stem):
+                    # Not a sidecar: the view ledger (_VIEW_LEDGER_NAME) lives here too.
+                    continue
+                counts["sidecars"] += 1
+                if stem not in aliases:
+                    if not counts["truncated"]:
+                        counts["orphan_sidecars"] += 1
+                    continue
+                try:
+                    fd = os.open(entry.path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+                    try:
+                        raw = os.read(fd, _PROJECTION_LEASE_MAX_BYTES + 1)
+                    finally:
+                        os.close(fd)
+                    alias_fd = os.open(
+                        directory / f"{stem}.json", os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+                    )
+                    try:
+                        alias_raw = os.read(alias_fd, _CENSUS_ALIAS_MAX_BYTES + 1)
+                    finally:
+                        os.close(alias_fd)
+                except OSError:
+                    continue
+                record = _parsed_spec(raw) if len(raw) <= _PROJECTION_LEASE_MAX_BYTES else None
+                recorded = (
+                    record.get(_MANAGED_ALIAS_SHA256)
+                    if record is not None and _managed_marker(record)
+                    else None
+                )
+                if len(alias_raw) > _CENSUS_ALIAS_MAX_BYTES:
+                    # Not read whole, so its digest proves nothing either way.
+                    continue
+                if isinstance(recorded, str) and recorded != hashlib.sha256(alias_raw).hexdigest():
+                    counts["rewritten"] += 1
+                if record is not None and _managed_marker(record) and churning is not None:
+                    _note_env_values(
+                        churning,
+                        (
+                            str(record.get(_MANAGED_AGENT))[:_CHURNING_LABEL_MAX_CHARS],
+                            str(record.get(_MANAGED_SOURCE))[:_CHURNING_LABEL_MAX_CHARS],
+                        ),
+                        _parsed_spec(alias_raw),
+                    )
+    except OSError:
+        pass
+    return counts
+
+
+# The largest alias the census hashes whole; a bigger one is left unjudged.
+_CENSUS_ALIAS_MAX_BYTES = 8 * 1024 * 1024
+
+
+def _note_env_values(
+    churning: dict[tuple[str, str], dict[str, set[str]]],
+    group: tuple[str, str],
+    view: dict[str, Any] | None,
+) -> None:
+    """Record, per agent and source, a digest of each non-volatile MCP env value."""
+    servers = view.get("mcpServers") if isinstance(view, dict) else None
+    if not isinstance(servers, dict):
+        return
+    volatile = volatile_env_keys()
+    if group not in churning and len(churning) >= _CHURNING_GROUPS_MAX:
+        return
+    seen = churning.setdefault(group, {})
+    for server, entry in servers.items():
+        env = entry.get("env") if isinstance(entry, dict) else None
+        if not isinstance(env, dict):
+            continue
+        for key, value in env.items():
+            if str(key) in volatile:
+                continue
+            # Bounded at insertion: a label is cut to a fixed length, and a group
+            # keeps a fixed number of them, so a spec with a huge env map costs a
+            # bounded amount. Rendering escapes it; see the doctor line.
+            label = f"{server}.{key}"[:_CHURNING_LABEL_MAX_CHARS]
+            if label not in seen and len(seen) >= _CHURNING_KEYS_PER_GROUP_MAX:
+                continue
+            values = seen.setdefault(label, set())
+            if len(values) < 2:
+                values.add(hashlib.sha256(str(value).encode("utf-8", "replace")).hexdigest())
+
+
+def census_churning_env_keys(directory: Path) -> list[str]:
+    """``<server>.<ENV_KEY>`` names whose value differs across one agent's aliases.
+
+    Read-only and bounded like :func:`census_projection_residue`. A key a launcher
+    re-stamps on every launch but that is not in :func:`volatile_env_keys` mints a
+    new alias per launch; this is how an operator finds it and adds it to
+    ``KIROCREW_SKILL_VIEW_VOLATILE_ENV``. A real edit to a value shows up once too.
+    """
+    churning: dict[tuple[str, str], dict[str, set[str]]] = {}
+    census_projection_residue(directory, churning)
+    names = {key for keys in churning.values() for key, values in keys.items() if len(values) > 1}
+    return sorted(names)[:_CHURNING_ENV_KEYS_MAX]
+
+
+_CHURNING_ENV_KEYS_MAX = 20
+_CHURNING_GROUPS_MAX = 256
+_CHURNING_KEYS_PER_GROUP_MAX = 64
+_CHURNING_LABEL_MAX_CHARS = 120
+
+
 def _is_current_publication(
     directory: Path, alias_path: Path, alias_raw: str, crew_home_id: str
 ) -> bool:
-    """Whether *alias_path* already holds *alias_raw* with this home's sidecar."""
+    """Whether *alias_path* already says *alias_raw* and carries this home's sidecar.
+
+    "Says", not "holds byte for byte": the comparison is of the parsed specs, so
+    a launcher that re-serialized the file does not force a rewrite of
+    every alias, and its sidecar, on every preparation under the shared lock.
+    Every VALUE still counts, ``env`` included -- a changed value is a changed
+    spec kiro-cli must be given, unlike the alias name and the ownership proof,
+    which deliberately ignore ``env`` values (:func:`_alias_identity`).
+    """
     info = pinned_fs.lstat_by_name(alias_path)
     if (
         info is None
@@ -1637,35 +2334,138 @@ def _is_current_publication(
         existing = safe_read_file_bytes(str(alias_path))
     except FileTooLargeError:
         return False
-    if existing != alias_raw.encode():
+    if existing is None:
         return False
+    if existing != alias_raw.encode():
+        parsed = _parsed_spec(existing)
+        if parsed is None or _canonical_json(parsed) != _canonical_json(json.loads(alias_raw)):
+            return False
     managed = _managed_metadata_for_alias(directory, alias_path, existing)
     return managed is not None and managed[0].get(_MANAGED_CREW_HOME) == crew_home_id
 
 
 def _alias_identity(view: dict[str, Any]) -> dict[str, Any]:
-    """The part of *view* an alias is named by: the view minus MCP env values.
+    """The part of *view* an alias is named by: the view minus volatile env values.
 
-    A launcher that re-injects a per-write value into each agent file's server
+    A launcher that re-injects a per-launch nonce into each agent file's server
     env (a fresh id every sandbox start) changes the view on every spawn, and
-    naming the alias by it mints a new file per spawn without bound. Env keys
-    stay in the identity, so adding or removing a variable still names a new
-    alias; a changed value reuses the alias and publication rewrites the file,
-    which still carries the full view.
+    naming the alias by it mints a new file per spawn without bound. So the values
+    of :func:`volatile_env_keys` are left out; every other env value is in, as a
+    digest. A rotated credential therefore names a NEW alias -- one kiro-cli has
+    not loaded, so ``set_mode`` never activates a copy still carrying the old
+    credential -- and two launch contexts with different credentials never share
+    one. Keys stay in too: adding or removing a variable names a new alias.
     """
     servers = view.get("mcpServers")
     if not isinstance(servers, dict):
         return view
+    volatile = volatile_env_keys()
     identity = dict(view)
     identity["mcpServers"] = {
         name: (
-            {**entry, "env": sorted(str(key) for key in entry["env"])}
+            {**entry, "env": _env_identity(entry["env"], volatile)}
             if isinstance(entry, dict) and isinstance(entry.get("env"), dict)
             else entry
         )
         for name, entry in servers.items()
     }
     return identity
+
+
+def _announce_publication(path: Path, data: bytes) -> None:
+    """Make a watcher that ignores renames notice the alias just published at *path*.
+
+    ``atomic_write`` publishes by rename, and kiro-cli (every release since its
+    agent-config hot reload landed in 2.10.0, 2.26.0 included) does not act on
+    one: its watcher reloads only on a create, a DATA modification or a remove of
+    a ``*.json`` in the agents directory, so the rename (a name modification) is
+    dropped, and so are the temp file's own events (not ``*.json``), an attribute
+    change and a close without a write. ``session/set_mode`` then looks only in
+    what was loaded. A NEW alias renamed in after the process started therefore
+    stays ``Mode ... not found`` indefinitely, and a KNOWN alias renamed over
+    keeps serving its old content. Rewriting the same bytes in place is
+    a data write, so it triggers a full rescan after a 500 ms quiet window
+    (measured: visible ~0.7 s later); and because every byte written equals the
+    byte already there and nothing is truncated, a reader racing it can never
+    see a torn file. Best effort: the file must still hold exactly *data*, and
+    any failure leaves it as published.
+    """
+    flags = os.O_RDWR | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError:
+        logger.debug("skill projection: cannot reopen %s to announce it", path.name, exc_info=True)
+        return
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_size != len(data):
+            return
+        current = b""
+        while len(current) < len(data):
+            chunk = os.read(fd, len(data) - len(current))
+            if not chunk:
+                break
+            current += chunk
+        if current != data:
+            return
+        os.lseek(fd, 0, os.SEEK_SET)
+        view = memoryview(data)
+        while view:
+            view = view[os.write(fd, view) :]
+    except OSError:
+        logger.debug("skill projection: cannot announce %s", path.name, exc_info=True)
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            # A deferred write error (network filesystems report one at close) is
+            # no reason to fail a best-effort nudge, or the session start behind it.
+            logger.debug("skill projection: close after announcing %s", path.name, exc_info=True)
+
+
+def announce_alias(alias: str) -> None:
+    """Rewrite published alias *alias* in place, byte for byte, so the host rescans.
+
+    The recovery ``session/set_mode`` takes on a ``Mode ... not found`` for a
+    fresh alias before it retries: see :func:`_announce_publication`. Only a name
+    of the shape this module mints is touched. Blocking; best effort.
+    """
+    if not _LEGACY_ALIAS_NAME_RE.fullmatch(alias):
+        return
+    path = kiro_agents_dir() / f"{alias}.json"
+    try:
+        data = safe_read_file_bytes(str(path))
+    except (OSError, ValueError, FileTooLargeError):
+        return
+    if data:
+        _announce_publication(path, data)
+
+
+# MCP env keys whose VALUE a launcher re-stamps on every launch (a per-launch
+# nonce, not a credential the agent's grants depend on), so a changed value is no
+# change. Every other env value counts: a rotated credential is a different grant.
+# Extended, never narrowed, by ``KIROCREW_SKILL_VIEW_VOLATILE_ENV`` (comma-separated
+# key names), for a launcher this list does not know yet.
+_VOLATILE_ENV_KEYS_DEFAULT = frozenset({"AIM_CREDS_AGENT_INJECTION"})
+_VOLATILE_ENV_VAR = "KIROCREW_SKILL_VIEW_VOLATILE_ENV"
+
+
+def volatile_env_keys() -> frozenset[str]:
+    """The MCP env keys whose values identity digests ignore (see above)."""
+    extra = os.environ.get(_VOLATILE_ENV_VAR, "")
+    return _VOLATILE_ENV_KEYS_DEFAULT | {k.strip() for k in extra.split(",") if k.strip()}
+
+
+def _env_identity(env: dict[Any, Any], volatile: frozenset[str]) -> dict[str, str | None]:
+    """*env* as identity: every key, and a digest of each value but the volatile ones."""
+    return {
+        str(key): (
+            None
+            if str(key) in volatile
+            else hashlib.sha256(str(value).encode("utf-8", "replace")).hexdigest()
+        )
+        for key, value in env.items()
+    }
 
 
 def prepare_native_skill_projection(
@@ -1699,7 +2499,7 @@ def prepare_native_skill_projection(
             return None
         try:
             with workspace_cli_settings_lock(work_dir) as locked_settings:
-                _restore_inheritance(locked_settings, _settings(locked_settings))
+                _restore_inheritance(locked_settings, _settings(locked_settings, may_pause=False))
         except OSError:
             logger.warning(
                 "skill projection: workspace settings lock unavailable during rollback",
@@ -1724,6 +2524,7 @@ def prepare_native_skill_projection(
     sources: dict[str, str] = {}
     errors: dict[str, str] = {}
     search_agents: set[str] = set()
+    display_sizes: dict[str, tuple[int, str]] = {}
     for agent in list_agents(project_dir=str(work_dir)):
         if not agent.filename:
             continue
@@ -1734,7 +2535,9 @@ def prepare_native_skill_projection(
         spec = _read_agent_spec(source, operation="native_skill_projection", source="acp")
         if spec is None:
             continue
+        display_sizes[agent.name] = (_display_text_bytes(spec), source.absolute().as_posix())
         view = copy.deepcopy(spec)
+        _strip_alias_display_text(view)
         resources = view.get("resources", [])
         resources = resources if isinstance(resources, list) else []
         view["resources"] = [
@@ -1835,6 +2638,7 @@ def prepare_native_skill_projection(
         specs[agent.name] = view
         sources[agent.name] = source.absolute().as_posix()
 
+    _warn_on_display_text(display_sizes)
     try:
         alias_lock = _projection_alias_lock(directory)
     except OSError:
@@ -1857,7 +2661,7 @@ def prepare_native_skill_projection(
                 # the write below. Every in-product workspace cli.json writer uses
                 # the same sidecar lock, so no effort or Tool Search update can land
                 # between this read and commit.
-                local = _settings(locked_settings)
+                local = _settings(locked_settings, may_pause=False)
                 inherited, preference_source, overlaid = _inheritance_preference(
                     local, global_settings
                 )
@@ -1928,13 +2732,16 @@ def prepare_native_skill_projection(
                         metadata = {
                             **ownership[alias],
                             _MANAGED_ALIAS_SHA256: hashlib.sha256(alias_raw.encode()).hexdigest(),
+                            _MANAGED_VIEW_SHA256: _view_digest(specs[agent_name]),
                         }
                         alias_path = directory / f"{alias}.json"
                         if _is_current_publication(directory, alias_path, alias_raw, crew_home_id):
-                            # Another spawn already published these exact bytes
-                            # with this home's record; keep its inode as is.
+                            # Another spawn already published this spec with
+                            # this home's record; keep its inode as is.
                             continue
                         atomic_write(alias_path, alias_raw, restrict_to_owner=True)
+                        # Renamed into place, which kiro-cli does not reload on.
+                        _announce_publication(alias_path, alias_raw.encode())
                         assert metadata_dir is not None
                         atomic_write(
                             metadata_dir / f"{alias}.json",

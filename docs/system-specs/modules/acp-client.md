@@ -29,6 +29,15 @@ error chains and tracebacks still name the path callers import it from.
 harness executable resolution, `finish_suspended_spawn` and the model-push ladder
 (`_push_model_via_effort_split`, `_is_config_value_rejection`) in `acp/client.py`.
 
+New module-level code goes to the owner whose row above names its
+responsibility, not to `acp/client.py` or `acp/runtime.py`: stdio framing and
+write bounds to `acp/transport_framing.py`; an `AcpError` subclass, or a
+classifier that reads a harness failure into one, to `acp/transport_errors.py`;
+model-catalog rules to `acp/runtime_models.py`; process-tree inspection to
+`acp/runtime_process_tree.py`; session-start admission to
+`acp/runtime_start.py`. A moved name a test patches through its facade is
+forwarded in `_EXPORTS_BY_OWNER`, which `test_acp_refactor_facade.py` pins.
+
 ## Native skill startup views
 
 Native CLI launches prepare a `skill_projection` after the existing spec freshness
@@ -174,13 +183,23 @@ in this process holds them and no held lease in any process names them. An
 alias is named by a 24-hex digest of the agent name, the owning Crew data home
 and the view content, so every spawn from that home that derives the same view
 -- any run folder, any session -- publishes the same file, and publication skips
-an existing alias whose bytes already match. MCP server env values are left out
-of that digest (env keys stay in): a launcher that writes a fresh per-write value
-into every agent file would otherwise name a new alias on every spawn, so a
-changed value reuses the alias and publication rewrites it with the full view.
-The source spec's path is in the digest too, so two agent files differing only
-in env values (one project agent copied into two workspaces, each with its own
-token) never share an alias.
+an existing alias that already SAYS the same spec with this home's sidecar: the
+two are compared parsed, so a launcher that re-serializes every file in the
+agents directory does not force a rewrite of every alias under the shared lock,
+while every value, env values included, still counts. Each MCP server env value is in that
+digest as a digest of its own, except the values of `volatile_env_keys()`: keys a
+launcher re-stamps with a per-launch nonce (default `AIM_CREDS_AGENT_INJECTION`,
+extended by `KIROCREW_SKILL_VIEW_VOLATILE_ENV`). Leaving those in would name a new
+alias on every spawn, so a changed volatile value reuses the alias and publication
+rewrites it with the full view. Every other value counts: a rotated credential
+names a NEW alias, one kiro-cli has not loaded, so `set_mode` never activates a
+copy still carrying the old credential, and two launch contexts with different
+credentials never share an alias. The env keys and the source spec's path are in
+the digest too, so two agent files differing only in env values never share an
+alias. A launcher nonce under a
+key the set does not know shows up as one view per launch; `kirocrew doctor`
+names each `<server>.<KEY>` whose value differs across one agent's views
+(`census_churning_env_keys`), so the operator can declare it volatile.
 Views can still differ per
 workspace: a SCOPE_PROJECT agent's prompt path and workspace-local inheritance
 shape the view, so those agents get
@@ -336,11 +355,108 @@ directory, and any other errno (`ENOENT` from a concurrent prune elsewhere,
 `EMFILE`) is reported by name with no such diagnosis. Every other `False`
 from the unlink is a deliberate keep and stays at debug.
 
+`session/set_mode` never activates a copy of an agent older than the one just
+prepared. kiro-cli 2.25.0 and 2.26.0 do not reload their agents directory on the
+rename that publishes an alias (fixed upstream in kiro-team/kiro-cli#5026), so a
+NEW alias published after the process started can answer `Mode '<alias>' not found`
+while the file is on disk. The bracket re-prepares before `set_mode` and always
+sends the FRESH alias: an alias the host loaded earlier, the spawn one included,
+may hold a generation of the spec an edit has since removed a server or an
+auto-approval from, and so may the authored spec kiro-cli cached, which it does
+not reload on a rename either. A `Mode ... not found` naming that alias -- and
+nothing else -- is retried after `_PROJECTED_MODE_RETRY_DELAYS_SECS` (3 s in
+total), each retry preceded by `announce_alias`: a same-bytes in-place rewrite of
+that alias, a data write kiro-cli's watcher DOES reload on (a miss triggers no
+reload by itself). If the host still has not loaded it, the session start FAILS
+with an error naming the agent and saying to restart the gateway; no other copy
+is activated in its place. A re-preparation that could not run (the alias lock is
+busy) fails the start the same way, since nothing proves any alias still matches
+the spec.
+
+Overlapping starts on one runtime are ordered so the newest view always wins. A
+preparation reads the agent specs before it waits on the alias file lock, so
+without ordering a start that read a spec before an edit revoked a grant could
+return last and activate that alias. Preparation and adoption therefore run under
+a per-runtime asyncio lock (`_skill_projection_lock`), so specs are read in
+adoption order, and each adopted projection is stamped with a generation issued
+under that lock; adoption refuses one older than the adopted generation. The lock
+covers only the `to_thread` preparation and the in-memory adoption, never
+`set_mode` itself, so a slow MCP server boot on one start does not hold up the
+others. Instead, a start whose `set_mode` is pending re-checks the generation
+before every attempt (it sends the newest adopted view's alias, never its own
+older one, and fails if that view does not offer the agent) and after the
+answer, after first taking the lock so a preparation still running when the
+answer arrived is adopted before the check: if a newer view gave the agent a
+different alias while the request was in flight, the host may have activated the
+older one, so the session is terminated
+and the start fails with "start it again; if it keeps failing, restart the
+gateway". A newer view that leaves the agent's alias unchanged refuses nothing.
+A preparation whose start is cancelled still runs to completion under the lock
+and its view is adopted before the cancellation propagates. A newer preparation
+that yields no view (or raises) leaves pending starts unable to prove their view
+current, so they fail the same way until a later view is adopted.
+Lock order, outermost first: `_skill_projection_lock` -> the alias file lock ->
+the workspace `cli.json` settings lock -> the projection lease. The file locks
+are taken and released inside one synchronous call on a worker thread, which
+never waits on the asyncio lock, so the two cannot deadlock.
+
+The adopted projection keeps translating, in inbound frames, every alias an
+earlier projection of the process published (`recognise`: alias-shaped names
+mapped to admissible agent names only, spawn aliases first, at most
+`_RECOGNISED_ALIASES_MAX`, with one warning per projection past the bound), and
+the projection the process spawned with is held for its life as
+`_spawn_skill_projection` so those aliases stay out of the prune. In
+`availableModes` a projected agent stays listed when the host advertises any of
+its aliases OR its authored id, once, so an agent never vanishes from later
+session starts because its alias changed. Each outcome logs and counts
+`kirocrew.acp.skill_view.fallback`; any other error propagates as before.
+
+An alias view leaves out `welcomeMessage` and caps `description` at
+`_ALIAS_DESCRIPTION_MAX_CHARS`. kiro-cli copies every loaded spec's name,
+description, source and welcomeMessage into each `session/new` and `session/load`
+reply, and an alias is a second copy of an agent the host already lists. So
+duplicating that text only doubles the reply, and past the ACP readers' 10 MB
+frame limit the reply is dropped: 50 agents carrying 113 KB of release notes each
+reached 11.7 MB. Kiro Crew renders an agent's welcomeMessage from the authored
+spec, never from an alias. A preparation also warns, once per size, naming each
+authored spec whose display text passes `_DISPLAY_TEXT_WARN_BYTES` and the
+directory total past `_DISPLAY_TEXT_TOTAL_WARN_BYTES`. That text still reaches
+every reply from the authored copy, so the fix for it is at its source.
+
 Projected agent JSON contains only fields accepted by Kiro's strict
 schema; lifecycle ownership lives in the non-spec
 `.kirocrew-skill-projection-metadata` directory. Each sidecar records the alias's
-exact byte digest, so a stale or replaced sidecar cannot authorize deletion of a
-different spec. No released build ever wrote lifecycle fields INTO a spec --
+exact byte digest AND the digest of its identity (the view the alias is named by,
+env values out), so a stale or replaced sidecar cannot authorize deletion of a
+different spec, while an alias another program merely re-serialized or
+re-stamped stays owned. A sidecar written before the identity digest existed,
+whose alias bytes moved, is still ownership-checked -- marker, this data home,
+the projected-view shape -- and then removed WITH its alias, without the legacy
+age wait: every build that writes a sidecar also holds a lease while it uses the
+alias; removing the alias alone would strand its sidecar. Two sweeps retire
+what outlived an alias, under the same lock, walk limit, random start and time
+budget as the alias walk, capped at
+`_SIDECAR_SWEEP_MAX_PER_RUN`: this home's sidecars whose alias is gone, and empty
+`<alias>.lock` files older than the legacy age with no alias beside them. This
+module never creates the latter; a launcher that rewrites every spec leaves one
+per spec it locked. The boot drain counts both sweeps as progress. `kirocrew
+doctor` reports the residue and the aliases whose bytes no longer match their
+sidecar -- another program is rewriting the directory -- on a `skill-view
+residue` line, warning past `_SKILL_VIEW_RESIDUE_WARN` or on any rewrite.
+
+Publication is by rename (`atomic_write`), and kiro-cli -- measured on 2.25.0
+and 2.26.0 -- does not reload its agents directory on a rename: its inotify
+watch receives `IN_MOVED_TO` but it reloads only on a data write to a `*.json`
+name, about 0.6 s debounced. A new alias renamed in after the process started
+therefore answers `Mode '<alias>' not found` indefinitely, and an alias renamed
+over a known name keeps serving its OLD content. Every publication is
+therefore followed by `_announce_publication`, which rewrites the alias's own
+bytes in place, unchanged -- a data write the host reloads on, which a racing
+reader cannot see torn -- and only while the file still holds exactly those
+bytes. That is what lets the `set_mode` retry above land on the published alias
+within its budget instead of failing the start.
+
+No released build ever wrote lifecycle fields INTO a spec --
 kiro-cli denies unknown fields, so the projection never could -- and an alias
 without a sidecar is judged by the unrecorded path above instead. The recorded
 source paths are never probed, so untrusted metadata cannot
@@ -503,7 +619,7 @@ launch and host-capability table is in
 need additional detail here:
 
 - `""` (default): `kiro-cli acp --agent <name>` (resolved by `_resolve_kiro_bin`). Per-session kiro settings are layered in via the workspace overlay `<work_dir>/.kiro/settings/cli.json` (written by `AcpProvider`, not the client): reasoning **effort** (`chat.modelDefaults`) and **MCP Tool Search** (`toolSearch.enabled` + activation thresholds from `agent.tool_search_min_pct` / `tool_search_min_tokens`, gated by `agent.tool_search`, default on) — see providers.md.
-- `"claude"` (`ACP_BACKEND_CLAUDE`): `claude-agent-acp` (resolved by `_resolve_claude_acp_bin` → `(list[str] | None, str)` (argv plus the augmented PATH actually searched)). Resolution order: `CLAUDE_AGENT_ACP_BIN` env var, then the **vendored copy** (`_resolve_vendored_claude_acp` — `<node_modules>/@agentclientprotocol/claude-agent-acp/dist/index.js` found under the package's `_vendor/node_modules` from the distribution bundle, the sibling `KiroCrewWebsite/node_modules` in a source checkout, or `KIROCREW_PROJECT_DIR`; needs no global npm install or network — matters on hosts that have no package-registry token at gateway runtime), then `mise which claude-agent-acp` (respects MISE_DATA_DIR and all mise config), then a direct glob under mise's Node installs dir (`_mise_node_installs_dir` — `<mise-data>/installs/node`, root from `env.mise_data_dir` so MISE_DATA_DIR / XDG_DATA_HOME are honoured), then augmented PATH (`env.augmented_path` — mise shims, `~/.npm-packages/bin`, `~/.volta/bin`, `/opt/homebrew/bin`, plus EVERY per-version manager bin dir via `env.node_all_bin_dirs` (mise/asdf/nvm/fnm, all installed versions — a global npm binary can live under any of them), so a non-login launchd/systemd gateway also finds globally-installed binaries). The adapter is vendored into the distribution bundle and the pip build by `setup.py` (`_vendor_acp_into_pkg` → `kiro_crew/_vendor/node_modules`), so every install method ships it without asking the user to `npm i -g`. Vendoring copies the adapter **plus its full transitive dependency closure** (`_acp_dependency_closure` walks `dependencies`/`optionalDependencies` from the resolved website `node_modules`, ~96 flat top-level packages) — npm hoists deps like `@agentclientprotocol/sdk` flat, so copying only the adapter package crashes the ESM loader with `ERR_MODULE_NOT_FOUND`. `_resolve_vendored_claude_acp` accepts a root only when the hoisted dependency marker `@agentclientprotocol/sdk` is present alongside the entry, so an incomplete vendored copy is skipped in favour of a complete one instead of being spawned and crashed. For scripts under mise installs, returns `[node_binary, script_path]` to bypass `#!/usr/bin/env node` shebang resolution which fails in non-interactive daemon contexts. For standalone binaries, returns `[binary_path]`. Pre-spawn the client writes `<work_dir>/.claude/settings.local.json` with `defaultMode: default` so the adapter routes every tool decision back to Kiro Crew via `session/request_permission`. This makes claude-agent-acp participate in the same approve / trust_reads / trust / yolo protocol as kiro-cli — dashboard, subagents, channel agents, cron, and heartbeat all share the path. Kiro Crew still enforces per-tool security via `HooksConfig.auto_deny_tools` (evaluated by `HookManager.on_tool_call` in `hooks.py`) on every `session/request_permission` event. `CLAUDE_CONFIG_DIR` (an isolated config root, distinct from the project-scope `<work_dir>/.claude/settings.local.json` the client writes itself) is **not** set by this core: `_spawn` merges a caller's `extra_env` into the child environment, so an edition can point the adapter's `SettingsManager` and the SDK at a seeded root, but with nothing supplied they read the user's global `~/.claude` — which is a live gate-bypass hazard for inherited `permissions.allow` entries, recorded as a known gap in claude-code-provider.md. The env also carries `CLAUDE_CODE_EXECUTABLE` (claude backend only, set in `_spawn` when unset): the adapter delegates the model turn to `@anthropic-ai/claude-agent-sdk`, which needs a per-platform native Claude binary (~250 MB each) shipped as npm `optionalDependencies` that the website install omits — so the vendored closure does **not** include it and the SDK fails `session/new` with `Claude native binary not found for <platform>`. The SDK does **not** search PATH for `claude` itself (so the host merely having the external agent CLI installed is not enough), and bundling a quarter-GB binary per platform is not viable; instead `_resolve_claude_code_executable` finds an existing `claude` (`CLAUDE_CODE_EXECUTABLE` override → `mise which claude` → augmented PATH incl. `~/.toolbox/bin`, where a managed distribution may ship the external agent CLI) and the adapter forwards it to the SDK as `pathToClaudeCodeExecutable` (no version check). If none is found the var is left unset (with a warning) so the adapter's native-binary error surfaces rather than a guessed bad path; an explicit operator-set value always wins.
+- `"claude"` (`ACP_BACKEND_CLAUDE`): `claude-agent-acp` (resolved by `_resolve_claude_acp_bin` → `(list[str] | None, str)` (argv plus the augmented PATH actually searched)). Resolution order: `CLAUDE_AGENT_ACP_BIN` env var, then the **vendored copy** (`_resolve_vendored_claude_acp` — `<node_modules>/@agentclientprotocol/claude-agent-acp/dist/index.js` found under the package's `_vendor/node_modules` from the distribution bundle, the sibling `KiroCrewWebsite/node_modules` in a source checkout, or `KIROCREW_PROJECT_DIR`; needs no global npm install or network — matters on hosts that have no package-registry token at gateway runtime), then `mise which claude-agent-acp` (respects MISE_DATA_DIR and all mise config), then a direct glob under mise's Node installs dir (`_mise_node_installs_dir` — `<mise-data>/installs/node`, root from `env.mise_data_dir` so MISE_DATA_DIR / XDG_DATA_HOME are honoured), then augmented PATH (`env.augmented_path` — mise shims, `~/.npm-packages/bin`, `~/.volta/bin`, `/opt/homebrew/bin`, plus EVERY per-version manager bin dir via `env.node_all_bin_dirs` (mise/asdf/nvm/fnm, all installed versions — a global npm binary can live under any of them), so a non-login launchd/systemd gateway also finds globally-installed binaries). The adapter is vendored into the distribution bundle and the pip build by `setup.py` (`_vendor_acp_into_pkg` → `kiro_crew/_vendor/node_modules`), so every install method ships it without asking the user to `npm i -g`. Vendoring copies the adapter **plus its full transitive dependency closure** (`_acp_dependency_closure` walks `dependencies`/`optionalDependencies` from the resolved website `node_modules`, ~96 flat top-level packages) — npm hoists deps like `@agentclientprotocol/sdk` flat, so copying only the adapter package crashes the ESM loader with `ERR_MODULE_NOT_FOUND`. `_resolve_vendored_claude_acp` is the claude spelling of the ONE project-local check shared by the three Node adapter resolvers (`_vendored_adapter_entry`; codex-acp and pi-acp call it with their own entry and marker): a copy is accepted only when the adapter's dependency marker `@agentclientprotocol/sdk` is reachable the way Node resolves a bare import from the entry script's **real path** (`os.path.realpath`, then `node_modules` directories walked upward from there -- `_node_module_search_dirs`). An ordinary `npm install` satisfies that at the hoisted root; a `file:` / `npm link` install is a symlink whose dependencies sit under the link target's own `node_modules`, which an earlier root-only check never looked at, so every linked adapter was rejected as incomplete and the ladder fell through -- silently -- to the global copy on PATH (#13869). An entry whose dependency is reachable nowhere is still skipped in favour of the next candidate instead of being spawned and crashed, and the skip is logged once with the entry, the dependency and the real location, so the fall-through is never silent. For scripts under mise installs, returns `[node_binary, script_path]` to bypass `#!/usr/bin/env node` shebang resolution which fails in non-interactive daemon contexts. For standalone binaries, returns `[binary_path]`. Pre-spawn the client writes `<work_dir>/.claude/settings.local.json` with `defaultMode: default` so the adapter routes every tool decision back to Kiro Crew via `session/request_permission`. This makes claude-agent-acp participate in the same approve / trust_reads / trust / yolo protocol as kiro-cli — dashboard, subagents, channel agents, cron, and heartbeat all share the path. Kiro Crew still enforces per-tool security via `HooksConfig.auto_deny_tools` (evaluated by `HookManager.on_tool_call` in `hooks.py`) on every `session/request_permission` event. `CLAUDE_CONFIG_DIR` (an isolated config root, distinct from the project-scope `<work_dir>/.claude/settings.local.json` the client writes itself) is **not** set by this core: `_spawn` merges a caller's `extra_env` into the child environment, so an edition can point the adapter's `SettingsManager` and the SDK at a seeded root, but with nothing supplied they read the user's global `~/.claude` — which is a live gate-bypass hazard for inherited `permissions.allow` entries, recorded as a known gap in claude-code-provider.md. The env also carries `CLAUDE_CODE_EXECUTABLE` (claude backend only, set in `_spawn` when unset): the adapter delegates the model turn to `@anthropic-ai/claude-agent-sdk`, which needs a per-platform native Claude binary (~250 MB each) shipped as npm `optionalDependencies` that the website install omits — so the vendored closure does **not** include it and the SDK fails `session/new` with `Claude native binary not found for <platform>`. The SDK does **not** search PATH for `claude` itself (so the host merely having the external agent CLI installed is not enough), and bundling a quarter-GB binary per platform is not viable; instead `_resolve_claude_code_executable` finds an existing `claude` (`CLAUDE_CODE_EXECUTABLE` override → `mise which claude` → augmented PATH incl. `~/.toolbox/bin`, where a managed distribution may ship the external agent CLI) and the adapter forwards it to the SDK as `pathToClaudeCodeExecutable` (no version check). If none is found the var is left unset (with a warning) so the adapter's native-binary error surfaces rather than a guessed bad path; an explicit operator-set value always wins.
 
 When the Claude adapter is not found, the spawn error reports the augmented PATH
 captured by that resolution attempt. The failed result and its PATH are cached
@@ -773,14 +889,12 @@ Data-driven — no code changes needed:
 
 Note: there IS a top-level `agents/` directory used at runtime for project-level overrides, but the bundled source lives in `src/kiro_crew/config/`.
 
-The normal and orchestrator prompts are alternative, self-contained inputs, not
-layers concatenated together; custom/app agents can supply their own prompts.
-Their compact tool directories retain exact callable syntax, session ownership,
+The shipped prompt is a self-contained input; custom/app agents can supply
+their own prompts. Its compact tool directory retain exact callable syntax, session ownership,
 privacy boundaries, stop conditions and output formats. Shared wording is not
 moved into a common include: source deduplication alone would not reduce the
 selected prompt sent to the model. `test/test_prompt_compact_contract.py` checks
-each file's UTF-8 size budget, template slots, critical operational clauses and
-the orchestrator example against the real plan parser. The size budget is an
+each file's UTF-8 size budget, template slots and critical operational clauses. The size budget is an
 absolute UTF-8 byte ceiling per selectable prompt: a context-cost guard, not a
 token count and not a permanent ban on new rules. A maintainer may raise a
 ceiling in a reviewed change when a rule earns its bytes; the clause tests, not
@@ -826,7 +940,8 @@ The details below describe the Kiro and Claude paths implemented directly here:
     project third-party declarations. Override eligibility reads project and
     global MCP settings through the bounded sensitive-path reader. A refused,
     unreadable or malformed settings file withholds these overrides, preserving
-    native restrictions; only an absent settings file contributes no restrictions.
+    native restrictions; only an absent settings file, or one that is empty or
+    holds only JSON whitespace (space, tab, CR, LF), contributes no restrictions.
     kiro-cli loads
     servers from the agent config (respects `mcpServers` in the agent's config
     file). Non-kirocrew agents (e.g. AIM-installed) load only their own
@@ -986,6 +1101,39 @@ for the probe it has yet to receive. The handle dates the snapshot it stores by
 the answer's own clock (`entitlement_probe_result_at`), not by its call time, so
 its floor never rises above the data it holds and a replayed answer is never
 re-dated out of the spawn-race window it was captured in.
+
+**Direct-spawn revalidation.** `AcpClient` owns one process and one session, so
+it has no runtime probe to borrow. It stamps its own `session/new` capture
+(`_available_models_captured_at`, unconfirmed) and, before an explicit
+`set_model` pick is refused or a startup pin is withheld on kiro,
+`refresh_available_models` asks again: a snapshot a probe confirmed within
+`_ENTITLEMENT_PROBE_TTL_SECS` is returned as is (fresh -- no round-trip); otherwise
+`_probe_advertised_models` asks on a DEDICATED short-lived transport: a throwaway
+`AcpClient` built by `_entitlement_probe_client` from this client's own launch
+inputs (work dir, agent, env, backend, sandbox mode, gateway overlay, session key),
+so `_spawn` starts it exactly as it started this session. On its own process it
+sends `initialize` (the same `_initialize_params` this session's handshake sends)
+and, before `session/new`, re-verifies the derived spec with
+`require_unchanged_derived_spec` -- the same verify→create bracket every other
+spawn path closes between initialize and session creation, so a spec revoked
+during probe init aborts (raising `DerivedSpecStale`, absorbed as an empty answer)
+rather than creating a session that would start that revoked spec's MCP server
+commands. It then sends one minimal `session/new` (the pooled broker stubs, for
+cost only), reads the answer through `advertised_models_from_session`, ends it
+with the harness's teardown verb and shuts the process down, bounded by
+`_INIT_TIMEOUT + _ENTITLEMENT_PROBE_TIMEOUT`. A non-empty answer replaces the
+snapshot, dated by its arrival and marked confirmed; an empty or failed one is no
+evidence and the refusal stands. There is no failure replay: the callers are user
+actions and the picker read, the direct-client form of `force=True`.
+`refresh_available_models` owns single-flight: a caller arriving while a probe is
+in flight awaits that same (shielded) probe, so an overlapping picker read and
+explicit pick start one probe process, never two. Because the probe never touches
+this session's stream, nothing it emits -- session updates, substitution
+advisories, and the MCP OAuth and init frames (keyed by `serverName`, no
+`sessionId`) of whatever servers kiro-cli starts from the spec for it -- can enter
+this session's notification buffer, its `_oauth_emitted_servers` dedupe or its
+event stream; no frame filter, prompt hold or turn guard is needed, and isolation
+does not depend on which servers the probe process happens to start.
 
 Step 5 drains MCP server init notifications (both after `session/load` and
 `session/new` — loading a session triggers MCP re-initialization).
@@ -1388,9 +1536,23 @@ to `cat` on its own); the other four classes are `INTERACTIVE_NARROWING_RISKS`.
 The classifier never rewrites the command. The repo has no environment layer on
 the ACP tool path — the hook gate (`ToolHookResult`) can only allow or deny, and
 the `GIT_PAGER=cat` layer in `dashboard/terminal_commands.py` serves the human
-terminal — so `PAGER=cat` / `-y` / `BatchMode` are PROPOSED via the hint the
+terminal — so `PAGER=cat` / `-y` / the ssh options are PROPOSED via the hint the
 recovery nudge carries, not applied. Applying them at the harness is a
 follow-up seam, not a matcher's job.
+
+The ssh hint does not propose `BatchMode=yes`. Once case is folded, that option
+name contains a permission verb, so a proposed `ssh -o BatchMode=yes … /usr/…` is
+refused by the permission deny rows. The hint proposes `-o
+StrictHostKeyChecking=yes -o NumberOfPasswordPrompts=0 -o
+PasswordAuthentication=no -o KbdInteractiveAuthentication=no` instead, aimed at
+the prompts ssh_config(5) says BatchMode disables: password prompts and host key
+confirmation. The classifier still counts only `BatchMode` as proof that ssh will
+not prompt. A command using the proposed options stays prompt-shaped, because a
+FIDO/sk key PIN or an encrypted key's passphrase may still be asked for under
+them, and the conservative reading keeps the shorter stall window. A
+permission-row refusal whose command spells `BatchMode` carries remediation text
+naming the same options (`deny_guidance.SSH_BATCHMODE_REMEDIATION`). The rows
+themselves are unchanged, so that spelling is still refused.
 
 **Post-stall classification.** When the tool branch acts, the stall is a wait
 for input on exactly two grounds: the oracle's own `STUCK_INPUT` (Linux), or a
@@ -1866,6 +2028,33 @@ unchanged: an out-of-roster server is still named there, where naming it is the
 point. Pinned by
 `test_session_start_timeout_diagnostics.py::test_a_complete_roster_says_the_stall_is_not_in_those_servers`.
 
+**A start that queued behind another one says so.** kiro-cli (2.26 and earlier)
+answers `session/new`, `session/load` and `session/set_mode` one at a time per
+process. Its ACP handlers await the whole start, or the mode switch's MCP init,
+inside the connection's dispatch loop, and that loop reads nothing else
+meanwhile. A start sent while one of those is unanswered therefore spends its own
+budget waiting for it. The commonest case is a retry sent behind the start that
+just timed out, which its collector still owns.
+
+On a backend in `ACP_BACKENDS_SERIAL_SESSION_STARTS` (kiro-cli, the one measured;
+harness-parity H6), `_send_and_await` records the method and send time of every
+awaited request in `_ONE_AT_A_TIME_METHODS` (`_one_at_a_time_sent`). Any other
+backend records nothing and its timeouts read as before. An id counts only while
+`_pending_requests` still holds it, so an answered or abandoned request drops out
+at the next send and the map cannot outgrow the pending set.
+
+When a session start times out, it carries only the requests ahead of it that
+were STILL unanswered at its deadline (`queued_behind`). On a serializing backend,
+this start had not begun while such a request was outstanding. A request answered
+before the deadline may have cost a few seconds or nothing, so it is not blamed
+for the budget. The same rule covers a request answered while this start was
+still waiting for the stdin write lock. `_session_start_stalled` then puts `queued behind N earlier
+request(s) this agent process had not answered by the deadline (…; oldest sent
+Xs earlier), and it answers those one at a time` ahead of the MCP progress. The
+roster-complete note is withheld in that case, because the budget went to those
+requests, which is not "later in session startup". Pinned by
+`test_session_start_queued_behind.py`.
+
 **One permit is reserved for a start that has not gone out.** A collector holding
 its permit is the intended back-pressure — the backend really is still working on
 that request — but at `session_start_concurrency = 2` two collectors hold the
@@ -2034,6 +2223,24 @@ descendants FROM the root, so a root that exits first leaves its subtree
 reparented to init and unreachable. Teardown prunes by descendant liveness and
 retains survivors for the orphan sweep. See
 [session](session.md) for the file formats and the sweeps that read them.
+
+**A failed start reaps its MCP servers too.** The group kill that ends a failed
+spawn or `initialize` handshake reaches only kiro-cli's own process group, and
+kiro-cli launches every stdio MCP server as the leader of a group of its own. The
+descendant scan above runs only after a successful start, so a runtime that failed
+before it had recorded nothing and its MCP servers outlived it untracked. The
+failed-start arm of `AcpRuntime._spawn_admitted` therefore scans the tree first
+(`_record_tree_before_failed_start_kill`, while the root still links it; POSIX
+only), kills
+the group, then `_kill_failed_start_escapees` SIGKILLs each recorded descendant
+whose identity still matches the scan and prunes the confirmed-dead entries; a
+survivor keeps its entry for the orphan sweep. The whole cleanup (stderr settle,
+scan, kill, reap) runs as one task, `_failed_start_cleanup`, that the guard only
+waits on behind `asyncio.shield`. A cancel of the spawning task, which ordinary
+slot signals deliver to the eager-spawn task, is absorbed until the cleanup
+settles and is then propagated in place of the original failure. Without that, a
+cancel landing inside the scan would drop the only record of the MCP servers.
+Pinned by `test/test_acp_runtime_failed_start_reap.py`.
 
 **A reaped root does not end the teardown.** `kill_process_tree` is
 `killpg(getpgid(pid))`, and `getpgid` raises once the root has exited — read as
@@ -2420,3 +2627,18 @@ The Codex spawn environment sets `DISABLE_MCP_CONFIG_FILTERING=true` so the
 adapter honors the session's MCP overrides even when a global configuration
 contains the same server name. This applies to both create and load; it changes
 configuration precedence, not authentication or the sandbox's credential mask.
+
+The Codex spawn environment also sets `CODEX_SQLITE_HOME`, so concurrent
+`codex app-server` processes (Codex Desktop and each Crew runtime) do not share
+one set of SQLite databases and fail new sessions with `database is locked`. The
+harness names the need (`SpawnPlan.private_state_env`) and the runtime points the
+variable at its own per-process scratch directory -- the one `TMPDIR` already
+names, allocated before the sandbox wrap and reclaimed by
+`agent_scratch.sweep_dead_scratch` once the process is dead -- so no new tree,
+lock or slot exists. Only the databases move: config, auth and the thread
+rollouts stay in `CODEX_HOME`, and a thread resumes from its rollout (measured on
+codex 0.159), so `spawn_continue` works across runtimes; a fresh home rebuilds
+its index on first start, an accepted cost. A value the operator set, or one a
+cron or workflow `extra_env` carries, reaches the child as set. Without a scratch
+directory nothing is set and one warning is logged: the child gets codex's shared
+default rather than a refused spawn.

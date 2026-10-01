@@ -26,6 +26,26 @@ KIROCREW_SPAWNED_VALUE = "1"
 # this one says WHICH spawn, so a teardown that has lost its root can still tell
 # the root's own tree from a fresh spawn that took the root's recycled pid.
 KIROCREW_SPAWN_INSTANCE_ENV = "KIROCREW_SPAWN_INSTANCE"
+# Set on every tree spawned through ``sandbox.sandboxed_spawn_argv`` -- a build, an
+# ``npx`` install, a ``git``/``gh`` read, a provisioning run -- and inherited by that
+# whole tree exactly as KIROCREW_SPAWNED is. It says what KIROCREW_SPAWNED does not:
+# this tree was spawned as TOOL work rather than as a session leader Kiro Crew owns
+# and tears down. ``session_pid._env_is_sandbox_tool`` reads it back out of the
+# kernel's exec-time copy, which lets the runtime reconciler leave such a tree out of
+# its kill-candidate population on evidence a same-uid process cannot forge on
+# another process, where an argv0 basename is merely a name.
+#
+# It is a claim about the TREE, not about each process in it. The chokepoint has
+# callers whose argv0 is itself a managed harness -- a pod child probe, an unattended
+# fix-authoring agent -- and the marker is inherited, so a harness can carry it
+# without being tool work. The reconciler therefore pairs this marker with the
+# managed-argv test and excludes only a pid that is marked AND is not a harness.
+#
+# Kept DISTINCT from KIROCREW_SPAWNED because that marker is the reconciler's
+# kill-ENABLING condition: an exclusion overloaded onto the same flag would have to
+# weaken the ownership test to express itself.
+KIROCREW_SANDBOX_TOOL_ENV = "KIROCREW_SANDBOX_TOOL"
+KIROCREW_SANDBOX_TOOL_VALUE = "1"
 
 # Canonical truthy set for boolean environment variables (KIROCREW_NO_JAIL,
 # KIROCREW_DEV_MODE, …).  Use ``env_flag_enabled`` rather than ``bool(os.environ
@@ -38,13 +58,55 @@ ENV_TRUTHY = frozenset({"1", "true", "yes", "on"})
 ENV_FALSY = frozenset({"0", "false", "no", "off"})
 
 
-# Minimum supported Node.js MAJOR version for every Python-side check
-# (``kirocrew doctor``, the frontend-build probe in ``cli.py``, the TUI
-# launcher in ``cli_chat.py``). Single source of truth so doctor and chat can
-# never disagree about the floor. 22 is the oldest non-EOL line the frontend
-# bundler supports (``ensure-node.sh`` enforces the finer-grained 22.12 floor;
-# ``.nvmrc`` pins the recommended 24 LTS).
-MIN_NODE_MAJOR = 22
+# Minimum supported Node.js version (major, minor, patch), shared by the startup
+# probe in ``cli.py`` and ``kirocrew doctor``. Below it, doctor fails and the
+# startup probe logs a warning; the probe's yes/no answer (which gates the
+# ensure-node repair at gateway boot) stays on ``MIN_NODE_VERSION[0]`` only. A
+# FULL version because a major-only compare admits an early 22.x that cannot
+# run the code:
+#
+# - ``worker_threads.markAsUncloneable`` first shipped in Node 22.10.0
+#   (nodejs/node#55234, CHANGELOG_V22.md). A recent undici fetch client calls
+#   it and fails with "webidl.util.markAsUncloneable is not a function" below.
+# - The frontend bundler (vite 8 / rolldown) declares engines.node
+#   "^20.19.0 || >=22.12.0"; 20.x is end-of-life, leaving 22.12.0.
+#
+# The floor is the stricter of the two. ``ensure-node.sh`` and ``make.ps1``
+# enforce the same 22.12 cutoff; ``.nvmrc`` pins the recommended 24 LTS.
+MIN_NODE_VERSION: tuple[int, int, int] = (22, 12, 0)
+
+_NODE_VERSION_RE = re.compile(r"^\s*v?(\d+)\.(\d+)\.(\d+)")
+
+
+def parse_node_version(text: str | None) -> tuple[int, int, int] | None:
+    """Parse ``node -v`` output (``v22.12.0``) into a tuple; None if unreadable."""
+    m = _NODE_VERSION_RE.match(text or "")
+    if not m:
+        return None
+    return (int(m.group(1)), int(m.group(2)), int(m.group(3)))
+
+
+def format_node_version(version: tuple[int, int, int]) -> str:
+    """Render a version tuple as ``22.12.0``."""
+    return ".".join(str(part) for part in version)
+
+
+def node_version_meets_floor(
+    version: tuple[int, int, int], floor: tuple[int, int, int] = MIN_NODE_VERSION
+) -> bool:
+    """True iff *version* is at or above *floor*, comparing major.minor.patch."""
+    return tuple(version) >= tuple(floor)
+
+
+def node_too_old_message(
+    version: tuple[int, int, int], floor: tuple[int, int, int] = MIN_NODE_VERSION
+) -> str:
+    """User-facing line naming the found version, the exact floor, and the fix."""
+    return (
+        f"Node.js v{format_node_version(version)} is too old: Kiro Crew needs "
+        f"v{format_node_version(floor)} or newer. Update Node.js: install 24 LTS "
+        "from https://nodejs.org, or run `nvm install 24` / `mise use -g node@24`."
+    )
 
 
 def env_flag_enabled(name: str) -> bool:
@@ -1496,6 +1558,13 @@ DENY_CAUSE_APPROVAL_UNDELIVERABLE = "approval_undeliverable"
 #: ``DENY_CAUSE_APPROVAL_UNDELIVERABLE`` (the card could not be posted at all):
 #: here the fix is in the model's hands, and the notice must say so.
 DENY_CAUSE_APPROVAL_OVERSIZE = "approval_oversize"
+#: An UNATTENDED surface refused a call it would otherwise have auto-approved
+#: because its audit record could not be written (audit-or-deny: an approval
+#: that leaves no trace is what the Security Event Log exists to prevent).
+#: Nothing judged the action; the host could not record it. Distinct from
+#: ``DENY_CAUSE_HOOK_ERROR`` (a PreToolUse hook raised while deciding the call):
+#: naming a hook here would send the model looking at a gate that never ran.
+DENY_CAUSE_AUDIT_UNAVAILABLE = "audit_unavailable"
 
 #: Upper bound on the best-effort in-band deny notice steered into a running
 #: turn before a permission rejection goes back on the wire. Every deny site

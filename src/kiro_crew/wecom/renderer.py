@@ -28,8 +28,9 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.messaging.display_safety import safe_split_offset
+from kiro_crew.messaging.display_safety import joins_to_a_credential, safe_split_offset
 from kiro_crew.messaging.renderer import (
+    CREDENTIAL_REDACTION_TAGS,
     Renderer,
     _default_redactor,
     count_redaction_tags,
@@ -37,9 +38,18 @@ from kiro_crew.messaging.renderer import (
     redaction_notice,
     split_options_trailer,
 )
-from kiro_crew.messaging.split import bounded_for_delivery, split_markdown_safe
+from kiro_crew.messaging.split import (
+    bounded_for_delivery,
+    split_markdown_bytes,
+    split_markdown_safe,
+    truncate_utf8,
+)
 from kiro_crew.messaging.transport import TransportCapabilities
-from kiro_crew.wecom.client import WECOM_SAFE_REPLY_CHARS, new_stream_id
+from kiro_crew.wecom.client import (
+    WECOM_MAX_REPLY_BYTES,
+    WECOM_SAFE_REPLY_CHARS,
+    new_stream_id,
+)
 
 if TYPE_CHECKING:
     from kiro_crew.wecom.client import WeComClient
@@ -77,6 +87,17 @@ _STREAM_MAX_AGE_S = 8 * 60.0
 # ``<think></think>`` wrapper is a WeCom-native affordance: the client renders
 # what is inside it as a collapsed reasoning block rather than as the answer.
 _THINKING = "<think>…</think>"
+
+# Count bound on retained reasoning-seam candidates (``_shown_reasonings``). The
+# per-item byte bound alone leaves the COUNT unbounded, which the AUTOSDE rule
+# ``a-bound-bounds-every-field-it-retains`` forbids. The bound is kept SOUND by
+# pairing it with a stop: once this many distinct reasoning frames have been sent
+# to the current bubble, ``_push`` sends no further reasoning updates, so the
+# bubble keeps showing a frame already retained and no un-retained frame can ever
+# reach the screen — the seam coverage stays complete while retention is finite.
+# A reasoning phase producing more than this many distinct throttled frames is
+# already pathological (dozens of ~10-minute-spanning seconds of pure reasoning).
+_MAX_REASONING_CANDIDATES = 64
 
 
 def _render_options_as_text(text: str) -> str:
@@ -144,6 +165,10 @@ class WeComRenderer(Renderer):
         # delivered as one notice from close(), where every delivery path ends.
         self._notice_creds = 0
         self._notice_urls = 0
+        # Count of reasoning-preview updates suppressed once the retention cap was
+        # reached (see _push). Announced once from close() so the overflow is said
+        # out loud rather than silently dropped (AUTOSDE a-bound-bounds rule).
+        self._suppressed_reasoning = 0
         self._stream_id = new_stream_id()
         self._buf: list[str] = []
         self._last_send = 0.0
@@ -167,6 +192,34 @@ class WeComRenderer(Renderer):
         # Reasoning chunks, rendered inside WeCom's native <think> block until the
         # answer itself starts arriving.
         self._reasoning: list[str] = []
+        # Every reasoning frame sent to the CURRENT bubble that may still be what
+        # the reader sees. A bubble can be sealed/aged on a reasoning frame — the
+        # answer never started, so ``_carried`` is 0 and stays 0 across the roll —
+        # yet the frozen bubble still displays reasoning, so it is part of the seam
+        # a continuation is graded against: a key whose prefix ends the reasoning
+        # and whose completion opens the answer would otherwise rejoin on screen.
+        #
+        # A LIST, not one or two fields, because WeCom is not documented to
+        # acknowledge an accepted frame, and a rejection ACK can land LATE (after
+        # the next frame's send, within the 2.5s throttle). So from the renderer we
+        # cannot know which reasoning frame the reader actually sees, and there is
+        # no positive signal that one was accepted: ``send_stream`` never waits for
+        # the ACK and ``_track_stream`` retires an outstanding rejection the moment
+        # the next frame is sent, so no candidate is ever provably superseded. Every
+        # frame put on the socket is therefore kept (``_push`` appends deduped, never
+        # evicting), and the continuation is graded against ALL of them. Grading
+        # against a snapshot the reader does not see only redacts a fragment
+        # (cosmetic); missing the one they do see leaks the key. Dedup bounds the
+        # list against throttled re-sends, and a COUNT cap
+        # (``_MAX_REASONING_CANDIDATES``) bounds it against distinct frames — kept
+        # sound by ``_push`` STOPPING reasoning sends once the cap is reached rather
+        # than evicting, so the bubble keeps showing a retained frame and no
+        # un-retained text ever reaches the screen. Each retained string is itself
+        # byte-bounded at the append.
+        self._shown_reasonings: list[str] = []
+        # The candidates captured at a roll from a bubble sealed on reasoning (no
+        # answer delivered), each graded against the fresh bubble's answer head.
+        self._reasoning_seams: list[str] = []
         # When the CURRENT bubble was opened, so it can be rotated before the
         # platform's ~10-minute stream lifetime seals it (see _STREAM_MAX_AGE_S).
         self._stream_opened_at = time.monotonic()
@@ -314,20 +367,6 @@ class WeComRenderer(Renderer):
         chunks = await asyncio.to_thread(
             bounded_for_delivery, chunks, WECOM_SAFE_REPLY_CHARS, _default_redactor
         ) or [remainder]
-        # Re-counted over the chunks that SHIP, as an ADDITION: the tally above read
-        # the whole answer, and both the display redaction below and a boundary
-        # repair can add a placeholder of their own. Only the difference belongs
-        # here. Assigning the chunk count instead would read a subject that is not
-        # the answer -- after a bubble rotation ``remainder`` starts at ``_carried``,
-        # so a placeholder in an already-delivered bubble would drop out of the
-        # notice entirely. The baseline is the PRE-redaction slice: measuring the
-        # redacted form instead subtracts the markers that pass's own scan
-        # introduced, and those are exactly what the notice has to announce.
-        baseline = answer[self._carried :]
-        shipped_creds, shipped_urls = count_redaction_tags("\n".join(chunks))
-        before_creds, before_urls = count_redaction_tags(baseline)
-        self._notice_creds += max(0, shipped_creds - before_creds)
-        self._notice_urls += max(0, shipped_urls - before_urls)
         # Tables convert per CHUNK, and only now that the turn has sealed: a table
         # whose last row was still arriving stayed raw in the streaming frames, so
         # ``final=True`` is the first point it can be rendered whole. Done once,
@@ -335,7 +374,50 @@ class WeComRenderer(Renderer):
         # pushes and the late head recovery -- carries the identical string. The
         # split ran on the RAW text, and `_render_slice` falls back to raw when a
         # conversion would exceed the cap, so a rendered chunk still fits.
-        chunks = [self._render_slice(c, final=True) for c in chunks]
+        #
+        # Only the FIRST chunk opens against the rotation seam: it seals or
+        # continues the bubble sitting beside what earlier bubbles already show
+        # (delivered answer prefix, plus a reasoning frame a seal caught before the
+        # answer), which a seal has frozen. So it alone is graded in that seam's
+        # context, closing a credential whose head is in the frozen bubble and whose
+        # completion opens this chunk. Later chunks abut only each other, and
+        # ``remainder`` was redacted whole above, so their joins are already clean.
+        seams = self._seam_showing()
+        chunks = [
+            self._render_slice(c, final=True, seams=seams if i == 0 else None)
+            for i, c in enumerate(chunks)
+        ]
+        # Re-bound by the WIRE BYTE limit after the seam pass. The split above sized
+        # chunks in CHARACTERS (``WECOM_SAFE_REPLY_CHARS`` = the byte cap // 4), which
+        # has zero byte headroom only when a chunk is almost entirely 4-byte astral
+        # characters — and the seam repair then prepends a ~22-byte redaction tag to
+        # the first chunk's head while dropping fewer bytes, nudging it over the
+        # 20480-byte cap. ``send_stream`` would ``truncate_utf8`` the overflow away
+        # silently, losing the tail while ``drive_turn`` still persists it — history
+        # and delivery disagreeing. Re-flow the over-byte tail into a following chunk
+        # instead (delivered as overflow, never dropped). Safe to re-split here: the
+        # chunks are already redacted whole, so the seam-straddle credential is a tag
+        # at the head and a byte cut falls between tags, not through a key.
+        rebounded: list[str] = []
+        for chunk in chunks:
+            rebounded.extend(split_markdown_bytes(chunk, WECOM_MAX_REPLY_BYTES))
+        chunks = rebounded or chunks
+        # Re-counted over the chunks that SHIP, AFTER the seam-render pass, as an
+        # ADDITION rather than a replacement. The tally above read the whole answer
+        # (so a placeholder in an already-delivered, rotated bubble is already in
+        # the count); overwriting it with only this remainder's chunks would drop
+        # those. Both a boundary repair and the seam grade can add a placeholder of
+        # their OWN — a reply whose only redaction is the seam repair (a key that
+        # straddled the rotation and nothing else) would announce none if counted
+        # before this pass — so only the DIFFERENCE over the pre-redaction baseline
+        # belongs here. The baseline is the PRE-redaction slice (``answer[_carried:]``):
+        # measuring the redacted form instead subtracts the markers that the display
+        # and seam passes introduced, which are exactly what the notice must announce.
+        baseline = answer[self._carried :]
+        shipped_creds, shipped_urls = count_redaction_tags("\n".join(chunks))
+        before_creds, before_urls = count_redaction_tags(baseline)
+        self._notice_creds += max(0, shipped_creds - before_creds)
+        self._notice_urls += max(0, shipped_urls - before_urls)
         # The FIRST chunk seals the live bubble the user is already watching. Any
         # OVERFLOW goes out as a proactive push instead of another stream frame,
         # because a push mints its OWN unique req_id and its ACK is therefore
@@ -485,6 +567,32 @@ class WeComRenderer(Renderer):
                     "WeCom: could not deliver the redaction notice (answer already sent)",
                     exc_info=True,
                 )
+        # Reasoning-preview overflow notice. Once the retention cap stopped reasoning
+        # updates, later reasoning frames were not shown; say so once rather than
+        # letting the preview silently freeze (AUTOSDE a-bound-bounds rule: overflow
+        # is counted AND announced). Consumed here so a second close() cannot repost
+        # it. Best-effort, same contract as the redaction notice — the answer is out.
+        suppressed = self._suppressed_reasoning
+        self._suppressed_reasoning = 0
+        if suppressed:
+            try:
+                note = f"ℹ️ 推理过程较长，已省略 {suppressed} 次推理预览更新（回答不受影响）。"
+                delivered = False
+                if self._chat_id:
+                    delivered = await self._client.send_proactive(self._chat_id, note)
+                if not delivered:
+                    delivered = await self._client.send_reply(self._response_url, note)
+                if not delivered:
+                    logger.warning(
+                        "WeCom: could not deliver the reasoning-overflow notice "
+                        "(answer already sent)"
+                    )
+            except Exception:
+                logger.warning(
+                    "WeCom: could not deliver the reasoning-overflow notice "
+                    "(answer already sent)",
+                    exc_info=True,
+                )
 
     async def _recover_unconfirmed_seal(self) -> bool:
         """Ask once more whether the sealing frame was accepted, and recover if not.
@@ -570,7 +678,7 @@ class WeComRenderer(Renderer):
         """
         return _render_options_as_text("".join(self._buf).strip())
 
-    def _render_slice(self, body: str, *, final: bool) -> str:
+    def _render_slice(self, body: str, *, final: bool, seams: list[str] | None = None) -> str:
         """Render tables in ONE outgoing slice, never in the whole answer.
 
         Table conversion changes the string's length, and ``_carried`` /
@@ -596,19 +704,85 @@ class WeComRenderer(Renderer):
         coordinates, and ``_push`` records progress from that raw slice, so the
         substitution cannot shift ``_carried`` / ``_sent_abs``.
 
-        This closes a credential that lies WITHIN one slice. A credential the cap
-        severs ACROSS two slices is not closed here: each half is scrubbed alone,
-        neither matches, and the reader's client rejoins them. That is unchanged
-        from the pre-existing behaviour -- the cap has always cut in raw
-        coordinates while the reader sees the canonical form -- and closing it
-        needs the cut itself chosen in canonical space, which is its own change.
+        ``seams`` closes the credential that a rotation SEAM otherwise severs
+        across two bubbles. It is a LIST of frozen prefixes this slice's head is
+        graded against, because a sealed bubble can never be rewritten so the
+        completion is redacted here or nowhere. Two cases supply it (see
+        ``_seam_showing``): when the answer has advanced (``_carried > 0``) the one
+        seam is the visible tail of what earlier bubbles already delivered; when no
+        answer has been delivered yet (``_carried == 0``) the seams are the
+        reasoning candidates a reasoning-only bubble was sealed on — one per frame
+        still possibly on screen, since WeCom does not say which was displayed. A
+        credential whose head sits in any such frozen prefix and whose completion
+        sits at the head of this slice matches neither bubble alone, and the
+        reader's client renders them side by side and rejoins them. Each seam is
+        graded in turn through :meth:`_repair_continuous_seam`, which grades the
+        VERBATIM join (boundary whitespace preserved, because WeCom shows one
+        continuous answer across the two bubbles) and gives up the span at the head
+        of this slice that finishes such a key — so the key never finishes on screen
+        while every character after it is delivered as written.
         """
         converted = self.render_tables_for_target(body, final=final)
         cap = self.capabilities.max_message_chars
         if cap > 0 and len(converted) > cap:
             safe_raw = self.safe_raw_table_fallback(body, final=final)
             converted = safe_raw if safe_raw is not None and len(safe_raw) <= cap else body
-        return self.redact_for_target(converted)
+        scrubbed = self.redact_for_target(converted)
+        if not seams:
+            return scrubbed
+        # Grade this slice's head against the WHOLE of each candidate seam, not a
+        # windowed tail: a fixed window is the unsound "hand-written character
+        # class" ``joins_to_a_credential`` exists to avoid — a long link target
+        # could push the credential's start out of a bounded window and the grade
+        # would pass vacuously. ``_repair_continuous_seam`` takes the full seam,
+        # steps back exponentially, and gives up only the completing span, keeping
+        # the rest. Offset-safe: the slice was cut in raw coordinates upstream and
+        # this only rewrites bytes WITHIN it, so ``_carried`` / ``_sent_abs`` do not
+        # shift.
+        #
+        # Each candidate is graded in turn because the reader may see any one of
+        # them (unconfirmed reasoning frames) and each repair only gives up MORE of
+        # the head — applying them in sequence converges on the span that clears
+        # every candidate, never reopening one an earlier repair already closed.
+        #
+        # The VERBATIM join is the right grade for WeCom, NOT the stripped
+        # ``repaired_after_a_sent_tail`` the separate-message channels use. That
+        # helper strips the boundary whitespace because Telegram and WhatsApp put
+        # the two halves in SEPARATE messages, where the platform drops the boundary
+        # space so a leading space separates nothing on screen. A WeCom rotation
+        # cuts ONE continuous answer across two bubbles, so the boundary space is
+        # real answer text the reader sees (``…AKIAIOSF`` then `` ODNN7…`` reads as
+        # ``AKIAIOSF ODNN7…`` — two tokens, no key). Grading through the stripped
+        # helper would join across a space the reader actually sees and redact
+        # harmless prose that merely mentions example-key fragments. So grade the
+        # verbatim join only.
+        for seam in seams:
+            if not seam:
+                continue
+            scrubbed = self._repair_continuous_seam(seam, scrubbed)
+        return scrubbed
+
+    def _repair_continuous_seam(self, seam: str, slice_text: str) -> str:
+        """Give up the head span of *slice_text* that finishes a key across a
+        WHITESPACE-preserving seam, keeping everything after it.
+
+        ``repaired_after_a_sent_tail`` strips the boundary whitespace because its
+        callers deliver the two halves as separate messages, where the platform
+        drops it. A WeCom rotation cuts one continuous answer, so a boundary space
+        is visible answer text — ``…Bearer`` then `` abc…`` reads ``Bearer abc…``.
+        This grades the VERBATIM join (no strip) with the same exponential
+        step-back the shared helper uses, so the cost stays logarithmic and no
+        fixed character window is introduced.
+        """
+        if not slice_text or not joins_to_a_credential(seam, slice_text, _default_redactor):
+            return slice_text
+        offset, step = 1, 1
+        while offset < len(slice_text):
+            if not joins_to_a_credential(seam, slice_text[offset:], _default_redactor):
+                break
+            step *= 2
+            offset = min(len(slice_text), step)
+        return CREDENTIAL_REDACTION_TAGS[0] + slice_text[offset:]
 
     def _roll_if_sealed(self) -> None:
         """Move to a fresh bubble when WeCom has sealed the current one.
@@ -660,6 +834,49 @@ class WeComRenderer(Renderer):
         # a bubble refused before it accepted anything resumes exactly where it
         # began, so the worst case stays a visible repeat instead of a silent hole.
         self._prev_sent_abs = self._sent_abs = self._carried
+        # If the bubble being abandoned was sealed on a REASONING frame (no answer
+        # delivered on it, so ``_carried`` is 0), it still shows that reasoning for
+        # good. Carry it as the seam the fresh bubble's answer head is graded
+        # against — a key whose prefix ends the reasoning and whose completion opens
+        # the answer would otherwise rejoin on screen. When answer was already
+        # delivered (``_carried`` > 0) the abandoned bubble shows the answer, not
+        # reasoning, so there is no reasoning seam to carry.
+        #
+        # WeCom is not documented to ACK an accepted frame and a rejection ACK can
+        # land late, so a single boolean cannot say WHICH reasoning frame is on
+        # screen. ``_shown_reasonings`` therefore carries every candidate still
+        # possibly visible (collapsed to the newest once an unrejected frame
+        # supersedes the rest; see ``_push``), and all of them become seams —
+        # over-grading one the reader does not see is cosmetic, missing the one they
+        # do see leaks the key.
+        #
+        # UNION, not replace: a reasoning-only bubble can seal, roll to a fresh
+        # bubble that is ALSO refused before any answer (846605 refuses every
+        # replacement), and roll AGAIN — still at ``_carried == 0``. The first
+        # roll's frozen reasoning is still on screen above both later bubbles, so it
+        # is still a seam; replacing ``_reasoning_seams`` with the (now empty, since
+        # the roll reset ``_shown_reasonings``) current set would drop it and let
+        # the straddling credential through. Accumulate instead, deduped — every
+        # candidate is a prefix-extension of its predecessors, so the distinct set
+        # stays small and no frozen prefix is ever lost while the answer is empty.
+        if self._carried == 0:
+            deduped: list[str] = []
+            for candidate in (*self._reasoning_seams, *self._shown_reasonings):
+                if candidate not in deduped:
+                    deduped.append(candidate)
+            # No slice here. The SHARED send-stop in ``_push`` counts
+            # ``_reasoning_seams`` + ``_shown_reasonings`` against the cap and stops
+            # sending reasoning before the combined total can exceed it, so this
+            # union is already within bound. Slicing it would be unsound: ``[:cap]``
+            # drops the NEWEST frozen prefix, which is the bubble that sealed last
+            # and sits immediately above the continuation — exactly the seam a key
+            # joins to (nothing follows it, so it is not covered as a prefix of a
+            # later frame). The bound is enforced by not sending, never by dropping
+            # a retained seam.
+            self._reasoning_seams = deduped
+        else:
+            self._reasoning_seams = []
+        self._shown_reasonings = []
         self._stream_id = new_stream_id()
         self._stream_opened_at = time.monotonic()
         self._tool_shown = False
@@ -682,6 +899,27 @@ class WeComRenderer(Renderer):
         answer = self.text()
         body = answer[self._carried :]
         if not body and self._reasoning:
+            if (
+                len(self._reasoning_seams) + len(self._shown_reasonings)
+                >= _MAX_REASONING_CANDIDATES
+            ):
+                # The SHARED retention bound (carried seams from prior rolls PLUS
+                # this bubble's candidates) is reached. Sending another reasoning
+                # frame would either put un-retained text on screen (unsound — the
+                # seam grade could then miss the displayed prefix) or force a slice
+                # (also unsound — the rotation union would then drop the NEWEST
+                # frozen prefix, the one sitting immediately above the continuation,
+                # which is exactly the seam a key joins to). So stop sending
+                # reasoning updates before any retained seam can be sliced away: the
+                # bubble keeps showing the last retained frame, which is still
+                # graded, and the finite set stays complete coverage. Nothing of the
+                # answer is delivered here, so no progress is recorded; the pace is
+                # unaffected. The suppression is COUNTED so ``close()`` can announce
+                # it once — the AUTOSDE bound rule requires overflow said out loud,
+                # not silently dropped.
+                self._suppressed_reasoning += 1
+                self._last_send = now
+                return
             # Reasoning shows only while the answer is still empty; once real text
             # arrives the answer is what the bubble is for. Nothing of the answer
             # is delivered by this frame, so no progress is recorded for it.
@@ -701,10 +939,45 @@ class WeComRenderer(Renderer):
             # is guarded against, on the same renderer.
             reasoning = "".join(self._reasoning)
             reasoning = self.redact_for_target(reasoning)
-            reasoning = f"<think>{reasoning}</think>"
+            reasoning_wrapped = f"<think>{reasoning}</think>"
             self._stream_ok = await self._client.send_stream(
-                self._req_id, self._stream_id, reasoning, finish=False
+                self._req_id, self._stream_id, reasoning_wrapped, finish=False
             )
+            if self._stream_ok:
+                # This frame reached the socket, so the reader MAY now see it —
+                # record it as a candidate. Store the DISPLAYED form: the wire
+                # applies a byte cut (``truncate_utf8`` to ``WECOM_MAX_REPLY_BYTES``)
+                # that the renderer's char cap does not reach on this branch, so the
+                # untruncated text would grade a seam the reader never sees. Recover
+                # the shown reasoning by truncating the wrapped frame exactly as the
+                # wire does, then stripping the wrapper the ``<think>`` block hides.
+                shown = truncate_utf8(reasoning_wrapped, WECOM_MAX_REPLY_BYTES)
+                shown = shown.removeprefix("<think>").removesuffix("</think>")
+                # Every frame put on the socket is RETAINED as a candidate — there
+                # is no safe point to drop an earlier one, so the list only grows
+                # (deduped) within a bubble. The tempting optimisation — collapse to
+                # the newest once the stream shows no outstanding rejection, since an
+                # accepted frame supersedes the rest on screen — is UNSOUND here:
+                # ``send_stream`` never waits for the per-frame ACK (every frame of a
+                # turn replays the one inbound req_id, so an ACK cannot be attributed
+                # to the frame that drew it), and ``_track_stream`` RETIRES any
+                # outstanding non-terminal rejection the instant the next frame is
+                # sent. So right after sending frame B, ``stream_had_rejection`` is
+                # false for the ordinary case — not because B was accepted, but
+                # because nothing has reported on B yet — and B's own rejection ACK
+                # can still land late (the comment at ``_roll_if_sealed`` concedes
+                # exactly this). Collapsing to ``[B]`` there would discard the
+                # earlier frame A that is still what the reader sees when B is then
+                # refused, and the rotation seam would grade only B (ending in
+                # prose) and pass vacuously while A's credential prefix rejoins the
+                # answer on screen. No positive acceptance signal exists, so no
+                # candidate is ever provably superseded; keep them all and grade
+                # against each. Dedup keeps throttled re-sends of identical reasoning
+                # from growing the list, and the COUNT cap checked at the top of
+                # this branch bounds distinct frames — by STOPPING further sends, not
+                # evicting, so no retained-and-displayed prefix is ever dropped.
+                if shown not in self._shown_reasonings:
+                    self._shown_reasonings.append(shown)
             self._last_send = now
             return
         footer = f"🔧 正在运行：{self._tool}…" if self._tool else ""
@@ -725,9 +998,45 @@ class WeComRenderer(Renderer):
         # Progress is recorded from the RAW slice, before any table conversion: the
         # offsets index ``text()``, and a converted string has a different length.
         sent_abs = self._carried + len(body)
-        # Display transform, applied to the slice actually going out.
-        body = self._render_slice(body, final=False)
+        # Display transform, applied to the slice actually going out. When this
+        # slice opens a fresh bubble (``_carried`` advanced past a rotation, or a
+        # reasoning-only bubble was sealed before the answer began), grade its head
+        # against what the frozen prior bubble still shows — the delivered answer
+        # prefix AND any reasoning that bubble was sealed on — so a credential
+        # straddling the seam is closed. The sealed bubble cannot be rewritten, so
+        # the completion is redacted here or nowhere.
+        seams = self._seam_showing()
+
+        def _render(raw: str) -> str:
+            # The seam grade runs the display-redaction battery over each frozen
+            # prefix, which after a rotation repeats every throttled frame. Offload
+            # it so it does not block the event loop — the same reason ``on_done``
+            # threads its splits and both sibling channels thread this helper.
+            if seams:
+                return self._render_slice(raw, final=False, seams=seams)
+            return self._render_slice(raw, final=False)
+
+        body = await asyncio.to_thread(_render, body)
         content = f"{body}\n\n{footer}" if body and footer else (body or footer)
+        # The slice was cut in CHARACTERS, but the wire caps BYTES, and the seam
+        # repair can prepend a redaction tag that pushes a near-astral slice over
+        # 20480 bytes. ``send_stream`` would then ``truncate_utf8`` the overflow away
+        # SILENTLY while returning True, yet ``sent_abs`` was fixed from the raw slice
+        # and would advance over the dropped suffix — an aged rotation then resumes
+        # PAST text the reader never saw. So if the rendered content is over the byte
+        # cap, shrink the RAW slice and re-render until it fits, and derive
+        # ``sent_abs`` from that shorter raw slice. The remainder rides the next
+        # frame of this bubble, exactly as the character cut already intends. (The
+        # ``on_done`` path solves the same hazard by re-flowing chunks in byte space.)
+        raw = answer[self._carried : sent_abs]
+        while content and len(content.encode("utf-8")) > WECOM_MAX_REPLY_BYTES and len(raw) > 1:
+            # Scale the raw length down by how far the RENDERED bytes overshot, and
+            # always make progress so an awkward ratio cannot spin.
+            overshoot = len(content.encode("utf-8"))
+            raw = raw[: max(1, min(len(raw) - 1, len(raw) * WECOM_MAX_REPLY_BYTES // overshoot))]
+            sent_abs = self._carried + len(raw)
+            body = await asyncio.to_thread(_render, raw)
+            content = f"{body}\n\n{footer}" if body and footer else (body or footer)
         if not content:
             return
         self._stream_ok = await self._client.send_stream(
@@ -736,3 +1045,22 @@ class WeComRenderer(Renderer):
         if self._stream_ok:
             self._prev_sent_abs, self._sent_abs = self._sent_abs, sent_abs
         self._last_send = now
+
+    def _seam_showing(self) -> list[str]:
+        """Every frozen prefix a continuation must be graded against, as a list.
+
+        A bubble can be sealed on either kind of content: the answer prefix already
+        delivered (``answer[:_carried]``), or — when a seal caught a reasoning-only
+        bubble before any answer — the reasoning it still shows. The reasoning side
+        is a LIST of candidates (``_reasoning_seams``): WeCom does not confirm which
+        reasoning frame the reader sees, so each possibly-visible one is graded. A
+        credential whose prefix ends any frozen prefix and whose completion opens
+        the continuation would rejoin on screen otherwise, since a sealed frame
+        cannot be rewritten.
+        """
+        answer = self.text()
+        delivered = answer[: self._carried] if self._carried else ""
+        seams = list(self._reasoning_seams)
+        if delivered:
+            seams.append(delivered)
+        return seams

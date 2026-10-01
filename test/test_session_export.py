@@ -100,7 +100,7 @@ def _slot(messages, *, title="My session", memory_mode="persistent", app="", **o
         agent="",
         model="claude-opus-5",
         reasoning_effort="high",
-        mode="orchestrator",
+        mode="design-critique",
         autocompact_pct=75.0,
         workspace="default",
         project="/home/me/checkout",

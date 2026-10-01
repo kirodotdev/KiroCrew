@@ -4053,7 +4053,14 @@ async def test_concurrent_expansions_are_bounded_and_the_excess_is_refused(monke
         asyncio.create_task(_run_import(st, monkeypatch, None, gz=gz))
         for _ in range(st._MAX_CONCURRENT_EXPANSIONS + st._MAX_QUEUED_EXPANSIONS + 2)
     ]
-    await asyncio.sleep(0.05)
+    # Wait for the gate rather than a fixed sleep: every request streams its body
+    # to disk before it reaches admission, which takes longer than any fixed tick
+    # on a slow runner. The gunzip is held shut, so an admitted or queued import
+    # cannot finish yet; any task done before the release is one the gate refused.
+    deadline = asyncio.get_running_loop().time() + 10
+    while not any(t.done() for t in running):
+        assert asyncio.get_running_loop().time() < deadline, "no import ever reached the gate"
+        await asyncio.sleep(0.01)
     refused = [t for t in running if t.done()]
     release.set()
     results = await asyncio.gather(*running)

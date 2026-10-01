@@ -1505,15 +1505,11 @@ def uninstall_app(name: str, *, keep_data: bool = True) -> AppResult:
                     ".kirocrew-deps.lock" if _data_pin.fd is not None
                     else str(data / ".kirocrew-deps.lock")
                 )
-                # Match the provisioner's creator election: uninstall can race
+                # Same creator election as the provisioner: uninstall can race
                 # its first open before either caller holds the dependency lock.
-                try:
-                    _lfd = os.open(
-                        _lock_name, _lflags | os.O_CREAT | os.O_EXCL, 0o644,
-                        dir_fd=_data_pin.fd,
-                    )
-                except FileExistsError:
-                    _lfd = os.open(_lock_name, _lflags, dir_fd=_data_pin.fd)
+                _lfd = platform_compat.open_create_or_existing(
+                    _lock_name, _lflags, 0o644, dir_fd=_data_pin.fd,
+                )
                 _deps_lock = contextlib.ExitStack()
                 _lf = _deps_lock.enter_context(os.fdopen(_lfd, "r+"))
                 _deps_lock.enter_context(platform_compat.file_lock(_lf.fileno(), exclusive=True))

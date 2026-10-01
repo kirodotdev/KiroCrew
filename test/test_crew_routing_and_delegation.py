@@ -457,6 +457,38 @@ class TestTheSpawnEndpointActuallyDelegates:
         assert json.loads(resp.text)["code"] == "unknown_member"
         mgr.spawn.assert_not_called()
 
+    def test_a_crew_named_without_triggers_still_spawns_in_its_store(self, tmp_path, monkeypatch):
+        """Triggers steer automatic routing only; naming a member is enough.
+
+        Members added from an agent template, or synced from an installed agent package, start with
+        empty triggers. A named delegation to one must bind that member's store,
+        exactly as it does for a member that has triggers.
+        """
+        cfg = {
+            "default_agent": "kirocrew",
+            "agents": {
+                "kirocrew": {"kiro_agent": "kirocrew"},
+                "builder": {"kiro_agent": "kirocrew", "triggers": "  "},
+            },
+        }
+        resp, mgr = self._spawn_call({"task": "x", "crew": "builder"}, cfg, tmp_path, monkeypatch)
+        assert resp.status == 200, resp.text
+        mgr.spawn.assert_called_once()
+        config = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
+        store = config["agents"]["builder"]["memory_store"]
+        assert store and mgr.spawn.call_args.kwargs["memory_store"] == store
+
+    def test_the_crew_field_description_does_not_gate_on_triggers(self):
+        """The tool text is what an agent reads before it delegates."""
+        import inspect
+
+        from kiro_crew.mcp_tools import spawn as spawn_tool
+
+        src = inspect.getsource(spawn_tool)
+        assert "Naming a member is enough" in src
+        assert "must have non-empty Triggers" not in src
+        assert "delegated tasks" not in src
+
     def test_the_mcp_tool_forwards_the_field_it_accepts(self):
         """A schema field the handler drops is a documented no-op. `select_crew`,
         `route_crew` and the conductor skill all instruct `spawn_run(crew=...)`,

@@ -6,7 +6,8 @@
  * `action in ("approve", "reject")` and 400s on anything else. So every approval
  * from the pet failed, and the failure was swallowed twice (no res.ok check plus a
  * bare catch) — the dialog closed, the pet said "approved", the agent stayed
- * blocked. Matching the dashboard's own mapping (website/src/components/ChatInput.tsx):
+ * blocked. Matching the dashboard's own mapping
+ * (website/src/components/chat-input/approval.ts):
  *
  *   approve / reject          → POST /api/approvals/{id}/{approve|reject}
  *   trust, trust_reads, …     → POST /api/chat/slots/{slot}/approve

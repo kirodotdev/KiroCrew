@@ -1085,7 +1085,7 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
   // immediately instead of answering a name prompt before they know what
   // they are writing. The kind is left unspecified so the store defaults it
   // to markdown and marks it auto-assigned — the first save that looks like
-  // JSON or SVG re-types it (see detect_editor_kind in artifacts.py).
+  // JSON or SVG re-types it (see detect_editor_kind in artifact_store/rules.py).
   //
   // The cost of create-first is litter (abandoned empty documents); the
   // detail page pays for it by discarding an untouched blank on leave, which

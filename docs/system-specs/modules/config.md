@@ -44,7 +44,7 @@ representative seams of each kind.
 | `config/sections.py` | The DTOs other specs and tests anchor here: agent, crew record, workspace, session, dashboard (with `TailscaleConfig` and its parser), the messaging channels, `wakatime`, speech-to-text and its degradation rules, telemetry, decisions, resource limits, and the bounds constants. It is also the facade for the three section owners below. |
 | `config/memory_sections.py` | `memory`, `knowledge`, `skills`, `session_summary` and the named `memory_stores` records. |
 | `config/integration_sections.py` | `mcp`, `mcp_gateway` (with the MCP stub roster readers the gateway seed shares), `instances`, `tunnel`, `publish`, `computer_use` and the external app `registries`. |
-| `config/service_sections.py` | `taskrunner`, `orchestrator`, `messaging`, `cron_history`, `monitoring`, `heartbeat` and `watchdog`. |
+| `config/service_sections.py` | `taskrunner`, `messaging`, `cron_history`, `monitoring`, `heartbeat` and `watchdog`. |
 | `config/section_builders.py` | The `_build_*` helper of 28 sections, grouped by the module that owns each section's DTO. Four `_build_*` helpers stay in the loader (agent, session, telemetry, dashboard). Sections with no helper are built inline in `KiroCrewConfig._load_resolved` (`heartbeat`, the external app `registries`, `memory_stores`, the `agents` crew roster, `workspaces`) or by their DTO (`DecisionsConfig.from_raw`, `ResourceLimitsConfig.from_raw`, `ChannelConfig.from_dict` for `slack_channels`). |
 | `config/migration.py` | The write-back migration ids, the document transform `apply_document_migrations`, the one-shot `connections_ui` marker name, superseded-default reporting, and the in-memory half of an adoption. |
 | `config/resolution.py` | Raw overlay merging, top-level section classification, and degraded-input tracking. |
@@ -93,6 +93,15 @@ because its readers look up a name the loader's callers and tests patch there:
 New section constants, including local speech's automatic-language default, are
 read from `config.sections` directly; they do not expand that historical facade.
 
+New work goes to the owner of its responsibility, not to a facade: a field to
+the module that owns its section's DTO, a new section's DTO to
+`memory_sections.py`, `integration_sections.py` or `service_sections.py` by
+domain, a shared coercer to `config/fields.py`, a section's `_build_*` helper to
+`config/section_builders.py`, a migration rule to `config/migration.py`, and
+overlay, validation, schema, live-applier and path work to its owner in the
+table above. `config/loader.py` takes only work inside one of its residual rows,
+and `sections.py` gains a new DTO only when another spec anchors it there.
+
 A feature whose section spends tokens on the user's behalf defaults to off and
 documents its knobs in its own spec — `session_summary` is the current example
 (see [session-summary.md](session-summary.md)), following the shape
@@ -114,10 +123,9 @@ contract are documented in
 
 ## Orchestration prompt contract
 
-`config/prompt.md` and `config/prompt-orchestrator.md` guide direct work and
-delegation using the same concrete-value policy. Parent-plus-child parallelism
-depends on the spawn receipt's delivery capability; the existing Autopilot
-approval and stage boundaries remain. Runtime checks and compatibility are
+`config/prompt.md` guides direct work and delegation using a concrete-value
+policy. Parent-plus-child parallelism depends on the spawn receipt's delivery
+capability. Runtime checks and compatibility are
 owned by [subagent.md](subagent.md), not inferred from prompt wording.
 
 ## Embedding rebuild request publication
@@ -1337,6 +1345,29 @@ agent rather than the default, which a first real turn would otherwise have to
 discard); the **fail-loud** lives on the real turn alone, since the eager path is
 best-effort and tears itself down on any miss.
 
+**Failed background starts back off, then stop.** The signals that schedule an
+eager spawn (focus, reconnect, slot create, reset) recur, so a slot whose agent
+cannot start would spawn and tear down a fresh process tree on each one. After a
+failed background start, `schedule_eager_spawn` skips every signal for a backoff
+window: 10s after the first failure, 20s after the second. Nothing is queued for
+later, and the first signal after the window starts normally. (The window doubles
+up to a 300s ceiling, which only a larger cap would reach.) After 3 failures in a row (`_EAGER_SPAWN_FAILURE_CAP`),
+background starts for that slot stay **off until a start succeeds or the gateway
+restarts**. `schedule_eager_spawn` refuses the slot, and the stop is logged once
+at ERROR and posted once as an error row in the chat. The row's last-error text
+is redacted and bounded to 500 characters. The user's next message still starts
+the agent, and its success clears the count. The count lives only on the
+in-memory `_ChatSlot`, so a gateway restart starts it at zero.
+
+Only a failure of the agent start itself counts: an exception from the session
+allocation in `_spawn_admitted_prefetch`, other than a shutdown
+(`SessionClosingError`), a key being ended (`SessionEndingError`), a
+speculative-resume refusal, or a capability refusal raised before any process ran
+(`CapabilityError`, or a `CapabilityStartupError` code in
+`_PRE_SPAWN_CAPABILITY_CODES`). A failed pending-reset consume, binding or
+selection write, or admission step spawned no agent and is logged without
+counting. Pinned by `test/test_eager_spawn_start_backoff.py`.
+
 `register_app` (`apps/bridges.py`) backs the from-source recovery with a **visible
 error**: when a manifest declares agents but `_register_agents` materializes none
 (source missing or unreadable) it appends a `"registered 0 of N declared
@@ -1879,8 +1910,9 @@ dispatcher; `WorkflowService` binds `agent.workflow_run_timeout_secs` to its
 `agent.max_channel_agents` to its cap setters, both with `live.bind`). Only the
 ones whose holder is `DashboardState`, or that must rebuild agent artifacts,
 live in `server.py::_register_config_watch` — `agent.provider`,
-`agent.model`, `agent.role_models.background`, and `agent.log_level`
-(→ `handlers/updates.py::apply_log_level_from_config`). The log-level applier
+`agent.model`, `agent.role_models.background`, `agent.log_level`
+(→ `handlers/updates.py::apply_log_level_from_config`), and
+`dashboard.dynamic_dashboard_cards` (→ `DashboardState.set_dynamic_cards_enabled`). The log-level applier
 shares `apply_log_level` with the Logs page's `POST /api/logs/level`, and that
 one function moves the `kiro_crew` logger only — which is the ONLY level gate
 on the way to `gateway.log`: the file handler and the queue handler
@@ -1960,8 +1992,10 @@ Consequences, and they are the point:
   silently-inert bug this design exists to kill, now with the settings UI
   affirming that the value took effect.
 - **A reload that can widen approvals is audited.** `HookManager` follows
-  `hooks.*` live, and `config.json` is writable by an auto-approved agent shell,
-  so its applier SEL-logs an `auto_approve_tools` / `auto_approve_sources` /
+  `hooks.*` live, and `config.json` — sealed read-only against an in-sandbox agent
+  shell — is still written by every settings surface outside the seal (the config
+  PATCH, the operator CLI, an unsandboxed spawn), so its applier SEL-logs an
+  `auto_approve_tools` / `auto_approve_sources` /
   `auto_approve_subagent_*` change (`hook_manager.reconfigure`,
   `auto_approve_changed`, counts and flag names only) the way the channel
   transports audit an allow-list reload. Governance still caps the resulting
@@ -2127,6 +2161,7 @@ class MemoryConfig:
     persistence_enabled: bool = True # global switch: off = no automatic memory writes (lessons, consolidation, task-runner) AND no stored memory/lessons injected
     inject_memory: bool = True       # inject the stored memory block (preferences, activity index, recent-session snippets) into new-session context
     inject_lessons: bool = True      # inject the [Learned corrections] + [USER PROFILE] blocks into new-session context
+    inject_lessons_per_turn: bool = False  # on follow-up messages, add up to 3 matching lessons the session was not shown; requires inject_lessons
     inject_activity: bool = True     # inject the budgeted [Memory activity] block (projects, daily history (14 full days, then decayed summaries and counts to day 180), task facts, relevant episodes); requires inject_memory
 
 @dataclass
@@ -2221,7 +2256,7 @@ class TelegramConfig:
     allowed_forum_chat_ids: list[int] = []  # numeric supergroup chat_ids permitted to run forum-topic sessions; empty = deny all groups (fail closed)
 
 # Additional top-level DTOs (not fully expanded here — see the owner modules in the Overview):
-# OrchestratorConfig, CronHistoryConfig, TunnelConfig, InstancesConfig, HeartbeatConfig,
+# CronHistoryConfig, TunnelConfig, InstancesConfig, HeartbeatConfig,
 # WorkspaceConfig, MemoryStoreConfig, ExternalRegistryConfig,
 # KiroCrewAgentConfig, SlackConfig.
 
@@ -2368,8 +2403,8 @@ to a closed vocabulary is not user-authored text, and masking it would break the
 reaction while destroying nothing an attacker could have put there.
 
 Anything else — a non-dict, an unknown `kind`, a ghost override carrying no
-trait, motion or sound that survives validation — collapses to `{}` on load (config.json is hand-editable and
-agent-writable, so junk must never crash the load), while the endpoints answer a
+trait, motion or sound that survives validation — collapses to `{}` on load (config.json is hand-editable,
+so junk must never crash the load), while the endpoints answer a
 non-empty raw value the coercer collapses with 400 `invalid_avatar` — except a
 well-formed ghost override whose traits all coerce to absent, which is the
 validator's own all-empty → reset rule rather than caller junk and so stores as
@@ -2438,10 +2473,12 @@ Consent to send message text and skill descriptions to Jev lives **outside
 
 `endpoint` is the `provider.endpoint` the owner consented to; the gate sends only
 while the configured endpoint still equals it, because that field is in this
-agent-writable file too. Same reasoning as `computer_use.json` above: `config.json` is a `VISIBLE` leaf the
-agent's shell can write, and every `decisions.*` field is hot-applied by the live
-watcher, so an `enabled` toggle here would let a prompt-injected agent start the
-egress of its own conversation without a restart. Reads fail soft to `{}` → **not
+same settings file. Same reasoning as `computer_use.json` above: `config.json` is
+sealed read-only against an in-sandbox agent shell (`sandbox._CREW_READONLY_LEAVES`;
+see security.md) but remains an ordinary settings file every config writer reaches
+without an owner gate, and every `decisions.*` field is hot-applied by the live
+watcher, so an `enabled` toggle here would be one settings edit away from starting
+the egress of the owner's conversation without a restart. Reads fail soft to `{}` → **not
 consented**, and only a literal `true` consents. The only writer is the owner-only,
 browser-called `PUT /api/decisions/consent` (`dashboard/handlers/decisions.py`);
 `PATCH /api/config/kirocrew` refuses `decisions.enabled`, and an `enabled` key written
@@ -2924,9 +2961,8 @@ dashboard chat runner does, so a channel session's compaction re-injects the
 skills index and this block.
 
 The earlier delivery — a `{{VERBOSITY_BLOCK}}` token expanded wherever an agent
-prompt carried it — is retired. No shipped prompt (`config/prompt.md`,
-`config/prompt-orchestrator.md`, the conductor/worker prompt constants in
-`agent.py`) carries the token, and `test/test_verbosity_config.py` pins that;
+prompt carried it — is retired. No shipped prompt (`config/prompt.md`, the
+conductor/worker prompt constants in `agent.py`) carries the token, and `test/test_verbosity_config.py` pins that;
 `_resolve_prompt_templates` still strips a stale token from a spec copied before
 the move so the literal never reaches the model. `context_blocks._MARKERS` knows
 the frame as `response_preferences`, so the context-breakdown panel attributes

@@ -15,6 +15,7 @@ from collections import OrderedDict, deque
 from collections.abc import Iterable, Iterator, Mapping
 from itertools import chain, islice
 from pathlib import Path
+from typing import Any
 
 from kiro_crew import mcp_apps_render, model_registry
 from kiro_crew.agent import kiro_agents_dir_path
@@ -216,7 +217,7 @@ def _local_turn_generation(meta: Mapping[str, object]) -> int:
     return stored if type(stored) is int and stored > 0 else 0
 
 
-_LOCAL_TURN_PROMPT_ROLES = frozenset({"user", "nudge", "inject"})
+_LOCAL_TURN_PROMPT_ROLES = frozenset({"user", "nudge", "subagent", "inject"})
 _LOCAL_TURN_PROMPT_META_KEYS = ("mid", "files", "dirs", "injectKind")
 #: Bounds on the opening-row copy the marker retains. The attachment bounds are
 #: the send path's own (``chat_delivery.ATTACHMENT_LIST_MAX_ITEMS`` entries of
@@ -833,7 +834,25 @@ def _validate_reasoning_effort(raw: object, *, persisted_marker: bool = False) -
 #: retired in favour of the Crew Members page. Its durable store under
 #: ``<data home>/crew/`` is neither read nor deleted here; the transcript is
 #: the user's record and the store held only routing state.
-_RETIRED_MODES: frozenset[str] = frozenset({"crew"})
+#:
+#: ``orchestrator`` — chat Autopilot mode (a planned, staged run), retired
+#: without a replacement. Its stage result files are neither read nor deleted.
+_RETIRED_MODES: frozenset[str] = frozenset({"crew", "orchestrator"})
+
+#: Retired modes a client may still SEND. An older dashboard build can still
+#: ask for one on create, switch or fork, so the request runs as plain chat
+#: instead of failing. ``crew`` is not here: its refusal predates this set.
+_COERCED_REQUEST_MODES: frozenset[str] = frozenset({"orchestrator"})
+
+
+def _coerce_requested_mode(raw: Any) -> Any:
+    """Map a retired mode a request still names to "" (plain chat).
+
+    Anything else is returned unchanged for the caller's own allowlist check.
+    """
+    if isinstance(raw, str) and raw in _COERCED_REQUEST_MODES:
+        return ""
+    return raw
 
 
 def _restored_mode(raw: object) -> str:

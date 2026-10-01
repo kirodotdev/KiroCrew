@@ -918,7 +918,7 @@ separate session, so it carries no `turn`.
 
 | Field | Type | Required | Meaning | Enum |
 |---|---|---|---|---|
-| `kind` | string | required | Which background call this was. The writer records the caller's value without constraining it; the calling sites emit the values listed here. | `title`, `summary`, `memory_consolidation` |
+| `kind` | string | required | Which background call this was. The writer records the caller's value without constraining it; the calling sites emit the values listed here. | `title`, `summary`, `memory_consolidation`, `dynamic_card` |
 | `model` | string | optional | Served model. | |
 | `provider` | string | optional | Provider. | |
 | `credits` | float | optional | Written only when the call was billed, so a zero cost is absent. | |

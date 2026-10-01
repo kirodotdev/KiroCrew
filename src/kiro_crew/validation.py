@@ -1436,7 +1436,8 @@ MONITOR_WATCH_SCHEMA = ToolSchema(
             max_val=MAX_MONITOR_CADENCE_SECS,
         ),
         FieldSpec("max_runtime_secs", (int, float), min_val=1, max_val=MAX_RUNTIME_CEILING_SECS),
-        FieldSpec("max_agent_turns", int, min_val=1, max_val=MAX_MONITOR_AGENT_TURNS),
+        # Floor 0, not 1: zero is the unlimited sentinel for this one budget.
+        FieldSpec("max_agent_turns", int, min_val=0, max_val=MAX_MONITOR_AGENT_TURNS),
         FieldSpec("max_tokens", int, min_val=1, max_val=MAX_MONITOR_TOKENS),
         FieldSpec("max_provider_errors", int, min_val=1, max_val=MAX_MONITOR_PROVIDER_ERRORS),
         FieldSpec("wake_instructions", str, max_len=MAX_MONITOR_WAKE_INSTRUCTIONS_CHARS),
@@ -1592,7 +1593,8 @@ MONITOR_UPDATE_SCHEMA = ToolSchema(
         FieldSpec("max_runtime_secs", (int, float), min_val=1, max_val=MAX_RUNTIME_CEILING_SECS),
         FieldSpec("target", str, max_len=MAX_SHORT_STRING),
         FieldSpec("objective", str, allowed=publicly_armable_objectives()),
-        FieldSpec("max_agent_turns", int, min_val=1, max_val=MAX_MONITOR_AGENT_TURNS),
+        # Floor 0, not 1: zero is the unlimited sentinel for this one budget.
+        FieldSpec("max_agent_turns", int, min_val=0, max_val=MAX_MONITOR_AGENT_TURNS),
         FieldSpec("max_tokens", int, min_val=1, max_val=MAX_MONITOR_TOKENS),
         FieldSpec("max_provider_errors", int, min_val=1, max_val=MAX_MONITOR_PROVIDER_ERRORS),
         FieldSpec("wake_instructions", str, max_len=MAX_MONITOR_WAKE_INSTRUCTIONS_CHARS),
@@ -2459,6 +2461,29 @@ CHAT_SESSION_PIN_SCHEMA = ToolSchema(
         # A real JSON boolean: the string "false" is truthy, so a coerced value
         # would pin a session the caller asked to unpin.
         FieldSpec("pinned", bool, required=True),
+    ],
+)
+
+# Board columns (``/api/chat/tag-columns``). A column name is stored as
+# ``name[:60]`` (``chat_tags._NAME_MAX``), the same cap as a tag name, and a
+# column reference is a 12-hex id or the column's exact name.
+CHAT_TAG_COLUMN_LIST_SCHEMA = ToolSchema(tool_name="chat_tag_column_list", fields=[])
+
+CHAT_TAG_COLUMN_CREATE_SCHEMA = ToolSchema(
+    tool_name="chat_tag_column_create",
+    fields=[
+        FieldSpec("name", str, required=True, max_len=_CHAT_TAG_NAME_MAX),
+        FieldSpec("tag", str, required=True, max_len=_CHAT_TAG_REF_MAX),
+    ],
+)
+
+CHAT_TAG_COLUMN_MOVE_SCHEMA = ToolSchema(
+    tool_name="chat_tag_column_move",
+    fields=[
+        # The handler requires exactly one of ``before`` / ``after``.
+        FieldSpec("column", str, required=True, max_len=_CHAT_TAG_REF_MAX),
+        FieldSpec("before", str, max_len=_CHAT_TAG_REF_MAX),
+        FieldSpec("after", str, max_len=_CHAT_TAG_REF_MAX),
     ],
 )
 
@@ -3464,6 +3489,13 @@ SESSION_STOP_SCHEMA = ToolSchema(
     ],
 )
 
+SESSION_END_WAIT_SCHEMA = ToolSchema(
+    tool_name="session_end_wait",
+    fields=[
+        FieldSpec("target", str, required=True, max_len=MAX_SHORT_STRING),
+    ],
+)
+
 SESSION_SET_MODEL_SCHEMA = ToolSchema(
     tool_name="session_set_model",
     fields=[
@@ -3809,6 +3841,7 @@ MCP_DASHBOARD_SCHEMAS: dict[str, ToolSchema] = {
     "session_create": SESSION_CREATE_SCHEMA,
     "session_fork": SESSION_FORK_SCHEMA,
     "session_stop": SESSION_STOP_SCHEMA,
+    "session_end_wait": SESSION_END_WAIT_SCHEMA,
     "session_set_model": SESSION_SET_MODEL_SCHEMA,
     "session_close": SESSION_CLOSE_SCHEMA,
     "session_revive": SESSION_REVIVE_SCHEMA,
@@ -3829,6 +3862,9 @@ MCP_DASHBOARD_SCHEMAS: dict[str, ToolSchema] = {
     "chat_tag_update": CHAT_TAG_UPDATE_SCHEMA,
     "chat_tag_assign": CHAT_TAG_ASSIGN_SCHEMA,
     "chat_session_pin": CHAT_SESSION_PIN_SCHEMA,
+    "chat_tag_column_list": CHAT_TAG_COLUMN_LIST_SCHEMA,
+    "chat_tag_column_create": CHAT_TAG_COLUMN_CREATE_SCHEMA,
+    "chat_tag_column_move": CHAT_TAG_COLUMN_MOVE_SCHEMA,
 }
 
 # ── Tool Schemas (MCP crew log — server ``kirocrew-crew-log``) ──
@@ -3878,7 +3914,12 @@ CREW_LOG_PROJECTION_SCHEMA = ToolSchema(
             "name",
             str,
             required=True,
-            allowed=frozenset({"status", "usage", "timeline", "tools", "approvals"}),
+            # Must hold every name the tool ADVERTISES in its ``inputSchema`` enum, which is
+            # ``mcp_crew_log.PROJECTION_NAMES``. Spelled literally rather than imported
+            # because that module imports this one, and the two are pinned together by
+            # ``test_the_projection_schema_accepts_every_advertised_fold`` so a fold added to
+            # one and not the other fails CI instead of advertising a name this refuses.
+            allowed=frozenset({"status", "usage", "timeline", "tools", "approvals", "subagents"}),
         ),
     ],
 )

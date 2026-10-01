@@ -1877,7 +1877,7 @@ export default function DevFleetPage() {
     if (w.is_main) { variant = 'aim'; label = 'main'; title = i18nT('pages.devFleetPage.the_primary_checkout_this_fleet_is_discovered_fr') }
     else if (w.running) {
       // 200 = open; 401/403 = serving but auth-gated — all mean the pod is up
-      // (matches pod/runtime.py health() contract; anonymous probes get 403).
+      // (matches pod/runtime_client.py health() contract; anonymous probes get 403).
       const healthy = !!w.health && ((w.health >= 200 && w.health < 400) || w.health === 401 || w.health === 403)
       variant = healthy ? 'ok' : 'err'
       label = healthy ? i18nT('pages.devFleetPage.pod_up') : i18nT('pages.devFleetPage.pod_sick')

@@ -725,7 +725,11 @@ class TestABackendNothingCompactsIsRecycled:
         for restart in (after_failure, uncompactable):
             assert "auto-compacted" not in restart, restart
             assert "restarted" in restart, restart
-            assert "no longer remembers" in restart, restart
+            # What the successor actually does: its first turn carries a recent
+            # excerpt of the transcript, so the notice may not claim total loss
+            # and may not stay silent about the loss either.
+            assert "recent excerpt" in restart, restart
+            assert "no longer remembers" not in restart, restart
 
         assert "cannot compact" in uncompactable
         assert "cannot compact" not in after_failure
@@ -759,7 +763,9 @@ class TestABackendNothingCompactsIsRecycled:
             # cannot answer.
             assert "auto-compacted" not in restart.lower(), restart
             assert "restarted" in restart, restart
-            assert "no longer remembers" in restart, restart
+            # Same rule as the channel leg: name the excerpt, not a total loss.
+            assert "recent excerpt" in restart, restart
+            assert "no longer remembers" not in restart, restart
 
         # The capability claim belongs to exactly one of them.
         assert "cannot compact" in uncompactable

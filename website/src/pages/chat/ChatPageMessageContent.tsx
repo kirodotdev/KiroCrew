@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import type React from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { BookOpen, ChevronDown, ChevronRight, Folder, Paperclip, Plug } from 'lucide-react'
+import { BookOpen, ChevronDown, ChevronRight, Folder, MessageSquarePlus, Paperclip, Plug } from 'lucide-react'
 
 import { api } from '../../api/client'
 import Clickable from '../../components/Clickable'
@@ -14,6 +14,8 @@ import SessionActionsMenu from '../../components/SessionActionsMenu'
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuSub,
   DropdownMenuSubContent,
   DropdownMenuSubTrigger,
@@ -40,7 +42,7 @@ import {
 import { findTokenRanges, recollapsePastes, type PasteBlock } from '../../utils/pasteTokens'
 import McpToolsPanel from './McpToolsPanel'
 
-export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, onAutoTitle, mode, sidebarOnScreen, omitPopout, triggerLabel }: {
+export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, onAutoTitle, mode, sidebarOnScreen, omitPopout, triggerLabel, newSessionHere }: {
   activeSlot: string | null; agent?: string; onReveal?: () => void; onRename?: () => void; onAutoTitle?: () => void; mode?: string
   /** Whether the sidebar (and its folder-order banner) is on screen -- see SessionActionsMenu. */
   sidebarOnScreen?: boolean
@@ -51,6 +53,10 @@ export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, onAutoTi
    *  flush after the last character). Absent, the trigger is the bare chevron
    *  the desktop title row places beside its own rename control. */
   triggerLabel?: React.ReactNode
+  /** Phone only: a first item that opens a sibling session in the on-screen
+   *  session's folder. It lives in this menu, not beside it, because the phone
+   *  bar's centre cell holds two controls (AUTOSDE `max-two-buttons-per-row`). */
+  newSessionHere?: { label: string; disabled?: boolean; onSelect: () => void }
 }) {
   // Controlled open state: lets the colour-swatch row (not a Radix menu item)
   // close the menu after a pick, via the onColorPicked hook passed below.
@@ -116,6 +122,14 @@ export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, onAutoTi
         )}
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="min-w-[180px]">
+        {newSessionHere && (
+          <>
+            <DropdownMenuItem data-testid="mobile-new-session-here" disabled={newSessionHere.disabled} onSelect={newSessionHere.onSelect}>
+              <MessageSquarePlus size={13} className="shrink-0 text-muted" /> {newSessionHere.label}
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+          </>
+        )}
         {activeSlot && (
         <SessionActionsMenu
           variant="dropdown"

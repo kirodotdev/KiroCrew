@@ -45,7 +45,6 @@ class _FakeSlot:
         self._stop_escalated_card_id = None
         self._queue: list[dict] = []
         self._pending_steers: list[dict] = []
-        self._auto_run = False
         self.running = True
         self.key = "test-slot"
         self.agent = "kirocrew"

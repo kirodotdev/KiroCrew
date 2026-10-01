@@ -753,6 +753,20 @@ class AcpFrameTooLarge(AcpRuntimeError):
     session_start_failed = False
 
 
+class AcpModeNotFound(AcpRuntimeError):
+    """kiro-cli answered ``Mode '<mode_id>' not found`` to an awaited request.
+
+    A subclass so every ``except AcpRuntimeError`` keeps catching it, and so the
+    one caller that can recover -- a ``session/set_mode`` naming a skill-view
+    alias the host has not loaded yet -- can tell it apart structurally rather
+    than by matching the user-facing sentence.
+    """
+
+    def __init__(self, message: str, mode_id: str) -> None:
+        super().__init__(message)
+        self.mode_id = mode_id
+
+
 class AcpRequestTimeout(AcpRuntimeError):
     """Raised when a request's response does not arrive within its budget.
 

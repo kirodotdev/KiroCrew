@@ -2,7 +2,7 @@
 
 ## Overview
 
-Pre-send prompt optimization is an explicit compose-bar action. When enabled for a `ChatInput` host, `Cmd/Ctrl+Shift+Enter` and the sparkle button rewrite the draft for scope, specificity, and structure before it is sent to the agent. `ChatInput.optimizePrompt` never sends the result; it writes the rewrite back to the draft for review, editing, or discard.
+Pre-send prompt optimization is an explicit compose-bar action. When enabled for a `ChatInput` host, `Cmd/Ctrl+Shift+Enter` and the sparkle button rewrite the draft for scope, specificity, and structure before it is sent to the agent. `optimizePrompt` (`usePromptOptimizer`, `website/src/components/chat-input/optimizer.ts`) never sends the result; it writes the rewrite back to the draft for review, editing, or discard.
 
 There is no client- or server-side heuristic that decides whether a nonempty prompt merits optimization. `handle_optimize` returns empty drafts directly, while `OPTIMIZER_SYSTEM` instructs the model to leave prompts that are already specific, scoped, and actionable unchanged. The handler also marks a case-insensitive match as unchanged, so cosmetic casing cannot replace a draft.
 
@@ -17,11 +17,11 @@ There is no client- or server-side heuristic that decides whether a nonempty pro
 - `handle_optimize` sends `prompt`, `context`, and the assembled paste block through `security.contains_injection` before streaming. A hit declines optimization rather than delivering untrusted text to the model; the constrained session, rejected permission requests, and output redaction reduce the impact if model output is unsafe.
 - Payload sections use a fresh request nonce in their pseudo-XML names. `handle_optimize` keeps untrusted text separate from the delimiter construction, so supplied prompt, context, and paste content do not choose the section boundary.
 - `handle_optimize` redacts exfiltration URLs and credentials from model output with `redact_exfiltration_urls` and `redact_credentials` before responding.
-- Context is bounded at both ends: `ChatInput.optimizePrompt` selects and shortens recent user and assistant messages, and `handle_optimize` retains only the context tail. `TestOptimizerEndpoint.test_context_truncated_to_2000_chars` pins the server-side bound.
+- Context is bounded at both ends: `optimizePrompt` selects and shortens recent user and assistant messages, and `handle_optimize` retains only the context tail. `TestOptimizerEndpoint.test_context_truncated_to_2000_chars` pins the server-side bound.
 
 ## Paste forwarding
 
-The chat input collapses a large paste into an inline `[ Paste #N · M lines ]` placeholder and retains the source text in a `PasteBlock` list in `website/src/utils/pasteTokens.ts`. `ChatInput.optimizePrompt` forwards only blocks referenced by the current draft, so the optimizer can use the content for scope without expanding it into the rewritten draft.
+The chat input collapses a large paste into an inline `[ Paste #N · M lines ]` placeholder and retains the source text in a `PasteBlock` list in `website/src/utils/pasteTokens.ts`. `optimizePrompt` forwards only blocks referenced by the current draft, so the optimizer can use the content for scope without expanding it into the rewritten draft.
 
 `_build_pasted_content_block` accepts only referenced, well-formed blocks, keeps the first block for each sequence, orders them by sequence, and bounds both scanned blocks and forwarded content. The content limit protects model context and request latency; `TestBuildPastedContentBlock.test_truncates_over_budget` pins its truncation behavior. Malformed or unreferenced `pastes` entries produce no forwarded section instead of failing the request.
 
@@ -29,12 +29,12 @@ The chat input collapses a large paste into an inline `[ Paste #N · M lines ]` 
 
 ## Frontend
 
-`website/src/components/ChatInput.tsx` uses a React Query mutation to call the endpoint. The keyboard shortcut is recognized only when the host enables `promptOptimizer` and the composer is connected; the sparkle button uses the same `optimizePrompt` callback.
+`usePromptOptimizer` (`website/src/components/chat-input/optimizer.ts`) owns the React Query mutation that calls the endpoint, its slot binding, and the write-back; `website/src/components/ChatInput.tsx` renders the sparkle button and wires it to the hook. The keyboard shortcut, in the composer's keydown handler (`website/src/components/chat-input/keyboard.ts`), is recognized only when the host enables `promptOptimizer` and the composer is connected; the sparkle button uses the same `optimizePrompt` callback.
 
 - `promptOptimizer` defaults to enabled, but a host can disable the feature. `SideChat` does so because it does not provide the cross-slot result route; `ChatInput.paste.test.tsx` pins that the opt-out covers the shortcut.
 - The textarea overlay and `readOnly` state are scoped to the slot that started the request. `optimizePendingRef` still prevents a second request from another displayed slot, so a pending mutation cannot clobber its own lifecycle state.
-- `optimizeSlotRef` binds a completion to its originating slot. When a host provides `onOptimizeResult` and the user changes slots, `ChatInput` passes the result or the original fallback to that callback; `ChatPage.handleOptimizeResult` persists it in the originating draft. `ChatInput.test.tsx` pins that a late completion cannot overwrite the visible different slot.
-- Before an in-place write, `setTextUndoable` compares the current trimmed draft with the submitted draft and drops a mismatch rather than clobbering a later edit. It attempts `document.execCommand('insertText')`, verifies the resulting DOM value, and reconciles through `onChange` when the browser does not insert; `ChatInput.optimizeWriteback.test.tsx` pins those fallback paths and the undo-history boundary.
+- `optimizeSlotRef` binds a completion to its originating slot. When a host provides `onOptimizeResult` and the user changes slots, the hook passes the result or the original fallback to that callback; `ChatPage.handleOptimizeResult` persists it in the originating draft. `ChatInput.test.tsx` pins that a late completion cannot overwrite the visible different slot.
+- Before an in-place write, `setTextUndoable` compares the current trimmed draft with the submitted draft and drops a mismatch rather than clobbering a later edit. It attempts `document.execCommand('insertText')`, verifies the resulting DOM value, and reconciles through `onChange` when the browser does not insert. A finished optimize is one undo step: the completion effect records a single boundary through `appendBoundary` (`useUndoHistory`, `website/src/components/chat-input/draftHistory.ts`). `ChatInput.optimizeWriteback.test.tsx` pins those fallback paths and the undo-history boundary.
 
 ## Config
 
@@ -44,7 +44,9 @@ There is no persisted optimizer setting. `ChatInput` enables `promptOptimizer` b
 
 - `src/kiro_crew/dashboard/handlers/optimizer.py`: endpoint, system prompt, paste-block assembly, input screening, output redaction, and placeholder guard.
 - `src/kiro_crew/dashboard/routes/chat.py`: optimizer route registration.
-- `website/src/components/ChatInput.tsx`: capability gate, shortcut, mutation, slot routing, and verified write-back.
+- `website/src/components/ChatInput.tsx`: the `promptOptimizer` capability gate and the sparkle button.
+- `website/src/components/chat-input/optimizer.ts`: mutation, slot routing, and verified write-back.
+- `website/src/components/chat-input/keyboard.ts`: the `Cmd/Ctrl+Shift+Enter` shortcut.
 - `website/src/pages/ChatPage.tsx`: persistence of a late cross-slot result into its originating draft.
 - `website/src/utils/pasteTokens.ts`: placeholder format and the `PasteBlock` model shared with the backend regex.
 - `test/test_optimizer.py`: backend behavior, context bound, paste forwarding, placeholder preservation, and injection-screening cases.

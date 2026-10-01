@@ -8,6 +8,7 @@ name read as "mine" and collided with the previous restore's saved state.
 from __future__ import annotations
 
 import tarfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -98,14 +99,29 @@ class TestAWrongTypeEntryIsRefusedNotSkipped:
 
 
 class TestTheRollbackDirectoryBelongsToOneRestore:
-    def test_a_second_allocation_in_the_same_second_gets_its_own_directory(self, home):
-        """Two restores inside one UTC second must not share a rollback set."""
+    def test_a_second_allocation_in_the_same_second_gets_its_own_directory(self, home, monkeypatch):
+        """Two restores inside one UTC second must not share a rollback set.
+
+        The stamp has one-second resolution, so "the same second" has to be held
+        rather than hoped for: on a slow runner the two allocations straddle a
+        second boundary often enough that the second gets a fresh, unsuffixed
+        name and the collision path under test never runs.
+        """
+        frozen = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+
+        class _Frozen:
+            @staticmethod
+            def now(tz=None):
+                return frozen
+
+        monkeypatch.setattr(snap, "datetime", _Frozen)
         first = snap._allocate_rollback_dir(home)
         second = snap._allocate_rollback_dir(home)
         assert first != second, "the second restore reused the first's rollback directory"
         assert first.is_dir() and second.is_dir()
-        assert second.name.startswith(
-            first.name
+        assert first.name == "pre-restore-20260101T120000Z"
+        assert (
+            second.name == "pre-restore-20260101T120000Z-2"
         ), f"the suffixed name should stay recognisable: {second.name}"
 
     def test_the_operator_readable_stem_is_kept(self, home):

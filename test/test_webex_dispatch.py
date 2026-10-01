@@ -108,7 +108,7 @@ class FakeSessions:
         self.begin_turns = 0
         self.reserved_generations: set[str] = set()
 
-    async def get_or_create(self, key, *, agent, channel_id):
+    async def get_or_create(self, key, *, agent=None, channel_id=None):
         self.last_agent = agent
         if self._raise is not None:
             raise self._raise
@@ -175,9 +175,17 @@ class FakeSessions:
     def dequeue(self, key):
         return self.queued.pop(0) if self.queued else None
 
-    def clear_queue(self, key, owned_by=None) -> None:
+    def clear_queue(self, key, owned_by=None, *, only=None) -> None:
         self.cleared.append(key)
         self.queued.clear()
+
+    def detach_queue(self, key):
+        taken = tuple(self.queued)
+        self.queued.clear()
+        return taken
+
+    def restore_queue(self, key, entries) -> None:
+        self.queued[:0] = list(entries)
 
     # -- origin / mirror binding (drive_turn binds on every turn) --
     def set_origin_link(self, key, link) -> None:
@@ -896,6 +904,159 @@ class TestStop:
         assert provider.cancelled == [0]
         assert sessions.cleared == [d._session_key(_EMAIL)]
         assert "🛑 Stopped." in client.sent[-1][1]
+
+    @pytest.mark.asyncio
+    async def test_a_decline_webex_could_not_post_leaves_the_next_press_a_first_press(
+        self,
+    ) -> None:
+        """``_reply`` hands back the id of what it posted, and ``None`` when there
+        was nothing to post with. A member who saw no answer presses again within
+        seconds, and that press must be declined again, never a silent reset."""
+        from kiro_crew import session_lifecycle as sl
+
+        sl._stop_declined_markers.clear()
+        provider = FakeProvider([])
+        sessions = FakeSessions(provider)
+        sessions._busy = True
+        sessions.is_compacting = lambda key: True
+        forced: list[dict] = []
+
+        async def stop_turn(key, **kw):
+            forced.append(kw)
+            return "hard"
+
+        sessions.stop_turn = stop_turn
+        client = FakeClient()
+        d = _dispatcher(sessions, FakeCtx(), client)
+        posted = d._reply
+        down = True
+
+        async def _flaky(inbound, text, **kw):
+            if down:
+                return None
+            return await posted(inbound, text, **kw)
+
+        d._reply = _flaky  # type: ignore[method-assign]
+        await d.handle_message(_inbound("/stop"))
+        assert sl._stop_declined_markers == {}, "an undelivered warning arms nothing"
+        down = False
+        await d.handle_message(_inbound("/stop"))
+        assert forced == [], "no force on a press the member was never warned about"
+        assert "nothing was stopped" in client.sent[-1][1]
+        sl._stop_declined_markers.clear()
+
+    @pytest.mark.asyncio
+    async def test_stop_is_declined_while_the_session_compacts(self) -> None:
+        """An automatic compaction holds the session: nothing is cancelled, nothing
+        is cleared, and the caller is told nothing was stopped."""
+        provider = FakeProvider([])
+        sessions = FakeSessions(provider)
+        sessions._busy = True
+        sessions.queued = [("1", "queued", {})]
+        sessions.is_compacting = lambda key: True
+        client = FakeClient()
+        d = _dispatcher(sessions, FakeCtx(), client)
+
+        await d.handle_message(_inbound("/stop"))
+
+        assert provider.cancelled == []
+        assert sessions.cleared == []
+        assert "nothing was stopped" in client.sent[-1][1]
+
+    @pytest.mark.asyncio
+    async def test_another_members_declined_stop_does_not_force_mine(self) -> None:
+        """A group space shares one session key. The decline marker belongs to the
+        member who was declined, so the next member's first press stays a first
+        press, and the declined member's own repeat is the one that forces."""
+        from kiro_crew import session_lifecycle as sl
+
+        sl._stop_declined_markers.clear()
+        provider = FakeProvider([])
+        sessions = FakeSessions(provider)
+        sessions._busy = True
+        sessions.is_compacting = lambda key: True
+        forced: list[dict] = []
+
+        async def stop_turn(key, **kw):
+            forced.append(kw)
+            return "hard"
+
+        sessions.stop_turn = stop_turn
+        client = FakeClient()
+        d = _dispatcher(sessions, FakeCtx(), client)
+
+        def group(email: str) -> WebexInbound:
+            return WebexInbound(person_email=email, room_id="ROOM", text="/stop", room_type="group")
+
+        await d.handle_message(group("alice@example.com"))
+        await d.handle_message(group("bob@example.com"))
+        assert forced == [], "bob's first press is a first press"
+        assert all("nothing was stopped" in m for (_, m) in client.sent[-2:])
+        await d.handle_message(group("alice@example.com"))
+        assert forced == [{"force": True, "preserve_queue": True}]
+        sl._stop_declined_markers.clear()
+
+    @pytest.mark.asyncio
+    async def test_the_forced_stop_keeps_other_members_queued_work(self) -> None:
+        """The reset is this member's; the queue is the whole space's. The queue is
+        detached before the hard stop, this member's entries are dropped from the
+        handles, and the other members' are handed to the successor."""
+        from kiro_crew import session_lifecycle as sl
+        from kiro_crew.messaging.queue_drain import QUEUED_OWNER_KEY
+        from kiro_crew.webex.transport_dispatch import _entry_owner
+
+        sl._stop_declined_markers.clear()
+        provider = FakeProvider([])
+        sessions = FakeSessions(provider)
+        sessions._busy = True
+        sessions.is_compacting = lambda key: True
+        mine = _entry_owner(_inbound("/stop"))
+        own = ("1", "mine", {QUEUED_OWNER_KEY: mine})
+        theirs = ("2", "theirs", {QUEUED_OWNER_KEY: "someone-else"})
+        sessions.queued = [own, theirs]
+        calls: list[dict] = []
+        only_cleared: list = []
+        restored: list = []
+
+        async def stop_turn(key, **kw):
+            calls.append(kw)
+            sessions.queued.clear()  # the hard reset pops the session and its queue
+            return "hard"
+
+        def detach_queue(key):
+            taken = tuple(sessions.queued)
+            sessions.queued.clear()
+            return taken
+
+        owner_clears: list = []
+
+        def clear_queue(key, owned_by=None, *, only=None):
+            if only is not None:
+                only_cleared.extend(only)
+            else:
+                owner_clears.append(owned_by)
+
+        def restore_queue(key, entries):
+            restored.extend(entries)
+            sessions.queued[:0] = list(entries)
+
+        sessions.stop_turn = stop_turn
+        sessions.detach_queue = detach_queue
+        sessions.clear_queue = clear_queue
+        sessions.restore_queue = restore_queue
+        client = FakeClient()
+        d = _dispatcher(sessions, FakeCtx(), client)
+
+        await d.handle_message(_inbound("/stop"))
+        await d.handle_message(_inbound("/stop"))
+        assert calls == [{"force": True, "preserve_queue": True}]
+        assert only_cleared == [own], "only this member's entry dropped"
+        assert owner_clears == [], "no second owner-scoped clear after the force"
+        assert restored == [theirs], "the other member's entry reached the successor"
+        assert sessions.queued == [theirs]
+        assert sessions.released[-1] == d._session_key(_EMAIL)
+        assert "🛑 Stopped." in client.sent[-1][1]
+        sl._stop_declined_markers.clear()
 
     @pytest.mark.asyncio
     async def test_stop_with_nothing_running_still_clears(self) -> None:

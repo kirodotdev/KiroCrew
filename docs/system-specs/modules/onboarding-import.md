@@ -61,7 +61,17 @@ Placement rules that are load-bearing:
   `onboarding_import.<name>` path. The facade re-exports each as the owner's own
   object. `test_onboarding_import_refactor_contract.py` pins the list, pins that
   each re-export is the owner's object, and pins that the entry points and store
-  writers are defined in the facade itself.
+  writers are defined in the facade itself. The facade also keeps every public
+  project name the module bound before it was split into owners (`platform_compat`,
+  `atomic_write`, `ConfigReadError`, `update_config_locked`, `config_dir`,
+  `make_sync_embed_fn`, `ONBOARDING_IMPORT`, `parse_block_scalar_header`,
+  `split_frontmatter`, `FileTooLargeError`, `safe_read_file_bytes_nolink`,
+  `Lesson`, `LessonStore`, `contains_volatile_lesson_fact`, `mcp_server_alias`,
+  `current_context`, `safe_context_call`, `contains_injection`,
+  `is_sensitive_path`, `redact_with_findings`, `VectorMemoryStore`), each bound to its defining module's own object, so code
+  written against the single module still resolves. Standard-library, typing and
+  third-party imports (`yaml`, `croniter`) and private helpers are not part of
+  that surface. The contract test pins the list.
 - **A patch on the facade reaches every call site.** The caps
   (`_MAX_FILES`, `_MAX_WALK_ENTRIES`, `_MAX_DB_ROWS`, `_MAX_DB_BYTES`,
   `_MAX_SKILL_BYTES`, `_MAX_SKILL_PACKAGE_BYTES`, `_MAX_MCP_SERVERS`,
@@ -74,8 +84,10 @@ Placement rules that are load-bearing:
   standard library's `url2pathname`, since that is where its call site looks it
   up), and that module's namespace is the only place the value lives. The facade
   binds none of the 18 names. A read resolves the owner through `sys.modules` on
-  each access (PEP 562 `__getattr__`), and the facade's module class forwards a
-  set or a delete to the owner, so `monkeypatch.setattr`, its undo,
+  each access (PEP 562 `__getattr__`, defined under `if not TYPE_CHECKING:` so a
+  type checker resolves a name read through the facade from its real bindings and
+  its `TYPE_CHECKING` imports, and reports one that is neither), and the facade's
+  module class forwards a set or a delete to the owner, so `monkeypatch.setattr`, its undo,
   `mock.patch` and `mock.patch.object` on `onboarding_import.<name>` land in the
   owner and restore the owner's own original. Every reader outside the owner --
   the facade's `_source_exists`, `_preview` and ledger flush, and the apply
@@ -107,13 +119,31 @@ Placement rules that are load-bearing:
   must ignore. The same file pins that the owner is the only engine module
   binding each seam, that the facade's own code reads no mirrored name as a bare
   global, that the facade's `TYPE_CHECKING` block imports every mirrored name
-  from its owner, that an owner already in `sys.modules` is read, written and
-  restored without a call to `importlib.import_module`, and drives a behavioral
+  from its owner, that `__getattr__` stays hidden from type checkers while every
+  name production imports from the facade still resolves, that an owner already
+  in `sys.modules` is read, written and restored without a call to `importlib.import_module`, and drives a behavioral
   scenario through every cross-module reader it finds in the source. `__all__` is derived from the
   facade's bindings plus the table, so a star import carries `url2pathname` too.
   `_MAX_LESSONS_TOTAL` and `make_sync_embed_fn` are read by the facade itself
   and are not mirrored. The facade also keeps `shutil` and
   `platform_compat` as attributes, the same module objects the owners use.
+- **A by-name copy on the facade is not a seam.** Besides the mirrored names, the
+  facade binds by-name copies of owner names: the apply owner's strategy
+  constants (`CONFLICT_STRATEGIES`, `STRATEGY_SKIP`, `STRATEGY_RENAME`,
+  `STRATEGY_OVERWRITE`), `CATEGORY_IDS`, the registry's `_sources`,
+  `_managed_mcp_names`, `_SOURCE_ID_RE` and `_CORE_MANAGED_MCP_NAMES`, the scan
+  owner's `_frontmatter`, `_column0_activation_declared` and
+  `_load_no_alias_yaml`, and the pre-split public names. No owner reads the
+  facade's copy, so a facade patch of one reaches the facade's own code at most.
+  A second guard in `test_onboarding_import_refactor_contract.py` reads the same
+  test files and collects every name a test rebinds on the facade (`setattr` or
+  `delattr` on any receiver, `patch`, `patch.object`, `patch.multiple`; not
+  `patch.dict`, which mutates the shared object in place). It fails when an engine
+  module other than the facade and the name's `_EXPORTS` owner also binds that
+  name: mirror the name in `_EXPORTS`, or patch the module that reads it. The
+  guard is pinned on a planted source, and it must see the names the engine's own
+  suites rebind (`_is_link_like`, `_write_json`, `_MAX_LESSONS_TOTAL`,
+  `make_sync_embed_fn`), so an empty scan cannot pass.
 - **One logger.** Every owner logs through `kiro_crew.onboarding_import`, the
   name operators and tests filter import warnings on.
 - **Managed MCP names are read from the live registry.** `_scan_source` wires the

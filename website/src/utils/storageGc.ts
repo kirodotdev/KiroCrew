@@ -40,7 +40,9 @@ const SESSION_PREFIXES = [
   'mc-webpreview-pending:',
   'mc-webpreview-applied:',
   'mc-busy-send-mode:',
-  // Writer: `DISMISS_PREFIX` in `pages/chat/command-center/CommandCenterDock.tsx`.
+  // No live writer: the one-time Dashboard hint card wrote this flag before the
+  // dock became persistent. Kept so a browser that already carries the keys
+  // still has them collected.
   'mc-task-dashboard-dismissed:',
 ] as const
 

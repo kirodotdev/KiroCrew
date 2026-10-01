@@ -125,7 +125,14 @@ def _stop(sessions: _Sessions, queue: ReceiptQueue, surface: _Surface) -> str:
         # mid-turn burst would have left one.
         async with queue.lock:
             await queue.create_or_grow_locked("s", surface, "what time is it", _CALLER)
-        return await stop_running_turn(sessions, "s", queue=queue, surface=surface, owner=_CALLER)
+        return await stop_running_turn(
+            sessions,
+            "s",
+            queue=queue,
+            surface=surface,
+            owner=_CALLER,
+            deliver=AsyncMock(),
+        )
 
     return asyncio.run(go())
 

@@ -3550,8 +3550,16 @@ class ConversationLog:
 
     def delete_session(self, key: str, *, skip_pinned: bool = False) -> bool | None:
         if skip_pinned:
-            return self._metadata_projection.delete_session(key, skip_pinned=True)
-        return self._metadata_projection.delete_session(key, skip_pinned=False)
+            deleted = self._metadata_projection.delete_session(key, skip_pinned=True)
+        else:
+            deleted = self._metadata_projection.delete_session(key, skip_pinned=False)
+        if deleted:
+            # A deleted session's restart-surviving vouch goes with it, so the
+            # vouched-executions/ files track live sessions, not every one ever made.
+            from kiro_crew._durable_vouch import forget_durable_vouch
+
+            forget_durable_vouch(key)
+        return deleted
 
     def delete_memory_consolidation_session(self, key: str, expected_store: str) -> bool:
         """Delete every artifact of one retired generated consolidation turn."""

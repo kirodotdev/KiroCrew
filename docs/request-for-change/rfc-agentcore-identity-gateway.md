@@ -347,7 +347,7 @@ needed to *stand up* an AgentCore-capable box:
   `kirocrew-ec2-boundary` or `kirocrew-ec2-boundary-agentcore`.
 - `bedrock-agentcore:CreateWorkloadIdentity` (and Get/Delete/Tag)
   on `workload-identity/kirocrew` and `kirocrew-*`.
-- Existing tag-gated `PassRole` of `kirocrew-ec2-*` roles.
+- Existing path-scoped `PassRole` of `/kirocrew-ec2/kirocrew-ec2-*` roles.
 
 The dashboard / `kirocrew cloud iam-policy` grows a **second,
 labeled** document — the instance-role fragment — from

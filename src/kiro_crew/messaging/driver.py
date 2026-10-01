@@ -591,7 +591,7 @@ class TurnDriver:
         seen_tool_identity: dict[str, tuple[str, str]] = {}
         # Purpose text from each tool_call, keyed by its tool_call_id, so a
         # permission request can be paired with the purpose of the tool IT asks
-        # about. The permission payload carries the title but no purpose, and the
+        # about. A permission payload may carry the title but no purpose, and the
         # two events are not necessarily adjacent, so a renderer remembering "the
         # last purpose" can pair one tool's name with another's purpose. Turn-local
         # and bounded by the turn's tool-call count.

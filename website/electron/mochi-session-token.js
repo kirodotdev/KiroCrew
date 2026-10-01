@@ -31,6 +31,17 @@
  */
 async function borrowSessionToken({ electronSession, backendUrl }) {
   if (!electronSession || typeof electronSession.cookies?.get !== "function") return "";
+  // Deliberately the RAW port, and deliberately fail closed when it is empty.
+  //
+  // `mc_token_<port>` is named by the GATEWAY, after the port the browser's Host
+  // header carried -- and a browser omits a scheme's default port from `Host`,
+  // so the gateway falls back to its OWN listen port there. Behind a tunnel that
+  // listen port is the remote one, which this process cannot know. Resolving the
+  // URL's default port would therefore name a cookie belonging to whichever
+  // gateway last served that port, and cookies are host-scoped only, so such a
+  // cookie is present in this jar. Borrowing it would hand one gateway's session
+  // credential to another. A port the URL states is unambiguous; an absent one
+  // is a guess, and this path declines to guess.
   let port;
   try {
     port = new URL(backendUrl).port;

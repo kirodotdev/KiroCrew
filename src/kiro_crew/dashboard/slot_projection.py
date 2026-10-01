@@ -2,11 +2,28 @@
 
 from __future__ import annotations
 
+import time
 from collections import deque
 from collections.abc import Callable, Sequence
 from typing import Any
 
 from kiro_crew.safety_override import safety_override, yolo_policy_permits
+from kiro_crew.session_lifecycle import STOP_DECLINED_ESCALATION_SECS
+
+
+def stop_declined_armed(slot: Any, now: float | None = None) -> bool:
+    """Whether a recent declined Stop makes the next press a force stop.
+
+    The window is ``session_lifecycle.STOP_DECLINED_ESCALATION_SECS``, the same
+    one the channels' second-press hatch uses: long enough for a human to read
+    the card and decide, short enough that a press an hour later is a fresh
+    first press.
+    """
+    at = float(getattr(slot, "_stop_declined_at", 0.0) or 0.0)
+    if at <= 0.0:
+        return False
+    current = time.monotonic() if now is None else now
+    return current - at < STOP_DECLINED_ESCALATION_SECS
 
 
 def resolved_row_identity(slot: Any) -> str:
@@ -411,6 +428,16 @@ class SlotProjection:
             "artifact": slot._artifact,
             "messages": len(slot.messages),
             "running": slot.turn_running,
+            # An automatic compaction in flight on this session. Separate from
+            # `running` because it is NOT a dashboard turn: the composer reads
+            # idle while it holds the session, which without this field looks
+            # like a stall worth pressing Stop on.
+            "compacting": bool(getattr(slot, "_compacting", False)),
+            # A cooperative Stop was declined moments ago (the session was
+            # compacting) and the next press escalates to a force stop. Read
+            # with the same window the stop route uses, so the button's hint and
+            # the backend's answer cannot disagree.
+            "stop_declined": stop_declined_armed(slot),
             "orchestrating": slot._in_stage_execution,
             "queue_depth": slot.queue_depth,
             "stopping": slot._stopping,

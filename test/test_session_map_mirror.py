@@ -10,6 +10,7 @@ Slack ``ChannelLink`` without needing migration.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 import threading
 import time
@@ -191,6 +192,116 @@ class TestBindingNonce:
         assert session_map.mirror_link_nonce("dashboard:chat-2") == ""
 
 
+class TestRecordedPrincipal:
+    """The peer a mirror was admitted for rides inside the ``mirror`` row.
+
+    It is what the per-send recipient check falls back to for a dashboard-born
+    session (whose key names nobody) mirrored to a DM whose conversation id cannot
+    be tested against a user roster. It is NOT part of the binding's identity, so
+    nothing that matches a binding by location -- the nonce, the occupancy check,
+    the location sweep -- reads it.
+    """
+
+    _KEY = "dashboard:chat-1-1700000000"
+
+    def test_the_principal_round_trips_through_the_map(self, session_map):
+        link = ChannelLink(channel_type="discord", channel_id="dm-9", principal="42")
+        session_map.set_mirror_link(self._KEY, link)
+        got = session_map.get_mirror_link(self._KEY)
+        assert got == link and got is not None and got.principal == "42"
+        assert session_map._data[self._KEY]["mirror"]["principal"] == "42"
+
+    def test_a_link_naming_no_peer_stores_the_row_shape_it_always_had(self, session_map):
+        session_map.set_mirror_link(
+            self._KEY, ChannelLink(channel_type="discord", channel_id="dm-9")
+        )
+        assert session_map._data[self._KEY]["mirror"] == {
+            "channel_type": "discord",
+            "channel_id": "dm-9",
+            "thread_id": None,
+        }
+        got = session_map.get_mirror_link(self._KEY)
+        assert got is not None and got.principal is None
+
+    def test_recording_the_peer_keeps_the_binding_identity(self, session_map):
+        """Same location, same binding: adding or dropping the record mints no nonce."""
+        bare = ChannelLink(channel_type="discord", channel_id="dm-9")
+        recorded = ChannelLink(channel_type="discord", channel_id="dm-9", principal="42")
+        session_map.set_mirror_link(self._KEY, bare)
+        nonce = session_map.mirror_link_nonce(self._KEY)
+        session_map.set_mirror_link(self._KEY, recorded, accepts_inbound=True)
+        assert session_map.mirror_link_nonce(self._KEY) == nonce
+        session_map.set_mirror_link(self._KEY, bare)
+        assert session_map.mirror_link_nonce(self._KEY) == nonce
+
+    def test_a_rewrite_that_names_no_peer_drops_the_recorded_one(self, session_map):
+        """Wholesale replacement: a peer never outlives the write that vouched for it."""
+        session_map.set_mirror_link(
+            self._KEY, ChannelLink(channel_type="discord", channel_id="dm-9", principal="42")
+        )
+        session_map.set_mirror_link(
+            self._KEY, ChannelLink(channel_type="discord", channel_id="dm-9")
+        )
+        got = session_map.get_mirror_link(self._KEY)
+        assert got is not None and got.principal is None and got.admission is None
+        assert "principal" not in session_map._data[self._KEY]["mirror"]
+        assert "admission" not in session_map._data[self._KEY]["mirror"]
+
+    def test_location_matching_ignores_the_record(self, session_map):
+        """Inbound resolution and the unlink sweep find the row by location alone."""
+        recorded = ChannelLink(channel_type="discord", channel_id="dm-9", principal="42")
+        session_map.set_mirror_link(self._KEY, recorded, accepts_inbound=True)
+        by_location = ChannelLink(channel_type="discord", channel_id="dm-9")
+        assert session_map.find_mirror_sessions(by_location, inbound_only=True) == [self._KEY]
+        assert session_map.clear_mirror_links_at(by_location) == [self._KEY]
+        assert session_map.get_mirror_link(self._KEY) is None
+
+    def test_the_map_carries_an_admission_verbatim_and_never_mints(self, session_map):
+        """The map is not a signer. A link the authorized creation path signed is
+        stored with its admission byte-for-byte and reads back verifying for that
+        session; a link that names a peer but carries no admission is stored
+        UNSIGNED and stays that way -- the refusal at send is the point."""
+        from kiro_crew.mirror_admission import sign_mirror_admission, verify_mirror_admission
+
+        link = ChannelLink(channel_type="discord", channel_id="dm-9", principal="42")
+        signed = dataclasses.replace(link, admission=sign_mirror_admission(self._KEY, link))
+        session_map.set_mirror_link(self._KEY, signed)
+        raw = session_map._data[self._KEY]["mirror"]
+        assert raw["principal"] == "42" and raw["admission"] == signed.admission
+        got = session_map.get_mirror_link(self._KEY)
+        assert got is not None and got.admission == signed.admission
+        assert verify_mirror_admission(self._KEY, got) is True
+        assert verify_mirror_admission("dashboard:chat-2-1700000000", got) is False
+
+        session_map.set_mirror_link(self._KEY, link)  # no admission: nothing minted
+        assert "admission" not in session_map._data[self._KEY]["mirror"]
+        got = session_map.get_mirror_link(self._KEY)
+        assert got is not None and got.principal == "42" and got.admission is None
+
+    def test_a_forged_admission_is_stored_as_given_and_does_not_verify(self, session_map):
+        """The map neither repairs nor rejects a bad admission -- that is the
+        reader's job, and repairing here is exactly the laundering a generic
+        signer would do."""
+        from kiro_crew.mirror_admission import verify_mirror_admission
+
+        planted = ChannelLink(
+            channel_type="discord", channel_id="dm-9", principal="42", admission="f" * 64
+        )
+        session_map.set_mirror_link(self._KEY, planted)
+        got = session_map.get_mirror_link(self._KEY)
+        assert got is not None and got.admission == "f" * 64
+        assert verify_mirror_admission(self._KEY, got) is False
+
+    def test_a_row_without_a_peer_carries_no_admission(self, session_map):
+        session_map.set_mirror_link(
+            self._KEY,
+            ChannelLink(channel_type="discord", channel_id="dm-9", admission="f" * 64),
+        )
+        assert "admission" not in session_map._data[self._KEY]["mirror"]
+        got = session_map.get_mirror_link(self._KEY)
+        assert got is not None and got.admission is None and got.principal is None
+
+
 class TestCompareAndClear:
     """``clear_mirror_link_if`` / ``clear_slack_link_if``: compare and clear, one step.
 
@@ -326,6 +437,29 @@ class TestLegacyFallback:
         session_map.set_slack_link("discord:agent:direct:7:gen1", "", "discord:7")
         assert session_map.get_slack_link("discord:agent:direct:7:gen1") == ("", "discord:7")
         assert session_map.get_mirror_link("discord:agent:direct:7:gen1") is None
+
+    def test_has_mirror_row_reads_the_explicit_row_alone(self, session_map):
+        """The question a clear's rollback asks -- is the row I removed back? --
+        must not be answered by the Slack link ``get_mirror_link`` synthesizes from a
+        surviving thread id, nor by the legacy ``dashboard:`` row it falls back to:
+        neither is the row the clear removed, and both would read as "still bound"
+        and make the rollback skip the restore it promised."""
+        key = "discord:kirocrew:direct:7"
+        session_map.set(key, "sid-abc")
+        session_map.set_slack_link(key, "ts-9", "C9")
+        assert session_map.get_mirror_link(key) is not None  # synthesized Slack link
+        assert session_map.has_mirror_row(key) is False
+        session_map._data[legacy_dashboard_mirror_key(key)] = {
+            "mirror": ChannelLink(channel_type="discord", channel_id="dm-old").to_dict()
+        }
+        assert session_map.get_mirror_link(key) is not None  # legacy-row fallback
+        assert session_map.has_mirror_row(key) is False
+        link = ChannelLink(channel_type="discord", channel_id="dm-9", principal="42")
+        session_map.set_mirror_link(key, link, accepts_inbound=True)
+        assert session_map.has_mirror_row(key) is True
+        assert session_map.clear_mirror_links_at(link) == [key]
+        assert session_map.has_mirror_row(key) is False
+        assert session_map.get_mirror_link(key) is not None  # the others still answer
 
 
 class TestGetMirrorLinkNone:

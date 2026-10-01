@@ -134,7 +134,18 @@ def _resolve_nvm_path(binary_name: str) -> str | None:
 
     Sources ~/.nvm/nvm.sh to find the nvm-managed node path, then resolves
     the requested binary relative to that directory.
+
+    POSIX only. nvm (nvm-sh) is a POSIX-shell tool, so on Windows this returns
+    None before touching the filesystem or spawning anything: the bare name
+    ``bash`` there resolves through ``CreateProcess`` to
+    ``C:\\Windows\\System32\\bash.exe`` -- the WSL launcher -- which cannot
+    source a Windows path and stalls the backend start for up to the 10 s
+    timeout (or opens WSL's distribution-install prompt on a host with no
+    distro). nvm-windows puts its ``node``/``npm`` shims on PATH, which the
+    callers already fall through to via ``shutil.which``.
     """
+    if platform_compat.IS_WINDOWS:
+        return None
     nvm_dir = os.environ.get("NVM_DIR", os.path.expanduser("~/.nvm"))
     nvm_sh = os.path.join(nvm_dir, "nvm.sh")
     if not os.path.isfile(nvm_sh):

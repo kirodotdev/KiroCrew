@@ -8,6 +8,8 @@ import { NavigationLeaveGuardProvider, useMayLeaveForNavigation } from '../../co
 import { ApiError } from '../../api/apiError'
 import { memberProjectionStore } from '../../state/memberProjectionStore'
 import { markSlotUnread, sseConnected, sseDisconnected, sseSlots } from '../../store/dashboardSlice'
+import { setSlotStatusDetail, sseChatMessage, sseToolActivity, sseToolResult, syncSlotRunningFromServer } from '../../store/chatSlice'
+import { PILL_ACTIVITY_MAX_CHARS } from './pillActivity'
 import { MEMBERS_ROSTER_QUERY_KEY, memberBriefingQueryKey, memberThreadQueryKey } from '../../api/membersQuery'
 import { __resetPaneDraftsForTests, readPaneDraft, writePaneDraft } from '../../utils/chatPaneDrafts'
 import { getViewedThreadSlot, _resetViewedThreadForTests } from '../../lib/viewedThread'
@@ -68,6 +70,22 @@ vi.mock('../../api/client', () => ({
     // `dashboard.crewmate_threads` (reply threads) is read from the shared config
     // query; an empty config is the default -- the flag is OFF.
     kirocrewConfig: vi.fn(() => Promise.resolve({})),
+    // The Schedules chip's count and its tab body read the whole cron list and
+    // filter it per crewmate (`wakesCrew`). Resolved-and-empty is the state every
+    // case not about schedules wants: the chip reads 0/0, which is an ANSWER of
+    // none — an unstubbed reject would instead make it unknown and drop the badge,
+    // and the strip assertions here would then pass for the wrong reason.
+    crons: vi.fn(() => Promise.resolve({ jobs: [] })),
+    // `wakesCrew`'s default-crew fallback needs to know which crew is the default,
+    // or every unbound job in the install would be attributed to whichever
+    // crewmate happens to be open.
+    defaultAgent: vi.fn(() => Promise.resolve({ default_agent: 'kirocrew' })),
+    // The schedule row's own controls (pause / run now), reached through
+    // `useCronActions` once the Schedules tab is open.
+    toggleCron: vi.fn(() => Promise.resolve({})),
+    runCron: vi.fn(() => Promise.resolve({})),
+    cancelCron: vi.fn(() => Promise.resolve({})),
+    cronToChat: vi.fn(() => Promise.resolve({})),
     // New crewmate dialog's option reads (installed agents, workspaces) and its
     // create write. Quiet defaults — one custom agent list item and one
     // workspace — so the dialog renders without its own options-failed notice
@@ -835,7 +853,7 @@ describe('MembersPage thread', () => {
   })
 })
 
-describe('MembersPage side panel (Notes / Work log / Dashboard) and edit jump', () => {
+describe('MembersPage side panel (Notes / Work log / Dashboard / Schedules) and edit jump', () => {
   it('a starred:true frame flips the Starred filter count and membership at page level without a roster refetch', async () => {
     // The page-level Starred count and filter read the MERGED list (rows +
     // pushed roster projection), so a `member_projection` frame that stars a
@@ -992,7 +1010,12 @@ describe('MembersPage side panel (Notes / Work log / Dashboard) and edit jump', 
     await screen.findByTestId('member-notes')
     for (const id of CREW_PANEL_TAB_IDS) {
       fireEvent.click(screen.getByTestId(`side-panel-leading-tab-${id}`))
-      const body = await screen.findByTestId('side-panel-leading-body')
+      // The body for THIS tab, by its `data-leading-id`, not "the" leading body: a
+      // visited Crew Dashboard is kept mounted-and-hidden, so once the loop passes it
+      // there is more than one leading body in the tree and a singular query throws.
+      const bodies = await screen.findAllByTestId('side-panel-leading-body')
+      const body = bodies.find((b) => b.getAttribute('data-leading-id') === id)
+      expect(body, `no leading body for ${id}`).toBeDefined()
       expect(body).not.toHaveTextContent(/memory store/i)
       expect(body).not.toHaveTextContent(/private memory/i)
       expect(body).not.toHaveTextContent(/configured memory store is unavailable/i)
@@ -1080,9 +1103,9 @@ describe('MembersPage side panel (Notes / Work log / Dashboard) and edit jump', 
     await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
     fireEvent.click(await rosterRow('oncall'))
     await screen.findByTestId('member-notes')
-    // Leading block: Notes, Work log, Dashboard; pinned: Artifacts, Files — and NOT Changes.
+    // Leading block: Notes, Work log, Dashboard, Schedules; pinned: Artifacts, Files — and NOT Changes.
     expect(screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label'))).toEqual([
-      'Notes', 'Work log', 'Dashboard', 'Artifacts', 'Files',
+      'Notes', 'Work log', 'Dashboard', 'Schedules', 'Artifacts', 'Files',
     ])
     fireEvent.pointerDown(
       screen.getByRole('button', { name: 'Open side panel tab' }),
@@ -1184,7 +1207,7 @@ describe('MembersPage side panel (Notes / Work log / Dashboard) and edit jump', 
     fireEvent.click(await rosterRow('oncall'))
     // In flight: thread still renders the cached key, panel is summary-only.
     await waitFor(() =>
-      expect(screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label'))).toEqual(['Notes', 'Work log', 'Dashboard']),
+      expect(screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label'))).toEqual(['Notes', 'Work log', 'Dashboard', 'Schedules']),
     )
     expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-oncall')
     // Confirmed: the slot-bound views return.
@@ -1218,7 +1241,7 @@ describe('MembersPage side panel (Notes / Work log / Dashboard) and edit jump', 
     ;(api.memberThread as ReturnType<typeof vi.fn>).mockReturnValueOnce(pending)
     fireEvent.click(await rosterRow('oncall'))
     await waitFor(() =>
-      expect(screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label'))).toEqual(['Notes', 'Work log', 'Dashboard']),
+      expect(screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label'))).toEqual(['Notes', 'Work log', 'Dashboard', 'Schedules']),
     )
     // …while its BODY is the same mounted element, on the same key — not
     // unmounted, not re-keyed to the empty slot.
@@ -1270,13 +1293,13 @@ describe('MembersPage side panel (Notes / Work log / Dashboard) and edit jump', 
     fireEvent.click(await rosterRow('oncall'))
     expect(await screen.findByTestId('member-thread-error')).toHaveTextContent(/Couldn't reconnect/i)
     await waitFor(() =>
-      expect(screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label'))).toEqual(['Notes', 'Work log', 'Dashboard']),
+      expect(screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label'))).toEqual(['Notes', 'Work log', 'Dashboard', 'Schedules']),
     )
     act(() => { resolveFirst({ slot_key: 'member-oncall', slug: 'oncall', member: 'oncall', created: false }) })
     // Still unbound after the stale answer: the refusal stands, no slot-bound views.
     await act(async () => { await new Promise((r) => setTimeout(r, 20)) })
     expect(screen.getByTestId('member-thread-error')).toHaveTextContent(/Couldn't reconnect/i)
-    expect(screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label'))).toEqual(['Notes', 'Work log', 'Dashboard'])
+    expect(screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label'))).toEqual(['Notes', 'Work log', 'Dashboard', 'Schedules'])
     expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-oncall')
   })
 
@@ -1284,7 +1307,7 @@ describe('MembersPage side panel (Notes / Work log / Dashboard) and edit jump', 
     // The roster binding says `member-oncall`, but the thread endpoint refuses
     // (a stale binding whose canonical key an ordinary slot now occupies). The
     // panel must not aim Side chat / Artifacts / Files at that occupant: with no
-    // confirmed slot, only the slot-free Notes / Work log / Dashboard chips are on the strip and the
+    // confirmed slot, only the slot-free Notes / Work log / Dashboard / Schedules chips are on the strip and the
     // + menu offers nothing slot-bound. A remembered member restores on
     // arrival (a fresh visit no longer auto-opens anyone, #11763), so the
     // refused open is that restore.
@@ -1292,7 +1315,7 @@ describe('MembersPage side panel (Notes / Work log / Dashboard) and edit jump', 
     await renderPage([row({ bound: true, slot_key: 'member-oncall' })], 'kirocrew', { thread: new Error('409') })
     await screen.findByText(/Could not open this crewmate's chat/i)
     expect(await screen.findByTestId('member-notes')).toBeInTheDocument()
-    expect(screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label'))).toEqual(['Notes', 'Work log', 'Dashboard'])
+    expect(screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label'))).toEqual(['Notes', 'Work log', 'Dashboard', 'Schedules'])
     fireEvent.pointerDown(
       screen.getByRole('button', { name: 'Open side panel tab' }),
       { button: 0, ctrlKey: false, pointerType: 'mouse' },
@@ -1321,7 +1344,7 @@ describe('MembersPage side panel (Notes / Work log / Dashboard) and edit jump', 
     fireEvent.click(await rosterRow('oncall'))
     expect(await screen.findByTestId('member-thread-error')).toHaveTextContent(/Couldn't reconnect/i)
     await waitFor(() =>
-      expect(screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label'))).toEqual(['Notes', 'Work log', 'Dashboard']),
+      expect(screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label'))).toEqual(['Notes', 'Work log', 'Dashboard', 'Schedules']),
     )
     expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-oncall')
   })
@@ -1340,7 +1363,10 @@ describe('MembersPage side panel (Notes / Work log / Dashboard) and edit jump', 
     fireEvent.click(await rosterRow('oncall'))
     expect(await screen.findByTestId('member-thread-error')).toHaveTextContent(/Couldn't reconnect/i)
     await waitFor(() =>
-      expect(screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label'))).toEqual(['Notes', 'Work log', 'Dashboard']),
+      // Every slot-bound view is withheld while the thread is unconfirmed, so
+      // only the host's own leading tabs remain -- Schedules among them: it
+      // reads the crewmate's jobs by `member_id`, not through the slot.
+      expect(screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label'))).toEqual(['Notes', 'Work log', 'Dashboard', 'Schedules']),
     )
     localStorage.setItem(ownedKey, '500')
     localStorage.removeItem(SIDE_PANEL_WIDTH_KEY)
@@ -2156,10 +2182,18 @@ describe('MembersPage side panel (Notes / Work log / Dashboard) and edit jump', 
       row({ name: 'quiet', slug: 'quiet' }),
     ])
     await rosterRow('oncall')
+    // The most recently used crewmate opens by default, and its identity pill
+    // in the thread header says "Idle" by design (once visibly, once for
+    // screen readers). Wait for that pill so the case always runs against the
+    // page it is checking, not only when the header happens to render late.
+    await screen.findByTestId('member-identity-pill')
     // The preview is the row's sub-line, like a session row. Presence rides
-    // the avatar dot, so a textual status label must not come back.
-    expect(screen.getByText('Six new issues triaged.')).toBeTruthy()
-    expect(screen.queryByText(/^(idle|working)$/i)).toBeNull()
+    // the avatar dot, so a textual status label must not come back in the
+    // ROSTER. The header's activity line is not a roster row, so the label
+    // check is scoped to the roster column.
+    expect(roster().getByText('Six new issues triaged.')).toBeTruthy()
+    expect(roster().queryByText(/^(idle|working)$/i)).toBeNull()
+    expect(roster().getByText('quiet')).toBeTruthy()
   })
 
   it('a projection left behind by a refused append does not outrank the transcript preview', async () => {
@@ -3093,6 +3127,89 @@ describe('MembersPage member edit entry (issue #9425)', () => {
     // row inside that editor, not where an "edit this member" click lands.
     expect(navigateSpy).toHaveBeenCalledWith(EDIT_LINK)
     expect(navigateSpy).not.toHaveBeenCalledWith(expect.stringContaining('avatar=1'))
+  })
+
+  it('the pill\'s second line says what the crewmate is doing: text only, always present, out of the button\'s name', async () => {
+    const { store } = await renderPage([row({ bound: true, slot_key: 'member-oncall', last_active_ts: Math.floor(Date.now() / 1000) - 180 })])
+    act(() => {
+      store.dispatch(sseSlots([{ key: 'member-oncall', mode: 'member', running: false, messages: 0 }] as never))
+    })
+    fireEvent.click(await rosterRow('oncall'))
+    const pill = await screen.findByTestId('member-identity-pill')
+    const line = screen.getByTestId('member-pill-activity')
+    // Inside the pill, under the title row — the title row is not widened
+    // sideways for it.
+    expect(pill).toContainElement(line)
+    expect(screen.getByTestId('member-title-row')).not.toContainElement(line)
+    // Resting: the line is still there (one pill height in every state) and
+    // says how long ago the thread last moved. No dot, no glyph: text only.
+    expect(line).toHaveAttribute('data-activity', 'idle')
+    expect(line.textContent).toMatch(/^Idle · /)
+    expect(line.querySelector('svg, span')).toBeNull()
+    // The button is still named by the crewmate alone — a line that changes
+    // several times a turn is not part of WHO the thread is with. The same
+    // text is in the reading order OUTSIDE the button for assistive tech, and
+    // is not a live region.
+    expect(line).toHaveAttribute('aria-hidden', 'true')
+    expect(pill).toHaveAccessibleName(expect.not.stringContaining('Idle'))
+    const sr = screen.getByTestId('member-pill-activity-sr')
+    expect(pill).not.toContainElement(sr)
+    expect(sr.className).toContain('sr-only')
+    expect(sr).not.toHaveAttribute('aria-live')
+    expect(sr.textContent).toBe(line.textContent)
+
+    // A tool call: the line is the SHARED status label for that slot — the
+    // same record the sessions sidebar renders — which in simplified mode is
+    // the call's own purpose, verbatim when short.
+    act(() => {
+      store.dispatch(sseSlots([{ key: 'member-oncall', mode: 'member', running: true, messages: 1 }] as never))
+      store.dispatch(sseToolActivity({ slot: 'member-oncall', tool: 'shell', kind: 'shell', purpose: 'Look up the glass pill code', input_preview: 'grep -n Glass', tool_call_id: 't1' }))
+      store.dispatch(setSlotStatusDetail({ slot: 'member-oncall', kind: 'tool', purpose: 'Look up the glass pill code', toolName: 'grep -n Glass', toolCallId: 't1', ts: Date.now() }))
+      store.dispatch(sseChatMessage({ slot: 'member-oncall', role: 'tool', content: '🔧 shell', meta: { tool_call_id: 't1' } }))
+    })
+    expect(line).toHaveAttribute('data-activity', 'tool')
+    expect(line.textContent).toBe('Look up the glass pill code')
+    expect(sr.textContent).toBe('Look up the glass pill code')
+
+    // Once the call returns (matched by ITS id; an empty output still counts)
+    // the model is reading it: thinking, not the stale purpose.
+    act(() => {
+      store.dispatch(sseToolResult({ slot: 'member-oncall', output: '', tool_call_id: 't1' }))
+    })
+    expect(line).toHaveAttribute('data-activity', 'thinking')
+    expect(line.textContent).toBe('Thinking…')
+
+    // A long purpose is cut at the cap with one ellipsis, so the centred pill
+    // never grows to the header's width. At most the cap: a cut landing on a
+    // space drops the space too.
+    const long = 'Rebuild the whole site and then take a screenshot of every page in both themes'
+    expect(Array.from(long).length).toBeGreaterThan(PILL_ACTIVITY_MAX_CHARS)
+    act(() => {
+      store.dispatch(setSlotStatusDetail({ slot: 'member-oncall', kind: 'tool', purpose: long, toolName: 'npm run build', toolCallId: 't2', ts: Date.now() }))
+    })
+    expect(line).toHaveAttribute('data-activity', 'tool')
+    expect(Array.from(line.textContent ?? '').length).toBeLessThanOrEqual(PILL_ACTIVITY_MAX_CHARS)
+    expect(line.textContent?.endsWith('…')).toBe(true)
+    expect(line.textContent?.startsWith('Rebuild the whole site')).toBe(true)
+
+    // Visible output streaming: the pill's own word, not the seam's
+    // "Streaming" (transport jargon on a line that says what the crewmate
+    // is doing).
+    act(() => {
+      store.dispatch(setSlotStatusDetail({ slot: 'member-oncall', kind: 'streaming', ts: Date.now() }))
+    })
+    expect(line).toHaveAttribute('data-activity', 'writing')
+    expect(line.textContent).toBe('Writing…')
+
+    // The turn ends — status idle, run state settled (as `chat_done` does),
+    // slots frame no longer running: back to idle, whatever the last status
+    // said.
+    act(() => {
+      store.dispatch(setSlotStatusDetail({ slot: 'member-oncall', kind: 'idle', ts: Date.now() }))
+      store.dispatch(syncSlotRunningFromServer({ slot: 'member-oncall', running: false, stopping: false }))
+      store.dispatch(sseSlots([{ key: 'member-oncall', mode: 'member', running: false, messages: 2 }] as never))
+    })
+    expect(line).toHaveAttribute('data-activity', 'idle')
   })
 
   it('there is no separate pencil: the pill is the only edit control in the header', async () => {
@@ -4780,6 +4897,107 @@ describe('MembersPage default member, memory and URL', () => {
     })
     await rosterRow('gamma')
     expect(names()).toEqual(['beta', 'gamma', 'alpha'])
+  })
+
+  it('the OPEN crewmate rising to the top is the one recency change that re-sorts', async () => {
+    // #15276: sorted by Recent, typing into a crewmate's DM leaves the row in
+    // its alphabetical place. The user's own send is not a background event — it
+    // is the thing in front of them — so it is the one advance the order hold
+    // must not swallow. A pushed `member_projection` frame carries it, so this
+    // happens with NO roster refetch.
+    await renderPage([
+      row({ name: 'alpha', slug: 'alpha', last_active_ts: 900 }),
+      row({ name: 'beta', slug: 'beta', last_active_ts: 100 }),
+      row({ name: 'gamma', slug: 'gamma', last_active_ts: 500 }),
+    ])
+    const names = () =>
+      roster()
+        .getAllByRole('listitem')
+        .map((li) => within(li).queryByText(/^(alpha|beta|gamma)$/)?.textContent)
+        .filter(Boolean)
+    await waitFor(() => expect(names()).toEqual(['alpha', 'gamma', 'beta']))
+    const callsBefore = (api.members as ReturnType<typeof vi.fn>).mock.calls.length
+
+    // Open beta, the coldest row. Opening alone must NOT re-sort: the hold's
+    // whole point is that rows do not move as the user works the list.
+    fireEvent.click(await rosterRow('beta'))
+    await waitFor(() =>
+      expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-beta'),
+    )
+    expect(names()).toEqual(['alpha', 'gamma', 'beta'])
+
+    // A background crewmate advances QUIETLY first, while the user works the
+    // list. This is the row the hold exists for: it must not move, and — the
+    // part a whole re-sort gets wrong — it must still not move when the open
+    // row's own advance arrives next. gamma's 9000 outranks everything, so a
+    // re-sort of the whole list would put gamma first, not beta.
+    act(() => {
+      memberProjectionStore.apply(
+        'gamma',
+        'roster',
+        { name: 'gamma', slug: 'gamma', last_active_ts: 9_000 },
+        4,
+      )
+    })
+    await waitFor(() => expect(names()).toEqual(['alpha', 'gamma', 'beta']))
+
+    // Now beta's recency advances — the user sent. seq > the baseline seed's
+    // asOfSeq (1), so higher-seq-wins takes it.
+    act(() => {
+      memberProjectionStore.apply(
+        'beta',
+        'roster',
+        { name: 'beta', slug: 'beta', last_active_ts: 4_000 },
+        5,
+      )
+    })
+    // ONE row moved. beta is first because the user messaged it; alpha and gamma
+    // keep the positions they held relative to each other, even though gamma now
+    // carries the greatest recency of the three.
+    await waitFor(() => expect(names()).toEqual(['beta', 'alpha', 'gamma']))
+    expect((api.members as ReturnType<typeof vi.fn>).mock.calls.length).toBe(callsBefore)
+
+    // A further background advance still moves nothing.
+    act(() => {
+      memberProjectionStore.apply(
+        'alpha',
+        'roster',
+        { name: 'alpha', slug: 'alpha', last_active_ts: 99_000 },
+        6,
+      )
+    })
+    await waitFor(() => expect(names()).toEqual(['beta', 'alpha', 'gamma']))
+  })
+
+  it('under the by-name sort a recency advance moves nothing', async () => {
+    // Recency is not what the name sort orders by, so the open crewmate's own
+    // send says nothing about where its row belongs. Lifting it to the top here
+    // would break the one ordering the user explicitly chose.
+    localStorage.setItem('mc-members-sort', 'name')
+    await renderPage([
+      row({ name: 'alpha', slug: 'alpha', last_active_ts: 100 }),
+      row({ name: 'beta', slug: 'beta', last_active_ts: 200 }),
+      row({ name: 'gamma', slug: 'gamma', last_active_ts: 300 }),
+    ])
+    const names = () =>
+      roster()
+        .getAllByRole('listitem')
+        .map((li) => within(li).queryByText(/^(alpha|beta|gamma)$/)?.textContent)
+        .filter(Boolean)
+    await waitFor(() => expect(names()).toEqual(['alpha', 'beta', 'gamma']))
+    fireEvent.click(await rosterRow('gamma'))
+    await waitFor(() =>
+      expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-gamma'),
+    )
+    act(() => {
+      memberProjectionStore.apply(
+        'gamma',
+        'roster',
+        { name: 'gamma', slug: 'gamma', last_active_ts: 9_000 },
+        5,
+      )
+    })
+    await waitFor(() => expect(names()).toEqual(['alpha', 'beta', 'gamma']))
   })
 
   it('restores the remembered member on return (and after a reload)', async () => {

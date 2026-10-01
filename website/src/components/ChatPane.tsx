@@ -82,7 +82,8 @@ import { resolveAskAfterSend } from '../lib/resolveAskAfterSend'
 import { classifyDrop } from '../utils/dropClassify'
 import { prepareSendPayload, serializeDirTokens, spliceDirTokens, VIDEO_EXT } from '../utils/fileTokens'
 import { Composer, type ComposerHandle, type ComposerVoiceOptions } from '../chat-core/composer/Composer'
-import { displayModel } from '../lib/model'
+import { displayModel, modelChipMarker } from '../lib/model'
+import { useSettingsDefaultModel } from '../hooks/useSettingsDefaultModel'
 import { slotApprovalMode } from '../utils/slotApprovalMode'
 
 
@@ -716,6 +717,19 @@ export default function ChatPane({
     displayModels,
     _modelsDegraded,
     paneSlot?.model_withheld,
+  )
+  // `default` only for the Settings default (see ChatPage).
+  const chipDefault = useSettingsDefaultModel(
+    paneSlot && !paneSlot.model ? paneAgentName : '',
+    paneRemoteCrew.isRemote,
+    codexPairModels,
+  )
+  const modelMarker = modelChipMarker(
+    paneSlot?.model || '',
+    shownModel,
+    _pinShownModel,
+    chipDefault.settingsDefault,
+    chipDefault.agentPinned,
   )
 
   // One-time hydrate of this slot's message history via React Query + the api
@@ -1905,6 +1919,13 @@ export default function ChatPane({
           message={provider.capabilities.reasoningEffort && selectionCapabilitiesQ.isError
             ? i18nT('pages.chatPage.effort_options_unavailable') : ''}
         />
+        {/* No hand-off: this pane holds an unsent draft; the reads retry in place. */}
+        <ErrorNotice
+          variant="inline"
+          className="mx-4 mt-2"
+          testId="chat-pane-model-default-error"
+          message={chipDefault.failed ? i18nT('pages.settings.chatPanel.failed_to_load_config') : ''}
+        />
         {/* No hand-off: the composer draft is untouched by a failed stop; the
             turn is still running, so the Stop button stays for a retry. */}
         <ErrorNotice
@@ -1974,7 +1995,8 @@ export default function ChatPane({
           // Effort is edited inside the model picker below; the chip only
           // names the level in force.
           hasEffort={effortSupported}
-          modelIsInheritedDefault={shownModel !== 'auto' && shownModel !== _pinShownModel}
+          modelIsInheritedDefault={modelMarker === 'default'}
+          modelIsAutoChosen={modelMarker === 'auto'}
           // See ChatPage: the slot's RAW model, because `shownModel` substitutes
           // the served id and would hide every routed turn.
           modelIsJevRouted={jevRouteOn && isUnpinnedModel(paneSlot?.model)}

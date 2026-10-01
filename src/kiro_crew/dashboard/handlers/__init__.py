@@ -381,6 +381,7 @@ from kiro_crew.dashboard.handlers.messaging import (  # noqa: E402, F401
     api_webex_config_save,
     api_wecom_config_get,
     api_wecom_config_save,
+    stop_browser_install,
 )
 
 # ── Rendered slides for the file panel (handlers/office_slides.py) ──
@@ -1030,6 +1031,8 @@ from kiro_crew.dashboard.handlers.decisions import (  # noqa: E402, F401
     api_decisions_consent_get,
     api_decisions_consent_put,
     api_decisions_feedback,
+    api_decisions_provider_get,
+    api_decisions_provider_put,
 )
 
 # Flagged-file delivery consent — owner-gated, and the ONLY writer of

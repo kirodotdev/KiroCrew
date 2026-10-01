@@ -230,7 +230,11 @@ thread, a toggle already flipped. One that changes persisted state (creates some
 switches a store) and then expects the pre-change state cannot be retried: its second
 attempt meets a precondition that no longer holds and cannot reach a verdict. Write the
 steps and expectations so both attempts read the same, or keep the mutation out of the
-scenario. The same boot also serves every LATER scenario in the run, through one browser
+scenario. A create step names the one row it needs rather than the click that makes
+it: `knowledge-add-folder-source-and-scan` asks for exactly one "Team notes" source and
+adds nothing when an earlier attempt already listed it, because the backend refuses a
+second source on the same path and the form's red "source already exists" would fail
+the run. The same boot also serves every LATER scenario in the run, through one browser
 profile, so a per-device switch (Developer Mode, Show Timestamps, a feature preview)
 that a scenario flips is still flipped when the next scenario starts. A scenario that
 flips one either puts it back before it ends or leaves a state nothing later depends on

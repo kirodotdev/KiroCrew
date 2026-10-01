@@ -232,6 +232,9 @@ def _make_state(tmp_path, **kwargs):
         if isinstance(channel_id, ChannelLink):
             if _mirror_links.get(key) != channel_id or key not in _mirror_nonces:
                 _mirror_nonces[key] = _mint_nonce()
+            # Parity with ``SessionMap.set_mirror_link``: the link is stored as
+            # handed over, admission included when the caller signed it, and the
+            # store never mints one -- only the two authorized creation paths do.
             _mirror_links[key] = channel_id
             if accepts_inbound:
                 _inbound_keys.add(key)
@@ -299,7 +302,6 @@ def _make_app(state: DashboardState) -> web.Application:
     from kiro_crew.dashboard.chat import (
         api_chat,
         api_chat_mode,
-        api_chat_plan_action,
         api_chat_slot_approve,
         api_chat_slot_color,
         api_chat_slot_delete,
@@ -346,7 +348,6 @@ def _make_app(state: DashboardState) -> web.Application:
     app.router.add_post("/api/chat/slots/{slot}/rewind", api_chat_slot_rewind)
     app.router.add_post("/api/chat/slots/{slot}/switch-variant", api_chat_slot_switch_variant)
     app.router.add_post("/api/chat/mode", api_chat_mode)
-    app.router.add_post("/api/chat/slots/{slot}/plan-action", api_chat_plan_action)
     return app
 
 

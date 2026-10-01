@@ -311,6 +311,7 @@ _CREW_SECRET_LEAVES: list[str] = [
     # its own poisoned clone. Masked at OS level too (`sandbox._CREW_HIDDEN_LEAVES`), since a
     # spawned shell's `open()` never routes through this gate.
     "quarantined-clones",
+    "vouched-executions",  # member-store vouches; also sandbox-masked
     "browser-cookies.txt",
     "playwright-storage-state.json",
     # The refused-inbound spool (messaging/inbound_spool.py). Not a secret: it is
@@ -923,11 +924,11 @@ _KEYSTONE_ARTIFACT_PARENTS: list[str] = sorted(
 # shared read+write gate, and reading config.json is routine and intended (the
 # dashboard file viewer, ``cat``, and knowledge indexing all read it). We
 # instead block only WRITES, at the agent file-edit tool gate
-# (hooks.on_tool_call), via ``is_sensitive_write_path``. This is defense in
-# depth on top of the loader's load-time clamp, which already neutralizes any
-# inflated on-disk value no matter how it was written. The operator edits config
-# out-of-band (dashboard config API / CLI), which do NOT route through this
-# gate, so legitimate config changes still work.
+# (hooks.on_tool_call), via ``is_sensitive_write_path``. That gate sees the
+# file-edit tool only, and the loader's clamp bounds NUMBERS, not SWITCHES
+# (``agent.sandbox: "off"``), so the load-bearing half is the OS sandbox, which
+# mounts both files read-only (``sandbox._CREW_READONLY_LEAVES``). The operator
+# edits config out-of-band (dashboard API / own-terminal CLI), outside both.
 # (The denied-command opt-out state does NOT live here — it is a security
 # ceiling and lives on the read+write keystone floor in ``denied_commands.json``
 # above, so no bash-level write matcher is needed for it. The computer-use primary

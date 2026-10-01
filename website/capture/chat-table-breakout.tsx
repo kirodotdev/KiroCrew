@@ -7,6 +7,7 @@ import McpAppFrame from '../src/components/McpAppFrame'
 import { ThemeProvider } from '../src/hooks/useTheme'
 import type { ChatSection } from '../src/hooks/useChatNavigation'
 import AssistantMessage from '../src/pages/chat/AssistantMessage'
+import { crewmateBubbleClass } from '../src/components/chat/crewmateBubbles'
 import TranscriptScrollShell from '../src/pages/chat/TranscriptScrollShell'
 import TurnNavigationMinimap from '../src/pages/chat/TurnNavigationMinimap'
 import { initI18n } from '../src/i18n/all'
@@ -60,6 +61,10 @@ function MainColumn({ displayIndex, children }: { displayIndex?: number; childre
 
 function Message() {
   const source = params.has('tableOnly') ? content.slice(content.indexOf('| #'), content.indexOf('\n\nThis paragraph')) : content
+  // `host=crewmate`: the same row chain with the crewmate chat's bordered card.
+  if (params.get('host') === 'crewmate') {
+    return <MainColumn><AssistantMessage content={source} isStreaming={false} bubbleClassName={crewmateBubbleClass('single')} /></MainColumn>
+  }
   if (params.get('host') === 'main') {
     return <MainColumn>
       <AssistantMessage content={source} isStreaming={false} />

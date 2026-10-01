@@ -24,9 +24,10 @@ function mockDeps(overrides = {}) {
 }
 
 function mockParams(overrides = {}) {
-  const calls = { replaceMisspelling: [], addWord: [] };
+  const calls = { replaceMisspelling: [], addWord: [], copyImageAt: [] };
   const webContents = {
     replaceMisspelling: (w) => calls.replaceMisspelling.push(w),
+    copyImageAt: (x, y) => calls.copyImageAt.push([x, y]),
     showDefinitionForSelection: () => {},
     session: { addWordToSpellCheckerDictionary: (w) => { calls.addWord.push(w); return true; } },
   };
@@ -415,5 +416,39 @@ describe("buildMenuTemplate link block", () => {
     const t = buildMenuTemplate(params, "linux", webContents, deps);
     assert.notEqual(t[t.length - 1].type, "separator");
     assert.deepEqual(t.map((i) => i.label), ["Copy Link Address"]);
+  });
+});
+
+describe("buildMenuTemplate image block", () => {
+  const image = { mediaType: "image", hasImageContents: true, x: 40, y: 60, srcURL: "http://127.0.0.1:3210/api/file-raw?path=/tmp/a.png" };
+
+  it("I1: an image with nothing selected yields Copy Image instead of no menu", () => {
+    const { params, webContents, calls } = mockParams(image);
+    const t = buildMenuTemplate(params, "linux", webContents, mockDeps().deps);
+    assert.deepEqual(t.map((i) => i.label), ["Copy Image"]);
+    t[0].click();
+    assert.deepEqual(calls.copyImageAt, [[40, 60]]);
+  });
+
+  it("I2: an image that failed to load offers nothing to copy", () => {
+    const { params, webContents } = mockParams({ ...image, hasImageContents: false });
+    assert.deepEqual(buildMenuTemplate(params, "linux", webContents, mockDeps().deps), []);
+  });
+
+  it("I3: non-image media gets no Copy Image", () => {
+    const { params, webContents } = mockParams({ ...image, mediaType: "video" });
+    assert.deepEqual(buildMenuTemplate(params, "linux", webContents, mockDeps().deps), []);
+  });
+
+  it("I4: an image inside a link keeps the link block first", () => {
+    const { params, webContents } = mockParams({ ...image, linkURL: "https://example.com/x" });
+    const t = buildMenuTemplate(params, "linux", webContents, mockDeps().deps);
+    assert.deepEqual(t.map((i) => i.label || i.type), ["Copy Link Address", "separator", "Copy Image"]);
+  });
+
+  it("I5: an image with a live selection keeps the selection's Copy", () => {
+    const { params, webContents } = mockParams({ ...image, selectionText: "caption" });
+    const t = buildMenuTemplate(params, "linux", webContents, mockDeps().deps);
+    assert.deepEqual(t.map((i) => i.label || i.role || i.type), ["Copy Image", "separator", "copy"]);
   });
 });

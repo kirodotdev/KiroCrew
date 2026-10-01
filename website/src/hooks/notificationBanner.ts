@@ -70,8 +70,8 @@ export const BANNER_EXPANDED_MAX = 4
 
 /** The chat surfaces, where `chat.activeSlot` is the conversation on screen.
  *  The ONE spelling of that set: the socket layer's `isChatSurfaceVisible`
- *  (useWebSocket.ts) applies it to `window.location`, this gate to the router's
- *  pathname. */
+ *  (websocket/attention.ts) applies it to `window.location`, this gate to the
+ *  router's pathname. */
 export function isChatPath(pathname: string): boolean {
   return pathname === '/' || pathname === '/chat' || pathname.startsWith('/chat/')
     || pathname.startsWith('/popout/chat') || pathname.startsWith('/embed/chat')

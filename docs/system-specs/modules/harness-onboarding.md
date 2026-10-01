@@ -252,15 +252,20 @@ What a hand-written harness needs, using the Codex adapter as the shape:
   harness that speaks ACP natively skips most of this stage.
 - **Binary and package constants** (`CODEX_ACP_BIN`, `CODEX_ACP_NPM_PKG`) and
   the package entry path.
-- **A hoisted-dependency marker.** An adapter whose own dependencies are missing
+- **A dependency marker.** An adapter whose own dependencies are missing
   dies at ESM import time — *after* the child is spawned, which is the worst
-  place to find out.
+  place to find out. The marker is checked the way Node would import it: in a
+  `node_modules` on the walk up from the entry script's real path, so a
+  hoisted install and a `file:` / `npm link` install both pass, and a copy
+  that cannot import it is skipped with a logged reason (#13869).
 - **An explicit env override** (`CODEX_ACP_BIN`), spelled the way the adapter's
   own documentation spells it.
 - **Resolution order**: project-local `node_modules` first, then global/PATH.
-  Share the root discovery (`_vendored_acp_roots`) and join your own package
-  path onto it. Generalizing that helper is allowed; it is harness-neutral and
-  belongs to no harness. Adding a branch to the Kiro path is not (H13).
+  Share the root discovery (`_vendored_acp_roots`) and the completeness check
+  (`_vendored_adapter_entry`, called with your own package entry and marker —
+  never a per-harness copy of the walk). Generalizing those helpers is allowed;
+  they are harness-neutral and belong to no harness. Adding a branch to the Kiro
+  path is not (H13).
 
 Constants an adapter reads *itself* from the ambient environment do not get a
 constant here. Naming one implies a forwarding that does not exist — the Codex

@@ -278,9 +278,9 @@ These are routinely conflated and the plan is wrong if they are:
   `fire_tool_hooks` / `get_global_hook_store` in `acp/client.py:5881`. They are
   already backend-agnostic and already work everywhere. **This RFC does not
   touch them, and no gap here is about them.**
-- **The spec's `hooks` block** (written by `agent.py:_kiro_hooks_only` +
-  `_apply_user_kiro_hooks`) is executed by the *harness*. This is the one that
-  does not arrive.
+- **The spec's `hooks` block** (written by `_kiro_hooks_only` +
+  `_apply_user_kiro_hooks` in `agent_materialization/kiro_hooks.py`) is executed
+  by the *harness*. This is the one that does not arrive.
 
 So the honest statement of the gap is narrow: *a user's per-agent hooks are
 executed by kiro-cli and by nobody else.* Crew's own gate, audit and deny rules

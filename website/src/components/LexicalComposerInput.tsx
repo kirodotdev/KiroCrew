@@ -42,6 +42,7 @@ import {
 import { INPUT_TYPO } from './PasteHighlightLayer'
 import { MacLineEdgePlugin } from './composerLineEdge'
 import { createImeLatch } from '../hooks/useImeGuard'
+import { IS_MAC } from '../hooks/useKeyboardShortcuts'
 import type { ComposerControl, ComposerSelection } from './composerControl'
 import { livePromptHistoryCursor, stepPromptHistory, type PromptHistoryCursor, type PromptHistoryItem } from './composerPromptHistory'
 import {
@@ -95,6 +96,10 @@ interface LexicalComposerInputProps {
   sentMessages?: PromptHistoryItem[]
   /** Owner of `sentMessages` (the slot); a change ends prompt-history browsing. */
   historyScope?: string | null
+  /** ⌘↑ (macOS) / Ctrl+↑ elsewhere — edit the last user message.
+   *  Fired by the editor only from an EMPTY composer, so it cannot shadow
+   *  ordinary caret movement or the ↑/↓ history recall below. */
+  onEditLastRequest?: () => void
 }
 
 function appendPlainText(text: string, append: (node: ReturnType<typeof $createTextNode> | ReturnType<typeof $createLineBreakNode>) => void) {
@@ -328,11 +333,12 @@ function InteractionPlugin({
   onUploadFiles,
   sentMessages,
   historyScope,
+  onEditLastRequest,
   disabled,
   readOnly,
   sendOnEnter,
   showFullPastes,
-}: Pick<LexicalComposerInputProps, 'blocks' | 'onBlocksChange' | 'onChange' | 'onSend' | 'onUploadFiles' | 'sentMessages' | 'historyScope' | 'disabled' | 'readOnly' | 'sendOnEnter' | 'showFullPastes'>) {
+}: Pick<LexicalComposerInputProps, 'blocks' | 'onBlocksChange' | 'onChange' | 'onSend' | 'onUploadFiles' | 'sentMessages' | 'historyScope' | 'onEditLastRequest' | 'disabled' | 'readOnly' | 'sendOnEnter' | 'showFullPastes'>) {
   const [editor] = useLexicalComposerContext()
   const blocksRef = useRef(blocks)
   const rawPasteRef = useRef(false)
@@ -519,6 +525,17 @@ function InteractionPlugin({
       })
     }
     const navigateHistory = (event: KeyboardEvent, direction: 'up' | 'down') => {
+      // ⌘↑ / Ctrl+↑: edit the last user message. Claimed only from an
+      // empty composer — with content present the chord falls through so it
+      // can never shadow multi-line caret movement (the same gate the plain
+      // ↑ recall below enforces).
+      if (direction === 'up' && (IS_MAC ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey) &&
+        !event.altKey && !event.shiftKey && !event.isComposing) {
+        if (!onEditLastRequest || $getRoot().getTextContent() !== '') return false
+        event.preventDefault()
+        onEditLastRequest()
+        return true
+      }
       if (!sentMessages?.length || event.isComposing || event.metaKey || event.ctrlKey ||
         event.altKey || event.shiftKey) return false
       const selection = $canonicalSelection()
@@ -564,7 +581,7 @@ function InteractionPlugin({
       // timer cannot write to the latch after teardown (useImeGuard contract).
       latch.reset()
     }
-  }, [disabled, editor, onBlocksChange, onChange, onSend, onUploadFiles, readOnly, sendOnEnter, sentMessages, showFullPastes])
+  }, [disabled, editor, onBlocksChange, onChange, onEditLastRequest, onSend, onUploadFiles, readOnly, sendOnEnter, sentMessages, showFullPastes])
 
   return null
 }
@@ -590,6 +607,7 @@ export default function LexicalComposerInput({
   onUploadFiles,
   sentMessages,
   historyScope,
+  onEditLastRequest,
 }: LexicalComposerInputProps) {
   const initialValueRef = useRef({ value, blocks })
   const lastEmittedRef = useRef({ value, blocks })
@@ -657,6 +675,7 @@ export default function LexicalComposerInput({
           onUploadFiles={onUploadFiles}
           sentMessages={sentMessages}
           historyScope={historyScope}
+          onEditLastRequest={onEditLastRequest}
           disabled={disabled}
           readOnly={readOnly}
           sendOnEnter={sendOnEnter}

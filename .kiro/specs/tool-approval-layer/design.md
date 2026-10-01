@@ -13,7 +13,7 @@ It already exists in Kiro Crew as three cooperating pieces:
    and governance (ceiling ∩ profile) rules. This is the **only** policy authority.
 2. **Render (frontend):** `components/ApprovalCard.tsx` + `components/ToolInputPreview.tsx`
    render a pending call as a card, currently as a raw `<pre>` args dump.
-3. **Resume (frontend → backend):** `components/ChatInput.tsx` submits the decision via
+3. **Resume (frontend → backend):** `components/chat-input/approval.ts` (`useToolApproval`, rendered by `components/ChatInput.tsx`) submits the decision via
    the id-scoped `api.resolveApproval(request_id, action)` for plain approve/reject
    (`api.approveChatSlot(slot, …)` is reserved for trust grants); the paused turn resumes
    with the tool either executed or rejected.
@@ -64,7 +64,7 @@ Tool executes (approved) or is skipped (rejected); agent turn continues
 | `src/kiro_crew/hooks.py` (`on_tool_call`) | **Unchanged.** Sole policy authority; the layer reads its verdict. |
 | `website/src/components/ApprovalCard.tsx` | Hosts `ToolPreviewFrame` + the batch affordance. |
 | `website/src/components/ToolInputPreview.tsx` | The fallback preview and the "show raw input" surface. |
-| `website/src/components/ChatInput.tsx` (`resolveApproval`) | **Unchanged** resume path the layer reuses (id-scoped by `request_id`; `approveChatSlot` is trust-grants only). |
+| `website/src/components/chat-input/approval.ts` (`resolveApproval`) | **Unchanged** resume path the layer reuses (id-scoped by `request_id`; `approveChatSlot` is trust-grants only). |
 | `website/src/hooks/useWebSocket.ts` | Delivers the pending-decision + resume events (existing). |
 | `website/src/kit/tool-views/` (App Builder Kit spec — **prerequisite, not built by this spec**) | Supplies `ToolPreviewFrame` / schema-matched typed previews. This spec **consumes** it and is sequenced after it (see "Dependency and sequencing" below, and Req 8). |
 | `website/src/types/index.ts` (`tool_input: string`) | The opaque input string a preview parses; no new wire field. |
@@ -143,7 +143,7 @@ The decision is passed straight to the existing callback:
 
 ```ts
 onApprove(decision: 'approve' | 'reject', pattern?: string)
-// plain approve/reject → api.resolveApproval(approval.request_id, decision)  (ChatInput.tsx)
+// plain approve/reject → api.resolveApproval(approval.request_id, decision)  (chat-input/approval.ts)
 // (trust grants only → approveChatSlot; unattended sources downgrade to resolveApproval)
 ```
 

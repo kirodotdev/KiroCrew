@@ -1,11 +1,11 @@
 ---
 title: Terminal exit closes its tab — what the dashboard does when a shell ends on its own
-status: draft
+status: accepted
 author: jjaskula
 created: 2026-09-29
-last-audited: 2026-09-29
-audited-at: df0ea7909
-doc-pr: null
+last-audited: 2026-09-30
+audited-at: c1a02ce976
+doc-pr: 15144
 implementation-prs: [14509, 14511]
 tracking-issues: [14584, 13189]
 supersedes: []
@@ -14,7 +14,8 @@ superseded-by: []
 
 # RFC: Terminal Exit Closes Its Tab
 
-> **Status:** `draft`. Nothing is on main. Verified at `df0ea7909`: `read_pty`
+> **Status:** `accepted` on 2026-09-30 by maintainer bolichen (see Open
+> questions). Nothing is on main yet. Verified at `c1a02ce976`: `read_pty`
 > in `src/kiro_crew/dashboard/handlers/terminal.py` sends no frame when the
 > shell exits, so the browser sees only a dropped socket, redials, and the dial
 > spawns a new shell. The dead PTY is reaped by the 15-minute orphan sweep. The
@@ -154,3 +155,10 @@ status. The terminal routes' own access rules are unchanged.
 ## Open questions
 
 None.
+
+**Decided 2026-09-30 by bolichen (maintainer): this design is accepted.** A
+shell that exits on its own closes its tab for every user, with no setting; a
+known non-zero status posts one `system.terminal` bell note carrying no session
+detail; and the Windows exit code follows in Phase 2. The implementations are
+[#14509](https://github.com/kirodotdev/KiroCrew/pull/14509) and
+[#14511](https://github.com/kirodotdev/KiroCrew/pull/14511).

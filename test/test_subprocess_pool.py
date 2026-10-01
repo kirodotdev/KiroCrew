@@ -805,6 +805,85 @@ class TestExecutorContract:
         assert list(pool.map(str.strip, [" a ", " b "])) == ["a", "b"]
 
 
+class TestShutdownRefillWindow:
+    """``shutdown`` must not leave a child the reaper spawned after it began.
+
+    The reaper is the only spawner, and its tick checks ``_shutdown`` before it
+    spawns. A tick already past that check can still ``Popen`` while ``shutdown``'s
+    kill loop runs, refilling a slot the loop just emptied. Two guards close that
+    window, and each has one test here: ``shutdown`` joins the reaper BEFORE it
+    kills, and a reaper tick that spawned after the flag went up kills its own
+    child instead of leasing it. Both are deterministic: the race is staged by
+    setting the flag inside the spawn, not by running many pools and hoping.
+    """
+
+    @staticmethod
+    def _wait_spawned(executor: SubprocessPoolExecutor, workers: int) -> None:
+        deadline = time.monotonic() + 30.0
+        while executor._free.qsize() < workers:
+            if time.monotonic() > deadline:  # pragma: no cover - a wedged host
+                pytest.fail("reaper never spawned the pool's children")
+            time.sleep(0.01)
+
+    def test_shutdown_joins_the_reaper_before_it_kills_a_child(self, monkeypatch) -> None:
+        executor = SubprocessPoolExecutor(workers=2)
+        order: list[str] = []
+        real_join = executor._reaper.join
+        real_kill = executor_mod._Child.kill
+
+        def join(timeout=None):
+            order.append("join")
+            real_join(timeout)
+
+        def kill(child):
+            order.append("kill")
+            real_kill(child)
+
+        try:
+            self._wait_spawned(executor, 2)
+            executor._reaper.join = join  # a Thread instance takes the attribute
+            monkeypatch.setattr(executor_mod._Child, "kill", kill)
+            executor.shutdown(wait=False)
+        finally:
+            monkeypatch.undo()
+            executor.shutdown(wait=False)
+        assert order[0] == "join", order
+        assert order.count("kill") >= 2, order
+        assert order.index("join") < order.index("kill"), order
+        assert not executor._reaper.is_alive()
+
+    def test_a_tick_that_spawned_after_shutdown_began_kills_its_own_child(
+        self, monkeypatch
+    ) -> None:
+        executor = SubprocessPoolExecutor(workers=1)
+        killed: list[object] = []
+        real_kill = executor_mod._Child.kill
+
+        def kill(child):
+            killed.append(child)
+            real_kill(child)
+
+        def ensure_spawned(child):
+            # The stage: ``shutdown`` sets its flag while this tick is already past
+            # its second check. The tick reports a spawn and must now reap it.
+            executor._shutdown.set()
+            return True
+
+        try:
+            self._wait_spawned(executor, 1)
+            leased_before = executor._free.qsize()
+            monkeypatch.setattr(executor_mod._Child, "kill", kill)
+            monkeypatch.setattr(executor_mod._Child, "ensure_spawned", ensure_spawned)
+            executor._wake.set()
+            executor._reaper.join(timeout=30.0)
+            assert not executor._reaper.is_alive(), "reaper did not stop on the flag"
+            assert killed == executor._children, "the spawned child was not reaped by its tick"
+            assert executor._free.qsize() == leased_before, "a post-shutdown child was leased"
+        finally:
+            monkeypatch.undo()
+            executor.shutdown(wait=False)
+
+
 class TestChildFunctionsInProcess:
     """Exercise the child module's own functions in THIS interpreter.
 

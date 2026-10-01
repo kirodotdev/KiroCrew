@@ -14,7 +14,7 @@ import platform as _plat
 import sys
 from typing import TYPE_CHECKING
 
-from kiro_crew import cli_doctor, platform_compat, stt
+from kiro_crew import cli_doctor
 
 if TYPE_CHECKING:
     from kiro_crew.config import KiroCrewConfig
@@ -166,7 +166,7 @@ def _doctor_speech_to_text(cfg: KiroCrewConfig, issues: list[str]) -> None:
     # historical non-fatal report for that case so an enabled-by-default feature
     # cannot block gateway startup; desktop releases gate both native components
     # at build time and should never reach the missing branches.
-    stt_fatal = not platform_compat.IS_WINDOWS
+    stt_fatal = not cli_doctor.platform_compat.IS_WINDOWS
     stt_mark = "❌" if stt_fatal else "⚠️ "
 
     if stt_active and cfg.stt.provider == "local":
@@ -180,9 +180,11 @@ def _doctor_speech_to_text(cfg: KiroCrewConfig, issues: list[str]) -> None:
         # The weights are fetched on first use, so "not downloaded" is the normal
         # first-run state and never an issue. Naming the size is the useful part,
         # because that transfer is what a first dictation waits on.
-        model = stt.resolve_model(cfg.stt.model)
-        if stt.is_present(model):
-            print(f"  model:       ✅ {model.name} at {stt.models_dir() / model.filename}")
+        model = cli_doctor.stt.resolve_model(cfg.stt.model)
+        if cli_doctor.stt.is_present(model):
+            print(
+                f"  model:       ✅ {model.name} at {cli_doctor.stt.models_dir() / model.filename}"
+            )
         else:
             print(
                 f"  model:       ⏹ {model.name} not downloaded yet "
@@ -203,7 +205,7 @@ def _doctor_speech_to_text(cfg: KiroCrewConfig, issues: list[str]) -> None:
         # arrives as ogg/Opus and the dashboard records webm, so the only input
         # that reaches a recogniser without ffmpeg is a 16 kHz mono WAV.
         print(f"  ffmpeg:      {stt_mark} not found")
-        if platform_compat.is_bundled_interpreter():
+        if cli_doctor.platform_compat.is_bundled_interpreter():
             print("               Fix: reinstall Kiro Crew (the bundled audio decoder is missing)")
         else:
             print(

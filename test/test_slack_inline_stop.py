@@ -47,8 +47,12 @@ class TestBuildWorkingBlocks:
 class TestSessionTaskCard:
     def test_end_button_present(self):
         blocks = session_task_card(
-            idx=0, key="sess-1", title="Test", agent="kirocrew",
-            status="active", messages=[],
+            idx=0,
+            key="sess-1",
+            title="Test",
+            agent="kirocrew",
+            status="active",
+            messages=[],
         )
         actions_block = blocks[1]
         assert actions_block["type"] == "actions"
@@ -61,7 +65,12 @@ class TestSessionTaskCard:
 
     def test_resume_button_present(self):
         blocks = session_task_card(
-            idx=0, key="s1", title="T", agent="a", status="paused", messages=[],
+            idx=0,
+            key="s1",
+            title="T",
+            agent="a",
+            status="paused",
+            messages=[],
         )
         buttons = blocks[1]["elements"]
         resume_btn = [b for b in buttons if "Resume" in b["text"]["text"]]
@@ -69,13 +78,23 @@ class TestSessionTaskCard:
 
     def test_active_status_emoji(self):
         blocks = session_task_card(
-            idx=0, key="s", title="T", agent="a", status="active", messages=[],
+            idx=0,
+            key="s",
+            title="T",
+            agent="a",
+            status="active",
+            messages=[],
         )
         assert "🟢" in blocks[0]["title"]
 
     def test_paused_status_emoji(self):
         blocks = session_task_card(
-            idx=0, key="s", title="T", agent="a", status="paused", messages=[],
+            idx=0,
+            key="s",
+            title="T",
+            agent="a",
+            status="paused",
+            messages=[],
         )
         assert "⏸️" in blocks[0]["title"]
 
@@ -100,9 +119,11 @@ def mock_orch():
 def setup_interactions(mock_orch, monkeypatch):
     """Set up interactions module state for testing."""
     import kiro_crew.slack.interactions as interactions
+
     monkeypatch.setattr(interactions, "_orch", mock_orch)
     # Set owner so is_owner returns True for U_OWNER
     from kiro_crew.slack.handler import set_owner_id
+
     set_owner_id("U_OWNER")
     return interactions
 
@@ -169,7 +190,9 @@ class TestHandleInlineStop:
             mock_sel.return_value.log_tool_invocation = MagicMock()
             await interactions._handle_inline_stop(payload, action, "C1", "ts1", "U_OWNER")
 
-        mock_orch.slack.update_message.assert_any_call("C1", "ts1", text="⛔ Execution stopped — session reset.")
+        mock_orch.slack.update_message.assert_any_call(
+            "C1", "ts1", text="⛔ Execution stopped — session reset."
+        )
 
     @pytest.mark.asyncio
     async def test_idle_outcome_shows_nothing_running(self, setup_interactions, mock_orch):
@@ -188,6 +211,55 @@ class TestHandleInlineStop:
         calls = mock_orch.slack.update_message.call_args_list
         final_text = calls[-1][1]["text"] if calls[-1][1] else calls[-1][0][2]
         assert "Nothing running" in final_text
+
+    @pytest.mark.asyncio
+    async def test_compacting_decline_arms_and_the_repeat_press_forces(
+        self, setup_interactions, mock_orch
+    ):
+        """The decline reply promises a repeat forces: the first press arms the
+        marker for this presser, the second press by the same presser inside the
+        window passes ``force=True``."""
+        from kiro_crew import session_lifecycle as sl
+
+        sl._stop_declined_markers.clear()
+        interactions = setup_interactions
+        mock_orch.sessions.is_compacting = MagicMock(return_value=True)
+        mock_orch.sessions.stop_turn = AsyncMock(side_effect=["compacting", "hard"])
+        payload = {"user": {"id": "U_OWNER"}}
+        action = {"value": "sess-c"}
+
+        with patch("kiro_crew.slack.interactions.sel") as mock_sel:
+            mock_sel.return_value.log_api_access = MagicMock()
+            mock_sel.return_value.log_tool_invocation = MagicMock()
+            await interactions._handle_inline_stop(payload, action, "C1", "ts1", "U_OWNER")
+            assert mock_orch.sessions.stop_turn.await_args.kwargs.get("force") is None
+            await interactions._handle_inline_stop(payload, action, "C1", "ts1", "U_OWNER")
+            assert mock_orch.sessions.stop_turn.await_args.kwargs["force"] is True
+            assert mock_orch.sessions.stop_turn.await_args.kwargs["preserve_queue"] is True
+        sl._stop_declined_markers.clear()
+
+    @pytest.mark.asyncio
+    async def test_a_decline_it_could_not_show_arms_nothing(self, setup_interactions, mock_orch):
+        """This reply is a message update guarded by a client and a message id and
+        wrapped in its own ``except``. An escalation armed behind a swallowed
+        failure would turn the presser's retry into a silent session reset."""
+        from kiro_crew import session_lifecycle as sl
+
+        sl._stop_declined_markers.clear()
+        interactions = setup_interactions
+        mock_orch.sessions.is_compacting = MagicMock(return_value=True)
+        mock_orch.sessions.stop_turn = AsyncMock(return_value="compacting")
+        mock_orch.slack.update_message = AsyncMock(side_effect=RuntimeError("slack 503"))
+        payload = {"user": {"id": "U_OWNER"}}
+        action = {"value": "sess-d"}
+
+        with patch("kiro_crew.slack.interactions.sel") as mock_sel:
+            mock_sel.return_value.log_api_access = MagicMock()
+            mock_sel.return_value.log_tool_invocation = MagicMock()
+            await interactions._handle_inline_stop(payload, action, "C1", "ts1", "U_OWNER")
+
+        assert sl._stop_declined_markers == {}, "the retry is a first press again"
+        sl._stop_declined_markers.clear()
 
     @pytest.mark.asyncio
     async def test_no_session_key_returns_early(self, setup_interactions, mock_orch):

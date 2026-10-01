@@ -161,6 +161,7 @@ import ShortcutsModal from './components/ShortcutsModal'
 import QuickSearchSurface from './components/QuickSearchSurface'
 import ReportProblemModal from './components/ReportProblemModal'
 import FeedbackPill from './components/FeedbackPill'
+import { Glass } from './components/Glass'
 import KiroAccountModal, { type KiroAccountUsage } from './components/KiroAccountModal'
 import WindowsTitlebarMenu from './components/WindowsTitlebarMenu'
 import { NavHistoryArrows } from './components/NavHistoryArrows'
@@ -397,6 +398,12 @@ function readMetricsFrame(raw: SysMetricsFrame) {
     },
   }
 }
+
+// Corner radius, in px, of the top bar's Liquid Glass pills (the search
+// trigger, the readout capsule; components/FeedbackPill.tsx carries the same
+// number): `rounded-xl`, which the update pill already wears, so the row reads
+// as one family of boxes.
+const TOPBAR_PILL_RADIUS = 12
 
 // The top-bar search is laid out by CSS, not measured here: `.topbar` in
 // index.css is a three-track grid whose centre track is
@@ -1576,10 +1583,18 @@ function NotificationsBellButton() {
                 the blur to nothing there, so there is no hard boundary.
                 -z-10 + isolate on the sheet keeps it behind the cards without
                 forming a backdrop root (isolation is not a root trigger, so
-                the cards' own backdrop-blur still samples the page). */}
+                the cards' own backdrop-blur still samples the page).
+                Strength: 2% black, 2px blur. The 12% / 4px it wore before the
+                rows became liquid glass (#3029, for text contrast on flat
+                cards) now stacks under every row's own glass tint and
+                `glass-shadow`, and read as a heavy shadow down the sheet's
+                left edge (measured 248 -> 217 on a white page, 12% darker).
+                At 2% the strip still separates the column from the page
+                (248 -> 243) without reading as a shadow; the rows carry the
+                contrast themselves now. */}
             <div
               aria-hidden="true"
-              className="absolute inset-y-0 -left-20 right-0 -z-10 pointer-events-none bg-black/[.12] backdrop-blur-xs [mask-image:linear-gradient(to_right,transparent,black_80px)] [-webkit-mask-image:linear-gradient(to_right,transparent,black_80px)]"
+              className="absolute inset-y-0 -left-20 right-0 -z-10 pointer-events-none bg-black/[.02] backdrop-blur-[2px] [mask-image:linear-gradient(to_right,transparent,black_80px)] [-webkit-mask-image:linear-gradient(to_right,transparent,black_80px)]"
             />
             <div className="flex-1 min-h-0 px-3 py-2 flex flex-col">
               <NotificationFeed
@@ -3760,9 +3775,9 @@ export default function App() {
    * `replace` so Back returns to the chat rather than to a second copy of it.
    * That is a property of the drawer that hosts the rail, so it is not an option.
    *
-   * Rows the full nav drawer offers and this rail does not: Library (reachable
-   * from Discover), Developer, Terminal and Connect-your-phone — each toggles a
-   * desktop-shaped surface or is moot on the phone itself.
+   * The only row the full nav drawer offers and this rail does not is
+   * Connect-your-phone, which is moot on the phone itself. Terminal toggles the
+   * docked panel and closes the drawer so the panel is not left behind it.
    *
    * The brand mark on top is a control -- the product's "home": it goes to the
    * chat root (the page every other app's logo returns to) and closes the
@@ -3833,6 +3848,17 @@ export default function App() {
             onClickOverride={discoverNavActive ? onActivate : undefined}
             badge={<NavBadge navId="apps" collapsed appBadges={discoverBadges} />}
           />
+          <NavItem
+            navId="apps-library"
+            path="/apps/library"
+            label={i18nT('nav.library')}
+            icon={<LayoutGrid size={16} />}
+            active={libraryNavActive}
+            collapsed
+            touch
+            replace
+            onClickOverride={libraryNavActive ? onActivate : undefined}
+          />
           {/* Apps list: scrolls in its OWN frame when many apps are installed --
               the brand mark, the Main rows and Discover above it, and
               Capabilities / Settings / Search below it stay pinned, exactly as
@@ -3845,6 +3871,32 @@ export default function App() {
           >
             {sortedAppGroup.map(railRow)}
           </div>
+          {devMode && (
+            <NavItem
+              navId="developer"
+              path="/developer"
+              label={i18nT('app.developer')}
+              icon={<Code size={16} />}
+              active={activePath === '/developer'}
+              collapsed
+              touch
+              replace
+              onClickOverride={activePath === '/developer' ? onActivate : undefined}
+            />
+          )}
+          {terminalEnabled && (
+            <NavItem
+              navId="terminal"
+              path="#"
+              label={i18nT('app.terminal')}
+              icon={<SquareTerminal size={16} />}
+              active={bottomTerminalOpen || terminalPoppedOut}
+              pressed={bottomTerminalOpen || terminalPoppedOut}
+              collapsed
+              touch
+              onClickOverride={() => { onActivate(); if (terminalPoppedOut) focusTerminalPopout(); else toggleBottomTerminal(activeSlotProject) }}
+            />
+          )}
           {railRow(capabilitiesSurface)}
           {/* The account modal (balance, sign-in state): the desktop opens it
               from the readout capsule, which the phone does not render, so the
@@ -4167,10 +4219,17 @@ export default function App() {
             reads it any more. Keep it. */}
         {!isMobile && (
           <div data-topbar-overlay className="flex items-center gap-1.5 min-w-0">
-          <button
+          {/* The trigger IS a Liquid Glass pane (components/Glass.tsx, chip
+              recipe) rendered as the button, the same material as the
+              sidebar's search field and the composer dock: no border and no
+              fill of its own, `glass-hover` for the hover step. */}
+          <Glass
+            as="button"
             type="button"
+            variant="chip"
+            radius={TOPBAR_PILL_RADIUS}
             onClick={commandPalette.openPalette}
-            className="h-7 flex-1 min-w-0 px-3 rounded-md border border-border bg-card text-muted hover:text-text hover:border-border-strong transition-colors flex items-center justify-center gap-2 cursor-pointer shadow-none"
+            className="glass-shadow glass-hover h-7 flex-1 min-w-0 px-3 text-muted hover:text-text transition-colors flex items-center justify-center gap-2 cursor-pointer"
             /* The trigger has to describe the surface it actually opens. While an app
                owns the quick-search slot the gesture opens a launcher -- typing runs
                commands and does not search the corpora this label promises -- so
@@ -4197,7 +4256,7 @@ export default function App() {
                 ? i18nT('app.k_run_a_command')
                 : i18nT('app.k_search_for_anything')}
             </span>
-          </button>
+          </Glass>
           {/* Focus mode. `aria-pressed` rather than a second label, so a screen
               reader gets the state from the control instead of from copy that
               would have to be kept in step with the icon. */}
@@ -4545,9 +4604,20 @@ export default function App() {
               <motion.div
                 layout
                 transition={{ layout: { duration: capsuleLayoutPulse ? 0.25 : 0, ease: 'easeOut' } }}
-                className={`tb-capsule flex items-center gap-2 h-7 px-2.5 rounded-xl transition-colors duration-300 ${offline ? 'bg-danger-subtle' : 'bg-card'}`}
+                className="flex items-center shrink-0"
               >
-                {segments.flatMap((s, i) => (i === 0 ? [s] : [<span key={`sep-${i}`} className="w-px h-3.5 bg-border shrink-0" aria-hidden="true" />, s]))}
+                {/* The capsule IS a Liquid Glass pane (components/Glass.tsx,
+                    chip recipe) hosting the segments directly, so the
+                    `.tb-capsule > …` rungs in index.css still see them as its
+                    children; the motion wrapper outside only animates width.
+                    Offline is a tint step (`glass-danger`), never a fill. */}
+                <Glass
+                  variant="chip"
+                  radius={TOPBAR_PILL_RADIUS}
+                  className={`tb-capsule glass-shadow flex items-center gap-2 h-7 px-2.5 ${offline ? 'glass-danger' : ''}`}
+                >
+                  {segments.flatMap((s, i) => (i === 0 ? [s] : [<span key={`sep-${i}`} className="w-px h-3.5 bg-border shrink-0" aria-hidden="true" />, s]))}
+                </Glass>
               </motion.div>
             )
           })()}

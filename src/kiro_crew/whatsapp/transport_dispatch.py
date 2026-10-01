@@ -43,6 +43,12 @@ from kiro_crew.messaging.driver import APPROVAL_INTERACTIVE
 from kiro_crew.messaging.inbound_spool import InboundRoute
 from kiro_crew.messaging.link import build_dm_session_key, seed_generation
 from kiro_crew.messaging.transport import InboundMessage
+from kiro_crew.session_lifecycle import (
+    STOP_DECLINED_COMPACTING_TEXT,
+    compaction_in_flight,
+    consume_stop_declined,
+    decline_stop,
+)
 from kiro_crew.whatsapp.commands import (
     COMPACT_AUTO_TEXT,
     COMPACT_BUSY_TEXT,
@@ -293,12 +299,35 @@ class WhatsAppDispatcher:
         is still coming.
         """
         session_key = self._live_session_key(scope)
+        # A repeat within the window after a declined stop is the second press
+        # and forces; the first decline records the marker below. Only the
+        # operator reaches a command, so the conversation names the presser.
+        force = consume_stop_declined(session_key, scope) and compaction_in_flight(
+            self.sessions, session_key
+        )
         try:
-            outcome = await self.sessions.stop_turn(session_key)
+            # ``preserve_queue`` on the force: the hard reset pops the session
+            # and its queue, and under a unified ``dm_scope`` that queue holds
+            # other channels' messages; ``stop_turn`` parks them for the
+            # successor instead. This channel queues nothing of its own.
+            outcome = await (
+                self.sessions.stop_turn(session_key, force=True, preserve_queue=True)
+                if force
+                else self.sessions.stop_turn(session_key)
+            )
         except Exception:  # noqa: BLE001: the queue clear below still applies
             logger.warning("whatsapp: stop_turn failed", exc_info=True)
             outcome = None
-        stopped = str(getattr(outcome, "kind", outcome) or "") in ("soft", "hard")
+        kind = str(getattr(outcome, "kind", outcome) or "")
+        if kind == "compacting":
+            # Sent before the marker is armed: an undelivered warning plus an
+            # armed escalation is a retry that hard-resets the session with the
+            # operator never told that it would.
+            await decline_stop(
+                session_key, scope, lambda: self._say(scope, STOP_DECLINED_COMPACTING_TEXT)
+            )
+            return
+        stopped = kind in ("soft", "hard")
         await self._say(scope, STOPPED_TEXT if stopped else STOP_NOTHING_RUNNING_TEXT)
 
     async def _handle_compact(self, scope: str) -> None:
@@ -655,13 +684,24 @@ class WhatsAppDispatcher:
             title = (user_text or "").strip().replace("\n", " ")[:40] or "WhatsApp"
             self.conv_log.set_title(session_key, title)
 
-    async def _say(self, chat_jid: str, text: str) -> None:
+    async def _say(self, chat_jid: str, text: str) -> bool:
+        """Send one out-of-band message; did it land?
+
+        Most callers ignore the answer -- a command ack is cosmetic beside the
+        command's effect. One does not: the compaction decline arms an escalation
+        that resets the session on the next press, and the only thing that makes
+        that press informed is this text arriving. A missing transport and a
+        swallowed send error both return ``False`` so that escalation stays
+        unarmed.
+        """
         if self.transport is None:
-            return
+            return False
         try:
             await self.transport.send_message(chat_jid, text)
         except Exception:
             logger.warning("whatsapp: out-of-band send failed", exc_info=True)
+            return False
+        return True
 
     def _session_key(self, scope: str, *, is_operator: bool = True) -> str:
         """The session address for *scope*.

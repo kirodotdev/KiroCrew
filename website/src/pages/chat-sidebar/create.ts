@@ -4,11 +4,10 @@ import { useState, useRef, useCallback, type Dispatch, type SetStateAction } fro
 import { useMutation } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { type ErrorReport, findReport } from '../../utils/errorReport'
-import { resolveFolderAgent, resolveFolderProjectDir } from '../../utils/folderAgent'
+import { isStaleProjectDirError, resolveFolderAgent, resolveFolderProjectDir } from '../../utils/folderAgent'
 import { loadChatConfig } from '../chat/ChatSettings'
 import { createSlot } from '../../store/chatSlice'
 import { focusComposer } from '../chat/composerFocus'
-import { ApiError } from '../../api/apiError'
 import { i18nT } from '../../i18n/t'
 import type { Slot } from './types'
 import type { AppDispatch } from '../../store'
@@ -105,18 +104,10 @@ export function useFolderChatCreate({ folders, defaultAgent, mode, dispatch, dro
       // eslint-disable-next-line no-console -- surface chat-creation failures for diagnostics
       console.error('Failed to create chat in folder:', err)
       if (attempt !== folderCreateAttemptRef.current) return
-      // The backend refusing the folder's project directory (HTTP 400
-      // "Not a directory" from the slot-project endpoint) is the one failure
+      // The backend refusing the folder's project directory is the one failure
       // the user can fix themselves, so it gets a specific message naming the
-      // stale path and where to change it. createSlot rethrows the ApiError,
-      // but createAsyncThunk serializes thrown errors down to
-      // {name, message, stack} — the instance and its `status` are gone by the
-      // time `.unwrap()` delivers it here — so match the live instance when
-      // present and fall back to the serialized shape.
-      const isStaleProjectDir = err instanceof ApiError
-        ? err.status === 400 && err.message === 'Not a directory'
-        : (err as { name?: unknown } | null)?.name === 'ApiError'
-          && (err as { message?: unknown }).message === 'Not a directory'
+      // stale path and where to change it (see isStaleProjectDirError).
+      const isStaleProjectDir = isStaleProjectDirError(err)
       const raw = (err as { message?: unknown } | null)?.message
       const message = isStaleProjectDir
         ? i18nT('pages.chatSidebar.folder_project_dir_missing', { path: resolveFolderProjectDir(folders, folderId) ?? '' })

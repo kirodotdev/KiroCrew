@@ -1707,11 +1707,6 @@ html[data-font-family="custom"][data-custom-ligatures="off"] body{font-variant-l
    Scoped to kiro-light: in every other theme --panel is the page colour, not a shell colour. */
 [data-theme="kiro-light"] .focus-chrome-rail,[data-theme="kiro-light"] .sidebar-inner{background-color:var(--panel)}
 [data-theme="kiro-light"] .user-bubble{background-color:var(--bg-hover)}
-/* Kiro light: the two top-bar capsules (status readout, Request a Feature) are borderless bg-card
-   fills like the bubble, and the bar behind them is --chrome, which follows the white canvas — so
-   they too would vanish. An inset 1px ring in --border gives them the same edge the neighbouring
-   search field draws with a real border, without changing the box's size. */
-[data-theme="kiro-light"] .tb-capsule,[data-theme="kiro-light"] .feedback-pill{box-shadow:inset 0 0 0 1px var(--border)}
 /* Kiro theme: lift unselected nav labels + section headers to Prey/300 (#c1bec6, ~9.8:1) per the
    Figma settings-panel guideline (was Prey/400 #938f9b ~5.7:1). Inactive icons inherit this color
    (they only carry opacity-70), lifting them from ~3.4:1 to ~5.6:1. Active items keep .nav-active. */
@@ -1723,9 +1718,10 @@ html[data-font-family="custom"][data-custom-ligatures="off"] body{font-variant-l
 /* Kiro dark: panel resize-handle highlight is a thin line, so match it to the brightened thin-accent
    (#B07FFF) rather than the #8E48FF fill it inherits from bg-accent. Only applies while dragging-hover. */
 [data-theme="kiro-dark"] .group\/drag:hover .resize-accent{background-color:#b07fff}
-/* Kiro dark: queued-message bar matches the Figma "Waiting for input" snackbar (1793:25695) —
-   semi-transparent olive bg + Yellow/800 border + Yellow/100 text. */
-[data-theme="kiro-dark"] .queue-card{background-color:#2a2810;border-color:#5c5500;color:#fff7cc}
+/* Kiro dark: the queued-message card used to take the Figma "Waiting for input"
+   snackbar's olive here. It is a Glass pane on the warn tint step now
+   (components/QueueStack.tsx, `glass-warn`), and a background on the host
+   would paint UNDER the glass layers and solidify them, so no theme override. */
 /* Kiro theme: the session agent-label is intentionally NOT tinted — it is metadata, not a link, and
    the purple tint made every row's agent name compete with the session title for attention. It keeps
    the row's neutral grey (`text-muted`), leaving purple to carry meaning: the running-state accent on
@@ -2162,15 +2158,20 @@ file-tree-container{
   @container (max-width:738px){ .tb-has-update .tb-drop-metrics{display:none} }
   @container (max-width:600px){ .tb-has-update .tb-drop-usage{display:none} }
   @container (max-width:548px){ .tb-has-update .tb-drop-feedback{display:none} }
-  @container (max-width:408px){ .tb-has-update .tb-capsule > *:not(:first-child){display:none} }
+  @container (max-width:408px){ .tb-has-update .tb-capsule > :not([data-liquid-glass-layer]) ~ :not([data-liquid-glass-layer]){display:none} }
 }
 /* Terminal rung: the capsule keeps only its first child, the connection dot.
    The rungs above name the built-in readouts one by one, but the capsule is also
    an extension slot (`getCapsuleSegments`) whose registered segments cannot be
    enumerated here, so the floorless track needs one rung that bounds the group
-   whatever it holds. Structural (`> *:not(:first-child)`) rather than by class
-   for exactly that reason. Budget documented in docs/extension-seams.md. */
-@container (max-width:200px){ .tb-capsule > *:not(:first-child){display:none} }
+   whatever it holds. Structural rather than by class for exactly that reason:
+   every non-layer child that has a non-layer sibling before it. The capsule is
+   a Liquid Glass host (components/Glass.tsx) whose effect layers are its FIRST
+   children (`data-liquid-glass-layer`), so a plain `:first-child` would keep a
+   layer and hide the dot; skipping the layers on both sides of `~` keeps the
+   first segment whatever the layer count. Budget documented in
+   docs/extension-seams.md. */
+@container (max-width:200px){ .tb-capsule > :not([data-liquid-glass-layer]) ~ :not([data-liquid-glass-layer]){display:none} }
 /* The counterpart: a form that exists ONLY on the narrow rungs (e.g. the metric
    readout's icon stand-in). Both forms ship in the DOM because the rung is a
    container query — no JS branch here can observe the group's own width. With
@@ -2620,6 +2621,14 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
    bottom edge, so the dock sets --list-dock-pin-inset to that gap. */
 .sidebar,.folder-row-sticky{--folder-row-sticky-h:32px;--folder-row-sticky-inset:var(--list-dock-pin-inset,0.5rem)}
 .folder-row-sticky{height:var(--folder-row-sticky-h)}
+/* The clickable connector line down an open folder's body (components/FolderRail.tsx).
+   The body's own border-l still draws the line at rest; this is an out-of-flow
+   8px hit strip over it (-5..3 from the body's padding edge, stopping short of
+   the rows) and a 3px accent bar centred on the border on hover. */
+.folder-rail{position:absolute;top:0;bottom:0;left:-5px;z-index:1;width:8px;margin:0;padding:0;background:transparent;border:0;cursor:pointer;outline:none}
+.folder-rail>span{position:absolute;top:0;bottom:0;left:4px;width:1px;border-radius:9999px;pointer-events:none;background:transparent;transition:left 150ms,width 150ms,background-color 150ms}
+.folder-rail:hover>span{left:3px;width:3px;background:color-mix(in srgb,var(--accent) 60%,transparent)}
+@media (prefers-reduced-motion:reduce){.folder-rail>span{transition:none}}
 /* Rows scrolled into view (arrow-key roving, focus, reveal) stop below the
    pinned header stack of their folder block (ChatSidebar renderFolderBlock
    sets --folder-pin-stack); unfiled rows have no stack and keep 0. Chromium's
@@ -3006,11 +3015,14 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
 
 /* Tint steps for a Liquid Glass pane (components/Glass.tsx). Every surface in
  * the composer dock — the composer, the follow-up chips, the tip / suggestion /
- * question cards, the memory chip, the jump-to-bottom button — is the SAME
- * primitive rendered as its own element, so there is no CSS copy of the
+ * question cards, the memory chip, the jump-to-bottom button, the status bars
+ * and queue cards above the box — is the SAME primitive rendered as its own
+ * element, so there is no CSS copy of the
  * material. What a call site says is only WHICH tint step its pane is on:
- * `glass-accent` (a picked chip, an attached card) and `glass-warn` (the
- * incognito chip) mix a hue INTO the glass tint so the pane stays a glass, and
+ * `glass-accent` (a picked chip, an attached card, a progress bar) and
+ * `glass-warn` (the incognito chip, a queued message) and `glass-danger` (the
+ * top-bar readout capsule while the gateway is offline) mix a hue INTO the glass
+ * tint so the pane stays a glass, and
  * `glass-hover` brightens an interactive pane a step on hover, as the old chip
  * border-color change did, and `glass-faded` thins the tint to 55% for a pane
  * that recedes (a silenced notification row, the edges of a collapsed stack,
@@ -3021,10 +3033,11 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
  * primitive's frost box reads the token, so the pane repaints without a rule
  * of its own. The mixed values are computed once on :root (from the polarity's
  * own `--glass-tint`), so a swap on the host cannot reference itself. */
-:root { --glass-tint-accent: color-mix(in srgb, var(--accent) 14%, var(--glass-tint)); --glass-tint-warn: color-mix(in srgb, var(--warn) 12%, var(--glass-tint)); --glass-tint-hover: color-mix(in srgb, var(--text) 8%, var(--glass-tint)); --glass-tint-faded: color-mix(in srgb, var(--glass-tint) 55%, transparent); }
+:root { --glass-tint-accent: color-mix(in srgb, var(--accent) 14%, var(--glass-tint)); --glass-tint-warn: color-mix(in srgb, var(--warn) 12%, var(--glass-tint)); --glass-tint-danger: color-mix(in srgb, var(--danger) 12%, var(--glass-tint)); --glass-tint-hover: color-mix(in srgb, var(--text) 8%, var(--glass-tint)); --glass-tint-faded: color-mix(in srgb, var(--glass-tint) 55%, transparent); }
 .glass-accent { --glass-tint: var(--glass-tint-accent); }
 .glass-faded { --glass-tint: var(--glass-tint-faded); }
 .glass-warn { --glass-tint: var(--glass-tint-warn); }
+.glass-danger { --glass-tint: var(--glass-tint-danger); }
 .glass-hover:hover { --glass-tint: var(--glass-tint-hover); }
 
 /* The context shelf (agent, project, branch, model chips) sits BELOW the glass
@@ -3136,6 +3149,7 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
      their hue on the solid surface. */
   .liquid-glass.glass-accent{ background:color-mix(in srgb, var(--accent) 14%, var(--bg-elevated)) !important }
   .liquid-glass.glass-warn{ background:color-mix(in srgb, var(--warn) 12%, var(--bg-elevated)) !important }
+  .liquid-glass.glass-danger{ background:color-mix(in srgb, var(--danger) 12%, var(--bg-elevated)) !important }
   .liquid-glass>[data-liquid-glass-layer]{ display:none !important }
   /* Floating notification panes (the banner, the bell popover's rows) sit OVER
      page content, so they solidify to the card color, not the page background.
@@ -3197,6 +3211,7 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
   .liquid-glass:focus-visible{ outline:2px solid var(--accent) !important; outline-offset:2px !important }
   .liquid-glass.glass-accent{ background:color-mix(in srgb, var(--accent) 14%, var(--bg-elevated)) !important }
   .liquid-glass.glass-warn{ background:color-mix(in srgb, var(--warn) 12%, var(--bg-elevated)) !important }
+  .liquid-glass.glass-danger{ background:color-mix(in srgb, var(--danger) 12%, var(--bg-elevated)) !important }
   .liquid-glass>[data-liquid-glass-layer]{ display:none !important }
 }
 /* The same rules, on the user's own switch (Settings -> Display -> View ->
@@ -3217,6 +3232,7 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
   html[data-reduce-transparency="on"] .liquid-glass:focus-visible{ outline:2px solid var(--accent) !important; outline-offset:2px !important }
   html[data-reduce-transparency="on"] .liquid-glass.glass-accent{ background:color-mix(in srgb, var(--accent) 14%, var(--bg-elevated)) !important }
   html[data-reduce-transparency="on"] .liquid-glass.glass-warn{ background:color-mix(in srgb, var(--warn) 12%, var(--bg-elevated)) !important }
+  html[data-reduce-transparency="on"] .liquid-glass.glass-danger{ background:color-mix(in srgb, var(--danger) 12%, var(--bg-elevated)) !important }
   html[data-reduce-transparency="on"] .liquid-glass>[data-liquid-glass-layer]{ display:none !important }
 }
 @media (prefers-contrast: more){
@@ -3228,6 +3244,7 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
   .liquid-glass{ outline:1px solid var(--text) !important; outline-offset:-1px }
   .liquid-glass.glass-accent{ outline-color:var(--accent) !important }
   .liquid-glass.glass-warn{ outline-color:var(--warn) !important }
+  .liquid-glass.glass-danger{ outline-color:var(--danger) !important }
   /* The pane outline above is !important, so it would beat the base-layer
      :focus-visible ring on the chips / memory chip / jump button, which are
      glass buttons; keyboard focus re-asserts the ring inside the same block. */
@@ -3419,19 +3436,22 @@ html[data-font-family="opendyslexic"] .nav-item {
    farm lives inside this same scroller, so off-screen rows inherit identical
    column widths and heights. Hosts that do
    not publish the property fall back to ordinary markdown sizing. */
-/* Only top-level assistant tables may escape the reading column. The
+/* Only top-level assistant tables may escape the reading column, and only
+   from an unbordered bubble: a host that draws the reply as a bordered card
+   (a crewmate's chat, AssistantMessage's `bubbleClassName` → `data-bordered`)
+   keeps its table inside the card. The
    intervening div is rehypeStableRootKeys' display:contents wrapper;
    quoted/list tables and formatted code cards retain their own bounds. */
-.chat-container .chat-message-body:has([data-role="assistant"] > .message-bubble > [data-image-scope] > div > .markdown-table),
-.chat-container [data-role="assistant"] > .message-bubble:has(> [data-image-scope] > div > .markdown-table) {
+.chat-container .chat-message-body:has([data-role="assistant"] > .message-bubble:not([data-bordered]) > [data-image-scope] > div > .markdown-table),
+.chat-container [data-role="assistant"] > .message-bubble:not([data-bordered]):has(> [data-image-scope] > div > .markdown-table) {
   overflow: visible;
 }
-.chat-container [data-role="assistant"] > .message-bubble:has(> [data-image-scope] > div > .markdown-table) {
+.chat-container [data-role="assistant"] > .message-bubble:not([data-bordered]):has(> [data-image-scope] > div > .markdown-table) {
   /* Preserve the bubble's margin containment and raw-view height measurement
      while allowing its table to paint into the surrounding gutters. */
   display: flow-root;
 }
-.chat-container [data-role="assistant"] > .message-bubble > [data-image-scope] > div > .markdown-table {
+.chat-container [data-role="assistant"] > .message-bubble:not([data-bordered]) > [data-image-scope] > div > .markdown-table {
   /* Stop 40px short of each pane edge: the band TurnNavigationMinimap needs
      free beside the content column (MIN_GUTTER_PX, a px constant — so px here,
      not rem, or a browser's smaller root font would shrink the clearance under

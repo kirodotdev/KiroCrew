@@ -140,10 +140,9 @@ class TestRefusalDispositionPerSite:
             assert refusing.await_args.kwargs["expected_history_key"] == pinned
 
     @pytest.mark.asyncio
-    async def test_slot_mode_rolls_back_both_fields_and_409(self):
+    async def test_slot_mode_rolls_back_and_409(self):
         slot = _ChatSlot("test")
-        slot.mode = "orchestrator"
-        slot._auto_run = True
+        slot.mode = "custom-mode"
         state = MagicMock(spec=DashboardState)
         state._slots = {slot.key: slot}
         state.push_slots_update = MagicMock()
@@ -154,10 +153,7 @@ class TestRefusalDispositionPerSite:
                 resp = await client.patch("/api/chat/slots/test/mode", json={"mode": ""})
                 assert resp.status == 409
                 assert (await resp.json())["code"] == "session_gone"
-        # Both live fields restored: the mode AND the auto-run flag the
-        # transition cleared on the way through.
-        assert slot.mode == "orchestrator"
-        assert slot._auto_run is True
+        assert slot.mode == "custom-mode"
         assert refusing.await_args.kwargs["expected_history_key"] == pinned
 
     @pytest.mark.asyncio
@@ -310,9 +306,7 @@ class TestRefusalRollbackHardening:
 
         with patch("kiro_crew.dashboard.chat_folders.save_slot_off_loop", _concurrent_writer_wins):
             async with TestClient(TestServer(_make_mode_app(state))) as client:
-                resp = await client.patch(
-                    "/api/chat/slots/test/mode", json={"mode": "orchestrator"}
-                )
+                resp = await client.patch("/api/chat/slots/test/mode", json={"mode": ""})
                 assert resp.status == 409
         assert slot.mode == "design-critique"
 

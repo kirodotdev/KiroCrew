@@ -726,8 +726,11 @@ def test_codex_resolves_its_own_adapter_and_declares_its_own_handshake() -> None
     # And the client core carries neither the constant nor a row for codex.
     assert not hasattr(acp_client, "PROTOCOL_VERSION_CODEX")
     assert ACP_BACKEND_CODEX not in acp_client._PROTOCOL_VERSION_BY_BACKEND
-    assert "_PROTOCOL_VERSION_BY_BACKEND" in inspect.getsource(
+    assert "self._initialize_params()" in inspect.getsource(
         acp_client.AcpClient._initialize_session
+    )
+    assert "_PROTOCOL_VERSION_BY_BACKEND" in inspect.getsource(
+        acp_client.AcpClient._initialize_params
     )
 
 

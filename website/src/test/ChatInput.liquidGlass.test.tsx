@@ -9,7 +9,7 @@
  * is always mounted: toggling it would remount the editor and drop the draft's
  * focus when an approval lands.
  */
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 vi.mock('@radix-ui/react-dropdown-menu', async () => await import('./__mocks__/@radix-ui/react-dropdown-menu'))
@@ -21,6 +21,13 @@ import type { RootState } from '../store'
 
 const INDEX_CSS = readFileSync(resolve(process.cwd(), 'src/index.css'), 'utf-8')
 const CHAT_INPUT_SRC = readFileSync(resolve(process.cwd(), 'src/components/ChatInput.tsx'), 'utf-8')
+// The composer's owners under chat-input/ carry its markup too: a focus form must
+// not come back through any of them.
+const COMPOSER_OWNERS_DIR = resolve(process.cwd(), 'src/components/chat-input')
+const COMPOSER_SRCS = [
+  CHAT_INPUT_SRC,
+  ...readdirSync(COMPOSER_OWNERS_DIR).map(f => readFileSync(resolve(COMPOSER_OWNERS_DIR, f), 'utf-8')),
+]
 const SETTINGS_SEARCH_SRC = readFileSync(resolve(process.cwd(), 'src/pages/settings/SettingsSearch.tsx'), 'utf-8')
 const FOLLOW_UP_BAR_SRC = readFileSync(resolve(process.cwd(), 'src/components/FollowUpBar.tsx'), 'utf-8')
 const DISPLAY_PANEL_SRC = readFileSync(resolve(process.cwd(), 'src/pages/settings/DisplayPanel.tsx'), 'utf-8')
@@ -211,8 +218,11 @@ describe('composer liquid glass', () => {
     expect(INDEX_CSS).not.toContain('--glass-tint-focus')
     expect(INDEX_CSS).not.toContain('composer-halo')
     expect(INDEX_CSS).not.toMatch(/\.glass-shadow[^{]* \{[^}]*--accent/)
-    expect(CHAT_INPUT_SRC).not.toContain('composer-halo')
-    expect(CHAT_INPUT_SRC).not.toContain('focus-within:border-accent')
+    expect(COMPOSER_SRCS.length).toBeGreaterThan(1)
+    for (const src of COMPOSER_SRCS) {
+      expect(src).not.toContain('composer-halo')
+      expect(src).not.toContain('focus-within:border-accent')
+    }
     // The Settings search bar follows the same rule: its boxed input keeps the
     // shared `focus-ring` shape but swaps the accent for a neutral border + halo.
     expect(SETTINGS_SEARCH_SRC).toMatch(/className="settings-search relative shrink-0"/)
@@ -225,10 +235,12 @@ describe('composer liquid glass', () => {
   // and each step is a `--glass-tint` swap derived once on :root.
   it('has no CSS copy of the material, only tint steps on the host', () => {
     expect(INDEX_CSS).not.toContain('glass-pane')
-    expect(INDEX_CSS).toMatch(/:root \{ --glass-tint-accent: color-mix\(in srgb, var\(--accent\) 14%, var\(--glass-tint\)\); --glass-tint-warn: color-mix\(in srgb, var\(--warn\) 12%, var\(--glass-tint\)\); --glass-tint-hover: color-mix\(in srgb, var\(--text\) 8%, var\(--glass-tint\)\); --glass-tint-faded: color-mix\(in srgb, var\(--glass-tint\) 55%, transparent\); \}/)
+    expect(INDEX_CSS).toMatch(/:root \{ --glass-tint-accent: color-mix\(in srgb, var\(--accent\) 14%, var\(--glass-tint\)\); --glass-tint-warn: color-mix\(in srgb, var\(--warn\) 12%, var\(--glass-tint\)\); --glass-tint-danger: color-mix\(in srgb, var\(--danger\) 12%, var\(--glass-tint\)\); --glass-tint-hover: color-mix\(in srgb, var\(--text\) 8%, var\(--glass-tint\)\); --glass-tint-faded: color-mix\(in srgb, var\(--glass-tint\) 55%, transparent\); \}/)
     expect(INDEX_CSS).toContain('.glass-accent { --glass-tint: var(--glass-tint-accent); }')
     expect(INDEX_CSS).toContain('.glass-faded { --glass-tint: var(--glass-tint-faded); }')
     expect(INDEX_CSS).toContain('.glass-warn { --glass-tint: var(--glass-tint-warn); }')
+    // The top bar's readout capsule while the gateway is offline (App.tsx).
+    expect(INDEX_CSS).toContain('.glass-danger { --glass-tint: var(--glass-tint-danger); }')
     expect(INDEX_CSS).toContain('.glass-hover:hover { --glass-tint: var(--glass-tint-hover); }')
   })
 

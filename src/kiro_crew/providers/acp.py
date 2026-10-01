@@ -20,12 +20,18 @@ from kiro_crew.acp.client import (
     AcpError,
     _is_config_value_rejection,
     advertised_model_ids,
+    catalog_row_would_drop,
     model_is_unusable,
     resolve_pin_spelling,
     sandbox_init_failure_for_runtime,
 )
 from kiro_crew.acp.runtime import AcpRuntime, AcpRuntimeError
-from kiro_crew.acp.session_handle import AcpSessionHandle
+from kiro_crew.acp.session_handle import (
+    _READ_PATH_PROBE_DEADLINE_SECS,
+    _READ_PATH_REPROBE_MIN_INTERVAL_SECS,
+    AcpSessionHandle,
+    EntitlementRevalidating,
+)
 from kiro_crew.acp.session_provider import AcpSessionProvider
 from kiro_crew.acp.types import (
     ACP_BACKEND_CODEX,
@@ -1523,20 +1529,79 @@ class AcpProvider(LLMProvider):
         """Revalidate the advertised-model snapshot on the picker read path.
 
         The dashboard model list (`/api/models`) narrows the catalog through this
-        provider's snapshot. `self._client` is a plain `AcpClient` before startup
-        (NOT an `LLMProvider`, no revalidation) and becomes an `AcpSessionProvider`
-        (an `LLMProvider`) on the kiro shared-runtime path, which carries the
-        read-path revalidation. Forward when the inner client is an `LLMProvider`
-        (propagating its contract: the read deadline raises
+        provider's snapshot. `self._client` becomes an `AcpSessionProvider` (an
+        `LLMProvider`) on the kiro shared-runtime path, which carries the
+        read-path revalidation; forward to it (propagating its contract: the read
+        deadline raises
         :class:`~kiro_crew.acp.session_handle.EntitlementRevalidating` while the
         probe keeps running, and a probe FAILURE returns the current snapshot,
-        fail open); otherwise return the current snapshot unchanged, so a
-        pre-startup placeholder client or a non-kiro direct client never worsens
-        the picker.
+        fail open).
+
+        On the DEDICATED transport `self._client` stays a plain kiro `AcpClient`
+        whose snapshot is the one unconfirmed `session/new` answer a startup race
+        can leave at the free tier -- the same defect on the same transport. When
+        that snapshot would actually drop a catalog row (the picker's own verdict,
+        :func:`catalog_row_would_drop`), it is re-asked through the client's
+        :meth:`~kiro_crew.acp.client.AcpClient.refresh_available_models`, which
+        asks on a throwaway probe process of its own -- never this session's stream,
+        so a read during a streaming turn races nothing (a probe
+        -confirmed list inside the probe TTL is not re-probed; a failed probe keeps
+        the snapshot). A snapshot that drops nothing, a pre-startup placeholder
+        client and a non-kiro direct client are returned unchanged, so this can
+        never worsen the picker.
         """
         if isinstance(self._client, LLMProvider):
             return await self._client.maybe_refresh_available_models(catalog_ids)
-        return self.available_models()
+        snapshot = self.available_models()
+        client = self._client
+        if not (
+            isinstance(client, AcpClient)
+            and getattr(client, "_is_kiro", False)
+            and getattr(client, "_session_id", "")
+        ):
+            return snapshot
+        advertised = advertised_model_ids(snapshot)
+        if not any(catalog_row_would_drop(cid, advertised) for cid in catalog_ids):
+            return snapshot
+        # A recorded `_picker_probe_at` rate-limits the next poll regardless of
+        # whether the last probe CONFIRMED: a failed probe never sets
+        # `_available_models_probe_confirmed`, so keying the gate on that flag (as
+        # the shared read path can, because its runtime single-flight probe TTL
+        # bounds the burst) would leave an unconfirmed narrow snapshot cold-spawning
+        # a fresh probe process on every 8s poll -- a self-sustaining kiro-cli +
+        # MCP-fleet spawn loop. The dedicated transport has no such runtime TTL
+        # backstop, so the interval alone must bound it. Skip the interval entirely
+        # while a probe is already in flight: returning the snapshot here would
+        # serve the stale list as a live 200 while its own refresh is still landing,
+        # so the corrected list this in-flight probe is fetching would never reach
+        # the picker -- fall through and await that same shielded probe.
+        now = time.monotonic()
+        last = getattr(self, "_picker_probe_at", 0.0)
+        inflight = getattr(client, "_entitlement_probe_inflight", None)
+        probe_in_flight = inflight is not None and not inflight.done()
+        recently_probed = last > 0.0 and now - last < _READ_PATH_REPROBE_MIN_INTERVAL_SECS
+        if not probe_in_flight and recently_probed:
+            return snapshot
+        self._picker_probe_at = now
+        try:
+            # The client owns the probe's single-flight, so shielding the await
+            # leaves that one probe RUNNING (it lands and cleans up its throwaway
+            # session); we just stop waiting past the deadline. Without this a
+            # stalled probe would hold a picker poll or a pin-save for the probe's
+            # full init+session timeout (~270s). On a miss, signal revalidation in
+            # flight (the endpoint serves its degraded response and the frontend
+            # keeps its last-good list and polls again) rather than returning the
+            # un-revalidated snapshot as a live answer.
+            fresh = await asyncio.wait_for(
+                asyncio.shield(client.refresh_available_models()),
+                timeout=_READ_PATH_PROBE_DEADLINE_SECS,
+            )
+        except (TimeoutError, asyncio.TimeoutError):
+            raise EntitlementRevalidating from None
+        except Exception:
+            logger.debug("dedicated-transport picker revalidation failed", exc_info=True)
+            return snapshot
+        return fresh or snapshot
 
     def mcp_session_report(self) -> SessionMcpReport:
         """This session's MCP registration report, kept on the inner client.

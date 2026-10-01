@@ -66,7 +66,6 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/capability/mcp/registry", handlers.api_capability_mcp_registry)
     app.router.add_post("/api/chat/slots/{slot}/resume", chat.api_chat_slot_resume)
     app.router.add_post("/api/chat/slots/{slot}/approve", chat.api_chat_slot_approve)
-    app.router.add_post("/api/chat/slots/{slot}/plan-action", chat.api_chat_plan_action)
     app.router.add_post("/api/chat/mode", chat.api_chat_mode)
     app.router.add_post("/api/chat/nav/resolve-links", chat.api_chat_nav_resolve_links)
     app.router.add_post("/api/chat/slots/{slot}/generate-title", chat.api_chat_slot_generate_title)

@@ -159,6 +159,10 @@ logger = logging.getLogger(__name__)
 PROTOCOL_VERSION_CODEX = 1
 
 
+#: Where ``codex`` keeps its SQLite databases; defaults to ``CODEX_HOME``.
+_SQLITE_HOME_ENV = "CODEX_SQLITE_HOME"
+
+
 def _sandbox_wrapper_generations(sandbox_mode: str) -> int:
     """Crew-owned processes between the spawned pid and the harness's adapter.
 
@@ -276,11 +280,21 @@ class CodexHarness(MembershipHarness):
         wrapper_generations = await asyncio.to_thread(
             _sandbox_wrapper_generations, ctx.sandbox_mode
         )
+        # Every ``codex app-server`` opens the same SQLite files by default and
+        # they lock each other out: Codex Desktop plus a Crew runtime fail new
+        # sessions with ``database is locked``. So each runtime gets its own
+        # CODEX_SQLITE_HOME (the runtime's per-process scratch dir). Only the
+        # databases move: config, auth and the thread rollouts stay in CODEX_HOME,
+        # and a thread resumes from its rollout (measured on codex 0.159), so
+        # spawn_continue still works across runtimes. A fresh home rebuilds its
+        # index on first start -- an accepted cost. An operator who set the
+        # variable chose that location; it reaches the child as set.
         return SpawnPlan(
             argv=list(argv),
             rss_depth=self.CORE_RSS_DEPTH + wrapper_generations,
             extra_hidden_dirs=hidden,
             extra_expose_files=expose,
+            private_state_env=None if ctx.environ.get(_SQLITE_HOME_ENV) else _SQLITE_HOME_ENV,
         )
 
     def apply_spawn_env(self, env: dict[str, str]) -> None:

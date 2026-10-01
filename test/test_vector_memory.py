@@ -4716,15 +4716,19 @@ class TestHandlerOffload1947:
         assert ".get_lessons()" in violations[0]
 
     def test_async_callers_offload_locked_methods(self) -> None:
-        import ast
-
         locked = self._derive_locked_methods()
         root = self._package_root()
         violations: list[str] = []
-        for path in sorted(root.rglob("*.py")):
+        # A violation is an ``async def`` holding ``<expr>.<locked>(...)``, so a module
+        # whose text lacks ``async`` or every locked NAME cannot carry one: narrow to
+        # those off the shared corpus (NFKC-folded, like the parser) and parse one
+        # tree at a time, instead of a private ``rglob`` + ``ast.parse`` of the whole
+        # package on every run of this one test (~6 s of CPU, measured).
+        for path, _text, tree in source_corpus.parsed_candidates(
+            require_all=("async",), require_any=tuple(sorted(locked))
+        ):
             if path == root / "vector_memory.py":
                 continue  # the store may call its own methods inline
-            tree = ast.parse(path.read_text(encoding="utf-8"))
             violations.extend(self._find_inline_calls(tree, locked, str(path.relative_to(root))))
         assert not violations, "\n".join(violations)
 

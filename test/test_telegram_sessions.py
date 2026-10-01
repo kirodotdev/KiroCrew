@@ -138,6 +138,9 @@ class _Sessions:
     def get_mirror_link(self, key: str) -> ChannelLink | None:
         return self.mirror_links.get(key)
 
+    def has_mirror_row(self, key: str) -> bool:
+        return key in self.mirror_links
+
     def find_mirror_sessions(self, link: ChannelLink, *, inbound_only: bool = False) -> list[str]:
         return [
             key

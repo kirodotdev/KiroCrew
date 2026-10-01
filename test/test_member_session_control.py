@@ -1535,3 +1535,121 @@ class TestPrivateStoreCallerIsolation:
         result = asyncio.run(sc.create_session(state, caller_session_key=slot_history_key(worker)))
         child = state.get_slot(result["target"])
         assert read_session_execution(slot_history_key(child)).store == execution.store
+
+    def test_a_restart_self_heals_a_member_born_child_at_its_next_gate_admission(
+        self, tmp_path, monkeypatch, _fresh_create_budget
+    ):
+        # The nested-conductor case the member-DM self-heal does not reach. A
+        # member creates a child (a `chat-` key, vouched at birth), the gateway
+        # restarts, and the child's own-store dispatch must still be admitted.
+        # The child's key is not a member DM key, so its trust source is the
+        # durable vouch record the birth wrote in the sandbox-masked vouch directory.
+        from kiro_crew import execution_context
+        from kiro_crew.execution_context import (
+            read_session_execution,
+            read_vouched_session_execution,
+        )
+
+        state, cfg = self._prepare(tmp_path, monkeypatch)
+        member, execution = self._member_caller(state, cfg)
+        born = asyncio.run(sc.create_session(state, caller_session_key=slot_history_key(member)))
+        child = state.get_slot(born["target"])
+        child_key = slot_history_key(child)
+        assert read_vouched_session_execution(child_key) is not None
+
+        # The restart: only this process's word is gone; records survive.
+        execution_context._VOUCHED_EXECUTIONS.clear()
+        assert read_vouched_session_execution(child_key) is None
+
+        result = asyncio.run(sc.create_session(state, caller_session_key=child_key))
+        grandchild = state.get_slot(result["target"])
+        assert read_session_execution(slot_history_key(grandchild)).store == execution.store
+        assert read_vouched_session_execution(child_key).store == execution.store
+
+    def test_a_restarted_child_whose_record_moved_to_a_peer_is_not_revouched(
+        self, tmp_path, monkeypatch, _fresh_create_budget
+    ):
+        # The forgery the durable record must not open. A member-born child that
+        # rewrites its own record to name a PEER's store after a restart still
+        # disagrees with what the gateway recorded at its birth, so nothing is
+        # re-vouched and the create is refused.
+        from kiro_crew import execution_context
+        from kiro_crew.execution_context import (
+            read_vouched_session_execution,
+            resolve_member_execution,
+        )
+
+        state, cfg = self._prepare(tmp_path, monkeypatch)
+        member, _execution = self._member_caller(state, cfg)
+        born = asyncio.run(sc.create_session(state, caller_session_key=slot_history_key(member)))
+        child = state.get_slot(born["target"])
+        child_key = slot_history_key(child)
+        peer_execution = resolve_member_execution(cfg, "peer")
+        child.memory_store = peer_execution.store.legacy_name
+        execution_context._VOUCHED_EXECUTIONS.clear()
+        monkeypatch.setattr(sc, "read_session_execution", lambda *_a, **_k: peer_execution)
+
+        with pytest.raises(sc.SessionControlError) as error:
+            asyncio.run(sc.create_session(state, caller_session_key=child_key, agent="peer"))
+        assert error.value.code == "memory_delegation_denied"
+        assert read_vouched_session_execution(child_key) is None
+
+    def test_the_durable_vouch_is_sandbox_masked_and_a_tightening_withdraws_it(
+        self, tmp_path, monkeypatch, _fresh_create_budget
+    ):
+        # The durable copy mirrors the in-memory vouch: written where the gateway
+        # vouches, in a directory every sandbox masks and no file tool opens,
+        # and withdrawn where a deliberate withdrawal happens. A child that turns
+        # incognito keeps no restart-surviving authority behind.
+        from kiro_crew._durable_vouch import durable_vouch_path, read_durable_vouch
+        from kiro_crew.config.paths import data_home
+        from kiro_crew.execution_context import bind_session_execution, read_session_execution
+
+        state, cfg = self._prepare(tmp_path, monkeypatch)
+        member, execution = self._member_caller(state, cfg)
+        born = asyncio.run(sc.create_session(state, caller_session_key=slot_history_key(member)))
+        child_key = slot_history_key(state.get_slot(born["target"]))
+
+        path = durable_vouch_path(child_key)
+        from kiro_crew import sandbox
+        from kiro_crew.security import sensitive_home_dirs
+
+        leaf = path.parent.name
+        assert path.parent == data_home() / leaf
+        # NOT under trust/, which sandboxes keep read-write for the SEL log.
+        assert (data_home() / "trust") not in path.parents
+        assert leaf in sandbox._CREW_HIDDEN_LEAVES
+        assert leaf in sandbox._CREW_PRECREATE_HIDDEN_DIR_LEAVES
+        assert any(d.endswith(leaf) for d in sensitive_home_dirs())
+        assert read_durable_vouch(child_key)["store"] == execution.to_record()["store"]
+
+        current = read_session_execution(child_key)
+        bind_session_execution(child_key, current.with_mode("incognito"), replace_existing=True)
+        assert read_durable_vouch(child_key) is None
+        assert not path.exists()
+
+    def test_a_cleared_or_deleted_session_leaves_no_durable_vouch(
+        self, tmp_path, monkeypatch, _fresh_create_budget
+    ):
+        # Every other withdrawal takes the durable copy with it too: an explicit
+        # clear (the hook path's per-request withdrawal, a failed fork) and a
+        # deleted transcript. Otherwise each such key leaves a vouch file for good.
+        from kiro_crew._durable_vouch import read_durable_vouch
+        from kiro_crew.execution_context import clear_session_execution
+
+        state, cfg = self._prepare(tmp_path, monkeypatch)
+        member, _execution = self._member_caller(state, cfg)
+        member_key = slot_history_key(member)
+        first = asyncio.run(sc.create_session(state, caller_session_key=member_key))
+        first_key = slot_history_key(state.get_slot(first["target"]))
+        second = asyncio.run(sc.create_session(state, caller_session_key=member_key))
+        second_key = slot_history_key(state.get_slot(second["target"]))
+        assert read_durable_vouch(first_key) is not None
+        assert read_durable_vouch(second_key) is not None
+
+        clear_session_execution(first_key)
+        assert read_durable_vouch(first_key) is None
+
+        state.conversation_log.append(second_key, "user", "hello")
+        assert state.conversation_log.delete_session(second_key)
+        assert read_durable_vouch(second_key) is None

@@ -5,6 +5,7 @@ import { Plus, X, Pin, Monitor, ArrowUpDown, Eye, EyeOff, VenetianMask, Ghost, F
 import GithubLogo from '../components/icons/GithubLogo'
 import GitlabLogo from '../components/icons/GitlabLogo'
 import { FolderBody } from '../components/FolderBody'
+import { FolderRail } from '../components/FolderRail'
 import ErrorNotice, { ErrorNoticeMenuItem } from '../components/ErrorNotice'
 import JiraLogo from '../components/icons/JiraLogo'
 import { sourceProviderMeta } from '../utils/sourceProviderMeta'
@@ -110,7 +111,7 @@ import { useSidebarResize } from './chat-sidebar/resize'
 import { useSidebarTags } from './chat-sidebar/tags'
 import { useBoardColumns, useColumnPopover, useBoardColumnMutations, useColumnMatches, useBoardFolderCollapse } from './chat-sidebar/board'
 import { useHoverHold, useHoverPinLiveness } from './chat-sidebar/hoverHold'
-import { useLineageSeed, useConductorLane } from './chat-sidebar/conductor'
+import { useLineageSeed, useConductorLane, citedCreatorOf } from './chat-sidebar/conductor'
 import { useShortcutOrder } from './chat-sidebar/shortcuts'
 import { useFolderDropOps, useSidebarMoveUndo, useSidebarDragHandlers } from './chat-sidebar/dnd/useSidebarDrag'
 import { useSidebarReveal } from './chat-sidebar/reveal'
@@ -766,7 +767,7 @@ const FOLDER_ROW_STICKY_Z = 20
  *  divider: 2px left of) its content column. Shared by the list-view and
  *  board-view folder bodies. */
 export const FOLDER_ROW_PAD_CLS = '[&_.session-row]:pl-[9px] [&_[data-row-divider]]:ml-[9px] [&_[data-stale-toggle]]:pl-[9px] [&_[data-folder-new-chat]]:pl-[9px] [&_[data-pinned-divider]]:ml-[7px] [&_[data-folder-hidden-reveal]]:pl-[9px]'
-export const FOLDER_BODY_CLS = `border-l border-border mb-1 ml-1 pl-[3px] rounded-bl-md ${FOLDER_ROW_PAD_CLS}`
+export const FOLDER_BODY_CLS = `relative border-l border-border mb-1 ml-1 pl-[3px] rounded-bl-md ${FOLDER_ROW_PAD_CLS}`
 
 /** The board-view folder body. Its header is not the list header: `paddingLeft`
  *  6, an 11px glyph and `gap-2` 8 put the folder name at 6 + 11 + 8 = 25 from the
@@ -775,7 +776,7 @@ export const FOLDER_BODY_CLS = `border-l border-border mb-1 ml-1 pl-[3px] rounde
  *  D 2 + `ml-2` 8 + border 1 + `pl-[5px]` 5 + R_in 9 = 25, rows on the name. The
  *  connector lands at D + 8 = 10, inside the glyph's 6..17 span. Each board
  *  nesting level costs 2 + 8 + 1 + 5 = 16px. */
-export const BOARD_FOLDER_BODY_CLS = `border-l border-border ml-2 pl-[5px] ${FOLDER_ROW_PAD_CLS}`
+export const BOARD_FOLDER_BODY_CLS = `relative border-l border-border ml-2 pl-[5px] ${FOLDER_ROW_PAD_CLS}`
 
 /** Test seam: reports every SessionRow body execution. The memo boundary
  *  below is a behavioral contract — one slot's background event re-renders one
@@ -3538,6 +3539,9 @@ function ChatSidebar({
            *  (`FOLDER_ROW_PAD_CLS`), with a body pad sized to this header, so in
            *  both views a folder's rows land on that folder's name column. */}
           <div className={BOARD_FOLDER_BODY_CLS}>
+            {(deepChildren.length > 0 || childSlots.length > 0) && (
+              <FolderRail name={folder.name} id={`${columnId}-${folder.id}`} onToggle={() => toggleColumnCollapse(columnId, folder)} />
+            )}
             {/* Default: the empty-folder affordance stays exactly as it was, in
              *  list-view parity (see renderFolderBlock). Reached only when the
              *  setting is OFF - with it on there is no body to put this in. */}
@@ -4280,6 +4284,7 @@ function ChatSidebar({
     const emptyBody = hideEmptyFolderBody && childNodes.length === 0
     const wrapped = childNodes.length > 0 ? (
       <div key={`folder-children-${folder.id}`} className={FOLDER_BODY_CLS}>
+        <FolderRail name={folder.name} id={folder.id} onToggle={() => toggleCollapse(folder.id)} />
         {childNodes}
       </div>
     ) : emptyBody || listNarrowed ? null : (
@@ -5755,9 +5760,9 @@ function ChatSidebar({
                 // against the unfiltered population. A creator that is still there is
                 // open and running, so saying it closed would be false.
                 const cited = orphanCitation(slot, tree.parentOf.get(key) ?? null)
-                const citedKey = slot.parent?.key
-                const creatorStillOpen = cited != null && citedKey != null
-                  && (citedCreatorExists.get(slot.peer_id)?.has(citedKey) ?? false)
+                const creator = citedCreatorOf(slot)
+                const creatorStillOpen = cited != null && creator !== null
+                  && (citedCreatorExists.get(creator.origin)?.has(creator.key) ?? false)
                 rows.push({
                   id: key,
                   slot,

@@ -3231,6 +3231,44 @@ def safe_read_file_bytes(raw: str) -> bytes | None:
         os.close(fd)
 
 
+def safe_file_identity(raw: str) -> tuple[int, int, int, int] | None:
+    """``(st_dev, st_ino, st_mtime_ns, st_size)`` of a file, through the same gate as a read.
+
+    Every call screens the path afresh with :func:`validate_file_path` -- no
+    admission is remembered between calls, because a link swapped in after one
+    screen must not be followed by the next sample -- and takes the identity
+    from a descriptor opened by
+    :func:`kiro_crew.platform_compat.open_file_no_reparse`, never from a
+    name-based ``stat`` that would follow a junction to an attacker-chosen UNC
+    target. The descriptor must still be the regular file the screen
+    validated, exactly as :func:`safe_read_file_bytes` requires before it reads.
+
+    Returns ``None`` when the file does not exist. Raises ``PermissionError``
+    when the path is refused or the opened descriptor does not match it, and
+    ``OSError`` for any other failure to open.
+    """
+    path = validate_file_path(raw)
+    if path is None:
+        raise PermissionError("Blocked: file path was refused")
+    try:
+        # lstat never follows the final component, so absence is known before
+        # anything is opened -- the same probe order safe reads use.
+        os.lstat(path)
+    except FileNotFoundError:
+        return None
+    try:
+        fd = platform_compat.open_file_no_reparse(path, nonblocking=True)
+    except FileNotFoundError:
+        return None
+    try:
+        if not _opened_file_matches_validated_path(fd, path):
+            raise PermissionError("Blocked: opened file no longer matches safe path")
+        st = os.fstat(fd)
+        return (st.st_dev, st.st_ino, st.st_mtime_ns, st.st_size)
+    finally:
+        os.close(fd)
+
+
 def safe_read_file_bytes_with_identity(
     raw: str, allowed_identities: set[tuple[int, int]]
 ) -> bytes | None:
@@ -4489,7 +4527,7 @@ def validate_hook_fields(
 # which a hostile or careless command could echo straight back through stdout,
 # stderr, or the audit trail. This is the same strict-allowlist boundary the
 # authenticated ``gh``/``glab`` spawns cross (``_PROVIDER_BASE_ENV_KEYS`` in
-# ``dashboard/handlers/source_providers.py``); a variable a hook genuinely needs
+# ``dashboard/source_providers/runner.py``); a variable a hook genuinely needs
 # is added here by name, never by opening the gate to the whole environment. A
 # key absent from the host environment is simply not forwarded — the allowlist
 # is a filter, not a set of required keys — so a minimal container is unaffected.

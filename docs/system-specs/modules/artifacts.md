@@ -54,13 +54,13 @@ native controls. Disabling automatic content does not disable those controls.
 
 An HTML/widget artifact tagged `task-dashboard` is a model-authored task view,
 not a fixed dashboard schema. The chat's **Dynamic Dashboard** side-panel tab
-(labelled **Dashboard**; a one-time hint card above the composer opens it once
-and then stays gone for that session, the tab being the way back) and Crew's
+(labelled **Dashboard**; the three-tile dock above the composer opens it) and Crew's
 single **Dashboard** tab select
 only artifacts whose recorded originating slot is the current slot or a durable
 `created_by` descendant. A presentation-only child session can therefore publish
 without impersonating its conductor. The same slug is updated at milestones;
-visible hosts poll the artifact inventory every ten seconds and load new revisions.
+visible hosts re-read the artifact inventory on each `artifact_update` frame and
+load new revisions.
 Session matching strips the dashboard scope and normalizes registered channel
 keys with the history safe-key rules, retaining the channel namespace. Unknown
 prefixes are not folded; missing task roots remain fail-closed.
@@ -127,13 +127,60 @@ session summaries are active on a page, with one automatic card and at most one
 selected saved view each: at most 24 iframe documents, not twelve mounted wrappers.
 Native attention controls remain mounted independently to preserve drafts across
 filters and pages. The task panel
-mounts at most twelve session frames (workers among them carry no automatic card)
-plus its selected task publication; Crew's
+mounts its own session's automatic card (a worker carries none) plus its selected
+task publication. Under Progress it shows the work items whenever the board has
+any, and adds the running runs, uncapped, only when the board is not the progress
+source (absent, or with omitted entries): that is when the dock's Progress
+list shows runs, and that list caps its rows and hands its overflow to the panel,
+so the rest must be readable there. It carries no live run roster beyond that; idle and done runs
+stay with the sidebar's Subagents and Workflows tabs; Crew's
 existing protected-template renderer retains its own lifecycle.
 The optional creation request is a model-facing English prompt; translated UI
 copy names the published view, and the artifacts skill owns its technical
 publishing contract. Source failures render through the shared error notice in
 both the dock and panel, with no navigation hand-off beside unsent answer drafts.
+The chat dock above the composer, in the composer's own column, is three tiles
+and nothing else: progress (accepted or checked-off count, else the running
+count written as "N running", under one Progress label either way), blocked, and Needs you. Each tile
+is a disclosure button for its own short list (`aria-expanded`; the open tile
+points at its region with `aria-controls`, and a second click closes it), grouped
+under the Dashboard name; in a narrow column the tiles wrap onto further rows
+rather than truncating their labels. Beside them sit two actions, open the
+Dashboard tab (icon plus its "Open Dashboard" text) and hide. A tile discloses a list read from the same source as its
+number: the running work items when a board exists (a blocked item is the
+Blocked tile's row, a waiting one is nobody's progress), else the running runs;
+the blocked runs and items; the requests. Each row hands off to the panel (the
+row is the button, named by its item) and never mounts an answer or approval
+control, so a draft has one home: the panel, which the dock's labelled Open
+Dashboard button also reaches. The panel loads lazily with its tab, so the shell chunk carries only the
+dock; a panel chunk that fails to load is caught by a boundary local to the tab,
+which says so through the shared error notice with no navigation hand-off, and
+never reaches the route boundary that would replace the chat page. Opening the
+panel moves focus to the panel heading once it shows, unless the user
+has moved focus elsewhere meanwhile. The dock hides to a single pill that
+carries the hide glyph, or a red count while something needs the user (persisted
+per browser as `mc-task-dashboard-hidden`), and it is one element in both forms;
+the toggle unmounts the pressed control, so a hide or show made from the dock's
+own controls hands focus to the counterpart (hide lands on the pill, show on the
+hide button), while a mount or a persisted value takes no focus. It is removed
+once a complete, current read shows every run at rest, no request waiting and
+the plan complete; a paused workflow rests (no tile counts it), a queued worker
+or an item's open question does not; a work board settles when every item is
+accepted, rejected or abandoned, a half-loaded or disconnected inventory is
+never settled, and a session with an open plan stays shown even when a board
+supplies the progress number. That verdict is retained in page memory per
+root across dock remounts, but is not persisted across a page reload: one entry
+per root that ever settled in this page lifetime, released when that root shows
+new work, cleared by reload; it arms only
+after a complete read of a readable scope: before the first slot list lands
+nothing is loading or stale and the empty model is vacuously settled, which
+must not count. Once a
+complete read has settled the task, a later connection drop, source error or
+remount's loading window does not bring the dock back, and only evidence of new
+work releases it — a complete read showing something running, blocked or asking,
+or a live slot state that already says someone is waiting on the user. The panel header carries the same three
+tiles; its explanatory copy (scope, permission-mode note, containment statement,
+last-checked time) lives behind one info control.
 No command-center source polls. The dock, panel and all-session view read each
 source once and re-read it on the frame that announces its change: `approval` and
 `approval_resolved` for both approval systems, `question_card` and its retirement
@@ -141,7 +188,30 @@ for questions, `artifact_update` for a task dashboard, the crew log's
 `slot_projection` for the work board of a team holding that slot, and workflow
 events into the store, with a finished, failed or cancelled run also re-reading
 the workflow snapshot the store's live runs are laid over, and the store's own
-workflow heal read replacing that snapshot; a reconnect re-reads all of them. The work board is the one host source the crew log
+workflow heal read replacing that snapshot; a reconnect re-reads all of them.
+Window focus re-reads a command-center source only while it has failed, since the frame
+that would refresh it may never come; a healthy source is left to its frames. The dock, mounted in every chat, reads the work
+board only for a team (a slot with sessions created under it) or whenever a published
+view keeps the dock relevant for that slot, so a verdict never settles over an item the
+unread board still holds open; the panel always
+does. Only questions and approvals decide the stale notice and the "updated"
+clock, so an optional source that fails (workflows answer 503 while their service
+starts) cannot hide a fresh decision; the dock, panel and all-session view show
+one notice listing every failed source (workflow runs, the work items under Live
+activity, published views) beside those decisions, with the reassurance said once,
+so a missing source is never read as an empty one. A work board the dock does not read contributes nothing, even when an
+open panel cached one. Approvals share the app shell's
+`global-approvals` cache, which keeps its own 30-second refresh and is re-read on
+reconnect. A `slot_projection` frame never cancels a work read in flight; one
+more read follows it once it settles. The shared model's session-state rule — a
+session is running while its turn runs or while subagents run, it is
+orchestrating, or it holds queued messages; a paused workflow waits and a planning
+one runs — also governs the all-session view's Running badge and its sort
+priority, which read the same model rather than the slot's turn flag alone. The all-session view takes its sort order
+when the set of sessions, what needs attention, the filter or the page changes,
+not on activity, since moving a card reloads its iframes and their single-use
+documents; a card shows the published views of its whole
+`created_by` team, as the task panel does. The work board is the one host source the crew log
 owns, a checkpointed slot fold. Pending approvals and questions stay on the live
 host inventory rather than a crew-log projection: a card needs the request's tool
 input, which the crew log only digests, and a decision needs the live future the
@@ -206,9 +276,11 @@ for isolated test instances.
 keeps its whole import surface, re-exporting each moved name with one identity:
 `kiro_crew.artifacts.ArtifactFolderStore` and
 `kiro_crew.artifact_store.folders.ArtifactFolderStore` are the same class. Its
-`__all__` lists that complete public surface, the moved names included, so a
-star import exposes them. The `records` and `comments` helpers the store calls
-are internal to it and are imported from their owner.
+`__all__` is derived from what the module binds plus its forwarding table
+(`_EXPORTS`), minus the forwarding machinery, so a star import exposes every
+public name, the moved and forwarded ones included, and no list of names is kept
+by hand. The `records` and `comments` helpers the store calls are internal to it
+and are imported from their owner.
 
 | Owner | Responsibility |
 |---|---|
@@ -227,8 +299,14 @@ time (`folders` names `ArtifactStore` for type checking only), and none performs
 networking or redaction or touches the filesystem except `ArtifactFolderStore` on
 its own file. `rules` imports `kiro_crew.history` and `kiro_crew.messaging.link`
 inside `_strip_session_scope` because both import the facade back. The moved
-classes keep `kiro_crew.artifacts` as their `__module__`, so tracebacks and type
-names in logs are unchanged.
+error classes (`ArtifactError` and its five subclasses) keep `kiro_crew.artifacts`
+as their `__module__`, so tracebacks and the error types in logs are unchanged;
+the cost is that `inspect.getsource` cannot find them through that name and
+raises `OSError`, and `inspect.getfile` names `artifacts.py` rather than the owner
+file that defines them. Every other moved class -- the record
+dataclasses, the class of `EXPECT_ABSENT` and `ArtifactFolderStore` -- reports
+the owner module that defines it, so the source lookup and a debugger find its
+definition.
 
 The store's seams belong to the facade, which hands them to the owners at call
 time, so they are patched on `kiro_crew.artifacts`: `config_dir`, `_now_iso`,
@@ -254,19 +332,40 @@ own imports too: a directly constructed `ArtifactFolderStore` takes its default
 path from `folders`' `config_dir` and logs through `folders`' `logger`, which is
 the same `kiro_crew.artifacts` logger object.
 
-Rule data an owner's own code reads has one live binding, in the owner, and the
-store reads it through the owner module too (`create_image` truncates to
-`MAX_NAME_LEN` / `MAX_DESCRIPTION_LEN`, and `update` pre-checks
+Rule data an owner's own code reads has one binding, in the owner, and the
+facade forwards it instead of holding a copy: `_EXPORTS` maps each such name to
+its owner, the module `__getattr__` answers a read from the owner in
+`sys.modules`, and the module's class sends a write or a delete to the owner. A
+patch through `kiro_crew.artifacts` (`monkeypatch`, or `mock.patch` without
+`create`) and a patch of the owner module therefore both reach every reader that
+looks the name up on the owner or the facade when it runs (a module that imports a
+forwarded name by name keeps its own copy, as `code_review_sage`'s report module
+does with `_SLUG_RE`), and the store reads these names through the owner module too (`create_image`
+truncates to `MAX_NAME_LEN` / `MAX_DESCRIPTION_LEN`, and `update` pre-checks
 `ALLOWED_EVENT_TYPES`). That covers the field limits and grammar
 (`MAX_NAME_LEN`, `MAX_DESCRIPTION_LEN`, `MAX_TAGS`, `MAX_SOURCE_PATH_LEN`,
-`_SLUG_RE`, `_TAG_RE`), the kind sets and inference maps (`ALLOWED_KINDS`,
-`ALLOWED_SOURCES`, `_EXT_KIND_MAP`, `_HTML_SNIFF_MARKERS`) in `rules`, the
-event-type vocabulary (`ALLOWED_EVENT_TYPES`) in `records`, and the folder path
-limits (`FOLDER_PATH_SEP`, `MAX_FOLDER_DEPTH`) in `folders`. The facade copy of
-such a name is an import-compatible re-export that steers nothing, so patch the
-owner module. `_IMAGE_MIME_EXT` is read only by the store, so its facade binding
-is the live one. `MAX_AUTO_WIDGET_ARTIFACTS` is the default argument of
-`prune_auto_widgets`, bound when the class is defined.
+`_SLUG_RE`, `_TAG_RE`, `_SLUG_NORMALIZE_RE`), the kind sets and inference tables
+(`ALLOWED_KINDS`, `ALLOWED_SOURCES`, `DOC_EXTENSIONS`, `_EXT_KIND_MAP`,
+`_HTML_SNIFF_MARKERS`, `_MD_HEADING_RE`, `_SVG_ROOT_RE`), the theme-colour lint
+patterns (`_HARDCODED_COLOR_RE`, `_HREF_ATTR_RE`) and `_strip_session_scope` in
+`rules`, the event-type vocabulary (`ALLOWED_EVENT_TYPES`) in `records`, the
+folder limits (`FOLDER_PATH_SEP`, `MAX_FOLDER_DEPTH`, `_NO_GENERATIONS`) in
+`folders`, and the per-format sniffers (`_sniff_jpeg_dimensions`,
+`_sniff_webp_dimensions`) in `images`. The moved classes stay ordinary bindings
+of the facade, since a class is never rebound and the store's string annotations
+resolve through them. The forwarding `__getattr__` is hidden from type checkers,
+which see each forwarded name through a `TYPE_CHECKING` import from its owner.
+`mock.patch(..., create=True)` on a forwarded name is not supported, because its
+exit deletes the owner's binding, and `test_artifacts_refactor_create_guard`
+refuses one anywhere in the test trees. `_IMAGE_MIME_EXT` is read only by the
+store, so its facade binding is the live one. `MAX_AUTO_WIDGET_ARTIFACTS` is the
+default argument of `prune_auto_widgets`, bound when the class is defined.
+
+`test_artifacts_refactor_store_contract` derives, from the tests themselves, every
+name a test rebinds on `kiro_crew.artifacts`, and fails when one is neither
+forwarded nor held by the facade alone with no owner function reading its own
+binding of it. Its one listed exception is `config_dir`, which `folders` reads for
+a directly constructed `ArtifactFolderStore`.
 
 `list()` returns newest first on a TOTAL order, `(updated_at, slug)` descending.
 The tie-break is load-bearing, not cosmetic: `updated_at` is microsecond ISO, so

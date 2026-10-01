@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 
 from aiohttp import web
 
+from kiro_crew.constants import DENY_CAUSE_SURFACE_POLICY
 from kiro_crew.dashboard.handlers._shared import (
     read_bounded_json,
     require_owner_dashboard_request,
@@ -19,6 +20,7 @@ from kiro_crew.dashboard.handlers._shared import (
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.execution_context import ExecutionContext, bind_session_execution
 from kiro_crew.hooks import FileTooLargeError, validate_file_path
+from kiro_crew.llm_helpers import _steer_host_deny
 from kiro_crew.security import (
     is_sensitive_path,
     is_sensitive_resolved_path,
@@ -1104,6 +1106,16 @@ async def api_taskrunner_from_chat(request: web.Request) -> web.Response:
     )
 
 
+#: What the model is told when the task-refine turn refuses a tool call. The
+#: refine SURFACE runs no tools -- it drafts the task spec from the request and
+#: answers the user's questions with text -- so nothing about the call was
+#: judged, and the reason says what this surface permits (nothing), which is
+#: what the surface-policy notice tells the model to read.
+_REFINE_DENY_REASON = (
+    "the task refine turn runs no tools: it only drafts the task spec from the "
+    "request and answers with text, so every tool call is refused here"
+)
+
 _REFINE_PROMPT = (
     "You are a task spec writer. Rewrite the user's request into a clear, structured task specification.\n\n"
     "Output ONLY the spec in this format — no preamble, no commentary:\n\n"
@@ -1160,6 +1172,24 @@ async def _run_refine(
                     _last_push = now
                     _push()
             elif event.kind == EVENT_PERMISSION_REQUEST:
+                # Audit FIRST (backend-security-controls: every denied tool
+                # attempt is a Security Event Log row, and the steer and the
+                # reject both await the ACP pipe, so a row sequenced after them
+                # can be cancelled away), then tell the model in-band that the
+                # HOST refused this (a rejected permission reaches it as
+                # kiro-cli's "User denied tool execution"), then answer the
+                # wire. The SURFACE refuses every call, so the notice says what
+                # the refine turn permits, not a sanctioned alternative.
+                _sel().log_tool_invocation(
+                    session_key=session_key,
+                    tool_name=getattr(event, "title", "") or "unknown",
+                    outcome="denied",
+                    source="taskrunner_refine",
+                    request_id=str(event.request_id),
+                )
+                await _steer_host_deny(
+                    client, event, _REFINE_DENY_REASON, cause=DENY_CAUSE_SURFACE_POLICY
+                )
                 await client.reject_tool(event.request_id)
             elif event.kind == EVENT_COMPLETE:
                 break

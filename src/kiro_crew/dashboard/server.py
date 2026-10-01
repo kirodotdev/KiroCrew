@@ -552,6 +552,7 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         "/api/session-control/create",
         "/api/session-control/fork",
         "/api/session-control/stop",
+        "/api/session-control/end-wait",
         "/api/session-control/set-model",
         "/api/session-control/close",
         "/api/session-control/revive",
@@ -1912,6 +1913,10 @@ def _register_mcp_routes(app: web.Application) -> None:
     )
     app.router.add_post(
         "/api/session-control/stop", _deferred("session_control", "api_session_control_stop")
+    )
+    app.router.add_post(
+        "/api/session-control/end-wait",
+        _deferred("session_control", "api_session_control_end_wait"),
     )
     app.router.add_post(
         "/api/session-control/set-model",
@@ -4058,6 +4063,18 @@ def _kick_knowledge_orphan_reclaim(state: DashboardState) -> None:
     task = asyncio.create_task(_knowledge_orphan_reclaim())
     state._background_tasks.add(task)
     task.add_done_callback(state._background_tasks.discard)
+
+
+def _register_browser_install_cleanup(app: web.Application, state: DashboardState) -> None:
+    """Stop any browser install owned by this gateway during shutdown."""
+
+    async def _browser_install_shutdown(app_: web.Application) -> None:
+        try:
+            await handlers.stop_browser_install(app_["state"])
+        except Exception:  # noqa: BLE001 - shutdown must not raise
+            logger.debug("browser install stop failed during shutdown", exc_info=True)
+
+    app.on_cleanup.append(_browser_install_shutdown)
 
 
 def _register_browser_view_cleanup(app: web.Application, state: DashboardState) -> None:
@@ -6291,6 +6308,8 @@ async def start_dashboard(
         # ``runner.setup()`` freezes the app's signal lists. See
         # ``_register_instances_hooks`` for why ordering matters.
         _register_instances_hooks(app, state, port)
+        # Install cleanup stays first, before browser relay/session shutdown.
+        _register_browser_install_cleanup(app, state)
         _register_browser_view_cleanup(app, state)
         _register_connections_warm_lifecycle(app, state)
         _register_workflow_lifecycle(app, state)
@@ -7338,6 +7357,7 @@ async def start_api_server(
     # Slack task, identically to the full dashboard.
     _register_prevent_sleep_shutdown(app, state)
     _register_listener_guard_shutdown(app, state)
+    _register_browser_install_cleanup(app, state)
     _register_connections_warm_lifecycle(app, state)
     _register_workflow_lifecycle(app, state)
 

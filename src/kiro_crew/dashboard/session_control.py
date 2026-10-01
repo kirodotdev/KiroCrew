@@ -1092,6 +1092,16 @@ QUEUED_CONTAINMENT_META_KEY = "queued_containment"
 # copies the admission dict onto the new entry's meta.
 SEND_ORIGIN_META_KEY = "send_origin_slot"
 
+# Queue-entry meta key naming the CHANNEL CONVERSATION that sent a message into a
+# resumed dashboard session mid-turn (``dashboard.channel_handoff``), so a
+# drain-time drop can be reported back into that conversation: the channel was
+# told "queued" at admission and, unlike a dashboard sender, reads neither the
+# target's transcript nor the SEL. Same reasoning as the sender stamp above for
+# why it is ``meta`` and how a requeued steer keeps it. It names a WRITE TARGET
+# on a network surface, so the restore path strips it like the sender stamp, and
+# the notice re-runs the outbound recipient authorization before it is sent.
+CHANNEL_RECIPIENT_META_KEY = "channel_recipient"
+
 # How much of a dropped delivery's own text the sender's notice quotes back, so
 # a caller holding several deliveries in flight can tell which one went.
 SEND_DROP_EXCERPT_CHARS = 120
@@ -1295,6 +1305,63 @@ def send_drop_excerpt(text: Any) -> str:
     return flat[:SEND_DROP_EXCERPT_CHARS].rstrip() + "…"
 
 
+def channel_recipient_meta(
+    channel_type: str, conversation_id: str, principal: str
+) -> dict[str, Any]:
+    """Queue-entry ``meta`` naming the channel conversation a message came FROM.
+
+    Stamped by :func:`~kiro_crew.dashboard.channel_handoff.hand_to_resumed_slot`
+    on both of its arms (the queue entry directly; the steer through its admission
+    dict, which the requeue copies onto the entry), so a drain-time drop can be
+    reported into that conversation (:func:`notify_channel_recipient_dropped`).
+
+    *principal* is the platform user id the channel authorized on inbound. It
+    rides along because the outbound recipient check needs one the SESSION KEY
+    cannot supply: a dashboard session names no channel peer, and a Discord DM's
+    conversation id is unrelated to the user id its roster holds, so without it the
+    notice would be refused as an unidentifiable recipient. Empty when the
+    channel has none to give (a thread route answers on its conversation id).
+
+    Empty when either address field is missing, and then nothing is stamped
+    rather than a half-address: a stamp that cannot be delivered to must not
+    produce a write.
+    """
+    channel_type = str(channel_type or "")
+    conversation_id = str(conversation_id or "")
+    if not channel_type or not conversation_id:
+        return {}
+    return {
+        CHANNEL_RECIPIENT_META_KEY: {
+            "channel_type": channel_type,
+            "conversation_id": conversation_id,
+            "principal": str(principal or ""),
+        }
+    }
+
+
+def channel_recipient_of(entry_meta: Any) -> tuple[str, str, str] | None:
+    """``(channel_type, conversation_id, principal)`` from an entry's stamp, or None.
+
+    *entry_meta* is plumbing of any shape: a missing, non-dict or malformed stamp
+    -- a non-string field, an empty address -- reads as no recipient, and the drop
+    proceeds unreported exactly as it does for a human-typed entry. Both readers
+    of a write-target stamp fail closed on the same shapes.
+    """
+    if not isinstance(entry_meta, dict):
+        return None
+    stamp = entry_meta.get(CHANNEL_RECIPIENT_META_KEY)
+    if not isinstance(stamp, dict):
+        return None
+    channel_type = stamp.get("channel_type")
+    conversation_id = stamp.get("conversation_id")
+    principal = stamp.get("principal", "")
+    if not isinstance(channel_type, str) or not isinstance(conversation_id, str):
+        return None
+    if not channel_type or not conversation_id or not isinstance(principal, str):
+        return None
+    return channel_type, conversation_id, principal
+
+
 def newly_held_constraints(
     now: dict[str, Any], entry_meta: Any, *, directive_user_origin: bool = False
 ) -> list[str]:
@@ -1469,6 +1536,109 @@ def notify_send_origin_dropped(
             target_key,
         )
         return False
+    return True
+
+
+def notify_channel_recipient_dropped(
+    state: "DashboardState",
+    *,
+    entry_meta: Any,
+    target_slot: "_ChatSlot",
+    text: Any,
+    constraints: list[str],
+    mirror_unverified: bool = False,
+) -> bool:
+    """Tell the CHANNEL CONVERSATION that sent a message that the drain dropped it.
+
+    The channel counterpart of :func:`notify_send_origin_dropped`. A message a
+    channel handed to a resumed dashboard slot's queue
+    (``dashboard.channel_handoff``) was confirmed "queued" in that conversation,
+    and the conversation reads neither the target's transcript nor the SEL -- so
+    without this the one outcome the author most needs, that the message will
+    never run, is the one they are never told, and they wait for a reply that
+    cannot come.
+
+    Returns whether a notice was SCHEDULED: True once the entry carries a channel
+    stamp and the task below exists. Answers False, and is not a failure, when the
+    entry carries no stamp (a dashboard-typed or restored entry) or when no loop
+    is running to carry the task. Whether the notice is then SENT is decided
+    inside the task, and its refusals are logged and audited there.
+
+    The send goes through the cross-surface ladder every proactive channel
+    delivery takes (``chat_runner._resolve_channel_target``: channels governance,
+    a registered transport that can send proactively, and the RECIPIENT
+    re-check), with the principal the stamp recorded -- the platform user the
+    channel authorized on inbound -- because a dashboard session key names no
+    channel peer for the ladder to derive one from. A revoked recipient gets no
+    notice; the refusal is audited by the ladder. The mirror pause is NOT
+    consulted: this is a delivery receipt to the message's own author, not turn
+    output, and the pause mutes output.
+
+    Nothing of the ladder runs on the calling thread. The drain that drops the
+    entry is synchronous on the event loop by contract (no suspension between its
+    snapshot and the dequeue), so the send cannot be awaited there -- and the
+    ladder's governance vet is the call every other async caller offloads,
+    because it reads and validates policy on the shared loop. Both therefore run
+    inside the scheduled task: the resolve through ``asyncio.to_thread``, the
+    send awaited after it. The task is held in the state's background set so it
+    cannot be collected mid-flight. Best-effort throughout: a failure is logged
+    and the drop, which is the authorization decision, stands.
+
+    The quoted excerpt is redacted through the same egress chain every channel
+    delivery uses: the author typed the text, but this is a network write and the
+    conversation may be read on a shared screen.
+    """
+    recipient = channel_recipient_of(entry_meta)
+    if recipient is None:
+        return False
+    channel_type, conversation_id, principal = recipient
+    # circular import: chat_runner imports this module's helpers at module level.
+    from kiro_crew.dashboard.chat_runner import _resolve_channel_target
+    from kiro_crew.dashboard.chat_utils import _redact_for_display
+
+    link = ChannelLink(channel_type, channel_id=conversation_id)
+    session_key = slot_history_key(target_slot)
+    excerpt = _redact_for_display(sanitize_outbound(send_drop_excerpt(text)))
+    notice = (
+        "⚠️ Your queued message to that session was dropped before it ran: "
+        + describe_containment_change(constraints, mirror_unverified=mirror_unverified)
+        + " after it was queued, so the authorization that admitted it no longer "
+        + "holds. It was not delivered and will not run; send it again if it still applies."
+        + (f' Text: "{excerpt}"' if excerpt else "")
+    )
+
+    async def _send() -> None:
+        try:
+            target = await asyncio.to_thread(
+                _resolve_channel_target, state, session_key, link, principal=principal
+            )
+        except Exception:
+            logger.warning(
+                "channel drop notice: send ladder failed for %s; the drop is not reported",
+                channel_type,
+                exc_info=True,
+            )
+            return
+        if target is None:
+            return
+        resolved_link, transport = target
+        try:
+            await transport.send_message(
+                resolved_link.channel_id, notice, thread_id=resolved_link.thread_id
+            )
+        except Exception:
+            logger.warning("channel drop notice: send to %s failed", channel_type, exc_info=True)
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        logger.warning("channel drop notice: no running loop to carry the send to %s", channel_type)
+        return False
+    task = loop.create_task(_send())
+    background = getattr(state, "_background_tasks", None)
+    if isinstance(background, set):
+        background.add(task)
+        task.add_done_callback(background.discard)
     return True
 
 
@@ -2169,10 +2339,11 @@ async def create_session(
             # at THIS gate-verified admission rather than stranding own-store
             # dispatch until the owner re-selects the agent. The trust source is
             # the VERIFIED session key: `revouch_at_verified_admission` re-vouches
-            # only when that key is a member DM key whose slug the durable record
-            # AGREES with, so a caller that forged its record to name a peer's
-            # store (its key is not a member DM key, or its slug is not the member
-            # the record claims) gets nothing. `caller_key` is the key the HTTP
+            # a member DM key whose slug the durable record AGREES with, or any
+            # other key whose disk vouch copy in `vouched-executions/` (written
+            # when the gateway vouched it -- a member-born child) agrees with the
+            # record. A caller that forged its record to name a peer's store gets
+            # nothing: neither source names the peer. `caller_key` is the key the HTTP
             # gate authenticated; `caller_memory_identity[0]` is the same session's
             # history key, which carries the `member-<slug>` form for a member DM.
             # Off the loop: it resolves the member's store from config (filesystem
@@ -4319,6 +4490,82 @@ async def stop_target(
             # session-control trail has to show it was made.
             "escalation_withheld": not may_escalate,
         },
+    )
+    return {"ok": True, "target": slot.key, **result}
+
+
+async def end_wait_target(
+    state: "DashboardState",
+    *,
+    caller_session_key: str,
+    target: str,
+    caller_fenced: bool | None = None,
+) -> dict[str, Any]:
+    """Wake *target* from the ``wait`` tool early, keeping its turn.
+
+    The same mechanism as the dashboard's End-wait button
+    (``api_chat_slot_end_wait``): the request is parked on the slot as
+    ``_end_wait_request`` and the sleeping tool collects it on its next keepalive
+    ping, then returns a normal tool result. Nothing is cancelled and no work is
+    discarded, which is what separates this verb from ``session_stop``.
+
+    The caller does not name a ``wait_id``. The button needs one because a stale
+    tab can still show an old countdown; here the id is read from the slot at the
+    moment of the request, so the request can only ever name the sleep that is in
+    flight now. ``_end_wait_by`` records who asked, so the keepalive reply can tell
+    the woken session that another session ended its wait rather than the user.
+
+    A target that is not sleeping is not an error: the reply carries ``info``
+    instead, so a caller does not retry something that has nothing to act on.
+    """
+    # Same ordering as `stop_target`: both prewarms are awaits, so they sit
+    # above the gate and nothing suspends between the gate and the write.
+    try:
+        await asyncio.to_thread(sel)
+    except Exception:  # noqa: BLE001 - a prewarm failure must not fail the call
+        logger.warning("session-control SEL prewarm failed", exc_info=True)
+    await prewarm_enabled_check()
+
+    slot = authorize_target(
+        state,
+        caller_session_key=caller_session_key,
+        target=target,
+        operation="end_wait",
+        precomputed_ownership_fenced=caller_fenced,
+    )
+    caller_key = caller_slot_key(state, caller_session_key)
+    if _created_by_other(slot, caller_key):
+        # Narrower than the other verbs on purpose: an owner session is not
+        # creator-fenced by `authorize_target`, but waking a sleep moves a turn
+        # forward on someone else's schedule, and the caller that armed the
+        # worker's wait is the one that knows when it is safe to end it.
+        raise _deny_factory(
+            caller_session_key=caller_session_key, operation="end_wait", target=target
+        )("session_end_wait reaches only sessions you created", "not_creator")
+    if getattr(slot, "_wait_contested", False):
+        # Two sleeps share this slot's session key (see _service_wait_ping's
+        # ambiguous-identity guard). There is no way to aim at one of them, and
+        # the button is hidden for the same reason.
+        info = "two waits share this session, so neither can be ended early"
+        result = {"ended": False, "info": info}
+        audit_result = "contested"
+    else:
+        current = getattr(slot, "_wait_state", None) or {}
+        wait_id = str(current.get("wait_id") or "")
+        if not wait_id:
+            result = {"ended": False, "info": "not sleeping in the wait tool"}
+            audit_result = "not_waiting"
+        else:
+            slot._end_wait_request = wait_id
+            slot._end_wait_by = caller_key
+            result = {"ended": True, "wait_id": wait_id}
+            audit_result = "requested"
+    _audit(
+        caller_session_key=caller_session_key,
+        operation="end_wait",
+        slot_key=slot.key,
+        outcome="allowed",
+        detail={"result": audit_result},
     )
     return {"ok": True, "target": slot.key, **result}
 

@@ -30,7 +30,6 @@ import contextlib
 import hashlib
 import json
 import logging
-import ntpath
 import os
 import re
 import shlex
@@ -47,7 +46,7 @@ from kiro_crew import __version__, platform_compat
 from kiro_crew.agent_spec_format import iter_agent_spec_files
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import config_dir
-from kiro_crew.env import mcp_search_path, spec_path_key
+from kiro_crew.env import mcp_search_path, resolved_command_casing, spec_path_key
 from kiro_crew.mcp_cleanup import (
     KIROCREW_BIN_MCP_SERVERS,
     mcp_entry_is_muted,
@@ -225,38 +224,6 @@ _TARGET_ARGS_FLAG_LEGACY = "--target-args"
 _STUB_MODULE = STUB_MODULE
 
 
-def _target_command_casing(path: str | None) -> str:
-    """Restore a PATH-resolved Windows basename without resolving aliases.
-
-    ``which`` can synthesize ``.EXE`` from PATHEXT. Looking up the matching
-    parent-directory entry repairs that spelling while retaining the lexical
-    parent route and a file symlink's own name. POSIX paths stay untouched.
-    """
-    if not path:
-        return ""
-    if not platform_compat.IS_WINDOWS:
-        return path
-    parent, name = os.path.split(path)
-    if not name:
-        return path
-    folded = ntpath.normcase(name)
-    matches: list[str] = []
-    try:
-        with os.scandir(parent or os.curdir) as entries:
-            for entry in entries:
-                if entry.name == name:
-                    return path
-                if ntpath.normcase(entry.name) == folded:
-                    matches.append(entry.name)
-    except OSError:
-        return path
-    # A case-sensitive Windows directory may legally contain ambiguous names.
-    # Never turn the requested launcher into a different directory entry.
-    if len(matches) != 1:
-        return path
-    return path[: -len(name)] + matches[0]
-
-
 # cmd.exe metacharacters. kiro-cli launches MCP entries on Windows through
 # ``cmd.exe /C``, which re-parses the assembled line: a quoted element beyond
 # the first trips the outer quote-stripping rule ("starts with a quote and has
@@ -377,7 +344,7 @@ def _resolve_target_command(
     # augmented host PATH. It also degrades a non-string PATH and dedups, so one
     # malformed hand-edited spec cannot abort the rewrite pass.
     search_path = mcp_search_path(env_path)
-    resolved = _target_command_casing(shutil.which(target_command, path=search_path))
+    resolved = resolved_command_casing(shutil.which(target_command, path=search_path))
     if notes is not None:
         notes.which_results[
             f"{target_command}{_WHICH_KEY_SEP}{search_path}"
@@ -1641,7 +1608,7 @@ def _kept_artifacts_vouched(
     for key, recorded in which_probes.items():
         bare, _, search_path = key.partition(_WHICH_KEY_SEP)
         try:
-            current = _target_command_casing(shutil.which(bare, path=search_path))
+            current = resolved_command_casing(shutil.which(bare, path=search_path))
         except OSError:
             return False
         if current != recorded:
@@ -1911,7 +1878,7 @@ def _cached_rewrite_result(
     for key, recorded in stored["which"].items():
         bare, _, search_path = key.partition(_WHICH_KEY_SEP)
         try:
-            current = _target_command_casing(shutil.which(bare, path=search_path))
+            current = resolved_command_casing(shutil.which(bare, path=search_path))
         except OSError:
             return None
         if current != recorded:

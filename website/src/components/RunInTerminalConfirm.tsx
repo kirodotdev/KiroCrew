@@ -14,12 +14,19 @@ import { i18nT } from '../i18n/t'
  * confirmation.
  */
 export default function RunInTerminalConfirm(
-  { open, command, warnReason, onConfirm, onCancel }: {
+  { open, command, warnReason, willCopy, onConfirm, onCancel }: {
     open: boolean
     /** The exact string that will be sent to the terminal (prompt chars already stripped). */
     command: string
     /** Non-empty when the command tripped a sensitive-command pattern. */
     warnReason?: string
+    /**
+     * True when the reuse-current setting is on, so confirming COPIES the
+     * command to the clipboard for the user to paste rather than running it in
+     * a new tab. Switches the title, body and primary-button copy from Run to
+     * Copy so the dialog does not promise an action it will not take.
+     */
+    willCopy?: boolean
     onConfirm: () => void
     onCancel: () => void
   },
@@ -45,7 +52,9 @@ export default function RunInTerminalConfirm(
       title={
         <span className="inline-flex items-center gap-2">
           <SquareTerminal size={15} className="text-muted" />
-          {i18nT('components.runInTerminalConfirm.title')}
+          {willCopy
+            ? i18nT('components.runInTerminalConfirm.title_copy')
+            : i18nT('components.runInTerminalConfirm.title')}
         </span>
       }
       footer={
@@ -66,17 +75,21 @@ export default function RunInTerminalConfirm(
             }`}
             onClick={onConfirm}
           >
-            {sensitive
-              ? i18nT('components.runInTerminalConfirm.run_anyway')
-              : i18nT('components.runInTerminalConfirm.run')}
+            {willCopy
+              ? i18nT('components.runInTerminalConfirm.copy')
+              : sensitive
+                ? i18nT('components.runInTerminalConfirm.run_anyway')
+                : i18nT('components.runInTerminalConfirm.run')}
           </button>
         </>
       }
     >
       <p className="text-[12px] text-muted mb-2.5">
-        {lines.length > 1
-          ? i18nT('components.runInTerminalConfirm.body_multi', { lines: lines.length })
-          : i18nT('components.runInTerminalConfirm.body_single')}
+        {willCopy
+          ? i18nT('components.runInTerminalConfirm.body_copy')
+          : lines.length > 1
+            ? i18nT('components.runInTerminalConfirm.body_multi', { lines: lines.length })
+            : i18nT('components.runInTerminalConfirm.body_single')}
       </p>
 
       {sensitive && (

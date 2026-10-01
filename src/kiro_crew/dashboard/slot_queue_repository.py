@@ -329,6 +329,7 @@ def sanitize_restored_queue(raw: object) -> list[dict[str, Any]]:
     # the key at module level would close an import cycle.
     from kiro_crew.dashboard.chat_delivery import TURN_ACTOR_META_KEY
     from kiro_crew.dashboard.session_control import (
+        CHANNEL_RECIPIENT_META_KEY,
         QUEUED_CONTAINMENT_META_KEY,
         SEND_ORIGIN_META_KEY,
     )
@@ -397,7 +398,7 @@ def sanitize_restored_queue(raw: object) -> list[dict[str, Any]]:
             # actor at all -- the same fail-closed baseline the flags above get.
             #
             # The SENDING SLOT goes with them, and it is the sharpest of the
-            # three because the value is not merely read, it names a WRITE
+            # first three because the value is not merely read, it names a WRITE
             # TARGET: the drain resolves the recipient of its drop notice from
             # this key alone and appends the entry's own text there
             # (`session_control.notify_send_origin_dropped`). Carried back off
@@ -410,6 +411,11 @@ def sanitize_restored_queue(raw: object) -> list[dict[str, Any]]:
             # itself still survives -- which is what putting the stamp in
             # ``meta`` rather than a consumption callback buys, since a
             # callback-carrying entry is not persisted at all.
+            #
+            # The CHANNEL RECIPIENT stamp goes for the same reason with a wider
+            # blast radius: it names a conversation on a network surface and the
+            # drop notice would carry the entry's text there, so an edited stamp
+            # would turn a file write into an outbound channel message.
             entry["meta"] = {
                 k: v
                 for k, v in meta.items()
@@ -418,6 +424,7 @@ def sanitize_restored_queue(raw: object) -> list[dict[str, Any]]:
                     QUEUED_CONTAINMENT_META_KEY,
                     TURN_ACTOR_META_KEY,
                     SEND_ORIGIN_META_KEY,
+                    CHANNEL_RECIPIENT_META_KEY,
                 )
             }
         try:

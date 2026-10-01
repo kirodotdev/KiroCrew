@@ -71,6 +71,12 @@ export async function healRedactionSwitchAfterReconnect(qc: QueryClient): Promis
  */
 export function invalidateRefreshQueries(qc: QueryClient): void {
   qc.invalidateQueries({ queryKey: ['cron-jobs'] })
+  // Prefix match on purpose: `['crons', 'crew-wake', <crew>]` caches the one global cron
+  // payload once per crewmate whose schedules pane has been opened (the crew editor's and
+  // the Crewmates panel's). Invalidating only `['cron-jobs']` refreshed the Schedule page
+  // and left every one of those entries stale, so a schedule changed anywhere else kept
+  // its old status under each crewmate until that entry happened to refetch.
+  qc.invalidateQueries({ queryKey: ['crons'] })
   qc.invalidateQueries({ queryKey: ['cron-history-all'] })
   qc.invalidateQueries({ queryKey: ['spawn-list'] })
   qc.invalidateQueries({ queryKey: ['sessions-context'] })
@@ -116,6 +122,8 @@ export function refreshServerStateAfterReconnect(queryClient: QueryClient): void
   // and cancel old reads before refetching observed cards.
   queryClient.resetQueries({ queryKey: ['dashboard-card'] })
   queryClient.invalidateQueries({ queryKey: ['command-center'] })
+  // The command center shares the app shell's approvals cache.
+  queryClient.invalidateQueries({ queryKey: ['global-approvals'] })
   // Same one-shot problem for the artifact library: `artifact_update`
   // frames pushed while the socket was down were never delivered, and a
   // list query that ERRORED during the gap (gateway restart 403s /

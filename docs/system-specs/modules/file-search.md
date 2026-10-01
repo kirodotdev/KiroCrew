@@ -382,7 +382,10 @@ shows literally — the same trade-off inline file mentions make.
 | `src/kiro_crew/dashboard/file_index.py` | `FileIndex`, `FileIndexRegistry` |
 | `website/src/components/FilePickerMenu.tsx` | Picker UI, `kind` propagation, trailing-slash insertion, `pathMode` |
 | `website/src/components/composerTokens.ts` | Caret-relative `@` / `$` / `./` token matchers and the shared token replace |
-| `website/src/components/ChatInput.tsx` | Composer wiring, pending file/folder preview strip |
+| `website/src/components/ChatInput.tsx` | Composer wiring: mounts the trigger pickers and the preview strip |
+| `website/src/components/chat-input/pickers.ts` | Which trigger picker the text at the caret opens (`@` / `$` / `./` / `/`), one rule for the textarea and the Lexical editor |
+| `website/src/components/chat-input/PickerMenus.tsx` | The `@` file picker, the `./` path picker (`pathMode`) and the `$` / `/` menus, anchored to the composer |
+| `website/src/components/chat-input/FilePreviewStrip.tsx` | Pending file/folder preview strip: basename-first folder labels, per-tile remove |
 | `website/src/utils/fileTokens.ts` | Attachment-marker owner: file AND dir token parse/serialize/resolve |
 | `website/src/utils/chatFileTokenDrafts.ts` | Per-slot persistence of file-chip aliases beside the staged-file drafts |
 | `website/src/pages/ChatPage.tsx` | Token-derived staging and send/steer serialization |
@@ -394,6 +397,7 @@ shows literally — the same trade-off inline file mentions make.
 |---|---|
 | `test/test_file_search.py` | Endpoint behaviour, scoring, exclusions |
 | `test/test_path_complete.py` | Directory listing, prefix + dot-entry rules, cap, the containment refusals (`../` escape, absolute `dir`, symlink out, an entry pointing out), the re-entering `../` run, and the swap-after-validation race |
+| `website/src/test/ChatInput.refactor.pickers.test.tsx` | The same `@` / `$` / `./` / `/` trigger decision from the textarea and from the Lexical change callback, and the caret each publishes |
 | `website/src/test/ChatInput.pathTrigger.test.tsx` | The `./` trigger: scoping per token, Tab/Enter accept, directory re-open, the debounce and placeholder windows (an accepted row is always rebuilt on the prefix that produced it), the out-of-project empty state, Escape, no `~/`, no menu without a project |
 | `website/src/test/composerTokens.test.ts` | Token matchers and detection↔insertion span agreement |
 | `test/test_file_grep.py` | Engine parity, the stdin pattern channel, anchored exclusions, deadline-bounded extraction, row redaction |

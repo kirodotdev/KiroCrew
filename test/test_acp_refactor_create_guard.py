@@ -346,7 +346,7 @@ _RUNTIME = acp_runtime.__name__
 _MOVED = "_kill_escaped_children"
 _MOVED_RT = "_resolve_session_start_concurrency"
 _KEPT = "_mise_which"
-_KEPT_RT = "_INIT_TIMEOUT_UNDER_THROTTLE"
+_KEPT_RT = "_INITIALIZE_TIMEOUT"
 
 
 #: ``(source, expected hits)``: every rule answered both ways, a must-flag case and a

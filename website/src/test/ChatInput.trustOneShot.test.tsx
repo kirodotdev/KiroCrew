@@ -35,12 +35,20 @@
  * The gate itself is pinned behaviorally in ChatInput.approval.test.tsx.
  */
 import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 import { toApiDecision } from '../utils/approvalDecision'
 
-const source = readFileSync(resolve(__dirname, '../components/ChatInput.tsx'), 'utf-8')
+// The composer is `components/ChatInput.tsx` plus its owners in
+// `components/chat-input/`; the approval decision submit lives in the approval
+// owner, and the contract below holds over the whole composer.
+const COMPOSER_DIR = resolve(__dirname, '../components/chat-input')
+const source = readFileSync(resolve(COMPOSER_DIR, 'approval.ts'), 'utf-8')
+const composerSources = [
+  readFileSync(resolve(__dirname, '../components/ChatInput.tsx'), 'utf-8'),
+  ...readdirSync(COMPOSER_DIR).map(f => readFileSync(resolve(COMPOSER_DIR, f), 'utf-8')),
+]
 
 /** The full verb set `handleApprovalAction` routes to the slot endpoint. */
 const TRUST_VERBS = ['trust', 'trust_reads', 'trust_command', 'trust_base']
@@ -74,7 +82,7 @@ describe('ChatInput binding to the shared mapping (#5486 / #8193)', () => {
   it('has exactly one call site, on the one-shot endpoint', () => {
     // A second call site would be a second resolve path with its own grant
     // semantics — re-verify this contract against it before adding one.
-    const calls = source.match(/(?<!function\s)toApiDecision\(/g) ?? []
+    const calls = composerSources.flatMap(src => src.match(/(?<!function\s)toApiDecision\(/g) ?? [])
     expect(calls).toHaveLength(1)
     expect(source).toContain('api.resolveApproval(approvalId, toApiDecision(decision))')
   })
@@ -86,8 +94,10 @@ describe('ChatInput binding to the shared mapping (#5486 / #8193)', () => {
     // shared module -- a same-named local function is reported. This stays as a
     // second, cheaper signal: it names the file and the import in the failure,
     // where the lint rule names a call site.
-    expect(source).not.toMatch(/function\s+toApiDecision\b/)
-    expect(source).not.toMatch(/const\s+toApiDecision\s*=/)
-    expect(source).toContain("import { toApiDecision } from '../utils/approvalDecision'")
+    for (const src of composerSources) {
+      expect(src).not.toMatch(/function\s+toApiDecision\b/)
+      expect(src).not.toMatch(/const\s+toApiDecision\s*=/)
+    }
+    expect(source).toContain("import { toApiDecision } from '../../utils/approvalDecision'")
   })
 })

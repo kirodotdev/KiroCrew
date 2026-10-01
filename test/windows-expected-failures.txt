@@ -27,8 +27,6 @@
 test/metrics/test_local_exporter.py::test_export_locks_only_the_prune_phase
 test/test_acp_offload.py::TestOffloadRunsOnSubprocessPool::test_kill_process_runs_scan_and_sweep_off_loop
 test/test_acp_runtime.py::test_periodic_sweep_skips_protected_runtime_pid
-test/test_agent.py::TestAtomicJsonWrite::test_new_file_gets_0o644
-test/test_agent.py::TestAtomicJsonWrite::test_preserves_existing_permissions
 test/test_agent.py::TestKiroHooksAutoimport::test_kiro_hooks_autoimport_honors_custom_dir
 test/test_agent.py::TestKiroHooksAutoimport::test_kiro_hooks_autoimport_non_executable_emits_sel_audit
 test/test_agent.py::TestKiroHooksAutoimport::test_kiro_hooks_autoimport_skips_non_executable
@@ -143,11 +141,6 @@ test/test_sandbox_launcher_sweep.py::TestRunDirMode::test_run_dir_mode_enforced_
 test/test_security.py::TestIsSensitivePath::test_absolute_symlink_to_aws_credentials
 test/test_security.py::TestIsSensitivePath::test_base_dir_anchors_relative_path
 test/test_security.py::TestIsSensitivePath::test_relative_symlink_to_aws_credentials
-test/test_seed.py::test_seed_audit_uses_rail_tag_not_raw_path[main_home-main_home-False]
-test/test_seed.py::test_seed_main_home_rail_catches_symlink
-test/test_seed.py::test_seed_main_home_rail_refuses
-test/test_seed.py::test_seed_main_home_rail_refuses_even_with_replace
-test/test_seed.py::test_seed_new_home_rail_refuses
 test/test_sel.py::TestHmacKeyManagement::test_key_file_permissions
 test/test_service.py::TestKirocrewBinOverride::test_service_bin_override_wins_over_which
 test/test_service.py::TestLinuxUnitRendering::test_install_writes_unit_via_sudo_install_and_invokes_systemctl

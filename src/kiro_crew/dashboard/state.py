@@ -117,6 +117,7 @@ from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.security.credential_sources import CredentialEvidence
 from kiro_crew.sel import sel
 from kiro_crew.session_compaction import (
+    COMPACT_OUTCOME_CANCELLED,
     COMPACT_OUTCOME_COMPACTED,
     COMPACT_OUTCOME_RECYCLED,
     COMPACT_OUTCOME_RESTARTED_UNCOMPACTABLE,
@@ -1120,6 +1121,13 @@ _TURN_INJECT_KINDS: frozenset[str] = frozenset(
 )
 
 
+#: The dispatching inject kinds that CONTINUE the turn above them rather than
+#: opening one of their own: a recovery (Resume, an automatic retry) and a replay
+#: of the user's own words. The rest of ``_TURN_INJECT_KINDS`` begin new work.
+_TURN_CONTINUING_INJECT_KINDS: frozenset[str] = frozenset({"recovery", "user_replay"})
+TURN_OPENING_INJECT_KINDS: frozenset[str] = _TURN_INJECT_KINDS - _TURN_CONTINUING_INJECT_KINDS
+
+
 def _is_turn_inject(meta: object) -> bool:
     """Whether an ``inject`` row's meta says it dispatched a turn."""
     return isinstance(meta, dict) and meta.get("injectKind") in _TURN_INJECT_KINDS
@@ -1295,9 +1303,18 @@ _AUTO_COMPACT_NOTICE = "🔄 Auto-compacted at {pct:.0f}%."
 #: separate template because ``_AUTO_COMPACT_NOTICE`` would announce a summary that
 #: never happened, and the user's next question -- why does the agent not remember
 #: this -- is answerable only if the notice said what actually occurred.
+#: Both restart notices end in ``_RESTART_MEMORY_TAIL`` because that sentence is
+#: what the successor actually does: its first turn is built from a recent excerpt
+#: of this transcript (``ContextBuilder`` thread history). Naming the excerpt is
+#: the point: a user who believes the context is gone for good has no reason to
+#: ask the agent to pick the work back up.
+_RESTART_MEMORY_TAIL = (
+    "The conversation above is still here, and the agent's next reply starts from a "
+    "recent excerpt of it rather than the whole thing."
+)
 _AUTO_RECYCLE_NOTICE = (
     "♻️ Compaction didn't succeed at {pct:.0f}%, so the session was restarted "
-    "instead. The conversation above is still here; the agent no longer remembers it."
+    "instead. " + _RESTART_MEMORY_TAIL
 )
 #: The same restart, for a backend that never had a compaction to attempt. Only this
 #: one may name the missing capability: the notice above is reached by kiro-cli and
@@ -1305,8 +1322,17 @@ _AUTO_RECYCLE_NOTICE = (
 #: backend cannot compact would be false.
 _AUTO_RESTART_UNCOMPACTABLE_NOTICE = (
     "♻️ Context reached {pct:.0f}% and this backend cannot compact at all, so "
-    "the session was restarted. The conversation above is still here; the agent no "
-    "longer remembers it."
+    "the session was restarted. " + _RESTART_MEMORY_TAIL
+)
+#: A user Stop ended the compaction turn. The only Stop that reaches a compacting
+#: session is the FORCED one, and a forced stop restarts the session, so the
+#: notice says so with the restart notices' own verb and memory tail; what tells
+#: it apart from them is the actor it leads with: nothing failed, the user ended
+#: it.
+_AUTO_COMPACT_CANCELLED_NOTICE = (
+    "⏹ Your forced Stop ended the compaction (condensing the conversation to free space) "
+    "that started at {pct:.0f}% of the context limit, so the session was restarted. "
+    + _RESTART_MEMORY_TAIL
 )
 _AUTO_COMPACT_WAITING_NOTICE = (
     "⏸ Auto-compact failed at {pct:.0f}%. The session is waiting for its sub-agents "
@@ -2725,11 +2751,15 @@ class _ChatSlot:
         "_mcp_report",
         "_mcp_report_session_id",
         "_on_message",
+        "_on_row",
         "_on_card_event",
         "_dashboard_card_identity",
+        "_dashboard_card_exempt",
         "_on_question_retired",
         "_coordinator_approvals",
         "_has_reader_flag",
+        "_compacting",
+        "_stop_declined_at",
         "_stop_state_raw",
         "_stop_generation",
         "_stop_event_id",
@@ -2738,22 +2768,17 @@ class _ChatSlot:
         "_pending_discard_conversation_key",
         "_pending_model_pick",
         "_eager_spawn_task",
+        "_eager_spawn_failures",
+        "_eager_spawn_retry_at",
         "_prefetch_ttl_task",
         "_dirty_flag",
         "_dirty_gen",
         "_metadata_persist_inflight",
         "_guarded_history_writes",
-        "_orch_tracker",
-        "_plan_cancelled",
-        "_auto_run",
         "_in_stage_execution",
-        "_stage_controller_task",
         "stage_boundary",
         "_last_turn_auth_required",
         "_recovery_chat_triggered",
-        "_stage_titles",
-        "_stage_descriptions",
-        "_plan_goal",
         "_slack_linked",
         "_slack_channel",
         "_slack_thread_ts",
@@ -2881,12 +2906,16 @@ class _ChatSlot:
         "_steer_delivery_ids",
         "_steer_send_ids",
         "_steer_user_origin",
+        "_steer_channel_origin",
+        "_turn_channel_narrowed",
         "_steer_admissions",
         "_steer_decision_strips",
         "_steer_audience_fences",
+        "_steer_audience_fence_holders",
         "_steer_attachment_meta",
         "_wait_state",
         "_end_wait_request",
+        "_end_wait_by",
         "_wait_last_ping",
         "_wait_steer_baseline",
         "_wait_contested",
@@ -2988,7 +3017,7 @@ class _ChatSlot:
         # the global session.autocompact_pct. Persisted with the slot and
         # re-seeded into the SessionManager after restore.
         self.autocompact_pct: float | None = None
-        # "" = default chat, "orchestrator" = orchestrated chat
+        # "" = default chat; app workers may carry their own mode (design-critique)
         self.mode = mode
         self.workspace = workspace
         # The crew's memory silo, or "" for the global store. Held on the slot
@@ -3323,8 +3352,20 @@ class _ChatSlot:
         self._mcp_report_session_id: str = ""
         # Callback for broadcasting messages via global SSE
         self._on_message: object | None = None  # Callable[[str, dict], None] | None
+        # Every appended row, RECORDED rather than rendered: Callable[[str,
+        # dict], None] | None, wired by DashboardState like _on_message. Kept
+        # apart from it deliberately — _on_message is the SSE delivery hook and
+        # is skipped for a row some other surface already rendered (a user row
+        # the composer echoed optimistically) or for a slot with its own HTTP
+        # stream reader. Neither says anything about whether the row happened,
+        # so a durable record hung off that hook loses exactly the rows a
+        # person typed.
+        self._on_row: object | None = None
         self._on_card_event: object | None = None
         self._dashboard_card_identity = uuid.uuid4().hex
+        #: Set on a throwaway API slot that no person follows, so automatic
+        #: cards never spend the shared budget on it.
+        self._dashboard_card_exempt = False
         # Announce stateless question cards this slot retires, so every client
         # drops them: Callable[[str, list[str]], None] | None, wired by
         # DashboardState like _on_message. A retirement that only mutates state
@@ -3338,6 +3379,21 @@ class _ChatSlot:
         # the state to learn that this slot is waiting.
         self._coordinator_approvals: Callable[[str], list[dict]] | None = None
         self._has_reader_flag: bool = False  # True when HTTP SSE stream is draining
+        # True while the session manager runs an automatic compaction on this
+        # slot's session. Written by the compacting observer wired in
+        # ``wire_session_compact_callback`` and read by the slot projection, so
+        # the composer can show the compaction while it runs and the Stop button
+        # can warn before a press that would fail it. Not persisted:
+        # a compaction never outlives the gateway process.
+        self._compacting: bool = False
+        # Monotonic time of the last cooperative Stop this slot DECLINED because
+        # its session was compacting; 0.0 when none. Kept apart from
+        # ``_stop_state`` on purpose: that machine is read by the queue drain as
+        # "a stop is in progress" and persists a "Session reset" row on it, and a
+        # declined Stop stopped nothing. What the marker buys is the escape
+        # hatch: a press that lands within ``STOP_DECLINED_ESCALATION_SECS`` of
+        # a decline is the user's second press and escalates to the force stop.
+        self._stop_declined_at: float = 0.0
         self._stop_state_raw: str = "idle"  # 'idle' | 'soft_pending' | 'killing'
         # Monotonic count of stop INITIATIONS (idle → active edges of
         # _stop_state). Teardown resets _stop_state back to "idle" but never
@@ -3380,6 +3436,10 @@ class _ChatSlot:
         # At most one per slot: scheduling a new one cancels the previous, so
         # rapid signals (create + project set) collapse into a single spawn.
         self._eager_spawn_task: asyncio.Task[None] | None = None
+        # Consecutive failed background starts, and the monotonic time before
+        # which the next one waits (chat_runner._note_eager_spawn_failure).
+        self._eager_spawn_failures: int = 0
+        self._eager_spawn_retry_at: float = 0.0
         # Unclaimed-prefetch teardown timer (resume prefetch). At most one per
         # slot: a newer resumed prefetch cancels the previous timer.
         self._prefetch_ttl_task: asyncio.Task[None] | None = None
@@ -3399,18 +3459,6 @@ class _ChatSlot:
         # retraction of this slot's name must order itself after the real write,
         # so it waits on these futures, which complete with the worker.
         self._guarded_history_writes: set[Any] = set()
-        self._orch_tracker: Any = None  # OrchestrationTracker, set by gateway
-        # Plan-cancel latch closing the cancel/Go race: the Cancel
-        # handler can only stop a tracker that exists, but _stage_loop creates
-        # the tracker lazily, so a cancel processed between a Go POST being
-        # accepted and its _stage_loop coroutine starting would no-op on the
-        # tracker and the plan would advance anyway. The handler sets this flag
-        # unconditionally; _stage_loop checks it before creating a tracker and
-        # exits without advancing. Cleared ONLY when a new plan is armed
-        # (_reset_auto_run_for_new_plan) — never on Go, so a Go on a cancelled
-        # plan cannot resurrect it (that would just invert the race).
-        self._plan_cancelled: bool = False
-        self._auto_run: bool = False  # "Go All" — skip stage gates
         # True only while _stage_loop is driving a stage-execution turn. Gates
         # the end-of-turn plan detector so a stage turn whose output happens to
         # contain plan-like text cannot re-arm / re-count the plan (which
@@ -3422,9 +3470,6 @@ class _ChatSlot:
         # queue/chip path. After the controller exits, an uncancelled pending
         # boundary keeps ``running`` true until guarded Go settles or reruns it.
         self._in_stage_execution: bool = False
-        # Outer Python stage driver, kept separately while ``task`` names the
-        # active LLM turn so slot teardown can cancel both lifetimes.
-        self._stage_controller_task: asyncio.Task[Any] | None = None
         # Atomic owner of the active stage's delivery, recovery, parent-session,
         # and cancellation state. Compatibility properties below expose the old
         # names to focused tests, but production paths mutate this object.
@@ -3435,9 +3480,6 @@ class _ChatSlot:
         # must not pop the held follow-up into another auth failure).
         self._last_turn_auth_required: bool = False
         self._recovery_chat_triggered: bool = False  # guard against concurrent failure recovery
-        self._stage_titles: list[str] = []  # stage titles extracted from plan
-        self._stage_descriptions: list[list[str]] = []  # bullet points per stage
-        self._plan_goal: str = ""  # goal from 📋 Plan for: header
         self._slack_linked: bool = False  # True when linked to a Slack thread
         self._slack_channel: str = ""
         self._slack_thread_ts: str = ""
@@ -4007,6 +4049,29 @@ class _ChatSlot:
         # derive it from the slot and has to be told. Absent means NOT the session's
         # own human: an unrecorded steer fails closed into the ordinary drop.
         self._steer_user_origin: dict[str, bool] = {}
+        # Whether an in-flight steer arrived through a MESSAGING CHANNEL rather than
+        # this slot's own composer, keyed and kept in the same LOCKSTEP as the map
+        # above. The requeue reads it for `directive_channel_origin`: a requeued
+        # steer runs as its own turn, and channel authority is the narrower
+        # credential boundary (a directive that turn issues is filed as
+        # channel-created, as a queued channel message's is). A steer the running
+        # turn consumes never reads it -- an injected steer runs under that turn's
+        # provenance, narrowed by the flag below. Absent means "not through a
+        # channel", the composer's case.
+        self._steer_channel_origin: dict[str, bool] = {}
+        # Whether a CHANNEL steer has been admitted into the turn this slot is
+        # running. Set by `steer_into_running_turn(channel_origin=True)` at
+        # admission -- before its RPC, since the client can inject the text and the
+        # model can act on it before the RPC returns -- and read by the turn wherever
+        # it stamps a directive's producer (`apply_session_directive`'s
+        # `producer_is_channel`), so every directive the model emits after channel
+        # text reached it is filed as channel-created, the narrower authority a
+        # channel-origin turn's directives carry. The turn's opener provenance
+        # (`_directive_channel_origin`) is a per-turn argument and cannot change
+        # mid-turn; this flag is the slot-level seam that can. Held for the rest of
+        # the turn, a declined or requeued steer included (narrowing is the direction
+        # that cannot be wrong); the turn resets it at its end and at the next start.
+        self._turn_channel_narrowed: bool = False
         # The containment that held when an in-flight steer was AUTHORIZED, keyed by
         # the same message text and kept in the same LOCKSTEP. The requeue stamps it
         # on the queue entry instead of reading the slot again: its own moment is the
@@ -4046,6 +4111,17 @@ class _ChatSlot:
         # TURN-SCOPED: the turn's teardown empties it, so one turn's withheld reply
         # never silences the next, whose authorization is its own.
         self._steer_audience_fences: dict[str, dict] = {}
+        # How many channel steers hold each AUDIENCE-keyed fence above. A channel
+        # hand-off records one fence per distinct containment snapshot per turn
+        # (`channel_handoff.audience_fence_key`), so several messages share one
+        # record; each admission counts a holder, and a steer whose text does not
+        # enter the running turn (declined, unavailable, requeued) releases its
+        # hold. The record is popped only when no holder remains, so a fence a
+        # landed sibling relies on survives a sibling's decline, while a fence
+        # nothing holds does not withhold the reply of a turn that never received
+        # the channel text. The peer path's per-token fences are not counted here.
+        # Cleared with the fences at the turn's teardown.
+        self._steer_audience_fence_holders: dict[str, int] = {}
         # Validated attachment lists for a pending steer. Requeue moves them
         # to the queue entry; a consumption echo releases them after an accepted
         # steer has stamped its own row.
@@ -4059,6 +4135,11 @@ class _ChatSlot:
         # wait_id the user asked to end early, parked here until the sleeping
         # tool collects it on its next poll. Consumed exactly once.
         self._end_wait_request: str | None = None
+        # Slot key of the session that parked ``_end_wait_request`` through
+        # ``session_end_wait``; "" when the End-wait button parked it. Both
+        # writers set it together with the request, so it is only ever read
+        # alongside a request it describes and needs no clearing of its own.
+        self._end_wait_by: str = ""
         # Wall clock of the tracked wait's last keepalive ping. Server-side only
         # (deliberately NOT in to_dict): it is the heartbeat that distinguishes a
         # sleep that ended from one that is still running, which is how
@@ -4175,10 +4256,6 @@ class _ChatSlot:
             # impossible and a missed bump can only cause an extra (harmless)
             # flush, never a skipped one.
             self._dirty_gen += 1
-
-    @property
-    def _plan_stage_count(self) -> int:
-        return len(self._stage_titles)
 
     @property
     def _stop_state(self) -> str:
@@ -4788,6 +4865,28 @@ class _ChatSlot:
             and not self._has_reader
         ):
             self._on_message(self.key, msg)  # type: ignore[operator]
+        # Record the row, which is a different question from delivering it. The
+        # gate above answers "does anything still need to render this?"; this
+        # one answers "did this row happen?", so the only conditions it may
+        # share are the two that make a row not a row at all:
+        #
+        #  * the wire-only roles — `chunk` is one streamed token, `done` and
+        #    `streaming` are markers — none of which is ever persisted, and
+        #  * `broadcast`, which is what separates a live append from a REPLAY
+        #    (`channel_slots._rebuild_window`, `chat_fork`, `session_transfer`
+        #    all re-append historical rows with broadcast=False). Recording a
+        #    replay would stamp a member as active just now for a message sent
+        #    hours ago and reorder the roster on a rotation recovery.
+        #
+        # Notably NOT shared: `role != "user" or broadcast_user` and
+        # `_has_reader`. A user row IS the event the roster's recency exists to
+        # order by, and the composer having drawn its own bubble is not a reason
+        # to forget it happened.
+        if broadcast and self._on_row and role not in _WIRE_ONLY_ROLES:
+            try:
+                self._on_row(self.key, msg)  # type: ignore[operator]
+            except Exception:
+                logger.debug("slot row hook failed", exc_info=True)
         # Trim old messages to bound memory usage
         if len(self.messages) > _MAX_SLOT_MESSAGES:
             excess = len(self.messages) - _MAX_SLOT_MESSAGES
@@ -5076,16 +5175,6 @@ class _ChatSlot:
         """
         return queue_persist_signature(self.durable_queue_entries()) != self._queue_persisted_sig
 
-    def track_stage_controller(self, task: asyncio.Task[Any]) -> None:
-        """Keep the outer stage driver reachable while ``task`` names a child turn."""
-        self._stage_controller_task = task
-
-        def _clear(done: asyncio.Task[Any]) -> None:
-            if self._stage_controller_task is done:
-                self._stage_controller_task = None
-
-        task.add_done_callback(_clear)
-
     @property
     def task(self) -> asyncio.Task[Any] | None:
         return self._task
@@ -5098,13 +5187,9 @@ class _ChatSlot:
 
     @property
     def turn_running(self) -> bool:
-        """Whether an active model turn or stage controller still owns the slot."""
+        """Whether an active model turn still owns the slot."""
         task = self.task
-        controller = self._stage_controller_task
-        return bool(
-            (task is not None and not task.done())
-            or (controller is not None and not controller.done())
-        )
+        return bool(task is not None and not task.done())
 
     @property
     def running(self) -> bool:
@@ -6090,7 +6175,11 @@ class DashboardState:
         self._terminal_reaper: asyncio.Task | None = None  # type: ignore[type-arg]
         self._browser_snapshot_pruner: asyncio.Task | None = None  # type: ignore[type-arg]
         self._browser_install_task: asyncio.Task | None = None  # type: ignore[type-arg]
-        self._browser_install_error: str | None = None
+        # The one browser install job (browser_cli.install_job.BrowserInstallJob)
+        # and the InstallScope owning its subprocesses. In memory only: a gateway
+        # start has no job, so a "running" state never outlives its process.
+        self._browser_install_job: Any = None
+        self._browser_install_scope: Any = None
         self._terminal_title_poller: asyncio.Task | None = None  # type: ignore[type-arg]
         # Background reconciler that surfaces channel-originated sessions
         # (slack:<ts>, discord:…) as chat slots. Held to prevent GC.
@@ -6307,6 +6396,8 @@ class DashboardState:
                 return
             if outcome == COMPACT_OUTCOME_WAITING_FOR_SUBAGENTS:
                 template = _AUTO_COMPACT_WAITING_NOTICE
+            elif outcome == COMPACT_OUTCOME_CANCELLED:
+                template = _AUTO_COMPACT_CANCELLED_NOTICE
             elif not success:
                 template = _AUTO_COMPACT_FAILED_NOTICE
             elif outcome == COMPACT_OUTCOME_RESTARTED_UNCOMPACTABLE:
@@ -6354,6 +6445,28 @@ class DashboardState:
                     )
 
         self.sessions.set_compact_callback(_on_compacted)
+
+        def _on_compacting_changed(key: str, on: bool) -> None:
+            # The slot learns the compaction is RUNNING, not only how it ended:
+            # the composer shows it and the Stop button warns on it.
+            # Synchronous, from the tick that committed the membership change,
+            # so the broadcast that follows agrees with ``is_compacting``.
+            from kiro_crew.dashboard.chat_utils import dashboard_slot_key
+
+            slot_key = dashboard_slot_key(key)
+            slot = self.get_slot(slot_key) if slot_key else None
+            if slot is None or slot._compacting == on:
+                return
+            slot._compacting = on
+            if not on:
+                # The decline marker was this compaction's; the next one, even
+                # inside the window, owes its own first refusal.
+                slot._stop_declined_at = 0.0
+            self.push_slots_update()
+
+        setter = getattr(self.sessions, "set_compacting_callback", None)
+        if callable(setter):
+            setter(_on_compacting_changed)
 
     async def _notify_channel_compaction(
         self,
@@ -7146,6 +7259,14 @@ class DashboardState:
             audit_provider=sel,
         )
 
+    def _audit_approval(
+        self, session_key: str, approval_id: str, approved: bool, decision: str = ""
+    ) -> None:
+        """Audit one approval outcome with no broadcast."""
+        _approvals_for(self).audit(
+            self, session_key, approval_id, approved, decision, audit_provider=sel
+        )
+
     def resolve_state_approval(self, approval_id: str, approved: bool) -> bool:
         """Resolve only a state-level background approval."""
         return _approvals_for(self).resolve_state(self, approval_id, approved)
@@ -7598,6 +7719,7 @@ class DashboardState:
             slot.title = pretty_title
         slot._tab_id = uuid.uuid4().hex[:12]
         slot._on_message = self._broadcast_chat_message
+        slot._on_row = self._record_member_row
         slot._on_card_event = self.notify_dashboard_card
         slot._on_question_retired = self._broadcast_question_retired
         slot._coordinator_approvals = self.pending_coordinator_approvals
@@ -7860,58 +7982,79 @@ class DashboardState:
         if direct_meta and isinstance(direct_meta, dict):
             payload["meta"] = {**(payload.get("meta") or {}), **direct_meta}
         self._broadcast(payload)
-        # Best-effort per-member event log: a message in a member DM thread.
+
+    def _record_member_row(self, slot_key: str, msg: dict) -> None:
+        """Append one ``member/message`` for a row landing in a member DM slot.
+
+        Wired as ``Slot._on_row``, which fires for EVERY live appended row, and
+        deliberately NOT off ``_broadcast_chat_message``: that method is the SSE
+        delivery path and is skipped for a ``user`` row the dashboard composer
+        already echoed, and for any row on a slot with an HTTP stream reader
+        attached. The roster's ``last_active_ts`` is folded from these events, so
+        a recorder reachable only through the delivery path cannot see the one
+        action the user most expects to reorder the roster: typing into a
+        crewmate's DM.
+
+        Nothing outside a member DM slot is recorded: ``member_slug_for_slot``
+        answers ``None`` for every other key.
+
+        Best-effort throughout, deliberately: a logging fault must not break a
+        message the user has already sent.
+        """
+        role = msg.get("role", "")
+        content = msg.get("content", "")
         try:
             from kiro_crew import eventlog_hooks
             from kiro_crew.eventlog.types import MEMBER_MESSAGE
 
             _mslug = eventlog_hooks.member_slug_for_slot(slot_key)
-            if _mslug is not None:
-                _raw_ts = msg.get("ts", "")
-                try:
-                    _ev_ts = float(_raw_ts)
-                except (TypeError, ValueError):
-                    _ev_ts = time.time()
+            if _mslug is None:
+                return
+            _raw_ts = msg.get("ts", "")
+            try:
+                _ev_ts = float(_raw_ts)
+            except (TypeError, ValueError):
+                _ev_ts = time.time()
 
-                # Same redaction chain the members roster read uses, run
-                # before the length cap so a credential split by truncation
-                # cannot leak. The payload is built by the one shared spelling
-                # (`member_message_payload` -> `speech_preview`) so the folded
-                # preview equals what `GET /api/members` reads back.
-                def _sanitize_preview(text: str) -> str:
-                    text, _ = redact_exfiltration_urls(text)
-                    text, _ = redact_credentials(text)
-                    return text
+            # Same redaction chain the members roster read uses, run
+            # before the length cap so a credential split by truncation
+            # cannot leak. The payload is built by the one shared spelling
+            # (`member_message_payload` -> `speech_preview`) so the folded
+            # preview equals what `GET /api/members` reads back.
+            def _sanitize_preview(text: str) -> str:
+                text, _ = redact_exfiltration_urls(text)
+                text, _ = redact_credentials(text)
+                return text
 
-                _payload = eventlog_hooks.member_message_payload(
-                    role, content, msg.get("meta"), _ev_ts, sanitize=_sanitize_preview
+            _payload = eventlog_hooks.member_message_payload(
+                role, content, msg.get("meta"), _ev_ts, sanitize=_sanitize_preview
+            )
+
+            # Off the event loop: emit opens the member log and does a
+            # synchronous os.fsync append. This callback runs loop-side, so
+            # hand the write to a worker thread (fire-and-forget, best-effort
+            # like the rest of this block) rather than stalling every gateway
+            # task on the fsync.
+            def _emit_message() -> None:
+                eventlog_hooks.emit(
+                    _mslug,
+                    None,
+                    MEMBER_MESSAGE,
+                    _payload,
                 )
 
-                # Off the event loop: emit opens the member log and does a
-                # synchronous os.fsync append. This callback runs loop-side, so
-                # hand the write to a worker thread (fire-and-forget, best-effort
-                # like the rest of this block) rather than stalling every gateway
-                # task on the fsync.
-                def _emit_message() -> None:
-                    eventlog_hooks.emit(
-                        _mslug,
-                        None,
-                        MEMBER_MESSAGE,
-                        _payload,
-                    )
-
-                # Queued on the ordered executor either way -- see the slot
-                # emit for why a no-loop caller queues rather than writing
-                # inline.
-                #
-                # The return is deliberately not read, and this is the ONE thing
-                # that makes it safe: nothing here records that the event was
-                # written. A refused or failed append costs this path exactly the
-                # event it was given, which the queue's own ceiling documents and
-                # reports. The slot path above cannot do the same because it keeps
-                # a checkpoint, and a checkpoint that outlives a lost append turns
-                # one missing event into a view that never recovers.
-                eventlog_hooks.submit(_emit_message)
+            # Queued on the ordered executor either way -- see the slot
+            # emit for why a no-loop caller queues rather than writing
+            # inline.
+            #
+            # The return is deliberately not read, and this is the ONE thing
+            # that makes it safe: nothing here records that the event was
+            # written. A refused or failed append costs this path exactly the
+            # event it was given, which the queue's own ceiling documents and
+            # reports. The slot path above cannot do the same because it keeps
+            # a checkpoint, and a checkpoint that outlives a lost append turns
+            # one missing event into a view that never recovers.
+            eventlog_hooks.submit(_emit_message)
         except Exception:
             logger.debug("member/message event-log hook failed", exc_info=True)
 

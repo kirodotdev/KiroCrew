@@ -10,7 +10,6 @@ import urllib.request
 from typing import TYPE_CHECKING
 
 from kiro_crew import cli_doctor
-from kiro_crew.discord import install_url, intent_probe
 from kiro_crew.doctor_checks import render
 
 if TYPE_CHECKING:
@@ -39,7 +38,7 @@ def _discord_live_state(port: int | None) -> dict[str, object] | None:
 
 
 def _discord_msg_content_line(
-    grants: intent_probe.IntentGrants, *, needs_content: bool, issues: list[str]
+    grants: cli_doctor.intent_probe.IntentGrants, *, needs_content: bool, issues: list[str]
 ) -> None:
     """Report the Message Content intent against what this install needs.
 
@@ -52,15 +51,15 @@ def _discord_msg_content_line(
     if not needs_content:
         detail = (
             "on, and unused by a DM-only install"
-            if state in intent_probe.GRANTED_STATES
+            if state in cli_doctor.intent_probe.GRANTED_STATES
             else "not needed (DMs deliver content without it)"
         )
         print(f"  msg content: ⏭  {detail}")
-    elif state in intent_probe.GRANTED_STATES:
-        limited = state == intent_probe.INTENT_LIMITED
+    elif state in cli_doctor.intent_probe.GRANTED_STATES:
+        limited = state == cli_doctor.intent_probe.INTENT_LIMITED
         extra = " (capped at 100 servers until the app is verified)" if limited else ""
         print(f"  msg content: ✅ granted{extra}")
-    elif state == intent_probe.INTENT_DISABLED:
+    elif state == cli_doctor.intent_probe.INTENT_DISABLED:
         print("  msg content: ❌ OFF, so thread and channel messages arrive empty")
         print(f"{render._INDENT}and Discord can close the connection with code 4014.")
         print(f"{render._INDENT}Fix: Developer Portal → Bot → Message Content Intent,")
@@ -79,7 +78,7 @@ def _discord_unused_intent_line(label: str, name: str, state: str) -> None:
     already reported that once), so this line only ever appears when there is
     something to turn off.
     """
-    if state in intent_probe.GRANTED_STATES:
+    if state in cli_doctor.intent_probe.GRANTED_STATES:
         print(f"  {label + ':':<13}⚠️  {name} Intent is on but unused")
         print(f"{render._INDENT}Turn it off in the Developer Portal → Bot: nothing in Kiro")
         print(f"{render._INDENT}Crew reads it, and it widens what Discord sends this bot.")
@@ -95,7 +94,7 @@ def _discord_install_line(application_id: str, *, dm_only: bool) -> None:
     """
     shape = "DM-only" if dm_only else "thread-capable"
     try:
-        url = install_url.build_install_url(application_id, dm_only=dm_only)
+        url = cli_doctor.install_url.build_install_url(application_id, dm_only=dm_only)
     except ValueError:
         print(f"  install URL: ⏭  needs the app id: the {shape} template is")
         print(f"{render._INDENT}in the Discord Integration doc")

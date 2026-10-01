@@ -1402,3 +1402,29 @@ async def test_a_restricted_session_killed_mid_turn_restores_resume(tmp_path, mo
     assert [m["role"] for m in restored.messages] == ["user", "assistant", "user"]
     assert restored.messages[-1]["content"] == "a private prompt"
     assert restored.to_dict()["interrupted"] is True
+
+
+def test_a_lost_subagent_completion_opener_is_restored(tmp_path):
+    # A drained sub-agent completion opens its own turn and rides the periodic
+    # flush. Without its copy a force exit in that window loses the row, and a
+    # Resume on the natively reloaded session would restore the request before
+    # it as the one to carry on with.
+    state = _make_state(tmp_path)
+    slot = state.get_or_create_slot("chat-1")
+    slot.append("user", "spawn the reviewer", "msg msg-u")
+    slot.append("assistant", "spawned", "msg msg-a")
+    assert _save_slot_to_history(state, slot, force=True)
+    completion = slot.append("subagent", "[Subagent completion event] review done", "msg msg-s")
+    copy = _local_turn_opening_row(slot)
+    assert copy is not None and copy["role"] == "subagent"
+    assert state.conversation_log is not None
+    state.conversation_log.update_metadata(
+        "dashboard:chat-1", {"turn_in_flight_generation": 7, "turn_in_flight_prompt": copy}
+    )
+
+    del state._slots["chat-1"]
+    restored = _rehydrate_slot_from_history(state, "chat-1")
+
+    assert restored is not None
+    tail = [m for m in restored.messages if m.get("role") == "subagent"]
+    assert tail and tail[-1]["content"] == completion["content"]

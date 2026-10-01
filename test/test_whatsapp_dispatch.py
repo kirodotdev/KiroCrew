@@ -457,6 +457,33 @@ def test_stop_acts_on_the_members_bucket_when_that_is_the_live_one():
     assert [t for _, t in transport.sent] == [STOPPED_TEXT]
 
 
+def test_a_repeat_stop_while_compacting_forces_and_keeps_the_shared_queue():
+    """The first /stop during a compaction is declined; the second inside the
+    window forces. The force keeps the queue: under a unified ``dm_scope`` it
+    holds other channels' messages, and ``stop_turn`` parks them for the
+    successor rather than letting the reset drop them."""
+    from kiro_crew import session_lifecycle as sl
+    from kiro_crew.whatsapp.transport_dispatch import STOP_DECLINED_COMPACTING_TEXT, STOPPED_TEXT
+
+    sl._stop_declined_markers.clear()
+    d, _client, sessions, transport = _make()
+    sessions.is_compacting = lambda key: True  # type: ignore[attr-defined]
+    calls: list[dict] = []
+
+    async def stop_turn(key, **kw):
+        calls.append(kw)
+        return "compacting" if not kw.get("force") else "hard"
+
+    sessions.stop_turn = stop_turn  # type: ignore[attr-defined]
+    asyncio.run(d._handle_stop(_GROUP))
+    assert calls == [{}]
+    assert [t for _, t in transport.sent] == [STOP_DECLINED_COMPACTING_TEXT]
+    asyncio.run(d._handle_stop(_GROUP))
+    assert calls[-1] == {"force": True, "preserve_queue": True}
+    assert [t for _, t in transport.sent][-1] == STOPPED_TEXT
+    sl._stop_declined_markers.clear()
+
+
 def test_busy_session_folds_into_current_reply_when_steerable():
     class Steering(FakeProvider):
         supports_steer = True
@@ -1217,3 +1244,54 @@ def test_a_scope_seeds_from_the_member_bucket_when_it_is_ahead():
     assert d._conv.current_gen(_GROUP) == 5
     # The seeded generation is what the member's key is then built with.
     assert d._session_key(_GROUP, is_operator=False) != member_bucket
+
+
+def test_a_decline_whose_reply_never_sends_leaves_the_next_press_a_first_press():
+    """``_say`` logs its own send error rather than raising, so the decline must
+    read its answer: an operator who saw nothing presses again within seconds,
+    and that press must be declined again rather than reset their session."""
+    from kiro_crew import session_lifecycle as sl
+    from kiro_crew.whatsapp.transport_dispatch import STOP_DECLINED_COMPACTING_TEXT
+
+    sl._stop_declined_markers.clear()
+    d, _client, sessions, transport = _make()
+    sessions.is_compacting = lambda key: True  # type: ignore[attr-defined]
+    calls: list[dict] = []
+
+    async def stop_turn(key, **kw):
+        calls.append(kw)
+        return "compacting" if not kw.get("force") else "hard"
+
+    sessions.stop_turn = stop_turn  # type: ignore[attr-defined]
+
+    working = transport.send_message
+    down = True
+
+    async def _flaky(jid, text):
+        if down:
+            raise RuntimeError("whatsapp 503")
+        return await working(jid, text)
+
+    transport.send_message = _flaky  # type: ignore[assignment]
+    asyncio.run(d._handle_stop(_GROUP))
+    assert calls == [{}]
+    assert sl._stop_declined_markers == {}, "an undelivered warning arms nothing"
+    # Delivery works again; the retry is still a first press, declined.
+    down = False
+    asyncio.run(d._handle_stop(_GROUP))
+    assert calls == [{}, {}], "no force on a press the operator was never warned about"
+    assert [t for _, t in transport.sent] == [STOP_DECLINED_COMPACTING_TEXT]
+    sl._stop_declined_markers.clear()
+
+
+def test_say_reports_whether_the_message_landed():
+    d, _client, _sessions, transport = _make()
+    assert asyncio.run(d._say(_GROUP, "hi")) is True
+
+    async def _down(_jid, _text):
+        raise RuntimeError("whatsapp 503")
+
+    transport.send_message = _down  # type: ignore[assignment]
+    assert asyncio.run(d._say(_GROUP, "hi")) is False
+    d.transport = None
+    assert asyncio.run(d._say(_GROUP, "hi")) is False

@@ -1824,7 +1824,8 @@ credentials — collapsing the two would make "we read the listings" hand out a
 credential. `review` is one of `""` / `"curated"` / `"community"`, and `label` is a
 display name shown instead of the `name` id. Both are build-only for the same
 reason `owner` is: `GET /api/apps/registries` reports them empty on operator rows
-and the PUT drops them, so a write into agent-writable `config.json` cannot stamp
+and the PUT drops them, so a write into `config.json` (sealed read-only against an
+in-sandbox shell, but an ordinary settings file to every other writer) cannot stamp
 a source "Reviewed by the Kiro Crew team". An unrecognised `review` DEGRADES to `""` (no
 claim) and is logged at error level; it never drops the pinned row. This list
 also feeds index fetch, the trusted-host allowlist and install, so dropping would
@@ -2008,7 +2009,7 @@ file outside the install directory opened cleanly, reported `S_ISREG`, sat under
 cap, and its bytes were served with a 200 — laundering, through an unsandboxed
 gateway, a read the app's own sandboxed code can be refused. Every other
 descriptor-validated read in the tree applies the same gate (`hooks.py`, `memory.py`,
-`spec_builder`, `onboarding_import.py`, `pinned_fs.copy_file_pinned`), so this route
+`spec_builder`, `onboarding_scan.py`, `pinned_fs.copy_file_pinned`), so this route
 was the outlier rather than a new rule.
 
 Spelled inline rather than through `pinned_fs.refuse_hardlink_alias`, which is the

@@ -14,12 +14,15 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
+import stat
 from collections.abc import Collection, Iterable, Sized
 from pathlib import Path
 from typing import Any
 
 from kiro_crew.agent_sdk.mcp_refs import RESERVED_TOOL_NAMESPACES
+from kiro_crew.atomic_write import atomic_write, open_access_control_source
 from kiro_crew.config.paths import kiro_home
 
 #: kiro-cli's enterprise-governance discriminator. The spec WRITER owns the
@@ -439,12 +442,47 @@ def clean_stale_managed_mcp() -> list[str]:
     for name in removed:
         del servers[name]
     try:
-        _kiro_mcp_json().write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-        logger.info("Removed stale managed MCP entries from kiro mcp.json: %s", removed)
+        _replace_mcp_json(json.dumps(data, indent=2) + "\n")
     except OSError:
         logger.debug("Could not clean kiro mcp.json", exc_info=True)
         return []
+    logger.info("Removed stale managed MCP entries from kiro mcp.json: %s", removed)
     return removed
+
+
+def _replace_mcp_json(content: str) -> None:
+    """Publish *content* as the global mcp.json by temp file + rename, never in place.
+
+    An in-place rewrite truncates first, and a reader that lands in that window
+    sees a 0-byte file -- which the session-start reader deliberately treats as
+    "no servers" (``session_mcp._read_mcp_settings``), so it would read as "no
+    restrictions". Every other
+    writer of this file (Kiro Crew's and kiro-cli's) already replaces it whole.
+
+    The replacement keeps what the in-place write kept: the permission bits and
+    any POSIX ACL are carried onto the new inode, and a symlinked mcp.json (a
+    dotfiles checkout) stays a symlink because its TARGET is what gets replaced.
+    Ownership is the one thing a rename cannot carry -- the new inode belongs to
+    this process -- so a file another user owns is refused with ``OSError``
+    rather than silently taken over; the caller already treats that as "could
+    not clean", the same outcome as an unwritable file.
+    """
+    target = _kiro_mcp_json().resolve()
+    src_fd = open_access_control_source(target)
+    try:
+        info = os.fstat(src_fd) if src_fd is not None else target.stat()
+        geteuid = getattr(os, "geteuid", None)  # absent on Windows
+        if geteuid is not None and info.st_uid != geteuid():
+            raise PermissionError(f"{target} is owned by uid {info.st_uid}; not replacing it")
+        atomic_write(
+            target,
+            content,
+            mode=stat.S_IMODE(info.st_mode),
+            preserve_access_control_from=src_fd,
+        )
+    finally:
+        if src_fd is not None:
+            os.close(src_fd)
 
 
 def _ref_server(ref: str) -> str:

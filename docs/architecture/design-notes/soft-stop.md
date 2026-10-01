@@ -93,7 +93,7 @@ knobs later is the trigger to reconsider the shape.
 ### `SessionManager.stop_turn`
 
 ```python
-StopOutcome = Literal["soft", "hard", "idle"]
+StopOutcome = Literal["soft", "hard", "idle", "compacting"]
 
 async def stop_turn(
     self, key, *, force=False, preserve_queue=False, on_soft=None, on_hard=None
@@ -102,6 +102,63 @@ async def stop_turn(
 
 The sequence:
 
+0. If the session's own automatic `/compact` turn holds it and `force` is not
+   set, return `"compacting"` before anything else: nothing is recorded, nothing
+   is cleared, and the caller reports that nothing was stopped. Callers with side
+   effects of their own probe `session_lifecycle.compaction_in_flight` before
+   them and run them only after an outcome other than `"compacting"`.
+   The declined press arms a second-press hatch for the person who pressed:
+   the dashboard keeps it on the slot (`_stop_declined_at`), the channels in
+   `session_lifecycle.decline_stop` / `consume_stop_declined`, keyed by
+   session AND presser because a group route or `dm_scope = "unified"` puts
+   several people on one session key and one person's decline must not arm
+   another's first press as the force that resets the session under both. The
+   marker store is swept of expired entries on every write and count-bounded
+   (`STOP_DECLINED_MARKERS_MAX`, key halves bounded by
+   `STOP_DECLINED_KEY_MAX_CHARS`); an eviction or refusal is counted and logged.
+   `decline_stop` sends the refusal BEFORE it writes the marker, and writes one
+   only when the send reports delivery EXPLICITLY -- `True`, nothing else: the
+   hatch turns the next press into a hard reset, and the only thing that makes
+   that press informed is the sentence it carries, so an undelivered refusal must
+   arm nothing. `None` is the value a transport whose send swallows its own error
+   returns when nothing landed, which is why an unknown result counts as not
+   delivered; the out-of-band sends on that path (`_say`, `_reply`,
+   `_update_ephemeral`, `post_message`) therefore report whether the message
+   landed rather than returning nothing. A send failure also makes the retry more
+   likely rather than less, because a person who saw no answer presses again
+   within seconds. For the same reason `messaging.commands.stop_running_turn`
+   owns the send through a required `deliver`, rather than returning the text for
+   its caller to post afterwards; `deliver` hands back what landed, and a falsy
+   handle arms nothing.
+   Every marker a compaction's declines armed dies when that compaction ends
+   (`_set_compacting` off clears the slot's `_stop_declined_at` through the
+   compacting observer and the channel markers through `clear_stop_declined`,
+   folding each marker's key onto the live one), so a second compaction that
+   starts inside the window owes its own first refusal.
+   A repeat by the same presser inside `STOP_DECLINED_ESCALATION_SECS` forces
+   through `session_lifecycle.force_stop_keeping_others`: the queue is detached
+   before the hard stop (the reset pops the session and its queue, and
+   `preserve_queue` alone cannot save what the pop discards), the presser's own
+   entries are dropped from the handles, and the other people's are handed to
+   the successor the hard stop respawns, so the reset is theirs and the queue
+   stays everyone's (the dashboard's escape from a decline hard-kills with
+   `preserve_queue=True` for the same reason: on a channel-linked slot the
+   session queue is the linked channel's; the slot's own queue is still
+   discarded, as on any hard kill); when no successor starts, or the reset raised after its pop,
+   they are parked (bounded per key by `PARKED_QUEUE_MAX`, across keys by
+   `PARKED_QUEUE_TOTAL_MAX`, keys by `STOP_DECLINED_KEY_MAX_CHARS`, each entry's
+   message id, text and kwargs by `PARKED_ENTRY_*_MAX_CHARS`; refusals and evictions counted
+   and logged) rather than dropped, and the next session registered or claimed
+   under the key adopts them (`adopt_parked_queue`, called from the allocation
+   layer), so the hard stop's respawn or any later ordinary start delivers them.
+   With `preserve_queue`, `stop_turn` parks whatever landed on the session after
+   the caller's detach right before the reset pops it, so that window loses
+   nothing either. `clear_queue(only=...)` unlinks its handles' files before
+   the session guard, since a hard stop can pop the session between the detach
+   and the clear. The failure arm's cotenant wait (`_await_cotenants`) polls the
+   Stop counter too: a force Stop landing while a restart is held for sub-agents
+   has already reset the parent, so the wait ends, the compaction settles
+   `cancelled`, and the live sub-agents are neither cancelled nor recycled again.
 1. Clear the queue, unless `preserve_queue=True` (the interrupt flow, which wants
    the next queued message to run).
 2. If `force`, go straight to the hard kill.
@@ -162,8 +219,8 @@ deliberately **not** treated as a failure:
 `POST /api/chat/slots/{slot}/stop` (`dashboard/chat_handlers.py`), with an optional
 `?force=true`.
 
-**First press** sets `slot._stop_state = "soft_pending"`, turns off auto-run
-(SEL-audited as `auto_run_stopped`), inserts a `stop_event` transcript message, and
+**First press** sets `slot._stop_state = "soft_pending"`, inserts a `stop_event`
+transcript message, and
 calls `stop_turn(..., force=False, preserve_queue=True, on_soft=, on_hard=)`. The
 queue is deliberately preserved here: a stop should cancel the running turn and
 leave queued messages for the user to process or dismiss individually. If the

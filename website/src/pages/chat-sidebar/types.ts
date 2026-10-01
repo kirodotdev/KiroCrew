@@ -15,8 +15,14 @@ export interface Slot {
    * here, matching `Slot.key` -- and is null when the creator is not running or the
    * records formed a cycle. A row can therefore cite a creator it cannot nest under,
    * which is the orphan the conductor lane marks with a muted prefix.
+   *
+   * `hub_key` appears only on a PEER row (see `useInstanceSessions`): the hub stamps
+   * it when the creator is a peer slot this hub drives, and it names the LOCAL row
+   * that drives that creator. It is the one half of a citation that crosses origins
+   * on purpose -- resolved against local rows, so a worker a remote-executed lead
+   * opened on the peer nests under the lead's local row.
    */
-  parent?: { slot?: string; key?: string | null } | null
+  parent?: { slot?: string; key?: string | null; hub_key?: string } | null
   /** Present and true while the gateway's lineage projection is still seeding for the
    *  current store, which makes THIS frame's `parent` provisional rather than final.
    *  Absent on an ordinary frame, and absent when there is nothing to wait for (the

@@ -221,6 +221,8 @@ test("module has no top-level Electron dependency and its factory accepts fakes"
     "probePrimaryPortOwner",
     "stopGracefully",
     "stopOnQuit",
+    "reopenTunnel",
+    "syncTunnel",
     "onInstallDispatched",
     "onInstallFailed",
   ]);
@@ -2912,4 +2914,55 @@ test("a service-owned stale bundle adds conditional service recovery guidance", 
   assert.equal(await state.supervisor.start(), true);
   assert.match(state.dialogs[0].detail, /If the gateway starts again automatically/);
   assert.match(state.dialogs[0].detail, /stop or update the service that restarts it/);
+});
+
+test("a client-only launch whose crew opted in opens the managed tunnel before asking the port", async () => {
+  const timers = fakeTimers();
+  const { supervisor, spawnCalls } = harness({
+    timers,
+    store: remoteCrewStore(5477, {
+      host: "devbox.example.com",
+      binPath: "kirocrew",
+      remotePort: "5476",
+      remotePath: "",
+      manageTunnel: true,
+    }, { runLocalGateway: false }),
+    port: 5477,
+  });
+
+  const started = supervisor.start();
+  await flush();
+  assert.strictEqual(spawnCalls.length, 1, "the keeper is spawned first");
+  const [, args] = spawnCalls[0];
+  assert.deepStrictEqual(args.slice(0, 2), ["desktop", "tunnel"]);
+  assert.deepStrictEqual(
+    args.slice(2),
+    ["--host", "devbox.example.com", "--local-port", "5477", "--remote-port", "5476"],
+  );
+
+  // The forward never answers: after one connect budget the launch falls through
+  // to the ordinary client-only failure, and no gateway is started here.
+  while (timers.pending.some((timer) => timer.ms === 500)) {
+    timers.fire(500);
+    await flush();
+  }
+  assert.strictEqual(await started, false);
+  assert.strictEqual(spawnCalls.length, 1, "client-only still starts no local gateway");
+
+  supervisor.stopOnQuit();
+  assert.ok(spawnCalls[0].child.killed, "quitting stops the keeper");
+});
+
+test("without the opt-in a client-only launch spawns nothing and does not wait", async () => {
+  const { supervisor, spawnCalls } = harness({
+    store: remoteCrewStore(5477, {
+      host: "devbox.example.com",
+      binPath: "kirocrew",
+      remotePort: "5476",
+      remotePath: "",
+    }, { runLocalGateway: false }),
+    port: 5477,
+  });
+  assert.strictEqual(await supervisor.start(), false);
+  assert.strictEqual(spawnCalls.length, 0);
 });

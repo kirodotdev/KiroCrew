@@ -679,6 +679,36 @@ def _resolve_chat_folder_id(
     return folder_id, None
 
 
+def _app_caller(request: web.Request) -> str:
+    """The calling app's name, or ``""`` when the caller is not an app.
+
+    The token middleware publishes the claim as a ``str``; ``None`` (absent)
+    is the internal-secret transport. Anything else is not an app caller,
+    matching the ``== ""`` test the owner gate applies.
+    """
+    app = request.get("app")
+    return app if isinstance(app, str) else ""
+
+
+def _audit_app_cron(app: str, operation: str, outcome: str, resources: str) -> None:
+    """Write the app-attributed SEL row for one app cron decision.
+
+    A bare enqueue: SEL is warmed at gateway startup
+    (sel.warm_sel_singleton); guarded because a FAILED warm leaves
+    construction to retry here.
+    """
+    try:
+        _sel().log_api_access(
+            caller=f"app:{app}",
+            operation=operation,
+            outcome=outcome,
+            source="dashboard",
+            resources=resources,
+        )
+    except Exception:  # pragma: no cover - audit must never change the outcome
+        logger.debug("SEL audit for app cron %s failed", operation, exc_info=True)
+
+
 async def _refuse_foreign_app_job(
     request: web.Request, state: DashboardState, job_ids: list[str], operation: str
 ) -> web.Response | None:
@@ -702,11 +732,8 @@ async def _refuse_foreign_app_job(
     foreign job changes nothing. The lookup is cache-only: ``created_by`` never
     changes after creation, and a stale miss can only refuse, never allow.
     """
-    app = request.get("app")
-    # The token middleware publishes the claim as a ``str``; ``None`` (absent)
-    # is the internal-secret transport. Anything else is not an app caller,
-    # matching the ``== ""`` test the owner gate above applies.
-    if not isinstance(app, str) or not app:
+    app = _app_caller(request)
+    if not app:
         return None
     # Function-local for the reason ``api_crons`` gives: importing
     # ``kiro_crew.apps.cron_sdk`` runs ``kiro_crew.apps.__init__`` and its cycle.
@@ -720,19 +747,13 @@ async def _refuse_foreign_app_job(
         ),
         None,
     )
-    # One SEL row per decision, allow and deny alike. A bare enqueue: SEL is
-    # warmed at gateway startup (sel.warm_sel_singleton); guarded because a
-    # FAILED warm leaves construction to retry here.
-    try:
-        _sel().log_api_access(
-            caller=f"app:{app}",
-            operation=operation,
-            outcome="allowed" if refused is None else "denied",
-            source="dashboard",
-            resources=",".join(job_ids) if refused is None else refused,
-        )
-    except Exception:  # pragma: no cover - audit must never change the outcome
-        logger.debug("SEL audit for app cron %s failed", operation, exc_info=True)
+    # One SEL row per decision, allow and deny alike.
+    _audit_app_cron(
+        app,
+        operation,
+        "allowed" if refused is None else "denied",
+        ",".join(job_ids) if refused is None else refused,
+    )
     if refused is not None:
         return _owner_denial_response(request)
     return None
@@ -1944,10 +1965,17 @@ async def api_cron_run(request: web.Request) -> web.Response:
 
 async def api_cron_cancel(request: web.Request) -> web.Response:
     """POST /api/crons/{id}/cancel — cancel a running execution."""
+    if request.get("app") == "":
+        owner_denied = await require_owner_dashboard_request(request, "crons.cancel")
+        if owner_denied is not None:
+            return owner_denied
     state: DashboardState = request.app["state"]
     job_id = request.match_info["job_id"]
     if (_e := _invalid_path_id_response(job_id, "job_id")) is not None:
         return _e
+    app_denied = await _refuse_foreign_app_job(request, state, [job_id], "crons.cancel")
+    if app_denied is not None:
+        return app_denied
     jobs = state.crons.list_jobs(include_disabled=True)
     job = next((j for j in jobs if j.id == job_id), None)
     if not job:
@@ -2084,10 +2112,17 @@ async def api_cron_enable(request: web.Request) -> web.Response:
 
 async def api_cron_ack(request: web.Request) -> web.Response:
     """POST /api/crons/{id}/ack — acknowledge a cron notification."""
+    if request.get("app") == "":
+        owner_denied = await require_owner_dashboard_request(request, "crons.ack")
+        if owner_denied is not None:
+            return owner_denied
     state: DashboardState = request.app["state"]
     job_id = request.match_info["job_id"]
     if (_e := _invalid_path_id_response(job_id, "job_id")) is not None:
         return _e
+    app_denied = await _refuse_foreign_app_job(request, state, [job_id], "crons.ack")
+    if app_denied is not None:
+        return app_denied
     # Default cap: the body is a short summary + notification ts. allow_absent
     # keeps the missing-body-means-defaults contract; see api_cron_enable.
     body, body_err = await read_bounded_json(request, allow_absent=True)
@@ -2096,6 +2131,16 @@ async def api_cron_ack(request: web.Request) -> web.Response:
     assert body is not None  # read_bounded_json returns (dict, None) on success
     summary = body.get("summary", "acknowledged")
     notification_ts = body.get("ts", "")
+    # An app may mark read only a notification of the job it just passed:
+    # the same ts / kind / job_id match api_notification_unack makes.
+    app = _app_caller(request)
+    if notification_ts and app:
+        if not any(
+            n.get("ts") == notification_ts and n.get("kind") == "cron" and n.get("job_id") == job_id
+            for n in state._notification_log
+        ):
+            _audit_app_cron(app, "crons.ack", "denied", job_id)
+            return _owner_denial_response(request)
     try:
         ok = await state.crons.ack_job_async(job_id, summary)
     except CronStoreBusy:

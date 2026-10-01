@@ -44,6 +44,7 @@ from urllib.parse import urlencode
 
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
+from dashboard_owner_helpers import NoConfiguredOwner
 
 from kiro_crew import llm_helpers
 from kiro_crew.apps.builtins.issue_radar.backend import github_client as gh
@@ -85,6 +86,12 @@ def _get(path: str, query: dict | None = None, state: object | None = None) -> w
     return make_mocked_request("GET", full, app=_app(state))
 
 
+#: Forge writes behind the dashboard-owner gate; their requests carry owner state.
+_OWNER_GATED_WRITES = frozenset(
+    {"labels/apply", "labels/apply-bulk", "labels/create", "issue/state", "issue/assignees"}
+)
+
+
 def _json_request(
     method: str, path: str, body: object, state: object | None = None
 ) -> web.Request:
@@ -93,7 +100,11 @@ def _json_request(
     ``None`` models a malformed payload: ``request.json()`` raising is exactly what
     each handler's ``except Exception -> 400`` branch is written for.
     """
+    if state is None and path in _OWNER_GATED_WRITES:
+        state = NoConfiguredOwner()
     req = make_mocked_request(method, f"{BASE}/{path}", app=_app(state))
+    req["user"] = "local-app"
+    req["app"] = ""
     if body is None:
         req.json = AsyncMock(side_effect=ValueError("not json"))  # type: ignore[method-assign]
     else:

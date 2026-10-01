@@ -41,6 +41,7 @@ sparingly: it is unscoped and silences the whole line.
 from __future__ import annotations
 
 import bisect
+import gc
 import importlib.util
 import math
 import os
@@ -56,11 +57,18 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # Self-test timing budget for the growth-ratio check. It divides two measured
 # durations, so it is only as trustworthy as the smaller one: pair each baseline
 # with its own doubled sample and keep the least noisy RATIO, then refuse to
-# judge one whose baseline is too small to measure. The floor sits above the
-# ~15.625ms granularity Windows reports process CPU time at, so a coarse clock
-# cannot on its own manufacture a regression.
+# judge one whose baseline is too small to measure.
+#
+# The floor is set in TICKS of the coarsest clock this runs under: Windows
+# reports process CPU time in ~15.625ms steps. A baseline of T ticks can read
+# one tick short while its doubled sample reads one tick long, so a perfectly
+# linear scan can report (2T+1)/(T-1) -- 5.0x at T=2 (a 0.031s baseline on a
+# slow runner is exactly two ticks), and still 3.0x at T=4. Only
+# above 4 ticks can quantisation alone not reach the 3.0x bound; 8 ticks
+# (125ms) caps it at 2.43x and leaves the rest of the headroom for real noise.
 _PERF_ATTEMPTS = 5
-_PERF_MIN_BASE_SECS = 0.020
+_PERF_TICK_SECS = 0.015625
+_PERF_MIN_BASE_SECS = 8 * _PERF_TICK_SECS
 
 # Baseline workloads, tried in order until one produces a measurable baseline.
 # A single fixed size cannot serve both ends of the hardware range: 20k costs a
@@ -72,8 +80,9 @@ _PERF_MIN_BASE_SECS = 0.020
 # Escalating is close to free because a REGRESSED scan never reaches it: its
 # baseline is ~25x the linear one, so it clears the floor at the first size and
 # is judged there. Only linear scans -- the fast case -- ever pay for a larger
-# size, and a slow runner clears the floor at 20k and pays nothing at all.
-_PERF_BASE_SIZES = (20_000, 50_000, 120_000)
+# size. The size is chosen by ONE probe scan per size, and only the chosen size
+# pays for every attempt, so escalating costs a probe, not a full measurement.
+_PERF_BASE_SIZES = (20_000, 50_000, 120_000, 300_000)
 
 # ---------------------------------------------------------------------------
 # What counts as a misspelling
@@ -556,6 +565,27 @@ PROBES: tuple[tuple[str, str, bool], ...] = (
 )
 
 
+def _timed_scan(count: int) -> tuple[float, int]:
+    """CPU time and hit count for one line of *count* brand names.
+
+    The collector is paused for the timed region: the doubled line allocates
+    twice the objects, so a collection lands on it more often than on the
+    baseline and inflates the ratio for reasons that have nothing to do with
+    the scan.
+    """
+    line = "!KiroCrew" * count
+    was_enabled = gc.isenabled()
+    gc.collect()
+    gc.disable()
+    try:
+        began = time.process_time()
+        hits = len(list(scan_line("big.md", 1, line, in_code=False)))
+        return time.process_time() - began, hits
+    finally:
+        if was_enabled:
+            gc.enable()
+
+
 def self_test() -> int:
     failures = 0
     for label, line, should_flag in PROBES:
@@ -662,9 +692,7 @@ def self_test() -> int:
         found: tuple[int, int] = (0, 0)
 
         def once(count: int) -> tuple[float, int]:
-            began = time.process_time()
-            hits = len(list(scan_line("big.md", 1, "!KiroCrew" * count, in_code=False)))
-            return time.process_time() - began, hits
+            return _timed_scan(count)
 
         for _ in range(_PERF_ATTEMPTS):
             base_time, base_hits = once(base)
@@ -677,13 +705,19 @@ def self_test() -> int:
                 best, best_pair = candidate, (base_time, doubled_time)
         return (0.0 if best is math.inf else best), best_pair[0], found[0], found[1]
 
-    # Grow the workload until the baseline is big enough to divide. `ratio_of`
-    # is only called again when the previous size came in under the floor, so
-    # the common cases cost exactly one call.
+    # One probe scan per size picks where to start; a size whose MEASURED baseline
+    # still lands under the floor (it can read a tick below its probe) moves on
+    # to the next size, so only the largest size can ever go unjudged. A
+    # regressed scan clears the floor at the first size.
+    start = len(_PERF_BASE_SIZES) - 1
+    for i, size in enumerate(_PERF_BASE_SIZES):
+        if _timed_scan(size)[0] >= _PERF_MIN_BASE_SECS:
+            start = i
+            break
     base_count = 0
     ratio = base_time = 0.0
     base_found = doubled_found = 0
-    for base_count in _PERF_BASE_SIZES:
+    for base_count in _PERF_BASE_SIZES[start:]:
         ratio, base_time, base_found, doubled_found = ratio_of(base_count)
         if base_time >= _PERF_MIN_BASE_SECS:
             break

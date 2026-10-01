@@ -1,8 +1,10 @@
 """Owner gate on the cron job mutation routes beyond ``POST /api/crons``.
 
 ``PATCH /api/crons/{id}``, ``POST /api/crons/{id}/run``, ``POST
-/api/crons/{id}/enable``, ``DELETE /api/crons/{id}`` and ``DELETE /api/crons``
-rewrite, fire or remove a job that runs on the owner's host. Each route gets
+/api/crons/{id}/enable``, ``POST /api/crons/{id}/ack``, ``POST
+/api/crons/{id}/cancel``, ``DELETE /api/crons/{id}`` and ``DELETE /api/crons``
+rewrite, fire, stop or remove a job that runs on the owner's host. An ack
+summary is appended to the job's next prompt, so it rewrites the job too. Each route gets
 four caller rows:
 
 * the owner (``app == ""``, subject == owner) still reaches the store;
@@ -71,6 +73,9 @@ def _crons() -> MagicMock:
     crons.run_job = AsyncMock(return_value=None)
     crons.attach_run_task = MagicMock()
     crons.get_history.return_value.delete_job_history = AsyncMock()
+    crons.ack_job_async = AsyncMock(return_value=True)
+    crons.list_jobs = MagicMock(return_value=[job])
+    crons.cancel = AsyncMock(return_value=True)
     return crons
 
 
@@ -85,10 +90,12 @@ ROUTES = [
     ),
     ("POST", f"/api/crons/{JOB_ID}/run", None, "run_job", "crons.run"),
     ("POST", f"/api/crons/{JOB_ID}/enable", {"enabled": True}, "enable_job_async", "crons.enable"),
+    ("POST", f"/api/crons/{JOB_ID}/ack", {"summary": "seen"}, "ack_job_async", "crons.ack"),
+    ("POST", f"/api/crons/{JOB_ID}/cancel", None, "cancel", "crons.cancel"),
     ("DELETE", f"/api/crons/{JOB_ID}", None, "remove_job_async", "crons.delete"),
     ("DELETE", "/api/crons", {"ids": [JOB_ID]}, "remove_jobs", "crons.batch_delete"),
 ]
-ROUTE_IDS = ["patch", "run", "enable", "delete", "batch_delete"]
+ROUTE_IDS = ["patch", "run", "enable", "ack", "cancel", "delete", "batch_delete"]
 
 
 @pytest.fixture
@@ -109,6 +116,8 @@ async def _call(claims: dict[str, object], method: str, path: str, body):
     app.router.add_patch("/api/crons/{job_id}", h.api_cron_update)
     app.router.add_post("/api/crons/{job_id}/run", h.api_cron_run)
     app.router.add_post("/api/crons/{job_id}/enable", h.api_cron_enable)
+    app.router.add_post("/api/crons/{job_id}/ack", h.api_cron_ack)
+    app.router.add_post("/api/crons/{job_id}/cancel", h.api_cron_cancel)
     app.router.add_delete("/api/crons/{job_id}", h.api_cron_delete)
     app.router.add_delete("/api/crons", h.api_cron_batch_delete)
     async with TestClient(TestServer(app)) as client:

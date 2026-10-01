@@ -181,6 +181,22 @@ describe('useInstanceSessions', () => {
     expect(result.current.rows[0].parent).toEqual({ slot: 'gone' })
   })
 
+  it('forwards the hub-stamped `hub_key` so a worker nests under the local row driving its creator', async () => {
+    // The hub rewrites a citation of a peer slot it drives to the LOCAL slot key
+    // (`hub_key`), the peer's own key for that creator never crossing the wire.
+    // A non-string half is dropped like the other two.
+    instanceChatSlotsMock.mockResolvedValue([
+      { key: 'w1', parent: { slot: 'chat-7', hub_key: 'chat-7' } },
+      { key: 'w2', parent: { slot: 'chat-7', hub_key: 7 } },
+    ])
+    const { result } = renderInstanceSessions(true, [CONNECTED])
+
+    await waitFor(() => expect(result.current.rows).toHaveLength(2))
+    const byKey = new Map(result.current.rows.map(r => [r.key, r]))
+    expect(byKey.get('w1')?.parent).toEqual({ slot: 'chat-7', hub_key: 'chat-7' })
+    expect(byKey.get('w2')?.parent).toEqual({ slot: 'chat-7' })
+  })
+
   it('preserves row identity across unrelated rerenders after query data settles', async () => {
     instanceChatSlotsMock.mockResolvedValue([
       { key: 'chat-1', title: 'stable row', last_turn_ts: '2026-08-31T14:00:00Z' },

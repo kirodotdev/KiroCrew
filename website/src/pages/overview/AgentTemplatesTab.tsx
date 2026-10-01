@@ -676,7 +676,7 @@ export default function AgentTemplatesTab() {
                             <MoreHorizontal className="lucide-inline" aria-hidden />
                           </Btn>
                         </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end" className="min-w-[260px]">
+                        <DropdownMenuContent align="end" className="min-w-[260px] max-w-[min(360px,calc(100vw-2rem))]">
                           {!selected.private_to && (
                             <DropdownMenuItem disabled={enroll.isPending || enrolled} onSelect={() => enroll.mutate(selected)} className="items-start">
                               <UserPlus className="lucide-inline mt-0.5 shrink-0 text-muted" aria-hidden />

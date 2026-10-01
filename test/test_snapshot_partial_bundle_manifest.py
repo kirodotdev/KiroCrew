@@ -268,42 +268,72 @@ class TestTextIOPinsUtf8:
     would fail.
     """
 
-    def test_no_text_io_in_the_backup_path_omits_an_encoding(self):
-        """Checked with the AST, not a regex: the call can span lines and its
+    @staticmethod
+    def _text_io_calls(source: str) -> list[tuple[int, str, bool]]:
+        """``(line, method, has_encoding)`` for every ``.read_text()`` / ``.write_text()``
+        call in *source*.
+
+        Checked with the AST, not a regex: the call can span lines and its
         arguments can contain nested calls with their own parentheses, both of
         which defeat line-oriented matching. A regex version of this test let a
         `write_text(payload)` mutant survive.
-
-        Scans the modules the off-host path is actually made of now: the snapshot
-        format, the redaction pass that rewrites what leaves (which reads the
-        opt-in switch as JSON, the exact shape this defect hit), and the app module
-        that performs the push.
         """
         import ast
+
+        return [
+            (node.lineno, node.func.attr, any(kw.arg == "encoding" for kw in node.keywords))
+            for node in ast.walk(ast.parse(source))
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in ("read_text", "write_text")
+        ]
+
+    def test_the_scan_flags_text_io_without_an_encoding_and_only_that(self):
+        cases = {
+            "p.read_text()\n": ["read_text"],
+            "p.write_text(payload)\n": ["write_text"],
+            "p.write_text(\n    json.dumps({'a': f(x)}),\n)\n": ["write_text"],
+            "p.read_text(encoding='utf-8')\n": [],
+            "p.write_text(\n    payload,\n    encoding='utf-8',\n)\n": [],
+            "read_text(p)\n": [],
+        }
+        for source, expected in cases.items():
+            flagged = [method for _, method, encoded in self._text_io_calls(source) if not encoded]
+            assert flagged == expected, source
+
+    def test_no_text_io_in_the_backup_path_omits_an_encoding(self):
+        """Scans the modules the off-host path is made of: the snapshot format, the
+        redaction pass that rewrites what leaves (which reads the opt-in switch as
+        JSON, the exact shape this defect hit), the app module that performs the
+        push, and every module of the ``backup_parts`` package its engine is
+        composed from, enumerated from the package directory.
+        """
         import pathlib
 
         import kiro_crew.snapshot_redact as sr
         from kiro_crew.apps.builtins.aws_control.backend import backup as app_backup
 
-        offenders = []
+        parts = pathlib.Path(app_backup.__file__).parent / "backup_parts"
         paths = [
             *snapshot_family_paths(),
             pathlib.Path(sr.__file__),
             pathlib.Path(app_backup.__file__),
+            *sorted(parts.rglob("*.py")),
         ]
-        for path in paths:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
-            for node in ast.walk(tree):
-                if not isinstance(node, ast.Call):
-                    continue
-                fn = node.func
-                if not isinstance(fn, ast.Attribute):
-                    continue
-                if fn.attr not in ("read_text", "write_text"):
-                    continue
-                if any(kw.arg == "encoding" for kw in node.keywords):
-                    continue
-                offenders.append(f"{path.name}:{node.lineno} .{fn.attr}()")
+        calls = {path: self._text_io_calls(path.read_text(encoding="utf-8")) for path in paths}
+        # A floor on the parts, over what the scan reads: the engine's state file is
+        # read there, twice. A scan that stopped reaching them would pass on nothing.
+        in_parts = [
+            call for path, found in calls.items() if parts in path.parents for call in found
+        ]
+        assert len(in_parts) >= 2, f"text I/O found in backup_parts: {in_parts}"
+
+        offenders = [
+            f"{path.name}:{line} .{method}()"
+            for path, found in calls.items()
+            for line, method, encoded in found
+            if not encoded
+        ]
 
         assert not offenders, (
             "text I/O without an explicit encoding: "

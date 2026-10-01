@@ -91,14 +91,12 @@ from kiro_crew.config.memory_sections import (  # noqa: F401
 from kiro_crew.config.resolution import _OBSERVED_DEGRADED_SECTIONS, DEGRADED_TAILSCALE
 from kiro_crew.config.service_sections import (  # noqa: F401
     DEFAULT_MAX_PARALLEL_STEPS,
-    DEFAULT_MAX_PLAN_DURATION,
     DEFAULT_RUNTIME_CEILING_SECS,
     MAX_RUNTIME_CEILING_SECS,
     CronHistoryConfig,
     HeartbeatConfig,
     MessagingConfig,
     MonitoringConfig,
-    OrchestratorConfig,
     TaskRunnerConfig,
     WatchdogConfig,
 )
@@ -1976,7 +1974,7 @@ class SlackConfig:
         default=5,
         metadata=_meta(
             "Home Tab Sessions Per Kind",
-            "Max sessions shown per category (main chat / autopilot) in the Slack Home Tab.",
+            "Max sessions shown per category (main chat / task runner) in the Slack Home Tab.",
             tags=["slack"],
         ),
     )
@@ -2799,6 +2797,21 @@ class DashboardConfig:
                         ),
                     },
                 },
+                "reuse_current": {
+                    "type": "boolean",
+                    "default": False,
+                    "x-meta": {
+                        "label": "Reuse the current terminal",
+                        "help": (
+                            "Run-in-terminal focuses the terminal tab you have "
+                            "selected and copies the command, so you can paste it into "
+                            "that shell and keep its state (working directory, "
+                            "environment, an active login session). With no terminal "
+                            "open, it still copies the command for you to paste — it is "
+                            "never run for you. Off = a fresh terminal each time."
+                        ),
+                    },
+                },
                 "completion": {
                     "type": "object",
                     "additionalProperties": True,
@@ -3442,7 +3455,7 @@ CHAT_TURN_TIMEOUT_MIN = 300
 CHAT_TURN_TIMEOUT_MAX = 86400
 
 # agent.session_start_timeout_secs — budget for ACP session/new + session/load
-# on the shared runtime (acp/runtime.py ``_SESSION_NEW_TIMEOUT`` is the built-in
+# on the shared runtime (acp/runtime_start.py ``_SESSION_NEW_TIMEOUT`` is the built-in
 # default). kiro-cli blocks the session/new response while it initializes the
 # session's MCP servers, so start time scales with the agent's server count and
 # per-server cold-start cost (observed: a 71-server agent with no pending OAuth

@@ -13,7 +13,7 @@ path) is gone.
 
 Handlers are wrapped by :func:`.._common.route`, which applies the
 deny-by-default enable gate and turns validation failures into 4xx. The write
-routes that change a meeting or drive its agents are also wrapped by
+routes that change a meeting, edit its dictionary, or drive its agents are also wrapped by
 :func:`.._common.require_owner`, so only the dashboard owner reaches them.
 """
 
@@ -173,9 +173,21 @@ def register_routes(app: web.Application) -> None:
         route(require_owner("meetings.put_config")(settings_routes.handle_put_config)),
     )
     router.add_get(f"{BASE}/dictionary", route(settings_routes.handle_get_dictionary))
-    router.add_post(f"{BASE}/dictionary", route(settings_routes.handle_add_dictionary_term))
     router.add_post(
-        f"{BASE}/dictionary/remove", route(settings_routes.handle_remove_dictionary_term)
+        f"{BASE}/dictionary",
+        route(
+            require_owner("meetings.add_dictionary_term")(
+                settings_routes.handle_add_dictionary_term
+            )
+        ),
+    )
+    router.add_post(
+        f"{BASE}/dictionary/remove",
+        route(
+            require_owner("meetings.remove_dictionary_term")(
+                settings_routes.handle_remove_dictionary_term
+            )
+        ),
     )
     router.add_post(f"{BASE}/dictionary/reload", route(settings_routes.handle_reload_dictionary))
 

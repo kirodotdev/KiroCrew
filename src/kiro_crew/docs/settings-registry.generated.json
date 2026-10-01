@@ -920,6 +920,13 @@
       "description": "Adds “New chat on crew” to the create menu, which starts a session on a remote crew — another machine you have connected under Settings > Remote Crew. Unfinished: the session opens in that crew’s own pane and is not listed in this dashboard’s sessions yet, so to return to it later, switch to that crew’s pane."
     },
     {
+      "id": "developer.composable-layout",
+      "label": "Composable layout",
+      "tab": "developer",
+      "route": "/settings/developer?highlight=developer.composable-layout",
+      "description": "Turns on an in-development, developer-only harness for a new layout mechanism. Nothing you can see changes yet: the mechanism has no page of its own, so this exists only so it can be built and tested behind a switch."
+    },
+    {
       "id": "developer.crewmates",
       "label": "Crewmates",
       "tab": "developer",
@@ -1101,6 +1108,14 @@
       "tab": "display",
       "route": "/settings/display/sidebar?highlight=display.palette",
       "description": "Choose a color palette for your sidebar sessions."
+    },
+    {
+      "id": "display.reuse-the-current-terminal",
+      "label": "Reuse the current terminal",
+      "tab": "display",
+      "route": "/settings/display/terminal?highlight=key%3Adashboard.terminal.reuse_current",
+      "description": "Copies the command instead of running it: Run in terminal focuses the terminal tab you have selected and copies the command, so you can paste it into that shell while keeping its working directory, environment, and any active login session. With no terminal open, it still copies the command for you to paste — it is never run for you.",
+      "configKey": "dashboard.terminal.reuse_current"
     },
     {
       "id": "display.theme",

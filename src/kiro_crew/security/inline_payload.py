@@ -125,7 +125,13 @@ def _lex(view: str):
 
     Python's lexer owns escapes, triple quotes and comments; a shell quote walk
     cannot substitute for its different string rules. No AST or execution occurs.
+
+    A NUL is blanked to a space first. The view holds a real NUL where the
+    program wrote a ``\\0`` escape, and CPython 3.12's tokenizer reports a NUL
+    after an indented block as ``SystemError``, not ``SyntaxError``; that escaped
+    here and crashed the whole gate. One character for one keeps every offset.
     """
+    view = view.replace("\0", " ")
     offsets = [0]
     for line in view.split("\n"):
         offsets.append(offsets[-1] + len(line) + 1)

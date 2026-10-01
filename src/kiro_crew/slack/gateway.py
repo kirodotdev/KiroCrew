@@ -10081,89 +10081,10 @@ class GatewayOrchestrator:
                 status, emoji, single_outcome = "completed", "✅", OUTCOME_OK
             title = f"Subagent `{info.id}` {emoji}"
 
-            # ── Orchestration guard: track failures (only in orchestrator mode) ──
-            guard_msg = ""
-            try:
-                # Stage limits are a property of the selected tab the
-                # orchestrator runs in, not of its canonical parent name.
-                _is_orchestrator = (
-                    _injection_slot is not None
-                    and getattr(_injection_slot, "mode", "") == "orchestrator"
-                )
-                if _injection_slot is not None and _is_orchestrator:
-                    from kiro_crew.context_management import (
-                        MAX_STAGE_ESCALATIONS,
-                        MAX_STAGE_ROUNDS,
-                        OrchestrationTracker,
-                    )
-
-                    # Deliberately NOT latch-based (slot._plan_cancelled):
-                    # the latch outlives the cancelled plan into the NEXT
-                    # planning turn (it clears only when the new plan is
-                    # armed), so a latch-based drop here would silently
-                    # discard subagent completions belonging to that new
-                    # turn — data loss. tracker.stopped scopes the drop to
-                    # a live-but-stopped orchestration; a stale completion
-                    # landing on a cancelled slot whose tracker is absent
-                    # is bounded accounting noise (the stage loop itself
-                    # stays latched and cannot advance).
-                    if not getattr(_injection_slot, "_orch_tracker", None):
-                        _injection_slot._orch_tracker = OrchestrationTracker()
-                    tracker = _injection_slot._orch_tracker
-                    if tracker.stopped:
-                        logger.info("Orchestration stopped, ignoring subagent result %s", info.id)
-                        if not _boundary_completion_cancelled():
-                            return
-                    task_key = info.task[:80]
-                    if _flush_only:
-                        # No task ran — nothing to record. Recording it as a
-                        # success would credit a stage round to a timer.
-                        pass
-                    elif info.user_stopped:
-                        # User stop: neither success nor failure. Recording it
-                        # as success would let orchestration/synthesis advance
-                        # on work the user explicitly killed and permanently
-                        # skew success stats; recording it as failure would
-                        # trigger retry-guidance guards for a deliberate act.
-                        pass
-                    elif info.error:
-                        if tracker.record_failure(task_key):
-                            guard_msg = (
-                                f"\n\n⚠️ [SYSTEM] Task '{task_key}' has failed "
-                                f"{tracker.failure_count(task_key)} times. "
-                                "You MUST ask the user for guidance before retrying."
-                            )
-                    else:
-                        tracker.record_success(task_key)
-                    # Track spawn rounds — count each completed batch as a round
-                    pending = (
-                        self.subagent_mgr.running_agents_for(parent_key)
-                        if self.subagent_mgr
-                        else []
-                    )
-                    if not pending and not _flush_only:
-                        # All agents done → one round completed
-                        stage = tracker.current_stage
-                        if tracker.record_round(stage):
-                            if tracker.is_force_failed(stage):
-                                guard_msg += (
-                                    f"\n\n🛑 [SYSTEM] Stage {stage} has failed after "
-                                    f"{MAX_STAGE_ESCALATIONS} escalations ({tracker.round_count(stage)} rounds). "
-                                    "You MUST stop this stage and report the failure to the user. "
-                                    "Do NOT retry or spawn more agents."
-                                )
-                            else:
-                                guard_msg += (
-                                    f"\n\n⚠️ [SYSTEM] Stage {stage} has used "
-                                    f"{tracker.round_count(stage)}/{MAX_STAGE_ROUNDS} spawn rounds. "
-                                    "You MUST ask the user for guidance before spawning more."
-                                )
-            except Exception:
-                logger.warning("Orchestration guard failed for %s", info.id, exc_info=True)
             # Chat mode: inline info.result (subagent.py already trimmed it to
             # agent.completion_keep + completion_keep_chars) when it fits. When the
-            # completion copy dropped content (result_truncated) or in orchestrator
-            # mode, emit a summary + result_path pointer so the parent reads the full
+            # completion copy dropped content (result_truncated), emit a summary +
+            # result_path pointer so the parent reads the full
             # transcript on demand (read / grep / spawn_status) instead of re-running
             # the subagent.
             result_path = info.result_path or ""
@@ -10194,7 +10115,7 @@ class GatewayOrchestrator:
                         "\n\nPartial output (the run did NOT finish — do not treat "
                         f"this as a completed result):\n{info.result}"
                     )
-            elif result_path and (info.result_truncated or _is_orchestrator):
+            elif result_path and info.result_truncated:
                 detail = summarize_result(info.result, result_path)
             else:
                 detail = info.result or "_No response._"
@@ -10216,7 +10137,6 @@ class GatewayOrchestrator:
                 f"Task: {task_text}\n\n"
                 f"Usage: {usage}\n\n"
                 f"{detail}"
-                f"{guard_msg}"
             )
             # Structured header facts for the dashboard card, stamped on the row
             # so a reword of the prose above cannot silently break rendering.
@@ -10284,7 +10204,6 @@ class GatewayOrchestrator:
                             "stopped": 0,
                             "fail_lines": [],
                             "ok_lines": [],
-                            "guard_msgs": [],
                             "held_ok_deliveries": [],
                             # Members whose delivery is currently held, so the
                             # hold-deadline sweep's timestamps can be cleared
@@ -10299,13 +10218,6 @@ class GatewayOrchestrator:
                     )
             if _batch_id and not _flush_only:
                 bp["done"] += 1
-                # Fold EVERY member's orchestration escalation into the wave
-                # digest — held members return before the announce is sent, so
-                # without accumulation only the last member's guard_msg would
-                # survive and a mid-wave "you MUST ask the user" ceiling would
-                # be silently dropped.
-                if guard_msg:
-                    bp["guard_msgs"].append(guard_msg)
                 _oc = info.outcome
                 if _oc == "stopped":
                     bp["stopped"] += 1
@@ -10466,9 +10378,6 @@ class GatewayOrchestrator:
                     _digest_body = "\n".join(_failures + _oks)
                     if len(_digest_body) > 60_000:
                         _digest_body = _digest_body[:60_000] + "\n…(digest truncated)"
-                    # Deduped union of this chunk's members' escalation
-                    # guards — not just the flushing member's.
-                    _guards = "".join(dict.fromkeys(bp.get("guard_msgs", [])))
                     bp["chunks"] += 1
                     bp["flushed"] = bp["done"]
                     _chunk_k = bp["chunks"]
@@ -10536,7 +10445,7 @@ class GatewayOrchestrator:
                             f"{SUBAGENT_BATCH_COMPLETION_PREFIX}\n"
                             f"Batch results {_chunk_k}/{_chunk_j} — "
                             f"{_completion_line}"
-                            f"{_footer}\n\n{_digest_body}{_guards}"
+                            f"{_footer}\n\n{_digest_body}"
                         )
                         # This member's completion is delivered as the wave-close
                         # digest, not a per-agent row — stamp the digest's facts
@@ -10581,7 +10490,7 @@ class GatewayOrchestrator:
                             f"sub-agents yet — more result batches from this "
                             f"run are still arriving, and spawning now will "
                             f"interleave with them.\n"
-                            f"{_footer}\n\n{_digest_body}{_guards}"
+                            f"{_footer}\n\n{_digest_body}"
                         )
                         # Mid-wave chunk: progress facts (delivered/running), no
                         # tallies — mirrors the CHUNK regex the frontend demotes.
@@ -10597,7 +10506,6 @@ class GatewayOrchestrator:
                         # _batch_progress above — nothing to reset.)
                         bp["fail_lines"] = []
                         bp["ok_lines"] = []
-                        bp["guard_msgs"] = []
                         bp["held_ok_deliveries"] = []
 
             # ── Route completion back to the originating session ──
@@ -10627,17 +10535,16 @@ class GatewayOrchestrator:
                     # dedicated synthesis turn (see chat_runner drain/idle branch).
                     # Ordering guarantees running_agents_for == [] here on the last
                     # agent (info.done set + _running_count decremented first).
-                    if not _is_orchestrator:
-                        try:
-                            _still_running = (
-                                self.subagent_mgr.running_agents_for(parent_key)
-                                if self.subagent_mgr
-                                else None
-                            )
-                        except Exception:
-                            _still_running = None  # error → don't arm (fail safe)
-                        if _still_running == []:
-                            _injection_slot._pending_synthesis = True
+                    try:
+                        _still_running = (
+                            self.subagent_mgr.running_agents_for(parent_key)
+                            if self.subagent_mgr
+                            else None
+                        )
+                    except Exception:
+                        _still_running = None  # error → don't arm (fail safe)
+                    if _still_running == []:
+                        _injection_slot._pending_synthesis = True
 
                     # ── Skip injection for blocking-tool-collected results ──
                     # spawn_sub_agents (blocking MCP tool) already delivered

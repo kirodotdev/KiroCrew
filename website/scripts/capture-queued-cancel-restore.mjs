@@ -28,7 +28,7 @@ const page = await browser.newPage({ viewport: { width: 860, height: 620 } })
 
 async function shoot(phase, theme, name) {
   await page.goto(`${BASE}/capture/queued-cancel-restore.html?lang=en&theme=${theme}&phase=${phase}`)
-  const card = page.locator('.queue-card')
+  const card = page.locator('[data-testid="queue-card"]')
   await card.waitFor({ timeout: 20000 })
   await page.waitForTimeout(300)
   await page.getByLabel('Cancel queued message').click()

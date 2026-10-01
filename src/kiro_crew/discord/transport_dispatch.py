@@ -351,6 +351,65 @@ _BUSY_OPTIONS_REFUSAL = (
     "applied. Type it as a message once the turn finishes."
 )
 
+#: What a typed message into a BUSY resumed dashboard session is told. The
+#: dashboard slot's own mid-turn machinery took it -- a dashboard-driven turn's
+#: reply reaches this DM, if at all, through the dashboard's own cross-surface
+#: leg and never through this dispatcher, so without a confirmation the hand-off
+#: is indistinguishable from a drop.
+_RESUMED_STEERED = "↪️ Steering that session — your message was folded into its running turn."
+_RESUMED_QUEUED = "⏳ Queued for that session — it runs when the current turn finishes."
+#: The session closed while the message was in flight; the close archives the
+#: queue the turn's teardown moved the text onto, so it runs on the next resume.
+_RESUMED_QUEUED_AFTER_CLOSE = (
+    "⏳ Queued for that session — it closed while your message was in flight; "
+    "the message runs when the session is next resumed."
+)
+#: The session changed while the message was in flight and the successor ran it.
+_RESUMED_RAN_AFTER_MOVE = (
+    "✅ Delivered to that session — it was reopened while your message was in flight, "
+    "and the message ran there as its own turn."
+)
+#: The session closed while the message was in flight and the queue the close
+#: archived does not (yet) carry the text: it is held only in memory, which
+#: nothing revisits once the slot is popped. Honest at the instant: the message
+#: may still run if the archive catches up, so the remedy is to watch first.
+_RESUMED_BUSY_UNSAVED_CLOSE_REFUSAL = (
+    "⏳ That session closed while your message was in flight, and the message had "
+    "not been saved with it yet. If it does not run once the session is reopened, "
+    "send it again."
+)
+#: The slot's live queue is at its bound. Refused rather than appended past it or
+#: evicting a waiting entry; the author still holds the text.
+_RESUMED_BUSY_QUEUE_FULL_REFUSAL = (
+    "⏳ That session's queue is full, so this message was NOT added. "
+    "Send it again once some of the waiting messages have run."
+)
+#: The slot cannot take the message: no open tab, a closing or remote-bound
+#: slot, or a lease held by something other than the dashboard turn loop
+#: (Discord's own turn on the resumed key). An incognito or temporary session is
+#: taken like any other: those modes keep their transcript and queue.
+_RESUMED_BUSY_REFUSAL = (
+    "⏳ That session is busy with a turn started elsewhere. "
+    "Send it again once it finishes, or `!unlink` to go back to "
+    "your own conversation."
+)
+#: Attachments cannot ride either arm: ``_session/steer`` carries text only, and
+#: the slot's queue cannot carry Discord attachment material (temp files owned by
+#: the consuming turn, which the dashboard drain has no hook to own). The files
+#: stay with the user rather than being dropped or answered without.
+_RESUMED_BUSY_ATTACHMENTS_REFUSAL = (
+    "⏳ That session is busy, and a message with attachments cannot wait in its "
+    "queue. Send it again once the turn finishes."
+)
+#: The slot the steer was handed to stopped being the one the session resolves
+#: to while the RPC was suspended (closed, or closed and recreated under the same
+#: key). Nothing would drain a queue entry made now, so the text is refused with
+#: the remedy rather than confirmed and lost.
+_RESUMED_BUSY_MOVED_REFUSAL = (
+    "⏳ That session changed while your message was in flight, so it was NOT "
+    "delivered. Send it again."
+)
+
 # How long a !model picker stays pressable, and how many pickers are retained.
 # Both bound unbounded growth (one entry per press-less !model), they are not UX
 # knobs: an expired or evicted picker answers "reopen !model" rather than acting
@@ -527,8 +586,9 @@ class DiscordDispatcher:
         binding to compare keys. The callers that dispatch with commands off
         and no tag DEPEND on the skip: a queue drain replays messages that were
         accepted for the native session while it was busy (a resumed session's
-        busy turn refuses instead of queueing, so a drained item's affinity is
-        native by construction), and an AutoNudge fire targets the native key
+        busy turn hands the message to the dashboard slot's own queue or steer
+        path and never to this queue, so a drained item's affinity is native by
+        construction), and an AutoNudge fire targets the native key
         its loop resolved and rotation-checked — routing either into a binding
         created later would run them in a session that never queued or armed
         them. An ``[OPTIONS:]`` press dispatches with commands off but a
@@ -775,18 +835,15 @@ class DiscordDispatcher:
                 # queue itself into an unrelated in-flight turn.
                 return MonitorDispatchResult.BUSY
             if resumed_key is not None:
-                # Do NOT queue or steer into a resumed session's running turn.
-                # ``_drain_queue`` is only ever called from the tail of a
-                # DISCORD-driven turn; the dashboard turn loop has no knowledge
-                # of this queue, so a message enqueued while the dashboard is
-                # driving would sit until some later Discord turn and then
-                # execute out of order. Refusing is honest and recoverable.
-                await self.client.send_message(
-                    channel_id,
-                    "⏳ That session is busy with a turn started elsewhere. "
-                    "Send it again once it finishes, or `!unlink` to go back to "
-                    "your own conversation.",
-                )
+                # NOT `_handle_busy`: that queues into THIS dispatcher's queue,
+                # which ``_drain_queue`` drains only at the tail of a DISCORD-driven
+                # turn and replays with resume routing off -- so a message queued
+                # there while the dashboard drives would sit until some later
+                # Discord turn and then run in the NATIVE session. The dashboard
+                # slot has its own steer path and its own queue, drained by the
+                # dashboard turn loop; the message goes to those, and the refusal
+                # stays for the cases the slot cannot take.
+                await self._handle_resumed_busy(session_key, msg, text, override_mode)
                 return monitor_result
             await self._handle_busy(session_key, msg, text, override_mode)
             return monitor_result
@@ -1504,6 +1561,90 @@ class DiscordDispatcher:
             await self._drain_queue(session_key)
         return monitor_result
 
+    async def _handle_resumed_busy(
+        self,
+        session_key: str,
+        msg: InboundMessage,
+        text: str,
+        override_mode: str | None,
+    ) -> None:
+        """A message arrived while the RESUMED dashboard session is mid-turn.
+
+        The same mode ladder as :meth:`_handle_busy` -- the per-message override,
+        else ``messaging.queue_mode`` -- but the destination is the dashboard slot's
+        own machinery (``dashboard.channel_handoff.hand_to_resumed_slot``), never this
+        dispatcher's queue: that queue is drained at the tail of a DISCORD-driven
+        turn and replayed with resume routing off, so an entry made while the
+        dashboard drives would run later in the native session. The slot's queue is
+        drained by the dashboard turn loop, so its ordering is the dashboard's.
+
+        Every outcome is confirmed in the DM. A dashboard-driven turn's reply reaches
+        this conversation, if at all, through the dashboard's own cross-surface leg
+        and never through this dispatcher, so a silent hand-off would read as a drop
+        and the user would resend into the same turn.
+        """
+        assert self.client is not None
+        # Deferred, like every dashboard import in this module: the dispatcher is on
+        # the gateway boot path and the dashboard package is not.
+        from kiro_crew.dashboard.channel_handoff import (
+            HANDOFF_STEERED,
+            QUEUED_BY_CLOSE,
+            RAN_ON_SUCCESSOR,
+            REFUSED_ATTACHMENTS,
+            REFUSED_MOVED,
+            REFUSED_QUEUE_FULL,
+            REFUSED_UNSAVED_CLOSE,
+            hand_to_resumed_slot,
+        )
+
+        mode = override_mode or str(self._live_cfg().messaging.queue_mode)
+        outcome = await hand_to_resumed_slot(
+            getattr(self._session_resume, "dashboard_state", None),
+            session_key,
+            text,
+            mode=mode,
+            has_attachments=bool(msg.attachments),
+            # Where a drop notice goes if the drain later refuses a queued entry,
+            # and the principal the outbound recipient check needs. Only a DM route
+            # supplies one: this user was authorized against ``allowed_user_ids``
+            # on inbound, and a dashboard slot's session key names no Discord peer
+            # of its own. A THREAD route supplies none -- the same convention the
+            # mirror's recipient check follows -- because ``may_send_to`` answers a
+            # thread from the thread roster and falls through to the DM arm only
+            # when the thread is not on it: a principal there would let a thread the
+            # operator has since removed from ``allowed_thread_ids`` receive the
+            # notice, excerpt included, on the strength of a user roster it was
+            # never checked against.
+            channel_type=_CHANNEL,
+            conversation_id=msg.conversation_id,
+            principal=(msg.user_id if not msg.thread_id else ""),
+        )
+        if outcome.refused:
+            logger.info(
+                "discord: message into busy resumed session %s refused (%s)",
+                session_key,
+                outcome.reason,
+            )
+            if outcome.reason == REFUSED_ATTACHMENTS:
+                reply = _RESUMED_BUSY_ATTACHMENTS_REFUSAL
+            elif outcome.reason == REFUSED_MOVED:
+                reply = _RESUMED_BUSY_MOVED_REFUSAL
+            elif outcome.reason == REFUSED_QUEUE_FULL:
+                reply = _RESUMED_BUSY_QUEUE_FULL_REFUSAL
+            elif outcome.reason == REFUSED_UNSAVED_CLOSE:
+                reply = _RESUMED_BUSY_UNSAVED_CLOSE_REFUSAL
+            else:
+                reply = _RESUMED_BUSY_REFUSAL
+        elif outcome.kind == HANDOFF_STEERED:
+            reply = _RESUMED_STEERED
+        elif outcome.reason == QUEUED_BY_CLOSE:
+            reply = _RESUMED_QUEUED_AFTER_CLOSE
+        elif outcome.reason == RAN_ON_SUCCESSOR:
+            reply = _RESUMED_RAN_AFTER_MOVE
+        else:
+            reply = _RESUMED_QUEUED
+        await self.client.send_message(msg.conversation_id, reply)
+
     async def _handle_busy(
         self,
         session_key: str,
@@ -1848,7 +1989,7 @@ class DiscordDispatcher:
         another transport too.
         """
         assert self.client is not None
-        reply = await stop_running_turn(
+        await stop_running_turn(
             self.sessions,
             resumed_key or self._session_key(user_id, thread_id),
             queue=self._queue,
@@ -1858,8 +1999,8 @@ class DiscordDispatcher:
                     user_id=str(user_id), channel_id=str(channel_id), thread_id=str(thread_id or "")
                 )
             ),
+            deliver=lambda text: self.client.send_message(channel_id, text),  # type: ignore[union-attr]
         )
-        await self.client.send_message(channel_id, reply)
 
     # ── Button handler (client's on_interaction) ───────────────────────────
 

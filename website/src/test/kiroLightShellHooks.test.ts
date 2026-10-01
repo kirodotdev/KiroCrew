@@ -26,8 +26,10 @@ const HOOKS: Record<string, { file: string[]; carries: RegExp }> = {
   // the members roster mount (pinned below) — one string, two cards.
   'sidebar-inner': { file: ['components', 'listShell.ts'], carries: /export const LIST_SHELL_CLS = 'sidebar sidebar-inner / },
   'user-bubble': { file: ['pages', 'chat', 'UserMessage.tsx'], carries: /'user-bubble bg-card text-card-fg'/ },
-  'tb-capsule': { file: ['App.tsx'], carries: /className={`tb-capsule / },
-  'feedback-pill': { file: ['components', 'FeedbackPill.tsx'], carries: /className="feedback-pill / },
+  // `.tb-capsule` and `.feedback-pill` are no longer kiro-light hooks: both
+  // pills are Liquid Glass panes (components/Glass.tsx) that draw their own
+  // edge on every canvas, so the inset ring rule that once gave them one on
+  // the white chrome is gone.
 }
 
 /**
@@ -100,9 +102,6 @@ describe('kiro-light shell hooks', () => {
 
   it('kiro-light gives the borderless bg-card surfaces an edge the white canvas would otherwise erase', () => {
     expect(css).toMatch(/\[data-theme="kiro-light"\] \.user-bubble\{background-color:var\(--bg-hover\)\}/)
-    expect(css).toMatch(
-      /\[data-theme="kiro-light"\] \.tb-capsule,\[data-theme="kiro-light"\] \.feedback-pill\{box-shadow:inset 0 0 0 1px var\(--border\)\}/,
-    )
     expect(css).toMatch(
       /\[data-theme="kiro-light"\] \.focus-chrome-rail,\[data-theme="kiro-light"\] \.sidebar-inner\{background-color:var\(--panel\)\}/,
     )

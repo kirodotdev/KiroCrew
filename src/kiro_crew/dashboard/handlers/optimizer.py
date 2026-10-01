@@ -10,15 +10,28 @@ from collections import Counter
 
 from aiohttp import web
 
+from kiro_crew.constants import DENY_CAUSE_SURFACE_POLICY
 from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.llm_helpers import _steer_host_deny
 from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_PERMISSION_REQUEST, EVENT_TEXT_CHUNK
 from kiro_crew.security import (
     contains_injection,
     redact_credentials,
     redact_exfiltration_urls,
 )
+from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
+
+#: What the model is told when the prompt optimizer refuses a tool call. The
+#: optimizer SURFACE runs no tools at all -- it rewrites one prompt inside a
+#: constrained side-session and returns text -- so nothing about the call was
+#: judged, and the reason says what this surface permits (nothing), which is
+#: what the surface-policy notice tells the model to read.
+_OPTIMIZER_DENY_REASON = (
+    "the prompt optimizer runs no tools: it only rewrites the prompt it was "
+    "given and answers with text, so every tool call is refused here"
+)
 
 # Placeholder the frontend collapses large pastes into (mirrors formatToken in
 # pasteTokens.ts: "[ Paste #N · M lines ]"). The middle dot is U+00B7. Captured
@@ -296,6 +309,25 @@ async def handle_optimize(request: web.Request) -> web.Response:
                     if event.kind == EVENT_TEXT_CHUNK:
                         text += event.text
                     elif event.kind == EVENT_PERMISSION_REQUEST:
+                        # Audit FIRST (backend-security-controls: every denied
+                        # tool attempt is a Security Event Log row, and the
+                        # steer and the reject both await the ACP pipe, so a
+                        # row sequenced after them can be cancelled away), then
+                        # tell the model in-band that the HOST refused this (a
+                        # rejected permission reaches it as kiro-cli's "User
+                        # denied tool execution"), then answer the wire. The
+                        # SURFACE refuses every call, so the notice says what the
+                        # optimizer permits, not a sanctioned alternative.
+                        sel().log_tool_invocation(
+                            session_key=optimizer_session_key,
+                            tool_name=getattr(event, "title", "") or "unknown",
+                            outcome="denied",
+                            source="optimizer",
+                            request_id=str(event.request_id),
+                        )
+                        await _steer_host_deny(
+                            client, event, _OPTIMIZER_DENY_REASON, cause=DENY_CAUSE_SURFACE_POLICY
+                        )
                         await client.reject_tool(event.request_id)
                     elif event.kind == EVENT_COMPLETE:
                         break

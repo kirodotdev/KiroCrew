@@ -1683,6 +1683,15 @@ def build_permission_event(
     # then describes the dialog, not the call the envelope names.
     _harness_tool_id = _permission_tool_id(params) if envelope is None else ""
 
+    # The agent's stated reason for the call, shown beside the approval. The
+    # same agent-authored display text a tool_call frame carries, read the same
+    # way: from the params the preceding tool_call cached, else the frame's own.
+    _purpose = extract_tool_purpose(_resolved_raw_params) or extract_tool_purpose(
+        tool_call.get("rawInput")
+    )
+    if _purpose:
+        _purpose = _redact(_purpose)
+
     event = AcpEvent(
         kind=EVENT_PERMISSION_REQUEST,
         request_id=request_id,
@@ -1702,6 +1711,7 @@ def build_permission_event(
         diff_path=_diff_path,
         spawn_target=_spawn_target,
         harness_tool_id=_harness_tool_id,
+        tool_purpose=_purpose,
     )
     return event, recorded
 

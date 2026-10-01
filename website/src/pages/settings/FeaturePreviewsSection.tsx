@@ -4,7 +4,7 @@ import { ArrowRight } from 'lucide-react'
 import { SettingsSection, SettingsCard, SettingsToggle } from '../../components/settings'
 import { FeaturePreviewIntroButton, type FeaturePreviewIntro } from '../../components/FeaturePreviewIntroDialog'
 import { usePreviewFlag } from '../../hooks/usePreviewFlag'
-import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_CREW, PREVIEW_INSTANCE_SESSIONS, PREVIEW_REMOTE_CREW_CHAT, PREVIEW_WEBHOOKS, setPreviewFlag } from '../../utils/previewFlags'
+import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_CREW, PREVIEW_INSTANCE_SESSIONS, PREVIEW_LAYOUT_HARNESS, PREVIEW_REMOTE_CREW_CHAT, PREVIEW_WEBHOOKS, setPreviewFlag } from '../../utils/previewFlags'
 import { DecisionsCard } from './DecisionsCard'
 import { i18nT } from '../../i18n/t'
 
@@ -133,6 +133,7 @@ export function FeaturePreviewsSection() {
   const crew = usePreviewFlag(PREVIEW_CREW)
   const remoteCrewChat = usePreviewFlag(PREVIEW_REMOTE_CREW_CHAT)
   const instanceSessions = usePreviewFlag(PREVIEW_INSTANCE_SESSIONS)
+  const layoutHarness = usePreviewFlag(PREVIEW_LAYOUT_HARNESS)
 
   return (
     // The wrapper exists for the legacy redirect: `?highlight=key:<anchor>`
@@ -280,6 +281,24 @@ export function FeaturePreviewsSection() {
           description={i18nT('pages.developer.featurePreviewsTab.merge_a_connected_remote_instances_live_sessions')}
           checked={instanceSessions}
           onChange={v => setPreviewFlag(PREVIEW_INSTANCE_SESSIONS, v)}
+        />
+      </SettingsCard>
+      {/* Dev-only MECHANISM preview, not a shippable surface: the composable-layout
+          mechanism (placement-driven renderer + scope + editor) being built beside
+          the Members page. This card is the FLAG PLUMBING only — the switch exists so
+          the mechanism can be built and tested behind a per-device gate.
+
+          NO ingress button, on purpose: unlike the webhooks card, this preview has no
+          routable door in the bundle yet, so a link here would point at a route that
+          does not exist. It follows the toggle-only shape of "Chat on a crew" above —
+          an honest switch with no door to promise. Add a "See what it looks like" intro
+          and/or an ingress the day the feature lands a real capture and route. */}
+      <SettingsCard>
+        <SettingsToggle
+          label={i18nT('pages.developer.featurePreviewsTab.layout_harness')}
+          description={i18nT('pages.developer.featurePreviewsTab.layout_harness_desc')}
+          checked={layoutHarness}
+          onChange={v => setPreviewFlag(PREVIEW_LAYOUT_HARNESS, v)}
         />
       </SettingsCard>
       {/* LAST, and the only card here whose switch is not a per-device flag: it

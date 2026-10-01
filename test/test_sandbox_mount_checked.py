@@ -25,6 +25,7 @@ the mutant's output.
 
 from __future__ import annotations
 
+import collections
 import errno
 import os
 import runpy
@@ -263,6 +264,8 @@ def _run(
         # Defined above the extracted slice, like the MS_ flags: the detach flag the
         # stage-retirement helper passes to ``umount2``.
         "_MNT_DETACH": 2,
+        # Step 2 (non-dumpable before the mount namespace) is outside this region.
+        "_launcher_nondumpable": False,
         "ctypes": ctypes,
         "os": os,
         "stat": stat,
@@ -547,6 +550,15 @@ def test_a_window_no_one_vouched_for_is_skipped_not_refused(tmp_path: Path) -> N
     assert refusal is None, f"an unvouched window was refused: {refusal}"
 
 
+#: Every raw ``_libc.mount(`` line the launcher may contain, each exactly once.
+_PERMITTED_RAW_MOUNTS = (
+    "if _libc.mount(source, target, None, flags, None) != 0:",
+    "if _libc.mount(source, target, None, flags, None) != 0:",
+    'if _libc.mount(b"tmpfs", target, b"tmpfs", _MS_NOSUID | _MS_NODEV | _MS_NOEXEC, '
+    'b"mode=0700,size=16k") != 0:',
+)
+
+
 def test_every_tier_routes_all_eight_mounts_through_the_guard() -> None:
     """No tier may keep a raw, unchecked ``_libc.mount`` call site.
 
@@ -554,20 +566,23 @@ def test_every_tier_routes_all_eight_mounts_through_the_guard() -> None:
     """
     for level in ("strict", "cc", "standard"):
         script = _build_launcher_script(level)
-        raw = [
-            line
-            for line in script.splitlines()
-            # the helper's own call is the one legitimate raw use
-            if "_libc.mount(" in line and "source, target, None, flags, None" not in line
-        ]
-        assert raw == [], f"{level}: unchecked mount call(s): {raw}"
-        # 1 def + 9 call sites: propagation, credential dirs, the read-only
-        # bind and its sealing remount, sensitive files, ~/.ssh, the private
-        # window's two -- staging its real contents out before the parent is
+        # The raw calls are pinned as an exact multiset, not filtered by pattern:
+        # the two guard helpers (_mount_or_die and its degrade-open sibling) each
+        # make one, and the unreadable mask's private-tmpfs helper makes one.
+        # Any other raw call, or a second copy of one of these, goes red.
+        raw = collections.Counter(
+            line.strip() for line in script.splitlines() if "_libc.mount(" in line
+        )
+        assert raw == collections.Counter(
+            _PERMITTED_RAW_MOUNTS
+        ), f"{level}: unchecked mount call(s): {dict(raw)}"
+        # 1 def + 10 call sites: propagation, credential dirs, the read-only
+        # bind and its sealing remount, sensitive files and the read-only seal
+        # on an unreadable mask, ~/.ssh, the private window's two -- staging its real contents out before the parent is
         # masked, then binding them onto the placeholder inside the stand-in --
         # and the nested re-mask that re-hides a masked leaf sitting INSIDE such
         # a window, applied after the window is bound.
-        assert script.count("_mount_or_die(") == 10
+        assert script.count("_mount_or_die(") == 11
 
 
 # --------------------------------------------------------------------------
@@ -789,9 +804,9 @@ _ARMS: dict[str, tuple[str, str]] = {
         "_libc.mount(per_dir_empty, target, None, _MS_BIND, None)",
     ),
     "site5": (
-        "_mount_or_die(empty_path.encode(), _file_target, _MS_BIND,\n"
+        "_mount_or_die(_empty_src, _file_target, _MS_BIND,\n"
         '                              "hiding sensitive file %s" % f)',
-        "_libc.mount(empty_path.encode(), _file_target, None, _MS_BIND, None)",
+        "_libc.mount(_empty_src, _file_target, None, _MS_BIND, None)",
     ),
     "site6": (
         "_mount_or_die(ssh_tmp, _ssh_target, _MS_BIND,\n"
@@ -868,10 +883,17 @@ def test_break_arms_falsify_each_assertion(tmp_path: Path, arm: str) -> None:
 
 def test_break_arm_reintroduce_raw_is_caught_by_the_tier_sweep() -> None:
     """The no-raw-call-sites sweep must fail when a raw call comes back."""
-    script = _mutate("site4")
-    raw = [
-        line
-        for line in script.splitlines()
-        if "_libc.mount(" in line and "source, target, None, flags, None" not in line
-    ]
-    assert raw, "the sweep would not have noticed a reintroduced raw mount"
+
+    # The same predicate the sweep uses: the multiset of raw mount lines must
+    # differ from the permitted set once one site is reverted to a raw call, and
+    # must equal it on the unmutated script, so this arm cannot pass vacuously.
+    def raw_lines(script: str) -> collections.Counter[str]:
+        return collections.Counter(
+            line.strip() for line in script.splitlines() if "_libc.mount(" in line
+        )
+
+    permitted = collections.Counter(_PERMITTED_RAW_MOUNTS)
+    assert raw_lines(_build_launcher_script("strict")) == permitted
+    assert (
+        raw_lines(_mutate("site4")) != permitted
+    ), "the sweep would not have noticed a reintroduced raw mount"

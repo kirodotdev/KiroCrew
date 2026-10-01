@@ -3883,13 +3883,13 @@ def test_metadata_mutations_on_an_empty_newborn_survive_a_restart(tmp_path):
     # The user tags, pins, mode-switches, and binds it before any message lands.
     child.tags = ["tag00000001"]
     child.pinned = True
-    child.mode = "orchestrator"
+    child.mode = "design-critique"
     child._artifact = "my-artifact"
     asyncio.run(save_slot_off_loop(state, child, force=True))
     meta = state.conversation_log.get_metadata(slot_history_key(child))
     assert meta.get("tags") == ["tag00000001"], "an acknowledged tag must reach disk"
     assert meta.get("pinned") is True, "an acknowledged pin must reach disk"
-    assert meta.get("mode") == "orchestrator", "an acknowledged mode switch must reach disk"
+    assert meta.get("mode") == "design-critique", "an acknowledged mode switch must reach disk"
     assert meta.get("artifact") == "my-artifact", "an acknowledged binding must reach disk"
     assert meta.get("folder_id") == "fold00000001", "the merge must not drop the birth filing"
 
@@ -3931,7 +3931,7 @@ def test_the_empty_window_merge_mirrors_the_full_saves_slot_owned_fields(tmp_pat
 
     child.tags = ["tag00000001"]
     child.pinned = True
-    child.mode = "orchestrator"
+    child.mode = "design-critique"
     child._artifact = "my-artifact"
     child.reasoning_effort = "high"
     child.color_index = 3

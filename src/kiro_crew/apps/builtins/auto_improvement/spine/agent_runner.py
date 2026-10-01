@@ -37,15 +37,23 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from kiro_crew.config import KiroCrewConfig
+from kiro_crew.constants import (
+    DENY_CAUSE_AUDIT_UNAVAILABLE,
+    DENY_CAUSE_HOOK_ERROR,
+    DENY_CAUSE_POLICY,
+    DENY_CAUSE_SURFACE_POLICY,
+)
 from kiro_crew.hooks import (
     TOOL_DENY,
     HookManager,
     hook_gate_kwargs,
     hooks_config_from_config_dict,
 )
+from kiro_crew.llm_helpers import _steer_host_deny
 from kiro_crew.permission_floor import (
     OUTCOME_PENDING_APPROVAL,
     OUTCOME_REJECTED_TRANSPORT_FLOOR,
@@ -58,6 +66,38 @@ from kiro_crew.subprocess_utf8 import UTF8_TEXT
 from .git_safety import GIT_SAFE_CONFIG, require_pinned
 
 logger = logging.getLogger(__name__)
+
+
+class _GovernanceDeny(str):
+    """A deny reason from ``_governance_denial`` that also names WHY it is a deny.
+
+    The gate reaches two different verdicts that both DENY: a hook judged the
+    call and said no (``DENY_CAUSE_POLICY``), or the hook layer itself raised
+    and the gate failed closed without judging anything
+    (``DENY_CAUSE_HOOK_ERROR``). The in-band deny notice must say which -- a
+    retry is reasonable after a fault and pointless after a verdict -- so the
+    gate carries its ``cause`` on the reason instead of leaving the reject
+    funnel to infer it from the reason's wording. A ``str`` subclass rather than
+    a pair because every caller reads the gate as a string: truthiness is the
+    deny/allow answer, and the text is what gets logged and steered.
+    """
+
+    cause: str
+
+    def __new__(cls, reason: str, *, cause: str) -> "_GovernanceDeny":
+        self = super().__new__(cls, reason)
+        self.cause = cause
+        return self
+
+
+#: What the model is told when the unattended run refuses a call because its
+#: audit record could not be written (see ``SessionAgentRunner._approve``:
+#: audit-or-deny). Nothing judged the action; the host could not record it.
+_AUDIT_UNAVAILABLE_REASON = (
+    "this unattended auto-improvement run approves a tool only once the "
+    "approval is on the Security Event Log, and that record could not be "
+    "written, so the call was refused rather than run unaudited"
+)
 
 # The headless Claude Code binary. Overridable for tests / alternate installs.
 CLAUDE_BIN = os.environ.get("AUTO_IMPROVEMENT_CLAUDE_BIN", "claude")
@@ -562,10 +602,13 @@ def _governance_denial(
             ),
         )
         if getattr(result, "action", "") == TOOL_DENY:
-            return (getattr(result, "reason", "") or "denied by governance policy").strip()
+            return _GovernanceDeny(
+                (getattr(result, "reason", "") or "denied by governance policy").strip(),
+                cause=DENY_CAUSE_POLICY,
+            )
     except Exception as exc:  # noqa: BLE001 - a broken gate must DENY, not authorize
         logger.warning("governance hook unavailable; denying (fail-closed)", exc_info=True)
-        return f"governance hook unavailable: {exc}"
+        return _GovernanceDeny(f"governance hook unavailable: {exc}", cause=DENY_CAUSE_HOOK_ERROR)
     return ""
 
 
@@ -598,6 +641,32 @@ def _tool_permitted(tool: object, allowed: list[str] | None) -> bool:
         # unidentifiable tool is exactly what a crafted request would look like.
         return False
     return any(got == n or got.startswith(n) or n.startswith(got) or n in got for n in names)
+
+
+def _bare_event(rid: str, tool: str) -> Any:
+    """The event shape ``_steer_host_deny`` reads when a caller has no permission event."""
+    return SimpleNamespace(request_id=rid, title=tool or "")
+
+
+def _allowlist_deny_reason(allowed: list[str] | None) -> str:
+    """What the model is told when ``_tool_permitted`` refuses: what this SURFACE permits.
+
+    The caller's allowlist is a property of the run, not a verdict on the call --
+    nothing about the action was judged -- so the reason names what can run here
+    (the surface-policy notice tells the model to read exactly that) rather than a
+    sanctioned alternative. The names are caller-authored, never agent text.
+    """
+    names = [str(a).strip() for a in (allowed or []) if str(a).strip()]
+    if not names:
+        return (
+            "this unattended auto-improvement run permits no tools at all: answer "
+            "from what you already have"
+        )
+    return (
+        "this unattended auto-improvement run permits only the tools its caller "
+        f"listed -- {', '.join(names)} -- and a request that names none of them "
+        "(or names no tool) is refused"
+    )
 
 
 def _audit_unattended_agent(*, cwd: str | None, model: str | None, max_turns: int) -> bool:
@@ -1517,7 +1586,27 @@ class SessionAgentRunner:
                     )
                     if gov:
                         logger.warning("refusing tool %r — governance: %s", tool, gov)
-                        await self._reject(provider, rid, tool=tool, session_key=session_key)
+                        # The gate names its own cause: a hook's deny judged
+                        # the call (policy), a hook LAYER that raised judged
+                        # nothing (hook_error). A bare string from the gate
+                        # is a hook verdict.
+                        gov_cause = (
+                            gov.cause if isinstance(gov, _GovernanceDeny) else DENY_CAUSE_POLICY
+                        )
+                        await self._reject(
+                            provider,
+                            rid,
+                            tool=tool,
+                            session_key=session_key,
+                            event=ev,
+                            cause=gov_cause,
+                            reason=gov,
+                            error=(
+                                "governance_hook_unavailable"
+                                if gov_cause == DENY_CAUSE_HOOK_ERROR
+                                else "governance_deny"
+                            ),
+                        )
                         self._emit_activity(
                             {"kind": "tool", "tool": tool or "tool", "detail": f"refused: {gov}"}
                         )
@@ -1525,7 +1614,17 @@ class SessionAgentRunner:
                     refusal = shell_command_refusal(_requested_command(ev))
                     if refusal:
                         logger.warning("refusing tool %r — %s", tool, refusal)
-                        await self._reject(provider, rid, tool=tool, session_key=session_key)
+                        # The app-local shell denylist judged the command itself.
+                        await self._reject(
+                            provider,
+                            rid,
+                            tool=tool,
+                            session_key=session_key,
+                            event=ev,
+                            cause=DENY_CAUSE_POLICY,
+                            reason=refusal,
+                            error="shell_denylist",
+                        )
                         self._emit_activity(
                             {
                                 "kind": "tool",
@@ -1536,12 +1635,22 @@ class SessionAgentRunner:
                         continue
                     if not self._allows_tool(ev, tool, allowed_tools):
                         logger.warning("refusing tool %r — not in the caller's allowed_tools", tool)
-                        await self._reject(provider, rid, tool=tool, session_key=session_key)
+                        # The caller's allowlist is what this SURFACE permits;
+                        # nothing about the call was judged.
+                        await self._reject(
+                            provider,
+                            rid,
+                            tool=tool,
+                            session_key=session_key,
+                            event=ev,
+                            cause=DENY_CAUSE_SURFACE_POLICY,
+                            reason=_allowlist_deny_reason(allowed_tools),
+                        )
                         self._emit_activity(
                             {"kind": "tool", "tool": tool or "tool", "detail": "refused"}
                         )
                         continue
-                    await self._approve(provider, rid, tool=tool, session_key=session_key)
+                    await self._approve(provider, rid, tool=tool, session_key=session_key, event=ev)
                     if tool:
                         text_buf.flush()  # close the current thought before the tool line
                         self._emit_activity({"kind": "tool", "tool": tool, "detail": "approved"})
@@ -1613,13 +1722,50 @@ class SessionAgentRunner:
                     pass
 
     @staticmethod
-    async def _reject(provider, rid, *, tool: str = "", session_key: str = "") -> None:
-        """Refuse a tool request that is outside the caller's allowlist, and RECORD it.
+    async def _reject(
+        provider,
+        rid,
+        *,
+        cause: str | None,
+        reason: str = "",
+        error: str = "not_in_allowed_tools",
+        event: object | None = None,
+        tool: str = "",
+        session_key: str = "",
+    ) -> None:
+        """Refuse a tool request, RECORD it, tell the model WHO refused it, answer the wire.
 
         A refusal is more interesting than an approval — it is what an injected instruction
         looks like — so it is audited even though the tool never ran. Not ``critical``: the
         tool is already being denied, so failing the whole run because the log is
         unwritable would trade a working refusal for an outage.
+
+        *cause* is REQUIRED and says whether the HOST refused this call. A rejected
+        permission reaches the model as kiro-cli's fixed "User denied tool execution";
+        every deny on this unattended surface is a host deny (no person is attached to
+        say no), so without a notice the model reads a refusal that never happened and
+        abandons or routes around a call nobody objected to. A host cause
+        (``DENY_CAUSE_POLICY`` for a hook's or the shell denylist's verdict on the call
+        itself, ``DENY_CAUSE_HOOK_ERROR`` for a governance hook layer that raised,
+        ``DENY_CAUSE_SURFACE_POLICY`` for the caller's allowlist refusing a tool it
+        does not permit) steers the in-band notice through
+        ``llm_helpers._steer_host_deny`` BEFORE the reject -- while the permission
+        request is still unanswered the turn is provably in flight, which is what gets
+        the notice queued rather than dropped (see ``kiro_crew.deny_notice``). ``None``
+        is the explicit verdict that no notice is owed; no caller in this module writes
+        it today, and one that does has to say so rather than inherit a default.
+        *reason* is the host's own wording for the notice; *error* is the SEL row's
+        closed-enum tag for WHICH gate refused (``governance_deny``,
+        ``governance_hook_unavailable``, ``shell_denylist``, or the allowlist
+        default), so an operator reading the ledger can tell a hook outage from a
+        policy refusal. *event* is the permission event (its title names the
+        call in the notice, its ``request_id`` is what the helper answers if the steer
+        is cancelled mid-flight); without one the funnel names the call by *tool*.
+
+        The audit lands FIRST, before the steer and the reject, as on every other deny
+        surface: the steer is one more bounded await on the ACP pipe, and a backend that
+        stops reading stdin cancels this coroutine at the turn deadline with the
+        decision acted on and never audited if the row came last.
         """
         try:
             from kiro_crew.sel import sel
@@ -1632,17 +1778,26 @@ class SessionAgentRunner:
                 tool_kind=str(tool or ""),
                 outcome="denied",
                 request_id=rid,
-                error="not_in_allowed_tools",
+                error=error,
             )
         except Exception:  # noqa: BLE001 - the denial stands even if the audit fails
             logger.warning("SEL audit failed for a REFUSED tool %r", tool)
+        if cause is not None:
+            await _steer_host_deny(
+                provider,
+                event if event is not None else _bare_event(rid, tool),
+                reason,
+                cause=cause,
+            )
         try:
             await provider.reject_tool(rid)
         except Exception:  # noqa: BLE001 - the agent's own timeout covers this
             logger.debug("reject_tool failed for %r", tool, exc_info=True)
 
     @staticmethod
-    async def _approve(provider, rid, *, tool: str = "", session_key: str = "") -> None:
+    async def _approve(
+        provider, rid, *, tool: str = "", session_key: str = "", event: object | None = None
+    ) -> None:
         """Auto-approve a tool permission, but only once the approval is on the record.
 
         AUDIT-OR-DENY. The approval is unattended and unconditional, so the Security
@@ -1674,6 +1829,16 @@ class SessionAgentRunner:
             )
         except Exception as exc:  # noqa: BLE001 - audit failure must deny, not approve
             logger.warning("SEL audit failed for tool %r — rejecting instead of approving", tool)
+            # A HOST deny with nothing judged: tell the model so in-band before
+            # the wire hands it kiro-cli's "User denied tool execution". Not
+            # routed through ``_reject`` -- its own audit row is exactly what
+            # just failed to write.
+            await _steer_host_deny(
+                provider,
+                event if event is not None else _bare_event(rid, tool),
+                _AUDIT_UNAVAILABLE_REASON,
+                cause=DENY_CAUSE_AUDIT_UNAVAILABLE,
+            )
             try:
                 await provider.reject_tool(rid)
             except Exception:  # noqa: BLE001 - the agent's own timeout covers this

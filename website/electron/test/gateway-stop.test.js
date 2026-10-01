@@ -750,6 +750,14 @@ test("classifyPortOwner: ours wins when a mixed set holds the port", async () =>
   assert.strictEqual(owner, "kirocrew");
 });
 
+test("classifyPortOwner: a composed edition's gateway classifies as ours, not foreign", async () => {
+  const owner = await classifyPortOwner(5476, {
+    getListenPids: async () => [4242],
+    getCommand: async () => "/opt/edition/bin/python3.12 -s -P -m kirocrew_enterprise gateway --port 5476",
+  });
+  assert.strictEqual(owner, "kirocrew");
+});
+
 test("classifyPortOwner and forceStopPort share one KiroCrew matcher", async () => {
   // Drift between the two would let one mis-target a stranger's process.
   assert.ok(isKirocrewCommand("python -m kiro_crew gateway"));
@@ -788,4 +796,45 @@ test("classifyPortOwner and forceStopPort share one KiroCrew matcher", async () 
   assert.ok(!isKirocrewCommand("C:\\Temp\\kirocrew.exe gateway", {
     trustedExecutablePaths: [trustedCli],
   }));
+});
+
+test("isKirocrewCommand: a composed edition's `-m kirocrew_<edition>` gateway is ours", () => {
+  // A companion package boots the gateway from its own top-level module so its
+  // composition root runs instead of the core CLI. Hardcoding `kiro_crew` made
+  // every such gateway a "foreign holder" the launcher refused to reuse. The
+  // core must not learn any edition's name, so the match is the naming
+  // convention `kirocrew_<edition>`, mirroring the Python side's
+  // `_gateway_module_roots()`.
+  assert.ok(isKirocrewCommand("python -m kirocrew_enterprise gateway"));
+  assert.ok(isKirocrewCommand("/opt/edition/bin/python3.12 -s -P -m kirocrew_acme2 gateway --port 5476"));
+  assert.ok(isKirocrewCommand("/Users/Jane Doe/venv/bin/python -m kirocrew_enterprise gateway"));
+  const trustedPython = "C:\\Program Files\\KiroCrew\\python.exe";
+  assert.ok(isKirocrewCommand(`"${trustedPython}" -m kirocrew_enterprise gateway`, {
+    trustedExecutablePaths: [trustedPython],
+  }));
+  // Still only the FIRST execution selector: `-m` later in argv is an argument.
+  assert.ok(!isKirocrewCommand("python app.py -m kirocrew_enterprise"));
+  assert.ok(!isKirocrewCommand("python -c 'import x' -m kirocrew_enterprise"));
+  // Exact top-level module only. A dotted submodule, a bare prefix, a
+  // look-alike, mixed case or a hyphen never authorize a kill.
+  assert.ok(!isKirocrewCommand("python -m kirocrew_enterprise.tools gateway"));
+  assert.ok(!isKirocrewCommand("python -m kirocrew_ gateway"));
+  assert.ok(!isKirocrewCommand("python -m kirocrew gateway"));
+  assert.ok(!isKirocrewCommand("python -m kirocrew-enterprise gateway"));
+  assert.ok(!isKirocrewCommand("python -m Kirocrew_Enterprise gateway"));
+  assert.ok(!isKirocrewCommand("python -m kiro_crew_enterprise gateway"));
+  assert.ok(!isKirocrewCommand("python -m mykirocrew_enterprise gateway"));
+  assert.ok(!isKirocrewCommand("python -m kiro_crew.dashboard gateway"));
+  assert.ok(!isKirocrewCommand("python -m"));
+  // The module alone never authorizes a kill: the first positional after it
+  // must be a server subcommand, mirroring `_KIROCREW_SERVER_SUBCOMMANDS`. A
+  // process that merely imports a `kirocrew_*` module on our port stays foreign.
+  assert.ok(isKirocrewCommand("python -m kirocrew_enterprise dashboard --port 5476"));
+  assert.ok(isKirocrewCommand("python -m kirocrew_enterprise start"));
+  assert.ok(!isKirocrewCommand("python -m kirocrew_backup"));
+  assert.ok(!isKirocrewCommand("python -m kirocrew_backup serve --port 5476"));
+  assert.ok(!isKirocrewCommand("python -m kirocrew_enterprise run gateway"));
+  assert.ok(!isKirocrewCommand("python -m kirocrew_enterprise --port 5476 gateway"));
+  assert.ok(!isKirocrewCommand("python -m kiro_crew"));
+  assert.ok(!isKirocrewCommand("python -m kiro_crew run /tmp/spec.md"));
 });

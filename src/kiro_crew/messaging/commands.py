@@ -45,7 +45,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -66,6 +66,13 @@ from kiro_crew.messaging.queue_receipt import ReceiptQueue, ReceiptSurface
 from kiro_crew.safety_override import describe_grant_lifetime, safety_override
 from kiro_crew.security import redact
 from kiro_crew.sel import sel
+from kiro_crew.session_lifecycle import (
+    STOP_DECLINED_COMPACTING_TEXT,
+    compaction_in_flight,
+    consume_stop_declined,
+    decline_stop,
+    force_stop_keeping_others,
+)
 from kiro_crew.subagent_wait_reasons import DEFERRED_QUEUED_REASONS
 
 if TYPE_CHECKING:  # pragma: no cover - typing only, no runtime import edge
@@ -85,6 +92,11 @@ STOP_REPLY_CANCELLED = "🛑 Stopped."
 #: cleared, and saying so is what distinguishes "nothing to stop" from "the stop did
 #: not work".
 STOP_REPLY_IDLE = "🛑 Nothing was running — queue cleared."
+#: The Stop was declined: the session's own automatic ``/compact`` turn holds it,
+#: and cancelling that turn would fail the compaction and restart the session.
+#: Nothing is cancelled and the queue is KEPT -- the caller's messages run after
+#: the compaction, which is what they were waiting for anyway.
+STOP_REPLY_COMPACTING = STOP_DECLINED_COMPACTING_TEXT
 
 
 def note_user_stop(sessions: Any, session_key: str) -> None:
@@ -113,11 +125,18 @@ async def stop_running_turn(
     queue: ReceiptQueue,
     surface: ReceiptSurface,
     owner: str,
+    deliver: Callable[[str], Awaitable[Any]],
 ) -> str:
     """Abort the in-flight turn, drop the caller's queued messages, finalize the receipt.
 
-    Returns the reply text the channel should send; the send itself is the only
-    address-shaped part and stays with the caller.
+    *deliver* sends one reply to the caller's own address, which is the only
+    address-shaped part; it is awaited here, and the text is returned as well so
+    a channel can log it. The send is REQUIRED, with no default, because the
+    compaction decline below arms an escalation that must not outlive an
+    undelivered warning: see :func:`~kiro_crew.session_lifecycle.decline_stop`.
+    For that reason it must hand back WHAT LANDED -- a message id, a ts, a bool --
+    since a falsy result is how a transport that swallows its own send error says
+    the caller was never told, and the escalation then stays unarmed.
 
     **The queue clear is the CALLER's, not the session's.** ``owner`` is the token
     :func:`kiro_crew.messaging.queue_drain.owner_token` builds for the person who typed
@@ -154,9 +173,46 @@ async def stop_running_turn(
     queue is still cleared, so claiming a stop that did not happen would be the
     worse lie.
     """
+    force = False
+    if compaction_in_flight(sessions, session_key):
+        # Before the Stop record and before the queue clear: a Stop the
+        # compaction declines ends nothing, so it must destroy nothing either.
+        # A repeat within the window is the user's second press and FORCES,
+        # so a live turn sharing the session with a compaction stays stoppable
+        # from a channel that has no force button.
+        # Keyed by ``owner`` as well as the session: on a shared key another
+        # person's declined Stop must not arm THIS person's first press.
+        if not consume_stop_declined(session_key, owner):
+            # Sent before the marker is armed, never after: an undelivered
+            # warning plus an armed escalation is a retry that hard-resets the
+            # session with the user never told it would.
+            async def _say_declined() -> bool:
+                # ``deliver`` hands back what landed -- a message id, a ts, a
+                # bool -- so a falsy result is a send that did not reach the
+                # caller, and an unreached caller arms nothing.
+                return bool(await deliver(STOP_REPLY_COMPACTING))
+
+            await decline_stop(session_key, owner, _say_declined)
+            return STOP_REPLY_COMPACTING
+        force = True
     note_user_stop(sessions, session_key)
     cancelled_turn = False
-    if sessions.is_busy(session_key):
+    if force:
+        if getattr(sessions, "stop_turn", None) is not None:
+            try:
+                # The reset is the caller's, the queue is everyone's: the hard
+                # stop pops the session and its queue, so the other people's
+                # entries are carried across to the successor and only the
+                # caller's are dropped (``force_stop_keeping_others``), which is
+                # what the docstring above requires of a shared key.
+                cancelled_turn = await force_stop_keeping_others(
+                    sessions, session_key, entries_queued_by(owner)
+                )
+            except Exception:
+                logger.warning(
+                    "%s: force stop failed for %s", surface.label, session_key, exc_info=True
+                )
+    elif sessions.is_busy(session_key):
         provider = sessions.get_provider(session_key)
         cancel = getattr(provider, "cancel", None)
         if cancel is not None:
@@ -171,9 +227,17 @@ async def stop_running_turn(
                     exc_info=True,
                 )
     async with queue.lock:
-        sessions.clear_queue(session_key, entries_queued_by(owner))
+        # On the forced repeat the helper above already dropped exactly the
+        # caller's entries that were queued WHEN STOP WAS PRESSED and carried the
+        # rest to the successor; a second owner-scoped clear here would take a
+        # message the same person sent during the stop's awaits, which is newer
+        # intent the Stop was never aimed at. The receipt is still finalized.
+        if not force:
+            sessions.clear_queue(session_key, entries_queued_by(owner))
         await queue.finish_cancelled_locked(session_key, surface, owner)
-    return STOP_REPLY_CANCELLED if cancelled_turn else STOP_REPLY_IDLE
+    reply = STOP_REPLY_CANCELLED if cancelled_turn else STOP_REPLY_IDLE
+    await deliver(reply)
+    return reply
 
 
 # ── /yolo (the process-wide auto-approve grant) ──────────────────────────────

@@ -502,7 +502,14 @@ async def _handle_labels_apply_bulk(request: web.Request) -> web.Response:
     GitHub can reject an individual issue (locked, transferred, deleted) — so the
     response carries per-issue results rather than one status code, and every
     issue that did succeed stays applied."""
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
     from .. import routes  # circular import: backend.routes imports this module
+
+    # Writes to the forge as the OWNER's gh/glab login: owner only.
+    owner_denied = await require_owner_dashboard_request(request, "issue_radar.labels_apply_bulk")
+    if owner_denied is not None:
+        return owner_denied
 
     try:
         body = await request.json()

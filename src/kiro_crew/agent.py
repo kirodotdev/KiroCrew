@@ -86,6 +86,7 @@ from kiro_crew.config.paths import (
 )
 from kiro_crew.env import (
     mcp_search_path,
+    resolved_command_casing,
     spec_path_key,
 )
 from kiro_crew.hooks import (
@@ -1461,24 +1462,8 @@ def run_first_run_setup() -> None:
         logger.warning("First-run: stale MCP purge failed", exc_info=True)
 
 
-def _prompt_path(mode: str = "") -> Path:
-    """Return user prompt if it exists, otherwise shipped prompt.
-
-    When mode="orchestrator", uses the orchestrator prompt.
-    """
-    if mode == "orchestrator":
-        user_orch = _user_dir() / "prompt-orchestrator.md"
-        if user_orch.is_file():
-            return user_orch
-        proj = _project_dir()
-        if proj:
-            candidate = proj / "agents" / "prompt-orchestrator.md"
-            if candidate.is_file():
-                return candidate
-        bundled_orch = _BUNDLED_CFG_DIR / "prompt-orchestrator.md"
-        if bundled_orch.is_file():
-            return bundled_orch
-
+def _prompt_path() -> Path:
+    """Return user prompt if it exists, otherwise shipped prompt."""
     user_prompt = _user_prompt_path()
     if user_prompt.is_file():
         return user_prompt
@@ -3385,13 +3370,21 @@ def rebuild_agent_config(
         # to audit directories that were never consulted, which is the opposite
         # of the not-installed/installed-elsewhere distinction this path draws --
         # so return "" as the searched path even though the lookup still runs.
+        #
+        # Both lookups pass through ``resolved_command_casing``: the value
+        # returned here is PERSISTED as the spec's absolute ``command``, and an
+        # absolute path is accepted verbatim on the next pass, so a PATHEXT-
+        # synthesized ``.EXE`` written once would be indistinguishable from an
+        # operator's own spelling from then on. Repairing at the resolver, not
+        # at the persist site, also keeps the provenance record's ``emitted``
+        # value repaired, so ``command_is_ours`` still recognises the entry.
         if os.path.dirname(cmd):
-            return shutil.which(cmd, path=_search), ""
+            return resolved_command_casing(shutil.which(cmd, path=_search)) or None, ""
         # The search path is returned, not recomputed by the caller: a candidate
         # that declares its own ``env.PATH`` is searched against a DIFFERENT path
         # than one that does not, so a caller reporting ``mcp_search_path("")``
         # would name directories that were never searched.
-        return shutil.which(cmd, path=_search), _search
+        return resolved_command_casing(shutil.which(cmd, path=_search)) or None, _search
 
     resolved = mcp_sources.resolve_mcp_servers(config, sources, _resolve_command)
     mounted = mcp_aliases.normalize_server_keys(config, resolved.unresolved)
@@ -4168,6 +4161,12 @@ handle immediately.
 #:   the PATCH goes to ``/api/chat/slots/<target>/pin`` where the target is the
 #:   session named in the ARGUMENTS, the same shape as ``chat_tag_assign``, and
 #:   no conductor step needs it.
+#: * ``chat_tag_column_list`` / ``chat_tag_column_create`` — WITHHELD. A read
+#:   and an append that dedups on name and tag, so neither fails the invariant;
+#:   withheld because no conductor step needs them, like the tag verbs.
+#: * ``chat_tag_column_move`` — WITHHELD, on the invariant: it MUTATES the order
+#:   of columns the person arranged, which is existing state that is not the
+#:   caller's own, and no conductor step needs it.
 #: * ``session_send`` — WITHHELD. Runs text as another session's user-role turn
 #:   under that target's own grants. The server-side gates bound WHICH target is
 #:   reachable; nothing bounds WHAT is sent.
@@ -4201,6 +4200,10 @@ handle immediately.
 #:   cancelled turn's work is gone either way — the retry de-duplication that
 #:   keeps a re-sent stop from ALSO discarding the queue does not make the verb
 #:   non-destructive).
+#: * ``session_end_wait`` — WITHHELD. Discards nothing, but it moves another
+#:   session's turn forward (the target's ``wait`` returns early), which is a
+#:   change to state that is not the caller's own, and no conductor step needs it
+#:   unattended.
 #:
 #: Every withheld verb stays MOUNTED (``@kirocrew-dashboard`` is still in
 #: ``tools``) — it just passes through ``hooks.on_tool_call`` like any ungranted

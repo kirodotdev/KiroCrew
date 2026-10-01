@@ -501,13 +501,31 @@ class TestNothingIsPushedOnAClaim(unittest.TestCase):
     """
 
     def test_no_claim_path_calls_the_notifier(self) -> None:
-        for module in (dispatch, __import__(
+        routes = __import__(
             "kiro_crew.apps.builtins.ops_mission_control.backend.routes",
             fromlist=["routes"],
-        )):
-            source = Path(module.__file__ or "").read_text(encoding="utf-8")
-            for line in source.splitlines():
-                if "notify_out.notify_" in line:
+        )
+        # The HTTP surface is ``routes.py`` plus every ``http_routes`` module its
+        # handlers are composed from, enumerated from the package directory so a new
+        # one is scanned without an edit here.
+        facade = Path(routes.__file__ or "")
+        scanned = {
+            "dispatch": [Path(dispatch.__file__ or "")],
+            "the HTTP surface": [facade, *sorted((facade.parent / "http_routes").rglob("*.py"))],
+        }
+        for half, paths in scanned.items():
+            lines = [
+                line
+                for path in paths
+                for line in path.read_text(encoding="utf-8").splitlines()
+                if "notify_out.notify_" in line
+            ]
+            # A floor on each half: the cycle's notices in ``dispatch`` and the
+            # transition's needs-human push on the HTTP surface. A half the scan
+            # finds no call in would pass on nothing.
+            self.assertTrue(lines, f"the scan of {half} finds no notifier call")
+            for line in lines:
+                with self.subTest(half=half, line=line.strip()):
                     self.assertNotIn("claim", line.lower())
 
     def test_the_module_records_the_omission(self) -> None:

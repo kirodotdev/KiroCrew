@@ -127,6 +127,21 @@ export const PREVIEW_REMOTE_CREW_CHAT = `${PREVIEW_FLAG_PREFIX}remote-crew-chat`
 export const PREVIEW_INSTANCE_SESSIONS = `${PREVIEW_FLAG_PREFIX}instance-sessions`
 
 /**
+ * The composable-layout dev harness (`/layout-harness`).
+ *
+ * Held because it is a MECHANISM being built beside the Members page, not a
+ * shippable surface: it mounts the layout renderer + scope over a hand-authored
+ * seed so the "panes connect by placement" mechanism can be verified in
+ * isolation, and it changes nothing a user sees. Gating the INGRESS only —
+ * turning it off hides the route; it orphans nothing (the harness holds no saved
+ * state). Its own flag so it releases (or is retired) independently.
+ *
+ * The key string is `layout-harness`, matching the flag the layout feature
+ * itself reads, so the toggle here and the feature's own gate agree on one key.
+ */
+export const PREVIEW_LAYOUT_HARNESS = `${PREVIEW_FLAG_PREFIX}layout-harness`
+
+/**
  * Read a preview flag. Absent, unparseable, or storage-denied all mean OFF —
  * the whole point of the gate is that a surface stays hidden unless someone
  * deliberately turned it on, so it fails closed.

@@ -13,8 +13,9 @@ import re
 import threading
 import time
 import unicodedata
-from collections import defaultdict, deque
+from collections import OrderedDict, defaultdict, deque
 from collections.abc import Awaitable, Callable, Iterator
+from collections.abc import Set as AbstractSet
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
@@ -55,6 +56,7 @@ from kiro_crew.member_essential_context import (
     _MAX_DOCUMENTS,
     ESSENTIAL_MAX_CHARS,
     MemberEssentialContextError,
+    member_context_identity,
     member_inherits_default_resources,
     render_essentials,
 )
@@ -667,6 +669,13 @@ _STRUCTURAL_MARKER_RES: tuple[re.Pattern[str], ...] = (
     # frame. The em dash the block uses folds to ``-`` before matching.
     re.compile(r"\[\s*TASK\s*CHECKLIST\s*[-]{1,2}", re.IGNORECASE),
     re.compile(r"\[\s*END\s*TASK\s*CHECKLIST\s*\]", re.IGNORECASE),
+    # The interrupted-turn restore (``build_interrupted_turn_preamble``). Its frame
+    # names the request inside it as the one the model is to carry on with, so a
+    # copy planted in a fetched page or a channel message would hand attacker
+    # text that authority. Minted AFTER the egress scrub by the runner, like the
+    # checklist, with its own payload scrubbed first.
+    re.compile(r"\[\s*INTERRUPTED\s*TURN\s*[-]{1,2}", re.IGNORECASE),
+    re.compile(r"\[\s*END\s*INTERRUPTED\s*TURN\s*\]", re.IGNORECASE),
 )
 _STRUCTURAL_MARKER_NEUTRALIZED = "[marker-removed]"
 
@@ -989,6 +998,31 @@ def neutralize_untrusted_text(text: str) -> str:
     return _neutralize_structural_markers(_neutralize_fence_markers(text))
 
 
+# Frames a stored lesson must not carry into the per-message lessons block: the
+# lesson frames, which a lesson could close early and then speak outside, and the
+# skill frame the block follows.
+_TURN_LESSON_FRAME_RES: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\[\s*LEARNED\s*(?:CORRECTIONS|EXPERIENCE)\b", re.IGNORECASE),
+    re.compile(r"\[\s*END\s*OF\s*LEARNED\s*(?:CORRECTIONS|EXPERIENCE)\s*\]", re.IGNORECASE),
+    re.compile(r"\[\s*SKILL\s*:", re.IGNORECASE),
+    re.compile(r"\[\s*END\s*OF\s*SKILL\s*\]", re.IGNORECASE),
+)
+
+
+def _scrub_turn_lesson(text: str) -> str:
+    """One stored lesson, made safe to place in the per-message lessons block.
+
+    A lesson is untrusted: a rule can be inferred from a conversation or imported.
+    Besides the primary boundary markers it loses the member-authority markers a
+    private member runs under and the lesson and skill frame markers, so it can
+    neither close its own frame nor open one that reads as a member rule or a
+    skill. Span-local, like the scrubs it composes.
+    """
+    framed = _apply_marker_spans(text, _marker_spans(text, _TURN_LESSON_FRAME_RES))
+    scrubbed = _neutralize_structural_markers(_scrub_member_payload(framed))
+    return scrubbed.translate(_MULTIBYTE_TABLE)
+
+
 def _fit_folder_steering_into_envelope(
     documents: list[tuple[str, str]],
     folder_docs: SteeringCollection | list[tuple[str, str]],
@@ -1239,6 +1273,47 @@ _PREFS_STARTUP_CAP = 12_700
 # findings must not be able to crowd out their own standing rules, and a user with
 # many rules must not lose the findings budget. Both are window-independent.
 _LESSON_EXPERIENCE_CAP = _budget(0.05)  # learned experience (on-demand tier)  = 5%
+# Per-message lessons (``memory.inject_lessons_per_turn``): at most this many
+# lessons and characters on one follow-up message. Every block stays in the
+# conversation, so the bound is per message; `_ShownLessons` keeps a lesson from
+# being sent again.
+_TURN_LESSONS_MAX = 3
+_TURN_LESSONS_CHARS = 2_000
+# Sessions whose shown-lesson record is kept, and per-message lessons each record
+# remembers. Past either bound the oldest goes, so a session that comes back, or a
+# lesson it was sent long ago, can be sent once more.
+_LESSONS_SHOWN_SESSIONS = 256
+_LESSONS_SHOWN_PER_SESSION = 256
+
+
+class _ShownLessons:
+    """What one session has already been shown: its startup block, then per-message lessons."""
+
+    __slots__ = ("startup_block", "sent")
+
+    def __init__(self, startup_block: str = "") -> None:
+        self.startup_block = startup_block
+        # hash() of each per-message lesson, oldest first. The record never leaves
+        # this process, so the per-process hash is stable for its whole life.
+        self.sent: dict[int, None] = {}
+
+    def shown(self, text: str) -> bool:
+        # Blocks render one "- <text>" line per lesson, so matching the whole
+        # line keeps a short lesson inside a longer one from reading as shown.
+        return hash(text) in self.sent or f"- {text}\n" in self.startup_block
+
+    def add(self, texts: Iterator[str]) -> None:
+        for text in texts:
+            self.sent[hash(text)] = None
+        while len(self.sent) > _LESSONS_SHOWN_PER_SESSION:
+            del self.sent[next(iter(self.sent))]
+
+    def copy(self) -> _ShownLessons:
+        duplicate = _ShownLessons(self.startup_block)
+        duplicate.sent = dict(self.sent)
+        return duplicate
+
+
 _SEMANTIC_MEMORY_CAP = _budget(0.077)  # semantic memory (vector)             = 7.7%
 _EPISODIC_MEMORY_CAP = _budget(0.077)  # episodic memory (vector)             = 7.7%
 _SKILLS_CAP = _budget(0.15)  # skills top-K block (lazy-loaded)     = 15%
@@ -2463,11 +2538,10 @@ _MEMBER_HOW_YOU_WORK = _MEMBER_HOW_YOU_WORK_COMMON + _MEMBER_BRIEFING_ITEM
 def _template_selected_on_member_store(execution_context: Any) -> bool:
     """Whether *execution_context* runs a member's store under a selected TEMPLATE.
 
-    The one predicate behind withholding the member operating protocol, read by
-    every ``_build_member_section`` caller. A member's memory identity and its
+    One of the two reasons :func:`_desk_withheld` gives for delivering a member
+    section without its desk layers. A member's memory identity and its
     persona are two fields of one record: ``member_id`` (bound to the store) says
     whose memory this is, ``selection_kind`` says what was picked to run it. A
-    member picked BY NAME runs its own desk and gets the whole section. A
     template picked on a member's store — a ``session_create(agent=...)`` child
     or a ``spawn_run(agent=...)`` delegate of a member — is that member's
     delegate sent to do the work: it keeps the member's identity, its
@@ -2480,15 +2554,47 @@ def _template_selected_on_member_store(execution_context: Any) -> bool:
     alone, and no record field can say "this member, under that template"
     without losing the member -- and losing the member drops its rules along
     with its persona. The ``session_create`` arm therefore keeps such a member's
-    selection and changes only the template, so that child keeps its whole
-    desk; a ``spawn_run(agent=...)`` child of such a member is a plain template
-    run on the parent's store and has no member section at all.
+    selection and changes only the template. That child is not a template
+    selection, so this predicate is False for it; it still loses the desk
+    layers, because the surface half of :func:`_desk_withheld` answers for it
+    (no caller names its desk). A ``spawn_run(agent=...)`` child of such a member
+    is a plain template run on the parent's store and has no member section at
+    all.
     """
     return (
         execution_context is not None
         and execution_context.member_id is not None
         and execution_context.selection_kind == "template"
     )
+
+
+def _desk_withheld(execution_context: Any, desk_member: str) -> bool:
+    """Whether this turn's member section is identity and permanent rules ONLY.
+
+    The one predicate behind withholding the member DESK — layer 2
+    (``[HOW YOU WORK]``) and layer 4 (``[CURRENT ASSIGNMENT]``, the agent-writable
+    briefing) — read by every ``_build_member_section`` caller. Identity and
+    ``[PERMANENT RULES]`` follow the member's STORE: the execution record's owner
+    (``member_id``, or ``selection_name`` when ``selection_kind == "member"``)
+    receives them on every surface, because the user's bounds on a member follow
+    its memory. The desk follows the SURFACE: the two layers describe how the
+    member runs its own DM thread ("this DM thread is your front desk", "keep
+    your working memory in the briefing file"), so they are delivered only where
+    the caller names that thread by passing ``member=`` — the dashboard's
+    ``mode == "member"`` slot does, an ordinary chat that merely resolved to a
+    crew alias does not, and neither does a cron, channel or delegated turn whose
+    owner comes from the record alone.
+
+    Two reasons withhold, either suffices:
+
+    * *desk_member* is empty — no caller named this turn as the member's desk. The
+      stock ``default`` alias resolves every plain dashboard chat to
+      ``selection_kind == "member"``; without this half every such chat became a
+      member desk that rewrote the briefing file from an ordinary conversation.
+    * :func:`_template_selected_on_member_store` — the record runs the member's
+      store under an explicitly selected template (the member's delegate).
+    """
+    return not desk_member or _template_selected_on_member_store(execution_context)
 
 
 # Runtime sources whose transcript renders tool-call cards (and therefore the
@@ -2717,6 +2823,93 @@ def build_cancelled_turn_preamble(
     if assistant_text:
         lines += ["", f"Partial assistant response before cancel:\n{assistant_text}"]
     lines.append("[END PREVIOUS TURN]")
+    return "\n".join(lines)
+
+
+# Roles that OPEN a turn in a dashboard transcript: the row an interrupted turn
+# was answering. An ``inject`` row opens one only when its ``meta.injectKind`` is
+# in the caller's *opener_inject_kinds* (a cron delivery, an app message, a
+# synthesis); every other row between the opener and the resume -- tool cards,
+# error and notice rows, a recovery inject such as an earlier Resume press -- is
+# walked past.
+_TURN_OPENER_ROLES = frozenset({"user", "nudge", "subagent"})
+
+
+def build_interrupted_turn_preamble(
+    messages: list[dict],
+    current: dict | None = None,
+    *,
+    opener_inject_kinds: AbstractSet[str] = frozenset(),
+    user_cap: int = 8000,
+    assist_cap: int = 4000,
+) -> str:
+    """Restore the interrupted turn for a backend that natively resumed without it.
+
+    kiro-cli appends a prompt to its session log only once the model has
+    answered it. When the process serving a turn dies mid-answer -- a gateway
+    restart, a crash, a recycled runtime -- that turn's request is never written,
+    so ``session/load`` brings the conversation back WITHOUT it. A resumed
+    session gets no Kiro Crew replay (the native history is trusted to be
+    complete), so a Resume pressed on that turn reaches the model as a bare
+    "finish the user's most recent request" with the request missing: the model
+    answers the turn before it, or reports there is nothing to continue.
+
+    *messages* is the slot's transcript window, which still holds the turn (the
+    turn-in-flight marker restores its opener after a restart). Walk back from
+    *current* -- the resume row this turn is running, excluded -- to the row that
+    opened the interrupted turn, collecting the assistant text it had streamed.
+    Returns "" when no opener is found. The caller mints the result AFTER the
+    prompt's egress scrub (its markers are in ``_STRUCTURAL_MARKER_RES``); the
+    payload is scrubbed here instead.
+    """
+    end = len(messages)
+    if current is not None:
+        for i in range(len(messages) - 1, -1, -1):
+            if messages[i] is current:
+                end = i
+                break
+    opener_idx = -1
+    for i in range(end - 1, -1, -1):
+        role = messages[i].get("role")
+        meta = messages[i].get("meta")
+        if role in _TURN_OPENER_ROLES or (
+            role == "inject"
+            and isinstance(meta, dict)
+            and meta.get("injectKind") in opener_inject_kinds
+        ):
+            opener_idx = i
+            break
+    if opener_idx < 0:
+        return ""
+    user_text = str(messages[opener_idx].get("content") or "").strip()
+    if not user_text:
+        return ""
+    assistant_parts = [
+        str(m.get("content") or "").strip()
+        for m in messages[opener_idx + 1 : end]
+        if m.get("role") == "assistant" and str(m.get("content") or "").strip()
+    ]
+    assistant_text = "\n".join(assistant_parts)
+    if len(user_text) > user_cap:
+        user_text = user_text[:user_cap] + "… [truncated]"
+    if len(assistant_text) > assist_cap:
+        assistant_text = assistant_text[:assist_cap] + "… [truncated]"
+    # The frame is minted outside the prompt's egress scrub, so its payload is
+    # scrubbed here: a transcript row must not carry a structural marker past it.
+    user_text = _neutralize_structural_markers(user_text)
+    assistant_text = _neutralize_structural_markers(assistant_text)
+    lines = [
+        "[INTERRUPTED TURN — context restore]",
+        "The turn below was cut off when the agent process serving this "
+        "conversation stopped, so the restored conversation may not include it. "
+        "It is the user's most recent request, the one you are being asked to "
+        "carry on with. Tool calls it made may already have taken effect.",
+        "",
+        f"Interrupted request:\n{user_text}",
+    ]
+    if assistant_text:
+        lines += ["", f"Partial response before the interruption:\n{assistant_text}"]
+    lines.append("[END INTERRUPTED TURN]")
     return "\n".join(lines)
 
 
@@ -3224,6 +3417,12 @@ class ContextBuilder:
         self.memory_mode_for_session: Callable[[str], Awaitable[str]] | None = None
         self.live_memory_mode_for_session: Callable[[str], str | None] | None = None
         self._session_memory_modes: dict[str, str] = {}
+        # Lessons each session has already been shown, keyed by the fixed-size
+        # digest of its session key: its session-start block plus every per-message
+        # block since, so `memory.inject_lessons_per_turn` skips them. In memory
+        # and bounded; see `_ShownLessons`.
+        self._lessons_shown: OrderedDict[str, _ShownLessons] = OrderedDict()
+        self._lessons_shown_lock = threading.Lock()
         if bot_name:
             self._bot_name = bot_name
         else:
@@ -3235,6 +3434,109 @@ class ContextBuilder:
             self._bot_name = "KiroCrew" if is_claude_code(provider) else "Kiro"  # brand-ok
         # Register default memory in the workspace cache
         _memory_stores[_DEFAULT_KEY] = self.memory
+
+    def _remember_startup_lessons(self, session_key: str, block: str) -> None:
+        """Start *session_key*'s shown-lesson record from its session-start block."""
+        key = self._cap_memo_key(session_key)
+        with self._lessons_shown_lock:
+            self._lessons_shown[key] = _ShownLessons(startup_block=block)
+            self._lessons_shown.move_to_end(key)
+            while len(self._lessons_shown) > _LESSONS_SHOWN_SESSIONS:
+                self._lessons_shown.popitem(last=False)
+
+    def _forget_shown_lessons(self, session_key: str) -> None:
+        """Compaction dropped every block this session was shown; lessons may come back."""
+        key = self._cap_memo_key(session_key)
+        with self._lessons_shown_lock:
+            if key in self._lessons_shown:
+                self._lessons_shown[key] = _ShownLessons()
+
+    def _live_shown_lessons(self, session_key: str) -> _ShownLessons:
+        """*session_key*'s record in place now, made the newest; the caller holds the lock.
+
+        A session with none -- the setting turned on after it started, or its
+        record dropped -- starts an empty one.
+        """
+        key = self._cap_memo_key(session_key)
+        record = self._lessons_shown.get(key)
+        if record is None:
+            record = _ShownLessons()
+            self._lessons_shown[key] = record
+        self._lessons_shown.move_to_end(key)
+        while len(self._lessons_shown) > _LESSONS_SHOWN_SESSIONS:
+            self._lessons_shown.popitem(last=False)
+        return record
+
+    def _turn_lessons_block(
+        self,
+        text: str,
+        session_key: str,
+        *,
+        workspace: str | None,
+        memory_store: str | None,
+        project: str | None,
+        member: str,
+        execution_context: Any,
+        context_groups: frozenset[str] | None,
+    ) -> str:
+        """The ``memory.inject_lessons_per_turn`` block for one follow-up message, or ``""``.
+
+        Reads the same store the session-start lessons block reads -- a private
+        member's own prepared store, otherwise the workspace's vector store --
+        under the same config and context-group gates. Lessons the session was
+        already shown are skipped, and what this block sends is recorded, so a
+        lesson is not sent again while the session's record holds it (see
+        `_ShownLessons` for its bounds). Each lesson line is scrubbed by
+        `_scrub_turn_lesson`. The JSONL fallback store is not read. A store that
+        cannot be read skips the block, never the turn.
+        """
+        cfg = KiroCrewConfig.load()
+        if not cfg.memory.inject_lessons_per_turn:
+            return ""
+        if not _group_included(_config_scoped_groups(context_groups, cfg), CONTEXT_GROUP_LESSONS):
+            return ""
+        private = bool(
+            member_context_identity(
+                member, member_is_id=bool(execution_context and execution_context.member_id)
+            )[0]
+        )
+        if private:
+            store = _vector_stores.get(memory_store or "")
+        else:
+            store = self.get_memory_for(workspace, memory_store).vector_store
+        if store is None:
+            return ""
+        with self._lessons_shown_lock:
+            snapshot = self._live_shown_lessons(session_key).copy()
+        try:
+            chosen = store.turn_lessons(
+                text,
+                shown=snapshot.shown,
+                project_dir=project,
+                max_rows=_TURN_LESSONS_MAX,
+                max_chars=_TURN_LESSONS_CHARS,
+                render_lesson=_scrub_turn_lesson,
+            )
+        except (OSError, ValueError, RuntimeError, sqlite3.Error):
+            logger.warning("Per-message lessons skipped: the lesson store could not be read")
+            return ""
+        if not chosen:
+            return ""
+        with self._lessons_shown_lock:
+            # Other sessions' builds, or a compaction, can drop or replace this
+            # record while the store is read, so the choice is checked against,
+            # and recorded in, the record in place now.
+            record = self._live_shown_lessons(session_key)
+            chosen = [entry for entry in chosen if not record.shown(entry[1])]
+            record.add(lesson for _, lesson in chosen)
+        if not chosen:
+            return ""
+        lines = "\n".join(f"- {_scrub_turn_lesson(lesson)}" for _, lesson in chosen)
+        return (
+            "[Learned corrections — relevant to this message, not shown earlier in this "
+            "session.\nFollow explicit user rules; stored inferences do not override the "
+            f"current user.]\n{lines}\n[End of learned corrections]\n\n"
+        )
 
     def _substitute_bot_name(self, prompt: str) -> str:
         """Replace {bot_name} placeholder in prompt text.
@@ -3468,7 +3770,7 @@ class ContextBuilder:
         *,
         strict: bool = False,
         include_briefing: bool = True,
-        template_selected: bool = False,
+        desk_withheld: bool = False,
     ) -> str:
         """Assemble the four-layer identity for a member's bound execution.
 
@@ -3489,16 +3791,18 @@ class ContextBuilder:
         4. ``[CURRENT ASSIGNMENT]`` — member-owned working memory, read
            (capped) from the member's own agent-writable briefing file.
 
-        ``template_selected`` is the verdict of
-        :func:`_template_selected_on_member_store` for the execution being
-        built: the member's store is running under an explicitly selected
-        template, so the section is the member's identity and rules ONLY. Layers
-        2 and 4 describe how the member runs its own desk — the desk protocol's
-        "hand substantial work to a separate session" item is what a template
-        picked to do that work must not be told — so both are withheld, with no
-        placeholder and no briefing read. Layer 1 stays because the memory the
-        delegate reads and writes is that member's, and layer 3 stays because
-        the user's bounds on a member follow its memory, not its template.
+        ``desk_withheld`` is the verdict of :func:`_desk_withheld` for the turn
+        being built: the section is the member's identity and rules ONLY. Layers
+        2 and 4 describe how the member runs its own desk — the DM thread — so
+        both are withheld, with no placeholder and no briefing read, when no
+        caller named this turn as that desk (an ordinary chat that resolved to
+        the crew alias, a cron, channel or delegated turn) or when the store runs
+        under an explicitly selected template (the desk protocol's "hand
+        substantial work to a separate session" item is what a template picked
+        to do that work must not be told). Layer 1 stays, minus the sentence
+        that describes the DM thread, because the memory the turn reads and
+        writes is that member's; layer 3 stays because the user's bounds on a
+        member follow its memory, not its surface or template.
 
         V1 retains its existing optional-layer failure behavior. V2 passes
         ``strict=True`` with a stable member ID, never a configured-name fallback,
@@ -3551,10 +3855,10 @@ class ContextBuilder:
         # around it (item 6 above, the placeholder below): where the pinned
         # briefing read fails closed (Windows — member_briefing_supported),
         # instructing upkeep of a never-injected file is a futile loop, so the
-        # section says the layer is unavailable instead. A template-selected
-        # delegate gets neither the layer nor a placeholder, so its briefing
+        # section says the layer is unavailable instead. A turn with the desk
+        # withheld gets neither the layer nor a placeholder, so its briefing
         # is not read at all.
-        briefing_ok = include_briefing and not template_selected and member_briefing_supported()
+        briefing_ok = include_briefing and not desk_withheld and member_briefing_supported()
         briefing = ""
         briefing_path = ""
         if briefing_ok:
@@ -3587,15 +3891,19 @@ class ContextBuilder:
             identity.append(f"Your role: {description}")
         if triggers:
             identity.append(f"Your remit — the work that belongs to you: {triggers}")
-        identity.append(
-            "This DM thread is your durable working relationship with the user. It "
-            "continues across sessions: remember what was discussed, refer back to it "
-            "naturally, and speak as a colleague who owns their work — never as a "
-            "support bot."
-        )
+        if not desk_withheld:
+            # The one identity sentence that describes the DM thread itself: an
+            # ordinary chat, a cron turn or a delegate on this member's store is
+            # not that thread, so the sentence goes with the desk layers.
+            identity.append(
+                "This DM thread is your durable working relationship with the user. It "
+                "continues across sessions: remember what was discussed, refer back to it "
+                "naturally, and speak as a colleague who owns their work — never as a "
+                "support bot."
+            )
 
         parts = ["\n".join(identity)]
-        if not template_selected:
+        if not desk_withheld:
             parts.append("\n\n")
             parts.append(
                 _MEMBER_HOW_YOU_WORK
@@ -3607,7 +3915,7 @@ class ContextBuilder:
             # is no "working protocol above" to name, so that clause goes with it.
             outranked = (
                 ""
-                if template_selected
+                if desk_withheld
                 else "the working protocol above included, whose instructions yield "
                 "wherever these rules contradict them — "
             )
@@ -3628,11 +3936,12 @@ class ContextBuilder:
                     "priorities worth remembering)"
                 )
             )
-        elif template_selected:
+        elif desk_withheld:
             # No layer 4 and no placeholder either, the scope notice below
-            # included: the placeholders tell a MEMBER why its own working memory
-            # is missing this turn and not to fill that gap from the briefing file
-            # or recall, and a delegate has no layer 4 to miss. Its memory scope
+            # included: the placeholders tell a MEMBER AT ITS DESK why its own
+            # working memory is missing this turn and not to fill that gap from
+            # the briefing file or recall; a turn off the desk (an ordinary chat
+            # on the alias, a delegate) has no layer 4 to miss. Its memory scope
             # is stated where every non-member session's is -- the [CONTEXT
             # SCOPE] block for a narrowed spawn or a privacy mode, nowhere for
             # the operator's standing toggle -- and this arm is ordered ahead of
@@ -3672,15 +3981,15 @@ class ContextBuilder:
         conditional_index: bool = False,
         trigger_text: str = "",
         steering_dirs: tuple[str, ...] = (),
-        template_selected: bool = False,
+        desk_withheld: bool = False,
         provider_type: str = PROVIDER_ACP,
     ) -> str:
         """Refresh complete member essentials without opening learned memory.
 
-        ``template_selected`` is :func:`_template_selected_on_member_store`'s verdict
-        for the execution being built and is handed to the member-section builder
-        unchanged: the envelope keeps the member's identity, rules, documents and
-        anchors, and withholds only the desk protocol and briefing.
+        ``desk_withheld`` is :func:`_desk_withheld`'s verdict for the turn being
+        built and is handed to the member-section builder unchanged: the
+        envelope keeps the member's identity, rules, documents and anchors, and
+        withholds only the desk protocol and briefing.
 
         ``provider_type`` names the harness serving the session. Only kiro-cli
         (:data:`PROVIDER_ACP`) honours ``chat.disableInheritingDefaultResources``,
@@ -3719,7 +4028,7 @@ class ContextBuilder:
             context_groups, CONTEXT_GROUP_PROJECT
         )
         identity = self._build_member_section(
-            owner, strict=True, include_briefing=reads, template_selected=template_selected
+            owner, strict=True, include_briefing=reads, desk_withheld=desk_withheld
         )
         # A validation pass measures the largest envelope any harness can build,
         # so it keeps inheritance and never reads kiro-cli's opt-out. On a normal
@@ -3928,6 +4237,11 @@ class ContextBuilder:
             from kiro_crew.execution_context import read_session_execution
 
             execution_context = read_session_execution(session_key)
+        # The caller's ``member=`` names this turn as the member's DESK (the
+        # dashboard passes it for a ``mode == "member"`` slot only). It decides
+        # the desk layers and nothing else; the record below decides whose
+        # identity, rules and memory the turn carries.
+        desk_member = member
         if execution_context is not None:
             member = execution_context.member_id or (
                 execution_context.selection_name
@@ -3959,7 +4273,7 @@ class ContextBuilder:
                 context_groups=context_groups,
                 member_template=execution_context.template_id if execution_context else "",
                 steering_dirs=steering_dirs,
-                template_selected=_template_selected_on_member_store(execution_context),
+                desk_withheld=_desk_withheld(execution_context, desk_member),
                 provider_type=provider_type,
             )
 
@@ -4136,7 +4450,7 @@ class ContextBuilder:
         # [PERMANENT RULES] fresh and fails closed on an unreadable file.
         if member_turn_context(member, MemberLifecycle.FRESH).deliver_section and not essentials:
             _member_section = self._build_member_section(
-                member, template_selected=_template_selected_on_member_store(execution_context)
+                member, desk_withheld=_desk_withheld(execution_context, desk_member)
             )
             if _member_section:
                 append_required(_member_section)
@@ -4641,6 +4955,11 @@ class ContextBuilder:
                 max(1, caps.protected_context - protected_without_lessons)
             )
             protected_chars = len(essentials) + sum(len(parts[i]) for i in protected_parts)
+        if session_key and _cfg.memory.inject_lessons_per_turn:
+            # The block as sent, after any trim: per-message lessons skip what it holds.
+            self._remember_startup_lessons(
+                session_key, parts[lessons_part_index] if lessons_part_index is not None else ""
+            )
 
         # Admit background as whole source blocks, never by slicing the joined
         # prompt. Protected rules/preferences are outside this discretionary pool.
@@ -4738,7 +5057,7 @@ class ContextBuilder:
             # kiro-cli *branding* references are rewritten to claude code.
             # A custom agent keeps its own prompt on every provider.
             try:
-                pp = _prompt_path(mode=mode)
+                pp = _prompt_path()
                 agent_prompt = pp.read_text(encoding="utf-8")
                 agent_prompt = agent_prompt.replace("kiro-cli", "claude code")
                 agent_prompt = re.sub(r"\bKiro\b", "Claude", agent_prompt)
@@ -4752,7 +5071,7 @@ class ContextBuilder:
             )
         else:
             try:
-                pp = _prompt_path(mode=mode)
+                pp = _prompt_path()
                 logger.debug("Prompt selection: mode=%r → %s", mode, pp)
                 agent_prompt = pp.read_text(encoding="utf-8")
             except OSError:
@@ -4845,6 +5164,11 @@ class ContextBuilder:
             from kiro_crew.execution_context import read_session_execution
 
             execution_context = read_session_execution(session_key)
+        # The caller's ``member=`` names this turn as the member's DESK (the
+        # dashboard passes it for a ``mode == "member"`` slot only). It decides
+        # the desk layers and nothing else; the record below decides whose
+        # identity, rules and memory the turn carries.
+        desk_member = member
         if execution_context is not None:
             member = execution_context.member_id or (
                 execution_context.selection_name
@@ -4942,7 +5266,7 @@ class ContextBuilder:
                 and delivery is not None
                 and not context_provider.native_steering,
                 steering_dirs=steering_dirs,
-                template_selected=_template_selected_on_member_store(execution_context),
+                desk_withheld=_desk_withheld(execution_context, desk_member),
                 provider_type=provider_type,
             )
         if _essentials and not is_new_session:
@@ -5019,7 +5343,10 @@ class ContextBuilder:
                     context_groups=context_groups,
                     query_text=text,
                     project=project,
-                    member=member,
+                    # The desk argument, not the record's owner: the callee
+                    # re-derives the owner from the same record and must see
+                    # whether THIS caller named the desk.
+                    member=desk_member,
                     execution_context=execution_context,
                     steering_dirs=steering_dirs,
                     _v2_essentials=_essentials,
@@ -5075,8 +5402,7 @@ class ContextBuilder:
                     _resume_member = ""
                     if _member_turn.deliver_section:
                         _member_section = self._build_member_section(
-                            member,
-                            template_selected=_template_selected_on_member_store(execution_context),
+                            member, desk_withheld=_desk_withheld(execution_context, desk_member)
                         )
                         if _member_section:
                             _resume_member = (
@@ -5191,6 +5517,8 @@ class ContextBuilder:
         # mapping excludes and an unmapped custom agent cannot receive a block
         # its session-start context never contained.
         if not is_new_session and needs_reinjection:
+            if session_key:
+                self._forget_shown_lessons(session_key)
             # The managed spec prompt is a stub pointing at this block, so a
             # compaction that drops it leaves the session with no contract.
             # Trusted content (managed contract or the user's own persona),
@@ -5308,7 +5636,7 @@ class ContextBuilder:
             # chokepoint consult above).
             if _member_turn.deliver_section:
                 _member_section = self._build_member_section(
-                    member, template_selected=_template_selected_on_member_store(execution_context)
+                    member, desk_withheld=_desk_withheld(execution_context, desk_member)
                 )
                 if _member_section:
                     parts.append(_neutralize_structural_markers(_member_section))
@@ -5657,6 +5985,34 @@ class ContextBuilder:
                 hint = self.skills.trigger_hint(pointer_only, project)
                 if hint:
                     parts.append(_neutralize_structural_markers(hint))
+
+        # Per-message lessons (``memory.inject_lessons_per_turn``, off by
+        # default): stored lessons that match this follow-up message and were
+        # not shown earlier in the session. For every agent, like the
+        # session-start lessons block, and never for a temporary session.
+        # Matched against the user's own text (the ``user_text_range`` slice,
+        # or a transform hook's output), never the context a dispatcher
+        # prefixed to the turn: every pick is recorded as shown, so a match on
+        # a prefixed notice would withhold the lesson from the later turn the
+        # user actually types about it.
+        if not is_new_session and not minimal_context and not blocks_reads and session_key:
+            user_turn_text = (
+                hook_result.text
+                if hook_result.action == HOOK_MODIFY
+                else text[user_text_range[0] : user_text_range[1]]
+            )
+            turn_lessons = self._turn_lessons_block(
+                user_turn_text,
+                session_key,
+                workspace=workspace,
+                memory_store=memory_store,
+                project=project,
+                member=member,
+                execution_context=execution_context,
+                context_groups=context_groups,
+            )
+            if turn_lessons:
+                parts.append(turn_lessons)
 
         # Hook-injected context — apply to all agents. Declarative context can
         # echo user text, so scrub it before placing it beside trusted markers.

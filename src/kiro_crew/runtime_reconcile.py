@@ -83,10 +83,19 @@ row is the one thing bridging the two, and a row that was never written reads he
 as an abandoned process carrying our marker. On such a host the unowned population
 ran 250-504 per pass against 4 genuine strays in 6.5 hours.
 
-Membership is narrower than the slice even for this install's own spawns: an app
-backend's pid record and a long-lived sandboxed subprocess are in neither, so both
-read as unowned on every pass. Turning the budget to 0 is how an operator on such
-a host takes the reading without the signal until that is fixed.
+Membership is narrower than the slice even for this install's own spawns, and one
+such spawn answers by identity rather than by a record. A sandboxed tool subprocess
+-- a build, an ``npx`` install, a provisioning run routed through
+:func:`sandbox.sandboxed_spawn_argv` -- lands in this slice carrying our inherited
+marker and is in no membership source, so it would read as unowned on every pass and
+its argv0 basename would be all that stood between it and a signal once it outlives
+the age floor. The chokepoint stamps ``KIROCREW_SANDBOX_TOOL`` on its whole tree and
+:func:`process_is_sandbox_tool` reads that back, which takes such a tree out of the
+candidate population on exec-time evidence -- paired with the managed-argv test,
+because the marker is inherited and a harness that ends up inside a tool tree must
+stay a candidate. An app backend's pid record is the other narrowing. Turning the
+budget to 0 is how an operator on a shared-data-home host takes the reading without
+the signal.
 
 Why the dead direction acts immediately
 ---------------------------------------
@@ -164,7 +173,13 @@ class ReconcileReading:
     owned_alive: int = 0
     #: Pids a record claims that are gone, or that now name a stranger.
     owned_dead: int = 0
-    #: Live pids inside our own agent slice that no record claims.
+    #: Live pids inside our own agent slice that no record claims, EXCEPT those
+    #: :meth:`RuntimeReconciler._unowned` excludes: a pid marked as sandboxed tool
+    #: work whose argv0 is not a managed harness. So this is the unclaimed population
+    #: this arm can act on, which is what makes it the number to read beside
+    #: ``would_kill``. ``resource_status.slice_ownership`` publishes a field of the
+    #: same name computed as every unclaimed slice pid, so on a host doing long-lived
+    #: tool work the two disagree BY DESIGN and the larger one is not a fault.
     unowned_alive: int = 0
     #: Unowned pids that met every condition and whose tree was signalled.
     killed: int = 0
@@ -173,8 +188,8 @@ class ReconcileReading:
     #: ``session.reconcile_max_kills`` down to 0. The number they read to decide
     #: whether restoring the budget would take anything they still want: it is 0 on
     #: a host with nothing to reclaim and non-zero on a host with a real stray, and
-    #: neither says so through ``unowned_alive``, which counts the whole unclaimed
-    #: population.
+    #: neither says so through ``unowned_alive``, which counts the whole population
+    #: this arm can act on.
     would_kill: int = 0
     #: Dead pids whose records were retracted.
     forgotten: int = 0
@@ -463,6 +478,41 @@ def process_is_ours(pid: int, *, proc_root: Path | None = None) -> bool:
     return _read_env_has_kirocrew_marker(pid, proc_root) is True
 
 
+def process_is_sandbox_tool(pid: int, *, proc_root: Path | None = None) -> bool:
+    """Whether *pid* is a sandboxed tool subprocess this install spawned.
+
+    A tree spawned through :func:`sandbox.sandboxed_spawn_argv` -- a build, an ``npx``
+    install, a ``git``/``gh`` read, a provisioning run -- runs inside the slice this
+    module reads, carries the inherited spawn marker, and is recorded nowhere, so the
+    argv0 basename test is all that holds it back from a signal once it is older than
+    the age floor. The chokepoint stamps ``KIROCREW_SANDBOX_TOOL`` on the whole tree,
+    so this answers for a descendant no spawn recorded, and it answers out of the
+    kernel's exec-time copy: a same-uid process can set its own argv or write any
+    file, and cannot alter a running process's environment. That is the difference
+    between a name and evidence.
+
+    The marker means TOOL, not OWNERSHIP, which is why it is a separate variable from
+    the one :func:`process_is_ours` reads. That one enables a kill and this one
+    withholds it, so the two must be able to disagree.
+
+    FAILS OPEN, the opposite of every other test here, because its answer is an extra
+    sparing rather than a permission: only a positive read excludes. An unreadable
+    environment and a platform with no environ oracle both leave *pid* in the
+    candidate population, where the ownership, argv, two-pass and age conditions
+    still govern it. Failing closed would widen what escapes those conditions on
+    doubt, which is the one thing this module must never do.
+
+    This answer alone NEVER excludes a pid, because the marker describes a TREE. The
+    chokepoint accepts harness argv by design -- its ``is_kiro_cli`` parameter exists
+    so a delegating spawn can route through it, and a pod child probe and an
+    unattended fix-authoring agent both do -- and the marker is inherited, so a
+    harness can carry it without being tool work.
+    :meth:`RuntimeReconciler._unowned` therefore requires this answer AND a
+    non-harness argv0 before it drops a pid.
+    """
+    return session_pid._env_is_sandbox_tool(pid, proc_root) is True
+
+
 def process_age_secs(pid: int, *, proc_root: Path = Path("/proc")) -> float:
     """Seconds since *pid*'s process started, or ``0.0`` when unreadable.
 
@@ -502,6 +552,7 @@ class RuntimeReconciler:
         was_recycled: Callable[[int], bool] = lambda _pid: False,
         is_ours: Callable[[int], bool] = process_is_ours,
         is_managed: Callable[[int], bool] = process_is_a_managed_agent,
+        is_sandbox_tool: Callable[[int], bool] = process_is_sandbox_tool,
         leases_on: Callable[[int], int] = _leases_on_pid,
         claims_on: Callable[[int], int] = _claims_on_pid,
         authorize: Callable[[int, str], bool] | None = None,
@@ -523,6 +574,7 @@ class RuntimeReconciler:
         self._was_recycled = was_recycled
         self._is_ours = is_ours
         self._is_managed = is_managed
+        self._is_sandbox_tool = is_sandbox_tool
         self._leases_on = leases_on
         self._claims_on = claims_on
         self._authorize = authorize or _default_authorize
@@ -779,6 +831,44 @@ class RuntimeReconciler:
                 # unreadable one means claimed: this list decides a kill, so the
                 # fail-closed answer is the only safe one.
                 continue
+            try:
+                if self._is_sandbox_tool(pid) and not self._is_managed(pid):
+                    # A tool subprocess from the sandbox chokepoint. It is in the
+                    # slice and in no record, but it is not an agent runtime, so it
+                    # leaves the population HERE rather than at a later condition:
+                    # excluded before the list is built it is never counted in
+                    # ``unowned_alive``, never reaches ``_why_not_yet``, and never
+                    # collects a gate allow or a kill attribution naming it.
+                    #
+                    # BOTH tests, because the marker describes a TREE and the argv
+                    # test is per process. A harness can carry the marker two ways:
+                    # the chokepoint is called with harness argv directly (a pod
+                    # child probe, an unattended fix-authoring agent -- that is what
+                    # its ``is_kiro_cli`` parameter is for), or a marked tool tree
+                    # spawns one, since an agent's terminal command routes through
+                    # the same chokepoint and a shell can launch a runtime. Either
+                    # way that process is the one stray class this arm can reach --
+                    # an orphaned harness in the slice, in no record, past the floor
+                    # -- so requiring "marked AND not a harness" keeps it a candidate.
+                    #
+                    # So the population that leaves here is exactly the population
+                    # ``_why_not_yet`` would withhold by name anyway: the kill arm's
+                    # behaviour is unchanged, and what changes is that these pids
+                    # stop being counted, gated and attributed every pass. Both
+                    # error directions land on that same pre-existing behaviour -- a
+                    # wider basename set excludes FEWER pids, and a tool named like
+                    # a harness is not excluded at all.
+                    continue
+            except Exception:
+                # The opposite posture to the claimed check above, because the
+                # answers mean opposite things. Claimed WITHHOLDS a kill, so doubt
+                # must withhold; this exclusion also withholds, so doubt must NOT
+                # exclude -- a pid whose marker cannot be read stays a candidate
+                # under the ownership, argv, two-pass and age conditions, which is
+                # exactly where it sits with no marker at all.
+                logger.debug(
+                    "runtime_reconcile: sandbox-tool check failed pid=%s", pid, exc_info=True
+                )
             out.append(pid)
         return out
 

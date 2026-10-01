@@ -5084,13 +5084,16 @@
       "sent_to_terminal": "Sent to terminal"
     },
     "runInTerminalConfirm": {
+      "body_copy": "The command is copied for you to paste into the terminal.",
       "body_multi": "{{lines}} lines will run in a new terminal tab, in this chat's working directory.",
       "body_single": "This will run in a new terminal tab, in this chat's working directory.",
       "cancel": "Cancel",
+      "copy": "Copy",
       "flagged": "Flagged:",
       "run": "Run",
       "run_anyway": "Run anyway",
-      "title": "Run in terminal"
+      "title": "Run in terminal",
+      "title_copy": "Copy to terminal"
     },
     "searchBar": {
       "case_sensitive": "Case sensitive",
@@ -7388,6 +7391,11 @@
       "unread_message": "Unread message",
       "stopped_indicator": "Stopped",
       "drawer_working": "Working",
+      "pill_writing": "Writing…",
+      "pill_compacting": "Compacting…",
+      "pill_stopping": "Stopping…",
+      "pill_idle": "Idle",
+      "pill_idle_since": "Idle · {{when}}",
       "stat_today": "Runs today",
       "stat_week": "Runs, past 7 days",
       "notes_tab": "Notes",
@@ -7615,7 +7623,13 @@
       "team_state_idle_since": "Idle · last active {{ago}}",
       "team_state_idle": "Idle",
       "team_today_week": "Runs: {{today}} today · {{week}} this week",
-      "teams_load_failed": "Could not load teams."
+      "teams_load_failed": "Could not load teams.",
+      "schedules_tab": "Schedules",
+      "schedules_heading": "What wakes this crewmate",
+      "schedules_blurb": "Schedules that start this crewmate on its own, with nobody asking.",
+      "schedules_count_title": "{{active}} active of {{total}} schedules",
+      "schedules_empty": "Nothing wakes this crewmate on its own yet.",
+      "schedules_leave_draft": "Leave the page and lose the schedule you were writing?"
     },
     "migrationPage": {
       "app_migration": "App Migration",
@@ -8605,9 +8619,7 @@
         "browsing": "Browsing",
         "use_builtin_label": "Use the built-in browser",
         "use_builtin_desc": "Open pages in {{productName}}'s built-in panel. Turn off to browse with playwright-cli instead.",
-        "use_builtin_desktop_only": "Only works in the desktop app. In a browser or on a remote gateway the agent uses playwright-cli.",
         "cannot_load": "Cannot load browser status. Is the gateway running?",
-        "available": "The agent can browse web pages.",
         "presence_is_consent": "Browsing is available because the Playwright CLI is installed. Removing it is what takes the capability away.",
         "not_installed": "The agent cannot browse yet.",
         "install_explains": "Installing the Playwright CLI lets the agent open pages, read them, and fill forms. You can watch and take over from the Browser panel.",
@@ -8615,7 +8627,6 @@
         "installing": "Installing...",
         "install_takes_a_while": "This downloads a browser, so it can take a few minutes. You can leave this page.",
         "needs_node": "Needs Node.js 20 or newer to install (found {{version}}).",
-        "attach_needs_extension": "To browse with your own logged-in Chrome, install the Playwright extension in that browser.",
         "get_the_extension": "Get the extension",
         "token_label": "Extension token (optional)",
         "token_placeholder": "Paste from the extension",

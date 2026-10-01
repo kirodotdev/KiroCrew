@@ -130,7 +130,6 @@ def test_migration_exemption_is_narrow() -> None:
 # this covers prose, and neither covers a brand-new description string.
 AGENT_INSTRUCTION_FILES = (
     "src/kiro_crew/config/prompt.md",
-    "src/kiro_crew/config/prompt-orchestrator.md",
     "src/kiro_crew/mcp_cron.py",
     "AUTOSDE.yaml",
     "website/AUTOSDE.yaml",

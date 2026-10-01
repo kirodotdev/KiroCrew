@@ -1662,51 +1662,6 @@
       "defaultValue": ""
     },
     {
-      "path": "orchestrator",
-      "kind": "core",
-      "type": "object",
-      "required": false,
-      "deprecated": false,
-      "sensitive": false,
-      "tags": [],
-      "label": "Orchestrator",
-      "help": "Autopilot/orchestrator settings.",
-      "hasChildren": true,
-      "enumValues": null,
-      "defaultValue": {
-        "stage_timeout_seconds": 1800,
-        "max_plan_duration_seconds": 7200
-      }
-    },
-    {
-      "path": "orchestrator.stage_timeout_seconds",
-      "kind": "core",
-      "type": "integer",
-      "required": false,
-      "deprecated": false,
-      "sensitive": false,
-      "tags": [],
-      "label": "Stage Timeout",
-      "help": "Max seconds per stage before auto-run stops. Default 30 min.",
-      "hasChildren": false,
-      "enumValues": null,
-      "defaultValue": 1800
-    },
-    {
-      "path": "orchestrator.max_plan_duration_seconds",
-      "kind": "core",
-      "type": "integer",
-      "required": false,
-      "deprecated": false,
-      "sensitive": false,
-      "tags": [],
-      "label": "Max Plan Duration",
-      "help": "Ceiling for a WHOLE auto-run plan in seconds, checked at each stage boundary, with one warning at 75% of the budget. The per-stage timeout above multiplies by stage count, so without this a long plan can run unattended for hours. 0 disables. Default 2 h.",
-      "hasChildren": false,
-      "enumValues": null,
-      "defaultValue": 7200
-    },
-    {
       "path": "messaging",
       "kind": "core",
       "type": "object",
@@ -1909,6 +1864,7 @@
         "persistence_enabled": true,
         "inject_memory": true,
         "inject_lessons": true,
+        "inject_lessons_per_turn": false,
         "inject_activity": true,
         "migrated": false
       }
@@ -2309,6 +2265,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
+    },
+    {
+      "path": "memory.inject_lessons_per_turn",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Lessons Per Message",
+      "help": "On each follow-up message, add up to three stored lessons that match it and have not been shown in the session yet. The session-start block holds only what fits its budget; this adds the rest as the topic reaches them. Requires inject_lessons.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "memory.inject_activity",
@@ -5021,7 +4991,7 @@
         "slack"
       ],
       "label": "Home Tab Sessions Per Kind",
-      "help": "Max sessions shown per category (main chat / autopilot) in the Slack Home Tab.",
+      "help": "Max sessions shown per category (main chat / task runner) in the Slack Home Tab.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 5
@@ -7779,6 +7749,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""
+    },
+    {
+      "path": "dashboard.terminal.reuse_current",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Reuse the current terminal",
+      "help": "Run-in-terminal focuses the terminal tab you have selected and copies the command, so you can paste it into that shell and keep its state (working directory, environment, an active login session). With no terminal open, it still copies the command for you to paste — it is never run for you. Off = a fresh terminal each time.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "dashboard.terminal.completion",

@@ -679,7 +679,7 @@ async def test_edit_resend_by_index_truncates_from_that_row(state) -> None:
 
 
 @pytest.mark.asyncio
-async def test_edit_resend_redacts_the_edited_content(state) -> None:
+async def test_edit_resend_delivers_the_owners_edit_as_typed(state) -> None:
     slot = state.get_or_create_slot("s1")
     slot.append("user", "first")
     slot.drain()
@@ -693,8 +693,12 @@ async def test_edit_resend_redacts_the_edited_content(state) -> None:
             assert resp.status == 200
             await asyncio.sleep(0)
 
-    assert "AKIAIOSFODNN7EXAMPLE" not in slot.messages[-1]["content"]
-    assert "AKIAIOSFODNN7EXAMPLE" not in run.await_args.args[2]
+    # No request app, so the edit is the session owner's own words: it is
+    # delivered as typed into both the persisted row and the turn input, the
+    # same rule an idle send and a steer follow. An app-driven edit still
+    # redacts (test_queued_user_text_display covers that boundary).
+    assert slot.messages[-1]["content"] == "use AKIAIOSFODNN7EXAMPLE please"
+    assert run.await_args.args[2] == "use AKIAIOSFODNN7EXAMPLE please"
 
 
 @pytest.mark.asyncio

@@ -73,6 +73,12 @@ If absent, use `web_fetch` and tell the user the panel fallback needs the vetted
 sandbox-sealed install from **Settings → Browser**. Installation makes browsing
 available; agent commands still follow the ordinary shell approval ladder.
 
+That install downloads Playwright's own Chromium build onto the gateway's machine.
+When a browser is missing, point the user at that download rather than at a system
+Google Chrome package, which is a different browser and not what the CLI launches.
+Only on Debian or Ubuntu does the download also try to install OS libraries; a
+missing-library failure carries the command for the user to run.
+
 That panel also controls `dashboard.use_builtin_browser`. When it is off, the
 `browser` tool directs you to `playwright-cli`; relay this as the user's setting,
 not a missing panel.

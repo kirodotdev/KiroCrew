@@ -68,6 +68,15 @@ from kiro_crew.security import (
 )
 from kiro_crew.sel import sel
 from kiro_crew.session import unlink_queued_temp_paths
+from kiro_crew.session_lifecycle import (
+    STOP_DECLINED_COMPACTING_TEXT,
+)
+from kiro_crew.session_lifecycle import compaction_in_flight as _compaction_in_flight
+from kiro_crew.session_lifecycle import (
+    consume_stop_declined,
+    decline_stop,
+    hand_queue_to_successor,
+)
 from kiro_crew.skills import SkillsLoader
 from kiro_crew.slack.allowlist import prompt_track_channel, send_dashboard_link
 from kiro_crew.slack.blocks import (
@@ -1253,7 +1262,7 @@ async def _publish_home_tab(orch: GatewayOrchestrator, user_id: str) -> None:
             )
         blocks.append({"type": "divider"})
 
-        # ── Sessions (main chat + autopilot/task runner) ──
+        # ── Sessions (main chat + task runner) ──
         blocks.append({"type": "header", "text": {"type": "plain_text", "text": "🧵 Sessions"}})
         # Deny-by-default authorization gate (defense-in-depth).
         #
@@ -1331,7 +1340,7 @@ async def _publish_home_tab(orch: GatewayOrchestrator, user_id: str) -> None:
                             {
                                 "type": "context",
                                 "elements": [
-                                    {"type": "mrkdwn", "text": "*Autopilot / task runner*"}
+                                    {"type": "mrkdwn", "text": "*Task runner*"}
                                 ],
                             }
                         )
@@ -2665,39 +2674,172 @@ async def _route_message(
         # session that owns it, and that is the key the replay reads. For a flat
         # DM session_key is already the channel-scoped owning key, so the lookup
         # falls back to it unchanged.
-        note_user_stop(orch.sessions, orch.sessions.get_session_for_thread(session_key) or session_key)
-        has_session = orch.sessions.has_session(session_key)
-        active_task = orch._session_tasks.pop(session_key, None)
-        if has_session or active_task:
-            orch.sessions.clear_queue(session_key)
-            # Dropped pending (pre-session) entries never reach
-            # _dispatch_queued's cleanup, so unlink their temp files here.
-            for _item in orch._pending_queue.pop(session_key, None) or []:
-                unlink_queued_temp_paths(_item[2])
-
-            # Post ephemeral "Stopping…" block with Kill Now button
-            if orch.slack:
-                await orch.slack.post_ephemeral(
-                    channel,
-                    sender_id,
-                    "Stopping…",
-                    blocks=build_stopping_blocks(session_key),
-                    thread_ts=stop_post_ts,
+        force_stop = False
+        if _compaction_in_flight(orch.sessions, session_key):
+            # A repeat !stop within the window is the second press and forces
+            # (the Kill Now button is the other route). The first is declined
+            # BEFORE any side effect: the Stop record, the queue clear, the
+            # pending-file unlink and the task pop below all assume the turn is
+            # being ended, and a Stop the session's own /compact turn declines
+            # ends nothing. Same answer ``stop_turn`` gives for the race. Keyed
+            # by the presser too: a thread's session key is every member's, and
+            # another member's declined !stop must not arm this member's first.
+            force_stop = consume_stop_declined(session_key, sender_id)
+        if _compaction_in_flight(orch.sessions, session_key) and not force_stop:
+            # Posted before the marker is armed, and nothing is armed when there
+            # is no client to post with: an undelivered warning plus an armed
+            # escalation is a retry that hard-resets the session with this member
+            # never told that it would.
+            async def _say_declined() -> bool:
+                if not orch.slack:
+                    return False
+                # The post hands back the ts of what landed, so a falsy one is a
+                # warning this member never saw and must arm nothing.
+                return bool(
+                    await orch.slack.post_message(
+                        channel, STOP_DECLINED_COMPACTING_TEXT, stop_post_ts
+                    )
                 )
 
-            async def _on_soft() -> None:
+            await decline_stop(session_key, sender_id, _say_declined)
+            sel().log_tool_invocation(
+                session_key=session_key,
+                source="slack",
+                tool_name="!stop",
+                tool_kind="command",
+                outcome="compacting",
+                metadata={"user": sender_id, "channel": channel},
+            )
+            return
+        note_user_stop(orch.sessions, orch.sessions.get_session_for_thread(session_key) or session_key)
+        has_session = orch.sessions.has_session(session_key)
+        # READ, not popped: the task is removed only once the cancel is known
+        # to have gone through, below.
+        active_task = orch._session_tasks.get(session_key)
+        if has_session or active_task:
+            # What Stop is asked to drop is what was queued WHEN IT WAS PRESSED,
+            # and it must neither START nor be lost while the stop is in flight:
+            # the cancelled turn's end-of-turn drain would otherwise dispatch it
+            # during the awaits below. So it is DETACHED here, before the first
+            # await (files kept), and either dropped once the stop went through
+            # or put back if the stop is declined. A message admitted after this
+            # line is newer intent and is never touched.
+            queued_at_press = orch.sessions.detach_queue(session_key)
+            pending_at_press = list(orch._pending_queue.pop(session_key, None) or ())
+            try:
+                # Post ephemeral "Stopping…" block with Kill Now button
                 if orch.slack:
-                    await orch.slack.post_message(channel, "⏹ Execution stopped.", stop_post_ts)
-
-            async def _on_hard() -> None:
-                if orch.slack:
-                    await orch.slack.post_message(
-                        channel, "⛔ Execution stopped — session reset.", stop_post_ts
+                    await orch.slack.post_ephemeral(
+                        channel,
+                        sender_id,
+                        "Stopping…",
+                        blocks=build_stopping_blocks(session_key),
+                        thread_ts=stop_post_ts,
                     )
 
-            outcome = await orch.sessions.stop_turn(session_key, on_soft=_on_soft, on_hard=_on_hard)
-            if active_task and not active_task.done():
-                active_task.cancel()
+                async def _on_soft() -> None:
+                    if orch.slack:
+                        await orch.slack.post_message(channel, "⏹ Execution stopped.", stop_post_ts)
+
+                async def _on_hard() -> None:
+                    if orch.slack:
+                        await orch.slack.post_message(
+                            channel, "⛔ Execution stopped — session reset.", stop_post_ts
+                        )
+
+                # ``force`` only when set: the default call shape is what every
+                # existing caller and test double of ``stop_turn`` expects.
+                # ``preserve_queue``: what this Stop drops was DETACHED above and
+                # is cleared by identity below; ``stop_turn``'s own whole-queue
+                # clear would take a message admitted since the detach, which is
+                # newer intent this Stop was never aimed at.
+                _kw = {"force": True} if force_stop else {}
+                outcome = await orch.sessions.stop_turn(
+                    session_key, preserve_queue=True, on_soft=_on_soft, on_hard=_on_hard, **_kw
+                )
+            except BaseException:
+                # The detached work is held only in these locals. If the ephemeral
+                # post or the stop itself raises, nothing below runs: put the work
+                # back where it was, then propagate. Without this a rate-limited
+                # Slack reply silently emptied the user's queue and leaked its
+                # staged attachment files. A forced stop whose reset raised AFTER
+                # popping the session leaves no queue to put it back on; there the
+                # handles' files are unlinked rather than leaked.
+                if orch.sessions.has_session(session_key):
+                    orch.sessions.restore_queue(session_key, queued_at_press)
+                elif queued_at_press:
+                    # No session to put it back on: handed to the successor the
+                    # hard stop respawns, or parked for a later start, the way
+                    # the other channels' forced stop keeps co-tenants' work.
+                    await hand_queue_to_successor(orch.sessions, session_key, queued_at_press)
+                if pending_at_press:
+                    later = orch._pending_queue.get(session_key) or []
+                    orch._pending_queue[session_key] = pending_at_press + list(later)
+                raise
+            if outcome == "compacting":
+                # The pre-check above passed and a compaction committed during
+                # the ephemeral post. ``stop_turn`` is the authority: nothing was
+                # stopped, so what was detached goes back, ahead of anything
+                # admitted since, and the task stays tracked.
+                orch.sessions.restore_queue(session_key, queued_at_press)
+                if pending_at_press:
+                    later = orch._pending_queue.get(session_key) or []
+                    orch._pending_queue[session_key] = pending_at_press + list(later)
+                # Armed here as on the pre-check decline: the reply promises
+                # that a repeat forces, so the repeat must find a marker -- and
+                # only after the reply landed, since an escalation the member was
+                # never warned about is a silent reset of their session.
+
+                async def _say_declined_race() -> bool:
+                    if not orch.slack:
+                        return False
+                    # The ts of what landed: a falsy one is a warning this
+                    # member never saw and must arm nothing.
+                    return bool(
+                        await orch.slack.post_message(
+                            channel, STOP_DECLINED_COMPACTING_TEXT, stop_post_ts
+                        )
+                    )
+
+                await decline_stop(session_key, sender_id, _say_declined_race)
+            else:
+                # The destructive half, AFTER the outcome: a Stop that ended a
+                # turn drops what was queued behind it. Placed before the cancel
+                # this ran on a declined Stop too and discarded queued work.
+                # Pop only the task this Stop ended. A message stashed in
+                # ``_pending_queue`` while the session was still spawning is
+                # not cleared by ``stop_turn``, so the cancelled task's
+                # completion can dispatch it as a SUCCESSOR entry during the
+                # awaits above; an unconditional pop would untrack that
+                # successor and let a further message dispatch beside it.
+                # Pop only the task this Stop ended. A message admitted during
+                # the awaits above can already be running as a SUCCESSOR entry;
+                # that is the user's newer intent and is left alone, tracked.
+                if orch._session_tasks.get(session_key) is active_task:
+                    orch._session_tasks.pop(session_key, None)
+                if force_stop and outcome == "hard":
+                    # The forced repeat on a compacting session: the hard reset
+                    # popped the session and its queue. A Slack queue entry does
+                    # not record who sent it, so the presser's own cannot be told
+                    # from a co-tenant's in a shared thread -- and the Stop was
+                    # aimed at the compaction, not at the queue. Everything
+                    # detached at the press is carried to the successor, as the
+                    # other channels' forced stop carries co-tenants' entries
+                    # (``force_stop_keeping_others``). Pending (pre-session)
+                    # entries go back to their stash for the same reason.
+                    await hand_queue_to_successor(orch.sessions, session_key, queued_at_press)
+                    if pending_at_press:
+                        later = orch._pending_queue.get(session_key) or []
+                        orch._pending_queue[session_key] = pending_at_press + list(later)
+                else:
+                    orch.sessions.clear_queue(session_key, only=queued_at_press)
+                    # Dropped pending (pre-session) entries never reach
+                    # _dispatch_queued's cleanup, so unlink their temp files here.
+                    # Only the ones detached at the press; later arrivals stay.
+                    for _item in pending_at_press:
+                        unlink_queued_temp_paths(_item[2])
+                if active_task and not active_task.done():
+                    active_task.cancel()
             # If stop_turn returned "idle" (no active turn), neither callback
             # fired — dismiss the stale "Stopping…" ephemeral explicitly.
             if outcome == "idle" and orch.slack:

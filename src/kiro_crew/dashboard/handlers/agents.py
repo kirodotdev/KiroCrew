@@ -4840,6 +4840,33 @@ def _pin_entitlement_backend(cfg: Any) -> str:
     return default_backend
 
 
+async def _revalidate_crew_pin(model: str, request: web.Request) -> str | None:
+    """Revalidate the snapshot a crew's model pin is about to be judged by.
+
+    Awaited BEFORE the handlers take the config lock: :func:`_model_pin_rejected`
+    runs synchronously inside it and cannot probe, and a probe must not hold the
+    lock for its read deadline. Resolves the same entitlement backend the locked
+    check will use and hands off to the role-pin revalidation, which heals the
+    live snapshot in place. Returns a denial reason only while that probe is still
+    in flight past its deadline; ``None`` otherwise.
+
+    Skips the cases the locked check answers without the live list -- inherit,
+    the retained claude_code seam and a known wrong-flavour spelling -- so no probe
+    is spent on a value the snapshot does not decide.
+    """
+    if not model or model == "auto" or model_registry.acp_id_correction(model):
+        return None
+    cfg = await asyncio.to_thread(KiroCrewConfig.load)
+    if is_claude_code(cfg.agent.provider):
+        return None
+    # circular import: see _model_pin_rejected.
+    from kiro_crew.dashboard.handlers.core import _revalidate_role_pin_evidence
+
+    return await _revalidate_role_pin_evidence(
+        model, request, backend=_pin_entitlement_backend(cfg)
+    )
+
+
 def _model_pin_rejected(
     model: str, request: web.Request, provider: str, *, backend: str | None = None
 ) -> str | None:
@@ -5070,6 +5097,9 @@ async def api_kirocrew_agents_create(request: web.Request) -> web.Response:
             },
             status=400,
         )
+    pending_reason = await _revalidate_crew_pin(model, request)
+    if pending_reason:
+        return web.json_response({"error": pending_reason, "code": "invalid_model"}, status=400)
     async with _get_config_lock():
         cfg = KiroCrewConfig.load()
         # The config key is an id and the name the user typed is its label
@@ -5355,6 +5385,10 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
             },
             status=400,
         )
+    if "model" in body:
+        pending_reason = await _revalidate_crew_pin(pending_model, request)
+        if pending_reason:
+            return web.json_response({"error": pending_reason, "code": "invalid_model"}, status=400)
     async with _get_config_lock():
         cfg = KiroCrewConfig.load()
         if name not in cfg.agents:

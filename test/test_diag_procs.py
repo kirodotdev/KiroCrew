@@ -1166,21 +1166,25 @@ def test_a_read_refused_as_too_soon_does_not_restart_the_window(tmp_path: Path) 
     table.add(GATEWAY, OUTSIDER, cmdline=GATEWAY_ARGV, env=dict(MARKER))
     table.add(CHAT, GATEWAY, cmdline=CHAT_ARGV, env=dict(MARKER), utime=0, runq_ns=0)
 
+    # Every read is pinned to one clock reading, so the hand-aged windows are
+    # the whole window. Unpinned, the second read's gap is 0.8s plus however
+    # long the runner takes to finish the first scan and start the second, which
+    # on a loaded runner crosses the 1s floor and admits the read under test.
     baseline = procs.RateBaseline()
-    table.scan_rated(baseline)
+    table.scan_rated(baseline, monotonic=SCAN_MONOTONIC)
     _age_baseline(baseline, 0.8)
     stored = baseline._prev
     assert stored is not None
     pinned = stored.monotonic
 
-    refused = table.scan_rated(baseline)
+    refused = table.scan_rated(baseline, monotonic=SCAN_MONOTONIC)
     assert refused.nodes[CHAT].cpu_pct is None, "0.8s apart is under the floor"
     assert baseline._prev is not None
     assert baseline._prev.monotonic == pinned, "the refused read replaced the baseline"
 
     # 0.8s + 0.6s clears the 1s floor. Had the refused read replaced the
     # baseline, only the 0.6s would remain and this read would be refused too.
-    # 0.7 CPU-seconds and 0.14s of run-queue wait over that window.
+    # 0.7 CPU-seconds and 0.14s of run-queue wait over exactly that 1.4s window.
     _age_baseline(baseline, 0.6)
     table.add(
         CHAT,
@@ -1190,23 +1194,10 @@ def test_a_read_refused_as_too_soon_does_not_restart_the_window(tmp_path: Path) 
         utime=table.clk_tck * 7 // 10,
         runq_ns=140_000_000,
     )
-    recovered = table.scan_rated(baseline)
+    recovered = table.scan_rated(baseline, monotonic=SCAN_MONOTONIC)
 
-    # A BAND, not a point. Both ageings have to stay under the 1s floor for the
-    # discrimination above to mean anything, which caps the elapsed window under
-    # 2s, so the runner's own microseconds are never negligible here -- 34 ms of
-    # it moved this figure 1.2 points. The ceiling is the real invariant: the
-    # window is at least the 1.4s aged, so 0.7 CPU-seconds cannot read above 50%.
-    # The exact arithmetic is pinned by the 10s-window test instead, where
-    # overhead is a rounding error.
-    assert recovered.nodes[CHAT].cpu_pct is not None, "the window should have recovered"
-    # The ceiling itself is float arithmetic on a large monotonic base: the
-    # 1.4s window is `now - (stored - 0.8 - 0.6)`, and when `now` is the same
-    # coarse-clock tick as `stored` the difference is 1.4 to a few ulps, so
-    # 0.7 / window can read 50.000000000005 on Windows. Slack, not a point.
-    assert 20.0 < recovered.nodes[CHAT].cpu_pct <= 50.0 + _FLOAT_SLACK
-    assert recovered.nodes[CHAT].runq_wait_pct is not None
-    assert 4.0 < recovered.nodes[CHAT].runq_wait_pct <= 10.0 + _FLOAT_SLACK
+    assert recovered.nodes[CHAT].cpu_pct == pytest.approx(50.0, abs=_FLOAT_SLACK)
+    assert recovered.nodes[CHAT].runq_wait_pct == pytest.approx(10.0, abs=_FLOAT_SLACK)
 
 
 def test_a_read_refused_as_too_old_does_replace_the_baseline(tmp_path: Path) -> None:

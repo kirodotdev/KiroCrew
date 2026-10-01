@@ -340,8 +340,8 @@ async def test_every_route_refuses_an_unconnected_repository(
 ) -> None:
     """A name that parses is not permission to read that repository's data.
 
-    This is the HOST APP's authorization gate: ``routes.py`` enforces
-    ``store.is_repo_connected`` at every repo-scoped handler it owns, and these three
+    This is the HOST APP's authorization gate: every repo-scoped read in
+    ``http_routes`` is gated on ``store.is_repo_connected``, and these three
     read the same per-repository data -- the issue cache under that repo's own
     directory, and its queue shard. Disconnecting does not erase any of it, so a
     name-only check would keep serving a removed repository's titles, assignees,

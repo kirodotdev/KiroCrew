@@ -540,11 +540,11 @@ def _parse_forge_ref(token: str, lead: tuple[str, ...]) -> _ForgeRef | None:
 #:
 #: Deliberately a plain module-level callable: this module imports nothing but
 #: the standard library, and the provider registry it serves lives in
-#: ``kiro_crew.dashboard.handlers.source_providers`` — a 7k-line module that
-#: imports aiohttp at module scope. Reaching UP to ask it would put the whole
-#: dashboard HTTP stack on every search, including the CLI and the Discord
-#: title-only gate, neither of which runs a web server. The dashboard therefore
-#: PUSHES its collector down here at registration time instead.
+#: ``kiro_crew.dashboard.source_providers.plugins``, which imports this module.
+#: Reaching UP to ask it would invert that dependency and put a dashboard
+#: import on every search, including the CLI and the Discord title-only gate,
+#: neither of which runs a web server. The dashboard therefore PUSHES its
+#: collector down here at registration time instead.
 _search_ref_resolver: Callable[[str], tuple[str, Sequence[str]] | None] | None = None
 
 logger = logging.getLogger(__name__)

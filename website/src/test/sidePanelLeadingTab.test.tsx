@@ -383,6 +383,30 @@ describe('SidePanel leading tabs — three host tabs', () => {
     expect(screen.queryByTestId('side-panel-leading-tab-crew-dashboard')).toBeNull()
   })
 
+  it('the fixed-chip group scrolls instead of pushing its own chips and the strip controls off the edge', () => {
+    // At 320px the Crewmates overlay is handed the whole window, and the panel
+    // root clips (`overflow-hidden`). A `shrink-0` group of leading + pinned
+    // chips would then carry its last chip and the trailing controls (+ menu,
+    // dock toggle, close) past that edge with no way back at that width. The
+    // group must therefore be allowed to shrink and to scroll, exactly like the
+    // dynamic tablist — while the chips inside it stay unsqueezed.
+    renderPanel({ closable: true, leading: THREE_LEADING })
+    const fixed = screen.getByTestId('side-panel-fixed-tabs')
+    // Every non-closable chip lives in this one group: three leading + pinned.
+    expect(fixed.querySelectorAll('[role="tab"]')).toHaveLength(3 + PINNED_VIEWS.length)
+    expect(fixed.className).toContain('overflow-x-auto')
+    expect(fixed.className).toContain('min-w-0')
+    expect(fixed.className).not.toContain('shrink-0')
+    // Same overflow contract as the dynamic group it sits beside.
+    expect(screen.getByRole('tablist').className).toContain('overflow-x-auto')
+    // The chips themselves do not squeeze — they scroll.
+    expect(screen.getByTestId('side-panel-leading-tabs').className).toContain('shrink-0')
+    // The trailing controls are still rendered as siblings of the group, not
+    // inside the scroller where they would scroll away with the chips.
+    const close = screen.getByRole('button', { name: 'Close panel' })
+    expect(fixed.contains(close)).toBe(false)
+  })
+
   it('closing the last dynamic tab lands on the first leading tab, whichever was focused before', () => {
     renderPanel({ closable: false, leading: THREE_LEADING })
     fireEvent.click(chipFor('crew-work-log'))

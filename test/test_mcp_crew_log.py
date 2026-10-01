@@ -103,6 +103,19 @@ class TestTheToolSetIsRatcheted:
 
         assert server.PROJECTION_NAMES == PROJECTION_NAMES
 
+    def test_the_projection_schema_accepts_every_advertised_fold(self) -> None:
+        """Advertising a fold the validator refuses is worse than not advertising it.
+
+        The tool puts ``PROJECTION_NAMES`` straight into its ``inputSchema`` enum, so a
+        client reads the name as offered and then has its call rejected by the schema. The
+        two lists live in different modules because ``mcp_crew_log`` imports ``validation``,
+        which is exactly the shape that drifts -- so it is pinned here.
+        """
+        from kiro_crew.validation import CREW_LOG_PROJECTION_SCHEMA
+
+        name_field = next(spec for spec in CREW_LOG_PROJECTION_SCHEMA.fields if spec.name == "name")
+        assert name_field.allowed == frozenset(server.PROJECTION_NAMES)
+
     def test_the_caller_name_matches_the_one_the_endpoint_recognizes(self) -> None:
         from kiro_crew.dashboard.handlers.crew_log import CREW_LOG_MCP_CALLER
         from kiro_crew.dashboard.token_auth import KNOWN_INTERNAL_CALLERS

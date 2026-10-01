@@ -1145,6 +1145,9 @@ class TestRunProbe:
         # finds, so an inherited value survives into the child and trips the
         # `leaked-` assertion below.
         monkeypatch.setenv("GRADLE_OPTS", "leaked-GRADLE_OPTS")
+        # `KIROCREW_SANDBOX_TOOL` is named below too. The chokepoint OVERWRITES it, so
+        # a parent value reaching the child would mean that stamp stopped replacing it.
+        monkeypatch.setenv("KIROCREW_SANDBOX_TOOL", "leaked-KIROCREW_SANDBOX_TOOL")
         # HOME keeps the `leaked-` marker but must be an ABSOLUTE path: on hosts
         # where the userns sandbox is unavailable the probe child runs unsandboxed
         # and inherits pytest's CWD (the repo root), and the workspace resolver
@@ -1168,9 +1171,11 @@ class TestRunProbe:
         # wrote. That the launcher always writes it is pinned from the shipped
         # launcher source by
         # test_sandbox_gradle_daemon.py::test_sets_the_flag_when_gradle_opts_is_absent.
+        # `KIROCREW_SANDBOX_TOOL` is the tool-tree marker the chokepoint stamps on every
+        # tree it spawns, for the runtime reconciler to read back.
         sandbox_injected = {"KIROCREW_HOST_PID", "KIROCREW_SANDBOX_ACTIVE",
-                            "KIROCREW_SANDBOX_LEVEL", "KIROCREW_SPAWNED",
-                            "GIT_SSH_COMMAND", "GRADLE_OPTS"}
+                            "KIROCREW_SANDBOX_LEVEL", "KIROCREW_SANDBOX_TOOL",
+                            "KIROCREW_SPAWNED", "GIT_SSH_COMMAND", "GRADLE_OPTS"}
         shell_added = {"PWD", "SHLVL", "_"}
         # macOS injects __CF_USER_TEXT_ENCODING into every spawned process
         # unconditionally (CoreFoundation per-user encoding preference). This is

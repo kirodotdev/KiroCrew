@@ -258,6 +258,14 @@ The idle-session cleanup is state that only the header menu's dialog in this fil
 reads. The render closures also stamp rows in paint order, and the row memo depends
 on that order.
 
+New sidebar code goes to the owner whose row above names its responsibility, not
+to `ChatSidebar.tsx`. A responsibility no row names gets a new file under
+`pages/chat-sidebar/` that never imports the facade, and a new owner hook is listed
+at its call position in `CALL_ORDER` in `ChatSidebar.ownerComposition.test.ts`. A
+new browser-storage key is declared in `persistence.ts`, and a view type the owners
+share goes to `types.ts`. The facade grows only in the code listed above as staying
+there.
+
 ## ConversationLog (`history.py` facade)
 
 Per-thread JSONL files at `~/.kiro/crew/sessions/{safe_key}.jsonl`. First line is metadata, subsequent lines are messages with `role`, `content`, `ts`, `tools`, `source_thread`, `source_user`. A writer can also supply `cls` (presentation class) and `mid` — persisted as `meta.mid`, the same field shape the dashboard slot save writes, so a dual-write injector's durable copy carries the SAME delivery identity as its in-memory window copy and a bounded slot-detail read reconciles the two as one message instead of re-appending the injection. A row appended without an id carries no `meta` at all (the pre-id shape readers keep an id-less fallback for; existing transcripts are never migrated).

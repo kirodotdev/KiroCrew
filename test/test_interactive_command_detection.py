@@ -75,6 +75,14 @@ from kiro_crew.acp.types import (
         ("npm init", INTERACTIVE_CONFIRM, "npm"),
         ("sudo apt-get install -y jq", INTERACTIVE_PROMPT, "sudo"),
         ("ssh build-host uptime", INTERACTIVE_PROMPT, "ssh"),
+        # The proposed BatchMode replacement is not treated as proof of no prompt:
+        # a FIDO/sk PIN or an encrypted key's passphrase may still be asked for.
+        (
+            "ssh -o StrictHostKeyChecking=yes -o NumberOfPasswordPrompts=0 "
+            "-o PasswordAuthentication=no -o KbdInteractiveAuthentication=no build-host uptime",
+            INTERACTIVE_PROMPT,
+            "ssh",
+        ),
         ("scp file host:/tmp/", INTERACTIVE_PROMPT, "scp"),
         ("gpg --decrypt secret.gpg", INTERACTIVE_PROMPT, "gpg"),
         ("docker login registry", INTERACTIVE_PROMPT, "docker"),
@@ -217,7 +225,7 @@ def test_hints_are_proposals_not_rewrites():
     for cmd, expect in (
         ("git log", "git -P log"),
         ("apt-get install jq", "apt-get -y"),
-        ("ssh host", "BatchMode=yes"),
+        ("ssh host", "NumberOfPasswordPrompts=0"),
         ("python", "python -c"),
         ("git commit", "git commit -m"),
     ):

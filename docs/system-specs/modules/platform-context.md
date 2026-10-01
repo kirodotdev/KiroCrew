@@ -398,6 +398,18 @@ kirocrew-enterprise = "kirocrew_enterprise.cli:main"
 The `kirocrew-enterprise` binary sets `KIROCREW_PROFILE=enterprise` and delegates to the
 core `main` — the explicit composition-root path that a security review reads.
 
+**The companion's top-level module MUST be named `kirocrew_<edition>`** — lowercase
+letters, digits and underscores only, no dots or hyphens. Two matchers identify a
+running gateway from its command line and neither can read the companion's entry
+points: `port_resolution._gateway_module_roots()` derives the Python side's set
+from the installed `kirocrew.plugins` entry points, while the desktop launcher's
+`isKirocrewCommand` (`website/electron/gateway-stop.js`) runs in a process with no
+view of that Python environment and matches the name against `KIROCREW_MODULE_RE`
+instead. Both also require a server subcommand (`gateway`, `dashboard`, `start`)
+as the first positional after the module. A companion named outside the
+convention classifies as ours on the Python side but as a foreign port holder on
+the desktop side, and the app refuses to start on its own gateway's port.
+
 ### Distribution build version
 
 A distribution that repackages one core release as several builds of its own

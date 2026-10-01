@@ -28,7 +28,8 @@ import { SaveCreateLabel } from '../utils/cronUtils'
 
 import { i18nT } from '../i18n/t'
 
-function WakeRow({ job, onChanged }: { job: CronJob; onChanged: () => void }) {
+/** One schedule row. */
+function WakeRow({ job, onChanged, dense = false }: { job: CronJob; onChanged: () => void; dense?: boolean }) {
   const { running, runNow, toggleEnabled, actionError } = useCronActions(onChanged)
   const isRunning = running.has(job.id) || !!job.is_running
 
@@ -48,9 +49,16 @@ function WakeRow({ job, onChanged }: { job: CronJob; onChanged: () => void }) {
       {/* Narrow-first: a 320px dialog cannot fit the badges, the schedule and two
           controls on one line, and the editor clips rather than scrolls. The two
           wrappers become `display: contents` at `sm`, so the wide layout is the
-          same single flex row it was without them. */}
-      <div className="flex flex-col gap-1.5 sm:flex-row sm:items-center sm:gap-3">
-        <div className="flex w-full items-center gap-2 sm:contents">
+          same single flex row it was without them.
+          `dense` pins the stacked layout ON, whatever the viewport. `sm:` asks
+          about the VIEWPORT, and this section now also mounts in a ~460px panel
+          column on a wide screen — where every `sm:` promotion fires and the
+          one-line layout squeezes the job name down to about ten characters
+          ("Nightly bac…"). A container query would answer the right question, but
+          the row's siblings are all viewport-keyed, so a host that KNOWS it is
+          narrow says so instead. */}
+      <div className={dense ? 'flex flex-col gap-1.5' : 'flex flex-col gap-1.5 sm:flex-row sm:items-center sm:gap-3'}>
+        <div className={dense ? 'flex w-full items-center gap-2' : 'flex w-full items-center gap-2 sm:contents'}>
           <Badge variant="muted" className="shrink-0 font-mono">
             <Clock className="lucide-inline" aria-hidden="true" />
             {i18nT('components.crewWakeSection.schedule')}
@@ -65,8 +73,11 @@ function WakeRow({ job, onChanged }: { job: CronJob; onChanged: () => void }) {
             )}
           </div>
         </div>
-        <div className="flex w-full items-center gap-2 sm:contents">
-          <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted sm:w-24 sm:flex-none" title={job.schedule}>
+        <div className={dense ? 'flex w-full items-center gap-2' : 'flex w-full items-center gap-2 sm:contents'}>
+          <span
+            className={`min-w-0 flex-1 truncate font-mono text-[11px] text-muted${dense ? '' : ' sm:w-24 sm:flex-none'}`}
+            title={job.schedule}
+          >
             {job.schedule}
           </span>
           <Badge variant={isRunning ? 'aim' : job.enabled ? 'ok' : 'muted'} className="shrink-0">
@@ -109,10 +120,53 @@ function WakeRow({ job, onChanged }: { job: CronJob; onChanged: () => void }) {
   )
 }
 
-export default function CrewWakeSection({ crew, agentTemplate, isDefaultCrew, onDraftChange, onSavingChange, onRequestCancel }: {
+/** Which schedules the section lists, as ONE question the host must answer.
+ *
+ *  A schedule carrying no `member_id` and no bound agent belongs to nobody, and
+ *  `wakesCrew`'s last fallback hands it to the DEFAULT crew. Whether that is the
+ *  right answer depends on what the host is asking:
+ *
+ *  - The crew editor asks what this crew will RUN, unowned work included, so it
+ *    answers `isDefaultCrew` and gets the fallback.
+ *  - The Crewmates panel asks what wakes THIS crewmate. A schedule with no
+ *    crewmate is nobody's, so it is never claimed there whatever the default crew
+ *    is; it stays on `/schedule`, the cross-crewmate view. That host sets
+ *    `ownedOnly` instead.
+ *
+ *  A union rather than two independent booleans: a host that forgets
+ *  `isDefaultCrew` would silently drop the default crew's unowned schedules, and
+ *  a host that sets both would be stating two different scopes at once. */
+type WakeScope =
+  | { ownedOnly: true; isDefaultCrew?: never }
+  | { ownedOnly?: false; isDefaultCrew: boolean }
+
+export default function CrewWakeSection({ crew, memberId, agentTemplate, isDefaultCrew, ownedOnly = false, dense = false, heading, blurb, emptyLine, onDraftChange, onSavingChange, onRequestCancel }: WakeScope & {
   crew: string
+  /** The crew's IMMUTABLE id (its slug), which is what a private schedule's
+   *  `member_id` holds and what a new one is bound to. Separate from `crew`, the
+   *  mutable display name, because the two differ for any crewmate whose name is not
+   *  already its own slug — and conflating them made every such crewmate read as
+   *  having no schedules. See `wakesCrew`. */
+  memberId: string
   agentTemplate?: string
-  isDefaultCrew: boolean
+  /** Pin the rows' stacked layout on, for a host that is narrow on a wide screen
+   *  (the Crewmates panel column). See `WakeRow`'s own note on `dense`. Also collapses the two
+   *  header actions to icon-only, which `md:` would otherwise expand at exactly the
+   *  width where they crowd out the heading. */
+  dense?: boolean
+  /** Section heading, when the host's word for this thing is not "agent". The crew
+   *  editor is editing an AGENT and says so; the Crewmates panel is looking at a
+   *  CREWMATE, and borrowing the editor's noun there makes the panel read as if it
+   *  had wandered into a different product. */
+  heading?: string
+  /** The line under the heading. Overridden with it, for the same reason: the
+   *  editor's copy disambiguates against the Triggers field sitting directly above
+   *  it, which does not exist in the panel, so there it explains nothing. */
+  blurb?: string
+  /** What the empty state says. Same reason again, and the most-seen of the three:
+   *  most crewmates have no schedules, so on the panel this is the line the reader
+   *  usually gets, and the editor's wording calls the crewmate an "agent". */
+  emptyLine?: string
   /** Reports whether the create form holds unsaved TYPED work, so the host
    *  editor can fold it into its own unsaved-state accounting (dirty dot,
    *  Save gating, discard confirms). Keyed on the form's own dirtiness, not
@@ -178,7 +232,7 @@ export default function CrewWakeSection({ crew, agentTemplate, isDefaultCrew, on
     queryKey: crewWakeQueryKey(crew),
     queryFn: () => api.crons(),
   })
-  const jobs: CronJob[] = (data?.jobs || []).filter((j: CronJob) => wakesCrew(j, crew, isDefaultCrew))
+  const jobs: CronJob[] = (data?.jobs || []).filter((j: CronJob) => wakesCrew(j, crew, !ownedOnly && !!isDefaultCrew, memberId))
   const onChanged = useCallback(() => { void refetch() }, [refetch])
   const onCreated = useCallback(() => {
     // The saved job should be visible where it was made: close the form and
@@ -215,15 +269,15 @@ export default function CrewWakeSection({ crew, agentTemplate, isDefaultCrew, on
         ? (
           <div className="flex items-center gap-2 rounded-md border border-border bg-bg-accent px-3 py-2.5 text-[11.5px] leading-relaxed text-muted">
             <AlarmClockOff className="lucide-inline shrink-0" aria-hidden="true" />
-            {i18nT('components.crewWakeSection.no_schedules_run_this_crew_automatically')}
+            {emptyLine ?? i18nT('components.crewWakeSection.no_schedules_run_this_crew_automatically')}
           </div>
         )
-        : <div>{jobs.map(j => <WakeRow key={j.id} job={j} onChanged={onChanged} />)}</div>
+        : <div>{jobs.map(j => <WakeRow key={j.id} job={j} onChanged={onChanged} dense={dense} />)}</div>
 
   return (
     <section className="flex flex-col gap-3" data-testid="crew-wake-section">
       <div className="flex items-center gap-2">
-        <h3 className="text-[12px] font-semibold uppercase tracking-wider text-muted">{i18nT('components.crewWakeSection.what_wakes_this_crew')}</h3>
+        <h3 className="text-[12px] font-semibold uppercase tracking-wider text-muted">{heading ?? i18nT('components.crewWakeSection.what_wakes_this_crew')}</h3>
         <div className="ml-auto flex items-center gap-1.5">
           {/* Below `md` the editor pane runs as narrow as ~216px (320px
               viewport), where the heading plus two intrinsic-width buttons
@@ -266,7 +320,7 @@ export default function CrewWakeSection({ crew, agentTemplate, isDefaultCrew, on
             {creating
               ? <X className="lucide-inline" aria-hidden="true" />
               : <Plus className="lucide-inline" aria-hidden="true" />}
-            <span className="hidden md:inline">
+            <span className={dense ? 'hidden' : 'hidden md:inline'}>
               {creating
                 ? i18nT('components.crewWakeSection.cancel_new_schedule')
                 : i18nT('components.crewWakeSection.new_schedule')}
@@ -282,14 +336,14 @@ export default function CrewWakeSection({ crew, agentTemplate, isDefaultCrew, on
               title={i18nT('components.crewWakeSection.open_schedule')}
             >
               <ExternalLink className="lucide-inline" aria-hidden="true" />
-              <span className="hidden md:inline">
+              <span className={dense ? 'hidden' : 'hidden md:inline'}>
                 {i18nT('components.crewWakeSection.open_schedule')}
               </span>
             </Btn>
           )}
         </div>
       </div>
-      <p className="m-0 text-[11.5px] leading-relaxed text-muted">{i18nT('components.crewWakeSection.schedules_that_run_this_crew_without_you_asking')}</p>
+      <p className="m-0 text-[11.5px] leading-relaxed text-muted">{blurb ?? i18nT('components.crewWakeSection.schedules_that_run_this_crew_without_you_asking')}</p>
       {creating && (
         <div
           id="crew-wake-create"
@@ -317,7 +371,16 @@ export default function CrewWakeSection({ crew, agentTemplate, isDefaultCrew, on
             agents={[]}
             defaultAgent=""
             lockedAgent={crew}
-            /* Unconditional: JobForm applies the default-crew rule itself. */
+            /* The NAME, not `memberId`. `memberId` is the read-side matcher: it is
+               the crewmate's immutable id, which is what a stored `member_id` holds
+               once a job has run. But for a crewmate whose id was never persisted,
+               that id is DERIVED from the name and slugification is lossy, so two
+               crewmates can share one derived id. A created job keeps the client's
+               string until its first run, and member resolution matches an agent NAME
+               before a stored id -- so submitting a derived id could file the schedule
+               against a different crewmate that happens to be named it. The name is
+               the roster row's own identity and cannot collide that way. Unconditional:
+               JobForm applies the default-crew rule itself. */
             memberId={crew}
             providerAgent={agentTemplate}
             onSaved={onCreated}

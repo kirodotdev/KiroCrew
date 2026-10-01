@@ -17,9 +17,10 @@ green.
 
 from __future__ import annotations
 
+import functools
 import subprocess
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 
 import pytest
 from skill_script_helpers import load_skill_script
@@ -114,18 +115,36 @@ def pair(tmp_path: Path) -> Pair:
     return Pair(upstream, work)
 
 
-def _run_main(mod: ModuleType, monkeypatch, pair: Pair, *argv: str) -> int:
-    """Run the script's ``main`` from inside the work clone.
+def _git_runs_in(mod: ModuleType, monkeypatch, cwd: Path) -> None:
+    """Pin every spawn the script issues to ``cwd``, at the seam the script reads.
 
     ``green_age.run()`` is a CLI runner whose contract is "git in the invoking
-    cwd": it passes no ``cwd=`` of its own, so the PROCESS cwd is the repository
-    it measures. The ``chdir`` here is therefore the whole isolation: with it,
-    every ``git`` the script spawns runs under ``tmp_path``; without it, the same
-    spawns would run in the pytest worker's cwd -- this checkout -- and answer
-    about the wrong repository. The ``cwd=None`` descriptor itself is deliberate
-    and stays (test-hygiene class 7, "what not to re-derive").
+    cwd": it passes no ``cwd=`` of its own, and that ``cwd=None`` descriptor is
+    deliberate and stays (test-hygiene class 7, "what not to re-derive"). Left
+    alone, the ``git`` it spawns would inherit the pytest worker's cwd -- this
+    checkout -- and answer about the wrong repository. The spawn is the one
+    ``subprocess.run`` call in ``run()``, reached through the module's own
+    ``subprocess`` binding, so that binding is replaced with one whose ``run``
+    carries ``cwd``: the body of ``run()`` -- the ``which`` resolution, the
+    decode, the ``OSError`` mapping -- executes unchanged, and every descriptor
+    it opens names the scratch directory instead of relying on the process cwd.
+    A ``chdir`` alone would place the process there too, but leaves the
+    descriptor itself ``cwd=None``, which a per-spawn probe cannot tell from a
+    spawn that really did run in the checkout. The binding swap alone covers
+    only spawns that go through it: a ``from subprocess import run`` at module
+    level, an ``os.popen`` or a helper module would still inherit the worker's
+    cwd -- this checkout -- and answer. So BOTH are set: the binding for the
+    descriptor the probe reads, the process cwd for the spawns it cannot see.
     """
-    monkeypatch.chdir(pair.work)
+    monkeypatch.chdir(cwd)
+    monkeypatch.setattr(
+        mod, "subprocess", SimpleNamespace(run=functools.partial(subprocess.run, cwd=str(cwd)))
+    )
+
+
+def _run_main(mod: ModuleType, monkeypatch, pair: Pair, *argv: str) -> int:
+    """Run the script's ``main`` against the work clone (see ``_git_runs_in``)."""
+    _git_runs_in(mod, monkeypatch, pair.work)
     return mod.main(list(argv))
 
 
@@ -333,7 +352,8 @@ def _outside_any_repository(monkeypatch, tmp_path: Path) -> Path:
     below the named directory -- and the script inherits the environment, so the
     state the test asserts is constructed here rather than assumed of the host.
     The directory returned is a CHILD of the ceiling because git checks the
-    directory it starts in before consulting the ceiling.
+    directory it starts in before consulting the ceiling. Callers hand it to
+    ``_git_runs_in`` so the script's spawns carry it as their ``cwd``.
     """
     monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
     nowhere = tmp_path / "nowhere"
@@ -343,7 +363,7 @@ def _outside_any_repository(monkeypatch, tmp_path: Path) -> Path:
 
 def test_outside_a_git_repository_is_an_environment_error(mod, monkeypatch, tmp_path) -> None:
     """Unknown must never read as fresh: no verdict is exit 2, not exit 0."""
-    monkeypatch.chdir(_outside_any_repository(monkeypatch, tmp_path))
+    _git_runs_in(mod, monkeypatch, _outside_any_repository(monkeypatch, tmp_path))
 
     assert mod.main([]) == mod.EXIT_ENV
 
@@ -585,7 +605,7 @@ def test_the_human_line_says_unavailable_rather_than_fresh(mod) -> None:
 
 def test_summarize_never_reports_fresh_without_a_verdict(mod, monkeypatch, tmp_path) -> None:
     """The dict is always readable, and a failure carries ok=False plus a reason."""
-    monkeypatch.chdir(_outside_any_repository(monkeypatch, tmp_path))
+    _git_runs_in(mod, monkeypatch, _outside_any_repository(monkeypatch, tmp_path))
     summary = mod.summarize()
 
     assert summary["ok"] is False
@@ -598,14 +618,15 @@ def test_an_injected_runner_is_the_only_way_commands_are_issued(
 ) -> None:
     """pr_status.py embeds this script and passes its own runner; nothing leaks.
 
-    Run from a directory that is not the repository at all: the verdict is still
-    correct, which is only possible if every command went through the runner.
-    That directory is constructed, not inherited: the default cwd is the pytest
-    worker's -- this checkout, itself a git repository -- from which a command
-    that slipped past the runner would still answer, and answer about the wrong
-    repository. From ``nowhere`` a leaked ``git`` fails instead of passing.
+    Every spawn is pinned to a directory that is not the repository at all: the
+    verdict is still correct, which is only possible if every command went
+    through the runner. That directory is constructed, not inherited: the
+    default cwd is the pytest worker's -- this checkout, itself a git repository
+    -- from which a command that slipped past the runner would still answer, and
+    answer about the wrong repository. From ``nowhere`` a leaked ``git`` fails
+    instead of passing.
     """
-    monkeypatch.chdir(_outside_any_repository(monkeypatch, tmp_path))
+    _git_runs_in(mod, monkeypatch, _outside_any_repository(monkeypatch, tmp_path))
     pair.branch_changes({"src/kiro_crew/ledger/store.py": "VALUE = 2\n"})
     pair.base_gains({"src/kiro_crew/ledger/store.py": "VALUE = 3\n"})
     seen: list[list[str]] = []

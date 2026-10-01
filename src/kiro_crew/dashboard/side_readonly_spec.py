@@ -163,9 +163,11 @@ def unavailable_mode_explanation(agent: str) -> tuple[str, str]:
     spec THIS module published both halves of that are wrong: setup never writes
     it (a side turn does, see :func:`publish_readonly_spec`), and it is usually
     PRESENT -- kiro-cli lists its agents once, at process start, so a process
-    started before the side turn published it cannot select it. The spec is not
-    a sub-agent either, which is the other way a caller reaches this message, so
-    the remedy names the base agent instead.
+    started before the side turn published it cannot select it, and the remedy
+    says a new session fixes that. The spec is not a sub-agent either, which is
+    the other way a caller reaches this message, so the remedy also names the
+    base agent -- or says to omit ``agent``, since the host default is reached
+    that way rather than by name.
 
     Which answer applies is decided by the owner marker on the file at the
     derived path, not by the name: a user's own agent that is merely called
@@ -182,7 +184,8 @@ def unavailable_mode_explanation(agent: str) -> tuple[str, str]:
         f"{agent!r} is the read-only spec Kiro Crew derives from {base!r} for side "
         "replies: a side turn writes it, `kirocrew setup` does not, and kiro-cli lists "
         "only the agents present when its process started.",
-        f"It is not a sub-agent; to spawn its source agent, name {base!r}.",
+        "A new session starts a kiro-cli that lists it. It is not a sub-agent: to spawn "
+        f"its source agent, name {base!r}, or omit 'agent' when that is the default agent.",
     )
 
 

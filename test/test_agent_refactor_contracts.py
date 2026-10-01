@@ -235,7 +235,7 @@ BASE_SURFACE: dict[str, str] = {
     "_project_dir": "callable _project_dir() -> 'Path | None'",
     "_project_shadow_of": "callable _project_shadow_of(agent: 'str', work_dir: 'str | Path | None', *, markdown_specs: 'bool' = True, dispatchable_only: 'bool' = False) -> 'Path | None'",
     "_projected_ceiling_generation": "value state",
-    "_prompt_path": "callable _prompt_path(mode: 'str' = '') -> 'Path'",
+    "_prompt_path": "callable _prompt_path() -> 'Path'",
     "_read_agent_spec": "callable _read_agent_spec(path: 'Path', *, operation: 'str' = 'list_agents', source: 'str' = 'list_agents') -> 'dict[str, Any] | None'",
     "_read_spec_capped": "callable _read_spec_capped(path: 'Path') -> 'dict | None'",
     "_reconcile_tool_aliases_from_disk": "callable _reconcile_tool_aliases_from_disk(path: 'Path', config: 'dict') -> 'bool'",

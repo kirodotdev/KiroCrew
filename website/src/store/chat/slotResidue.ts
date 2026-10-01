@@ -117,8 +117,8 @@ export function addSlotListCases(builder: ActionReducerMapBuilder<ChatState>): v
       // An empty frame before the first real snapshot is a reconnect artifact.
       // The authoritative empty case is not lost by skipping it: every
       // reconnect dispatches `fetchSlots` right after `sseConnected`
-      // (`hooks/useWebSocket.ts`), and the case below reconciles that reply
-      // even when it is empty.
+      // (`runReconnectCatchUp` in `hooks/websocket/reconnectCatchUp.ts`), and
+      // the case below reconciles that reply even when it is empty.
       if (action.payload.length === 0 && !seenSnapshot) return
       reconcileSlotResidue(state, action.payload)
       clearFiledFolderSuggestions(state, action.payload)

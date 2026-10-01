@@ -244,11 +244,14 @@ def infer_monitor(
     this function's.
 
     Budgets are left at their defaults and are NOT enforced on this path. The
-    default cap is 8 agent turns, and real babysit loops run for dozens of
-    cycles, so enforcing it here would stop working watches early -- a
-    regression wearing a budget's clothing. Enforcement belongs with the
-    decision controller that owns the rest of the budget vocabulary, and is
-    deliberately not smuggled in behind a token saving.
+    default wake cap is unlimited, so there is nothing here to enforce for the
+    budget a shadow monitor would otherwise trip on first; what remains -- the
+    runtime, token and provider-error bounds -- is enforced by the decision
+    controller that owns the rest of the budget vocabulary, against live state
+    this function does not have. Enforcement is deliberately not smuggled in
+    behind a token saving: a bound applied here, without the probe history the
+    controller reads, would stop working watches early -- a regression wearing a
+    budget's clothing.
     """
     target = infer_subject(message, judge)
     if target is None:

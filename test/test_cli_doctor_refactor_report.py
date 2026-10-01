@@ -159,7 +159,7 @@ class _Host:
         mp.setattr(cli_doctor, "data_home", lambda: self.home)
         mp.setattr(cli_doctor, "warm_backend", lambda timeout=None: None)
         mp.setattr(cli_doctor, "_mc_version", "9.9.9")
-        mp.setattr(cli_doctor, "MIN_NODE_MAJOR", 20)
+        mp.setattr(cli_doctor, "MIN_NODE_VERSION", (20, 0, 0))
         mp.setattr(KiroCrewConfig, "load", classmethod(lambda cls: self.cfg))
         mp.setattr(KiroCrewConfig, "load_credentials", lambda cfg: dict(self.creds))
         mp.setattr(cli_doctor, "resolve_kiro_cli", lambda: self.kiro)
@@ -323,7 +323,7 @@ Dependencies
   <<_doctor_claude_backend>>
   <<_doctor_agent_auth>>
   git:         ✅ /usr/bin/git
-  node:        ✅ /usr/bin/node (v22)
+  node:        ✅ /usr/bin/node (v22.3.0)
 
 Project
   source dir:  ✅ <TMP>/checkout (Kiro Crew source checkout)
@@ -425,7 +425,7 @@ def _ready(host: _Host) -> None:
     host.mp.setenv("KIROCREW_PROJECT_DIR", str(checkout))
     (host.agents / "kirocrew.json").write_text("{}", encoding="utf-8")
     host.which.update(git="/usr/bin/git", node="/usr/bin/node")
-    host.runs[("node", "-v")] = _done("v22.3.0\n")
+    host.runs[("/usr/bin/node", "-v")] = _done("v22.3.0\n")
     host.runs[(_KIRO, "--version")] = _done("kiro-cli 1.2.3\n")
     (host.tmp / "dumps").mkdir()
     host.readiness = [
@@ -479,8 +479,8 @@ Dependencies
   <<_doctor_claude_backend>>
   <<_doctor_agent_auth>>
   git:         ❌ not found (needed for kirocrew update)
-  node:        ⚠️  v18 < 20 (frontend needs Node 20+)
-               Fix: install Node.js >= 20
+  node:        ❌ v18.19.0 < v20.0.0
+               Fix: Node.js v18.19.0 is too old: Kiro Crew needs v20.0.0 or newer. Update Node.js: install 24 LTS from https://nodejs.org, or run `nvm install 24` / `mise use -g node@24`.
 
 Project
   source dir:  ❌ stale — points to deleted <TMP>/gone
@@ -589,14 +589,14 @@ Connectivity
      Then run: kirocrew token
   auth check:  ❌ external access allowed without token!
 
-❌ Fix these issues: platform composition failed: companion missing, git, stale project_dir, agent config, agent model pin, dashboard auth: remote bind without Slack, _doctor_effective_model issue, render_doctor_section issue, _doctor_credentials issue, _doctor_sandbox issue, _doctor_live_target_pointer issue, doctor_dead_paths issue, python deps, _doctor_import_path issue, sqlite fts5, embedding runtime, custom embedding model unusable, speech recogniser (extra_missing), ffmpeg, _doctor_discord issue, _doctor_whatsapp issue, telegram: missing TELEGRAM_BOT_TOKEN and telegram.allowed_chat_ids, loop-stall dump attributed to cron job 'nightly' ('job-7'), recent loop-stall crash dump (2h ago), dashboard auth: no token required on external interface
+❌ Fix these issues: platform composition failed: companion missing, git, node, stale project_dir, agent config, agent model pin, dashboard auth: remote bind without Slack, _doctor_effective_model issue, render_doctor_section issue, _doctor_credentials issue, _doctor_sandbox issue, _doctor_live_target_pointer issue, doctor_dead_paths issue, python deps, _doctor_import_path issue, sqlite fts5, embedding runtime, custom embedding model unusable, speech recogniser (extra_missing), ffmpeg, _doctor_discord issue, _doctor_whatsapp issue, telegram: missing TELEGRAM_BOT_TOKEN and telegram.allowed_chat_ids, loop-stall dump attributed to cron job 'nightly' ('job-7'), recent loop-stall crash dump (2h ago), dashboard auth: no token required on external interface
 """
 
 
 def test_a_broken_host_reports_every_issue_in_order_and_exits_one(host, capsys) -> None:
     host.kiro = None
     host.which.update(node="/usr/bin/node")
-    host.runs[("node", "-v")] = _done("v18.19.0\n")
+    host.runs[("/usr/bin/node", "-v")] = _done("v18.19.0\n")
     venv_py = host.tmp / "pkg" / ".venv" / "bin" / "python3"
     venv_py.parent.mkdir(parents=True)
     venv_py.write_text("", encoding="utf-8")

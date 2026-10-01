@@ -103,6 +103,7 @@ from kiro_crew.vector_memory_runtime import migration as _migration
 from kiro_crew.vector_memory_runtime import recall as _recall
 from kiro_crew.vector_memory_runtime import retirement as _retirement
 from kiro_crew.vector_memory_runtime import semantic as _semantic
+from kiro_crew.vector_memory_runtime import text_scoring as _text_scoring
 from kiro_crew.vector_memory_runtime.embedding import (  # noqa: F401
     _EmbeddingVector,
     _RecallQuery,
@@ -2024,7 +2025,7 @@ class VectorMemoryStore:
                     reason = None
                     old_conf = existing["confidence"]
                     if source != "user_explicit":
-                        if _is_degenerate_value_json(existing["value_json"]):
+                        if _semantic._is_degenerate_value_json(existing["value_json"]):
                             # Neither precedence rule has content to protect here, and
                             # refusing is what makes such a row permanent: the automated
                             # writer this branch turns away is the only writer that would
@@ -2082,7 +2083,7 @@ class VectorMemoryStore:
                 changed = bool(
                     existing
                     and (
-                        not _json_value_equal(existing["value_json"], value_json)
+                        not _semantic._json_value_equal(existing["value_json"], value_json)
                         or existing["is_deleted"]
                     )
                 )
@@ -2186,7 +2187,7 @@ class VectorMemoryStore:
             if (
                 existing
                 and not existing["is_deleted"]
-                and not _json_value_equal(existing["value_json"], value_json)
+                and not _semantic._json_value_equal(existing["value_json"], value_json)
             ):
                 old_text = json.loads(existing["value_json"])
                 if isinstance(old_text, str) and len(old_text) >= 3:
@@ -2945,7 +2946,7 @@ class VectorMemoryStore:
         self, limit: int = 50, offset: int = 0, tag_filter: list[str] | None = None, *, q: str = ""
     ) -> list[dict]:
         """Active episodes, with optional literal text/tag search before pagination."""
-        query = _normalize_memory_search_query(q)
+        query = _text_scoring._normalize_memory_search_query(q)
         if tag_filter:
             # Use JSON-quoted exact match to avoid substring false positives
             # e.g. "cr" should not match "cron" or "datacraft"
@@ -2973,7 +2974,10 @@ class VectorMemoryStore:
         if query:
             with self._db_lock:
                 self.db.create_function(
-                    "memory_text_contains", 3, _contains_memory_search_text, deterministic=True
+                    "memory_text_contains",
+                    3,
+                    _text_scoring._contains_memory_search_text,
+                    deterministic=True,
                 )
                 rows = self._fetch_all_locked(sql, params)
         else:
@@ -3573,7 +3577,7 @@ class VectorMemoryStore:
                     # exactly as before this pass existed.
                     backfill_generation = self._space_generation
                     existing_emb = self._try_embed(
-                        _lesson_embed_text(json.loads(existing["value_json"])),
+                        _lessons._lesson_embed_text(json.loads(existing["value_json"])),
                         PRIORITY_BULK,
                     )
                     if existing_emb:
@@ -3743,7 +3747,7 @@ class VectorMemoryStore:
                     # the display rendering -- the vector must live in the same
                     # space as the query vectors it is compared against.
                     existing_emb = self._try_embed(
-                        _lesson_embed_text(json.loads(existing["value_json"])),
+                        _lessons._lesson_embed_text(json.loads(existing["value_json"])),
                         PRIORITY_BULK,
                     )
                     if existing_emb:
@@ -3968,6 +3972,27 @@ class VectorMemoryStore:
             hard_cap=hard_cap,
             directive_budget=directive_budget,
             experience_budget=experience_budget,
+        )
+
+    def turn_lessons(
+        self,
+        query_text: str,
+        *,
+        shown: Callable[[str], bool],
+        project_dir: str | Path | None = None,
+        max_rows: int,
+        max_chars: int,
+        render_lesson: Callable[[str], str] | None = None,
+    ) -> list[tuple[str, str]]:
+        """``(key, text)`` of the lessons a follow-up message should add, best first."""
+        return _lessons.turn_lessons(
+            self,
+            query_text,
+            shown=shown,
+            project_dir=project_dir,
+            max_rows=max_rows,
+            max_chars=max_chars,
+            render_lesson=render_lesson,
         )
 
     def _rank_lessons(

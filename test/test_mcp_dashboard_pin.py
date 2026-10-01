@@ -261,7 +261,7 @@ class TestChannelAgentsAreRefusedAtDispatch:
             ),
             patch("kiro_crew.mcp_dashboard._get") as mock_get,
             patch("kiro_crew.mcp_dashboard._patch") as mock_patch,
-            patch("kiro_crew.sel.sel", return_value=sel_obj),
+            patch("kiro_crew.mcp_dashboard.sel", return_value=sel_obj),
         ):
             out = _call_tool_inner("chat_session_pin", {"session": "chat-3-300", "pinned": True})
         assert out.startswith("Error:") and "channel agents" in out

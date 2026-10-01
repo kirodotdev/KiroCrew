@@ -16,7 +16,7 @@ import type { PendingApproval } from './index'
 //
 // Resume identifier: `approval.request_id`. Plain approve/reject resolves through
 // the id-scoped `api.resolveApproval(request_id, action)` → POST
-// /api/approvals/<id>/<action> (ChatInput.tsx). The slot-scoped
+// /api/approvals/<id>/<action> (components/chat-input/approval.ts). The slot-scoped
 // `api.approveChatSlot(slot, …)` is used ONLY for trust grants, and downgrades to
 // `resolveApproval` for unattended sources — so this layer resumes by
 // `request_id`, never by inventing a new call. A stale/closed id is a no-op.

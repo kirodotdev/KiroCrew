@@ -59,6 +59,14 @@ import pytest
 from kiro_crew import runtime_ownership as ro
 from kiro_crew import runtime_reconcile as rr
 
+# The rootdir conftest wipes runtime_ownership's tables on both sides of every
+# test. This file does its own intra-file isolation with explicit
+# ``ro._reset_for_tests()`` calls, and its positive control at the end reads the
+# table to prove the earlier tests left it clean -- a wipe at ANY test's teardown
+# would empty it first and make that read vacuous. Module-wide, not per test,
+# because the predecessor's teardown is the wipe that matters.
+pytestmark = pytest.mark.keep_runtime_ownership_tables
+
 # ── the reconciler core ───────────────────────────────────────────────────────
 
 
@@ -3922,6 +3930,11 @@ def test_every_tenancy_claim_in_this_file_is_bound_and_released() -> None:
 async def test_the_tenancy_table_is_empty_for_this_files_pids_at_the_end() -> None:
     """POSITIVE CONTROL for the scan: the pids this file claims are free afterwards.
 
+    Reads the table as the earlier tests in this file left it (the module-level
+    ``keep_runtime_ownership_tables`` mark keeps the rootdir conftest from wiping it
+    at every test boundary); wiped, the assertion below would hold against an empty
+    table and prove nothing.
+
     The scan reads text; this reads the table, so a scan that matched nothing -- a
     renamed accessor, a typo in the needle -- cannot pass while every claim leaks.
 
@@ -3937,3 +3950,209 @@ async def test_the_tenancy_table_is_empty_for_this_files_pids_at_the_end() -> No
             f"pid {pid} still carries a claim from an earlier test in this file, which "
             "refuses every later barrier on it"
         )
+
+
+def _cleanup_with_clock(
+    clock: list[float],
+    *,
+    logger: logging.Logger,
+) -> Any:
+    """A reconcile hook harness whose ``build_reconciler`` and clock the caller drives.
+
+    Returns the ``SessionCleanup`` with a mutable ``clock`` (its ``monotonic``
+    reads ``clock[0]``) and a named ``logger`` a ``caplog`` fixture can capture,
+    so the warn-once ledger for a refused pass can be exercised across ticks.
+    """
+    import dataclasses
+
+    cleanup, _recorded = _cleanup(candidates=[], active={4242})
+    cleanup._deps = dataclasses.replace(cleanup._deps, monotonic=lambda: clock[0], logger=logger)
+    return cleanup
+
+
+def _drive_reconcile(cleanup: Any, monkeypatch: pytest.MonkeyPatch, reading: Any) -> None:
+    """Run one reconcile hook tick whose pass returns *reading*."""
+    from kiro_crew import session_cleanup as sc
+
+    class _Fake:
+        def __init__(self, active_pids: Any) -> None:
+            self._active_pids = active_pids
+
+        def set_max_kills(self, budget: int) -> None:
+            return None
+
+        def run_once(self) -> Any:
+            return reading
+
+    monkeypatch.setattr(sc, "build_reconciler", lambda active_pids, notify_dead: _Fake(active_pids))
+    # The hook retains its reconciler across ticks (its two-pass memory). Each
+    # driven tick wants its OWN reading, so drop the retained one first.
+    cleanup.state.runtime_reconciler = None
+    asyncio.run(cleanup._reconcile_runtimes_hook())
+
+
+def test_a_refused_pass_is_reported_at_warning_not_only_debug(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """MUTATION TARGET: a refused reconcile pass surfaces above debug.
+
+    ``supported=False`` reclaims nothing and publishes no counts. Reported only at
+    debug, the reconciler goes silently inert while its source stays unreadable --
+    the defect this fixes. The fact must reach WARNING.
+    """
+    logger = logging.getLogger("test.reconcile.refusal.warn")
+    clock = [100.0]
+    cleanup = _cleanup_with_clock(clock, logger=logger)
+
+    with caplog.at_level(logging.WARNING, logger=logger.name):
+        _drive_reconcile(
+            cleanup,
+            monkeypatch,
+            rr.ReconcileReading(supported=False, reason="cannot read the registry: boom"),
+        )
+
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert warnings, "a refused pass must warn, not stay at debug"
+    assert "cannot read the registry: boom" in warnings[0].getMessage()
+    assert cleanup.state.reconcile_refusal_reason == "cannot read the registry: boom"
+
+
+def test_a_persistent_refusal_warns_once_not_every_tick(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """MUTATION TARGET: the re-warn floor is honored while the reason is unchanged.
+
+    The reconciler ticks on the cleanup cadence, so a condition that persists for
+    minutes must not write one WARNING per tick -- that is the noise the floor
+    exists to prevent.
+    """
+    logger = logging.getLogger("test.reconcile.refusal.once")
+    clock = [0.0]
+    cleanup = _cleanup_with_clock(clock, logger=logger)
+    same = rr.ReconcileReading(supported=False, reason="the tracked-pid snapshot is incomplete")
+
+    with caplog.at_level(logging.WARNING, logger=logger.name):
+        _drive_reconcile(cleanup, monkeypatch, same)
+        clock[0] = 60.0  # well within RECONCILE_REFUSAL_WARN_INTERVAL_SECS
+        _drive_reconcile(cleanup, monkeypatch, same)
+
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1, f"a steady refusal warns once, not per tick; {warnings}"
+
+
+def test_a_new_refusal_reason_re_warns_at_once(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """MUTATION TARGET: a CHANGE of reason bypasses the re-warn floor.
+
+    A different unreadable source is a different event and must not be swallowed by
+    a floor armed for the previous one.
+    """
+    logger = logging.getLogger("test.reconcile.refusal.newreason")
+    clock = [0.0]
+    cleanup = _cleanup_with_clock(clock, logger=logger)
+
+    with caplog.at_level(logging.WARNING, logger=logger.name):
+        _drive_reconcile(
+            cleanup, monkeypatch, rr.ReconcileReading(supported=False, reason="reason A")
+        )
+        clock[0] = 1.0  # far inside the floor
+        _drive_reconcile(
+            cleanup, monkeypatch, rr.ReconcileReading(supported=False, reason="reason B")
+        )
+
+    messages = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(messages) == 2, f"a new reason warns immediately; {messages}"
+    assert any("reason A" in m for m in messages) and any("reason B" in m for m in messages)
+
+
+def test_a_recovered_pass_logs_recovery_and_re_arms(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """MUTATION TARGET: a supported pass after a refusal clears the ledger and re-arms.
+
+    Without the clear the first outage after boot consumes the only WARNING, and a
+    later outage inside the floor is silent -- the original defect in a subtler
+    form.
+    """
+    logger = logging.getLogger("test.reconcile.refusal.recover")
+    clock = [0.0]
+    cleanup = _cleanup_with_clock(clock, logger=logger)
+
+    with caplog.at_level(logging.WARNING, logger=logger.name):
+        _drive_reconcile(
+            cleanup, monkeypatch, rr.ReconcileReading(supported=False, reason="reason A")
+        )
+        clock[0] = 1.0
+        # A supported pass: recovery logged, ledger cleared.
+        _drive_reconcile(cleanup, monkeypatch, rr.ReconcileReading(supported=True))
+        assert cleanup.state.reconcile_refusal_reason is None, "the ledger is cleared on recovery"
+        clock[0] = 2.0
+        # A fresh outage inside the old floor window re-warns immediately.
+        _drive_reconcile(
+            cleanup, monkeypatch, rr.ReconcileReading(supported=False, reason="reason A")
+        )
+
+    messages = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("resumed reclaiming" in m for m in messages), f"recovery is announced; {messages}"
+    # First refusal + recovery + second refusal = 3 WARNING lines despite the floor.
+    assert len(messages) == 3, f"the re-arm lets the next outage warn at once; {messages}"
+
+
+def test_a_supported_pass_with_no_prior_refusal_logs_no_recovery(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A steady healthy reconciler is silent: recovery fires only after a refusal."""
+    logger = logging.getLogger("test.reconcile.refusal.quiet")
+    clock = [0.0]
+    cleanup = _cleanup_with_clock(clock, logger=logger)
+
+    with caplog.at_level(logging.WARNING, logger=logger.name):
+        _drive_reconcile(cleanup, monkeypatch, rr.ReconcileReading(supported=True))
+
+    messages = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert messages == [], f"a healthy pass says nothing; {messages}"
+
+
+def test_an_incomplete_union_skip_surfaces_through_the_same_warn_once_ledger(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """MUTATION TARGET: the hook's OTHER silent-inert skip is not left at debug.
+
+    The incomplete-active-pid-union skip produces no reading and publishes no
+    counts, exactly as a ``run_once`` refusal does, so it must go through the same
+    warn-once ledger rather than a bare debug line -- otherwise the boundary covers
+    only ``run_once`` refusals, not every path that leaves the reconciler inert. It
+    is its own reason, so a distinct transition, and it recovers on the next
+    complete pass.
+    """
+    import dataclasses
+
+    from kiro_crew import session_cleanup as sc
+
+    logger = logging.getLogger("test.reconcile.refusal.union")
+    clock = [0.0]
+    # union_complete=False makes the hook take the incomplete-union skip before it
+    # ever builds or calls a reconciler.
+    cleanup, _recorded = _cleanup(candidates=[], active={4242}, union_complete=False)
+    cleanup._deps = dataclasses.replace(cleanup._deps, monotonic=lambda: clock[0], logger=logger)
+
+    class _Fake:
+        def __init__(self, active_pids: Any) -> None:
+            self._active_pids = active_pids
+
+        def set_max_kills(self, budget: int) -> None:
+            return None
+
+        def run_once(self) -> rr.ReconcileReading:
+            raise AssertionError("the pass must not run while the union is incomplete")
+
+    monkeypatch.setattr(sc, "build_reconciler", lambda active_pids, notify_dead: _Fake(active_pids))
+
+    with caplog.at_level(logging.WARNING, logger=logger.name):
+        asyncio.run(cleanup._reconcile_runtimes_hook())
+
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert warnings, "the incomplete-union skip must warn, not stay at debug"
+    assert "incomplete" in warnings[0].getMessage()
+    assert cleanup.state.reconcile_refusal_reason == "the active-pid union is incomplete"

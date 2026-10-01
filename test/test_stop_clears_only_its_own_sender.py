@@ -25,6 +25,7 @@ import ast
 import asyncio
 import pathlib
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -611,7 +612,12 @@ class TestTheSharedStopPath:
             )
             before = len(surface.edits)
             await stop_running_turn(
-                sessions, "unified:agent", queue=queue, surface=surface, owner=ALICE
+                sessions,
+                "unified:agent",
+                queue=queue,
+                surface=surface,
+                owner=ALICE,
+                deliver=AsyncMock(),
             )
             return sessions, surface, queue, before
 
@@ -630,7 +636,11 @@ class TestTheSharedStopPath:
         with pytest.raises(TypeError):
             asyncio.run(
                 stop_running_turn(  # type: ignore[call-arg]
-                    _Sessions([]), "s", queue=ReceiptQueue(), surface=_Surface()
+                    _Sessions([]),
+                    "s",
+                    queue=ReceiptQueue(),
+                    surface=_Surface(),
+                    deliver=AsyncMock(),
                 )
             )
 

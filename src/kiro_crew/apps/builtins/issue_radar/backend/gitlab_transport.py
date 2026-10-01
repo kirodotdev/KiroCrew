@@ -21,8 +21,27 @@ from .errors import (
     RepoUrlError,
 )
 
-SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+#: GitLab's own ceiling on a single path segment. ``Namespace`` validates ``path``
+#: with ``length: { maximum: URL_MAX_LENGTH }``, and that constant is 255. Each
+#: segment becomes one filesystem component, so 255 is also ``NAME_MAX`` -- this
+#: bound keeps every individual segment inside a path component. Bounding a
+#: segment's SIZE and the segment COUNT below together bound the whole parsed
+#: value, keeping ``owner/repo`` well inside the one argv element it rides in.
+GITLAB_MAX_SEGMENT_CHARS = 255
+SEGMENT_RE = re.compile(rf"^[A-Za-z0-9._-]{{1,{GITLAB_MAX_SEGMENT_CHARS}}}$")
 _URL_PATH_SEPARATOR = "/"
+
+#: GitLab's own ceiling on how deep a group may sit. ``Namespace`` validates
+#: ``nesting_level_allowed``, which refuses a group whose ``ancestors.count``
+#: exceeds ``Group::NUMBER_OF_ANCESTORS_ALLOWED``; that constant is 20, and the
+#: documented maximum hierarchy depth states the same number
+#: (https://docs.gitlab.com/user/group/#recommended-limits-for-group-structure).
+GITLAB_MAX_GROUP_ANCESTORS = 20
+
+#: The most group segments a namespace can legally carry. ``ancestors`` excludes
+#: the group itself, so the deepest accepted path is the ancestors that check
+#: allows plus the group they are ancestors OF -- which is the one extra segment.
+MAX_NAMESPACE_SEGMENTS = GITLAB_MAX_GROUP_ANCESTORS + 1
 GITLAB_RESERVED_SEGMENTS = frozenset(
     {"-", "groups", "projects", "admin", "dashboard", "explore", "help", "users", "api"}
 )
@@ -100,6 +119,15 @@ def parse_gitlab_repo_url(
     parts = [part for part in path.split(_URL_PATH_SEPARATOR) if part]
     if len(parts) < 2:
         raise RepoUrlError(f"not a full project URL: {link!r} (expected .../<group>/<project>)")
+    # Nesting bounds the namespace at BOTH ends: at least one group above, and no
+    # more group levels than GitLab itself will create below. The loop after this
+    # checks each segment's SHAPE; this checks their COUNT, which is the thing that
+    # decides how deep a path every consumer of the namespace goes on to build.
+    if len(parts) - 1 > MAX_NAMESPACE_SEGMENTS:
+        raise RepoUrlError(
+            f"namespace in {link!r} is nested deeper than GitLab allows "
+            f"(at most {MAX_NAMESPACE_SEGMENTS} group levels)"
+        )
     parts[-1] = re.sub(r"\.git$", "", parts[-1])
     for segment in parts:
         if segment in (".", "..") or not SEGMENT_RE.match(segment):

@@ -172,7 +172,7 @@ export function findNextPromptIdx(items: DisplayItem[], afterIdx: number): numbe
  * its own, with the banner above it naming the prompt the whole block answers.
  *
  * Walking up lengthens the jump. The virtualizer's near/far decision
- * (`mountIndex` in useVirtualChat) compares the anchor's jump window against
+ * (`mountIndex` in windowRange.ts) compares the anchor's jump window against
  * the COMMITTED window with `NEAR_JUMP_OVERSCAN_MULT` overscan windows of
  * slack (24 rows for the transcript, which passes `overscan: 6`) — a budget
  * shared with the distance the jump already covers, so the walk consumes

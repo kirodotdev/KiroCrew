@@ -2263,6 +2263,61 @@ class TestComposedEditionGatewayModule:
         assert _args_look_like_kirocrew(self.COMPOSED_ARGV) is False
 
 
+class TestDesktopGatewayIdentityParity:
+    """The desktop launcher classifies a port holder from the SAME command line
+    ``kirocrew stop`` does, but in a process with no view of the Python
+    environment, so ``website/electron/gateway-stop.js`` carries its own copy
+    of the two identity constants. This pins the copies together: widening the
+    Python side without the JavaScript side is exactly how the desktop app came
+    to refuse a composed edition's own gateway as a foreign port holder.
+    """
+
+    GATEWAY_STOP = Path(__file__).parent.parent / "website" / "electron" / "gateway-stop.js"
+
+    def _js_constant(self, name: str) -> str:
+        import re
+
+        source = self.GATEWAY_STOP.read_text(encoding="utf-8")
+        match = re.search(rf"^const {name} = (.+?);$", source, re.MULTILINE)
+        assert match, f"{name} not found in {self.GATEWAY_STOP}"
+        return match.group(1)
+
+    def test_server_subcommands_are_the_same_set(self):
+        import re
+
+        from kiro_crew.port_resolution import _KIROCREW_SERVER_SUBCOMMANDS
+
+        expr = self._js_constant("KIROCREW_SERVER_SUBCOMMANDS")
+        js_set = set(re.findall(r'"([^"]+)"', expr))
+        assert js_set == set(_KIROCREW_SERVER_SUBCOMMANDS)
+
+    def test_module_pattern_accepts_every_conventional_entry_point_root(self):
+        """The JS regex must accept the core module and the root
+        ``_gateway_module_roots()`` derives from a conventionally named
+        ``kirocrew.plugins`` entry point, and refuse a dotted submodule. The
+        regex uses only syntax Python's ``re`` shares with JavaScript."""
+        import re
+
+        expr = self._js_constant("KIROCREW_MODULE_RE")
+        assert expr.startswith("/") and expr.endswith("/"), expr
+        pattern = re.compile(expr[1:-1])
+        for entry_point in (
+            "kiro_crew.cli:main",
+            "kirocrew_companion.compose:build_context",
+            "kirocrew_acme2.compose:build",
+        ):
+            root = entry_point.split(":", 1)[0].split(".", 1)[0]
+            assert pattern.fullmatch(root), root
+        for rejected in (
+            "kiro_crew.dashboard",
+            "kirocrew",
+            "kirocrew_",
+            "kirocrew-x",
+            "Kirocrew_X",
+        ):
+            assert pattern.fullmatch(rejected) is None, rejected
+
+
 class TestStop:
     """Tests for _stop CLI function."""
 

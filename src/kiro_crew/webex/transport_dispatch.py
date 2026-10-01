@@ -97,6 +97,13 @@ from kiro_crew.messaging.queue_drain import (
 from kiro_crew.messaging.queue_receipt import ReceiptQueue, ReceiptSurface, receipt_address_key
 from kiro_crew.safety_override import describe_grant_lifetime, safety_override
 from kiro_crew.sel import sel
+from kiro_crew.session_lifecycle import (
+    STOP_DECLINED_COMPACTING_TEXT,
+    compaction_in_flight,
+    consume_stop_declined,
+    decline_stop,
+    force_stop_keeping_others,
+)
 from kiro_crew.webex import cards
 from kiro_crew.webex.attachments import process_webex_attachments
 from kiro_crew.webex.cards import LiveChoices, read_press
@@ -1535,12 +1542,43 @@ class WebexDispatcher:
         answer to, and flips their receipt to a cancellation they never asked for.
         """
         session_key = self._session_key(_route_of(inbound))
+        owner = _entry_owner(inbound)
+        # Before the Stop record and the queue clear: a Stop the session's own
+        # automatic compaction declines ends nothing and must destroy nothing.
+        force = False
+        if compaction_in_flight(self.sessions, session_key):
+            # A repeat within the window is the second press and forces. Keyed
+            # by the presser too: a group space shares one session key, and
+            # another member's declined Stop must not arm this member's first.
+            if not consume_stop_declined(session_key, owner):
+                # Sent before the marker is armed: an undelivered warning plus an
+                # armed escalation is a retry that hard-resets the session with
+                # this member never told that it would.
+                async def _say_declined() -> bool:
+                    # ``_reply`` returns the id of the message it posted, so a
+                    # ``None`` is a warning this member never saw.
+                    return await self._reply(inbound, STOP_DECLINED_COMPACTING_TEXT) is not None
+
+                await decline_stop(session_key, owner, _say_declined)
+                return
+            force = True
         # Recorded before the busy check, so a Stop landing while the session is
         # between an abandoned attempt and its replay still counts (see
         # ``note_user_stop``).
         note_user_stop(self.sessions, session_key)
         cancelled_turn = False
-        if self.sessions.is_busy(session_key):
+        if force:
+            try:
+                # The reset is this member's, the queue is the whole space's: the
+                # hard stop pops the session and its queue, so the other members'
+                # entries are carried to the successor and only this member's are
+                # dropped (``force_stop_keeping_others``).
+                cancelled_turn = await force_stop_keeping_others(
+                    self.sessions, session_key, entries_queued_by(owner)
+                )
+            except Exception:
+                logger.warning("Webex /stop: force stop failed for %s", session_key, exc_info=True)
+        elif self.sessions.is_busy(session_key):
             provider = self.sessions.get_provider(session_key)
             # ``cancel`` is declared on the LLMProvider ABC, so the guard is for
             # a session with no live provider, not for a provider missing it.
@@ -1551,8 +1589,11 @@ class WebexDispatcher:
                 except Exception:
                     logger.warning("Webex /stop: cancel failed for %s", session_key, exc_info=True)
         async with self._queue.lock:
-            owner = _entry_owner(inbound)
-            self.sessions.clear_queue(session_key, entries_queued_by(owner))
+            # On the forced repeat the helper already dropped this member's
+            # press-time entries and carried the rest; a second clear here would
+            # take a message the same member sent during the stop's awaits.
+            if not force:
+                self.sessions.clear_queue(session_key, entries_queued_by(owner))
             await self._queue.finish_cancelled_locked(
                 session_key, self._receipt_surface(inbound), owner
             )

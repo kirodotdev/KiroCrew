@@ -20,7 +20,8 @@
  * relayed, so no policy is duplicated here. The parent is the gate.
  *
  * Two call sites: `hooks/useNativeNotification.ts` (bell notes, which is also
- * how an approval reaches the OS) and `hooks/useWebSocket.ts` (chat finished).
+ * how an approval reaches the OS) and `hooks/websocket/turnCompletion.ts`
+ * (chat finished).
  */
 import { isEmbeddedPane } from './embedded'
 import { parseLoopbackOriginPort } from './tunnelOrigin'

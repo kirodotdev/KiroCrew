@@ -960,6 +960,48 @@ def test_stop_cancels_a_live_turn_cooperatively(tmp_path):
     assert any("正在停止" in m["text"] for m in client.sent)
 
 
+def test_stop_is_declined_while_the_session_compacts(tmp_path):
+    provider = FakeProvider()
+    d, client, sessions = _make(tmp_path, provider=provider, busy=True)
+    sessions.is_compacting = lambda key: True
+
+    asyncio.run(d.handle_message(_msg("/stop")))
+
+    assert provider.cancelled == []
+    assert any("nothing was stopped" in m["text"] for m in client.sent)
+
+
+def test_a_repeat_stop_while_compacting_forces_through_the_queue_keeping_helper(
+    tmp_path, monkeypatch
+):
+    """The second press inside the window forces. Under a unified ``dm_scope`` the
+    key is shared with channels that queue, so the force goes through
+    ``force_stop_keeping_others`` rather than a bare ``stop_turn``."""
+    from kiro_crew import session_lifecycle as sl
+    from kiro_crew.weixin import transport_dispatch as td
+
+    sl._stop_declined_markers.clear()
+    provider = FakeProvider()
+    d, client, sessions = _make(tmp_path, provider=provider, busy=True)
+    sessions.is_compacting = lambda key: True
+    calls: list = []
+
+    async def _helper(sess, key, owned_by):
+        calls.append((key, owned_by))
+        return True
+
+    monkeypatch.setattr(td, "force_stop_keeping_others", _helper)
+
+    asyncio.run(d.handle_message(_msg("/stop")))
+    assert calls == [], "first press is declined"
+    asyncio.run(d.handle_message(_msg("/stop")))
+    assert len(calls) == 1
+    # The presser's own token matches none of the other channels' entries.
+    assert calls[0][1]({"queued_owner": "telegram-bob"}) is False
+    assert any(td._STOPPING in m["text"] for m in client.sent)
+    sl._stop_declined_markers.clear()
+
+
 def test_stop_with_nothing_running_says_so(tmp_path):
     provider = FakeProvider()
     d, client, sessions = _make(tmp_path, provider=provider, busy=False)
@@ -1131,3 +1173,53 @@ def test_a_failed_notice_send_does_not_fail_a_delivered_turn(tmp_path):
 
     asyncio.run(go())
     assert any(CREDENTIAL_REDACTION_TAGS[0] in m["text"] for m in client.sent)
+
+
+def test_a_decline_whose_reply_never_sends_leaves_the_next_press_a_first_press(
+    tmp_path, monkeypatch
+):
+    """``_say`` logs its own send error rather than raising, so the decline reads
+    its answer: a user who saw no reply presses again within seconds, and that
+    press must be declined again rather than reset their session unannounced."""
+    from kiro_crew import session_lifecycle as sl
+    from kiro_crew.weixin import transport_dispatch as td
+
+    sl._stop_declined_markers.clear()
+    provider = FakeProvider()
+    d, client, sessions = _make(tmp_path, provider=provider, busy=True)
+    sessions.is_compacting = lambda key: True
+    calls: list = []
+
+    async def _helper(sess, key, owned_by):
+        calls.append(key)
+        return True
+
+    monkeypatch.setattr(td, "force_stop_keeping_others", _helper)
+    working = client.send_message
+    down = True
+
+    async def _flaky(**kw):
+        if down:
+            raise RuntimeError("weixin 503")
+        return await working(**kw)
+
+    client.send_message = _flaky
+
+    asyncio.run(d.handle_message(_msg("/stop")))
+    assert sl._stop_declined_markers == {}, "an undelivered warning arms nothing"
+    down = False
+    asyncio.run(d.handle_message(_msg("/stop")))
+    assert calls == [], "no force on a press the user was never warned about"
+    assert any(td.STOP_DECLINED_COMPACTING_TEXT in m["text"] for m in client.sent)
+    sl._stop_declined_markers.clear()
+
+
+def test_say_reports_whether_the_message_landed(tmp_path):
+    d, client, _sessions = _make(tmp_path, provider=FakeProvider(), busy=False)
+    assert asyncio.run(d._say("u1", "hi")) is True
+
+    async def _down(**_kw):
+        raise RuntimeError("weixin 503")
+
+    client.send_message = _down
+    assert asyncio.run(d._say("u1", "hi")) is False

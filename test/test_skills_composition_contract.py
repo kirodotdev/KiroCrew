@@ -125,7 +125,8 @@ _LOADER_MEMBERS = {
         _max_triggered_now _on_config_change _owned_hint _owning_app _pending_root
         _pending_scripts_verdict _pending_scripts_verdict_at _prune_versions _rank_key
         _read_candidate_pinned _read_enumerated_skill_bytes _read_global_skill_text
-        _read_pending_meta _recency_boost _record_use _redact_deep _redact_file_in_place
+        _read_pending_meta _readable_frontmatter _recency_boost _record_use _redact_deep
+        _redact_file_in_place
         _redact_validation_report _request_catalog_refresh _resolve_path
         _resolve_path_and_root _resolve_snapshot_version _run_catalog_build
         _scoped_entries _served_key_by_realpath _snapshot_admitted_roots
@@ -210,6 +211,7 @@ _LOADER_SIGNATURES = {
     "_read_candidate_pinned": "(self, pdir: 'Path') -> 'tuple[str, dict, list[dict]] | None'",
     "_read_enumerated_skill_bytes": "(self, path: 'Path', within: 'str | None', *, max_bytes: 'int | None' = None, refusal_reasons: 'list[str] | None' = None, canonical_root: 'str | None' = None) -> 'bytes | None'",
     "_read_global_skill_text": "(self, path: 'Path', max_bytes: 'int | None', *, canonical_root: 'str | None' = None) -> 'str | None'",
+    "_readable_frontmatter": "(self, path: 'Path', *, within: 'str | None', mtime: 'float | None' = None, canonical_root: 'str | None' = None) -> 'dict[str, str] | None'",
     "_read_pending_meta": "(self, slug: 'str') -> 'dict'",
     "_recency_boost": "(self, path_str: 'str', fingerprint: 'str' = '') -> 'float'",
     "_record_use": "(self, key: 'str') -> 'None'",

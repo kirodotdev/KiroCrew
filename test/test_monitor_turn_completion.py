@@ -11,6 +11,7 @@ import pytest
 from kiro_crew.acp.types import TurnUsage
 from kiro_crew.autonudge import AutoNudgeService, NudgeLoop
 from kiro_crew.monitoring import models
+from kiro_crew.monitoring.decision import monitor_budget_reason
 from kiro_crew.monitoring.models import MonitorBudgets, MonitorOutcome, MonitorState
 
 
@@ -358,7 +359,119 @@ async def test_completion_stops_on_the_first_exhausted_budget(
 def test_agent_turn_budget_above_universal_bound_is_rejected() -> None:
     """Persisted configuration and enforcement must expose the same ceiling."""
     with pytest.raises(ValueError, match="max_agent_turns"):
-        MonitorBudgets(max_agent_turns=9)
+        MonitorBudgets(max_agent_turns=models.MAX_MONITOR_AGENT_TURNS + 1)
+
+
+def test_agent_turn_budget_at_the_universal_bound_is_accepted() -> None:
+    """The ceiling itself is a legal configuration, not one past the edge."""
+    budgets = MonitorBudgets(max_agent_turns=models.MAX_MONITOR_AGENT_TURNS)
+
+    assert budgets.max_agent_turns == models.MAX_MONITOR_AGENT_TURNS
+
+
+def test_unlimited_agent_turns_is_the_default() -> None:
+    """A watch nobody configured carries no wake ceiling."""
+    assert models.DEFAULT_MONITOR_AGENT_TURNS == 0
+    assert MonitorBudgets().max_agent_turns == 0
+
+
+def test_the_explicit_wake_ceiling_matches_the_legacy_cycle_cap() -> None:
+    """The two reachable cycle caps agree, so neither is a freely chosen number.
+
+    The default must NOT equal the maximum: when it did, ``max_agent_turns`` could
+    only ever be lowered, which is the defect this budget's semantics exist to fix.
+    """
+    assert models.MAX_MONITOR_AGENT_TURNS == 1_000
+    assert models.DEFAULT_MONITOR_AGENT_TURNS != models.MAX_MONITOR_AGENT_TURNS
+    with pytest.raises(ValueError, match="max_agent_turns"):
+        MonitorBudgets(max_agent_turns=1_001)
+    assert MonitorBudgets(max_agent_turns=1_000).max_agent_turns == 1_000
+
+
+def test_zero_agent_turns_never_exhausts_the_turn_budget() -> None:
+    """Zero means unlimited, so no turn count may satisfy the turn bound.
+
+    The bound is a ``>=`` comparison, so a zero ceiling read as a number rather
+    than as the unlimited sentinel is satisfied by a fresh monitor that has run
+    no turns at all -- every watch would stop on its first wake.
+    """
+    state = MonitorState(
+        kind="github_pull_request",
+        target="owner/repo#123",
+        objective="review_ready",
+        created_ts=1_000.0,
+        budgets=MonitorBudgets(max_agent_turns=0),
+    )
+
+    assert monitor_budget_reason(state, now=1_000.0) == ""
+
+    for turns in (1, 8, 9, 1_000, 10_000):
+        state.agent_turns = turns
+        assert monitor_budget_reason(state, now=1_000.0) == ""
+
+
+def test_zero_agent_turns_still_lets_the_other_budgets_stop_the_watch() -> None:
+    """Unlimited wakes are still bounded by runtime, tokens and provider errors."""
+
+    def _state() -> MonitorState:
+        return MonitorState(
+            kind="github_pull_request",
+            target="owner/repo#123",
+            objective="review_ready",
+            created_ts=1_000.0,
+            budgets=MonitorBudgets(
+                max_agent_turns=0,
+                max_runtime_secs=100,
+                max_tokens=500,
+                max_provider_errors=3,
+            ),
+        )
+
+    runtime = _state()
+    runtime.agent_turns = 10_000
+    assert monitor_budget_reason(runtime, now=1_100.0) == "runtime_budget"
+
+    tokens = _state()
+    tokens.agent_turns = 10_000
+    tokens.input_tokens = 300
+    tokens.output_tokens = 200
+    assert monitor_budget_reason(tokens, now=1_000.0) == "token_budget"
+
+    errors = _state()
+    errors.agent_turns = 10_000
+    errors.provider_error_count = 3
+    assert monitor_budget_reason(errors, now=1_000.0) == "provider_error_budget"
+
+
+@pytest.mark.asyncio
+async def test_unlimited_turn_completions_never_stop_the_monitor(tmp_path) -> None:
+    """A zero turn ceiling survives more completed wakes than the old bound allowed."""
+    service = AutoNudgeService(base_dir=tmp_path)
+    loop = _structured_loop()
+    assert loop.monitor is not None
+    loop.monitor.budgets = MonitorBudgets(max_agent_turns=0)
+    service._loops[loop.id] = loop
+
+    for index in range(12):
+        fingerprint = f"failure-{index}"
+        assert await service.mark_monitor_action_in_flight(loop.id, fingerprint, now=1_050.0)
+        await service.record_monitor_turn_completion(
+            models.MonitorActionCompletion(
+                monitor_id=loop.id,
+                fingerprint=fingerprint,
+                disposition=models.MonitorActionDisposition.FAILURE,
+                completed_ts=1_050.0 + index,
+                input_tokens=1,
+                output_tokens=1,
+            )
+        )
+
+    assert loop.active
+    assert loop.monitor.outcome is None
+    assert loop.monitor.agent_turns == 12
+    # The twelfth completion re-arms the timer, so the service owns a background
+    # task bound to this test's directory until it is stopped.
+    service.stop()
 
 
 @pytest.mark.asyncio
@@ -524,3 +637,41 @@ async def test_completion_hook_delivers_one_typed_record_with_explicit_unknown_u
             output_tokens=None,
         )
     ]
+
+
+@pytest.mark.asyncio
+async def test_update_can_lift_a_finite_wake_ceiling_to_unlimited(tmp_path) -> None:
+    """A watch armed with a finite wake ceiling can be patched to unlimited.
+
+    The end of the write path: a budget patch merges into the stored budgets and
+    re-runs ``MonitorBudgets`` validation, so 0 has to survive that round trip or
+    a caller can reach the new semantics on arm but not on update.
+    """
+    service = AutoNudgeService(base_dir=tmp_path)
+    loop = _structured_loop()
+    assert loop.monitor is not None
+    loop.monitor.budgets = MonitorBudgets(max_agent_turns=4)
+    service._loops[loop.id] = loop
+
+    await service.update_monitor(loop.id, budget_patch={"max_agent_turns": 0})
+
+    assert loop.monitor.budgets.max_agent_turns == 0
+    # The sibling budgets are untouched by the patch.
+    assert loop.monitor.budgets.max_runtime_secs == models.DEFAULT_MONITOR_RUNTIME_SECS
+    assert loop.monitor.budgets.max_tokens == models.DEFAULT_MONITOR_TOKENS
+    service.stop()
+
+
+@pytest.mark.asyncio
+async def test_update_still_refuses_an_over_ceiling_wake_budget(tmp_path) -> None:
+    """Raising the ceiling on arm must not open a back door on update."""
+    service = AutoNudgeService(base_dir=tmp_path)
+    loop = _structured_loop()
+    service._loops[loop.id] = loop
+
+    with pytest.raises(ValueError, match="max_agent_turns"):
+        await service.update_monitor(
+            loop.id,
+            budget_patch={"max_agent_turns": models.MAX_MONITOR_AGENT_TURNS + 1},
+        )
+    service.stop()

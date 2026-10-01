@@ -680,7 +680,7 @@ foreach ($dir in @($Prefix, $BinDir)) {
     try {
         New-Item -ItemType Directory -Path $dir -Force | Out-Null
     } catch {
-        Die $ExNotWritable "cannot create $dir"
+        Die $ExNotWritable "cannot create $dir ($($_.Exception.Message))"
     }
 }
 
@@ -695,7 +695,7 @@ foreach ($dir in @($Prefix, $BinDir)) {
     try {
         [IO.File]::WriteAllText($probe, "")
     } catch {
-        Die $ExNotWritable "$dir is not writable"
+        Die $ExNotWritable "$dir is not writable ($($_.Exception.Message))"
     }
     Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue
 }
@@ -718,7 +718,10 @@ try {
         $me, "FullControl", "Allow")))
     Set-Acl -LiteralPath $logPath -AclObject $logAcl
 } catch {
-    Die $ExNotWritable "cannot restrict the install log $logPath to owner-only"
+    # Keep the exception: a Set-Acl refused by a broken domain trust otherwise
+    # reads as a permissions problem, which is not what the user has to fix.
+    Die $ExNotWritable ("cannot restrict the install log $logPath to owner-only " +
+        "($($_.Exception.Message))")
 }
 
 if (-not $haveNode) { Install-Node }

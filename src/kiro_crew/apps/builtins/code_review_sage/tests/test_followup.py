@@ -30,37 +30,13 @@ from sage_lib import store
 
 from kiro_crew import platform_compat
 from kiro_crew.apps.builtins.code_review_sage.tests.fixtures import SYMLINKS_OK
+from kiro_crew.testing.links import make_dir_link as _make_dir_link
 
 
 def _ev(kind, **over):
     base = {"kind": kind, "text": "", "title": "", "stop_reason": "end_turn"}
     base.update(over)
     return SimpleNamespace(**base)
-
-
-def _make_dir_link(link: Path, target: Path) -> None:
-    """Create a reparse point at *link* resolving to the directory *target*.
-
-    A local mirror of ``test/conftest.py::make_dir_link``, which these in-package
-    tests cannot import: only the ``test/`` testpath gets that conftest.
-
-    ``platform_compat.symlink_or_junction`` is deliberately NOT used here. It
-    tries ``os.symlink`` FIRST and falls back to a junction only where the
-    privilege is missing, so a runner with Developer Mode or an elevated shell
-    gets a SYMLINK and the junction arm these tests exist for is never exercised
-    -- silently, while still reporting green. ``CreateJunction`` is what that
-    helper falls back to, taken directly so the link type is not left to the host.
-    """
-    if platform_compat.IS_WINDOWS:
-        # Function-local because the module does not exist off Windows, so a
-        # top-level import would break collection on POSIX. Both in-repo callers
-        # of CreateJunction do the same -- test/conftest.py::make_dir_link and
-        # platform_compat.symlink_or_junction.
-        import _winapi
-
-        _winapi.CreateJunction(str(target), str(link))  # type: ignore[attr-defined]
-        return
-    link.symlink_to(target, target_is_directory=True)
 
 
 class FakeHandle:
@@ -291,7 +267,7 @@ class LinkedDirectoryTests(_SessionsDirCase):
     # The symlink tests above SKIP on an ordinary Windows host: os.symlink there
     # needs SeCreateSymbolicLinkPrivilege. A directory junction needs none, so on
     # the platform where the plant is EASIEST to stage the guard had no coverage.
-    # `_make_dir_link` below mirrors test/conftest.py::make_dir_link for this
+    # `_make_dir_link` (kiro_crew.testing.links.make_dir_link) stages them
     # -- a plain symlink on POSIX, a junction on Windows -- so these run on every
     # platform with nothing gated away.
     #

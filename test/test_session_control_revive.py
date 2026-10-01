@@ -13,11 +13,13 @@ from __future__ import annotations
 
 import asyncio
 import errno
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
 from chat_test_helpers import _make_state
 
+from kiro_crew import history_projection as _history_projection
 from kiro_crew.dashboard import create_rate_limit
 from kiro_crew.dashboard import session_control as sc
 from kiro_crew.dashboard import stop_retry
@@ -36,6 +38,73 @@ def _fresh_windows():
     yield
     stop_retry.reset_for_tests()
     create_rate_limit.reset_for_tests()
+
+
+@pytest.fixture(autouse=True)
+def _settle_metadata_rewrite_before_read(monkeypatch):
+    """Await each metadata rewrite's file transition before the test reads it.
+
+    These tests drive a REAL on-disk ``ConversationLog`` through metadata
+    rewrites (close, ``clear_closed``, ``update_metadata_if``) and then read the
+    line straight back, all synchronously on the event loop via ``asyncio.run``.
+    Every such rewrite lands atomically through ``replace_with_retry`` (a temp
+    file renamed over the target). On Windows the freshly-renamed file is briefly
+    unopenable while an indexer or AV scanner holds it (ERROR_SHARING_VIOLATION →
+    PermissionError). Production tolerates this off the loop, where the metadata
+    read retry sleeps; on the loop that pause is a deliberate no-op (a live server
+    must not block the loop inside a read), so a synchronous on-loop test read
+    races the hold and reports it as ``resume_conflict`` — a failure decided by
+    OS file-sharing timing, not by what the test set up.
+
+    The production READ path is left EXACTLY as it is — no attempt count,
+    timeout, or poll budget is raised and the retry pause is not patched, because
+    doing so would hide the race rather than resolve it. Instead the filesystem
+    transition is synchronized on the WRITE side: after each metadata-line rename
+    lands, the test confirms the destination is openable again before the writer
+    returns. Because every metadata rewrite funnels through ``replace_with_retry``
+    and every real caller reads only after its write returns, the file the
+    subsequent read opens is always settled — the test awaits the rewrite before
+    reading, deterministically. It reads the TRUE current line every time, so a
+    line another writer changes concurrently (a link written during the read) is
+    still seen; nothing is served from a stale snapshot.
+
+    The wait is bounded and, on POSIX where no hold occurs, the first probe
+    succeeds (a no-op), so it changes nothing on the platform these tests already
+    pass on. It wraps only the shared rename primitive, so every injected
+    condition the tests rely on is preserved: facade-level stubs replace whole
+    methods above it, and a write-path ``OSError`` injection raises before the
+    rename is reached.
+    """
+    import time
+
+    from kiro_crew import atomic_write as _aw
+
+    real_replace = _aw.replace_with_retry
+
+    def replace_with_retry(src, dst):
+        real_replace(src, dst)
+        dst_path = str(dst)
+        if not dst_path.endswith(".jsonl"):
+            return
+        deadline = time.monotonic() + 2.0
+        while True:
+            try:
+                with open(dst_path, encoding="utf-8"):
+                    return
+            except FileNotFoundError:
+                return
+            except OSError:
+                if time.monotonic() >= deadline:
+                    return
+                time.sleep(0.005)
+
+    # Both metadata writers reach the rename through this module-level name:
+    # ``clear_closed``/close via ``atomic_write`` (which calls it) and
+    # ``_update_metadata_locked`` directly. Patch it where each looks it up.
+    monkeypatch.setattr(_aw, "replace_with_retry", replace_with_retry)
+    monkeypatch.setattr(
+        _history_projection, "replace_with_retry", replace_with_retry, raising=False
+    )
 
 
 def _slot(state, name: str, **kwargs):
@@ -62,7 +131,22 @@ def _archive(state, caller, peer, *, messages=2, title="") -> str:
     key = peer.key
     asyncio.run(sc.close_target(state, caller_session_key=_key(caller), target=key))
     assert key not in state._slots
-    assert state.conversation_log.get_metadata(f"dashboard:{key}").get("closed")
+    meta = state.conversation_log.get_metadata(f"dashboard:{key}")
+    assert meta.get("closed")
+    # Backdate the close so it is strictly BEFORE any resume the caller then runs.
+    #
+    # `clear_closed`'s compare-and-clear refuses when `closed_at >= resume_started_at`,
+    # conservative on purpose so a close landing at the resume's own boundary keeps its
+    # marker. Both values come from `time.time()`, whose resolution is the platform's:
+    # on Windows that is the ~15.6 ms interrupt clock, so a close and a resume a few
+    # microseconds apart return the IDENTICAL float, the guard reads equal, and the
+    # marker stays. Linux returns a finer value per call, so the same pair compares
+    # strictly ordered there and the platform decides whether these tests see a clear.
+    # The precondition they mean is "this session is closed BEFORE the resume begins",
+    # so state it here rather than leaving clock granularity to imply it.
+    state.conversation_log.update_metadata(
+        f"dashboard:{key}", {"closed_at": float(meta["closed_at"]) - 60.0}
+    )
     return key
 
 
@@ -93,6 +177,42 @@ def test_revive_brings_a_closed_peer_back_with_its_transcript(tmp_path):
     assert live.running is False
     # The reopen is durable: the closed flag is cleared so a restart restores it.
     assert not state.conversation_log.get_metadata(f"dashboard:{key}").get("closed")
+
+
+def test_a_revive_in_the_close_clock_reading_keeps_the_marker(tmp_path, monkeypatch):
+    """A revive that starts in the same clock reading as the close is refused,
+    and the session stays archived.
+
+    The resume's compare-and-clear keeps any ``closed`` stamped at or after the
+    moment the resume started. Inside one clock reading it cannot tell the close
+    it read from a new close that landed just after, so keeping the marker is
+    the safe answer. The clock is frozen here so the tie happens on every OS; on
+    Windows CPython 3.12 ``time.time()`` moves every ~15.6 ms, so an unfrozen
+    close and revive tie there by themselves, which is why ``_archive`` backdates
+    the close for every other test in this file."""
+    frozen = [time.time()]
+    monkeypatch.setattr(time, "time", lambda: frozen[0])
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    peer = _slot(state, "chat-2")
+    peer.messages.append({"role": "user", "content": "m0"})
+    peer._dirty = True
+    key = peer.key
+    hk = f"dashboard:{key}"
+    asyncio.run(sc.close_target(state, caller_session_key=_key(caller), target=key))
+    assert state.conversation_log.get_metadata(hk).get("closed_at") == frozen[0]
+
+    with pytest.raises(sc.SessionControlError) as exc:
+        _revive(state, caller, key)
+
+    assert exc.value.code == "resume_conflict"
+    assert key not in state._slots and key not in state._slots_under_construction
+    assert state.conversation_log.get_metadata(hk).get("closed") is True
+
+    # One clock step later the same revive lands and clears the marker.
+    frozen[0] += 1.0
+    assert _revive(state, caller, key)["target"] == key
+    assert "closed" not in state.conversation_log.get_metadata(hk)
 
 
 @pytest.mark.parametrize(

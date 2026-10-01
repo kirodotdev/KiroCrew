@@ -1608,6 +1608,15 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "developer.composable-layout",
+    "label": "Composable layout",
+    "labelKey": "pages.developer.featurePreviewsTab.layout_harness",
+    "description": "Turns on an in-development, developer-only harness for a new layout mechanism. Nothing you can see changes yet: the mechanism has no page of its own, so this exists only so it can be built and tested behind a switch.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
     "id": "developer.crewmates",
     "label": "Crewmates",
     "labelKey": "pages.developer.featurePreviewsTab.crew_members",
@@ -1886,6 +1895,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "params": {
       "sub": "sidebar"
     }
+  },
+  {
+    "id": "display.reuse-the-current-terminal",
+    "label": "Reuse the current terminal",
+    "labelKey": "pages.settings.displayPanel.terminal_reuse_current",
+    "description": "Copies the command instead of running it: Run in terminal focuses the terminal tab you have selected and copies the command, so you can paste it into that shell while keeping its working directory, environment, and any active login session. With no terminal open, it still copies the command for you to paste — it is never run for you.",
+    "tab": "display",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "terminal"
+    },
+    "configKey": "dashboard.terminal.reuse_current"
   },
   {
     "id": "display.theme",

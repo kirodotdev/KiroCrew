@@ -851,14 +851,27 @@ _CONFIRM_TABLE: dict[str, tuple[frozenset[str], tuple[str, ...], str]] = {
     "yarn": (frozenset({"init", "create"}), ("-y", "--yes"), "yarn init -y …"),
 }
 # Credential / terminal prompts: program -> (flags that make it non-interactive, hint).
+#
+# ``BatchMode`` is recognised but not proposed: once case is folded it contains a
+# permission verb, so a proposed ``ssh -o BatchMode=yes … /usr/…`` is refused by
+# the permission deny rows. ssh_config(5) says BatchMode disables password prompts
+# and host key confirmation, and the hint proposes options aimed at the same
+# prompts. They are proposed, not trusted: BatchMode alone still counts as proof
+# of no prompt, because a FIDO/sk key PIN or an encrypted key's passphrase may
+# still be asked for under the proposed options.
+_SSH_BATCH_FLAGS = ("-o BatchMode=yes", "-oBatchMode=yes")
+_SSH_NONINTERACTIVE_OPTIONS = (
+    "-o StrictHostKeyChecking=yes -o NumberOfPasswordPrompts=0 "
+    "-o PasswordAuthentication=no -o KbdInteractiveAuthentication=no"
+)
 _PROMPT_TABLE: dict[str, tuple[tuple[str, ...], str]] = {
     "sudo": (
         ("-n", "--non-interactive", "-S", "--stdin"),
         "sudo -n … (fails instead of prompting)",
     ),
-    "ssh": (("-o BatchMode=yes", "-oBatchMode=yes"), "ssh -o BatchMode=yes …"),
-    "scp": (("-o BatchMode=yes", "-oBatchMode=yes", "-B"), "scp -B …"),
-    "sftp": (("-o BatchMode=yes", "-oBatchMode=yes", "-b"), "sftp -b <batchfile> …"),
+    "ssh": (_SSH_BATCH_FLAGS, f"ssh {_SSH_NONINTERACTIVE_OPTIONS} …"),
+    "scp": ((*_SSH_BATCH_FLAGS, "-B"), "scp -B …"),
+    "sftp": ((*_SSH_BATCH_FLAGS, "-b"), "sftp -b <batchfile> …"),
     "gpg": (("--batch",), "gpg --batch …"),
     "passwd": ((), "passwd cannot run non-interactively under the tool"),
     "su": ((), "su cannot run non-interactively under the tool"),
@@ -1072,7 +1085,8 @@ def _classify_segment(segment: str, *, last: bool) -> InteractiveClassification:
             return NOT_INTERACTIVE
         # ``ssh host <remote command>`` is still prompt-shaped without
         # BatchMode: the risk is the host-key / password prompt, not the
-        # remote work, and only BatchMode removes it.
+        # remote work. The proposed options are NOT treated as proof, so the
+        # classifier stays on the safe side for the prompts they may miss.
         return InteractiveClassification(
             INTERACTIVE_PROMPT,
             program,

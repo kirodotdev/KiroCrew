@@ -100,8 +100,12 @@ interface PeerSlot {
    *  nests under a local session whose key merely matches. `slot` is the child's
    *  own record of who opened it -- the "opened by" glyph on a row placed under
    *  nothing, and the move-detection baseline; a peer whose creator is gone
-   *  sends `slot` with no `key`, the orphan case. */
-  parent?: { slot?: string; key?: string }
+   *  sends `slot` with no `key`, the orphan case. `hub_key` is the one half in
+   *  the HUB's key space: the hub stamps it when the creator is a peer slot this
+   *  hub drives, naming the LOCAL row that drives it (the peer's own key for that
+   *  creator never crosses the wire), and the lane nests the child under that
+   *  local row. */
+  parent?: { slot?: string; key?: string; hub_key?: string }
   /** Present and true while the peer's lineage projection is still seeding, so
    *  this frame's `parent` is provisional. Absent on a settled frame. */
   lineage_pending?: boolean
@@ -149,9 +153,11 @@ export interface InstanceSessionRow {
    *  conductor lane reads a peer row exactly as it reads a local one. Each half
    *  is kept only when it is a string, and the object only when at least one
    *  half survived. `key` is resolved within this row's `peer_id`, never across
-   *  origins (`ChatSidebar` `lineage`); `slot` feeds `orphanCitation`,
-   *  `citesParent` and the `citedCreatorRef` move baseline. */
-  parent?: { slot?: string; key?: string }
+   *  origins (`lineage` in pages/chat-sidebar/conductor.ts); `hub_key` is
+   *  resolved against LOCAL rows only (`citedCreatorOf` in that same module);
+   *  `slot` feeds `orphanCitation`, `citesParent` and the `citedCreatorRef` move
+   *  baseline. */
+  parent?: { slot?: string; key?: string; hub_key?: string }
   lineage_pending?: boolean
 }
 
@@ -264,8 +270,13 @@ export function useInstanceSessions(
         const cited = s.parent && typeof s.parent === 'object' ? s.parent : undefined
         const parentKey = cited ? str(cited.key) : undefined
         const parentSlot = cited ? str(cited.slot) : undefined
-        const parent = parentKey || parentSlot
-          ? { ...(parentSlot ? { slot: parentSlot } : {}), ...(parentKey ? { key: parentKey } : {}) }
+        const parentHubKey = cited ? str(cited.hub_key) : undefined
+        const parent = parentKey || parentSlot || parentHubKey
+          ? {
+            ...(parentSlot ? { slot: parentSlot } : {}),
+            ...(parentKey ? { key: parentKey } : {}),
+            ...(parentHubKey ? { hub_key: parentHubKey } : {}),
+          }
           : undefined
         rows.push({
           ...(parent ? { parent } : {}),

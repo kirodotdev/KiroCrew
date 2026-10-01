@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import Counter
+from typing import Any
 
 from aiohttp import web
 
@@ -566,6 +567,10 @@ async def api_members(request: web.Request) -> web.Response:
     preview_authoritative: set[str] = set()
     for row in rows:
         mt, preview, stopped, exhaustive = tails.get(row["slot_key"], (0.0, "", False, False))
+        # The TRANSCRIPT's epoch, which is what `reconcile_member_preview` below
+        # carries into its correcting event. The row's shipped `last_active_ts`
+        # is decided after the projections are folded (see the final loop): the
+        # crew log is the recency authority, and this value is its floor.
         row["last_active_ts"] = mt
         row["last_message"] = preview
         if not (preview or exhaustive) or row["slot_key"] in unflushed_slot_keys:
@@ -769,8 +774,59 @@ async def api_members(request: web.Request) -> web.Response:
     for row in rows:
         block = projections.get(row["slug"], {"asOfSeq": _SEQ_UNATTRIBUTABLE, "values": {}})
         row["projections"] = _redact_projection_value(_roster_only(block))
+        row["last_active_ts"] = _recency_for_row(block, row.get("last_active_ts"))
 
     return web.json_response({"members": rows})
+
+
+def _recency_for_row(block: dict, transcript_ts: Any) -> float:
+    """The roster row's ``last_active_ts``: the crew log's fold, floored by the
+    transcript.
+
+    The **crew log is the authority**, and that is the whole point of reading it
+    here. ``RosterProjection`` sets ``last_active_ts`` on every
+    ``member/message`` — including a machinery row that carries no preview — so
+    it answers "when was this member last active", which is the question the
+    Recent sort asks. The transcript's last SPEECH row answers a narrower one:
+    when did this member last SAY something. Ordering by that put a crewmate the
+    user had just messaged below one whose agent had spoken longer ago, and it
+    could not move at all for a member whose log exists but whose transcript
+    rows had not been flushed yet. The same fold is what the pushed
+    ``member_projection`` frame carries, so taking it here makes the cold row
+    and the live frame one value and lets a send reorder the list with no
+    roster refetch.
+
+    The transcript is kept as a **floor**, not as a rival: these events are
+    appended on a best-effort hook that a queue ceiling may drop, and a member
+    whose log has no ``last_active_ts`` at all (no log yet, a shared slug, a
+    read the store would not prove — every one of which answers an empty
+    ``values``) has only the transcript. Taking the greater of the two can
+    therefore lose neither, and because it is monotone a lagging fold can never
+    walk a row's recency backwards.
+    """
+    from kiro_crew.eventlog import types as eventlog_types
+
+    floor = _as_epoch(transcript_ts)
+    values = block.get("values") if isinstance(block, dict) else None
+    roster = values.get(eventlog_types.PROJ_ROSTER) if isinstance(values, dict) else None
+    folded = _as_epoch(roster.get("last_active_ts")) if isinstance(roster, dict) else 0.0
+    return max(floor, folded)
+
+
+def _as_epoch(value: Any) -> float:
+    """*value* as epoch seconds, or ``0.0`` for anything that is not a number.
+
+    A projection field is whatever the event carried, so this must survive
+    ``None`` (a ``member/message`` with no ``ts``), a bool, and a string,
+    without letting any of them become an ordering key. ``bool`` is excluded
+    explicitly: it is an ``int`` subclass, so ``True`` would otherwise rank a
+    member one second after the epoch instead of not at all.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0.0
+    if value != value or value in (float("inf"), float("-inf")):  # NaN / infinities
+        return 0.0
+    return float(value) if value > 0 else 0.0
 
 
 def _member_thread_slot(cfg, member: str, slug: str) -> tuple[str, str]:

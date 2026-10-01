@@ -2400,14 +2400,14 @@ class TelegramDispatcher:
         another transport too.
         """
         assert self.client is not None
-        reply = await stop_running_turn(
+        await stop_running_turn(
             self.sessions,
             session_key or self._session_key(route),
             queue=self._queue,
             surface=self._receipt_surface(chat_id, None),
             owner=_entry_owner(origin),
+            deliver=lambda text: self._reply(chat_id, text, thread=self._route_thread(route)),
         )
-        await self._reply(chat_id, reply, thread=self._route_thread(route))
 
     # ── /yolo (global auto-approve grant) ──────────────────────────────────
 

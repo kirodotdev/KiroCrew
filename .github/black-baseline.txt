@@ -143,7 +143,6 @@ src/kiro_crew/builtin_skills/kirocrew-dev/prepare-pr/scripts/local_review.py
 src/kiro_crew/changelog.py
 src/kiro_crew/channel_history.py
 src/kiro_crew/channel_transcript_migration.py
-src/kiro_crew/cli_desktop.py
 src/kiro_crew/config/schema.py
 src/kiro_crew/config/validation.py
 src/kiro_crew/connections/alias_record.py
@@ -255,7 +254,6 @@ src/kiro_crew/perf_sampler.py
 src/kiro_crew/platform/admission.py
 src/kiro_crew/platform/update_layout.py
 src/kiro_crew/pod/launchd.py
-src/kiro_crew/pod/provision.py
 src/kiro_crew/publish_governance.py
 src/kiro_crew/publish_sync.py
 src/kiro_crew/sel.py
@@ -587,7 +585,6 @@ test/test_host_service_guard.py
 test/test_image_artifacts.py
 test/test_inbound_unbind_notice.py
 test/test_installer_distro.py
-test/test_installer_node_floor.py
 test/test_instances_search_federation.py
 test/test_interactions_shortcut.py
 test/test_ios_simulator_preview_skill.py
@@ -737,13 +734,11 @@ test/test_pptx_maker_decks.py
 test/test_pptx_maker_engine_source.py
 test/test_pptx_maker_library.py
 test/test_pptx_maker_paths.py
-test/test_pptx_maker_provision.py
 test/test_pptx_maker_routes.py
 test/test_pr_readiness_publish.py
 test/test_prepare_pr_local_review.py
 test/test_prepare_pr_profiles.py
 test/test_prepare_pr_status.py
-test/test_previous_result_read_off_loop.py
 test/test_process_tree_kill.py
 test/test_project_alias.py
 test/test_project_git.py
@@ -828,7 +823,6 @@ test/test_slack_agent_passthrough.py
 test/test_slack_dashboard_live_sync.py
 test/test_slack_handler_coverage_branches.py
 test/test_slack_home_tab.py
-test/test_slack_inline_stop.py
 test/test_slack_linked_approval.py
 test/test_slack_mirror_unlink.py
 test/test_slack_options_lifecycle.py

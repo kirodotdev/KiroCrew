@@ -25,7 +25,7 @@ Reqs 1/3/4/5/6 without the module; only the typed rich preview (Req 2.2) is gate
   - Confirmed (via reading `useWebSocket.ts` + `ChatInput.tsx`) that a `PendingDecision`
     assembles from the existing PreToolUse event with NO new backend wire field, and that the
     resume identifier is `approval.request_id`: plain approve/reject resolves through the
-    id-scoped `api.resolveApproval(request_id, action)` (`ChatInput.tsx`), NOT slot-scoped
+    id-scoped `api.resolveApproval(request_id, action)` (`ChatInput.tsx`, now in chat-input/approval.ts), NOT slot-scoped
     `approveChatSlot` (which is used only for trust grants, and downgrades to `resolveApproval`
     for unattended sources).
   - _Requirements: 3.3, 3.4, 5.1, 6.4, 8.1, 8.3_
@@ -46,7 +46,7 @@ Reqs 1/3/4/5/6 without the module; only the typed rich preview (Req 2.2) is gate
 - [ ] 3. Wire the resume path (approve / reject / pattern)
   - Route the decision through the existing `onApprove(decision, pattern?)`. Plain
     approve/reject resolves via the id-scoped `api.resolveApproval(request_id, action)`
-    (`ChatInput.tsx`); the slot-scoped `api.approveChatSlot(slot, …)` is reserved for trust
+    (`chat-input/approval.ts`); the slot-scoped `api.approveChatSlot(slot, …)` is reserved for trust
     grants (and downgrades to `resolveApproval` for unattended sources). Forward an approval
     `pattern` verbatim on the path that accepts it. Do NOT introduce a new approval API path.
   - Ensure resume targets the same invocation via `approval.request_id`; a stale/closed id is

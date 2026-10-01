@@ -1421,19 +1421,28 @@ class TestAnAppendWaitsOutAnotherProcessesLease:
         # without a second interpreter.
         key = lease.acquire(lease_path, kind=KIND_MEMBER, unit_id="waiter", sole=True)
         hold_seconds = 0.2
+        # Ordered by events, not timed: Windows' monotonic clock on Python 3.12 is
+        # ~15.6ms steps, so an elapsed-time check has no margin at all. The hold
+        # starts only once the append is about to run, so the append's first
+        # attempt meets a held lease; ``releasing`` is set just BEFORE the release,
+        # so an append that returns while it is still unset never waited.
+        appending = threading.Event()
+        releasing = threading.Event()
 
         def _release_after_holding() -> None:
+            appending.wait(5)
             time.sleep(hold_seconds)
+            releasing.set()
             lease.release(key)
 
         holder = threading.Thread(target=_release_after_holding, daemon=True)
         holder.start()
-        started = time.monotonic()
         try:
+            appending.set()
             svc.append("waiter", ACTIVITY_RECORD, {"member": "Waiter", "ts": "x"})
+            waited_out_the_holder = releasing.is_set()
         finally:
             holder.join(timeout=5)
-        elapsed = time.monotonic() - started
 
         assert [e["type"] for e in svc.history("waiter", before=None, limit=None)] == [
             ACTIVITY_RECORD
@@ -1441,7 +1450,7 @@ class TestAnAppendWaitsOutAnotherProcessesLease:
         # The append must have WAITED, not raced the release. Without this the test
         # passes whenever the holder happens to let go first, which is a test of
         # timing rather than of the retry -- and it passed with the retry removed.
-        assert elapsed >= hold_seconds
+        assert waited_out_the_holder, "the append returned while the other holder still held it"
 
     def test_a_holder_past_the_budget_still_reports_rather_than_waiting_forever(self, monkeypatch):
         # CONTROL, two ways. It proves the wait is BOUNDED, so a wedged peer cannot

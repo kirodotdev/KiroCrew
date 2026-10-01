@@ -508,6 +508,30 @@ retirement machinery detects and recycles them, in `session_lifecycle.py`
 (`retire_kiro_identity_sessions`) driven by the per-turn gate in
 `chat_runner.py`, against baselines owned by `KiroPrerequisiteService`.
 
+**Identity fingerprint** (`current_identity_fingerprint`): one string over
+every credential source a child may have loaded, each kept as its OWN
+component so a failed read drops a component rather than changing one: the
+kiro-cli store's hashed stable claims, then `+key:<sha256>` for Kiro CLI's own
+`KIRO_API_KEY` (read from the environment, falling back to the data home's
+`.env`, as the `whoami` probe does), then `+crew:<digest>` for the Crew vault.
+The key and vault components appear only when present, so a host with neither
+fingerprints exactly as the store alone. An API-key host keeps no identity row
+in the store, and without the key component it read as signed out on every
+turn — every dashboard send retired idle sessions and cancelled their
+`spawn_run` children (#15126). The key joins only a DEFINITIVE store answer
+(read and audited with every credential row identified, or no store file at
+all): after an unauditable, unreadable or relocated store read, or one that
+found a login no stable claim identifies (a social login), only the key
+component is withheld and the fingerprint is exactly what it was before the key
+was counted, because a harness that strips the key (KAS) authenticates from the
+store, and a key-only baseline would let a store account switch compare equal.
+A child whose per-session env overlay (`extra_env`, e.g. a cron job's `env`
+block) names `KIRO_API_KEY` is never spawn-stamped and never spared by the
+sweep: the fingerprint reads the gateway's credentials, and that child may have
+authenticated as a different account. A spawn stamp proves a wrong account only
+through its store or vault component, never its key component: a harness that
+strips the key (KAS) is unaffected by a key rotation, which the ordinary
+baseline comparison still reports.
 **Boot-seeded baseline** (`seed_sessions_baseline`): the running-children
 baseline is adopted from the store at gateway startup, before anything can
 spawn a kiro-backed child, so every child postdates the read. This removes the
@@ -516,7 +540,8 @@ busy, nothing mid-start) is routinely unsatisfiable on a live gateway —
 retired idle sessions are eagerly respawned by dashboard slots, the next sweep
 reads incomplete, and the baseline never advances, recycling healthy children
 forever. The seed refuses (keeping the fail-safe sweep) under `assume_ready`,
-when a baseline is already recorded, when the store cannot be fingerprinted,
+when a baseline is already recorded, when the identity cannot be fingerprinted
+(an unreadable store with no API key, or any store read that is not definitive),
 and when the read hangs past a 5s bound.
 
 **Interim latch** (`_maybe_latch_interim_identity`): a bare baseline
@@ -545,10 +570,13 @@ child keeps exactly the pre-stamping protections.
 
 **Live-account spare** (`spawned_under`, inside the sweep): a session or
 companion runtime whose spawn stamp EQUALS the live fingerprint — the whole
-fingerprint, both components — provably authenticated as the live account and
+fingerprint, every component — provably authenticated as the live account and
 is skipped by `retire_kiro_identity_sessions`: not retired, not flagged, and
 not counted against completeness (the runtime reapers take the fingerprint as
-`live=` and apply the same test to their post-conditions). Without it the
+`live=` and apply the same test to their post-conditions). For a child that
+never received `KIRO_API_KEY` (KAS and every foreign backend strip it at
+spawn) the key component is left out of that comparison, so a key rotation
+does not retire its idle parent and cancel its running children. Without it the
 sweep retired every kiro-backed idle session and could complete only when
 every kiro-backed holder was idle at once, which a busy gateway never is:
 each turn re-swept, and an idle parent whose `spawn_run` children were still
@@ -626,8 +654,8 @@ against sweep completeness, and are torn down at `close_all`.
      counter below 1 while the flag is only set with it at 2 or more, so the flag is
      already clear on that path. The second clear is what makes
      the flag independent of the several controls that discard a queued
-     continuation without landing a turn (the hard-kill Stop's queue clear, a plan
-     Cancel's owner-scoped discard, a rewind commit's rebuild). None of those
+     continuation without landing a turn (the hard-kill Stop's queue clear, a rewind
+     commit's rebuild). None of those
      resets the recovery counter, so a spent counter can still route a LATER
      request into rung 2, and that request's own turns must not inherit this
      episode's evidence. The counter's own staleness across those controls is
@@ -1308,7 +1336,7 @@ against sweep completeness, and are torn down at `close_all`.
 | `record_success(key)` / `record_failure(key)` | Circuit breaker tracking. |
 | `release(key)` | Release per-session semaphore (must call in `finally`). |
 | `cancel_current(key, *, wait_ack_timeout=0.0)` | Cancel in-flight operation without destroying session. Returns `CancelOutcome`. Default `wait_ack_timeout=0.0` preserves fire-and-forget behavior for internal callers (taskrunner, subagent, llm_helpers). |
-| `stop_turn(key, *, force=False, on_soft=None, on_hard=None)` | Cooperative stop with kill fallback. Returns `StopOutcome` (`"soft"`, `"hard"`, or `"idle"`). Clears queue unconditionally, then sends `session/cancel` and waits up to `agent.soft_stop_budget_secs`; falls back to `reset()` + eager respawn on timeout or error. `force=True` skips cancel and goes straight to hard kill. `on_soft`/`on_hard` callbacks fire before return. |
+| `stop_turn(key, *, force=False, preserve_queue=False, on_soft=None, on_hard=None)` | Cooperative stop with kill fallback. Returns `StopOutcome` (`"soft"`, `"hard"`, `"idle"`, or `"compacting"`). A cooperative stop on a session whose own automatic `/compact` turn holds it answers `"compacting"` BEFORE recording the Stop or clearing anything: cancelling that turn would fail the compaction and recycle the session. Otherwise records the Stop, clears the queue unless `preserve_queue`, then sends `session/cancel` and waits up to `agent.soft_stop_budget_secs`; falls back to `reset()` + eager respawn on timeout or error. `force=True` is never declined: it skips cancel and goes straight to hard kill. `on_soft`/`on_hard` callbacks fire before return. Callers with side effects of their own (a queue clear, a pending-file unlink, a task pop) probe `session_lifecycle.compaction_in_flight` first and run them only after an outcome other than `"compacting"`. |
 | `reset(key, *, expect_session=None, skip_if_busy=False, clear_conversation=False)` | Kill session; returns `bool` (True iff a session was actually torn down). Does NOT delete session map entry (kiro-cli file persists for future resume). Optional guards evaluated atomically under the lock with the pop, used by the RSS-recycle watchdog: `expect_session` only resets if that exact session object still occupies the key (guards against recycling a reset+recreated session on a stale off-lock RSS reading); `skip_if_busy` skips when the current session's semaphore is held so a live stream is never cut mid-turn. `clear_conversation=True` additionally clears the native resume sid in the SAME event-loop tick as the pop (entry + channel bindings survive, as in `_recycle_held`) — used by the still-critical post-compaction escalation so the overflowed conversation is not reloaded, without a delayed clear ever erasing a racing successor's sid. |
 | `discard_conversation(key)` | Kill session AND clear only the resume sid (`SessionMap.clear_sid`) — the map ENTRY survives, preserving Slack thread/channel linkage and the reverse thread→session index. The cleared sid is stashed as `discarded_sid` in the entry, so the discard is diagnosable and manually reversible (the native conversation persists on disk; only the pointer is dropped). Every path that empties `sid` in place records what it dropped, through one shared `_stash_and_clear_sid` — this discard, the provider switch, the startup prune and the per-read stale repair — because a history reader answers from that field and cannot tell which path wrote it, so a field written by only some of them holds a genuine id that is not the latest one. The next turn cold-starts a fresh native conversation instead of `session/load`-ing the old one. Used by the poisoned-conversation escalation in `chat_runner` (canary-verified backend rejection of a specific persisted conversation), by typed `IMAGE_FORMAT_UNSUPPORTED` recovery when a dashboard turn supplied no new attachment (the native history retains unsupported image bytes while the bounded Kiro Crew replay is text-only), and by the Slack / Discord / Telegram `/compact` failure recovery: the conversation is unusable but the session's channel identity must persist. This is the shape every HOUSEKEEPING teardown takes — `SessionMap.prune` refuses to delete an entry carrying a channel binding, and `_recycle_held` clears the sid for the same reason. Only an explicit user action (`destroy`) may remove a channel identity. Sits between `reset` (sid kept, resume expected) and `remove` (entry deleted, no resume). |
 | `remove(key)` | Shut down a session but PRESERVE the session map entry — the kiro-cli session files remain on disk, so a future `get_or_create` restores the conversation losslessly via `session/load`. For revivable teardown (tab close, agent switch, idle kill). Permanent deletion is `destroy(key)`. |
@@ -1400,6 +1428,11 @@ applier — a raised turn budget is in force on the next prompt.
 
 `stop_turn()` is the shared orchestration layer for every stop surface (dashboard Stop button, Slack `/kirocrew stop`, transport stop verbs). Sequence:
 
+0. Decline a cooperative stop while the session's own automatic `/compact` turn
+   holds it (`key in _compacting`, `force=False`): return `"compacting"` before
+   anything below runs. Cancelling that turn would fail the compaction and recycle
+   the session, so nothing is recorded and nothing is cleared; the caller tells the
+   user and the compaction finishes on its own. `force=True` is never declined.
 1. Record the Stop: `stop_requests[key] += 1` (per folded key, on
    `SessionLifecycleState`). This runs BEFORE anything is awaited so the
    dashboard runner's end-of-turn gates -- which may run the moment the
@@ -1449,6 +1482,30 @@ success. The next prompt handler (dashboard `_run_chat`, Slack
 re-inject the cancelled user prompt and partial assistant output. This is
 necessary because kiro-cli discards cancelled turns from its own ACP
 conversation log, so the LLM has no memory of the interrupted request.
+
+### Interrupted-turn context restore
+
+kiro-cli appends a prompt to `<sid>.jsonl` only once the model has answered
+it, so a turn cut off by the serving process dying (a gateway restart, a crash,
+a recycled runtime) is never written, and `session/load` restores the
+conversation without it. A natively resumed session gets no Kiro Crew replay,
+so the dashboard's Resume press (`_MANUAL_RESUME_MSG`) and the automatic
+connection-lost and session-busy recoveries (`_CONN_RECOVER_MSG`,
+`_BUSY_RECOVER_MSG`) would ask the model to finish a
+request it cannot see. When either runs on a session that THIS turn resumed
+natively (`is_new` and the provider has history), `_run_chat` prepends
+`context.build_interrupted_turn_preamble(slot.messages, current=...)` to the
+final prompt AFTER the egress scrub (its markers are registered in
+`_STRUCTURAL_MARKER_RES`, so a copy planted in transcript or tool text is
+neutralized; the restored payload is scrubbed by the builder): the
+newest turn opener before the resume row (a user, nudge or sub-agent row, or an
+`inject` whose kind is in `dashboard.state.TURN_OPENING_INJECT_KINDS` -- a cron,
+app or synthesis delivery; a recovery inject such as an earlier Resume press is
+walked past) plus the assistant text it had streamed, bracketed `[INTERRUPTED TURN …]` / `[END INTERRUPTED TURN]`. A cold
+start that replays (Tool Search on a dashboard chat, a failed load) already
+carries the turn and gets no preamble. A session whose ONLY turn was
+interrupted is handled one layer down: `SessionMap.get` prunes a sid whose
+`<sid>.jsonl` holds no turn, so that start replays instead of loading.
 
 ### Edit rewind context boundary
 
@@ -2520,6 +2577,20 @@ semaphore. When a DM arrives mid-turn, the dispatcher acts on
   that finishes in the window runs the message instead of stranding it — and
   drain it after the turn, iteratively and capped (not recursively).
 
+A DM bound to a **resumed dashboard session** is the exception: `is_busy` there
+usually means the DASHBOARD turn loop holds the semaphore, and the channel's queue
+is drained only at the tail of a channel-driven turn with resume routing off, so a
+message enqueued there would later run in the channel's native session. Discord
+hands such a message to the dashboard slot's own machinery instead
+(`dashboard/channel_handoff.py`): the slot's steer path (`steer_into_running_turn`,
+recording the same audience fence a peer steer records) or the slot's queue
+(`queue_for_next_turn`, drained by the dashboard turn loop), and confirms in the
+DM. The refusal stays when the slot cannot take the message — no open slot, a
+closing or remote-bound slot, a slot that is not itself running the turn (a
+channel-driven turn on the resumed key), or attachments; an incognito or
+temporary session is taken like any other, since those modes keep their
+transcript and queue. See [messaging](messaging.md#a-busy-resumed-dashboard-session-takes-the-slots-own-machinery-discord).
+
 WeCom always steers regardless of `queue_mode`: its replies are bound to the
 inbound request, so a queued-then-drained reply can't be delivered later
 (capability-driven, like `supports_proactive_send=False`).
@@ -2588,7 +2659,7 @@ so absence clears it.
   pending-action latch instead of treating a no-op as accepted. Interrupt requests
   that produce a command outcome are audited to the SEL as a
   `dashboard_interrupt` command: the idle dispatch logs `outcome="started"`, a
-  running press logs the `stop_turn` outcome (`soft` / `hard` / `idle`), and a
+  running press logs the `stop_turn` outcome (`soft` / `hard` / `idle` / `compacting`), and a
   superseded or already-in-progress press logs `outcome="noop"`. Requests
   rejected before a command outcome, including validation and idle-dispatch
   race refusals, are recorded by the generic mutating-API audit instead.
@@ -2630,7 +2701,7 @@ so absence clears it.
 - **Durability does not depend on the mutation site.** `_queue_persisted_sig`
   records what the last committed save wrote and `slot.queue_persist_pending`
   compares it against the live queue, so an in-place rewrite — a reorder, a
-  plan-approval filter, a force-stop clear — is picked up by the periodic flush
+  force-stop clear — is picked up by the periodic flush
   without each site marking the slot dirty. The flush and the resumed-slot no-op
   guard both read it beside `_dirty`.
 - **A rows-only handover save defers the key** (it is in
@@ -2726,7 +2797,31 @@ only when a `mirror` `ChannelLink` exists on the dashboard-side key:
   pre-unification `dashboard:` row it superseded — because the read falls back
   to the older row the moment the canonical one is gone: popping the winner
   alone left the session reading as mirrored to its previous target, and the
-  dashboard redrew the row its Unlink had just reported removed.
+  dashboard redrew the row its Unlink had just reported removed. The link may
+  also carry the **peer it was admitted for** (`ChannelLink.principal`), stored
+  inside the `mirror` row and read back with it: the dashboard's mirror-link
+  handler records the `user:<id>` it resolved and admitted, a Discord `!sessions`
+  pick records the pressing owner, and every other writer (an origin bind, a room
+  or thread target) records none. Because `session_map.json` is writable by
+  in-sandbox code, such a row carries an `admission` — HMAC-SHA256 over the
+  canonical session key and the whole location under a key derived from the
+  sandbox-masked `token_signing.key` (`kiro_crew.mirror_admission`) — minted ONLY
+  by those two creation paths before they hand the link over. `set_mirror_link`
+  never mints or repairs one: it stores the caller's bytes verbatim, so a rollback
+  that re-sets a row it read back keeps a verifying admission byte-for-byte and can
+  never sign a planted one
+  (every rollback first passes the row through `mirror_admission.restorable_link`,
+  which strips a peer whose admission does not verify), and a row assembled
+  anywhere else never verifies. Neither field is part of the binding's identity —
+  the nonce rule, `find_mirror_sessions` and the location sweep compare links by
+  location alone; a rollback's ownership guard alone compares the whole row
+  (`ChannelLink.same_row`) — and both are replaced with the row, so a rewrite that
+  names no peer stores none. Their reader is the per-send recipient
+  check in [messaging](messaging.md) (§ Proactive sends), for a dashboard-born
+  session whose key names nobody: it hands the roster the peer only when the
+  admission verifies
+  for that session and location, and a rotated signing key refuses every such
+  mirror until it is re-linked.
 - `SessionManager.clear_mirror_link_if(key, channel_type, token)` /
   `clear_slack_link_if(key, channel_type, token)` — compare-and-clear as ONE
   step under the map's own lock: the binding held is recomputed into its row

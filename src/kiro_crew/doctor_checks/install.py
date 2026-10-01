@@ -12,7 +12,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from kiro_crew import cli_doctor, stdlib_shadow
+from kiro_crew import cli_doctor
 from kiro_crew.doctor_checks import render
 
 # Top-level entries that hold a Python virtual environment rather than user
@@ -381,7 +381,7 @@ def _doctor_import_path(issues: list[str]) -> None:
     is an issue; a launch entry on ``sys.path`` is a note, because a console
     script's own ``bin/`` is the ordinary case for a pip install.
     """
-    shadows = stdlib_shadow.find_shadowed_stdlib()
+    shadows = cli_doctor.stdlib_shadow.find_shadowed_stdlib()
     if shadows:
         for s in shadows:
             entry = s.path_entry or os.getcwd()
@@ -389,7 +389,7 @@ def _doctor_import_path(issues: list[str]) -> None:
             # rather than write them to the terminal.
             print(f"  import path: ❌ {s.name} shadowed by {ascii(s.resolved)}")
             print(f"               sys.path entry {ascii(entry)} ({s.entry_kind})")
-        remedy = stdlib_shadow.remedy_command(shadows[0])
+        remedy = cli_doctor.stdlib_shadow.remedy_command(shadows[0])
         if remedy is None:
             print(
                 "               Fix: move or rename the shadowed path above, or run from another directory"

@@ -1900,6 +1900,24 @@ class SshTunnelManager:
         reserved |= self._registry.live_hop_leases()
         return reserved
 
+    def _port_recorded_by_another_row(self, port: int, own_id: str) -> bool:
+        """Does any registry row OTHER than ``own_id`` record ``port`` as its local_port?
+
+        BLOCKING -- reads the registry from disk, so call it from a thread, the same
+        rule as :meth:`_reserved_ports`.
+
+        A crew's own recorded port is dropped from the exclude set so its origin
+        preference is reachable, but two rows can record the SAME port number (a
+        duplicate hint left by an earlier allocation). Removing that number from the
+        exclude set on this crew's behalf would also unreserve it for the other row,
+        letting this crew's forward bind a port a hub still forwards another crew's
+        bearer token to -- the confused-deputy the reservation exists to close. The
+        port is this crew's to reclaim only when no other row still records it.
+        """
+        return any(
+            other.id != own_id and other.local_port == port for other in self._registry.list()
+        )
+
     def sync_hop_holds(self) -> set[int]:
         """Hold every lent hop port no live forward is serving. Returns what failed.
 
@@ -3346,15 +3364,27 @@ class SshTunnelManager:
             # unverified process is therefore left alone, and allocation simply
             # skips its port.
             #
-            # There is deliberately no "take my own previous port back" branch.
-            # It reads as free stability, but the case it fires in cannot benefit:
-            # ``disconnect`` zeroes the port, while ``shutdown`` documents that it
-            # "Leaves registry hints intact", so the recorded port survives a
-            # gateway RESTART rather than only a crash — and after any restart the
-            # token is re-minted and the pane reloads, so there is no iframe
-            # origin or ``mc_token_<port>`` cookie left to keep stable. The
-            # in-session case that genuinely wants the same port is already served
-            # by ``_recover``, which reuses ``current.status.local_port``.
+            # The recorded ``local_port`` is PREFERRED, not merely skipped: the
+            # loopback port is the browser ORIGIN of this pane's iframe
+            # (``http://<host>:<local_port>``), and origin-keyed client state —
+            # ``localStorage`` UI preferences above all — is lost the moment that
+            # origin moves. ``disconnect`` zeroes the port, but ``shutdown``
+            # documents that it "Leaves registry hints intact", so the recorded
+            # port survives a gateway RESTART, and the auto-revive on the next
+            # start reconnects through here. A first-free-only allocator lets the
+            # crew land on a DIFFERENT port after that restart whenever another
+            # instance claimed the lower port first, silently resetting the user's
+            # pane settings — re-minting the token and reloading the pane does
+            # nothing for state the browser keys by origin. So the recorded port
+            # is passed as ``preferred`` and returned unchanged when it is still
+            # free; only if something else now holds it does allocation fall
+            # through to first-free. The recorded port is
+            # dropped from ``reserved`` first (``_reserved_ports`` adds every row's
+            # own ``local_port``), or the preference could never be honoured. A
+            # rebuild deliberately wants a different port — the field evidence puts
+            # every stall on the first-allocated port — so it passes no preference
+            # and keeps the recorded port excluded, gated on the rebuild flag
+            # rather than on there being a freed port to add back.
             #
             # Everything here runs off the event loop: ``_reserved_ports`` reads
             # the registry from disk under its own lock, and the port probe binds
@@ -3365,10 +3395,47 @@ class SshTunnelManager:
             # stall unrelated requests and heartbeats. This matches how the rest
             # of the module already reaches the registry (``asyncio.to_thread``).
             reserved = await asyncio.to_thread(self._reserved_ports)
-            if rebuild_freed_port is not None:
-                reserved = set(reserved) | {rebuild_freed_port}
+            # Prefer this crew's own recorded port for origin stability (above),
+            # but not on a rebuild, which wants a fresh port. ``_reserved_ports``
+            # adds every row's ``local_port`` including this crew's, so the
+            # preference is unreachable unless its own port is dropped from the
+            # exclude set first.
+            #
+            # SECURITY: the drop must NOT expose a port another crew still claims.
+            # Two rows can record the SAME port number (a duplicate hint from an
+            # earlier allocation), and a LIVE HOP LEASE means a chained credential
+            # this gateway minted still routes a bearer token to that port number,
+            # so ``_reserved_ports`` withholds it whoever's row records it. Dropping
+            # it here to satisfy the origin preference — while another row records
+            # it or a lease covers it — would bind this crew's forward under a token
+            # minted for a different crew, the exact confused-deputy the reservation
+            # exists to close. A shared or leased recorded port therefore stays
+            # reserved and unpreferred: the crew takes a fresh port this cycle, and
+            # the next reconnect once it is this crew's alone restores the stable
+            # origin. The lease is re-armed on a failed forward exit by
+            # ``_on_tunnel_exit`` / ``_recover_after``.
+            preferred_port = 0
+            if rebuild:
+                # A rebuild wants a fresh port, so the recorded port stays
+                # excluded — whether or not the torn-down forwarder had bound
+                # one to free (``rebuild_freed_port`` can be None when the old
+                # tunnel never bound a port). Gating on the flag rather than the
+                # freed port keeps the recorded port reserved in every rebuild.
+                reserved = set(reserved)
+                if rebuild_freed_port is not None:
+                    reserved |= {rebuild_freed_port}
+            elif inst.local_port:
+                leased = await asyncio.to_thread(self._registry.live_hop_leases)
+                shared = await asyncio.to_thread(
+                    self._port_recorded_by_another_row, inst.local_port, inst.id
+                )
+                if inst.local_port not in leased and not shared:
+                    preferred_port = inst.local_port
+                    reserved = set(reserved) - {inst.local_port}
             try:
-                local_port = await asyncio.to_thread(self._allocator.allocate, exclude=reserved)
+                local_port = await asyncio.to_thread(
+                    self._allocator.allocate, exclude=reserved, preferred=preferred_port
+                )
             except RuntimeError as e:
                 return self._error_status(inst, str(e))
 

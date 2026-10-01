@@ -50,14 +50,16 @@ class TestChatSlotMode:
         app.middlewares.append(_as_app)
         with patch("kiro_crew.dashboard.chat_folders.save_slot_off_loop") as save:
             async with TestClient(TestServer(app)) as client:
-                resp = await client.patch("/api/chat/slots/s1/mode", json={"mode": "orchestrator"})
+                resp = await client.patch("/api/chat/slots/s1/mode", json={"mode": ""})
                 assert resp.status == 404
                 assert (await resp.json())["code"] == "slot_not_found"
         save.assert_not_called()
         assert mine.mode == ""
 
     @pytest.mark.asyncio
-    async def test_switch_to_orchestrator(self):
+    async def test_retired_orchestrator_mode_is_coerced_to_plain_chat(self):
+        """Autopilot retired: an older client that still asks for it gets plain
+        chat instead of a 400."""
         slot = _ChatSlot("test")
         assert slot.mode == ""
         state = _mock_state(slot)
@@ -69,14 +71,14 @@ class TestChatSlotMode:
                 )
                 assert resp.status == 200
                 data = await resp.json()
-                assert data == {"ok": True, "mode": "orchestrator"}
-                assert slot.mode == "orchestrator"
+                assert data == {"ok": True, "mode": ""}
+                assert slot.mode == ""
                 state.push_slots_update.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_switch_back_to_default(self):
         slot = _ChatSlot("test")
-        slot.mode = "orchestrator"
+        slot.mode = "design-critique"
         state = _mock_state(slot)
         with patch("kiro_crew.dashboard.chat_folders.save_slot_off_loop"):
             async with TestClient(TestServer(_make_app(state))) as client:
@@ -111,14 +113,14 @@ class TestChatSlotMode:
             async with TestClient(TestServer(_make_app(state))) as client:
                 resp = await client.patch(
                     "/api/chat/slots/nonexistent/mode",
-                    json={"mode": "orchestrator"},
+                    json={"mode": ""},
                 )
                 assert resp.status == 404
 
     @pytest.mark.asyncio
     async def test_missing_mode_defaults_to_empty(self):
         slot = _ChatSlot("test")
-        slot.mode = "orchestrator"
+        slot.mode = "design-critique"
         state = _mock_state(slot)
         with patch("kiro_crew.dashboard.chat_folders.save_slot_off_loop"):
             async with TestClient(TestServer(_make_app(state))) as client:
@@ -145,7 +147,7 @@ class TestChatSlotMode:
                 async with TestClient(TestServer(_make_app(state))) as client:
                     resp = await client.patch(
                         "/api/chat/slots/test/mode",
-                        json={"mode": "orchestrator"},
+                        json={"mode": ""},
                     )
                     assert resp.status == 409
                     assert slot.mode == ""  # unchanged
@@ -175,28 +177,12 @@ class TestChatSlotMode:
             async with TestClient(TestServer(_make_app(state))) as client:
                 resp = await client.patch(
                     "/api/chat/slots/test/mode",
-                    json={"mode": "orchestrator"},
+                    json={"mode": ""},
                 )
         assert asked == ["slack:1785370133.085469"]
         # And the answer is honoured: pending work refuses the switch.
         assert resp.status == 409
         assert slot.mode == ""
-
-    @pytest.mark.asyncio
-    async def test_auto_run_cleared_on_leaving_orchestrator(self):
-        slot = _ChatSlot("test")
-        slot.mode = "orchestrator"
-        slot._auto_run = True
-        state = _mock_state(slot)
-        with patch("kiro_crew.dashboard.chat_folders.save_slot_off_loop"):
-            async with TestClient(TestServer(_make_app(state))) as client:
-                resp = await client.patch(
-                    "/api/chat/slots/test/mode",
-                    json={"mode": ""},
-                )
-                assert resp.status == 200
-                assert slot.mode == ""
-                assert slot._auto_run is False
 
     @pytest.mark.asyncio
     async def test_crew_is_no_longer_a_switchable_mode(self):
@@ -224,7 +210,12 @@ class TestRetiredModeRestore:
 
         assert _restored_mode("crew") == ""
 
-    @pytest.mark.parametrize("raw", ["orchestrator", "design-critique", "member"])
+    def test_orchestrator_restores_as_plain_chat(self):
+        from kiro_crew.dashboard.chat_persistence import _restored_mode
+
+        assert _restored_mode("orchestrator") == ""
+
+    @pytest.mark.parametrize("raw", ["design-critique", "member"])
     def test_live_modes_pass_through(self, raw):
         from kiro_crew.dashboard.chat_persistence import _restored_mode
 

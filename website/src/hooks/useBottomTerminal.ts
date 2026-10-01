@@ -233,7 +233,12 @@ function dropTabs(ids: ReadonlySet<string>): void {
 
 const newRuling = (restored: ReadonlySet<string>) =>
   createTerminalHydrateRuling(restored, () => state.tabs.map(t => t.id), dropTabs, emit)
-let ruling = newRuling(new Set(state.tabs.map(t => t.id)))
+// The session ids restored from persistence at module init. The ruling closes
+// over its own copy for the two-look absence protocol and exposes no per-id
+// query, so reuseCurrentTab keeps this set to tell a restored tab (a hydration
+// suspect until the ruling settles) from a freshly minted one.
+let restoredIds: ReadonlySet<string> = new Set(state.tabs.map(t => t.id))
+let ruling = newRuling(restoredIds)
 
 /** First look: weigh the restored tab set against the backend's session list
  *  (the JSON body of `GET /api/terminal/sessions`, or null when the probe
@@ -357,6 +362,36 @@ export function adoptTab(id: string, cwd?: string): boolean {
  *  here, and rolling back anyway would double-delete the PTY. */
 export function hasTab(id: string): boolean {
   return state.tabs.some(t => t.id === id)
+}
+
+/** Focus the current existing dock terminal and return its session id, or null
+ *  when the panel holds none. This is the "reuse the current terminal" path
+ *  for Run-in-terminal (opt-in via `dashboard.terminal.reuse_current`):
+ *  reusing an existing shell keeps its state (env, cwd, an active `awsume`
+ *  session) that a freshly minted PTY would not have — which is exactly what
+ *  the setting exists to preserve.
+ *
+ *  "Current" means the focused tab, not simply the most recently created one:
+ *  a user may select an older shell because that is where their active login
+ *  lives. A stale or missing active id falls back to the last tab, matching the
+ *  cap fallback in `addTab` and keeping old persisted state recoverable. The
+ *  PTY is NEVER minted here: a null return means there is no settled shell to
+ *  focus, so the caller skips the focus step — it does NOT mint and run a fresh
+ *  tab, because reuse-on always copies the command for manual paste and never
+ *  executes it. Opens the panel so the reused shell is visible, the same as
+ *  `addTab`. */
+export function reuseCurrentTab(): string | null {
+  const current = state.tabs.find(tab => tab.id === state.activeId) ?? state.tabs[state.tabs.length - 1]
+  if (!current) return null
+  // A tab restored from persistence is a hydration SUSPECT until a live probe
+  // confirms it (see reconcileRestoredTabs). Reusing one before it settles
+  // would copy the command against a tab that reconciliation may then drop,
+  // leaving no terminal and no fresh-tab fallback. While hydration is unsettled
+  // and the chosen tab is such a suspect, return null so the caller mints a
+  // fresh tab, which it owns outright.
+  if (ruling.isPending() && restoredIds.has(current.id)) return null
+  set({ ...state, open: true, activeId: current.id })
+  return current.id
 }
 
 /** Remove a tab from the store (the caller disposes the PTY/xterm first).
@@ -489,7 +524,8 @@ export function useTerminalHydratePending(): boolean {
 export function __resetBottomTerminal(): void {
   volatileNames.clear()
   state = { open: false, height: DEFAULT_HEIGHT, width: DEFAULT_WIDTH, position: 'bottom', tabs: [], activeId: null }
-  ruling = newRuling(new Set())
+  restoredIds = new Set()
+  ruling = newRuling(restoredIds)
   emit()
   setTerminalCloseFailed(false)
   if (typeof localStorage !== 'undefined') {

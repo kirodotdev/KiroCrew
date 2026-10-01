@@ -209,7 +209,7 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
   type KirocrewCfg = {
     dashboard?: {
       recent_tint_count?: number
-      terminal?: { shell?: string; completion?: { enabled?: boolean } }
+      terminal?: { shell?: string; completion?: { enabled?: boolean }; reuse_current?: boolean }
     }
   }
   const mcQ = useQuery<KirocrewCfg>({
@@ -317,6 +317,26 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
       setConfigPathValue(cached as KirocrewCfg, 'dashboard.terminal.completion.enabled', value),
     onFailure: () => setCompletionError(i18nT('pages.settings.displayPanel.terminal_completion_save_failed')),
     onSupersede: () => setCompletionError(null),
+  }))
+
+  // Run-in-terminal tab reuse (dashboard.terminal.reuse_current). Server-side
+  // and off by default — the run-in-terminal handler reads it on each click, so
+  // a flip takes effect with no restart. Only a literal `true` reads as on, the
+  // same rule the backend applies, so a hand-edited non-boolean cannot show as
+  // on here while the handler still opens a fresh tab. Same per-path overlay as
+  // the shell and completion fields, so a slow save cannot roll back a sibling.
+  const serverReuseCurrent = mcQ.data?.dashboard?.terminal?.reuse_current === true
+  const shownReuseCurrent = overlay.shown('dashboard.terminal.reuse_current', serverReuseCurrent)
+  const [reuseCurrentError, setReuseCurrentError] = useState<string | null>(null)
+  const reuseCurrentMut = useMutation(overlay.mutationOpts<boolean>({
+    queryKey: ['kirocrewConfig'],
+    mutationFn: (value: boolean) => api.patchConfig('dashboard.terminal.reuse_current', value),
+    path: () => 'dashboard.terminal.reuse_current',
+    displayValue: v => v,
+    applyToCache: (cached, value) =>
+      setConfigPathValue(cached as KirocrewCfg, 'dashboard.terminal.reuse_current', value),
+    onFailure: () => setReuseCurrentError(i18nT('pages.settings.displayPanel.terminal_reuse_current_save_failed')),
+    onSupersede: () => setReuseCurrentError(null),
   }))
 
   // ── Install theme (Level 0) from a local folder or a GitHub repo ──
@@ -684,6 +704,18 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
               are unsaved local state, and the hand-off's navigation unmounts
               the whole panel with them. Same rule as the language notice. */}
           <ErrorNotice message={completionError} variant="inline" />
+          <SettingsToggle
+            label={i18nT('pages.settings.displayPanel.terminal_reuse_current')}
+            description={i18nT('pages.settings.displayPanel.terminal_reuse_current_desc')}
+            checked={shownReuseCurrent}
+            onChange={v => reuseCurrentMut.mutate(v)}
+            disabled={reuseCurrentMut.isPending || !mcQ.isSuccess}
+            configKey="dashboard.terminal.reuse_current"
+          />
+          {/* No hand-off: same unsaved-draft reason as the completion toggle
+              above — `shellDraft` and `installValue` on this panel would be
+              discarded by the hand-off's navigation. */}
+          <ErrorNotice message={reuseCurrentError} variant="inline" />
         </SettingsCard>
       </SettingsSection>
           )

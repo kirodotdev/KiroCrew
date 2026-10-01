@@ -482,13 +482,17 @@ class TestPeerTextIsRedactedAndAllowlisted:
 
         assert data[0]["parent"] == {"slot": "gone"}
 
-    async def test_a_citation_naming_a_hub_driven_slot_is_dropped(self, monkeypatch):
+    async def test_a_citation_naming_a_hub_driven_slot_is_rewritten_to_the_local_driver(
+        self, monkeypatch
+    ):
         """The route's contract is that no peer slot key of a hub-driven binding
         crosses to the browser. The driven row itself is filtered; a peer session
         that row OPENED still ships, and its citation would carry the same key by
-        another route. The citation goes, the child stays, as a root: its creator
-        is on screen as the LOCAL row that drives it, which the lane cannot hang
-        a peer row from anyway."""
+        another route. The citation is rewritten to the LOCAL slot that drives
+        the creator: ``hub_key`` names it in the hub's key space (``key`` is the
+        peer's and stays absent), and ``slot`` names it for the "opened by"
+        glyph. The conductor lane then nests the worker under the local row the
+        user chats in, where before it rendered as a top-level stray."""
         _enable_instances(monkeypatch)
         rows = [
             {"key": "peer-chat-9", "title": "driven lead"},
@@ -503,10 +507,28 @@ class TestPeerTextIsRedactedAndAllowlisted:
 
         by_key = {r["key"]: r for r in data}
         assert set(by_key) == {"w1", "w2", "w3"}
-        assert "parent" not in by_key["w1"]
-        assert "parent" not in by_key["w2"]
+        assert by_key["w1"]["parent"] == {"slot": "chat-1", "hub_key": "chat-1"}
+        # ``slot`` alone names the driven creator (its ``key`` half is null: the
+        # peer's projection lost the creator): rewritten the same way.
+        assert by_key["w2"]["parent"] == {"slot": "chat-1", "hub_key": "chat-1"}
         assert by_key["w3"]["parent"] == {"slot": "other", "key": "other"}
         assert "peer-chat-9" not in json.dumps(data)
+
+    def test_a_driven_citation_without_a_local_key_is_dropped(self):
+        """With no local key to redirect to, the citation is dropped whole rather
+        than forwarded naming the peer key. ``hub_key`` is never taken from the
+        peer: a peer row that spells one itself is shaped down to the two
+        allowlisted fields."""
+        cited = {"slot": "peer-chat-9", "key": "peer-chat-9"}
+        assert hi._clean_peer_parent(cited, {"peer-chat-9": ""}) is None
+        assert hi._clean_peer_parent(cited, {"peer-chat-9": "chat-1"}) == {
+            "slot": "chat-1",
+            "hub_key": "chat-1",
+        }
+        assert hi._clean_peer_parent({"slot": "a", "key": "a", "hub_key": "chat-1"}) == {
+            "slot": "a",
+            "key": "a",
+        }
 
     async def test_lineage_pending_is_forwarded_only_when_literally_true(self, monkeypatch):
         """The lane tests PRESENCE to skip a provisional frame when it records what

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from kiro_crew import cli_doctor, platform_compat
+from kiro_crew import cli_doctor
 from kiro_crew.doctor_checks import render
 
 
@@ -80,7 +80,7 @@ def _doctor_name_grant_platform_scope() -> None:
         # word. The others -- a relative `PATH` entry, an inherited `BASH_ENV`
         # or exported shell functions -- are named in the detail, which says
         # which one it is; a generic sentence there beats naming the wrong file.
-        if platform_compat.IS_WINDOWS and refusal.code == name_grant.AMBIGUOUS_ENV:
+        if cli_doctor.platform_compat.IS_WINDOWS and refusal.code == name_grant.AMBIGUOUS_ENV:
             remedy = "remove or rename the profile to restore them."
         else:
             remedy = "clear the environment state named above to restore them."
@@ -145,8 +145,8 @@ def _doctor_credentials(issues: list[str]) -> None:
         # resolved and then would not run. Collapsing any of them onto "install
         # the AWS CLI" tells an operator who has one to install it -- the same
         # confident wrong answer this section was opened to remove.
-        declined_cli = platform_compat.aws_bin_declined_on_ownership()
-        resolved_cli = platform_compat.trusted_aws_bin()
+        declined_cli = cli_doctor.platform_compat.aws_bin_declined_on_ownership()
+        resolved_cli = cli_doctor.platform_compat.trusted_aws_bin()
         profiles = cli_doctor._aws_profile_names()
         if profiles:
             shown = ", ".join(render._safe_display(name) for name in profiles[:6])

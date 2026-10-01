@@ -17,11 +17,17 @@
  * browser for an external link, so the missing capability was the clipboard,
  * not a second spelling of the hand-off.
  *
+ * And the IMAGE block. Right-clicking an image with nothing selected produced an
+ * empty template, so no menu appeared at all and the only way to get an image
+ * into another app was to download it. `webContents.copyImageAt` writes through
+ * the OS clipboard, so unlike the web Clipboard API it also works when the
+ * dashboard is served over plain HTTP.
+ *
  * Logic and wiring are split so the template builder is unit-testable without
  * stubbing Electron:
  *   - buildMenuTemplate(params, platform, webContents, deps): pure. All
- *     branching (link / misspelled word / editable / selection / nothing)
- *     lives here. Takes webContents and `deps` as explicit dependencies so
+ *     branching (link / image / misspelled word / editable / selection /
+ *     nothing) lives here. Takes webContents and `deps` as explicit dependencies so
  *     tests can pass plain mocks.
  *   - attachContextMenu(webContents, options): side-effecting. Registers the
  *     `context-menu` listener and pops the built menu on the owning
@@ -141,6 +147,14 @@ function buildLinkItems(params, deps) {
   return items;
 }
 
+/** Items for the image block, or an empty array when the click missed an image.
+ * `hasImageContents` is false for an image that failed to load, where there is
+ * nothing to copy. */
+function buildImageItems(params, webContents) {
+  if (params.mediaType !== "image" || params.hasImageContents === false) return [];
+  return [{ label: "Copy Image", click: () => webContents.copyImageAt(params.x, params.y) }];
+}
+
 function buildMenuTemplate(params, platform, webContents, deps = {}) {
   const items = [];
 
@@ -152,6 +166,15 @@ function buildMenuTemplate(params, platform, webContents, deps = {}) {
   const linkItems = buildLinkItems(params, deps);
   if (linkItems.length) {
     items.push(...linkItems);
+    items.push({ type: "separator" });
+  }
+
+  // ── Image block ──
+  //
+  // After the link block, matching browser menus for an image inside a link.
+  const imageItems = buildImageItems(params, webContents);
+  if (imageItems.length) {
+    items.push(...imageItems);
     items.push({ type: "separator" });
   }
 

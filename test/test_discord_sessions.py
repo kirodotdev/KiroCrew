@@ -123,6 +123,11 @@ class _Sessions:
 
     def __init__(self) -> None:
         self.mirror_links: dict[str, ChannelLink] = {}
+        # A slot's legacy Slack thread link, kept beside the mirror the way the
+        # real map keeps ``slack_thread_ts``: ``get_mirror_link`` synthesizes a
+        # Slack link from it when no explicit mirror is stored, and a clear of
+        # the mirror never touches it.
+        self.slack_threads: dict[str, tuple[str, str]] = {}
         # `closing` mirrors SessionManager._closing so begin_turn refuses the
         # dispatch the way the real gate does after close_all.
         self.closing = False
@@ -190,7 +195,19 @@ class _Sessions:
         return self.origin_links.get(key)
 
     def get_mirror_link(self, key: str) -> ChannelLink | None:
-        return self.mirror_links.get(key)
+        # Interface parity with the real SessionMap: the explicit mirror first,
+        # else a Slack link synthesized from the surviving thread link.
+        link = self.mirror_links.get(key)
+        if link is not None:
+            return link
+        thread = self.slack_threads.get(key)
+        if thread is not None:
+            return ChannelLink(channel_type="slack", channel_id=thread[1], thread_id=thread[0])
+        return None
+
+    def has_mirror_row(self, key: str) -> bool:
+        # The explicit row alone, as the real map answers it: no synthesis.
+        return key in self.mirror_links
 
     def find_mirror_sessions(
         self,
@@ -791,6 +808,121 @@ async def test_native_generation_pick_replaces_only_same_dm_origin_mirrors() -> 
 
 
 @pytest.mark.asyncio
+async def test_a_failed_pick_restores_displaced_rows_without_laundering_them() -> None:
+    """The pick commit clears the same-DM origin mirrors it displaces; when the
+    commit then fails, the rollback puts each displaced row back as it WAS -- a
+    genuine admission byte-for-byte, a forged one stripped to the location -- and
+    never re-signs anything, so a rollback cannot turn a planted row into a trusted
+    one. The pick's own signed link is not left behind either.
+    """
+    import dataclasses
+
+    from kiro_crew.mirror_admission import sign_mirror_admission, verify_mirror_admission
+
+    prior_key = "discord:kirocrew:direct:u1:gen4"
+    log = _ConversationLog(
+        [
+            {
+                "key": transcript_stem(prior_key),
+                "title": "Earlier Discord generation",
+                "memory_mode": "persistent",
+            }
+        ],
+        {prior_key: []},
+    )
+    dispatcher, client, sessions = _dispatcher({"u1"}, log)
+    current_key = dispatcher.current_session_key("u1")
+    sessions.channel_keys.update({current_key, prior_key})
+    location = ChannelLink(channel_type="discord", channel_id="c1")
+    genuine_row = dataclasses.replace(
+        location,
+        principal="u1",
+        admission=sign_mirror_admission(current_key, dataclasses.replace(location, principal="u1")),
+    )
+    forged_row = dataclasses.replace(location, principal="u1", admission="f" * 64)
+    sessions.set_mirror_link(current_key, genuine_row)
+    sessions.set_mirror_link(prior_key, forged_row)
+
+    real_set = sessions.set_mirror_link
+    calls: list[str] = []
+
+    def _fail_the_claim(key, link, **kwargs):
+        calls.append(key)
+        if key == prior_key and kwargs.get("accepts_inbound"):
+            raise OSError("map write failed")
+        return real_set(key, link, **kwargs)
+
+    sessions.set_mirror_link = _fail_the_claim  # type: ignore[method-assign]
+    await dispatcher.handle_message(_message("!sessions"))
+    custom_id, message_id = _picker_button(client)
+    await dispatcher.on_interaction(_interaction(custom_id, message_id))
+
+    # The displaced current-generation row is back exactly as it was, still verifying.
+    restored = sessions.mirror_links[current_key]
+    assert restored == location and restored.admission == genuine_row.admission
+    assert verify_mirror_admission(current_key, restored) is True
+    # The forged row on the chosen key was never written over, and nothing signed
+    # it on the way: it is exactly as planted and still does not verify.
+    prior = sessions.mirror_links[prior_key]
+    assert prior == location and prior.admission == "f" * 64
+    assert verify_mirror_admission(prior_key, prior) is False
+    assert prior_key not in sessions.inbound_keys
+    assert prior_key in calls, "the commit never reached the failing claim"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_picks_rollback_leaves_a_refreshed_relink_in_place(monkeypatch) -> None:
+    """The pick claims its row, then the commit fails on the way out; between that
+    failure and the rollback's own critical section the signing key rotates and the
+    dashboard re-links the same session to the same DM under a fresh admission. The
+    rollback owns only the row it stored. A location match would take the refreshed
+    row for its own, clear it and leave the session unbound (or restore an obsolete
+    row); whole-row identity leaves it alone and it still verifies under the new key.
+    """
+    import dataclasses
+    import secrets
+
+    from kiro_crew.dashboard import token_secret
+    from kiro_crew.mirror_admission import sign_mirror_admission, verify_mirror_admission
+
+    log = _log()
+    log.messages["dashboard:chat-1"] = [{"role": "assistant", "content": "prior"}]
+    dispatcher, client, sessions = _dispatcher({"u1"}, log)
+    location = ChannelLink(channel_type="discord", channel_id="c1")
+    rotated = secrets.token_bytes(32)
+    refreshed: dict[str, ChannelLink] = {}
+    sections = {"n": 0}
+
+    @contextmanager
+    def _fail_the_commit_then_relink():
+        sections["n"] += 1
+        if sections["n"] == 1:
+            yield  # the commit's writes land ...
+            raise OSError("map flush failed")  # ... and the section fails on the way out
+        if sections["n"] == 2:
+            # Between the two critical sections: rotation, then the re-link.
+            monkeypatch.setattr(token_secret, "_get_secret", lambda: rotated)
+            row = dataclasses.replace(location, principal="u1")
+            row = dataclasses.replace(row, admission=sign_mirror_admission("dashboard:chat-1", row))
+            sessions.mirror_links["dashboard:chat-1"] = row
+            sessions.inbound_keys.add("dashboard:chat-1")
+            refreshed["row"] = row
+        yield
+
+    sessions.batched_save = _fail_the_commit_then_relink  # type: ignore[method-assign]
+    await dispatcher.handle_message(_message("!sessions"))
+    custom_id, message_id = _picker_button(client)
+    await dispatcher.on_interaction(_interaction(custom_id, message_id))
+
+    assert sections["n"] >= 2, "the rollback never ran"
+    current = sessions.mirror_links.get("dashboard:chat-1")
+    assert current is not None, "the stale rollback cleared the refreshed binding"
+    assert current == location and current.admission == refreshed["row"].admission
+    assert verify_mirror_admission("dashboard:chat-1", current) is True
+    assert "dashboard:chat-1" in sessions.inbound_keys
+
+
+@pytest.mark.asyncio
 async def test_binding_claimed_during_header_edit_is_not_overwritten() -> None:
     """A link that lands while the header edit is in flight must win.
 
@@ -1064,6 +1196,29 @@ async def test_choice_binds_replays_and_routes_followup() -> None:
 
     await dispatcher.handle_message(_message("continue here"))
     assert sessions.last_key == "dashboard:chat-1"
+
+
+@pytest.mark.asyncio
+async def test_choice_records_the_owner_as_the_bindings_peer() -> None:
+    """A ``!sessions`` pick writes WHO the DM was admitted for beside WHERE it is.
+
+    The resumed dashboard session's key names no principal and a Discord DM
+    channel id cannot be tested against the user roster, so without this record the
+    per-send recipient check refused every reply the dashboard side produced into
+    this DM. The peer is the pressing owner -- the only human a picker press in a
+    DM can come from -- and it is not part of the binding's identity, so the
+    location match the dispatcher routes inbound by is unchanged.
+    """
+    dispatcher, client, sessions = _dispatcher({"u1"}, _log())
+    await dispatcher.handle_message(_message("!sessions"))
+    custom_id, message_id = _picker_button(client)
+
+    await dispatcher.on_interaction(_interaction(custom_id, message_id))
+
+    bound = sessions.mirror_links["dashboard:chat-1"]
+    assert bound.principal == "u1"
+    assert bound == ChannelLink(channel_type="discord", channel_id="c1")
+    assert dispatcher._session_resume.resumed_session("c1") == "dashboard:chat-1"
 
 
 @pytest.mark.parametrize("banner_lands", [True, False], ids=["banner-lands", "banner-lost"])
@@ -2093,6 +2248,121 @@ class TestBindingLostUnderTheConversation:
         await dispatcher.handle_message(_message("where did we land?"))
         assert sessions.last_key == "dashboard:chat-1", "the resumed session must carry on"
         assert not any("Detached" in text for text, _ in client.sent)
+
+    @pytest.mark.asyncio
+    async def test_a_rolled_back_release_keeps_a_genuine_bindings_recorded_peer(self) -> None:
+        """The rollback restores each occupant's OWN row, not the bare location.
+
+        A row made from the dashboard or a ``!sessions`` pick records the peer it
+        was admitted for under the gateway's admission. Restoring the location
+        argument would put the binding back without that record, and every later
+        dashboard reply into this DM would be refused until the session was
+        re-linked -- a failed unlink silently costing the mirror its deliveries. The
+        signed row goes back byte-for-byte and still delivers.
+        """
+        import dataclasses
+
+        from kiro_crew.dashboard.chat_runner import _recipient_principal
+        from kiro_crew.mirror_admission import sign_mirror_admission
+
+        dispatcher, client, sessions = _dispatcher({"u1"}, _log("Launch plan"))
+        link = ChannelLink(channel_type="discord", channel_id="c1", principal="u1")
+        genuine = dataclasses.replace(
+            link, admission=sign_mirror_admission("dashboard:chat-1", link)
+        )
+        sessions.set_mirror_link("dashboard:chat-1", genuine, accepts_inbound=True)
+        sessions.flush_error = OSError("disk full")
+        await dispatcher.handle_message(_message("!unlink"))
+        assert any("NOT completed" in text for text, _ in client.sent)
+        restored = sessions.get_mirror_link("dashboard:chat-1")
+        assert restored == genuine and restored.principal == "u1"
+        assert restored.admission == genuine.admission
+        assert "dashboard:chat-1" in sessions.inbound_keys
+        assert _recipient_principal("dashboard:chat-1", restored, dispatcher.transport) == "u1"
+
+    @pytest.mark.asyncio
+    async def test_a_rolled_back_release_does_not_launder_a_forged_row(self) -> None:
+        """The forgery a re-signing rollback would have admitted: a row planted in
+        the agent-writable map (no valid admission), sitting unverifiable since a
+        restart, then a failed unlink persistence. The rollback puts the binding
+        back WITHOUT its peer -- nothing mints -- so the send stays refused and one
+        audit row says why.
+        """
+        from kiro_crew.dashboard.chat_runner import _recipient_principal
+
+        dispatcher, client, sessions = _dispatcher({"u1"}, _log("Launch plan"))
+        forged = ChannelLink(
+            channel_type="discord", channel_id="c1", principal="u1", admission="f" * 64
+        )
+        sessions.set_mirror_link("dashboard:chat-1", forged, accepts_inbound=True)
+        sessions.flush_error = OSError("disk full")
+        await dispatcher.handle_message(_message("!unlink"))
+        assert any("NOT completed" in text for text, _ in client.sent)
+        restored = sessions.get_mirror_link("dashboard:chat-1")
+        assert restored == ChannelLink(channel_type="discord", channel_id="c1")
+        assert restored.principal is None and restored.admission is None
+        assert "dashboard:chat-1" in sessions.inbound_keys
+        assert _recipient_principal("dashboard:chat-1", restored, dispatcher.transport) == ""
+
+    @pytest.mark.asyncio
+    async def test_a_rolled_back_release_leaves_a_binding_made_during_the_flush_in_place(
+        self,
+    ) -> None:
+        """The release clears the occupants, then awaits the flush; the dashboard takes
+        no lock of ours, so a new binding for a cleared key can land during that await.
+        When the flush then fails, the rollback owns only its CLEAR: it puts a row back
+        where the key is still empty and leaves the newer binding -- deliberate state
+        -- exactly as it found it, the same rule the pick applies to displaced rows.
+        """
+        dispatcher, client, sessions = _dispatcher({"u1"}, _log("Launch plan"))
+        link = ChannelLink(channel_type="discord", channel_id="c1", principal="u1")
+        sessions.set_mirror_link("dashboard:chat-1", link, accepts_inbound=True)
+        elsewhere = ChannelLink(channel_type="telegram", channel_id="tg-7")
+        real_aflush = sessions.aflush
+
+        async def _bind_then_fail() -> None:
+            sessions.set_mirror_link("dashboard:chat-1", elsewhere, accepts_inbound=True)
+            sessions.flush_error = OSError("disk full")
+            await real_aflush()
+
+        sessions.aflush = _bind_then_fail  # type: ignore[method-assign]
+        await dispatcher.handle_message(_message("!unlink"))
+        assert any("NOT completed" in text for text, _ in client.sent)
+        assert sessions.mirror_links["dashboard:chat-1"] == elsewhere
+        assert "dashboard:chat-1" in sessions.inbound_keys
+
+    @pytest.mark.asyncio
+    async def test_a_rolled_back_release_restores_a_mirror_beside_a_slack_thread_link(
+        self,
+    ) -> None:
+        """The ownership question is asked of the row the clear removed -- the
+        entry's own mirror -- never of ``get_mirror_link``. That reader also answers
+        for bindings the clear never touched: a slot that still carries its legacy
+        Slack thread link reads back as a synthesized Slack mirror, so judged there
+        the rollback would call the key "still bound", skip the restore, and leave
+        the Discord binding cleared in this process while the user is told the
+        release did NOT complete and nothing changed.
+        """
+        import dataclasses
+
+        from kiro_crew.mirror_admission import sign_mirror_admission
+
+        dispatcher, client, sessions = _dispatcher({"u1"}, _log("Launch plan"))
+        link = ChannelLink(channel_type="discord", channel_id="c1", principal="u1")
+        genuine = dataclasses.replace(
+            link, admission=sign_mirror_admission("dashboard:chat-1", link)
+        )
+        sessions.set_mirror_link("dashboard:chat-1", genuine, accepts_inbound=True)
+        sessions.slack_threads["dashboard:chat-1"] = ("1700000000.000100", "C-ops")
+        sessions.flush_error = OSError("disk full")
+        await dispatcher.handle_message(_message("!unlink"))
+        assert any("NOT completed" in text for text, _ in client.sent)
+        restored = sessions.mirror_links.get("dashboard:chat-1")
+        assert restored is not None, "the rollback skipped the restore it promised"
+        assert restored == link and restored.principal == "u1"
+        assert restored.admission == genuine.admission
+        assert "dashboard:chat-1" in sessions.inbound_keys
+        assert dispatcher._session_resume.resumed_session("c1") == "dashboard:chat-1"
 
     @pytest.mark.parametrize("recorded", [False, True], ids=["bare", "recorded"])
     @pytest.mark.asyncio

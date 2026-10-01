@@ -284,6 +284,17 @@ describe('task dashboard input routing', () => {
     expect(send).toHaveBeenCalledWith({ slot: 'child', message: 'Which scope?: Backend', ...(steer ? { steer: true } : {}) })
   })
 
+  it('treats a card the answer already retired as done, not as an error', async () => {
+    vi.spyOn(transport, 'sendTurn').mockResolvedValue({ status: 'dispatched', body: { ok: true } })
+    const dismiss = vi.spyOn(api, 'dismissQuestionCard').mockRejectedValue(new ApiError(404, 'no pending question card for that slot and card_id'))
+    renderWithProviders(<AttentionCard item={{ ...question, question: { ...question.question!, ask_id: undefined, card_id: 'card' } }} title="Worker" />)
+    fireEvent.click(screen.getByText('Backend'))
+    fireEvent.click(screen.getByRole('button', { name: 'Send answer' }))
+    await screen.findByText('Your response was recorded.')
+    await waitFor(() => expect(dismiss).toHaveBeenCalledTimes(1))
+    expect(screen.queryByText(/no pending question card/)).not.toBeInTheDocument()
+  })
+
   it('never sends the answer twice when retiring its already-delivered card fails', async () => {
     const send = vi.spyOn(transport, 'sendTurn').mockResolvedValue({ status: 'dispatched', body: { ok: true } })
     vi.spyOn(api, 'dismissQuestionCard').mockRejectedValue(new Error('Retirement failed'))

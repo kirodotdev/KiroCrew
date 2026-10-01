@@ -10,10 +10,10 @@
  * emit a window event so a detail page can navigate away rather than serve
  * content that no longer exists.
  */
-import { renderHook, act } from '@testing-library/react'
+import { renderHook, act, waitFor } from '@testing-library/react'
 import { createElement } from 'react'
 import { Provider } from 'react-redux'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { QueryClient, QueryClientProvider, QueryObserver } from '@tanstack/react-query'
 import { createTestStore } from './helpers'
 import { sseSlots } from '../store/dashboardSlice'
 import { store } from '../store'
@@ -101,7 +101,7 @@ describe('useWebSocket artifact_update frame', () => {
     expect(spy.mock.calls.map(c => JSON.stringify(c[0]?.queryKey))).toContain(JSON.stringify(['command-center', 'artifacts']))
   })
 
-  it('re-reads exactly the grown slot\'s board and its ancestors\' boards, without cancelling a read in flight', async () => {
+  it('re-reads exactly the grown slot\'s board and its ancestors\' boards, never cancelling a read in flight', async () => {
     const team = [
       { key: 'root', messages: 1, running: false }, { key: 'worker', messages: 1, running: false, created_by: 'root' },
       { key: 'other', messages: 1, running: false },
@@ -121,6 +121,35 @@ describe('useWebSocket artifact_update frame', () => {
     spy.mockClear()
     act(() => { ws.simulateMessage({ type: 'slot_projection', data: {} }) })
     expect(spy).not.toHaveBeenCalled()
+  })
+
+  it('follows a work read that was in flight with one more read once it settles', async () => {
+    renderHook(() => useWebSocket(), { wrapper })
+    const ws = WS_INSTANCES[0]
+    act(() => { ws.simulateOpen() })
+    let release!: (value: { value: { items: never[] } }) => void
+    let reads = 0
+    const queryFn = () => { reads += 1; return reads === 1 ? new Promise<{ value: { items: never[] } }>(resolve => { release = resolve }) : Promise.resolve({ value: { items: [] } }) }
+    const observer = new QueryObserver(qc, { queryKey: ['command-center', 'root', 'work'], queryFn })
+    const unsubscribe = observer.subscribe(() => undefined)
+    await waitFor(() => expect(reads).toBe(1))
+    act(() => { ws.simulateMessage({ type: 'slot_projection', data: { slot: 'root' } }) })
+    expect(reads).toBe(1) // not cancelled and restarted
+    await act(async () => { release({ value: { items: [] } }) })
+    await waitFor(() => expect(reads).toBe(2))
+    unsubscribe()
+  })
+
+  it('re-reads the shared approvals inventory on reconnect', () => {
+    const spy = vi.spyOn(qc, 'invalidateQueries')
+    renderHook(() => useWebSocket(), { wrapper })
+    const ws = WS_INSTANCES[0]
+    act(() => { ws.simulateOpen() })
+    act(() => { ws.onclose?.(new CloseEvent('close')) })
+    spy.mockClear()
+    const next = WS_INSTANCES[WS_INSTANCES.length - 1]
+    act(() => { next.simulateOpen() })
+    expect(spy.mock.calls.map(c => JSON.stringify(c[0]?.queryKey))).toContain(JSON.stringify(['global-approvals']))
   })
 
   it('hands the connect-time workflow read to the command center snapshot', async () => {

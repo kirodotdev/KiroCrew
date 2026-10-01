@@ -516,11 +516,14 @@ def _monitor_config(
                 1,
                 runtime_ceiling,
             ),
+            # Floor 0, not 1: zero is this budget's unlimited sentinel, and
+            # ``_bounded_int`` reads the body by key rather than by truthiness, so
+            # an explicit 0 survives instead of collapsing to the default.
             max_agent_turns=_bounded_int(
                 body,
                 "max_agent_turns",
                 DEFAULT_MONITOR_AGENT_TURNS,
-                1,
+                0,
                 MAX_MONITOR_AGENT_TURNS,
             ),
             max_tokens=_bounded_int(

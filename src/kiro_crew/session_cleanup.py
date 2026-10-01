@@ -180,6 +180,15 @@ class CleanupState:
     # the read that gathers it happens where it is legal. Reading it from the
     # worker would drain the warm pool's asyncio.Queue off-loop.
     runtime_reconcile_active: frozenset[int] = frozenset()
+    # When the reconciler last refused a pass at WARNING, and the reason it
+    # carried, so a persistent refusal surfaces once instead of once per tick
+    # while a NEW reason re-warns at once and a resumed supported pass logs a
+    # recovery. A refusal disables reclamation and stops the SLI publishing;
+    # reported only at debug (the previous behaviour) it left the reconciler
+    # silently inert behind one debug line. ``None`` reason means "not currently
+    # refusing"; the two move together.
+    reconcile_refusal_warned_at: float | None = None
+    reconcile_refusal_reason: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -249,6 +258,15 @@ class SessionCleanup:
     # RSS reap, so it must surface above debug -- but one line per candidate
     # per tick is the noise this bound exists to prevent.
     PROBE_FAILURE_WARN_INTERVAL_SECS = 3600.0
+
+    # Floor between two WARNING lines about a reconcile pass that refuses. A
+    # refusal disables both reclamation directions and stops the liveness SLI
+    # publishing for as long as the unreadable source stays unreadable, so it
+    # must surface above debug -- but the reconciler ticks on the cleanup
+    # cadence, so one line per tick for a condition that persists for minutes is
+    # the noise this bound exists to prevent. A CHANGE of reason bypasses the
+    # floor and re-warns at once, because a new failure is a new event.
+    RECONCILE_REFUSAL_WARN_INTERVAL_SECS = 3600.0
 
     # Ceiling on the tick interval itself.
     #
@@ -514,9 +532,15 @@ class SessionCleanup:
                 # into the leak it exists to report. Housekeeping deferred one
                 # tick costs nothing that killing a live runtime would not cost
                 # more.
-                self._deps.logger.debug(
-                    "runtime reconcile skipped: the active-pid union is incomplete"
-                )
+                #
+                # This is the SAME silent-inert condition a ``run_once`` refusal
+                # is -- the pass produces no reading and publishes no counts -- so
+                # it goes through the same warn-once ledger and not a bare debug
+                # line. Its reason is distinct, so it is its own transition: a
+                # gateway stuck here and a gateway stuck on an unreadable source
+                # are two different faults an operator must tell apart, and the
+                # next supported pass clears whichever one was standing.
+                self._note_reconcile_refusal("the active-pid union is incomplete")
                 return
             snapshot = frozenset(active_now)
             self.state.runtime_reconcile_active = snapshot
@@ -544,10 +568,9 @@ class SessionCleanup:
                 reconciler.run_once,
             )
             if not reading.supported:
-                self._deps.logger.debug(
-                    "runtime reconcile skipped: %s", reading.reason or "unsupported"
-                )
+                self._note_reconcile_refusal(reading.reason or "unsupported")
                 return
+            self._clear_reconcile_refusal()
             self._deps.emit_counter(
                 "session.runtime_reconcile",
                 reading.as_counter_fields(),
@@ -570,6 +593,66 @@ class SessionCleanup:
         except Exception:
             # Best-effort, like the sweeps either side of it.
             self._deps.logger.debug("runtime reconcile hook failed", exc_info=True)
+
+    def _note_reconcile_refusal(self, reason: str) -> None:
+        """Report a refused reconcile pass: the reason at debug, the fact at a bounded WARNING.
+
+        A refused pass (``ReconcileReading.supported`` false) reclaims nothing and
+        publishes no ``unowned_alive``/``owned_dead`` reading, and it goes on
+        refusing for as long as the source it could not read stays unreadable -- a
+        corrupt MCP backend pidfile, an incomplete tracked-pid snapshot. Reported
+        only at debug (the previous behaviour) that left the reconciler silently
+        inert: an operator watching the liveness SLI sees the counts stop and
+        nothing above debug says the pass is refusing rather than reading zero.
+
+        So the fact surfaces at WARNING. It must NOT surface once per tick for a
+        condition that persists for minutes, so a steady refusal repeats at most
+        once per :data:`RECONCILE_REFUSAL_WARN_INTERVAL_SECS`; a CHANGE of reason
+        bypasses the floor, because a different unreadable source is a different
+        event worth its own line. The exact reason (which source, which error)
+        stays at debug every tick for a reader who wants the detail.
+        """
+        self._deps.logger.debug("runtime reconcile skipped: %s", reason)
+        now = self._deps.monotonic()
+        last = self.state.reconcile_refusal_warned_at
+        if (
+            last is not None
+            and reason == self.state.reconcile_refusal_reason
+            and now - last < self.RECONCILE_REFUSAL_WARN_INTERVAL_SECS
+        ):
+            return
+        self.state.reconcile_refusal_warned_at = now
+        self.state.reconcile_refusal_reason = reason
+        self._deps.logger.warning(
+            "Runtime reconcile refused a pass and is reclaiming nothing and "
+            "publishing no counts until its sources read again: %s. This warning "
+            "repeats at most once per %.0fs while the condition persists (reason "
+            "detail at debug).",
+            reason,
+            self.RECONCILE_REFUSAL_WARN_INTERVAL_SECS,
+        )
+
+    def _clear_reconcile_refusal(self) -> None:
+        """Log recovery once when a supported pass follows a refused one, then re-arm.
+
+        Without this the first refusal after boot would consume the only WARNING
+        the process emits for this condition, and a LATER refusal that arrived
+        while the flag was still set (within the re-warn floor) would be silent --
+        the original defect back in a subtler form. Clearing on the first supported
+        pass says the reconciler is working again and re-arms the warn-once so the
+        next outage warns immediately, exactly as ``kiro_readiness`` clears its own
+        refusal flag on recovery.
+        """
+        if self.state.reconcile_refusal_reason is None:
+            return
+        recovered_from = self.state.reconcile_refusal_reason
+        self.state.reconcile_refusal_warned_at = None
+        self.state.reconcile_refusal_reason = None
+        self._deps.logger.warning(
+            "Runtime reconcile is reading its sources again and has resumed "
+            "reclaiming and publishing counts (previously refusing: %s)",
+            recovered_from,
+        )
 
     def _note_dead_runtime(self, pid: int, loop: asyncio.AbstractEventLoop) -> None:
         """Tell whoever still holds *pid* that the process behind it is gone.

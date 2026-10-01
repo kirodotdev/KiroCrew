@@ -88,8 +88,35 @@ describe('parseCompactionNotice', () => {
       status: 'notice',
       text: 'This turn has produced nothing for 12 min.',
     })
+    // ⏹ leads the "ended by Stop" notice (#14841): a status, never a failure,
+    // so it must not fall into ErrorNotice's failure chrome.
+    expect(parseCompactionNotice('\u23F9 Your forced Stop ended the compaction that started at 87% of the context limit.')).toMatchObject({
+      status: 'notice',
+      text: 'Your forced Stop ended the compaction that started at 87% of the context limit.',
+      stopCaused: true,
+    })
+    // The app's own restart (♻) is not stop-caused: the two notices share a
+    // shape and must be told apart by the glyph.
+    expect(parseCompactionNotice('\u267B\uFE0F Compaction didn\u2019t succeed at 91%, so the session was restarted instead.').stopCaused).toBe(false)
     // Only a LEADING glyph is stripped; one inside the copy is content.
     expect(parseCompactionNotice('see the \u{1F504} marker').text).toBe('see the \u{1F504} marker')
+  })
+})
+
+describe('the stop-caused notice', () => {
+  it('renders with a stop-square glyph while the app-caused restart keeps the info glyph', () => {
+    const stop = render(
+      <CompactionCard content={'\u23F9 Your forced Stop ended the compaction that started at 87% of the context limit, so the session was restarted.'} />,
+    )
+    const stopIcon = stop.container.querySelector('[data-testid="notice-card"] svg')!
+    expect(stopIcon.classList.contains('lucide-square')).toBe(true)
+    expect(stop.container.querySelector('[data-testid="notice-card"]')!.getAttribute('data-tone')).toBe('info')
+    stop.unmount()
+    const app = render(
+      <CompactionCard content={'\u267B\uFE0F Compaction didn\u2019t succeed at 91%, so the session was restarted instead.'} />,
+    )
+    const appIcon = app.container.querySelector('[data-testid="notice-card"] svg')!
+    expect(appIcon.classList.contains('lucide-info')).toBe(true)
   })
 })
 

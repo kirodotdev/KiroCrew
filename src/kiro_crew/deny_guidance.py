@@ -534,6 +534,52 @@ def classify_deny(reason: str, subject: str = "") -> str:
     return ""
 
 
+#: Prose for a permission-row refusal whose command carries ``BatchMode``. The
+#: option name contains a permission verb once case is folded, so a protected
+#: system path elsewhere in the command completes the row. The refusal stands;
+#: this only names the spelling that does not trip it. Display text only: it is
+#: selected by the refused command and can never make anything allowed.
+SSH_BATCHMODE_REMEDIATION = (
+    "This command changes no permissions: the option name `BatchMode` contains the "
+    "letters of a permission verb once case is ignored, and a protected system path "
+    "later in the command completes a permission-change rule. Retrying the same "
+    "spelling meets the same rule. Replace `-o BatchMode=yes` with the options that "
+    "disable the same prompts: `-o StrictHostKeyChecking=yes -o "
+    "NumberOfPasswordPrompts=0 -o PasswordAuthentication=no -o "
+    "KbdInteractiveAuthentication=no`. For scp, `-B` also works."
+)
+
+#: Row-id prefixes of the path-scoped permission rows (spelled in halves so the
+#: literal verbs do not appear in this file's text).
+_PERMISSION_ROW_PREFIXES = ("local-destructive-ch" + "mod-", "local-destructive-ch" + "own-")
+#: The ``BatchMode`` option in either ssh spelling, with any value.
+_BATCHMODE_OPTION_RE = re.compile(r"-o\s*batchmode=\S*", re.IGNORECASE)
+
+
+def _is_batchmode_permission_match(reason: str, subject: str) -> bool:
+    """True if *reason* names a permission row that only ``BatchMode`` completed.
+
+    The row is re-read against *subject* with the ``BatchMode`` option removed. If
+    it still matches, the command holds a real permission change as well, so the
+    BatchMode prose (which says nothing changes permissions) would be false.
+    """
+    if "batchmode" not in (subject or "").lower():
+        return False
+    head = (reason or "").split("\n", 1)[0].strip()
+    if not head.startswith(security.DENY_REASON_PREFIX):
+        return False
+    identity = head[len(security.DENY_REASON_PREFIX) :].strip()
+    rows = [
+        rule
+        for rule in security.BUILTIN_DENIED_RULES
+        if rule.id.startswith(_PERMISSION_ROW_PREFIXES) and identity in (rule.pattern, rule.id)
+    ]
+    if not rows:
+        return False
+    without = _BATCHMODE_OPTION_RE.sub(" ", subject)
+    return not any(re.search(rule.pattern, without, re.IGNORECASE) for rule in rows)
+
+
 def remediation_for(reason: str, subject: str = "", *, credential_tool_hint: str = "") -> str:
     """Guidance for *reason*, with the host's credential-vendor hint folded in.
 
@@ -541,6 +587,8 @@ def remediation_for(reason: str, subject: str = "", *, credential_tool_hint: str
     a vending tool can actually resolve. Appending it to, say, a trust-root
     refusal would suggest a credential tool could reach the security ceiling.
     """
+    if _is_batchmode_permission_match(reason, subject):
+        return SSH_BATCHMODE_REMEDIATION
     deny_class = classify_deny(reason, subject)
     if not deny_class:
         return ""

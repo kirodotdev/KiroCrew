@@ -1,7 +1,7 @@
 """Tests for the `surface` field on serialized chat slots.
 
 The frontend's surface registry routes slot-bearing UI (Chat tab badge,
-Autopilot tab badge, slot list filter on each page) by reading
+app-worker badge, slot list filter on each page) by reading
 `slot.surface ?? slot.mode`. The backend emits `surface` as a forward-compat
 mirror of `mode`: today every slot's surface equals its mode, but the
 distinct field gives us the seam to split them later (e.g. introduce a new
@@ -20,11 +20,11 @@ def test_to_dict_emits_surface_field_for_default_chat():
     assert d["surface"] == ""
 
 
-def test_to_dict_emits_surface_field_for_orchestrator():
-    s = _ChatSlot("orch-1", mode="orchestrator")
+def test_to_dict_emits_surface_field_for_app_worker_mode():
+    s = _ChatSlot("dc-1", mode="design-critique")
     d = s.to_dict()
-    assert d["mode"] == "orchestrator"
-    assert d["surface"] == "orchestrator"
+    assert d["mode"] == "design-critique"
+    assert d["surface"] == "design-critique"
 
 
 def test_surface_mirrors_mode_for_arbitrary_modes():

@@ -526,17 +526,17 @@ describe('Settings > Developer > Feature Previews', () => {
     // answer "is this row selected?" instead.
     const { container } = renderTab()
     // Awaited: the Decisions card is not drawn until the governance read
-    // (`decisions_enabled`) lands, so the fifth switch arrives a tick late.
+    // (`decisions_enabled`) lands, so the last switch arrives a tick late.
     await waitFor(() => {
-      expect(screen.getAllByRole('switch')).toHaveLength(5)
+      expect(screen.getAllByRole('switch')).toHaveLength(7)
     })
     const anchors = container.querySelectorAll(`[data-setting-key="${FEATURE_PREVIEWS_HIGHLIGHT_ANCHOR}"]`)
     expect(anchors).toHaveLength(1)
     const anchor = anchors[0]
     expect(anchor.contains(screen.getByRole('heading', { name: /feature previews/i }))).toBe(true)
-    // Five, not four: the count is here so a card added outside the anchor
-    // fails rather than silently escaping the ring. The fifth is Decisions,
-    // whose switch is backend config — a different write path, the same ring.
+    // The count is here so a card added outside the anchor fails rather than
+    // silently escaping the ring. The last is Decisions, whose switch is
+    // backend config — a different write path, the same ring.
     for (const s of screen.getAllByRole('switch')) expect(anchor.contains(s)).toBe(true)
   })
 

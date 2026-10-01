@@ -18,6 +18,11 @@ function store(count = 3) {
   })) } })
 }
 
+/** The DOM order is the reading order. */
+function visualCards() {
+  return screen.getAllByTestId('session-dashboard-card')
+}
+
 describe('all session dashboards', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
@@ -39,7 +44,7 @@ describe('all session dashboards', () => {
     renderWithProviders(<SessionDashboardsPage />, { store: store() })
     await screen.findByText('Summary for slot-1')
     expect(screen.getByText('Dashboards for currently open sessions, with saved summaries and requests that need you.')).toBeVisible()
-    const cards = screen.getAllByTestId('session-dashboard-card')
+    const cards = visualCards()
     expect(within(cards[0]).getByText('No published view yet. Use Open session, then ask the agent to publish a view for this task.')).toBeVisible()
     expect(within(cards[0]).getByRole('link', { name: 'Open session' })).toHaveAttribute('href', '/chat?sid=slot-1')
     expect(cards.map(c => c.getAttribute('data-slot')).slice(0, 2)).toEqual(['slot-1', 'slot-2'])
@@ -57,6 +62,50 @@ describe('all session dashboards', () => {
     fireEvent.click(within(inbox).getByRole('button', { name: 'Approve once' }))
     await waitFor(() => expect(approve).toHaveBeenCalledWith('approval-2', 'approve', { origin: 'coordinator', slot: 'slot-2', instance: 'inst-2' }))
   })
+
+  it('keeps cards in place on live activity, re-sorts on a filter change, and shows a builder\'s view on its conductor', async () => {
+    const view = (slug: string, session: string): Artifact => ({ slug, session_key: session, name: slug, kind: 'html', source: 'chat', description: '', tags: ['task-dashboard'],
+      version: 1, created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z', content: '<p>view</p>' })
+    vi.mocked(api.artifacts).mockResolvedValue({ artifacts: [view('built-by-worker', 'dashboard:builder')] })
+    vi.spyOn(api, 'artifact').mockImplementation(async slug => view(slug, 'dashboard:builder'))
+    const initial = store().getState()
+    const team = createTestStore({ ...initial, dashboard: { ...initial.dashboard, slots: [
+      ...initial.dashboard.slots, { key: 'builder', title: 'Builder', messages: 2, running: false, created_by: 'slot-2' },
+    ] } })
+    renderWithProviders(<SessionDashboardsPage />, { store: team })
+    await waitFor(() => expect(screen.getAllByTestId('session-dashboard-card')).toHaveLength(4))
+    const domOrder = () => screen.getAllByTestId('session-dashboard-card').map(card => card.getAttribute('data-slot'))
+    await screen.findByRole('button', { name: 'Approve once' })
+    await screen.findByText('Stable')
+    const before = domOrder()
+    const conductor = screen.getAllByTestId('session-dashboard-card').find(card => card.getAttribute('data-slot') === 'slot-2')!
+    await waitFor(() => expect(within(conductor).queryByText(/No published view yet/)).not.toBeInTheDocument())
+    act(() => { team.dispatch({ type: 'dashboard/sseSlots', payload: team.getState().dashboard.slots.map(s => s.key === 'slot-2' ? { ...s, running: true, last_turn_ts: '2030-01-01T00:00:00Z' } : s) }) })
+    // Live activity does not move cards; changing the filter re-takes the order.
+    await new Promise(resolve => setTimeout(resolve, 50))
+    expect(domOrder()).toEqual(before)
+    fireEvent.change(screen.getByPlaceholderText('Search sessions…'), { target: { value: 'Session' } })
+    fireEvent.change(screen.getByPlaceholderText('Search sessions…'), { target: { value: '' } })
+    await waitFor(() => expect(domOrder()[0]).toBe('slot-2'))
+  })
+
+  it.each([['subagents_running', { subagents_running: true }], ['queue_depth', { queue_depth: 1 }]] as const)(
+    'shows Running and sorts ahead of an idle session for a turn-idle slot with %s', async (_flag, delegated) => {
+      vi.mocked(api.pendingQuestions).mockResolvedValue([])
+      vi.mocked(api.approvals).mockResolvedValue([])
+      const initial = createTestStore().getState()
+      // Neither slot has a turn in flight; the second one still has work going.
+      const fleet = createTestStore({ ...initial, dashboard: { ...initial.dashboard, connected: true, slotsLoaded: true, slots: [
+        { key: 'idle', title: 'Idle session', messages: 2, running: false, last_turn_ts: '2030-01-01T00:00:00Z' },
+        { key: 'delegated', title: 'Delegating session', messages: 2, running: false, ...delegated },
+      ] } })
+      renderWithProviders(<SessionDashboardsPage />, { store: fleet })
+      await screen.findByText('Summary for delegated')
+      const cards = visualCards()
+      expect(cards.map(c => c.getAttribute('data-slot'))).toEqual(['delegated', 'idle'])
+      expect(within(cards[0]).getByText('Running')).toBeVisible()
+      expect(within(cards[1]).getByText('Idle')).toBeVisible()
+    })
 
   it('counts requests, not distinct sessions, consistently in the filter and inbox', async () => {
     vi.mocked(api.pendingQuestions).mockResolvedValue([
@@ -97,7 +146,10 @@ describe('all session dashboards', () => {
     fireEvent.change(search, { target: { value: 'Session 0' } })
     vi.mocked(api.pendingQuestions).mockResolvedValue([])
     vi.mocked(api.approvals).mockResolvedValue([])
-    await act(async () => { await queryClient.refetchQueries({ queryKey: ['command-center'] }) })
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: ['command-center'] })
+      await queryClient.refetchQueries({ queryKey: ['global-approvals'] })
+    })
     fireEvent.change(search, { target: { value: '' } })
     expect(screen.getByRole('button', { name: 'Send answer' })).toBeEnabled()
     if (kind === 'custom') expect(input).toHaveValue('Keep my release draft')
@@ -148,7 +200,7 @@ describe('all session dashboards', () => {
     expect(api.sessionSummary).toHaveBeenCalledTimes(12)
     expect(api.dashboardCard).toHaveBeenCalledTimes(12)
     expect(api.artifact).toHaveBeenCalledTimes(12)
-    const first = screen.getAllByTestId('session-dashboard-card')[0]
+    const first = visualCards()[0]
     fireEvent.change(within(first).getByRole('combobox', { name: 'Published view' }), { target: { value: 'view-1-1' } })
     await within(first).findByTitle('View 1-1')
     fireEvent.click(screen.getByText('Stable'))

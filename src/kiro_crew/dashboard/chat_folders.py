@@ -16,7 +16,7 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew import pinned_fs
-from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
+from kiro_crew.dashboard.chat_persistence import _coerce_requested_mode, save_slot_off_loop
 from kiro_crew.dashboard.chat_tags import tags_write_lock, validate_folder_tag_ids
 from kiro_crew.dashboard.chat_utils import effective_session_key, slot_history_key
 from kiro_crew.dashboard.create_rate_limit import FOLDER_CREATE, allow_create
@@ -2637,7 +2637,7 @@ async def api_chat_slot_pin(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "pinned": slot.pinned, "changed": changed})
 
 
-_VALID_MODES = ("", "orchestrator")
+_VALID_MODES = ("",)
 
 
 async def api_chat_slot_mode(request: web.Request) -> web.Response:
@@ -2697,7 +2697,7 @@ async def api_chat_slot_mode(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
-    mode = body.get("mode", "")
+    mode = _coerce_requested_mode(body.get("mode", ""))
     if mode not in _VALID_MODES:
         return web.json_response({"error": "invalid mode"}, status=400)
     # Member DM threads (mode="member") are pinned to their crew, and every
@@ -2714,9 +2714,8 @@ async def api_chat_slot_mode(request: web.Request) -> web.Response:
         )
     # A crew-bound (remote) session runs PLAIN chat only — the same rule
     # api_chat_slot_create enforces at birth, applied here to the post-create
-    # switch that would otherwise reopen it. A non-plain mode (orchestrator,
-    # design-critique) is consumed by an earlier dispatch branch in api_chat that
-    # runs its tools and filesystem work on THIS machine, not on the peer the
+    # switch that would otherwise reopen it. A non-plain mode would run
+    # its tools and filesystem work on THIS machine, not on the peer the
     # session is bound to. Keyed on ``executor`` rather than
     # ``is_remote`` so even a half-bound slot can never be switched into one.
     if slot.executor == "remote" and mode:
@@ -2785,12 +2784,7 @@ async def api_chat_slot_mode(request: web.Request) -> web.Response:
                 {"error": "cannot switch mode while session is running"}, status=409
             )
         prior_mode = slot.mode
-        prior_auto_run = getattr(slot, "_auto_run", False)
         slot.mode = mode
-        # Clear orchestrator auto-run flag when leaving orchestrator mode to
-        # prevent stale "Go All" state from triggering on re-entry.
-        if mode != "orchestrator" and getattr(slot, "_auto_run", False):
-            slot._auto_run = False
         if not await save_slot_off_loop(
             state, slot, force=True, expected_history_key=authorized_history_key
         ):
@@ -2800,7 +2794,6 @@ async def api_chat_slot_mode(request: web.Request) -> web.Response:
             # writer's newer commit is not erased.
             if slot.mode == mode:
                 slot.mode = prior_mode
-                slot._auto_run = prior_auto_run
             # The UNPINNED periodic flush may have persisted the provisional
             # value while this save awaited (review-caught): mark dirty so the
             # next flush reconverges the durable record to the live state.

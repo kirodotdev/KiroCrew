@@ -28,7 +28,8 @@ import { renderWithProviders, createTestStore } from './helpers'
  * element — plus one behavioural check that typing still resizes the composer.
  */
 
-const SRC = readFileSync(join(__dirname, '..', 'components', 'ChatInput.tsx'), 'utf8')
+// The autosizer lives in the composer's sizing owner.
+const SRC = readFileSync(join(__dirname, '..', 'components', 'chat-input', 'sizing.ts'), 'utf8')
 
 /** The autosizer, sliced from its signature to its closing brace. */
 function applyHeightSource(): string {

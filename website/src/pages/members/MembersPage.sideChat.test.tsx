@@ -201,9 +201,12 @@ describe('MembersPage Side Chat in the side panel (selection Ask)', () => {
     // The collision surfaces as its own notice; no pane, so no Ask …
     await screen.findByTestId('member-thread-collision')
     expect(screen.queryByTestId('chat-pane-stub')).toBeNull()
-    // … and the strip is the slot-free bucket: only the Notes / Work log / Dashboard chips, no Side
-    // Chat on the roster's unconfirmed `member-other` key.
-    await waitFor(() => expect(tabLabels()).toEqual(['Notes', 'Work log', 'Dashboard']))
+    // … and the strip is the slot-free bucket: only the Notes / Work log / Dashboard /
+    // Schedules chips, no Side Chat on the roster's unconfirmed `member-other`
+    // key. Schedules is in that bucket because it keys on the crewmate's NAME,
+    // not on a confirmed slot — the schedules a crewmate owns are readable
+    // whether or not its thread opened.
+    await waitFor(() => expect(tabLabels()).toEqual(['Notes', 'Work log', 'Dashboard', 'Schedules']))
     expect(screen.queryByTestId('side-chat-stub')).toBeNull()
   })
 })

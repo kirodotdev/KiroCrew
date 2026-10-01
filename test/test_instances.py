@@ -322,6 +322,51 @@ class TestPortAllocator:
         finally:
             s.close()
 
+    def test_preferred_port_is_returned_when_free(self):
+        """A free, in-range ``preferred`` is handed back unchanged.
+
+        This is the origin-stability contract for a crew's embedded pane: the
+        loopback port is the browser origin of that pane, so returning the same
+        recorded port across reconnects keeps its origin-keyed localStorage
+        settings alive. ``preferred`` well above ``base`` must win over the
+        first-free port.
+        """
+        from kiro_crew.instances.port_allocator import PortAllocator
+
+        # Two OS-assigned free ports; the higher one is the "recorded" one.
+        socks = []
+        for _ in range(2):
+            sk = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sk.bind(("127.0.0.1", 0))
+            socks.append(sk)
+        low, high = sorted(s.getsockname()[1] for s in socks)
+        for s in socks:
+            s.close()
+        base = min(low, high)
+        pa = PortAllocator(base_port=base)
+        # Even though a lower free port exists, the preferred one is returned.
+        assert pa.allocate(preferred=high) == high
+
+    def test_preferred_port_falls_back_when_excluded_or_out_of_range(self):
+        """A ``preferred`` that is excluded, below base, or occupied yields.
+
+        The preference is honoured, never enforced: a port another instance now
+        holds (``exclude``) or one outside the allocator's range must not be
+        handed back — allocation falls through to first-free instead.
+        """
+        from kiro_crew.instances.port_allocator import PortAllocator
+
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.bind(("127.0.0.1", 0))
+        base = s.getsockname()[1]
+        s.close()
+        pa = PortAllocator(base_port=base)
+        # Preferred is reserved by another instance -> not returned.
+        got = pa.allocate(exclude={base}, preferred=base)
+        assert got != base and got > base
+        # Preferred below base is ignored, never handed back out of range.
+        assert pa.allocate(preferred=base - 1) >= base
+
     def test_is_port_free_detects_live_listener_even_with_reuseaddr(self):
         """A genuinely LISTENing port is still reported in-use.
 
@@ -1770,6 +1815,47 @@ class TestSshTunnelManager:
         assert reg.get_last_active().id == "cd-1"
         # idempotent
         assert (await mgr.connect("cd-1")).state == TunnelState.CONNECTED
+
+    @pytest.mark.asyncio
+    async def test_reconnect_prefers_recorded_port_for_origin_stability(self, tmp_path):
+        """A crew keeps its recorded loopback port across a gateway restart.
+
+        The pane is an iframe served at ``http://<host>:<local_port>``, so the
+        loopback port IS its browser origin, and origin-keyed client state —
+        ``localStorage`` UI preferences (mc-chat-config, pinLastPrompt,
+        hideEmptyFolderBody, ...) — is reset whenever that origin moves. The
+        recorded ``local_port`` survives a restart (``shutdown`` keeps registry
+        hints), so connect() must PREFER it: a first-free allocation lets a crew
+        land on a DIFFERENT port after the restart whenever another instance
+        holds the lower port, moving the origin and the settings behind it. The
+        preference keeps both put.
+        """
+        from kiro_crew.instances.ssh_tunnel_manager import SshTunnelManager, TunnelState
+
+        reg, mgr = self._mgr(tmp_path)
+        reg.add(name="A", ssh_host="a-alias", instance_id="a")
+        reg.add(name="B", ssh_host="b-alias", instance_id="b")
+
+        # First boot: A takes base, B takes base+1 (B's connect excludes A's
+        # recorded port via the registry).
+        base = mgr._allocator.base_port
+        assert (await mgr.connect("a")).local_port == base
+        assert (await mgr.connect("b")).local_port == base + 1
+
+        # Restart: a fresh manager over the SAME registry, which still holds both
+        # recorded ports. Reconnect B FIRST — the order that, under first-free,
+        # would hand B the now-vacant lower port (base) and move its origin.
+        mgr2 = SshTunnelManager(
+            reg, base_port=base, mint_token=mgr._mint_token, tunnel_factory=_FakeTunnel
+        )
+        st_b = await mgr2.connect("b")
+        assert st_b.state == TunnelState.CONNECTED
+        assert st_b.local_port == base + 1, "B must keep its recorded port, not slide to base"
+        assert reg.get("b").local_port == base + 1
+        # A then reconnects onto its own recorded port too — no collision.
+        st_a = await mgr2.connect("a")
+        assert st_a.local_port == base
+        assert reg.get("a").local_port == base
 
     @pytest.mark.asyncio
     async def test_connect_rebuild_replaces_a_connected_tunnel(self, tmp_path):
@@ -5497,15 +5583,18 @@ class TestPortMirror:
         assert reg.get("cd-a").local_port != reg.get("cd-b").local_port
 
     @pytest.mark.asyncio
-    async def test_reconnect_does_not_reclaim_its_own_recorded_port(self, tmp_path, monkeypatch):
-        """A recorded port is NOT preferred; allocation is the only path.
+    async def test_reconnect_prefers_its_own_recorded_port(self, tmp_path, monkeypatch):
+        """A recorded port IS preferred across a restart.
 
         ``shutdown`` documents that it "Leaves registry hints intact", so a
-        recorded ``local_port`` survives a gateway RESTART, not only a crash.
-        Preferring it would look like iframe-origin stability but cannot deliver
-        any: after a restart the token is re-minted and the pane reloads, so there
-        is no origin or ``mc_token_<port>`` cookie left to preserve. The in-session
-        case that does want the same port is served by ``_recover`` instead.
+        recorded ``local_port`` survives a gateway RESTART. The loopback port is
+        the browser ORIGIN of the pane's iframe (``http://<host>:<local_port>``),
+        and origin-keyed client state — ``localStorage`` UI preferences — is lost
+        the moment that origin moves; re-minting the token and reloading the pane
+        does nothing for state the browser keys by origin, and first-free
+        allocation moves the origin whenever another instance holds the lower
+        port. connect() therefore PREFERS the recorded port: here the base port
+        is free and lower, yet the recorded one is returned.
         """
         from kiro_crew.instances.registry import InstancesRegistry
         from kiro_crew.instances.ssh_tunnel_manager import TunnelState
@@ -5523,9 +5612,135 @@ class TestPortMirror:
         reg.update("cd-1", local_port=base + 2)  # survivor of a restart
 
         assert (await mgr.connect("cd-1")).state == TunnelState.CONNECTED
-        # The lower, free base port wins; the recorded one is never asked for.
-        assert captured["lp"] == base
-        assert reg.get("cd-1").local_port == base
+        # The recorded port is preferred even though the lower base port is free.
+        assert captured["lp"] == base + 2
+        assert reg.get("cd-1").local_port == base + 2
+
+    @pytest.mark.asyncio
+    async def test_reconnect_does_not_reuse_a_recorded_port_under_a_live_hop_lease(
+        self, tmp_path, monkeypatch
+    ):
+        """A leased recorded port yields to a fresh port, not the preference.
+
+        A live hop lease means a chained credential this gateway minted still
+        routes a bearer token to that port number. The origin-stability
+        preference must never override that: binding this crew's forward on a
+        leased port would deliver another crew's token here — the confused-deputy
+        the lease exists to close. So a recorded port carrying a live lease stays
+        reserved and unpreferred, and the crew takes a different port.
+        """
+        import time
+
+        from kiro_crew.instances.registry import InstancesRegistry
+        from kiro_crew.instances.ssh_tunnel_manager import TunnelState
+
+        captured: dict = {}
+
+        def factory(iid, ssh_host, lp, rp, **k):
+            captured["lp"] = lp
+            return _FakeTunnel(iid, ssh_host, lp, rp, **k)
+
+        reg = InstancesRegistry(path=tmp_path / "instances.json")
+        reg.add(name="CD", ssh_host="cd-1-alias", instance_id="cd-1", remote_port=7900)
+        mgr = self._mgr(reg, factory, monkeypatch)
+        base = mgr._allocator.base_port
+        recorded = base + 2
+        reg.update("cd-1", local_port=recorded)  # survivor of a restart
+        # A chained credential is still valid against the recorded port.
+        reg.lend_hop(recorded, time.time() + 3600)
+        assert recorded in reg.live_hop_leases()
+
+        assert (await mgr.connect("cd-1")).state == TunnelState.CONNECTED
+        # The leased port is NOT reused; a different, safe port is chosen.
+        assert captured["lp"] != recorded
+        assert captured["lp"] >= base
+        assert reg.get("cd-1").local_port != recorded
+        # The lease still stands — reconnecting did not free the guarded port.
+        assert recorded in reg.live_hop_leases()
+
+    @pytest.mark.asyncio
+    async def test_reconnect_does_not_reuse_a_recorded_port_another_row_records(
+        self, tmp_path, monkeypatch
+    ):
+        """A recorded port another row still records yields to a fresh port.
+
+        Two registry rows can record the SAME port number (a duplicate hint left
+        by an earlier allocation). ``_reserved_ports`` withholds that number on
+        behalf of every row that records it, so dropping it from the exclude set
+        for this crew alone would unreserve it for the other row too — binding
+        this crew's forward on a port a hub still forwards another crew's bearer
+        token to, the confused-deputy the reservation exists to close. So a
+        recorded port another row records stays reserved and unpreferred, and the
+        crew takes a different port.
+        """
+        from kiro_crew.instances.registry import InstancesRegistry
+        from kiro_crew.instances.ssh_tunnel_manager import TunnelState
+
+        captured: dict = {}
+
+        def factory(iid, ssh_host, lp, rp, **k):
+            captured["lp"] = lp
+            return _FakeTunnel(iid, ssh_host, lp, rp, **k)
+
+        reg = InstancesRegistry(path=tmp_path / "instances.json")
+        reg.add(name="CD", ssh_host="cd-1-alias", instance_id="cd-1", remote_port=7900)
+        reg.add(name="CE", ssh_host="ce-1-alias", instance_id="ce-1", remote_port=7901)
+        mgr = self._mgr(reg, factory, monkeypatch)
+        base = mgr._allocator.base_port
+        shared = base + 2
+        reg.update("cd-1", local_port=shared)  # survivor of a restart
+        reg.update("ce-1", local_port=shared)  # a second row records the same port
+
+        assert (await mgr.connect("cd-1")).state == TunnelState.CONNECTED
+        # The shared port is NOT reused; a different, safe port is chosen.
+        assert captured["lp"] != shared
+        assert captured["lp"] >= base
+        assert reg.get("cd-1").local_port != shared
+        # The other row's claim on the port is untouched.
+        assert reg.get("ce-1").local_port == shared
+
+    @pytest.mark.asyncio
+    async def test_rebuild_never_prefers_the_recorded_port(self, tmp_path, monkeypatch):
+        """A rebuild passes no port preference, gated on the flag.
+
+        A rebuild wants a DIFFERENT port — the field evidence puts every stall on
+        the first-allocated port, so a cause bound to the port itself must be
+        escaped. When a rebuild finds no live tunnel to tear down, the recorded
+        ``local_port`` is still on the registry row (nothing zeroed it) and the
+        freed-port value is absent — so an exclusion gated on the freed port
+        would let the recorded port be preferred on a rebuild, aiming straight
+        back at the very port the rebuild is escaping. Gating on the rebuild flag
+        keeps the recorded port unpreferred regardless.
+        """
+        from kiro_crew.instances.registry import InstancesRegistry
+        from kiro_crew.instances.ssh_tunnel_manager import TunnelState
+
+        reg = InstancesRegistry(path=tmp_path / "instances.json")
+        reg.add(name="CD", ssh_host="cd-1-alias", instance_id="cd-1", remote_port=7900)
+        mgr = self._mgr(reg, _FakeTunnel, monkeypatch)
+        base = mgr._allocator.base_port
+        recorded = base + 2
+        # A recorded port survives on the row, but no live tunnel is tracked — a
+        # rebuild here skips teardown, so the row's port is not zeroed.
+        reg.update("cd-1", local_port=recorded, was_connected=True)
+        assert "cd-1" not in mgr._tunnels
+
+        real_allocate = mgr._allocator.allocate
+        preferred_seen: list[int] = []
+
+        def spy_allocate(*, exclude, preferred=0):
+            preferred_seen.append(preferred)
+            return real_allocate(exclude=exclude, preferred=preferred)
+
+        monkeypatch.setattr(mgr._allocator, "allocate", spy_allocate)
+
+        rebuilt = await mgr.connect("cd-1", rebuild=True)
+        assert rebuilt.state == TunnelState.CONNECTED
+        # The allocation on the rebuild path is asked for NO preference, even
+        # though the recorded port is present and free.
+        assert preferred_seen == [0], "a rebuild must pass preferred=0, never the recorded port"
+        assert rebuilt.local_port != recorded, "rebuild must not land back on the recorded port"
+        assert rebuilt.local_port >= base
 
     @pytest.mark.asyncio
     async def test_port_conflict_hard_fails(self, tmp_path, monkeypatch):
@@ -7677,7 +7892,7 @@ class TestOrphanForwarderReclaim:
     @pytest.mark.asyncio
     async def test_hard_kill_leaked_forwarder_is_reclaimed_by_pid(self, tmp_path, monkeypatch):
         """hard-kill -> restart -> reconnect: the recorded child is terminated
-        and its port released; connect proceeds on a fresh port."""
+        and its port released; connect then succeeds."""
         import kiro_crew.instances.ssh_tunnel_manager as stm
         from kiro_crew import platform_compat as pc
         from kiro_crew.instances.port_allocator import _is_port_free
@@ -7722,9 +7937,15 @@ class TestOrphanForwarderReclaim:
             while not _is_port_free(port) and time.monotonic() < deadline:
                 time.sleep(0.05)
             assert _is_port_free(port), "reclaimed forwarder's port was not released"
-            # The connect allocated around the (still-reserved) recorded port.
+            # The connect succeeds regardless of which loopback port it lands on.
+            # It asserts only that a valid port was recorded, not a DIFFERENT one:
+            # the recorded port is PREFERRED for origin stability, so reclaiming
+            # this crew's own orphaned forwarder and then reconnecting onto the
+            # very port it freed is a valid outcome — and whether the freed port
+            # is already probe-free at allocation time races the OS reap, so
+            # neither "same" nor "different" is a stable assertion.
             inst = reg.get("cd-1")
-            assert inst.local_port != port
+            assert inst.local_port >= mgr._allocator.base_port
         finally:
             self._cleanup(proc)
 

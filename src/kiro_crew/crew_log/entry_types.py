@@ -1263,7 +1263,7 @@ _SESSION_TYPES: tuple[EntryType, ...] = (
                 "kind",
                 JSON_STRING,
                 required=True,
-                enum=("title", "summary", "memory_consolidation"),
+                enum=("title", "summary", "memory_consolidation", "dynamic_card"),
                 note=(
                     "Which background helper spent the budget. Open: the set grows with "
                     "each helper wired, and refusing an unrecognized one would drop the "

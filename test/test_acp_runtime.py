@@ -322,7 +322,10 @@ async def test_derived_worker_identity_keeps_freshness_and_readiness(
     agents_dir = tmp_path / "agents"
     agents_dir.mkdir()
     monkeypatch.setattr(agent, "kiro_agents_dir_path", lambda: agents_dir)
-    monkeypatch.setattr(paths_mod, "kiro_agents_dir", lambda: agents_dir)
+    # Redirect through the override: ``acp.skill_projection`` is first imported
+    # inside this test and binds ``kiro_agents_dir`` by name, so the redirect must
+    # live in a value that function reads on every call.
+    monkeypatch.setattr(paths_mod, "_agents_dir_override", lambda: agents_dir)
     monkeypatch.setattr(agent_state, "config_dir", lambda: tmp_path / "derived-state")
     default = agents_dir / "kirocrew.json"
     spec = {

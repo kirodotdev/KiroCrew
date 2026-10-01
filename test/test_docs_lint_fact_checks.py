@@ -67,27 +67,6 @@ def _tokens(root: Path, check: str, *, strict: bool = False) -> set[str]:
 
 
 class TestInvariantIds:
-    def test_autopilot_source_comment_ids_must_exist_in_the_invariant_table(
-        self, tree: Path
-    ) -> None:
-        _write(
-            tree,
-            "docs/system-specs/modules/autopilot.md",
-            "| ID | Rule |\n|---|---|\n| S1 | First |\n| S2 | Second |\n",
-        )
-        _write(
-            tree,
-            "src/kiro_crew/worker.py",
-            "# S1: valid citation\n"
-            "def run():\n"
-            '    """Valid citation (S2)."""\n'
-            "    return 'S3 service'  # S3 is a service, not an invariant citation\n"
-            "# noqa: S608\n"
-            "# S9: missing invariant\n",
-        )
-
-        assert gate.run(tree).unknown_autopilot_invariants == ["src/kiro_crew/worker.py:6 -> S9"]
-
     def test_harness_source_comment_ids_must_exist_in_the_invariant_table(self, tree: Path) -> None:
         _write(
             tree,

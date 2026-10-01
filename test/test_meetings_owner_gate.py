@@ -1,7 +1,8 @@
 """The Meetings write routes that change a meeting or drive its agents are owner-only.
 
-The dictionary and calendar-sync writes stay open: the meetings skill tells
-agents to call them over the internal transport, which carries no owner claim.
+Adding or removing a dictionary term is owner-only too: a term rewrites every
+line the owner's meeting agents receive. Dictionary reload and calendar sync
+stay open, since they only re-read the owner's own sources.
 
 An allow-listed channel user holds a dashboard token whose ``app`` claim is ``""``
 but whose subject is not the owner; an app token carries a non-empty ``app``.
@@ -32,6 +33,8 @@ pytestmark = pytest.mark.asyncio
 
 GATED = {
     ("PUT", "/config"): "meetings.put_config",
+    ("POST", "/dictionary"): "meetings.add_dictionary_term",
+    ("POST", "/dictionary/remove"): "meetings.remove_dictionary_term",
     ("PATCH", "/meetings/{meeting_id}"): "meetings.rename",
     ("DELETE", "/meetings/{meeting_id}"): "meetings.delete",
     ("POST", "/meetings/{meeting_id}/init"): "meetings.init",

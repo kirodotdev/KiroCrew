@@ -63,12 +63,12 @@ function newClient() {
   return new QueryClient({ defaultOptions: { queries: { retry: false } } })
 }
 
-function mount(props: { onFileOpen?: (p: string, d: boolean) => void; selectedPath?: string | null; projectDir?: string } = {}) {
+function mount(props: { onFileOpen?: (p: string, d: boolean) => void; selectedPath?: string | null; projectDir?: string; active?: boolean } = {}) {
   const qc = newClient()
   const onFileOpen = props.onFileOpen ?? vi.fn()
   const utils = render(
     <QueryClientProvider client={qc}>
-      <FileBrowserRail projectDir={props.projectDir ?? DIR} onFileOpen={onFileOpen} selectedPath={props.selectedPath} />
+      <FileBrowserRail projectDir={props.projectDir ?? DIR} onFileOpen={onFileOpen} selectedPath={props.selectedPath} active={props.active} />
     </QueryClientProvider>,
   )
   return { qc, onFileOpen, ...utils }
@@ -136,6 +136,18 @@ describe('FileBrowserRail mode segment', () => {
     })
     mount()
     expect(await within(screen.getByLabelText('Changed')).findByText('3')).toBeInTheDocument()
+  })
+
+  it('pauses the git-status poll while kept mounted but inactive', async () => {
+    const poll = (qc: QueryClient) => qc.getQueryCache().find({ queryKey: ['git-status', DIR] })!.observers[0].options
+    const shown = mount()
+    await waitFor(() => expect(H.api.projectGitStatus).toHaveBeenCalledWith(DIR))
+    expect(poll(shown.qc).refetchInterval).toBe(5_000)
+    cleanup()
+    const hidden = mount({ active: false })
+    await waitFor(() => expect(hidden.qc.getQueryCache().find({ queryKey: ['git-status', DIR] })?.observers.length).toBe(1))
+    expect(poll(hidden.qc).refetchInterval).toBe(false)
+    expect(poll(hidden.qc).refetchOnWindowFocus).toBe(false)
   })
 
   it('omits the badge when the working tree is clean', async () => {

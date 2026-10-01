@@ -3,12 +3,16 @@
  *
  * Every surface that floats over the transcript in the composer dock (the
  * composer itself, an approval bar, the follow-up chips, a tip or suggestion
- * card, the queue, the memory chip, the jump-to-bottom button), the mobile
- * Settings search capsule, the notification panes (the in-app banner, the
+ * card, the queue cards, the memory chip, the jump-to-bottom button, and the
+ * status stack above the box: the task, sub-agent and workflow progress bars,
+ * the Command Center card, the held-delivery line, the quote bubble in flight),
+ * the mobile Settings search capsule, the notification panes (the in-app banner, the
  * bell popover's rows and controls card), the list panels' search field
  * (Sessions sidebar, Crew Members roster; components/SearchFilterBar.tsx) and
  * the crewmate DM header's centred identity pill (face + name, itself the
- * "Edit crewmate" button; pages/members/MembersPage.tsx) wear the SAME
+ * "Edit crewmate" button; pages/members/MembersPage.tsx) and the top bar's
+ * three pills (the search trigger, the readout capsule and the Request a
+ * Feature pill; App.tsx, components/FeedbackPill.tsx) wear the SAME
  * material, from the SAME primitive:
  * `--glass-tint` over a blurred backdrop, an even top/bottom light band in
  * `--glass-band`, a 1px `--glass-edge` line down each side and a half-pixel
@@ -34,8 +38,9 @@
  * session composer included), plus `approval-glow` stacked on it while a
  * decision is pending — because which shadow a pane wears at this instant is
  * the caller's state, not the material's. A hue is mixed INTO the tint with `glass-accent`
- * (picked chip, tip card) or `glass-warn` (incognito chip), and `glass-hover`
- * brightens an interactive pane a step on hover — all three swap `--glass-tint`
+ * (picked chip, tip card), `glass-warn` (incognito chip) or `glass-danger` (the
+ * offline readout capsule), and `glass-hover`
+ * brightens an interactive pane a step on hover — all four swap `--glass-tint`
  * on the host (index.css), so the pane stays the same material. Focus changes
  * NOTHING on the pane — no theme colour, no brighter tint, no darker side
  * lines, no deeper shadow (maintainer decision): a focused pane is the same

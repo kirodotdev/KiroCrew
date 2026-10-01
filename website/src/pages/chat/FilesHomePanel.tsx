@@ -31,7 +31,7 @@ function basename(p: string): string {
  * already `cd`'d into it" is offered here instead of requiring the user to know
  * that a side-panel tab kind spawns a shell in the right directory.
  */
-export default function FilesHomePanel({ projectDir, onFileOpen, onAddToContext, onOpenTerminal }: {
+export default function FilesHomePanel({ projectDir, onFileOpen, onAddToContext, onOpenTerminal, active = true }: {
   projectDir: string
   /** `opts.line` opens the file at that line — a rail content-search hit. */
   onFileOpen: (absPath: string, diff: boolean, opts?: { line?: number }) => void
@@ -43,6 +43,8 @@ export default function FilesHomePanel({ projectDir, onFileOpen, onAddToContext,
    *  the terminal view), which withdraws the action rather than offering a shell
    *  that will not start. */
   onOpenTerminal?: () => void
+  /** False while kept mounted in a hidden panel: see FileBrowserRail. */
+  active?: boolean
 }) {
   const { t } = useTranslation()
   const qc = useQueryClient()
@@ -168,7 +170,7 @@ export default function FilesHomePanel({ projectDir, onFileOpen, onAddToContext,
           )}
         </div>
         {treeAvailable && (
-          <FileBrowserRail projectDir={projectDir} onFileOpen={onFileOpen} onAddToContext={onAddToContext} />
+          <FileBrowserRail projectDir={projectDir} onFileOpen={onFileOpen} onAddToContext={onAddToContext} active={active} />
         )}
       </div>
     </div>

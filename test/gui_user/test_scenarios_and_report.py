@@ -115,6 +115,27 @@ class TestShippedScenarios:
         assert any('"3 items"' in exp for exp in sc.expectations)
         assert any("/tmp/kirocrew-gui-user-test/team-notes" in step for step in sc.steps)
 
+    def test_knowledge_scenario_judges_the_settled_badge_and_survives_a_retry(self) -> None:
+        # Two ways this scenario reached NO_VERDICT on a night the product was
+        # healthy (run 36550183001). (1) The row's badge settles on "synced" once
+        # the scan the wait step waits for has finished; "active" is only the
+        # in-flight state after "Start Scanning", so an expectation demanding it
+        # asks for a screen the tester can never see, and the verdict then rides
+        # on judge leniency. (2) The retry runs against the same un-reseeded
+        # gateway, so attempt 2 meets the row attempt 1 added; a second add of
+        # the same folder is refused (409 "source already exists"), so the add
+        # step must name the final state and add nothing when the row is there.
+        sc = scenarios.load_scenario(SCENARIOS_DIR / "knowledge-add-folder-source-and-scan.yaml")
+        assert any('"synced"' in exp for exp in sc.expectations)
+        for exp in sc.expectations:
+            if '"active"' in exp:
+                assert '"synced"' in exp, f"expectation demands the in-flight badge: {exp}"
+        guard = [s for s in sc.steps if "already listed" in s and "add nothing" in s]
+        assert guard, "no step tells a retry to leave an already-listed source alone"
+        add_step = next(i for i, s in enumerate(sc.steps) if 'Click "Local Folder"' in s)
+        assert sc.steps.index(guard[0]) < add_step, "the guard must come before the add"
+        assert '"synced"' in sc.steps[-1], "the wait must stop on the settled badge"
+
     def test_seeded_project_reaches_the_transcript_reader(self, tmp_path: Path) -> None:
         # seed_home.py --project writes into the starter transcript's metadata line
         # by hand, and the dashboard restores `slot.project` from the same record

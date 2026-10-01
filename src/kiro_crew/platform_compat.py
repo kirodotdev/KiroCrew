@@ -1134,17 +1134,48 @@ def open_lock_file(path: "str | os.PathLike[str]") -> Iterator[int]:
     can observe or produce an empty lock file and crash out of the critical
     section — the loss lands only on a specific interleaving, which is why it
     read as shard flake rather than a deterministic failure.
-    ``O_RDWR | O_CREAT`` creates-or-opens in one syscall and never truncates.
+    The create-or-open is :func:`open_create_or_existing`, which never
+    truncates and is race-safe against a sibling creating the same name.
 
     Yields the raw integer fd, ready for :func:`file_lock` /
     :func:`flock_exclusive`. The lock file's CONTENT is never meaningful to
     the lock itself; this exists so contenders cannot watch it flicker empty.
     """
-    fd = os.open(os.fspath(path), os.O_RDWR | os.O_CREAT, 0o644)
+    fd = open_create_or_existing(path, os.O_RDWR, 0o644)
     try:
         yield fd
     finally:
         os.close(fd)
+
+
+def open_create_or_existing(
+    path: "str | os.PathLike[str]",
+    flags: int,
+    mode: int = 0o644,
+    *,
+    dir_fd: int | None = None,
+) -> int:
+    """Open *path*, creating it when absent, race-safe against a sibling creator.
+
+    A nonexclusive ``O_CREAT`` open of an absent name can come back ``ENOENT``
+    on Darwin when two callers race to create it -- the create is not the atomic
+    "make or find" the flag reads as. So the name is created EXCLUSIVELY first
+    and, when a sibling already made it, opened again WITHOUT ``O_CREAT`` so the
+    sibling's inode is the one both hold. A leaf that vanishes between those two
+    calls is a genuine ``ENOENT``, left to the caller: recreating it here would
+    hand two writers two different inodes under one lock name.
+
+    *flags* carries everything but the create bits (``O_RDWR``, ``O_NOFOLLOW``,
+    ``O_APPEND``, ...). *dir_fd* makes the open descriptor-relative, so a caller
+    that pinned the directory keeps its pin anchoring the open. Returns the raw
+    integer fd; the caller owns it. Shared by the SEL chain lock, the decision
+    log and the app-deps provisioning lock, which all hit the same race.
+    """
+    name = os.fspath(path)
+    try:
+        return os.open(name, flags | os.O_CREAT | os.O_EXCL, mode, dir_fd=dir_fd)
+    except FileExistsError:
+        return os.open(name, flags, mode, dir_fd=dir_fd)
 
 
 def acquire_lock(fd: int, *, exclusive: bool = True) -> None:
@@ -3091,18 +3122,34 @@ def trusted_system_bin(name: str) -> str | None:
     after boot would never be picked up.
     """
 
+    found = trusted_system_bin_quiet(name)
+    if found is None:
+        _log_tool_outside_trusted_dirs(name, _trusted_bin_search()[0])
+    return found
+
+
+def _trusted_bin_search() -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """``(directories, suffixes)`` the trusted lookup searches on this platform."""
     if IS_WINDOWS:
-        directories: tuple[str, ...] = _windows_system_dirs()
-        suffixes: tuple[str, ...] = _WINDOWS_BIN_SUFFIXES
-    else:
-        directories = _TRUSTED_SYSTEM_BIN_DIRS
-        suffixes = ("",)
+        return _windows_system_dirs(), _WINDOWS_BIN_SUFFIXES
+    return _TRUSTED_SYSTEM_BIN_DIRS, ("",)
+
+
+def trusted_system_bin_quiet(name: str) -> str | None:
+    """:func:`trusted_system_bin` without its miss diagnostic.
+
+    The diagnostic walks ``PATH`` (``shutil.which``) to say where else the tool
+    is, and a ``PATH`` entry on a stalled mount hangs that walk. A caller on
+    the event loop uses this instead, so the lookup stays a handful of ``stat``
+    calls on fixed system directories, and reports a miss in its own words.
+    """
+
+    directories, suffixes = _trusted_bin_search()
     for directory in directories:
         for suffix in suffixes:
             candidate = os.path.join(directory, name + suffix)
             if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
                 return candidate
-    _log_tool_outside_trusted_dirs(name, directories)
     return None
 
 
@@ -7333,6 +7380,7 @@ def unlink_link_or_junction(path: str | os.PathLike) -> None:
 #: name is seen for what it is rather than silently traversed. The share mode
 #: deliberately omits ``FILE_SHARE_DELETE``: that omission is the pin.
 _WIN_GENERIC_READ = 0x80000000
+_WIN_GENERIC_WRITE = 0x40000000
 _WIN_FILE_SHARE_READ_WRITE = 0x00000001 | 0x00000002
 _WIN_OPEN_EXISTING = 3
 _WIN_FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
@@ -7841,6 +7889,74 @@ def open_log_file_for_tail(path: str | os.PathLike) -> int:
     try:
         return msvcrt.open_osfhandle(  # type: ignore[attr-defined]
             handle, os.O_RDONLY | getattr(os, "O_BINARY", 0)
+        )
+    except BaseException:
+        # Ownership transfers only when the CRT descriptor is created.
+        kernel32.CloseHandle(handle)
+        raise
+
+
+def open_lock_file_for_sweep(path: "str | os.PathLike[str]") -> int:
+    """Open an ``<alias>.lock`` for the sweeper to lock AND unlink while held.
+
+    The orphan-lock sweep removes a lock file only while holding its own
+    exclusive lock on it: the held lock is the proof no launcher owns the inode,
+    so a launcher that still holds (or re-takes) it is left alone, and the unlink
+    happens WITHOUT first releasing — releasing before the unlink reopens the
+    very race the proof closes (another launcher could lock a fresh inode at the
+    same name in the gap).
+
+    * POSIX: ``os.open(O_RDWR | O_NOFOLLOW)``. ``unlink`` of a file with open
+      descriptors is routine; the inode lives until the last fd closes, and the
+      held ``flock`` keeps a contender out meanwhile. This is exactly the open
+      the sweep was doing, named.
+    * Windows: ``os.open`` routes through the CRT, which opens with
+      ``FILE_SHARE_READ | FILE_SHARE_WRITE`` and **omits** ``FILE_SHARE_DELETE``
+      — so while that descriptor lives, ``os.unlink`` of the same name fails with
+      a sharing violation (``PermissionError``/``WinError 32``). The sweep then
+      declines to remove genuine residue, because its own verification handle is
+      what blocks the delete. ``CreateFileW`` with
+      ``FILE_SHARE_READ_WRITE_DELETE`` lets the delete land while this handle is
+      still open (and still holding the ``msvcrt`` byte-range lock), preserving
+      the hold-across-unlink guarantee on both platforms. ``OPEN_EXISTING``
+      never creates — the sweep only ever removes names already present. No
+      ``OPEN_REPARSE_POINT``: the sweep's caller has already refused a reparse
+      point at the name (``is_link_or_junction``) and re-checks identity under
+      the lock, and following here would still only reach a file this same user
+      owns.
+
+    Returns the raw integer fd; the caller owns it and must ``os.close`` it.
+    """
+    if IS_POSIX:
+        return os.open(os.fspath(path), os.O_RDWR | getattr(os, "O_NOFOLLOW", 0))
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    handle = kernel32.CreateFileW(
+        os.fspath(path),
+        _WIN_GENERIC_READ | _WIN_GENERIC_WRITE,
+        _WIN_FILE_SHARE_READ_WRITE_DELETE,
+        None,
+        _WIN_OPEN_EXISTING,
+        0,
+        None,
+    )
+    if handle is None or handle == wintypes.HANDLE(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())  # type: ignore[attr-defined]
+    try:
+        return msvcrt.open_osfhandle(  # type: ignore[attr-defined]
+            handle, os.O_RDWR | getattr(os, "O_BINARY", 0)
         )
     except BaseException:
         # Ownership transfers only when the CRT descriptor is created.
