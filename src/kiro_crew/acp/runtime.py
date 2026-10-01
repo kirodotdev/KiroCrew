@@ -124,6 +124,7 @@ from kiro_crew.acp.transport_framing import (
     OversizeLineUnrecoverable,
     _drain_oversize_line,
     response_write_window_secs,
+    settle_drain,
     write_notification_best_effort,
     write_response_frame_bounded,
 )
@@ -2568,9 +2569,13 @@ class AcpRuntime:
         # is the last moment the child's own account of why it could not start
         # is still reachable, and a sandbox refusal is exactly the failure that
         # arrives this way: the child writes its signature and closes stdout
-        # together. Bounded and swallowing (see ``settle_stderr``); this is
-        # already the failure path.
-        await self.settle_stderr()
+        # together. Bounded (see ``settle_stderr``); this is already the failure
+        # path. A cancel of THIS task (loop shutdown) is absorbed here as it is
+        # in the tree scan below, so the kill that follows still runs.
+        try:
+            await self.settle_stderr()
+        except asyncio.CancelledError:
+            pass
         # The group kill below reaches only kiro-cli's own process group, and
         # every stdio MCP server it launches leads a group of its own. A
         # runtime that served a session has those recorded by the descendant
@@ -4405,16 +4410,12 @@ class AcpRuntime:
 
         Bounded and swallowing, because the caller is already on a failure path:
         the worst case of not settling is the generic error it would have produced
-        anyway, and no failure here may become a second failure. The same shape
-        and the same budget as ``AcpClient._read_message``'s own EOF drain.
+        anyway, and no failure here may become a second failure. The same budget
+        as ``AcpClient._read_message``'s own EOF drain, but shielded: this child
+        may still be alive and the drain is still the latches' only writer. A
+        cancel of the caller propagates; see :func:`settle_drain`.
         """
-        task = self._stderr_task
-        if task is None or task.done():
-            return
-        try:
-            await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
-        except (Exception, asyncio.CancelledError):
-            pass
+        await settle_drain(self._stderr_task, timeout)
 
     def saw_sandbox_init_failure(self) -> bool:
         """True if an OS sandbox told this runtime's child it could not initialize.

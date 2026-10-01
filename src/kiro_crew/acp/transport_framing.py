@@ -3,10 +3,11 @@
 ``AcpClient`` (one harness process per session) and ``AcpRuntime`` (one process
 multiplexed across sessions) exchange newline-delimited JSON-RPC frames over the
 harness's stdio. This module owns the parts of that framing both transports share:
-discarding one oversize stdout line while keeping the stream on a frame boundary, and
+discarding one oversize stdout line while keeping the stream on a frame boundary,
 bounding a response or notification write by the reader's progress rather than by
-elapsed time. Each transport keeps its own write lock, pending-request table and the
-death handling a failed write triggers.
+elapsed time, and the bounded settle of the stderr drain on a failure path. Each
+transport keeps its own write lock, pending-request table and the death handling a
+failed write triggers.
 
 ``kiro_crew.acp.client`` re-exports every name defined here.
 """
@@ -370,3 +371,35 @@ async def write_notification_best_effort(
         return "drained" if drained else "stalled"
     finally:
         lock.release()
+
+
+async def settle_drain(
+    task: "asyncio.Future[Any] | None", timeout: float, *, shield: bool = True
+) -> None:
+    """Wait up to *timeout* for the stderr drain *task*, swallowing its outcome.
+
+    Both transports call this on a failure path before they read what the drain
+    collected, so nothing about the DRAIN may become a second failure: its
+    timeout, its error, and its own cancellation by a teardown are all absorbed.
+    With *shield* the drain keeps running when the wait gives up; without it the
+    wait cancels the drain, for a caller whose child is already gone.
+
+    A cancel of the CALLER is not the drain's outcome and propagates: swallowed,
+    a Stop, a shutdown or an outer deadline landing inside this wait would be
+    lost, and ``AcpClient.ensure_ready`` settles on its retry path, where the
+    next step is a fresh spawn. The drain's own cancellation surfaces here as the
+    same ``CancelledError``, so the two are told apart the way ``asyncio.timeout``
+    does it: by whether the caller's ``cancelling()`` count grew during the wait.
+    An absolute count would misread a task that absorbed an earlier cancel.
+    """
+    if task is None or task.done():
+        return
+    current = asyncio.current_task()
+    cancels_before = current.cancelling() if current is not None else 0
+    try:
+        await asyncio.wait_for(asyncio.shield(task) if shield else task, timeout=timeout)
+    except asyncio.CancelledError:
+        if current is not None and current.cancelling() > cancels_before:
+            raise
+    except Exception:
+        pass

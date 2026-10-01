@@ -924,6 +924,61 @@ class TestStartKiroRuntimeResume:
         mock_runtime.kill.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_a_cancel_during_the_startup_settle_reaches_the_caller(self):
+        # The shared-runtime twin of AcpClient's startup settle, at the site
+        # where it really waits: create_session() failed on a LIVE runtime, so
+        # the stderr drain is still running when the translation settles it (up
+        # to 0.5 s). A Stop 0.1 s into that wait must end the start as a cancel,
+        # not as the generic AcpRuntimeError the pool replaces with a fresh
+        # worker -- and the post-spawn guard must still kill the runtime.
+        from test_update_provider import _UNALLOCATABLE_PID
+
+        from kiro_crew.acp.runtime import AcpRuntime
+        from kiro_crew.acp.session_handle import AcpRuntimeError
+
+        provider = self._kiro_provider(model="auto")
+        provider._client._resume_session_id = ""  # no resume -> straight to create_session
+
+        mock_runtime = MagicMock()
+        mock_runtime.pid = _UNALLOCATABLE_PID
+        mock_runtime.spawn = AsyncMock()
+        mock_runtime.kill = AsyncMock()
+        mock_runtime.create_session = AsyncMock(side_effect=AcpRuntimeError("session/new died"))
+        mock_runtime.saw_not_logged_in = MagicMock(return_value=False)
+        mock_runtime.saw_sandbox_init_failure = MagicMock(return_value=False)
+        mock_runtime._stderr_task = asyncio.ensure_future(asyncio.sleep(3600))
+        settle_entered = asyncio.Event()
+
+        async def _real_settle(timeout: float = 0.5) -> None:
+            settle_entered.set()
+            # Long, so the cancel below cannot race the budget on a loaded runner.
+            await AcpRuntime.settle_stderr(mock_runtime, 30)
+
+        mock_runtime.settle_stderr = _real_settle
+
+        with (
+            patch("kiro_crew.providers.acp.AcpRuntime", return_value=mock_runtime),
+            patch("kiro_crew.providers.acp.AcpSessionProvider"),
+        ):
+            start = asyncio.ensure_future(provider._start_kiro_runtime())
+            try:
+                await asyncio.wait_for(settle_entered.wait(), timeout=5)
+                await asyncio.sleep(0.1)
+                start.cancel()
+                await asyncio.wait({start}, timeout=5)
+                assert start.done(), "the start never finished"
+                assert start.cancelled(), (
+                    f"the runtime start ended with {start.exception()!r} instead of "
+                    "the cancel that arrived during its stderr settle"
+                )
+                mock_runtime.spawn.assert_awaited_once()
+                mock_runtime.kill.assert_awaited_once()
+            finally:
+                mock_runtime._stderr_task.cancel()
+                if not start.done():
+                    start.cancel()
+
+    @pytest.mark.asyncio
     async def test_successful_start_does_not_kill_runtime(self):
         # Guard against over-eager cleanup: a normal successful start must NOT
         # kill the runtime (the AcpSessionProvider now owns it).

@@ -803,10 +803,10 @@ async def sandbox_init_failure_for_runtime(runtime: Any) -> "AcpSandboxInitFaile
     the stdout side and fails the pending ``initialize`` synchronously -- so both
     are runnable at once and a straight read can see ``False`` for a line already
     in the pipe. That is the ordinary shape of a real refusal, not a corner: the
-    child writes its signature and closes stdout together. Bounded and swallowing
-    (see :meth:`AcpRuntime.settle_stderr`), the same pattern ``AcpClient`` applies
-    at its own EOF. Because every caller asks this BEFORE the auth translation,
-    the settle covers that read too.
+    child writes its signature and closes stdout together. Bounded, and swallowing
+    everything except a cancel of the caller (see :meth:`AcpRuntime.settle_stderr`).
+    Because every caller asks this BEFORE the auth translation, the settle covers
+    that read too.
     """
     await runtime.settle_stderr()
     if not runtime.saw_sandbox_init_failure():
