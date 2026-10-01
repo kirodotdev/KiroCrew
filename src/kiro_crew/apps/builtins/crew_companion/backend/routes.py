@@ -16,6 +16,13 @@ process, no loopback URL to resolve and no proxy hop.
 Every handler is wrapped in :func:`_require_enabled`, so a disabled app answers
 403 and a not-yet-started runtime answers 503. The two are different facts: the
 caller can usefully retry one and not the other.
+
+Every route that WRITES is also wrapped in :func:`_owner_only`. The reminders,
+packs and notification switches are the owner's own state, so only the dashboard
+owner may change them. A non-owner dashboard subject and any app token get the
+shared 403 ``owner_only``. Every real caller is the owner's own same-origin
+dashboard page or desktop window, which carries the owner's session cookie. The
+reads stay open to anyone who passes the enable gate.
 """
 
 from __future__ import annotations
@@ -35,6 +42,7 @@ from kiro_crew.appearance_packs.transfer import (
 )
 from kiro_crew.apps.builtins.crew_companion.hooks import get_appearances, get_store
 from kiro_crew.apps.manager import is_app_enabled
+from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +125,55 @@ def _require_enabled(handler: Handler) -> Handler:
             )
 
     return _wrapped
+
+
+def _audit_owner_write_allowed_sync(caller: str, operation: str) -> None:
+    """Best-effort SEL record of an allowed owner write; never raises.
+
+    The shared owner gate audits only its refusals, so the allowed decision is
+    recorded here. Runs off the event loop: the first ``sel()`` of a process
+    constructs the log.
+    """
+    try:
+        from kiro_crew.sel import sel  # deferred: sel imports config, which reaches apps
+
+        sel().log_api_access(
+            caller=caller,
+            operation=operation,
+            outcome="allowed",
+            source="dashboard",
+        )
+    except Exception:  # pragma: no cover - audit must never change the outcome
+        logger.debug("SEL audit for %s failed", operation, exc_info=True)
+
+
+def _owner_only(operation: str) -> Callable[[Handler], Handler]:
+    """Refuse everyone but the dashboard owner before a write runs.
+
+    Delegates to the shared ``require_owner_dashboard_request`` so this gate
+    follows the same rule, refusal audit and 403 ``owner_only`` as every other
+    owner-gated route, and records the allowed decision in SEL too. App tokens
+    are refused: the companion has no caller that holds one.
+    """
+
+    def _decorate(handler: Handler) -> Handler:
+        @wraps(handler)
+        async def _wrapped(request: web.Request) -> web.StreamResponse:
+            denied = await require_owner_dashboard_request(request, operation)
+            if denied is not None:
+                return denied
+            caller = str(request.get("user") or "unknown")
+            await asyncio.to_thread(_audit_owner_write_allowed_sync, caller, operation)
+            return await handler(request)
+
+        return _wrapped
+
+    return _decorate
+
+
+def _owner_write(operation: str, handler: Handler) -> Handler:
+    """A mutating route: the enable gate first, then the owner gate."""
+    return _require_enabled(_owner_only(f"crew_companion.{operation}")(handler))
 
 
 async def _body(request: web.Request) -> dict[str, Any]:
@@ -399,38 +456,51 @@ async def _handle_petdex_fetch(request: web.Request) -> web.StreamResponse:
 def register_routes(app: web.Application) -> None:
     """Register on the gateway's aiohttp Application (single-arg convention)."""
     app.router.add_get(f"{_BASE}/reminders", _require_enabled(_handle_reminders_get))
-    app.router.add_post(f"{_BASE}/reminders/add", _require_enabled(_handle_add))
-    app.router.add_post(f"{_BASE}/reminders/remove", _require_enabled(_handle_remove))
-    app.router.add_post(f"{_BASE}/reminders/skip", _require_enabled(_handle_skip))
-    app.router.add_post(f"{_BASE}/reminders/update", _require_enabled(_handle_update))
-    app.router.add_post(f"{_BASE}/reminders/config", _require_enabled(_handle_config))
+    app.router.add_post(f"{_BASE}/reminders/add", _owner_write("reminders_add", _handle_add))
+    app.router.add_post(
+        f"{_BASE}/reminders/remove", _owner_write("reminders_remove", _handle_remove)
+    )
+    app.router.add_post(f"{_BASE}/reminders/skip", _owner_write("reminders_skip", _handle_skip))
+    app.router.add_post(
+        f"{_BASE}/reminders/update", _owner_write("reminders_update", _handle_update)
+    )
+    app.router.add_post(
+        f"{_BASE}/reminders/config", _owner_write("reminders_config", _handle_config)
+    )
     app.router.add_get(f"{_BASE}/stats", _require_enabled(_handle_stats_get))
     app.router.add_get(f"{_BASE}/pending", _require_enabled(_handle_pending_get))
-    app.router.add_post(f"{_BASE}/presence", _require_enabled(_handle_presence))
+    app.router.add_post(f"{_BASE}/presence", _owner_write("presence", _handle_presence))
     app.router.add_get(f"{_BASE}/appearances", _require_enabled(_handle_appearances_get))
     app.router.add_get(
         f"{_BASE}/appearances/export", _require_enabled(_handle_appearance_export)
     )
     app.router.add_post(
-        f"{_BASE}/appearances/import", _require_enabled(_handle_appearance_import)
+        f"{_BASE}/appearances/import",
+        _owner_write("appearances_import", _handle_appearance_import),
     )
     app.router.add_post(
-        f"{_BASE}/appearances/save-sprite", _require_enabled(_handle_appearance_save_sprite)
+        f"{_BASE}/appearances/save-sprite",
+        _owner_write("appearances_save_sprite", _handle_appearance_save_sprite),
     )
-    app.router.add_post(f"{_BASE}/petdex/fetch", _require_enabled(_handle_petdex_fetch))
+    app.router.add_post(
+        f"{_BASE}/petdex/fetch", _owner_write("petdex_fetch", _handle_petdex_fetch)
+    )
     app.router.add_get(
         f"{_BASE}/appearances/detail", _require_enabled(_handle_appearance_detail)
     )
     app.router.add_post(
-        f"{_BASE}/appearances/colours", _require_enabled(_handle_appearance_colours)
+        f"{_BASE}/appearances/colours",
+        _owner_write("appearances_colours", _handle_appearance_colours),
     )
     app.router.add_post(
-        f"{_BASE}/appearances/delete", _require_enabled(_handle_appearance_delete)
+        f"{_BASE}/appearances/delete",
+        _owner_write("appearances_delete", _handle_appearance_delete),
     )
     app.router.add_post(
-        f"{_BASE}/appearances/save", _require_enabled(_handle_appearance_save)
+        f"{_BASE}/appearances/save",
+        _owner_write("appearances_save", _handle_appearance_save),
     )
     app.router.add_post(
-        f"{_BASE}/breathing-done", _require_enabled(_handle_breathing_done)
+        f"{_BASE}/breathing-done", _owner_write("breathing_done", _handle_breathing_done)
     )
-    app.router.add_post(f"{_BASE}/window", _require_enabled(_handle_window))
+    app.router.add_post(f"{_BASE}/window", _owner_write("window", _handle_window))

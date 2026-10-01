@@ -15,6 +15,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from kiro_crew.appearance_packs.store import AppearanceStore
 from kiro_crew.apps.builtins.crew_companion import hooks
 from kiro_crew.apps.builtins.crew_companion.backend import routes
 from kiro_crew.apps.builtins.crew_companion.reminders import parse_iso, to_iso
@@ -22,6 +23,8 @@ from kiro_crew.apps.builtins.crew_companion.store import CompanionStore
 
 BASE = "/api/apps/crew-companion"
 NOW = parse_iso("2026-07-31T14:00:00")
+OWNER = "owner-1"
+NON_OWNER = "slack-allowlisted-2"
 
 
 @pytest.fixture(autouse=True)
@@ -52,7 +55,16 @@ def store(tmp_path, monkeypatch):
 
 
 async def _client() -> TestClient:
-    app = web.Application()
+    @web.middleware
+    async def _identity(request, handler):
+        # Stand-in for token_auth: the signed claims the owner gate reads. A
+        # request with no test headers is the dashboard owner.
+        request["user"] = request.headers.get("X-Test-User", OWNER)
+        request["app"] = request.headers.get("X-Test-App", "")
+        return await handler(request)
+
+    app = web.Application(middlewares=[_identity])
+    app["state"] = SimpleNamespace(owner_id=OWNER)
     routes.register_routes(app)
     client = TestClient(TestServer(app))
     await client.start_server()
@@ -124,9 +136,149 @@ class TestGate:
                 ("post", f"{BASE}/reminders/config"),
                 ("post", f"{BASE}/presence"),
                 ("post", f"{BASE}/breathing-done"),
+                ("post", f"{BASE}/window"),
+                ("post", f"{BASE}/appearances/colours"),
+                ("post", f"{BASE}/appearances/delete"),
+                ("post", f"{BASE}/appearances/save"),
+                ("post", f"{BASE}/appearances/import"),
+                ("post", f"{BASE}/appearances/save-sprite"),
+                ("post", f"{BASE}/petdex/fetch"),
             ]:
                 r = await getattr(client, method)(path, json={})
                 assert r.status == 403, f"{method.upper()} {path} was not gated"
+        finally:
+            await client.close()
+
+
+# ── the owner gate ──────────────────────────────────────────────────────────
+
+# Every route that writes, with a body that would succeed for the owner.
+MUTATING = [
+    ("/reminders/add", {"text": "approve the pending tool call", "fireAt": "2026-07-31T14:01:00Z"}),
+    ("/reminders/remove", {"id": "r-owner"}),
+    ("/reminders/skip", {"id": "r-owner"}),
+    ("/reminders/update", {"id": "r-owner", "text": "edited by someone else"}),
+    ("/reminders/config", {"sessionNotificationsEnabled": False}),
+    ("/presence", {}),
+    ("/breathing-done", {}),
+    ("/window", {"target": "panel"}),
+    ("/appearances/colours", {"id": "default", "colorMap": {}}),
+    ("/appearances/delete", {"id": "owner-pack"}),
+    ("/appearances/save", {"id": "x", "manifest": {}, "files": {}}),
+    ("/appearances/import", {"bundle": {}}),
+    ("/appearances/save-sprite", {"id": "x", "manifest": {}, "spriteBase64": ""}),
+    ("/petdex/fetch", {"input": "some-pet"}),
+]
+
+READS = [
+    "/reminders",
+    "/stats",
+    "/pending",
+    "/appearances",
+    "/appearances/detail?id=kiro-ghost",
+]
+
+
+@pytest.fixture()
+def gated(enabled, store, tmp_path, monkeypatch):
+    """An enabled, started companion with no network and a recorded petdex call."""
+    appearances = AppearanceStore(tmp_path)
+    appearances.load()
+    monkeypatch.setattr(hooks, "_appearances", appearances)
+    calls: list[str] = []
+
+    def _offline_fetch(value):
+        calls.append(value)
+        return {"ok": False, "error": "offline in tests"}
+
+    monkeypatch.setattr(routes, "fetch_petdex_pet", _offline_fetch)
+    return SimpleNamespace(store=store, petdex_calls=calls)
+
+
+class TestOwnerGate:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("path,body", MUTATING, ids=[p for p, _ in MUTATING])
+    async def test_non_owner_dashboard_subject_is_refused(self, gated, path, body):
+        client = await _client()
+        try:
+            r = await client.post(BASE + path, json=body, headers={"X-Test-User": NON_OWNER})
+            assert r.status == 403, f"non-owner reached {path}: HTTP {r.status}"
+            assert (await r.json())["code"] == "owner_only"
+            assert gated.petdex_calls == []
+        finally:
+            await client.close()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("path,body", MUTATING, ids=[p for p, _ in MUTATING])
+    async def test_own_app_token_is_refused(self, gated, path, body):
+        """No companion caller holds an app token, so its own is refused too."""
+        client = await _client()
+        try:
+            r = await client.post(
+                BASE + path,
+                json=body,
+                headers={"X-Test-User": "crew-companion", "X-Test-App": "crew-companion"},
+            )
+            assert r.status == 403, f"app token reached {path}: HTTP {r.status}"
+            assert (await r.json())["code"] == "owner_only"
+            assert gated.petdex_calls == []
+        finally:
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_non_owner_cannot_silence_session_notifications(self, gated):
+        client = await _client()
+        try:
+            await client.post(
+                f"{BASE}/reminders/config",
+                json={"sessionNotificationsEnabled": False},
+                headers={"X-Test-User": NON_OWNER},
+            )
+            assert gated.store.snapshot()["sessionNotificationsEnabled"] is True
+        finally:
+            await client.close()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("path,body", MUTATING, ids=[p for p, _ in MUTATING])
+    async def test_owner_reaches_every_mutating_route(self, gated, path, body):
+        """The owner passes the gate: no route answers ``owner_only`` to them."""
+        client = await _client()
+        try:
+            r = await client.post(BASE + path, json=body)
+            assert r.status != 403, f"owner refused at {path}: HTTP {r.status}"
+        finally:
+            await client.close()
+        if path == "/petdex/fetch":
+            assert gated.petdex_calls == ["some-pet"]
+
+    @pytest.mark.asyncio
+    async def test_an_allowed_owner_write_is_audited(self, gated, monkeypatch):
+        """Every permission decision reaches SEL, the allowed one included."""
+        import kiro_crew.sel as sel_mod
+
+        events: list[dict] = []
+        recorder = SimpleNamespace(log_api_access=lambda **kw: events.append(kw))
+        monkeypatch.setattr(sel_mod, "sel", lambda: recorder)
+        client = await _client()
+        try:
+            r = await client.post(f"{BASE}/reminders/config", json={"breakNudgesEnabled": False})
+            assert r.status == 200
+        finally:
+            await client.close()
+        assert {
+            "caller": OWNER,
+            "operation": "crew_companion.reminders_config",
+            "outcome": "allowed",
+            "source": "dashboard",
+        } in events
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("path", READS)
+    async def test_non_owner_reads_keep_working(self, gated, path):
+        client = await _client()
+        try:
+            r = await client.get(BASE + path, headers={"X-Test-User": NON_OWNER})
+            assert r.status == 200, f"read {path} changed: HTTP {r.status}"
         finally:
             await client.close()
 
