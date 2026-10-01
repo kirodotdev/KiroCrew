@@ -13,15 +13,21 @@
  * with its own `queryKeyHashFn` stores a different `queryHash`).
  */
 import { useCallback, useSyncExternalStore } from 'react'
-import { hashKey, useQueryClient, type QueryKey } from '@tanstack/react-query'
+import { hashKey, notifyManager, useQueryClient, type QueryKey } from '@tanstack/react-query'
 
 export function useQueryIsFetching(queryKey: QueryKey): boolean {
   const queryClient = useQueryClient()
   const hash = hashKey(queryKey)
   const subscribe = useCallback(
-    (onChange: () => void) => queryClient.getQueryCache().subscribe(event => {
-      if (event.query.queryHash === hash) onChange()
-    }),
+    (onChange: () => void) => {
+      // The cache can emit 'added' synchronously while another component
+      // renders (a useQuery building an evicted key), so defer the store
+      // notification the way useIsFetching does, via notifyManager.batchCalls.
+      const notify = notifyManager.batchCalls(onChange)
+      return queryClient.getQueryCache().subscribe(event => {
+        if (event.query.queryHash === hash) notify()
+      })
+    },
     [queryClient, hash],
   )
   const getSnapshot = useCallback(

@@ -1,7 +1,7 @@
-import { act, renderHook } from '@testing-library/react'
+import { act, render, renderHook, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import { useQueryIsFetching } from './useQueryIsFetching'
 
@@ -34,9 +34,9 @@ describe('useQueryIsFetching', () => {
     const d = deferred()
     let done!: Promise<unknown>
     act(() => { done = client.fetchQuery({ queryKey: ['session-automation', 'a'], queryFn: () => d.promise }) })
-    expect(hook.result.current).toBe(true)
+    await waitFor(() => expect(hook.result.current).toBe(true))
     await act(async () => { d.resolve('x'); await done })
-    expect(hook.result.current).toBe(false)
+    await waitFor(() => expect(hook.result.current).toBe(false))
   })
 
   it('ignores other keys, including a longer key with the same prefix', async () => {
@@ -60,6 +60,30 @@ describe('useQueryIsFetching', () => {
     hook.rerender({ k: ['session-automation', 'b'] })
     expect(hook.result.current).toBe(true)
     await act(async () => { d.resolve('x') })
-    expect(hook.result.current).toBe(false)
+    await waitFor(() => expect(hook.result.current).toBe(false))
+  })
+
+  it('does not update during another component\'s render when that render changes the query', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const key = ['session-automation', 'a']
+    const d = deferred()
+    function Watcher() { return <span>{String(useQueryIsFetching(key))}</span> }
+    // A cache change made while Reader renders, standing in for any
+    // render-phase cache event, such as the 'added' a useQuery emits when it
+    // builds an evicted key.
+    function Reader() { void client.fetchQuery({ queryKey: key, queryFn: () => d.promise }); return null }
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const view = render(
+      <QueryClientProvider client={client}><Watcher /></QueryClientProvider>,
+    )
+    view.rerender(
+      <QueryClientProvider client={client}><Watcher /><Reader /></QueryClientProvider>,
+    )
+    await waitFor(() => expect(view.container.textContent).toBe('true'))
+    await act(async () => { d.resolve('x') })
+    const renderPhaseUpdates = errors.mock.calls.filter(args =>
+      String(args[0]).includes('Cannot update a component'))
+    errors.mockRestore()
+    expect(renderPhaseUpdates).toEqual([])
   })
 })
