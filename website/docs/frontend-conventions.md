@@ -76,7 +76,10 @@ Other shared modules:
 - `AgentSelector.tsx` (portal dropdown with ARIA)
 - `layout.ts` (`LAYOUT` numeric constants: nav widths, sidebar width, max message
   width, topbar height, log line cap)
-- `InfoTip.tsx`, `MarkdownRenderer.tsx` (the markdown renderer, with highlight.js
+- `InfoTip.tsx` (the one help-tip pattern: hover or focus reveals, click or tap
+  pins, Escape dismisses, and the tip text is the glyph's accessible
+  description — see [below](#help-text-description-or-infotip)),
+  `MarkdownRenderer.tsx` (the markdown renderer, with highlight.js
   syntax highlighting; its owners are mapped [below](#the-markdown-renderer)),
   `TypewriterText.tsx`
 - `ResizeHandle.tsx` + `hooks/useColumnResize` (the drag grip between two PANES)
@@ -143,6 +146,24 @@ under every theme (`npm run storybook`); see
 one today. A story is the cheapest place to look at a new variant or prop, so add
 or update one when you touch a primitive that has one; a per-primitive
 requirement is not in force until the change that makes CI render stories.
+
+### Help text: `description` or `InfoTip`
+
+A control's caption carries two kinds of prose, and the Settings primitives
+(`settings.tsx`) give each its own prop. `description` stays on the row at all
+times; it is for the sentence a reader needs to MAKE the choice — a consequence,
+a cost, where data goes, a status such as "disabled by instance config". `hint`
+renders an `InfoTip` beside the label; it is for what the control IS, which a
+reader wants once and never again. A row that always shows two lines of prose
+spends attention whether or not it is being read, so the default for an
+explanatory sentence is `hint`, one catalog string per tip. An error is neither: it renders through
+`ErrorNotice` (`AUTOSDE.yaml`, `errors-use-error-notice`), never behind a tip.
+
+`InfoTip` is accessible by construction — keyboard focusable, named by a short
+generic phrase, described by the tip text (the open tooltip, or `title` while it
+is closed), pinnable by tap for touch — so a surface outside Settings reaches
+for the same component rather than a bare `title` attribute or a hand-rolled
+hover.
 
 ### The markdown renderer
 

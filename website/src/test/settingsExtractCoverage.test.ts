@@ -87,6 +87,41 @@ describe('settingsExtract — multi-target panels', () => {
   })
 })
 
+describe('settingsExtract — description and hint indexing', () => {
+  // SecurityPanel is a plain single-target panel, so one primitive yields one
+  // entry and the description under test is read straight off it.
+  const FILE = 'SecurityPanel.tsx'
+
+  it('indexes both hint and description, hint first, when a row keeps both', () => {
+    // The tip states what the row is and the description states the
+    // consequence, so the joined text must read definition-then-consequence.
+    const { entries } = extractFromSource(
+      `<SettingsInput label="Default shell" description="Leave empty to use the system default." hint="The shell the built-in terminal launches." value={x} onChange={f} />`,
+      FILE,
+    )
+    expect(entries).toHaveLength(1)
+    expect(entries[0].description).toBe('The shell the built-in terminal launches. Leave empty to use the system default.')
+  })
+
+  it('still indexes the hint when a row has no description', () => {
+    const { entries } = extractFromSource(
+      `<SettingsToggle label="Session summaries" hint="Uses tokens on turns that change the session." checked={x} onChange={f} />`,
+      FILE,
+    )
+    expect(entries).toHaveLength(1)
+    expect(entries[0].description).toBe('Uses tokens on turns that change the session.')
+  })
+
+  it('leaves description undefined when a row has neither', () => {
+    const { entries } = extractFromSource(
+      `<SettingsToggle label="Bare row" checked={x} onChange={f} />`,
+      FILE,
+    )
+    expect(entries).toHaveLength(1)
+    expect(entries[0].description).toBeUndefined()
+  })
+})
+
 describe('settingsExtract — manual entry merge', () => {
   it('replaces a generated entry when ids collide, keeping list length', () => {
     const generated = [entry({ id: 'security.a', label: 'A' }), entry({ id: 'security.b', label: 'B' })]

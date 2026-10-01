@@ -195,7 +195,7 @@ describe('composer liquid glass', () => {
     // Theme card (stacked fields under captions, where a switch row read as a
     // different kind of control). The user-facing name is never the primitive's.
     expect(DISPLAY_PANEL_SRC).toMatch(/onChange=\{v => setUIMode\(v as 'chat' \| 'cli'\)\} \/>\n(?:\s+\{\/\*[\s\S]*?\*\/\}\n)?\s+<SettingsToggle\n\s+label=\{i18nT\('pages\.settings\.displayPanel\.translucent_panels'\)/)
-    expect(DISPLAY_PANEL_SRC).toMatch(/<SettingsToggle\n\s+label=\{i18nT\('pages\.settings\.displayPanel\.translucent_panels'\)\}\n\s+description=\{i18nT\('pages\.settings\.displayPanel\.translucent_panels_desc'\)\}\n\s+checked=\{liquidGlass\}\n\s+onChange=\{setLiquidGlass\}/)
+    expect(DISPLAY_PANEL_SRC).toMatch(/<SettingsToggle\n\s+label=\{i18nT\('pages\.settings\.displayPanel\.translucent_panels'\)\}\n\s+hint=\{i18nT\('pages\.settings\.displayPanel\.translucent_panels_desc'\)\}\n\s+checked=\{liquidGlass\}\n\s+onChange=\{setLiquidGlass\}/)
     expect(DISPLAY_PANEL_SRC).not.toMatch(/liquid_glass/)
     // The live preview follows the row: the real primitive over a skeleton transcript.
     expect(DISPLAY_PANEL_SRC).toMatch(/onChange=\{setLiquidGlass\}\n\s+\/>\n\s+<TranslucentPanelsPreview placeholder=\{i18nT\('components\.chatInput\.message_placeholder', \{ bot: botName \}\)\} \/>/)

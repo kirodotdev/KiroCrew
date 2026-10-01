@@ -95,7 +95,7 @@ export function SkillsPanel() {
       <SettingsCard>
         <SettingsToggle
           label={i18nT('pages.settings.skillsPanel.auto_generate_skills_from_sessions')}
-          description={i18nT('pages.settings.skillsPanel.analyze_each_completed_session_and_draft_a_reusa')}
+          hint={i18nT('pages.settings.skillsPanel.analyze_each_completed_session_and_draft_a_reusa')}
           checked={autoCreate}
           onChange={(v) => patchMut.mutate({ path: 'skills.auto_create_from_sessions', value: v })}
           disabled={disabled}

@@ -485,7 +485,7 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
               what answers the question, on every surface. */}
           <SettingsSelect
             label={i18nT('settings.display.language.label')}
-            description={i18nT('settings.display.language.description')}
+            hint={i18nT('settings.display.language.description')}
             value={language}
             options={[AUTO_LANGUAGE, ...PICKABLE_LANGUAGES.map(l => l.code)]}
             optionLabels={[
@@ -513,7 +513,7 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
               message={i18nT('settings.display.language.sync_failed')}
             />
           )}
-          <SettingsButtonGroup label={i18nT('pages.settings.displayPanel.interface')} description={i18nT('pages.settings.displayPanel.chat_bubbles_or_cli_style_line_by_line_output')} value={uiMode}
+          <SettingsButtonGroup label={i18nT('pages.settings.displayPanel.interface')} hint={i18nT('pages.settings.displayPanel.chat_bubbles_or_cli_style_line_by_line_output')} value={uiMode}
             options={[
               { value: 'chat', label: 'Chat' },
               { value: 'cli', label: 'CLI' },
@@ -534,7 +534,7 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
               Settings. */}
           <SettingsToggle
             label={i18nT('pages.settings.displayPanel.translucent_panels')}
-            description={i18nT('pages.settings.displayPanel.translucent_panels_desc')}
+            hint={i18nT('pages.settings.displayPanel.translucent_panels_desc')}
             checked={liquidGlass}
             onChange={setLiquidGlass}
           />
@@ -548,7 +548,7 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
       <SettingsSection title={i18nT('pages.settings.displayPanel.zoom_font')}>
         <SettingsCard>
           {zoomSupported ? (
-            <SettingsStepper label={i18nT('pages.settings.displayPanel.zoom_level')} description={i18nT('pages.settings.displayPanel.native_window_zoom_tip', { mod: modKey })} value={zoom} suffix="%" onIncrement={zoomIn} onDecrement={zoomOut} onReset={reset} />
+            <SettingsStepper label={i18nT('pages.settings.displayPanel.zoom_level')} hint={i18nT('pages.settings.displayPanel.native_window_zoom_tip', { mod: modKey })} value={zoom} suffix="%" onIncrement={zoomIn} onDecrement={zoomOut} onReset={reset} />
           ) : (
             <div className="flex items-center justify-between gap-4 py-1.5">
               <div className="flex flex-col gap-0.5">
@@ -563,7 +563,7 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
               </span>
             </div>
           )}
-          <SettingsButtonGroup label={i18nT('pages.settings.displayPanel.font_family')} description={i18nT('pages.settings.displayPanel.ui_font_family_for_the_dashboard_code_font_follo')} value={family}
+          <SettingsButtonGroup label={i18nT('pages.settings.displayPanel.font_family')} hint={i18nT('pages.settings.displayPanel.ui_font_family_for_the_dashboard_code_font_follo')} value={family}
             options={FONT_FAMILY_OPTIONS.map(o => ({ value: o.value, label: o.labelKey ? i18nT(o.labelKey) : o.label! }))}
             onChange={v => setFontFamily(v as FontFamily)} />
           {/* Only when "Custom" is picked above: choose ANY installed family for
@@ -575,7 +575,7 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
             <>
             <SettingsCombobox
               label={i18nT('pages.settings.displayPanel.custom_font_family')}
-              description={i18nT('pages.settings.displayPanel.custom_font_family_desc')}
+              hint={i18nT('pages.settings.displayPanel.custom_font_family_desc')}
               value={customFontFamily}
               options={customFontOptions}
               onChange={setCustomFontFamily}
@@ -606,7 +606,7 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
                 turns them off without leaving Custom. Only shown in Custom mode. */}
             <SettingsToggle
               label={i18nT('pages.settings.displayPanel.custom_font_ligatures')}
-              description={i18nT('pages.settings.displayPanel.custom_font_ligatures_desc')}
+              hint={i18nT('pages.settings.displayPanel.custom_font_ligatures_desc')}
               checked={customFontLigatures}
               onChange={setCustomFontLigatures}
             />
@@ -632,7 +632,7 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
               by CliPanel's font subscription. */}
           <SettingsCombobox
             label={i18nT('pages.settings.displayPanel.terminal_font_family')}
-            description={i18nT('pages.settings.displayPanel.terminal_font_family_desc')}
+            hint={i18nT('pages.settings.displayPanel.terminal_font_family_desc')}
             value={termFont.fontFamily}
             options={fontOptions}
             onChange={setTerminalFontFamily}
@@ -660,7 +660,7 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
           />
           <SettingsStepper
             label={i18nT('pages.settings.displayPanel.terminal_font_size')}
-            description={i18nT('pages.settings.displayPanel.terminal_font_size_desc')}
+            hint={i18nT('pages.settings.displayPanel.terminal_font_size_desc')}
             value={termFont.fontSize}
             onIncrement={() => setTerminalFontSize(termFont.fontSize + 1)}
             onDecrement={() => setTerminalFontSize(termFont.fontSize - 1)}
@@ -680,6 +680,7 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
           <SettingsInput
             label={i18nT('pages.settings.displayPanel.terminal_shell')}
             description={i18nT('pages.settings.displayPanel.terminal_shell_desc')}
+            hint={i18nT('pages.settings.displayPanel.terminal_shell_hint')}
             value={shellDraft ?? shownShell}
             onChange={setShellDraft}
             onBlur={commitShell}
@@ -693,7 +694,7 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
           <ErrorNotice message={shellError} variant="inline" />
           <SettingsToggle
             label={i18nT('pages.settings.displayPanel.terminal_completion')}
-            description={i18nT('pages.settings.displayPanel.terminal_completion_desc')}
+            hint={i18nT('pages.settings.displayPanel.terminal_completion_desc')}
             checked={shownCompletion}
             onChange={v => completionMut.mutate(v)}
             disabled={!mcQ.isSuccess}
@@ -727,7 +728,7 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
         <SettingsCard>
           <div className="flex items-center gap-2">
             <div className="flex-1 min-w-0">
-              <SettingsSelect label={i18nT('pages.settings.displayPanel.theme')} description={i18nT('pages.settings.displayPanel.select_a_theme_for_the_dashboard')} value={colorTheme}
+              <SettingsSelect label={i18nT('pages.settings.displayPanel.theme')} hint={i18nT('pages.settings.displayPanel.select_a_theme_for_the_dashboard')} value={colorTheme}
                 options={allThemes.map(t => t.value)} optionLabels={allThemes.map(t => t.label)}
                 onChange={v => setColorTheme(v as ColorTheme)} />
             </div>
@@ -794,7 +795,7 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
                 : i18nT('pages.settings.displayPanel.custom_theme_could_not_be_loaded')}
             />
           )}
-          <SettingsButtonGroup label={i18nT('pages.settings.displayPanel.mode')} description={i18nT('pages.settings.displayPanel.light_or_dark_appearance_for_the_dashboard')} value={preference}
+          <SettingsButtonGroup label={i18nT('pages.settings.displayPanel.mode')} hint={i18nT('pages.settings.displayPanel.light_or_dark_appearance_for_the_dashboard')} value={preference}
             options={[
               { value: 'system', label: 'Auto', icon: <svg className="w-3.5 h-3.5 stroke-current fill-none" viewBox="0 0 24 24" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg> },
               { value: 'light', label: 'Light', icon: <svg className="w-3.5 h-3.5 stroke-current fill-none" viewBox="0 0 24 24" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg> },
@@ -895,28 +896,28 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
         <SettingsCard>
           <SettingsButtonGroup
             label={i18nT('pages.settings.displayPanel.palette')}
-            description={i18nT('pages.settings.displayPanel.choose_a_color_palette_for_your_sidebar_sessions')}
+            hint={i18nT('pages.settings.displayPanel.choose_a_color_palette_for_your_sidebar_sessions')}
             value={paletteName}
             options={PALETTE_NAMES.map(p => ({ value: p, label: p.charAt(0).toUpperCase() + p.slice(1) }))}
             onChange={v => dispatch(setSessionColorsPalette(v as PaletteName))}
           />
           <SettingsButtonGroup
             label={i18nT('pages.settings.displayPanel.intensity')}
-            description={i18nT('pages.settings.displayPanel.how_visible_the_color_tint_is_on_sidebar_rows')}
+            hint={i18nT('pages.settings.displayPanel.how_visible_the_color_tint_is_on_sidebar_rows')}
             value={intensity}
             options={INTENSITY_NAMES.map(n => ({ value: n, label: n.charAt(0).toUpperCase() + n.slice(1) }))}
             onChange={v => dispatch(setSessionColorsIntensity(v as IntensityName))}
           />
           <SettingsButtonGroup
             label={i18nT('pages.settings.displayPanel.display_mode')}
-            description={i18nT('pages.settings.displayPanel.how_the_session_color_is_applied_to_the_row')}
+            hint={i18nT('pages.settings.displayPanel.how_the_session_color_is_applied_to_the_row')}
             value={colorMode}
             options={[{ value: 'tint', label: 'Solid Tint' }, { value: 'gradient', label: 'Gradient' }]}
             onChange={v => dispatch(setSessionColorsMode(v as SessionColorMode))}
           />
           <SettingsStepper
             label={i18nT('pages.settings.displayPanel.highlight_recent_sessions')}
-            description={i18nT('pages.settings.displayPanel.highlight_the_n_most_recently_active_sessions_wi')}
+            hint={i18nT('pages.settings.displayPanel.highlight_the_n_most_recently_active_sessions_wi')}
             value={shownTintCount}
             onIncrement={() => setTintCount(shownTintCount + 1)}
             onDecrement={() => setTintCount(shownTintCount - 1)}

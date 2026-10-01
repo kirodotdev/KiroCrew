@@ -150,7 +150,7 @@ export function ShortcutsPanel() {
         {IS_MAC && (
           <SettingsToggle
             label={i18nT('pages.settings.shortcutsPanel.use_ctrl_not_option_for_chat_1_9')}
-            description={i18nT('pages.settings.shortcutsPanel.bind_chat_tab_switching_to_ctrl_digit_instead_of')}
+            hint={i18nT('pages.settings.shortcutsPanel.bind_chat_tab_switching_to_ctrl_digit_instead_of')}
             checked={macCtrl}
             onChange={toggleMacCtrl}
           />

@@ -18,7 +18,7 @@ export const SETTINGS_KEYWORDS: Record<string, string[]> = {
 
   // Chat
   'chat.default-model': ['model', 'llm', 'opus', 'sonnet', 'haiku', 'gpt', 'default model', 'fallback model', 'switch model', 'which model'],
-  'chat.default-reasoning-effort': ['reasoning', 'thinking', 'effort', 'thinking depth', 'xhigh', 'reasoning effort'],
+  'chat.default-reasoning-effort': ['reasoning', 'thinking', 'effort', 'thinking depth', 'xhigh', 'reasoning effort', 'how long models think', 'think before answering', 'thinking time'],
   'chat.auto-compact-threshold': ['context window', 'compaction', 'memory', 'conversation length'],
   'chat.show-timestamps': ['time', 'clock', 'message time'],
   'chat.merge-queued-messages': ['queue', 'batch', 'combine messages'],

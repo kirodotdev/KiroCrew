@@ -49,7 +49,7 @@ export function DeveloperPanel() {
       <SettingsCard>
         <SettingsToggle
           label={i18nT('pages.settings.developerPanel.developer_mode')}
-          description={i18nT('pages.settings.developerPanel.show_developer_page_in_sidebar_with_logs_system')}
+          hint={i18nT('pages.settings.developerPanel.show_developer_page_in_sidebar_with_logs_system')}
           checked={devMode}
           onChange={toggleDevMode}
         />

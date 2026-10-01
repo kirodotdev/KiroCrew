@@ -198,7 +198,7 @@ export function VoicePanel() {
             <FormSkeleton rows={['toggle', 'field', 'field', 'field', 'field', 'field']} />
           ) : (
             <>
-              <SettingsToggle label={i18nT('pages.settings.voicePanel.auto_speak_responses')} description={i18nT('pages.settings.voicePanel.speak_every_assistant_reply_automatically')} checked={voiceCfg.autoSpeak} onChange={v => setVoice({ autoSpeak: v, ...(v ? { enabled: true } : {}) })} disabled={voiceDisabled} />
+              <SettingsToggle label={i18nT('pages.settings.voicePanel.auto_speak_responses')} hint={i18nT('pages.settings.voicePanel.speak_every_assistant_reply_automatically')} checked={voiceCfg.autoSpeak} onChange={v => setVoice({ autoSpeak: v, ...(v ? { enabled: true } : {}) })} disabled={voiceDisabled} />
               <SettingsSelect settingId="voice.provider-2" label={i18nT('pages.settings.voicePanel.provider')} description={i18nT('pages.settings.voicePanel.the_built_in_engine_needs_no_setup_piper_is_offlin')} value={voiceCfg.provider} options={PROVIDER_OPTIONS} optionLabels={PROVIDER_OPTIONS.map(p => i18nT(PROVIDER_LABEL_KEY[p]))} onChange={v => setVoice({ provider: v })} disabled={voiceDisabled} />
               {isSystem ? (
                 <>
@@ -231,8 +231,8 @@ export function VoicePanel() {
                       <Btn danger disabled={systemVoicesQ.isFetching} onClick={() => systemVoicesQ.refetch()}>{i18nT('pages.settings.voicePanel.retry')}</Btn>
                     </div>
                   )}
-                  <SettingsSelect label={i18nT('pages.settings.voicePanel.voice')} description={i18nT('pages.settings.voicePanel.voice_from_the_hosts_built_in_speech_engine')} value={voiceCfg.system_voice} options={systemVoiceOptions} optionLabels={systemVoiceLabels} onChange={v => setVoice({ system_voice: v })} disabled={voiceDisabled || systemUnavailable || systemVoicesLoading} />
-                  <SettingsSelect label={i18nT('pages.settings.voicePanel.speed')} description={i18nT('pages.settings.voicePanel.speech_rate_for_spoken_replies_built_in')} value={voiceCfg.rate} options={SPEED_OPTIONS} onChange={v => setVoice({ rate: v })} disabled={voiceDisabled || systemUnavailable} />
+                  <SettingsSelect label={i18nT('pages.settings.voicePanel.voice')} hint={i18nT('pages.settings.voicePanel.voice_from_the_hosts_built_in_speech_engine')} value={voiceCfg.system_voice} options={systemVoiceOptions} optionLabels={systemVoiceLabels} onChange={v => setVoice({ system_voice: v })} disabled={voiceDisabled || systemUnavailable || systemVoicesLoading} />
+                  <SettingsSelect label={i18nT('pages.settings.voicePanel.speed')} hint={i18nT('pages.settings.voicePanel.speech_rate_for_spoken_replies_built_in')} value={voiceCfg.rate} options={SPEED_OPTIONS} onChange={v => setVoice({ rate: v })} disabled={voiceDisabled || systemUnavailable} />
                 </>
               ) : isPolly ? (
                 <>
@@ -247,17 +247,17 @@ export function VoicePanel() {
                   {voicesQ.isError && (
                     <ErrorNotice variant="inline" className="mb-2" message={i18nT('pages.settings.voicePanel.voice_catalogue_unavailable')} />
                   )}
-                  <SettingsSelect label={i18nT('pages.settings.voicePanel.voice')} description={i18nT('pages.settings.voicePanel.amazon_polly_voice_for_tts')} value={voiceCfg.voice} options={voiceOptions.map(o => o.value)} optionLabels={voiceOptions.map(o => o.label)} onChange={v => { const engines = voiceOptions.find(o => o.value === v)?.engines ?? ENGINE_OPTIONS; const patch: Partial<VoiceConfig> = { voice: v }; if (!engines.includes(voiceCfg.engine)) patch.engine = engines[0]; setVoice(patch) }} disabled={voiceDisabled} />
-                  <SettingsSelect label={i18nT('pages.settings.voicePanel.engine')} description={i18nT('pages.settings.voicePanel.polly_engine_type')} value={voiceCfg.engine} options={selectedVoiceEngines} onChange={v => setVoice({ engine: v })} disabled={voiceDisabled} />
-                  <SettingsSelect label={i18nT('pages.settings.voicePanel.speed')} description={i18nT('pages.settings.voicePanel.speech_rate_for_spoken_replies_polly')} value={voiceCfg.rate} options={SPEED_OPTIONS} onChange={v => setVoice({ rate: v })} disabled={voiceDisabled} />
-                  <SettingsInput label={i18nT('pages.settings.voicePanel.aws_profile_polly')} description={i18nT('pages.settings.voicePanel.aws_credentials_profile_for_polly')} value={localProfile} onChange={setLocalProfile} onBlur={() => setVoice({ aws_profile: localProfile.trim() })} placeholder={i18nT('pages.settings.voicePanel.default')} disabled={voiceDisabled} />
-                  <SettingsInput label={i18nT('pages.settings.voicePanel.aws_region_polly')} description={i18nT('pages.settings.voicePanel.aws_region_for_polly_api')} value={localRegion} onChange={setLocalRegion} onBlur={() => setVoice({ region: localRegion.trim() })} placeholder={i18nT('pages.settings.voicePanel.us_east_1')} disabled={voiceDisabled} />
+                  <SettingsSelect label={i18nT('pages.settings.voicePanel.voice')} hint={i18nT('pages.settings.voicePanel.amazon_polly_voice_for_tts')} value={voiceCfg.voice} options={voiceOptions.map(o => o.value)} optionLabels={voiceOptions.map(o => o.label)} onChange={v => { const engines = voiceOptions.find(o => o.value === v)?.engines ?? ENGINE_OPTIONS; const patch: Partial<VoiceConfig> = { voice: v }; if (!engines.includes(voiceCfg.engine)) patch.engine = engines[0]; setVoice(patch) }} disabled={voiceDisabled} />
+                  <SettingsSelect label={i18nT('pages.settings.voicePanel.engine')} hint={i18nT('pages.settings.voicePanel.polly_engine_type')} value={voiceCfg.engine} options={selectedVoiceEngines} onChange={v => setVoice({ engine: v })} disabled={voiceDisabled} />
+                  <SettingsSelect label={i18nT('pages.settings.voicePanel.speed')} hint={i18nT('pages.settings.voicePanel.speech_rate_for_spoken_replies_polly')} value={voiceCfg.rate} options={SPEED_OPTIONS} onChange={v => setVoice({ rate: v })} disabled={voiceDisabled} />
+                  <SettingsInput label={i18nT('pages.settings.voicePanel.aws_profile_polly')} hint={i18nT('pages.settings.voicePanel.aws_credentials_profile_for_polly')} value={localProfile} onChange={setLocalProfile} onBlur={() => setVoice({ aws_profile: localProfile.trim() })} placeholder={i18nT('pages.settings.voicePanel.default')} disabled={voiceDisabled} />
+                  <SettingsInput label={i18nT('pages.settings.voicePanel.aws_region_polly')} hint={i18nT('pages.settings.voicePanel.aws_region_for_polly_api')} value={localRegion} onChange={setLocalRegion} onBlur={() => setVoice({ region: localRegion.trim() })} placeholder={i18nT('pages.settings.voicePanel.us_east_1')} disabled={voiceDisabled} />
                 </>
               ) : (
                 <>
                   <SettingsInput label={i18nT('pages.settings.voicePanel.piper_model')} description={i18nT('pages.settings.voicePanel.path_to_the_piper_voice_model_onnx_required_down')} value={localPiperModel} onChange={setLocalPiperModel} onBlur={() => setVoice({ piper_model: localPiperModel.trim() })} placeholder={i18nT('pages.settings.voicePanel.piper_en_us_lessac_medium_onnx')} disabled={voiceDisabled} />
                   <SettingsInput label={i18nT('pages.settings.voicePanel.piper_binary')} description={i18nT('pages.settings.voicePanel.path_to_the_piper_executable_leave_blank_to_auto')} value={localPiperBinary} onChange={setLocalPiperBinary} onBlur={() => setVoice({ piper_binary: localPiperBinary.trim() })} placeholder={i18nT('pages.settings.voicePanel.auto_detect')} disabled={voiceDisabled} />
-                  <SettingsSelect label={i18nT('pages.settings.voicePanel.speed')} description={i18nT('pages.settings.voicePanel.piper_speech_speed_length_scale')} value={String(voiceCfg.piper_length_scale)} options={PIPER_SPEED_OPTIONS} optionLabels={PIPER_SPEED_OPTIONS.map(v => i18nT(PIPER_SPEED_LABEL_KEY[v]))} onChange={v => setVoice({ piper_length_scale: Number(v) })} disabled={voiceDisabled} />
+                  <SettingsSelect label={i18nT('pages.settings.voicePanel.speed')} hint={i18nT('pages.settings.voicePanel.piper_speech_speed_length_scale')} value={String(voiceCfg.piper_length_scale)} options={PIPER_SPEED_OPTIONS} optionLabels={PIPER_SPEED_OPTIONS.map(v => i18nT(PIPER_SPEED_LABEL_KEY[v]))} onChange={v => setVoice({ piper_length_scale: Number(v) })} disabled={voiceDisabled} />
                 </>
               )}
             </>

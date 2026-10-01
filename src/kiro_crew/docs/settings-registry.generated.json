@@ -445,13 +445,15 @@
       "id": "chat.background-effort",
       "label": "Background Effort",
       "tab": "chat",
-      "route": "/settings/chat/models?highlight=chat.background-effort"
+      "route": "/settings/chat/models?highlight=chat.background-effort",
+      "description": "Applies only on reasoning-capable models. 'Model default' applies no override — this work does not inherit your Default Reasoning Effort."
     },
     {
       "id": "chat.background-model",
       "label": "Background Model",
       "tab": "chat",
-      "route": "/settings/chat/models?highlight=chat.background-model"
+      "route": "/settings/chat/models?highlight=chat.background-model",
+      "description": "'Auto' lets the provider pick — it does not inherit your Default Model. Pin a model to run this work on it."
     },
     {
       "id": "chat.compact-empty-folders",
@@ -492,6 +494,7 @@
       "label": "Content-filter fallback model",
       "tab": "chat",
       "route": "/settings/chat/models?highlight=key%3Aagent.refusal_fallback_model",
+      "description": "Auto retries on the model the provider suggests in its refusal, when it names one. The retry is announced in chat. Disabled shows the refusal as before.",
       "configKey": "agent.refusal_fallback_model"
     },
     {
@@ -507,14 +510,14 @@
       "label": "Default Model",
       "tab": "chat",
       "route": "/settings/chat/models?highlight=chat.default-model",
-      "description": "Which model new sessions start with when their agent pins none. Set a model per agent under Capabilities → Agents, or pick one inside a session to override it there."
+      "description": "Agents with their own configured model ignore this setting. 'Default' uses the model from the agent configuration, or the system default when none is configured. Changing this does not affect sessions that are already open. Which model new sessions start with when their agent pins none. Set a model per agent under Capabilities → Agents, or pick one inside a session to override it there."
     },
     {
       "id": "chat.default-reasoning-effort",
       "label": "Default Reasoning Effort",
       "tab": "chat",
       "route": "/settings/chat/models?highlight=chat.default-reasoning-effort",
-      "description": "How long models think before answering by default. Higher is slower and costs more. Only available on reasoning-capable models (Opus, Sonnet, Fable, GPT-5.x)."
+      "description": "Higher is slower and costs more. Only available on reasoning-capable models."
     },
     {
       "id": "chat.describe-your-role",
@@ -535,13 +538,15 @@
       "label": "Fallback model",
       "tab": "chat",
       "route": "/settings/chat/models?highlight=key%3Aagent.fallback_model",
+      "description": "Auto (default) lets the backend route to an available model. A fallback swap is announced in chat and sticks until your model recovers. Disabled turns fallback off.",
       "configKey": "agent.fallback_model"
     },
     {
       "id": "chat.feature-tips",
       "label": "Feature Tips",
       "tab": "chat",
-      "route": "/settings/chat/discovery?highlight=chat.feature-tips"
+      "route": "/settings/chat/discovery?highlight=chat.feature-tips",
+      "description": "Show occasional feature discovery tips above the composer while the agent is working"
     },
     {
       "id": "chat.file-change-chips",
@@ -728,7 +733,8 @@
       "id": "chat.soft-stop-budget-seconds",
       "label": "Soft-stop budget (seconds)",
       "tab": "chat",
-      "route": "/settings/chat/composer?highlight=chat.soft-stop-budget-seconds"
+      "route": "/settings/chat/composer?highlight=chat.soft-stop-budget-seconds",
+      "description": "How long to wait for the agent to honor a Stop press before forcefully killing the session. Longer budgets preserve session state more often but make stops feel laggy when agents are stuck in long tool calls."
     },
     {
       "id": "chat.spell-check-message-input",
@@ -754,13 +760,15 @@
       "id": "chat.subagent-effort",
       "label": "Subagent Effort",
       "tab": "chat",
-      "route": "/settings/chat/models?highlight=chat.subagent-effort"
+      "route": "/settings/chat/models?highlight=chat.subagent-effort",
+      "description": "Applies only on reasoning-capable models. 'Model default' applies no override — this work does not inherit your Default Reasoning Effort."
     },
     {
       "id": "chat.subagent-model",
       "label": "Subagent Model",
       "tab": "chat",
-      "route": "/settings/chat/models?highlight=chat.subagent-model"
+      "route": "/settings/chat/models?highlight=chat.subagent-model",
+      "description": "'Auto' lets the provider pick — it does not inherit your Default Model. Pin a model to run this work on it."
     },
     {
       "id": "chat.tail-only-fork",
@@ -794,7 +802,8 @@
       "id": "chat.what-enter-does-while-the-agent-is-working",
       "label": "What Enter does while the agent is working",
       "tab": "chat",
-      "route": "/settings/chat/composer?highlight=chat.what-enter-does-while-the-agent-is-working"
+      "route": "/settings/chat/composer?highlight=chat.what-enter-does-while-the-agent-is-working",
+      "description": "Steer interrupts the current turn; Queue waits for it."
     },
     {
       "id": "chat.widget-density",
@@ -1022,7 +1031,7 @@
       "label": "Default shell",
       "tab": "display",
       "route": "/settings/display/terminal?highlight=key%3Adashboard.terminal.shell",
-      "description": "Shell the built-in terminal launches — an absolute path or a command on PATH. Leave empty to use the system default ($SHELL).",
+      "description": "The shell the built-in terminal launches. An absolute path or a command on PATH. Leave empty to use the system default ($SHELL).",
       "configKey": "dashboard.terminal.shell"
     },
     {
@@ -1382,6 +1391,7 @@
       "label": "Auto-submit when I finish speaking",
       "tab": "voice",
       "route": "/settings/voice?highlight=key%3Astt.endpointing",
+      "description": "Use a fast model to detect when you've finished a complete request and send it automatically. Streaming providers only.",
       "configKey": "stt.endpointing"
     },
     {
@@ -1416,13 +1426,15 @@
       "id": "voice.dictation-panel",
       "label": "Dictation panel",
       "tab": "voice",
-      "route": "/settings/voice?highlight=voice.dictation-panel"
+      "route": "/settings/voice?highlight=voice.dictation-panel",
+      "description": "Show an animated panel while recording instead of the thin status bar. Falls back to the bar when the browser lacks WebGL2 or your system requests reduced motion."
     },
     {
       "id": "voice.enabled",
       "label": "Enabled",
       "tab": "voice",
-      "route": "/settings/voice?highlight=voice.enabled"
+      "route": "/settings/voice?highlight=voice.enabled",
+      "description": "Transcribe voice into the message box when you click the mic"
     },
     {
       "id": "voice.engine",
@@ -1442,19 +1454,22 @@
       "label": "Language",
       "tab": "voice",
       "route": "/settings/voice?highlight=key%3Astt.language_code",
+      "description": "BCP-47 language code for speech recognition",
       "configKey": "stt.language_code"
     },
     {
       "id": "voice.microphone",
       "label": "Microphone",
       "tab": "voice",
-      "route": "/settings/voice?highlight=voice.microphone"
+      "route": "/settings/voice?highlight=voice.microphone",
+      "description": "Input device used to capture your voice"
     },
     {
       "id": "voice.model",
       "label": "Model",
       "tab": "voice",
       "route": "/settings/voice?highlight=key%3Astt.model",
+      "description": "Models download on demand. Select one and click Download now; the desktop app already includes every other runtime dependency.",
       "configKey": "stt.model"
     },
     {
@@ -1476,6 +1491,7 @@
       "label": "Provider",
       "tab": "voice",
       "route": "/settings/voice?highlight=key%3Astt.provider",
+      "description": "Local speech recognition runs on this machine and sends nothing anywhere. Transcribe uploads your audio to AWS.",
       "configKey": "stt.provider"
     },
     {
@@ -1517,6 +1533,7 @@
       "label": "Streaming",
       "tab": "voice",
       "route": "/settings/voice?highlight=key%3Astt.streaming",
+      "description": "Show the transcript in the input box as you speak, instead of only when you stop.",
       "configKey": "stt.streaming"
     },
     {

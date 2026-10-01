@@ -485,11 +485,23 @@ describe('Settings > Developer > Feature Previews', () => {
         .filter(el => !decisionsFrame()?.contains(el))
         .map(nameOf)
         .sort()
-    expect(ingressButtons()).toEqual([])
+    // Every button outside the Decisions card is observed and partitioned:
+    // the rows' InfoTip help toggles (named 'More information'; they open a
+    // tooltip, never a page) are counted exactly, and whatever is left is the
+    // ingress census proper. The partition keeps the ratchet exhaustive --
+    // an unexpected button lands in `ingress`, an extra or missing tip
+    // changes `tips` -- while saying what each half protects.
+    const INFO_TIP = 'More information'
+    const INFO_TIP_COUNT = 4 // one per Feature Previews row carrying a `hint`
+    const partition = () => {
+      const all = ingressButtons()
+      return { tips: all.filter(n => n === INFO_TIP).length, ingress: all.filter(n => n !== INFO_TIP) }
+    }
+    expect(partition()).toEqual({ tips: INFO_TIP_COUNT, ingress: [] })
     await act(async () => {
       screen.getByRole('switch', { name: /^crewmates$/i }).click()
     })
-    expect(ingressButtons()).toEqual([])
+    expect(partition()).toEqual({ tips: INFO_TIP_COUNT, ingress: [] })
     // The Decisions subtree, exactly. A new button here -- or a duplicate of one of
     // these -- fails, which a name allowance could not do.
     // The Decisions subtree, exactly, once its reads have settled. Awaited rather than
@@ -504,7 +516,7 @@ describe('Settings > Developer > Feature Previews', () => {
     await act(async () => {
       screen.getByRole('switch', { name: /webhooks/i }).click()
     })
-    expect(ingressButtons()).toEqual(['Open Webhooks'])
+    expect(partition()).toEqual({ tips: INFO_TIP_COUNT, ingress: ['Open Webhooks'] })
     // And the card beside it still draws only its own two.
     expect(decisionsButtons()).toEqual(['Ask the agent', 'Show'])
   })

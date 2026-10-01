@@ -344,7 +344,7 @@ export function ComputerUsePanel() {
           {cfg.enabled && cfg.cursor_motion_supported && (
             <SettingsToggle
               label={i18nT('pages.settings.computerUsePanel.show_cursor_motion')}
-              description={i18nT('pages.settings.computerUsePanel.draw_a_cursor_that_glides_to_each_target_and_pul')}
+              hint={i18nT('pages.settings.computerUsePanel.draw_a_cursor_that_glides_to_each_target_and_pul')}
               checked={cfg.cursor_motion}
               onChange={v => save({ cursor_motion: v })}
               disabled={busy}

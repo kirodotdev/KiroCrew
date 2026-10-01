@@ -180,7 +180,7 @@ export function FeaturePreviewsSection() {
       <SettingsCard>
         <SettingsToggle
           label={i18nT('pages.developer.featurePreviewsTab.webhooks')}
-          description={i18nT('pages.developer.featurePreviewsTab.inbound_webhook_tokens_registered_contexts_and_r')}
+          hint={i18nT('pages.developer.featurePreviewsTab.inbound_webhook_tokens_registered_contexts_and_r')}
           checked={webhooks}
           onChange={v => setPreviewFlag(PREVIEW_WEBHOOKS, v)}
         />
@@ -226,7 +226,7 @@ export function FeaturePreviewsSection() {
       <SettingsCard>
         <SettingsToggle
           label={i18nT('pages.developer.featurePreviewsTab.crew_members')}
-          description={i18nT('pages.developer.featurePreviewsTab.crew_members_desc')}
+          hint={i18nT('pages.developer.featurePreviewsTab.crew_members_desc')}
           checked={crew}
           onChange={v => setPreviewFlag(PREVIEW_CREW, v)}
         />
@@ -261,7 +261,7 @@ export function FeaturePreviewsSection() {
       <SettingsCard>
         <SettingsToggle
           label={i18nT('pages.developer.featurePreviewsTab.chat_on_a_crew')}
-          description={i18nT('pages.developer.featurePreviewsTab.chat_on_a_crew_desc')}
+          hint={i18nT('pages.developer.featurePreviewsTab.chat_on_a_crew_desc')}
           checked={remoteCrewChat}
           onChange={v => setPreviewFlag(PREVIEW_REMOTE_CREW_CHAT, v)}
         />
@@ -278,7 +278,7 @@ export function FeaturePreviewsSection() {
       <SettingsCard>
         <SettingsToggle
           label={i18nT('pages.developer.featurePreviewsTab.remote_instance_sessions')}
-          description={i18nT('pages.developer.featurePreviewsTab.merge_a_connected_remote_instances_live_sessions')}
+          hint={i18nT('pages.developer.featurePreviewsTab.merge_a_connected_remote_instances_live_sessions')}
           checked={instanceSessions}
           onChange={v => setPreviewFlag(PREVIEW_INSTANCE_SESSIONS, v)}
         />

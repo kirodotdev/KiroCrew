@@ -3,8 +3,9 @@
  *
  * Parses `src/pages/settings/*.tsx` for JSX usages of settings primitives
  * (SettingsToggle, SettingsSelect, SettingsMultiSelect, SettingsInput,
- * SettingsStepper, SettingsButtonGroup) and extracts label + description +
- * primitive type.
+ * SettingsStepper, SettingsButtonGroup) and extracts label + description (the
+ * `hint` tip text first, then the description, when a row carries both; the tip
+ * alone when a row has no description) + primitive type.
  *
  * A label/description is read from EITHER form:
  *   - a string literal          `label="Zoom Level"`
@@ -376,7 +377,15 @@ export function extractFromSource(
         continue
       }
       const labelKey = extractTranslationKeyProp(props, 'label')
-      const description = extractStringProp(props, 'description')
+      // A row's help may sit on the always-visible `description`, behind the
+      // `hint` tip, or on both; each is text a palette search should match on,
+      // so a row keeping both indexes both. The tip states what the row is and
+      // the visible description states the consequence, so the tip goes first:
+      // definition-then-consequence reads as prose in the palette subtitle. The
+      // tip stands in alone when the row keeps nothing permanently visible.
+      const description = [extractStringProp(props, 'hint'), extractStringProp(props, 'description')]
+        .filter((s): s is string => s !== undefined)
+        .join(' ')
       const configKey = extractStringProp(props, 'configKey')
       const settingId = extractStringProp(props, 'settingId')
       // A rail-hosting panel renders each page in a `case '<key>':` block;
