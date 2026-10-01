@@ -1,5 +1,5 @@
-import { forwardRef, type ComponentProps, type ReactNode } from 'react'
-import { ListFilter, Search, X } from 'lucide-react'
+import { forwardRef, useId, type ComponentProps, type ReactNode } from 'react'
+import { ListFilter, Pause, Search, X } from 'lucide-react'
 
 import { Glass } from './Glass'
 import { DropdownMenuContent, DropdownMenuLabel } from './ui/dropdown-menu'
@@ -153,7 +153,7 @@ export const FILTER_CHIP_ROW_CLS = 'px-3 pb-1 flex items-center gap-1.5 flex-wra
  *  `label` is the caller's — the sidebar appends its window and count, the
  *  roster its counts — so one recipe carries whatever a list has to say about
  *  the filter without knowing what it is. */
-export function FilterChip({ label, color, aggregate, clearLabel, onClear, testId }: {
+export function FilterChip({ label, color, aggregate, clearLabel, onClear, testId, pausedLabel }: {
   label: string
   /** The filter's colour token, e.g. `var(--accent)` or `var(--warn)`; omit for an aggregate chip. */
   color?: string
@@ -163,20 +163,34 @@ export function FilterChip({ label, color, aggregate, clearLabel, onClear, testI
   clearLabel: string
   onClear: () => void
   testId?: string
+  /** Set while the filter is on but not narrowing the list (the sidebar's
+   *  chips while a search is typed). The chip dims, gains a pause glyph (a
+   *  cue that does not rest on opacity alone), the tooltip says so ahead of
+   *  the clear action, and an `aria-describedby` text carries it for focus
+   *  (a native tooltip never shows on focus); the click still clears, so the
+   *  accessible name stays `clearLabel`. */
+  pausedLabel?: string
 }) {
+  const pausedId = useId()
   return (
     <button
       type="button"
       className={cn(
         'inline-flex items-center gap-1 pl-2 pr-1 py-0.5 rounded-full text-[11px] cursor-pointer transition-colors',
         aggregate && 'max-w-full bg-bg-elevated/60 border border-border text-muted hover:text-text',
+        !!pausedLabel && 'opacity-50',
       )}
       style={aggregate || !color ? undefined : { background: `color-mix(in srgb, ${color} 10%, transparent)`, color, borderWidth: 1, borderColor: `color-mix(in srgb, ${color} 30%, transparent)` }}
       onClick={onClear}
-      title={clearLabel}
+      // Paused keeps the clear action in the hover text: the X glyph alone does
+      // not say a click clears, and the pause text alone would drop that.
+      title={pausedLabel ? `${pausedLabel} · ${clearLabel}` : clearLabel}
       aria-label={clearLabel}
+      aria-describedby={pausedLabel ? pausedId : undefined}
       data-testid={testId}
     >
+      {pausedLabel && <Pause size={10} className="shrink-0" aria-hidden="true" />}
+      {pausedLabel && <span id={pausedId} className="sr-only">{pausedLabel}</span>}
       {aggregate ? <span className="truncate">{label}</span> : label}
       <X size={11} className="shrink-0" />
     </button>
