@@ -26,6 +26,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
+from dashboard_owner_helpers import NoConfiguredOwner
 
 from kiro_crew import mcp_core
 from kiro_crew.apps.builtins.issue_radar.backend import routes as ir_routes
@@ -345,6 +346,9 @@ class TestPutHandlerBoundsTheItemNumber:
 
     async def _put(self, body: dict):
         request = make_mocked_request("PUT", RECORD_PATH)
+        request.app["state"] = NoConfiguredOwner()
+        request["user"] = "local-app"
+        request["app"] = ""
 
         async def _json():
             return body

@@ -428,6 +428,14 @@ async def _handle_connect(request: web.Request) -> web.Response:
     client cannot nominate a provider here -- that is what keeps a connected-repo
     record, and therefore every later request authorized against it, honest.
     """
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+    # Connecting probes the repo with the OWNER's provider CLI, and the read routes
+    # then serve whatever it can see, private repos included: owner only.
+    owner_denied = await require_owner_dashboard_request(request, "issue_radar.connect")
+    if owner_denied is not None:
+        return owner_denied
+
     try:
         body = await request.json()
     except Exception:

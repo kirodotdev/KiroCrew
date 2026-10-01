@@ -917,9 +917,13 @@ class TestPutSettings(unittest.IsolatedAsyncioTestCase):
 
 class TestDisconnect(unittest.IsolatedAsyncioTestCase):
     async def _call(self, query: dict):
-        return await routes._handle_disconnect(make_mocked_request(
+        req = make_mocked_request(
             "DELETE", f"{BASE}/repos?{urlencode(query)}" if query else f"{BASE}/repos"
-        ))
+        )
+        req.app["state"] = NoConfiguredOwner()
+        req["user"] = "local-app"
+        req["app"] = ""
+        return await routes._handle_disconnect(req)
 
     async def test_missing_params_is_400(self):
         self.assertEqual((await self._call({})).status, 400)

@@ -1015,7 +1015,11 @@ class TestConfigRoutesKeepTheirProvider(unittest.IsolatedAsyncioTestCase):
             await routes._handle_add_settings_label(
                 _post("settings/role", {**GITLAB_Q, "role": "triage", "label": "bug"})
             )
-            resp = await routes._handle_disconnect(_get("repos", GITLAB_Q))
+            disconnect = _get("repos", GITLAB_Q)
+            disconnect.app["state"] = NoConfiguredOwner()
+            disconnect["user"] = "local-app"
+            disconnect["app"] = ""
+            resp = await routes._handle_disconnect(disconnect)
         self.assertEqual(_body(resp), {"ok": True, "owner": "g", "repo": "p"})
         self.assertEqual(read.call_args, mock.call("g", "p", **identity))
         self.assertEqual(write.call_args.kwargs, {"expected_revision": 0, **identity})

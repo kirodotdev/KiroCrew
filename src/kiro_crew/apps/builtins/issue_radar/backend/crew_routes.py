@@ -470,8 +470,16 @@ async def _json_object(request: web.Request) -> tuple[dict, web.Response | None]
 
 async def _body_preamble(
     request: web.Request,
+    operation: str,
 ) -> tuple[dict, provider.RepoKey, web.Response | None]:
-    """JSON body + owner/repo + the connected-repo gate, for the mutating routes.
+    """Owner gate + JSON body + owner/repo + the connected-repo gate, for the
+    mutating routes.
+
+    The owner gate runs first, before the body is read. Every route that calls
+    this preamble writes crew state the watchdog acts on (a live crew is launched
+    with an auto-approve grant in the owner's name), so only the dashboard owner
+    may reach it. An app token and a non-owner dashboard subject get the shared
+    403 ``owner_only``. ``operation`` names the route in that denial's audit row.
 
     Deliberately NOT ``routes._pr_action_preamble``: that one also demands
     ``_repo_can_write``, which these local-state writes intentionally do not
@@ -479,6 +487,11 @@ async def _body_preamble(
     non-object 400, the not-connected 404 — is the same, in the same order, so a
     caller cannot tell the two preambles apart except by the gate that differs.
     """
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+    owner_denied = await require_owner_dashboard_request(request, operation)
+    if owner_denied is not None:
+        return {}, provider.RepoKey(), owner_denied
     raw, early = await _json_object(request)
     if early is not None:
         return {}, provider.RepoKey(), early
@@ -705,7 +718,7 @@ async def _handle_crew_create(request: web.Request) -> web.Response:
     duplicate comes back as the store's own 409 message, which names the taken
     name rather than a generic conflict.
     """
-    body, key, early = await _body_preamble(request)
+    body, key, early = await _body_preamble(request, "issue_radar.crew_create")
     if early is not None:
         return early
     if not routes._str_field(body, "name"):
@@ -808,7 +821,7 @@ async def _handle_crew_update(request: web.Request) -> web.Response:
     nudge firing before the watchdog's next sweep would take one whole auto-approved
     turn under a setting the human had already switched off.
     """
-    body, key, early = await _body_preamble(request)
+    body, key, early = await _body_preamble(request, "issue_radar.crew_update")
     if early is not None:
         return early
     crew_id = routes._str_field(body, "id")
@@ -835,7 +848,7 @@ async def _handle_crew_retire(request: web.Request) -> web.Response:
     make an old comment look like a live claim. Idempotent — retiring a retired
     crew re-stamps it rather than 409ing, so a double-click is not an error.
     """
-    body, key, early = await _body_preamble(request)
+    body, key, early = await _body_preamble(request, "issue_radar.crew_retire")
     if early is not None:
         return early
     crew_id = routes._str_field(body, "id")
@@ -946,7 +959,7 @@ async def _handle_crew_work(request: web.Request) -> web.Response:
             return early
         crew_id = str(crew.get("id") or "")
     else:
-        body, key, early = await _body_preamble(request)
+        body, key, early = await _body_preamble(request, "issue_radar.crew_work")
         if early is not None:
             return early
         crew_id = routes._str_field(body, "crew_id")
@@ -1123,7 +1136,7 @@ async def _handle_crew_pause(request: web.Request) -> web.Response:
     resuming does not re-arm here, because the watchdog relaunches a live crew on
     its next cycle and doing it twice would arm two loops for one slot.
     """
-    body, key, early = await _body_preamble(request)
+    body, key, early = await _body_preamble(request, "issue_radar.crew_pause")
     if early is not None:
         return early
     paused = body.get("paused")
@@ -1225,7 +1238,7 @@ async def _handle_crews_settings_put(request: web.Request) -> web.Response:
     partial patch cannot discard a key it did not send and there is nothing for an
     optimistic-concurrency check to protect.
     """
-    body, key, early = await _body_preamble(request)
+    body, key, early = await _body_preamble(request, "issue_radar.crews_settings_put")
     if early is not None:
         return early
     patch = body.get("settings")

@@ -88,7 +88,14 @@ def _get(path: str, query: dict | None = None, state: object | None = None) -> w
 
 #: Forge writes behind the dashboard-owner gate; their requests carry owner state.
 _OWNER_GATED_WRITES = frozenset(
-    {"labels/apply", "labels/apply-bulk", "labels/create", "issue/state", "issue/assignees"}
+    {
+        "labels/apply",
+        "labels/apply-bulk",
+        "labels/create",
+        "issue/state",
+        "issue/assignees",
+        "investigation",
+    }
 )
 
 

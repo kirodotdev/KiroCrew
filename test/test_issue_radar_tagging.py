@@ -1138,6 +1138,9 @@ class TestBooleanNumberOnEveryMutationPath(unittest.IsolatedAsyncioTestCase):
     async def test_investigation_put_rejects_a_boolean_number(self):
         writer = MagicMock()
         req = make_mocked_request("PUT", "/api/apps/issue-radar/investigation")
+        req.app["state"] = NoConfiguredOwner()
+        req["user"] = "local-app"
+        req["app"] = ""
         req.json = AsyncMock(return_value={
             "owner": "o", "repo": "r", "number": True, "status": "investigating",
         })
@@ -1460,6 +1463,9 @@ class TestSettingsConflictRoute(unittest.IsolatedAsyncioTestCase):
         current = {**store.DEFAULT_REPO_SETTINGS, "revision": 5,
                    "triage_labels": ["needs-triage"]}
         req = make_mocked_request("PUT", "/api/apps/issue-radar/settings")
+        req.app["state"] = NoConfiguredOwner()
+        req["user"] = "local-app"
+        req["app"] = ""
         req.json = AsyncMock(return_value={
             "owner": "o", "repo": "r",
             "settings": {**store.DEFAULT_REPO_SETTINGS, "revision": 4},
@@ -1476,6 +1482,9 @@ class TestSettingsConflictRoute(unittest.IsolatedAsyncioTestCase):
     async def test_the_revision_the_client_read_is_forwarded(self):
         writer = mock.Mock(return_value=store.DEFAULT_REPO_SETTINGS)
         req = make_mocked_request("PUT", "/api/apps/issue-radar/settings")
+        req.app["state"] = NoConfiguredOwner()
+        req["user"] = "local-app"
+        req["app"] = ""
         req.json = AsyncMock(return_value={
             "owner": "o", "repo": "r",
             "settings": {**store.DEFAULT_REPO_SETTINGS, "revision": 7},
@@ -1543,6 +1552,9 @@ class TestRevisionIsMandatory(unittest.IsolatedAsyncioTestCase):
 
     def _req(self, settings: dict):
         req = make_mocked_request("PUT", "/api/apps/issue-radar/settings")
+        req.app["state"] = NoConfiguredOwner()
+        req["user"] = "local-app"
+        req["app"] = ""
         req.json = AsyncMock(return_value={"owner": "o", "repo": "r", "settings": settings})
         return req
 
@@ -1654,11 +1666,17 @@ class TestSettingsRouteRejectsMalformedOwner(unittest.IsolatedAsyncioTestCase):
 
     async def _put(self, body: dict):
         req = make_mocked_request("PUT", "/api/apps/issue-radar/settings")
+        req.app["state"] = NoConfiguredOwner()
+        req["user"] = "local-app"
+        req["app"] = ""
         req.json = AsyncMock(return_value=body)
         return await routes._handle_put_settings(req)
 
     async def _role(self, body: dict):
         req = make_mocked_request("POST", "/api/apps/issue-radar/settings/role")
+        req.app["state"] = NoConfiguredOwner()
+        req["user"] = "local-app"
+        req["app"] = ""
         req.json = AsyncMock(return_value=body)
         return await routes._handle_add_settings_label(req)
 

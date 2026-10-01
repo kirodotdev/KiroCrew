@@ -98,7 +98,19 @@ async def _handle_put_investigation(request: web.Request) -> web.Response:
     record and normalized server-side (unknown keys dropped, ``status``
     constrained, ``findings`` coerced), so a partial patch — even ``{}`` — is
     valid. Purely local triage state; nothing is written to GitHub."""
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
     from .. import routes  # circular import: backend.routes imports this module
+
+    # Owner only from the dashboard. The internal-secret leg stays open: it is
+    # how the ``issue_radar_record_investigation`` MCP tool records findings, and
+    # the server allowlist admits that caller to this one path by name.
+    if not request.get("internal_auth"):
+        owner_denied = await require_owner_dashboard_request(
+            request, "issue_radar.investigation_put"
+        )
+        if owner_denied is not None:
+            return owner_denied
 
     try:
         body = await request.json()

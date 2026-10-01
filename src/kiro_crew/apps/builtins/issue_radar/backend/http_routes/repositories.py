@@ -411,7 +411,14 @@ async def _handle_put_settings(request: web.Request) -> web.Response:
     settings. The body is normalized server-side (unknown keys dropped, label
     lists coerced to de-duplicated strings), so the stored object is always the
     known schema regardless of client input."""
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
     from .. import routes  # circular import: backend.routes imports this module
+
+    # Repo settings steer every crew and triage view: owner only.
+    owner_denied = await require_owner_dashboard_request(request, "issue_radar.settings_put")
+    if owner_denied is not None:
+        return owner_denied
 
     try:
         body = await request.json()
@@ -486,9 +493,17 @@ async def _handle_add_settings_label(request: web.Request) -> web.Response:
     and the later write permanently drops the other's label. Appending here puts
     the read and the write in one critical section for every caller.
 
-    Local-only (nothing is written to GitHub), so no permission gate. Idempotent.
+    Local-only (nothing is written to GitHub), so no forge permission gate; it is
+    still owner only, like every other settings write. Idempotent.
     """
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
     from .. import routes  # circular import: backend.routes imports this module
+
+    # Same document as PUT /settings: owner only.
+    owner_denied = await require_owner_dashboard_request(request, "issue_radar.settings_role")
+    if owner_denied is not None:
+        return owner_denied
 
     try:
         body = await request.json()
@@ -532,7 +547,14 @@ async def _handle_disconnect(request: web.Request) -> web.Response:
     """DELETE /repos?owner=<o>&repo=<r> — disconnect a repo. Drops it from
     config.json and deletes its local issue/label cache. Local-only: nothing on
     GitHub is changed and the user's `gh` auth is untouched."""
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
     from .. import routes  # circular import: backend.routes imports this module
+
+    # Removes a repo from the owner's connected set: owner only.
+    owner_denied = await require_owner_dashboard_request(request, "issue_radar.disconnect")
+    if owner_denied is not None:
+        return owner_denied
 
     key = routes._key_from_request(request)
     owner, repo = key.owner, key.repo
