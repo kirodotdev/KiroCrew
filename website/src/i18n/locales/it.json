@@ -15139,6 +15139,7 @@
         "failed_to_save_auto_compact_threshold": "Impossibile salvare la soglia di compattazione automatica",
         "failed_to_save_completion_keep_characters": "Impossibile salvare i caratteri conservati del completamento",
         "failed_to_save_completion_keep_mode": "Impossibile salvare la modalità di conservazione del completamento",
+        "failed_to_save_chat_setting": "Impossibile salvare questa impostazione della chat. L'archiviazione del browser potrebbe essere piena.",
         "failed_to_save_dashboard_config": "Impossibile salvare la configurazione della dashboard",
         "failed_to_save_default_model": "Impossibile salvare il modello predefinito",
         "failed_to_save_default_reasoning_effort": "Impossibile salvare lo sforzo di ragionamento predefinito",

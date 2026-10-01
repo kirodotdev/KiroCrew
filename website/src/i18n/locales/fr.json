@@ -15139,6 +15139,7 @@
         "failed_to_save_auto_compact_threshold": "Échec de l’enregistrement du seuil de compactage automatique",
         "failed_to_save_completion_keep_characters": "Échec de l’enregistrement des caractères conservés de l’événement de fin",
         "failed_to_save_completion_keep_mode": "Échec de l’enregistrement du mode de conservation de l’événement de fin",
+        "failed_to_save_chat_setting": "Impossible d'enregistrer ce paramètre de chat. Le stockage du navigateur est peut-être plein.",
         "failed_to_save_dashboard_config": "Échec de l’enregistrement de la configuration du tableau de bord",
         "failed_to_save_default_model": "Échec de l’enregistrement du modèle par défaut",
         "failed_to_save_default_reasoning_effort": "Échec de l’enregistrement de l’effort de raisonnement par défaut",

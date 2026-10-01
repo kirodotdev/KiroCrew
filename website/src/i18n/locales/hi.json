@@ -14910,6 +14910,7 @@
         "failed_to_save_auto_compact_threshold": "ऑटो-कॉम्पैक्ट थ्रेशोल्ड सहेजने में विफल",
         "failed_to_save_completion_keep_characters": "कम्प्लीशन-कीप कैरेक्टर सहेजने में विफल",
         "failed_to_save_completion_keep_mode": "कम्प्लीशन-कीप मोड सहेजने में विफल",
+        "failed_to_save_chat_setting": "यह चैट सेटिंग सहेजी नहीं जा सकी. ब्राउज़र संग्रहण भरा हो सकता है.",
         "failed_to_save_dashboard_config": "डैशबोर्ड कॉन्फ़िग सहेजने में विफल",
         "failed_to_save_default_model": "डिफ़ॉल्ट मॉडल सहेजने में विफल",
         "failed_to_save_default_reasoning_effort": "डिफ़ॉल्ट रीज़निंग एफ़र्ट सहेजने में विफल",

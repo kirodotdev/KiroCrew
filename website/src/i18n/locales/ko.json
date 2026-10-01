@@ -14681,6 +14681,7 @@
         "failed_to_save_auto_compact_threshold": "자동 압축 임계값을 저장하지 못했습니다",
         "failed_to_save_completion_keep_characters": "완료 시 보존할 문자 수를 저장하지 못했습니다",
         "failed_to_save_completion_keep_mode": "완료 시 보존 모드를 저장하지 못했습니다",
+        "failed_to_save_chat_setting": "이 채팅 설정을 저장하지 못했습니다. 브라우저 저장 공간이 가득 찼을 수 있습니다.",
         "failed_to_save_dashboard_config": "대시보드 설정을 저장하지 못했습니다",
         "failed_to_save_default_model": "기본 모델을 저장하지 못했습니다",
         "failed_to_save_default_reasoning_effort": "기본 추론 강도를 저장하지 못했습니다",

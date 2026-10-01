@@ -14910,6 +14910,7 @@
         "failed_to_save_auto_compact_threshold": "Schwellenwert für automatische Verdichtung konnte nicht gespeichert werden",
         "failed_to_save_completion_keep_characters": "Zeichen für Abschluss-Beibehaltung konnten nicht gespeichert werden",
         "failed_to_save_completion_keep_mode": "Modus für Abschluss-Beibehaltung konnte nicht gespeichert werden",
+        "failed_to_save_chat_setting": "Diese Chat-Einstellung konnte nicht gespeichert werden. Der Browser-Speicher ist möglicherweise voll.",
         "failed_to_save_dashboard_config": "Dashboard-Konfiguration konnte nicht gespeichert werden",
         "failed_to_save_default_model": "Standardmodell konnte nicht gespeichert werden",
         "failed_to_save_default_reasoning_effort": "Standard-Denkaufwand konnte nicht gespeichert werden",

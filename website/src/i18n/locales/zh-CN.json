@@ -14681,6 +14681,7 @@
         "failed_to_save_auto_compact_threshold": "保存自动压缩阈值失败",
         "failed_to_save_completion_keep_characters": "保存完成事件保留字符数失败",
         "failed_to_save_completion_keep_mode": "保存完成事件保留模式失败",
+        "failed_to_save_chat_setting": "无法保存此聊天设置。浏览器存储空间可能已满。",
         "failed_to_save_dashboard_config": "保存仪表板配置失败",
         "failed_to_save_default_model": "保存默认模型失败",
         "failed_to_save_default_reasoning_effort": "保存默认推理强度失败",

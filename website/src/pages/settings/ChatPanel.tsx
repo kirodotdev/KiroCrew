@@ -1101,7 +1101,19 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
   const setChat = useCallback(<K extends keyof ChatConfig>(k: K, v: ChatConfig[K]) => {
     setChatCfg(prev => {
       const next = { ...prev, [k]: v }
-      saveChatConfig(next)
+      // saveChatConfig rolls the write back when storage is full (the blob or
+      // its dirty marker cannot be persisted). It reports that as `false`; a
+      // rolled-back save that still showed the new value would read as saved
+      // until a reload reverted it, with no notice (GPT 6.1 F2). On failure keep
+      // the PREVIOUS value on screen -- matching what is actually persisted --
+      // and raise the shared save banner through ErrorNotice.
+      if (!saveChatConfig(next)) {
+        saveErrorPathRef.current = null
+        rawSetSaveError(i18nT('pages.settings.chatPanel.failed_to_save_chat_setting'))
+        return prev
+      }
+      // A fresh success supersedes a stale save-failure banner.
+      if (saveErrorPathRef.current === null) rawSetSaveError('')
       return next
     })
   }, [])

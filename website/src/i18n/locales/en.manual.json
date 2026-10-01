@@ -6712,6 +6712,7 @@
         "failed_to_save_auto_compact_threshold": "Failed to save auto-compact threshold",
         "failed_to_save_completion_keep_characters": "Failed to save completion-keep characters",
         "failed_to_save_completion_keep_mode": "Failed to save completion-keep mode",
+        "failed_to_save_chat_setting": "Couldn't save this chat setting. Browser storage may be full.",
         "failed_to_save_dashboard_config": "Failed to save dashboard config",
         "failed_to_save_default_model": "Failed to save default model",
         "failed_to_save_default_reasoning_effort": "Failed to save default reasoning effort",
