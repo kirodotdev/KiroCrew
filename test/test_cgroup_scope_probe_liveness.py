@@ -274,6 +274,41 @@ def test_a_listener_with_a_full_backlog_is_reachable_and_never_blocks(fake_manag
             filler.close()
 
 
+def test_a_percent_escaped_bus_address_is_decoded(fake_manager, monkeypatch, tmp_path):
+    """D-Bus addresses may escape any byte; the escaped spelling names the same socket.
+
+    ``XDG_RUNTIME_DIR`` points somewhere with no sockets, so the only way to
+    find the live bus is to decode the address.
+    """
+    empty = tmp_path / "empty-rt"
+    empty.mkdir()
+    escaped = "".join(
+        f"%{b:02x}" if chr(b) == "/" else chr(b) for b in fake_manager.bus_path.encode()
+    )
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(empty))
+    monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", f"unix:path={escaped},guid=0123")
+
+    assert sb._probe_cgroup_scope() == (True, "ok")
+
+
+def test_a_probe_refresh_never_walks_path(fake_manager, monkeypatch):
+    """A refresh runs on the event loop; it must not resolve ``systemd-run`` through PATH.
+
+    A PATH entry on a stalled mount would hang ``shutil.which`` and with it the
+    gateway's loop. The probe uses the same fixed-directory lookup the wrapper does.
+    """
+
+    def _no_path_walk(*_args, **_kwargs):
+        raise AssertionError("the probe walked PATH")
+
+    monkeypatch.setattr(sb.shutil, "which", _no_path_walk)
+    clock = [1000.0]
+    monkeypatch.setattr(sb.time, "monotonic", lambda: clock[0])
+    assert sb._probe_cgroup_scope() == (True, "ok")
+    clock[0] += sb._CGROUP_SCOPE_PROBE_TTL_SECONDS + 1
+    assert sb._probe_cgroup_scope() == (True, "ok")
+
+
 def test_unchanged_session_reuses_the_cached_probe(fake_manager, monkeypatch):
     """The per-spawn check is a stat, not a re-probe: an unchanged host computes once."""
     calls = []
