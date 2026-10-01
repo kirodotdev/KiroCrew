@@ -19,28 +19,37 @@ import { render, screen, fireEvent, waitFor, within } from '@testing-library/rea
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { recordError, recentErrors, consumeChatHandoff, __resetErrorJournalForTests } from '../utils/errorReport'
 
-const H = vi.hoisted(() => ({ OPENED: '/repo/src/a.ts' }))
+const H = vi.hoisted(() => ({ OPENED: '/repo/src/a.ts', mounts: 0 }))
 
-vi.mock('../pierre/tree', () => ({
-  TreeSkeleton: () => null,
-  PierreWorkspaceTree: (p: {
-    projectDir: string
-    searchQuery?: string | null
-    onFileOpen?: (abs: string) => void
-    onAddToContext?: (abs: string, kind: 'file' | 'dir') => void
-  }) => (
-    <button
-      data-testid="tree"
-      data-dir={p.projectDir}
-      data-query={p.searchQuery ?? ''}
-      data-has-add-to-context={p.onAddToContext ? '1' : '0'}
-      onClick={() => p.onFileOpen?.(H.OPENED)}
-      onContextMenu={() => p.onAddToContext?.(H.OPENED, 'file')}
-    >
-      tree
-    </button>
-  ),
-}))
+vi.mock('../pierre/tree', async () => {
+  const { useState } = await import('react')
+  return {
+    TreeSkeleton: () => null,
+    PierreWorkspaceTree: function TreeProbe(p: {
+      projectDir: string
+      searchQuery?: string | null
+      onFileOpen?: (abs: string) => void
+      onAddToContext?: (abs: string, kind: 'file' | 'dir') => void
+    }) {
+      // Which mount this is: the real tree's expansion lives in its model, so a
+      // remount is what loses the folders the user opened.
+      const [mount] = useState(() => ++H.mounts)
+      return (
+        <button
+          data-testid="tree"
+          data-mount={mount}
+          data-dir={p.projectDir}
+          data-query={p.searchQuery ?? ''}
+          data-has-add-to-context={p.onAddToContext ? '1' : '0'}
+          onClick={() => p.onFileOpen?.(H.OPENED)}
+          onContextMenu={() => p.onAddToContext?.(H.OPENED, 'file')}
+        >
+          tree
+        </button>
+      )
+    },
+  }
+})
 
 import FolderPanel from '../pages/chat/FolderPanel'
 import { api, ApiError, BROWSE_FILES_TIMEOUT_MS, FILE_SEARCH_TIMEOUT_MS } from '../api/client'
@@ -409,6 +418,107 @@ describe('FolderPanel — project-root workspace tree', () => {
     // tree already holds the path set, so nothing is requested.
     await new Promise(resolve => setTimeout(resolve, 260))
     expect(api.fileSearch).not.toHaveBeenCalled()
+  })
+
+  it('sends the search to the server when the tree payload is truncated', async () => {
+    // A truncated tree holds only the rows inside the server's cap, so its own
+    // filter cannot find what was never listed: the query takes the recursive
+    // search, whose matches stand in for the tree until it is cleared.
+    vi.spyOn(api, 'projectTree').mockResolvedValue(
+      { root: ROOT, paths: ['README.md'], directories: [], repo: false, truncated: true } as never,
+    )
+    vi.spyOn(api, 'fileSearch').mockResolvedValue({
+      root: ROOT,
+      results: [{ path: `${ROOT}/deep/past/the/cap/readme.txt`, name: 'readme.txt' }],
+    } as never)
+    renderPanel({ path: ROOT, projectDir: ROOT })
+    await waitFor(() => expect(tree()).toBeTruthy())
+    fireEvent.change(screen.getByLabelText('Search files'), { target: { value: 'read' } })
+    await waitFor(() => expect(api.fileSearch).toHaveBeenCalled())
+    await waitFor(() => expect(screen.getByText('readme.txt')).toBeTruthy())
+    expect(tree()).not.toBeVisible()
+    // The takeover says why the results replaced the tree.
+    expect(screen.getByTestId('folder-search-beyond-tree')).toHaveTextContent(
+      'Too many items to filter here, so the search also covers items not listed',
+    )
+    fireEvent.change(screen.getByLabelText('Search files'), { target: { value: '' } })
+    await waitFor(() => expect(tree().getAttribute('data-query')).toBe(''))
+  })
+
+  it('keeps the matches the truncated tree already lists when the server search misses them', async () => {
+    // The server search walks under its own scan budget and can come back empty
+    // on a workspace whose tree is showing the file. The tree's own paths join
+    // its matches, so the takeover never finds less than the local filter did,
+    // and a path both name is listed once.
+    vi.spyOn(api, 'projectTree').mockResolvedValue(
+      {
+        root: ROOT,
+        paths: ['README.md', 'src/main_entry.py', 'src/other.py'],
+        directories: ['src'],
+        repo: false,
+        truncated: true,
+      } as never,
+    )
+    const search = vi.spyOn(api, 'fileSearch').mockResolvedValue({ root: ROOT, results: [] } as never)
+    renderPanel({ path: ROOT, projectDir: ROOT })
+    await waitFor(() => expect(tree()).toBeTruthy())
+    fireEvent.change(screen.getByLabelText('Search files'), { target: { value: 'MAIN_entry' } })
+    await waitFor(() => expect(api.fileSearch).toHaveBeenCalled())
+    const row = await waitFor(() => screen.getByText('main_entry.py'))
+    expect(row.closest('[title]')).toHaveAttribute('title', `${ROOT}/src/main_entry.py`)
+    expect(screen.queryByText('other.py')).toBeNull()
+    expect(screen.queryByText('No files match')).toBeNull()
+
+    search.mockResolvedValue({
+      root: ROOT,
+      results: [{ path: `${ROOT}/src/main_entry.py`, name: 'main_entry.py' }],
+    } as never)
+    fireEvent.change(screen.getByLabelText('Search files'), { target: { value: 'main_ent' } })
+    await waitFor(() => expect(api.fileSearch).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(screen.getAllByText('main_entry.py')).toHaveLength(1))
+  })
+
+  it('keeps the truncated tree mounted behind the search, so its expansion survives clearing it', async () => {
+    // The matches stand in for the tree while the query is up, but the tree is
+    // hidden, not unmounted: a remount builds a fresh model with every folder
+    // the user expanded collapsed again.
+    vi.spyOn(api, 'projectTree').mockResolvedValue(
+      { root: ROOT, paths: ['README.md'], directories: [], repo: false, truncated: true } as never,
+    )
+    renderPanel({ path: ROOT, projectDir: ROOT })
+    await waitFor(() => expect(tree()).toBeVisible())
+    const mount = tree().getAttribute('data-mount')
+    fireEvent.change(screen.getByLabelText('Search files'), { target: { value: 'read' } })
+    await waitFor(() => expect(api.fileSearch).toHaveBeenCalled())
+    await waitFor(() => expect(tree()).not.toBeVisible())
+    fireEvent.change(screen.getByLabelText('Search files'), { target: { value: '' } })
+    await waitFor(() => expect(tree()).toBeVisible())
+    expect(tree().getAttribute('data-mount')).toBe(mount)
+  })
+
+  it('does not name the beyond-the-tree search on a tab that only ever lists one level', async () => {
+    // Off the project root the box always searches recursively; nothing it
+    // replaces was a filter, so the takeover line has nothing to explain.
+    renderPanel({ path: `${ROOT}/src`, projectDir: ROOT })
+    await waitFor(() => expect(screen.getByText('src')).toBeTruthy())
+    fireEvent.change(screen.getByLabelText('Search files'), { target: { value: 'read' } })
+    await waitFor(() => expect(api.fileSearch).toHaveBeenCalled())
+    expect(screen.queryByTestId('folder-search-beyond-tree')).toBeNull()
+  })
+
+  it('refreshes the search that stands in for a truncated tree', async () => {
+    // While the matches replace a truncated tree they are what the tab shows, so
+    // Refresh re-reads them, as it does for the same search in listing mode.
+    vi.spyOn(api, 'projectTree').mockResolvedValue(
+      { root: ROOT, paths: ['README.md'], directories: [], repo: false, truncated: true } as never,
+    )
+    renderPanel({ path: ROOT, projectDir: ROOT })
+    await waitFor(() => expect(tree()).toBeTruthy())
+    fireEvent.change(screen.getByLabelText('Search files'), { target: { value: 'read' } })
+    await waitFor(() => expect(api.fileSearch).toHaveBeenCalledTimes(1))
+    fireEvent.click(screen.getByLabelText('Refresh'))
+    await waitFor(() => expect(api.fileSearch).toHaveBeenCalledTimes(2))
+    expect(api.projectTree).toHaveBeenCalledTimes(2)
   })
 
   it('refreshes the queries the tree reads, not the directory listing', async () => {

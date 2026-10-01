@@ -201,7 +201,7 @@ _EXPECTED_GATE_CALL_SITES: dict[str, int] = {
     # the candidate there is what this endpoint must not do at all, since on Windows
     # it would follow a junction aimed at a share.
     "kiro_crew/dashboard/file_api/path_complete.py": 3,
-    # ``_project_tree_entries``: the walk's own directory, and every entry of
+    # ``_project_tree_fence``: the walk's own directory, and every entry of
     # that directory the directory-level answers do not settle -- a link, or any
     # entry when a store sits at or beneath the directory. Each is handed the
     # ``os.path.realpath`` computed on the line itself. The walk runs inside
@@ -241,7 +241,7 @@ _EXPECTED_GATE_CALL_SITES: dict[str, int] = {
 
 # path relative to ``src`` -> number of ``pre_resolved=True`` containment claims.
 _EXPECTED_CONTAINMENT_CALL_SITES: dict[str, int] = {
-    # ``_project_tree_entries``: once per directory the non-git project-tree
+    # ``_project_tree_fence``: once per directory the non-git project-tree
     # walk visits, on the ``os.path.realpath`` of that directory. It is what
     # lets the walk settle a whole directory of entries without a gate call per
     # entry, and it runs inside ``api_project_tree``'s ``asyncio.to_thread``

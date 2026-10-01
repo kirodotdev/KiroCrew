@@ -176,10 +176,17 @@ from kiro_crew.dashboard.file_api.project_dirs import (  # noqa: F401
     api_project_git,
 )
 from kiro_crew.dashboard.file_api.project_tree import (  # noqa: F401
-    _project_tree_directories,
-    _project_tree_entries,
+    _project_tree_allot,
+    _project_tree_body,
+    _project_tree_fence,
     _project_tree_file_quotas,
-    _project_tree_sample_files,
+    _project_tree_git_layout,
+    _project_tree_identity,
+    _project_tree_is_link,
+    _project_tree_scandir,
+    _project_tree_scandir_entries,
+    _project_tree_walk,
+    _ProjectTreeFolderMoved,
     api_project_tree,
 )
 from kiro_crew.dashboard.file_api.search import (  # noqa: F401
@@ -2947,9 +2954,27 @@ _GIT_FILTER_KEY_RE = re.compile(
 )
 
 
-# Cap on FILES returned by api_project_tree. Directory rows are returned
-# separately and uncapped so manual navigation never loses a subtree.
+# Cap on the ROWS api_project_tree returns -- files and directory rows
+# together (``_project_tree_allot``). One number for both kinds, because every
+# row costs the same to redact, serialize and render, and the dashboard asks
+# for this listing every 10 s while a tree is open: the work per poll has to be
+# bounded by this number, not by the size of the project.
 _PROJECT_TREE_MAX_ENTRIES = 10_000
+
+# Directory entries the non-git walk may READ per listing, shared across the
+# folders of each depth (``_project_tree_walk``). This is what makes the walk's
+# cost a function of this number instead of the size of the tree: reading an
+# entry costs about half a microsecond, so the whole budget is a fraction of a
+# second in the worker thread. It is larger than the row cap so the walk can
+# see past the rows it will show -- the subfolders of a large folder, and files
+# for the round-robin sampling to share out -- and a folder cut by it is named
+# as truncated, whether or not the row cap was also reached.
+_PROJECT_TREE_SCAN_LIMIT = 20 * _PROJECT_TREE_MAX_ENTRIES
+
+# Whether this platform lists a directory through a descriptor. Read once: it is
+# a property of the platform, and a test seam that wraps ``os.scandir`` must not
+# silently turn it off and move every read onto the by-name branch.
+_PROJECT_TREE_SCANDIR_TAKES_FD = os.scandir in os.supports_fd
 
 
 # Directories never worth listing in a workspace tree. Applied only on the

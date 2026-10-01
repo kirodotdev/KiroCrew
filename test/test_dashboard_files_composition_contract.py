@@ -76,7 +76,8 @@ _BASE_NAMES = frozenset("""
         _MEDIA_MAGIC _OFFICE_PREVIEWABLE_EXT _OFFICE_PREVIEW_CAP _OpenDenied
         _OpenRefusal _OpenedFile _PATH_COMPLETE_MAX_ENTRIES _PATH_COMPLETE_MAX_SCAN
         _PATH_PROBE_ADMIT_TIMEOUT_SECS _PATH_PROBE_EXEC_CEILING_SECS
-        _PATH_TOKEN_SEPARATORS _PROJECT_TREE_MAX_ENTRIES _PROJECT_TREE_SKIP_DIRS
+        _PATH_TOKEN_SEPARATORS _PROJECT_TREE_MAX_ENTRIES _PROJECT_TREE_SCANDIR_TAKES_FD
+        _PROJECT_TREE_SCAN_LIMIT _PROJECT_TREE_SKIP_DIRS
         _PathProbe _PathProbeBusy _PreviewUnsupported _ProbeT _RASTER_EXT_MIME
         _RASTER_MIME_EXT _READ_PATH_EXTRA_MAGIC _SCREENSHOT_DIR _SEARCH_LIMIT_CEILING
         _SHEET_MAX_CDIR_ENTRY_BYTES _SHEET_MAX_CELL_CHARS _SHEET_MAX_COLS
@@ -99,8 +100,11 @@ _BASE_NAMES = frozenset("""
         _owner_view_bypasses_credential_pass _parse_range_header _parse_workbook_grid
         _porcelain_unquote _probe_busy_response _probe_git_dir _probe_persisted_session
         _probe_request_path _project_directory_absent _project_git_branch
-        _project_tree_directories _project_tree_entries _project_tree_file_quotas
-        _project_tree_sample_files _read_git_meta_prefix _read_outbox_file
+        _ProjectTreeFolderMoved _project_tree_allot _project_tree_body
+        _project_tree_fence _project_tree_file_quotas _project_tree_git_layout
+        _project_tree_identity _project_tree_is_link _project_tree_scandir
+        _project_tree_scandir_entries _project_tree_walk _read_git_meta_prefix
+        _read_outbox_file
         _read_request_path _redact_block _redact_blocks _redact_project_path
         _redact_value _repo_filter_refusal_cause _resolve_diff_path _resolve_project_git
         _resolve_project_relative _resolve_raster_ext _resolve_search_root
@@ -209,8 +213,10 @@ _BASE_OWNERS: dict[str, tuple[str, ...]] = {
         api_project_git_log api_project_git_status
         """.split()),
     "project_tree": tuple("""
-        _project_tree_directories _project_tree_entries _project_tree_file_quotas
-        _project_tree_sample_files api_project_tree
+        _ProjectTreeFolderMoved _project_tree_allot _project_tree_body
+        _project_tree_fence _project_tree_file_quotas _project_tree_git_layout
+        _project_tree_identity _project_tree_is_link _project_tree_scandir
+        _project_tree_scandir_entries _project_tree_walk api_project_tree
         """.split()),
     "dashboard_config": ("api_dashboard_config",),
 }
@@ -222,8 +228,9 @@ _OWNER_CONSTANTS = {"git_panel": ("_GIT_PANEL_STDOUT_CAP",)}
 
 #: SHA-256 of the sorted ``"<name> <kind> <signature>"`` lines of every name in
 #: ``_BASE_OWNERS``, captured from the one-module file before the split: each moved
-#: name keeps the kind and signature it had there.
-_BASE_SHAPE_DIGEST = "39d8626b5c3185175a8e0e9d269030041461fb6d8b72f588dff3f6da7bdf33bb"
+#: name keeps the kind and signature it had there. Recaptured when the bounded
+#: project-tree walk replaced the ``project_tree`` helpers.
+_BASE_SHAPE_DIGEST = "a38dad08c49dfab78f74315fde5ad9471c9cd53df1463bdb75380ca0aa397b6d"
 
 #: Definitions that stay in the facade file. The seams and the path-probe
 #: chokepoint every owner and two sibling handlers call; file delivery, kept whole
@@ -481,7 +488,7 @@ def test_every_moved_name_is_one_object_in_its_owner() -> None:
     ]
     assert strays == []
     names = [name for group in _BASE_OWNERS.values() for name in group]
-    assert len(names) == len(set(names)) == 96
+    assert len(names) == len(set(names)) == 103
 
 
 def test_the_moved_names_keep_their_base_shapes() -> None:
@@ -490,7 +497,7 @@ def test_the_moved_names_keep_their_base_shapes() -> None:
         for names in _BASE_OWNERS.values()
         for name in names
     )
-    assert len(lines) == 96
+    assert len(lines) == 103
     digest = hashlib.sha256("\n".join(lines).encode()).hexdigest()
     assert digest == _BASE_SHAPE_DIGEST, "\n".join(lines)
 
@@ -543,7 +550,7 @@ def test_every_base_definition_is_in_exactly_one_place() -> None:
     }
     assert defined == set(_FACADE_DEFS)
     moved = {name for names in _BASE_OWNERS.values() for name in names}
-    assert len(defined | moved) == len(defined) + len(moved) == 127
+    assert len(defined | moved) == len(defined) + len(moved) == 134
 
 
 def test_the_owners_log_as_the_facade() -> None:
@@ -1377,25 +1384,20 @@ def test_the_resolved_gate_dicts_name_the_owners() -> None:
     assert "kiro_crew/dashboard/handlers/files.py" not in containment
 
 
-def test_the_link_screen_site_moved_with_the_tree_route(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The gate discovers the tree listing's screen at its owner, and its declared
-    baseline names that key: without the row the new site is undeclared, and the
-    row's old key would be a stale one."""
+def test_the_tree_route_holds_no_link_screen_in_either_file() -> None:
+    """The bounded tree walk tells a link from the ``lstat`` its listing already
+    holds, so the route's ``_run`` calls no link screen at its owner or in the
+    facade, and the gate's baseline declares neither key -- a declared key with no
+    site would be a stale one."""
     import test_link_screen_hold_pin as gate
 
     site = ("dashboard/file_api/project_tree.py", "api_project_tree._run")
     old = ("dashboard/handlers/files.py", "api_project_tree._run")
     found = gate.discovered_sites()
-    assert site in found and old not in found
-    assert site in gate.DECLARED_SITES and old not in gate.DECLARED_SITES
+    assert site not in found and old not in found
+    assert site not in gate.DECLARED_SITES and old not in gate.DECLARED_SITES
     gate.test_every_site_is_declared()
     gate.test_declared_sites_still_exist()
-    monkeypatch.setattr(gate, "DECLARED_SITES", gate.DECLARED_SITES - {site})
-    with pytest.raises(AssertionError):
-        gate.test_every_site_is_declared()
-    monkeypatch.setattr(gate, "DECLARED_SITES", (gate.DECLARED_SITES - {site}) | {old})
-    with pytest.raises(AssertionError):
-        gate.test_declared_sites_still_exist()
 
 
 def test_the_bare_hop_guard_reads_the_file_family(

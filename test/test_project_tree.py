@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -16,6 +17,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from kiro_crew import pinned_fs
 from kiro_crew.dashboard.handlers import api_project_tree
 from kiro_crew.security.redaction import _PATH_SEGMENT_DISCRIMINATOR_SEP, _path_segment_label
 from kiro_crew.testing.links import make_dir_link
@@ -57,6 +59,54 @@ def _fence_targets(*paths: Path):
         yield
 
 
+# The read branches this platform has: descriptor listing exists only where
+# ``scandir`` takes a descriptor (POSIX); the by-name branch is reachable
+# everywhere, since a test can force the walk onto it.
+_LISTING_BRANCHES = [
+    *(
+        [pytest.param(True, id="descriptor")]
+        if os.scandir in os.supports_fd and pinned_fs.supports_pinned_walk()
+        else []
+    ),
+    pytest.param(False, id="by-name"),
+]
+
+
+def _refuse_link_open(monkeypatch, path: os.PathLike[str] | str, armed=lambda: True) -> None:
+    """Make the walk's ``O_NOFOLLOW`` open of *path* fail as it does on a link.
+
+    A real symlink needs a privilege on Windows; the walk only sees the
+    ``ELOOP`` the open raises, so this seam gives that shape on every host.
+    """
+    target = os.path.normcase(os.path.abspath(os.fspath(path)))
+    real_open = os.open
+
+    def fake_open(name, *args, **kwargs):
+        if (
+            isinstance(name, (str, os.PathLike))
+            and armed()
+            and os.path.normcase(os.path.abspath(os.fspath(name))) == target
+        ):
+            raise OSError(errno.ELOOP, "Too many levels of symbolic links", os.fspath(name))
+        return real_open(name, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", fake_open)
+
+
+def _identity(path_or_fd) -> tuple[int, int] | None:
+    """``(st_dev, st_ino)`` of a directory named by path OR open descriptor.
+
+    The walk lists a folder through a descriptor where the platform can (POSIX)
+    and by path where it cannot (Windows), so a seam that recognised only a path
+    would never see the POSIX reads. Identity names the folder either way.
+    """
+    try:
+        st = os.stat(path_or_fd)
+    except (OSError, TypeError, ValueError):
+        return None
+    return (st.st_dev, st.st_ino)
+
+
 def _deny_directory_read(monkeypatch, *denied: os.PathLike[str] | str) -> None:
     """Make ``scandir`` refuse the named directories, the way a mode-000 directory
     does for a non-root process.
@@ -65,42 +115,104 @@ def _deny_directory_read(monkeypatch, *denied: os.PathLike[str] | str) -> None:
     Windows (``chmod`` there touches only the read-only attribute, which does not
     govern listing) or on a filesystem that ignores POSIX modes, so a test built
     on it would have to skip on those hosts -- and the assertions it guards would
-    never execute on those CI shards. ``os.walk`` reads ``scandir`` off the ``os``
-    module on every call and reports its failure through ``onerror`` (verified
-    for the walk under test: the failing directory reaches ``onerror`` with its
-    path as ``filename`` and is not yielded), so refusing it here exercises the
-    handler's own recording path on every platform, including the process's own
-    kernel saying yes.
+    never execute on those CI shards. The walk reads ``scandir`` off the ``os``
+    module for every folder it opens and records a folder whose read raises as
+    unreadable, so refusing it here exercises the handler's own recording path
+    on every platform, including the process's own kernel saying yes.
     """
     real_scandir = os.scandir
-    refused = {os.path.realpath(os.fspath(d)) for d in denied}
+    refused = {_identity(os.fspath(d)) for d in denied}
 
     def scandir(path=".", *args, **kwargs):
-        # ``rmtree`` and friends pass a file descriptor: not a path, never refused.
-        if isinstance(path, (str, os.PathLike)) and os.path.realpath(os.fspath(path)) in refused:
-            raise PermissionError(errno.EACCES, "Permission denied", os.fspath(path))
+        if _identity(path) in refused:
+            raise PermissionError(errno.EACCES, "Permission denied", str(path))
         return real_scandir(path, *args, **kwargs)
 
     monkeypatch.setattr(os, "scandir", scandir)
 
 
 def _pretend_directory_symlink(monkeypatch, link: os.PathLike[str] | str) -> None:
-    """Make ``os.path.islink`` answer yes for one real directory.
+    """Make the walk's link test answer yes for one real directory.
 
     Creating a symlink needs a privilege on Windows, so a real one would skip the
-    test there. ``os.walk`` binds ``islink`` from ``os.path`` at call time and asks
-    it before descending (``followlinks`` is off), and the handler's own
-    hidden-only predicate asks the same function, so one patched answer gives both
-    the symlink-to-a-directory shape: listed among the subdirectories, never
-    walked into, never yielded as a folder of its own.
+    test there. The walk classifies each listed subfolder by its ``lstat``
+    (``_project_tree_is_link``) before it queues it, so one patched answer for
+    this folder's identity gives the symlink-to-a-directory shape: listed among
+    the subdirectories, never walked into.
     """
-    real_islink = os.path.islink
-    target = os.path.realpath(os.fspath(link))
+    from kiro_crew.dashboard.handlers import files as files_mod
 
-    def islink(path) -> bool:
-        return os.path.realpath(os.fspath(path)) == target or real_islink(path)
+    real_is_link = files_mod._project_tree_is_link
+    target = _identity(os.fspath(link))
 
-    monkeypatch.setattr(os.path, "islink", islink)
+    def is_link(st) -> bool:
+        return (st.st_dev, st.st_ino) == target or real_is_link(st)
+
+    monkeypatch.setattr(files_mod, "_project_tree_is_link", is_link)
+
+
+def _count_project_reads(monkeypatch, project: os.PathLike[str] | str) -> dict[str, int]:
+    """Count each ``scandir`` of a folder inside *project*, and nothing else.
+
+    An identity filter, not a wrapper around every call: the event loop, the
+    test client and anything else in the process may list a directory while
+    the patch is live, and they must neither be counted nor get anything but
+    the real iterator back. The project's folders are mapped to their resolved
+    paths when the seam is installed, so the counts read by path.
+    """
+    real_scandir = os.scandir
+    root = os.path.realpath(os.fspath(project))
+    folders = {_identity(root): root}
+    for dirpath, dirnames, _files in os.walk(root):
+        for name in dirnames:
+            path = os.path.realpath(os.path.join(dirpath, name))
+            folders[_identity(path)] = path
+    counts: dict[str, int] = {}
+
+    def scandir(path=".", *args, **kwargs):
+        folder = folders.get(_identity(path))
+        if folder is not None:
+            counts[folder] = counts.get(folder, 0) + 1
+        return real_scandir(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "scandir", scandir)
+    return counts
+
+
+class _Listing:
+    """A ``scandir`` iterator that runs *on_entry* per pulled entry and *on_close*
+    once when the listing is closed -- the two moments a test needs to act at.
+
+    Delegates the whole iterator protocol, context manager and ``close``
+    included, so the walk under test cannot tell it from the real one.
+    """
+
+    def __init__(self, inner, on_entry=None, on_close=None) -> None:
+        self._inner = inner
+        self._on_entry = on_entry
+        self._on_close = on_close
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+        return False
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        entry = next(self._inner)
+        if self._on_entry is not None:
+            self._on_entry(entry)
+        return entry
+
+    def close(self) -> None:
+        self._inner.close()
+        on_close, self._on_close = self._on_close, None
+        if on_close is not None:
+            on_close()
 
 
 class _Slot:
@@ -489,8 +601,11 @@ class TestProjectTree:
                 return real(logical_home)
 
             def walk() -> None:
-                for dirpath, dirnames, filenames in os.walk(project):
-                    files_mod._project_tree_entries(dirpath, dirnames, filenames)
+                files_mod._project_tree_walk(
+                    str(project),
+                    files_mod._PROJECT_TREE_MAX_ENTRIES,
+                    files_mod._PROJECT_TREE_SCAN_LIMIT,
+                )
 
             # Uncounted first, so the gate's target cache is warm either way: a
             # cold build resolves the anchors a second time under its own lock,
@@ -518,22 +633,15 @@ class TestProjectTree:
     async def test_non_repo_walk_lists_a_junction_as_a_link_and_never_walks_it(
         self, plain_project, mock_sel, monkeypatch
     ):
-        # A Windows junction is no symlink to ``os.walk``, which would descend
-        # it; the walk asks ``is_link_or_junction`` and prunes it instead.
-        from kiro_crew import platform_compat
-
+        # A Windows junction is a name surrogate, so the walk's ``lstat``
+        # classification (``_project_tree_is_link``) lists it as a link row
+        # and never reads beneath it -- under a dot-directory too.
         plain = plain_project
         junction = plain / ".worktrees" / "j"
         junction.mkdir(parents=True)
         (junction / "outside.txt").write_text("x")
         (plain / "top.txt").write_text("x")
-        target = os.path.realpath(junction)
-        real = platform_compat.is_link_or_junction
-
-        def is_link(path) -> bool:
-            return os.path.realpath(os.fspath(path)) == target or real(path)
-
-        monkeypatch.setattr(platform_compat, "is_link_or_junction", is_link)
+        _pretend_directory_symlink(monkeypatch, junction)
         async with TestClient(TestServer(_make_app(str(plain)))) as client:
             resp = await client.get(f"/api/project/tree?path={plain}")
             data = await resp.json()
@@ -658,12 +766,17 @@ class TestProjectTree:
         assert data["truncatedDirectories"] == [""]
 
     @pytest.mark.asyncio
-    async def test_walk_keeps_the_full_directory_skeleton_and_samples_files_fairly(
+    async def test_walk_spends_the_cap_on_folder_rows_first_and_samples_files_fairly(
         self, plain_project, mock_sel, monkeypatch
     ):
+        """One cap covers files AND folder rows. Folder rows come first,
+        shallowest first, but never past half the cap while there are files to
+        show; the files share the rest round-robin by direct parent, so no one
+        folder takes it all, and every shown folder that lost something is
+        named -- ``late`` lost its ``nested`` row."""
         from kiro_crew.dashboard.handlers import files as files_mod
 
-        monkeypatch.setattr(files_mod, "_PROJECT_TREE_MAX_ENTRIES", 4)
+        monkeypatch.setattr(files_mod, "_PROJECT_TREE_MAX_ENTRIES", 8)
         plain = plain_project
         for directory in ("alpha", "beta", "late/nested"):
             target = plain / directory
@@ -677,14 +790,549 @@ class TestProjectTree:
             data = await resp.json()
 
         assert data["truncated"] is True
-        assert len(data["paths"]) == 4
-        assert {path.rsplit("/", 1)[0] for path in data["paths"]} == {
-            "alpha",
-            "beta",
-            "late/nested",
-        }
-        assert data["directories"] == ["alpha", "beta", "empty", "late", "late/nested"]
-        assert data["truncatedDirectories"] == ["alpha", "beta", "late/nested"]
+        assert data["directories"] == ["alpha", "beta", "empty", "late"]
+        assert data["paths"] == ["alpha/0.txt", "alpha/1.txt", "beta/0.txt", "beta/1.txt"]
+        assert data["truncatedDirectories"] == ["alpha", "beta", "late"]
+
+    @pytest.mark.asyncio
+    async def test_walk_caps_folder_rows_too_shallowest_first(
+        self, plain_project, mock_sel, monkeypatch
+    ):
+        """With no file to show, folder rows take the whole cap, breadth-first:
+        the top-level folders keep their rows ahead of anything nested, and
+        every shown folder that lost a child row is named as truncated -- the
+        root included, which lost ``d3`` and ``d4``."""
+        from kiro_crew.dashboard.handlers import files as files_mod
+
+        monkeypatch.setattr(files_mod, "_PROJECT_TREE_MAX_ENTRIES", 3)
+        plain = plain_project
+        for index in range(5):
+            (plain / f"d{index}" / "sub").mkdir(parents=True)
+
+        async with TestClient(TestServer(_make_app(str(plain)))) as client:
+            resp = await client.get(f"/api/project/tree?path={plain}")
+            data = await resp.json()
+
+        assert data["directories"] == ["d0", "d1", "d2"]
+        assert data["paths"] == []
+        assert data["truncated"] is True
+        assert data["truncatedDirectories"] == ["", "d0", "d1", "d2"]
+
+    @pytest.mark.asyncio
+    async def test_walk_keeps_root_files_when_folders_alone_would_fill_the_cap(
+        self, plain_project, mock_sel, monkeypatch
+    ):
+        """More folders than the cap must not hide every file: the root's
+        ``README.md`` is the first file a workspace is opened for, and in tree
+        mode the rail's name filter searches only the listed rows."""
+        from kiro_crew.dashboard.handlers import files as files_mod
+
+        monkeypatch.setattr(files_mod, "_PROJECT_TREE_MAX_ENTRIES", 4)
+        plain = plain_project
+        for index in range(6):
+            (plain / f"pkg{index}").mkdir(parents=True)
+        (plain / "README.md").write_text("x")
+
+        async with TestClient(TestServer(_make_app(str(plain)))) as client:
+            resp = await client.get(f"/api/project/tree?path={plain}")
+            data = await resp.json()
+
+        assert data["paths"] == ["README.md"]
+        assert data["directories"] == ["pkg0", "pkg1", "pkg2"]
+        assert data["truncatedDirectories"] == [""]
+
+    @pytest.mark.asyncio
+    async def test_spare_rows_go_to_folders_without_evicting_files_that_fit(
+        self, plain_project, mock_sel, monkeypatch
+    ):
+        """Files counted in folders past the row budget leave file rows unused,
+        and those go back to folder rows -- but the folders gaining a row do not
+        then share the file rows, which would evict the root's README.md."""
+        from kiro_crew.dashboard.handlers import files as files_mod
+
+        monkeypatch.setattr(files_mod, "_PROJECT_TREE_MAX_ENTRIES", 6)
+        plain = plain_project
+        for index in range(6):
+            (plain / f"pkg{index}").mkdir(parents=True)
+        (plain / "LICENSE").write_text("x")
+        (plain / "README.md").write_text("x")
+        for index in range(5):
+            (plain / "pkg3" / f"m{index}.py").write_text("x")
+
+        async with TestClient(TestServer(_make_app(str(plain)))) as client:
+            resp = await client.get(f"/api/project/tree?path={plain}")
+            data = await resp.json()
+
+        assert data["paths"] == ["LICENSE", "README.md"]
+        assert data["directories"] == ["pkg0", "pkg1", "pkg2", "pkg3"]
+        assert data["truncatedDirectories"] == ["", "pkg3"]
+
+    @pytest.mark.asyncio
+    async def test_walk_of_a_big_tree_returns_at_most_the_cap_in_rows(
+        self, plain_project, mock_sel, monkeypatch
+    ):
+        """A large non-git project is listed every 10 s while its tree is open,
+        so the rows per listing are what the gateway pays for each poll: files
+        and folder rows together stop at the cap, and the cut is flagged."""
+        from kiro_crew.dashboard.handlers import files as files_mod
+
+        monkeypatch.setattr(files_mod, "_PROJECT_TREE_MAX_ENTRIES", 50)
+        plain = plain_project
+        for top in range(20):
+            nested = plain / f"top{top:02d}" / "sub"
+            nested.mkdir(parents=True)
+            for index in range(10):
+                (plain / f"top{top:02d}" / f"{index}.txt").write_text("x")
+                (nested / f"{index}.txt").write_text("x")
+
+        async with TestClient(TestServer(_make_app(str(plain)))) as client:
+            resp = await client.get(f"/api/project/tree?path={plain}")
+            data = await resp.json()
+
+        assert len(data["paths"]) + len(data["directories"]) == 50
+        assert data["truncated"] is True
+        # Every top-level folder keeps its row, and files still get theirs.
+        assert {f"top{top:02d}" for top in range(20)} <= set(data["directories"])
+        assert len(data["paths"]) == 25
+        assert set(data["truncatedDirectories"]) <= {"", *data["directories"]}
+
+    @pytest.mark.parametrize("big", ["data", "zz_data"])
+    @pytest.mark.asyncio
+    async def test_one_large_folder_does_not_starve_its_siblings_of_the_scan(
+        self, big, plain_project, mock_sel, monkeypatch
+    ):
+        """One folder holding more entries than the whole scan budget must not
+        starve its siblings, wherever it sorts: before ``src/`` it would spend
+        the budget before ``src/`` is read, after it it would spend what the
+        next depth needs to read ``src/lib/``. Each folder of a depth reads at
+        most an even split of what is left, with the depths below counted as
+        one more claimant, so ``src/`` and ``src/lib/`` are read in full and
+        only the large folder is cut."""
+        from kiro_crew.dashboard.handlers import files as files_mod
+
+        monkeypatch.setattr(files_mod, "_PROJECT_TREE_SCAN_LIMIT", 100)
+        plain = plain_project
+        (plain / big).mkdir(parents=True)
+        for index in range(110):
+            (plain / big / f"{index:04d}.csv").write_text("x")
+        (plain / "src" / "lib").mkdir(parents=True)
+        (plain / "src" / "main.py").write_text("x")
+        (plain / "src" / "lib" / "util.py").write_text("x")
+
+        async with TestClient(TestServer(_make_app(str(plain)))) as client:
+            resp = await client.get(f"/api/project/tree?path={plain}")
+            data = await resp.json()
+
+        assert "src/lib" in data["directories"]
+        assert "src/main.py" in data["paths"]
+        assert "src/lib/util.py" in data["paths"]
+        assert big in data["truncatedDirectories"]
+        assert not {"src", "src/lib"} & set(data["truncatedDirectories"])
+
+    @pytest.mark.parametrize("big", ["d00", "d09"])
+    @pytest.mark.asyncio
+    async def test_a_tree_inside_both_limits_is_read_whole_beside_one_large_folder(
+        self, big, plain_project, mock_sel, monkeypatch
+    ):
+        """A tree under the row cap and well under the scan limit is listed in
+        full, wherever its one large folder sorts: the large folder may read
+        past an even split, because the small siblings after it need only their
+        floor. An even split alone cut it here -- 200 files against a 45-entry
+        share -- and reported a whole tree as truncated."""
+        from kiro_crew.dashboard.handlers import files as files_mod
+
+        monkeypatch.setattr(files_mod, "_PROJECT_TREE_SCAN_LIMIT", 500)
+        plain = plain_project
+        expected: set[str] = set()
+        for top in range(10):
+            folder = plain / f"d{top:02d}"
+            folder.mkdir(parents=True)
+            for index in range(200 if folder.name == big else 5):
+                (folder / f"{index:03d}.txt").write_text("x")
+                expected.add(f"{folder.name}/{index:03d}.txt")
+
+        async with TestClient(TestServer(_make_app(str(plain)))) as client:
+            resp = await client.get(f"/api/project/tree?path={plain}")
+            data = await resp.json()
+
+        assert data["truncated"] is False
+        assert data["truncatedDirectories"] == []
+        assert expected <= set(data["paths"])
+
+    @pytest.mark.asyncio
+    async def test_a_large_folder_sorted_first_still_leaves_each_sibling_its_floor(
+        self, plain_project, mock_sel, monkeypatch
+    ):
+        """Reading past an even split never takes what the folders after it are
+        owed: with several folders larger than the whole budget, each small
+        sibling sorted after them is still read in full."""
+        from kiro_crew.dashboard.handlers import files as files_mod
+
+        monkeypatch.setattr(files_mod, "_PROJECT_TREE_SCAN_LIMIT", 400)
+        plain = plain_project
+        for top in range(3):
+            (plain / f"a{top}").mkdir(parents=True)
+            for index in range(500):
+                (plain / f"a{top}" / f"{index:03d}.csv").write_text("x")
+        for top in range(5):
+            (plain / f"z{top}").mkdir()
+            (plain / f"z{top}" / "small.txt").write_text("x")
+
+        async with TestClient(TestServer(_make_app(str(plain)))) as client:
+            resp = await client.get(f"/api/project/tree?path={plain}")
+            data = await resp.json()
+
+        assert {f"z{top}/small.txt" for top in range(5)} <= set(data["paths"])
+        assert set(data["truncatedDirectories"]) == {"a0", "a1", "a2"}
+
+    @pytest.mark.asyncio
+    async def test_a_folder_the_scan_budget_never_reaches_is_named_and_never_read(
+        self, plain_project, mock_sel, monkeypatch
+    ):
+        """A budget of one entry reads the root's only entry, ``later/``, and
+        nothing else: the folder that read named is shown and flagged, never
+        called empty, and the walk does not open it. The root is flagged too:
+        the look-ahead that would prove it held nothing more is drawn from the
+        same budget, which that one read spent."""
+        from kiro_crew.dashboard.handlers import files as files_mod
+
+        plain = plain_project
+        (plain / "later").mkdir(parents=True)
+        (plain / "later" / "inside.txt").write_text("x")
+        monkeypatch.setattr(files_mod, "_PROJECT_TREE_SCAN_LIMIT", 1)
+        opened = _count_project_reads(monkeypatch, plain)
+
+        async with TestClient(TestServer(_make_app(str(plain)))) as client:
+            resp = await client.get(f"/api/project/tree?path={plain}")
+            data = await resp.json()
+
+        assert opened == {os.path.realpath(plain): 1}
+        assert data["directories"] == ["later"]
+        assert data["paths"] == []
+        assert data["truncated"] is True
+        assert data["truncatedDirectories"] == ["", "later"]
+
+    @pytest.mark.asyncio
+    async def test_walk_reads_each_folder_once(self, plain_project, mock_sel, monkeypatch):
+        """One pass: each folder is read once, never once to count and again to
+        list. A nested tree, so a second read of any level shows."""
+        plain = plain_project
+        (plain / "a" / "b" / "c").mkdir(parents=True)
+        (plain / "a" / "b" / "c" / "leaf.txt").write_text("x")
+        (plain / "a" / "one.txt").write_text("x")
+        (plain / "z").mkdir()
+        opened = _count_project_reads(monkeypatch, plain)
+        async with TestClient(TestServer(_make_app(str(plain)))) as client:
+            resp = await client.get(f"/api/project/tree?path={plain}")
+            data = await resp.json()
+
+        assert data["paths"] == ["a/one.txt", "a/b/c/leaf.txt"]
+        expected = {os.path.realpath(plain / p) for p in (".", "a", "a/b", "a/b/c", "z")}
+        assert opened == {path: 1 for path in expected}
+
+    @pytest.mark.asyncio
+    async def test_a_listing_that_fails_part_way_is_an_unreadable_row(
+        self, plain_project, mock_sel, monkeypatch
+    ):
+        """A read can fail after ``scandir`` opened the folder -- the iterator
+        raises on a later entry. What it yielded first is not a listing of the
+        folder, so none of it is shown: the folder is a row named unreadable,
+        exactly as when ``scandir`` itself refuses."""
+        plain = plain_project
+        (plain / "flaky").mkdir(parents=True)
+        for name in ("a.txt", "b.txt", "c.txt"):
+            (plain / "flaky" / name).write_text("x")
+        flaky = _identity(os.path.realpath(plain / "flaky"))
+        real_scandir = os.scandir
+
+        class _FailsAfterOne:
+            def __init__(self, inner):
+                self._inner = inner
+                self._yielded = 0
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                self._inner.close()
+
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                if self._yielded:
+                    raise PermissionError(errno.EACCES, "Permission denied", "flaky")
+                self._yielded += 1
+                return next(self._inner)
+
+            def close(self):
+                self._inner.close()
+
+        def scandir(path=".", *args, **kwargs):
+            inner = real_scandir(path, *args, **kwargs)
+            if _identity(path) == flaky:
+                return _FailsAfterOne(inner)
+            return inner
+
+        monkeypatch.setattr(os, "scandir", scandir)
+        async with TestClient(TestServer(_make_app(str(plain)))) as client:
+            resp = await client.get(f"/api/project/tree?path={plain}")
+            data = await resp.json()
+
+        assert data["directories"] == ["flaky"]
+        assert data["unreadableDirectories"] == ["flaky"]
+        assert data["paths"] == []
+
+    @pytest.mark.asyncio
+    async def test_a_root_cut_by_the_scan_limit_is_truncated_not_hidden_only(
+        self, plain_project, mock_sel, monkeypatch
+    ):
+        """A root whose first entries are all hidden folders, cut by the scan
+        limit, has not been read in full: what follows is unknown, so it is
+        truncated -- never judged hidden-only or empty on what it did read."""
+        from kiro_crew.dashboard.handlers import files as files_mod
+
+        monkeypatch.setattr(files_mod, "_PROJECT_TREE_SCAN_LIMIT", 3)
+        plain = plain_project
+        # Skip-set names: dot-directories are walked, these never are.
+        for name in ("build", "dist", "node_modules", "target", "venv"):
+            (plain / name).mkdir(parents=True)
+
+        async with TestClient(TestServer(_make_app(str(plain)))) as client:
+            resp = await client.get(f"/api/project/tree?path={plain}")
+            data = await resp.json()
+
+        assert data["paths"] == [] and data["directories"] == []
+        assert data["truncated"] is True
+        assert data["truncatedDirectories"] == [""]
+        assert data["hiddenOnlyDirectories"] == []
+
+    def test_git_folders_are_ordered_the_way_the_walk_discovers_them(self):
+        """Breadth-first, then segment by segment: ``a/z`` before ``a-b/c``,
+        because the walk reads ``a`` before ``a-b`` -- a whole-string sort would
+        put ``a-b/c`` first (``-`` sorts before ``/``) and the row cap would
+        keep a different folder on each branch."""
+        from kiro_crew.dashboard.handlers.files import _project_tree_git_layout
+
+        rows, files = _project_tree_git_layout(sorted(["a-b/c/x.txt", "a/z/y.txt", "top.txt"]))
+
+        assert rows == ["a", "a-b", "a/z", "a-b/c"]
+        assert files == {"a-b/c": ["x.txt"], "a/z": ["y.txt"], "": ["top.txt"]}
+
+    @pytest.mark.parametrize("swap", ["rename", "symlink"])
+    @pytest.mark.parametrize("by_descriptor", _LISTING_BRANCHES)
+    @pytest.mark.asyncio
+    async def test_a_folder_swapped_after_its_parent_was_listed_is_not_read(
+        self, swap, by_descriptor, plain_project, tmp_path, mock_sel, monkeypatch
+    ):
+        """A subfolder is queued when its parent is listed and read one level
+        later, by name. Between the two, the name is swapped for a directory
+        outside the project -- renamed into place, or a symlink to it. The read
+        is pinned to the identity the parent's listing saw, so what now sits at
+        the name is not listed: the row stays, named unreadable -- not
+        truncated, which would claim an item limit the small tree never hit --
+        and no entry of the outside directory reaches the payload. ``by-name``
+        is the branch a platform without descriptor listing takes (Windows).
+        The symlink swap renames the outside folder into place and makes the
+        name answer as a link -- ``ELOOP`` on the descriptor open, a link
+        ``lstat`` by name -- so it needs no symlink privilege."""
+        from kiro_crew.dashboard.handlers import files as files_mod
+
+        monkeypatch.setattr(files_mod, "_PROJECT_TREE_SCANDIR_TAKES_FD", by_descriptor)
+        plain = plain_project
+        (plain / "a").mkdir(parents=True)
+        (plain / "a" / "ordinary.txt").write_text("x")
+        outside = tmp_path / "outside"
+        (outside / "OUTSIDE_FOLDER").mkdir(parents=True)
+        (outside / "OUTSIDE_NAME.txt").write_text("x")
+        swapped = []
+        if swap == "symlink":
+            outside_identity = _identity(outside)
+            real_is_link = files_mod._project_tree_is_link
+
+            def is_link(st) -> bool:
+                return (st.st_dev, st.st_ino) == outside_identity or real_is_link(st)
+
+            monkeypatch.setattr(files_mod, "_project_tree_is_link", is_link)
+            _refuse_link_open(
+                monkeypatch, os.path.join(os.path.realpath(plain), "a"), lambda: bool(swapped)
+            )
+        root = _identity(os.path.realpath(plain))
+        real_scandir = os.scandir
+
+        def swap_in():
+            # Once: teardown's own cleanup lists the root again through this
+            # seam (by path on Windows), and the swap has already happened.
+            if swapped:
+                return
+            os.rename(plain / "a", tmp_path / "a-moved-away")
+            os.rename(outside, plain / "a")
+            swapped.append(True)
+
+        def scandir(path=".", *args, **kwargs):
+            inner = real_scandir(path, *args, **kwargs)
+            if _identity(path) == root:
+                return _Listing(inner, on_close=swap_in)
+            return inner
+
+        monkeypatch.setattr(os, "scandir", scandir)
+        async with TestClient(TestServer(_make_app(str(plain)))) as client:
+            resp = await client.get(f"/api/project/tree?path={plain}")
+            data = await resp.json()
+
+        assert "OUTSIDE_" not in json.dumps(data)
+        assert data["directories"] == ["a"]
+        assert data["truncated"] is False
+        assert data["truncatedDirectories"] == []
+        assert data["unreadableDirectories"] == ["a"]
+
+    def test_a_root_swapped_for_a_link_is_unreadable_not_truncated(
+        self, plain_project, monkeypatch
+    ):
+        """The root is opened ``O_NOFOLLOW`` too, so one swapped for a symlink
+        after the handler resolved it fails with ``ELOOP``. Nothing was listed and
+        no limit was reached: the payload names the root unreadable (``.``), as
+        for any root the walk cannot read, never truncated. The descriptor
+        branch is forced and the ``ELOOP`` comes from a seam, so the case runs
+        on every host."""
+        from kiro_crew.dashboard.handlers import files as files_mod
+
+        monkeypatch.setattr(files_mod, "_PROJECT_TREE_SCANDIR_TAKES_FD", True)
+        monkeypatch.setattr(pinned_fs, "supports_pinned_walk", lambda: True)
+        plain = plain_project
+        (plain / "inside").mkdir(parents=True)
+        _refuse_link_open(monkeypatch, plain)
+
+        result = files_mod._project_tree_walk(str(plain), 50, 1_000)
+
+        assert result["directories"] == [] and result["paths"] == []
+        assert result["truncated"] is False
+        assert result["truncatedDirectories"] == []
+        assert result["unreadableDirectories"] == ["."]
+
+    @pytest.mark.parametrize(
+        ("tag", "is_link"),
+        [(0xA000000C, True), (0xA0000003, True), (0x9000001A, False), (0x80000013, False)],
+        ids=["symlink", "junction", "cloud-placeholder", "dedup"],
+    )
+    def test_only_a_reparse_point_naming_another_path_is_a_link(self, tag, is_link):
+        """A Windows folder can carry a reparse tag and still hold its own
+        contents: a cloud-files placeholder (a OneDrive project), a dedup
+        directory. Only a name surrogate -- a symlink, a junction -- leads to
+        another path; the rest are walked like any folder, not shown as a
+        link with nothing listed beneath it."""
+        import stat
+        from types import SimpleNamespace
+
+        from kiro_crew.dashboard.handlers.files import _project_tree_is_link
+
+        st = SimpleNamespace(st_mode=stat.S_IFDIR | 0o755, st_reparse_tag=tag)
+        assert _project_tree_is_link(st) is is_link
+
+    @pytest.mark.asyncio
+    async def test_the_look_ahead_is_drawn_from_the_scan_budget(
+        self, plain_project, mock_sel, monkeypatch
+    ):
+        """Telling a full folder from a cut one pulls one entry past its share;
+        that entry is counted against the same budget, so however many folders
+        are cut, the walk pulls no more than ``_PROJECT_TREE_SCAN_LIMIT``."""
+        from kiro_crew.dashboard.handlers import files as files_mod
+
+        plain = plain_project
+        for top in range(6):
+            for index in range(20):
+                (plain / f"d{top}").mkdir(parents=True, exist_ok=True)
+                (plain / f"d{top}" / f"{index:02d}.txt").write_text("x")
+        monkeypatch.setattr(files_mod, "_PROJECT_TREE_SCAN_LIMIT", 40)
+        folders = {_identity(os.path.realpath(plain))}
+        folders |= {_identity(os.path.realpath(plain / f"d{top}")) for top in range(6)}
+        pulled = 0
+        real_scandir = os.scandir
+
+        def count(_entry):
+            nonlocal pulled
+            pulled += 1
+
+        def scandir(path=".", *args, **kwargs):
+            inner = real_scandir(path, *args, **kwargs)
+            return _Listing(inner, on_entry=count) if _identity(path) in folders else inner
+
+        monkeypatch.setattr(os, "scandir", scandir)
+        async with TestClient(TestServer(_make_app(str(plain)))) as client:
+            resp = await client.get(f"/api/project/tree?path={plain}")
+            data = await resp.json()
+
+        assert 0 < pulled <= 40
+        assert data["truncated"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_failed_git_listing_falls_back_to_the_bounded_walk(
+        self, repo, mock_sel, monkeypatch
+    ):
+        """A repository whose ``ls-files`` overflows the output cap or the
+        timeout (or a host with no sandbox backend) gets a nonzero return code
+        and falls into the walk, so the walk's bound is what protects it."""
+        from kiro_crew.dashboard.handlers import files as files_mod
+
+        real = files_mod._run_git_bounded
+
+        def overflowing(argv, **kwargs):
+            if "ls-files" in argv:
+                return -9, "", True
+            return real(argv, **kwargs)
+
+        monkeypatch.setattr(files_mod, "_run_git_bounded", overflowing)
+        monkeypatch.setattr(files_mod, "_PROJECT_TREE_MAX_ENTRIES", 2)
+        async with TestClient(TestServer(_make_app(str(repo)))) as client:
+            resp = await client.get(f"/api/project/tree?path={repo}")
+            data = await resp.json()
+
+        assert data["repo"] is False
+        assert data["directories"] == ["src"]
+        assert len(data["paths"]) == 1
+        assert data["truncated"] is True
+        assert ".git" not in json.dumps(data["directories"])
+
+    @pytest.mark.parametrize("layout", ["walk", "git"])
+    @pytest.mark.asyncio
+    async def test_redaction_and_serialization_run_off_the_event_loop(
+        self, layout, plain_project, repo, mock_sel, monkeypatch
+    ):
+        """Redacting every row and serializing the body are linear in the size
+        of the listing, and the tree refetches every 10 s: on the event loop
+        they stall every other request the gateway serves."""
+        from kiro_crew.dashboard.handlers import files as files_mod
+
+        if layout == "walk":
+            project = plain_project
+            (project / "docs").mkdir(parents=True)
+            (project / "docs" / "readme.md").write_text("x")
+        else:
+            project = repo
+        loop_thread = threading.get_ident()
+        threads: dict[str, set[int]] = {"segments": set(), "body": set()}
+        real_segments = files_mod.redact_path_segments
+        real_body = files_mod._project_tree_body
+
+        def segments(path, redactor=None):
+            threads["segments"].add(threading.get_ident())
+            return real_segments(path, redactor)
+
+        def body(result):
+            threads["body"].add(threading.get_ident())
+            return real_body(result)
+
+        monkeypatch.setattr(files_mod, "redact_path_segments", segments)
+        monkeypatch.setattr(files_mod, "_project_tree_body", body)
+        async with TestClient(TestServer(_make_app(str(project)))) as client:
+            resp = await client.get(f"/api/project/tree?path={project}")
+            assert resp.status == 200
+            assert resp.content_type == "application/json"
+            data = await resp.json()
+
+        assert data["repo"] is (layout == "git")
+        assert threads["segments"] and threads["body"]
+        assert loop_thread not in threads["segments"] | threads["body"]
 
     @pytest.mark.asyncio
     async def test_walk_under_cap_keeps_all_files_and_directory_rows(
@@ -748,9 +1396,9 @@ class TestProjectTree:
         """``ls deploy`` shows ``current``: a symlink to a directory is a visible,
         navigable entry, so its folder is NOT hidden-only (hidden-only means every
         entry is one the listing filters out by nature -- dot-directories, the
-        skip set). The walk never follows a link (``followlinks`` is off, against
-        link cycles) and would otherwise yield it as neither a row nor a parent,
-        leaving the folder to read as empty; so the link is listed as a directory
+        skip set). The walk never follows a link (against link cycles), so
+        nothing beneath it would be listed and the folder would read as empty;
+        so the link is listed as a directory
         row of its own and named in ``linkedDirectories``, and nothing beneath it
         is listed. The link is a seam (``_pretend_directory_symlink``) over a real
         directory holding a file, so the assertion runs where symlinks need a
@@ -769,9 +1417,9 @@ class TestProjectTree:
 
         assert data["hiddenOnlyDirectories"] == []
         assert data["linkedDirectories"] == ["linked/current"]
-        # The folder AND the link are rows, in walk order; the link's target is
-        # never walked, so no file beneath it is listed.
-        assert data["directories"] == ["linked", "linked/current", "releases"]
+        # The folder AND the link are rows, in walk (breadth-first) order; the
+        # link's target is never walked, so no file beneath it is listed.
+        assert data["directories"] == ["linked", "releases", "linked/current"]
         assert data["paths"] == ["releases/kept.txt"]
         assert data["unreadableDirectories"] == []
 
@@ -816,11 +1464,10 @@ class TestProjectTree:
     async def test_walk_lists_a_kept_directory_it_could_not_read(
         self, plain_project, mock_sel, monkeypatch
     ):
-        """``os.walk`` skips a subdirectory whose ``scandir`` fails (permission
-        denied) WITHOUT yielding it, so a kept, non-symlink child that cannot be
-        read would leave no trace: its parent has no row beneath it, is not
-        hidden-only (the child is no symlink), and the tree would call the parent
-        an empty folder -- a lie, ``ls`` shows the child. The unreadable directory
+        """A kept, non-symlink child whose ``scandir`` fails (permission denied)
+        must not leave its parent childless: with no row beneath it the parent is
+        not hidden-only (the child is no symlink), and the tree would call the
+        parent an empty folder -- a lie, ``ls`` shows the child. The unreadable directory
         is instead a row of its own, named in ``unreadableDirectories`` so the
         dashboard can report it above the tree, and the parent is not childless
         at all. Its files are never listed: nothing read them. The refusal is a
@@ -847,11 +1494,48 @@ class TestProjectTree:
         assert data["truncated"] is False
 
     @pytest.mark.asyncio
+    async def test_a_listed_child_whose_lstat_fails_is_unreadable_not_truncated(
+        self, plain_project, mock_sel, monkeypatch
+    ):
+        """A folder that is readable but not searchable (mode ``r--``) lists its
+        names, and its subfolders' types come from the listing, yet the ``lstat``
+        that records each subfolder's identity is refused. Such a child is a row
+        nothing read -- unreadable, exactly as when its own ``scandir`` refuses
+        -- and never reported as cut by the item limit: a three-entry tree is
+        not truncated. The refusal is a seam on the identity read, so this runs
+        as root and on Windows too."""
+        from kiro_crew.dashboard.handlers import files as files_mod
+
+        plain = plain_project
+        for child in ("child", "child2"):
+            (plain / "noexec" / child).mkdir(parents=True)
+        (plain / "top.txt").write_text("x")
+        (plain / "noexec" / "f.txt").write_text("x")
+        refused = {_identity(os.path.realpath(plain / "noexec" / c)) for c in ("child", "child2")}
+        real_identity = files_mod._project_tree_identity
+
+        def identity(entry, native):
+            if _identity(native) in refused:
+                raise PermissionError(errno.EACCES, "Permission denied", native)
+            return real_identity(entry, native)
+
+        monkeypatch.setattr(files_mod, "_project_tree_identity", identity)
+        async with TestClient(TestServer(_make_app(str(plain)))) as client:
+            resp = await client.get(f"/api/project/tree?path={plain}")
+            data = await resp.json()
+
+        assert data["directories"] == ["noexec", "noexec/child", "noexec/child2"]
+        assert data["unreadableDirectories"] == ["noexec/child", "noexec/child2"]
+        assert data["truncated"] is False
+        assert data["truncatedDirectories"] == []
+        assert data["paths"] == ["top.txt", "noexec/f.txt"]
+
+    @pytest.mark.asyncio
     async def test_walk_names_an_unreadable_root_instead_of_an_empty_workspace(
         self, plain_project, mock_sel, monkeypatch
     ):
-        """A ``scandir`` failure on the project root itself reaches ``onerror``
-        with the root as its path and the walk then yields nothing, so the payload
+        """A ``scandir`` failure on the project root itself leaves the walk with
+        nothing read, so the payload
         would be ``paths == [] and directories == []`` -- exactly what a workspace
         with no files in it sends, and the dashboard would paint "No files in this
         workspace yet" over a folder nothing ever read: the same "empty" claim the
@@ -1004,9 +1688,9 @@ class TestProjectTree:
         assert data["directories"][0].startswith("[REDACTED: credential]")
         assert data["unreadableDirectories"] == data["directories"]
 
-    def test_truncation_copy_names_the_served_file_cap(self):
+    def test_truncation_copy_names_the_served_row_cap(self):
         """The state row under a truncated folder and the workspace-level notice
-        state the file cap as a literal in every catalog (``10,000``; a payload
+        state the row cap as a literal in every catalog (``10,000``; a payload
         field would be a new contract for one number). Pin each string to
         ``_PROJECT_TREE_MAX_ENTRIES`` so a change to the constant reds every
         locale still naming the old cap, instead of the dashboard stating a
@@ -1098,10 +1782,36 @@ class TestProjectTree:
 
         assert data["repo"] is True
         assert data["truncated"] is True
-        assert len(data["paths"]) == 20
+        # One cap covers files and folder rows; the four folders come first.
+        assert data["directories"] == ["docs", "src", "zz_vendor", "zz_vendor/deep"]
+        assert len(data["paths"]) == 16
         # The point of the fix: every tracked file keeps a row.
         for rel in tracked:
             assert rel in data["paths"], f"{rel} was evicted by the untracked block"
         # ...and the fix does not merely invert the loss: the untracked subtree
         # still spends the remaining budget, so it keeps a row too.
         assert any(p.startswith("zz_vendor/") for p in data["paths"])
+
+    @pytest.mark.asyncio
+    async def test_git_listing_spends_the_same_cap_as_the_walk(self, repo, mock_sel, monkeypatch):
+        """The git branch spends the one cap the walk does: folder rows
+        shallowest first, but never past half the cap while files remain, the
+        root's files first among those -- and a file whose folder lost its row
+        is not listed either. Every shown folder that lost something is named."""
+        from kiro_crew.dashboard.handlers import files as files_mod
+
+        monkeypatch.setattr(files_mod, "_PROJECT_TREE_MAX_ENTRIES", 3)
+        for top in ("p", "q"):
+            nested = repo / top / "deep"
+            nested.mkdir(parents=True)
+            (nested / "f.txt").write_text("x")
+
+        async with TestClient(TestServer(_make_app(str(repo)))) as client:
+            resp = await client.get(f"/api/project/tree?path={repo}")
+            data = await resp.json()
+
+        assert data["repo"] is True
+        assert data["directories"] == ["p"]
+        assert data["paths"] == [".gitignore", "a.txt"]
+        assert data["truncated"] is True
+        assert data["truncatedDirectories"] == ["", "p"]
