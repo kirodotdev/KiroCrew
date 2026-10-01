@@ -366,6 +366,21 @@ unchanged and logs a **one-time loud SECURITY warning**. `RLIMIT_NOFILE` still a
 the fork-bomb and memory ceilings are NOT enforced there. Operators on such hosts should run
 the gateway under an externally-configured cgroup or container limit.
 
+The user session half of that gate belongs to the user's login, not to the gateway process.
+On a host without lingering, logind stops the per-user manager and removes `/run/user/<uid>`
+and `user-<uid>.slice` when the last login session ends, while `XDG_RUNTIME_DIR` stays set in
+the gateway's environment. So `_probe_cgroup_scope` requires a bus socket that accepts a
+non-blocking `connect()` (a stale socket file, or a seccomp/LSM policy refusing the connect,
+is unavailable), and its cached answer is keyed on a stat-only fingerprint of the runtime
+directory, the bus sockets and the user slice, re-checked at every spawn, with a 60-second TTL
+behind it for a manager that died without removing its socket. A gateway that started inside
+an SSH session therefore stops prepending `systemd-run` once the manager is gone, instead of
+failing every spawn with `Failed to connect to bus`, and takes the same no-scope path a
+gateway started after the logout takes; it bounds spawns again once the manager returns. Each
+flip is logged, the loss as a SECURITY warning naming the remedy, `loginctl enable-linger
+$USER`, which keeps the manager and the ceiling across logouts (it needs sudo on a managed
+host such as a Cloud Desktop).
+
 ### macOS: a reaper, not a ceiling
 
 macOS has containment of a different kind and strictly weaker guarantees, so the two must
