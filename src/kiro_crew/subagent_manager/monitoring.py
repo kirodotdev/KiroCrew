@@ -11,6 +11,7 @@ from ..session_map import session_files_resumable
 from ..subagent_persistence import (
     _agent_dir,
     _check_result_available,
+    result_marked_complete,
     subagent_id_from_conversation_key,
 )
 from ._component import ManagerComponent
@@ -124,11 +125,19 @@ def tombstone_recovery_action(agent_id: str, state: dict) -> str:
     ``write_result_chunk`` appends per streamed chunk. The run records
     ``result_complete`` when its stream reaches the complete event, so
     without that flag these bytes are an opening sentence, not an answer.
+
+    That flag lives in ``state.json``, written in a step after the one that
+    finalizes ``result.txt``. A restart landing between the two can find a
+    finished answer on disk with the flag unwritten, which alone would read a
+    whole answer as a fragment. ``result_marked_complete`` reads the durable
+    marker the completion path drops in the SAME step it finalizes ``result.txt``
+    — so either signal is proof the answer is whole, closing the crash window
+    between the result bytes and the flag write.
     """
     has_result = _check_result_available(_agent_dir(agent_id) / "result.txt")
     if not has_result:
         return "notification_pending"
-    if not state.get("result_complete"):
+    if not (state.get("result_complete") or result_marked_complete(agent_id)):
         return "partial_result"
     return "result_available"
 

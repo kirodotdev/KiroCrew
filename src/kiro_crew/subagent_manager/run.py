@@ -92,6 +92,7 @@ if TYPE_CHECKING:
         join_failures,
         kill_set,
         logger,
+        mark_result_complete,
         name_grant,
         permission_pre_tool_block,
         process_survived_async,
@@ -2648,14 +2649,43 @@ class RunEventCoordinator(ManagerComponent):
         # would mark the fragment complete. The explicit ``_complete_event``
         # check is what tells those two apart. Recorded here because this is the
         # only point that knows. Written after cap_result_file so the flag
-        # describes the file as it will be read. A restart landing between the
-        # complete event and this write leaves a finished result unflagged — it
-        # under-claims, which is the safe direction for a signal whose whole
-        # purpose is not to overstate.
+        # describes the file as it will be read.
+        _result_complete = _complete_event is not None and _stop.is_success
+        # Drop the DURABLE completion marker before the state write below. The
+        # ``result_complete`` flag lives in state.json, written in the separate
+        # step that follows; a restart landing in that gap left a finished
+        # answer on disk with the flag never written, and the orphan reconciler
+        # read the whole answer as a fragment "cut off mid-turn". The marker
+        # lands in the SAME step that finalized result.txt (right after
+        # cap_result_file), so the completeness signal cannot lag the bytes it
+        # describes across a crash. The reconciler treats either signal as proof.
+        # Off the loop like the sibling state write below: a network-backed data
+        # home makes the mkdir + temp-file + rename synchronous filesystem work,
+        # which must not run on the gateway's single event loop. Shielded AND
+        # drained on cancellation for the same reason ``_write_state_off_loop``
+        # is: a cancel arriving during the rename must not return control to a
+        # terminal tombstone arm while the marker is still half-written, or that
+        # arm's ``tombstone_recovery_action`` reads a finished answer as a
+        # fragment. Holding the cancel until the worker settles lands the rename
+        # first, so the marker and the result bytes it certifies agree on disk.
+        if _result_complete:
+            _marker_writer = asyncio.ensure_future(asyncio.to_thread(mark_result_complete, info.id))
+            try:
+                await asyncio.shield(_marker_writer)
+            except asyncio.CancelledError:
+                try:
+                    await _marker_writer
+                except BaseException:
+                    pass
+                raise
+        # A restart landing between the complete event and the state write below
+        # still finds the durable marker above, so a finished result stays a
+        # whole result — while a run that never completed writes neither, which
+        # is the safe direction for a signal whose purpose is not to overstate.
         await self._manager._write_state_off_loop(
             info,
             "result complete",
-            result_complete=_complete_event is not None and _stop.is_success,
+            result_complete=_result_complete,
         )
         # Flag whether the completion-event copy will drop content, so the gateway
         # emits a summary + result_path pointer (read on demand) instead of a lossy

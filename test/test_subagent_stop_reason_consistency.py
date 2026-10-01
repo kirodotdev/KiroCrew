@@ -400,6 +400,67 @@ async def test_exhausted_stream_without_complete_is_not_marked_result_complete()
 
 
 @pytest.mark.asyncio
+async def test_successful_completion_drops_the_durable_result_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A successful ``_run_inner`` completion creates the durable marker on disk.
+
+    Pins the production invariant end to end: driving the real
+    ``SubagentManager.spawn`` -> ``_run`` -> ``_run_inner_impl`` path to a clean
+    ``end_turn`` must leave ``result.complete`` beside ``result.txt``, so the
+    orphan reconciler reads the finished answer as whole even when the separate
+    ``state.json`` flag write is lost to a restart. Asserting through the real
+    completion step, not a direct ``mark_result_complete`` call, is what locks
+    the write to the path that must perform it.
+    """
+    import kiro_crew.subagent_persistence as sp
+
+    monkeypatch.setattr(sp, "_SUBAGENTS_DIR", tmp_path / "subagents")
+
+    stream_factory, _calls = _single_turn(STOP_REASON_END_TURN)
+    mgr = _manager(_mock_sessions(stream_factory))
+    info = await _spawn_and_wait(mgr)
+
+    assert info.outcome == "completed"
+    assert info.stop_class == STOP_CLASS_SUCCEEDED and info.partial is False
+    assert sp.result_marked_complete(info.id) is True, (
+        "a clean completion must drop the durable marker through the real run path, "
+        "not only when mark_result_complete is called directly"
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_unfinished_completion_drops_no_result_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The complement: a run that did not finish writes no marker.
+
+    A stream that dies with no ``EVENT_COMPLETE`` takes the non-success branch,
+    so the completion step's ``_result_complete`` is False and no marker is
+    dropped — the safe direction the reconciler relies on to keep a genuine
+    fragment under-claimed.
+    """
+    import kiro_crew.subagent_persistence as sp
+
+    monkeypatch.setattr(sp, "_SUBAGENTS_DIR", tmp_path / "subagents")
+
+    def stream_factory(msg: str, *a, **kw):
+        async def _gen():
+            yield _text("partial output ")
+            # stream dies here: no EVENT_COMPLETE.
+
+        return _gen()
+
+    mgr = _manager(_mock_sessions(stream_factory))
+    info = await _spawn_and_wait(mgr)
+
+    assert sp.result_marked_complete(info.id) is False, (
+        "a run with no complete event must drop no marker, so a genuine fragment "
+        "stays under-claimed"
+    )
+
+
+@pytest.mark.asyncio
 async def test_user_stop_keeps_the_neutral_record_contract():
     """A `cancelled` completion after the user's own Stop is neutral: error unset."""
     mgr_ref: dict = {}
