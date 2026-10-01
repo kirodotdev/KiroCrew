@@ -230,6 +230,39 @@ describe('state rows against the real @pierre/trees widget', () => {
     expect(t.row('empty/').getAttribute('aria-expanded')).toBe('true')
   })
 
+  it('keeps the badge of a truncated folder the widget folds into a chain row', async () => {
+    // The cap fell after `p/a`, so `p` holds one listed subfolder and no file:
+    // the real widget folds the two into one row (`flattenEmptyDirectories`)
+    // whose path names `a`. The badge is `p`'s and must survive the fold.
+    vi.mocked(api.projectTree).mockResolvedValue({
+      root: ROOT,
+      paths: ['README.md'],
+      directories: ['p/', 'p/a/'],
+      truncatedDirectories: ['p'],
+      hiddenOnlyDirectories: [],
+      unreadableDirectories: [],
+      truncated: true,
+      repo: false,
+    })
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const view = render(
+      <QueryClientProvider client={qc}>
+        <PierreWorkspaceTreeImpl projectDir={ROOT} onFileOpen={vi.fn()} />
+      </QueryClientProvider>,
+    )
+    const chainRow = await waitFor(() => {
+      const shadow = view.container.querySelector<HTMLElement>('file-tree-container')?.shadowRoot
+      const rows = Array.from(shadow?.querySelectorAll<HTMLElement>(ROW) ?? [])
+      const row = rows.find(r => r.getAttribute('data-item-path')?.replace(/\/$/, '').endsWith('p/a'))
+      expect(row).toBeTruthy()
+      return row as HTMLElement
+    })
+    // Folded: one row stands for both folders.
+    expect(chainRow.textContent).toContain('p')
+    const badge = chainRow.querySelector('[data-item-section="decoration"]')?.textContent ?? ''
+    expect(badge).toMatch(/some items not shown/i)
+  })
+
   it('lets the truncation badge yield to the state row while the folder is open', async () => {
     const t = await mountTree()
     const badge = () => t.row('big/').querySelector('[data-item-section="decoration"]')?.textContent ?? ''
@@ -240,6 +273,6 @@ describe('state rows against the real @pierre/trees widget', () => {
     await t.click('big/')
     await waitFor(() => expect(t.row('big/').getAttribute('aria-expanded')).toBe('false'))
     expect(t.stateRows().some(r => r.getAttribute('data-item-path')?.startsWith('big/'))).toBe(false)
-    expect(badge()).toMatch(/files not shown/i)
+    expect(badge()).toMatch(/some items not shown/i)
   })
 })

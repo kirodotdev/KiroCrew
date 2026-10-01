@@ -14,7 +14,7 @@ const LABELS = {
   empty: 'Empty folder',
   'hidden-only': 'Contains only hidden items (dotfiles, caches)',
   linked: 'Link to another folder: contents not listed',
-  truncated: 'Files not shown',
+  truncated: 'Not shown',
 } as const
 const M = STATE_ROW_MARKER
 
@@ -36,9 +36,9 @@ describe('planTreeStateRows', () => {
     expect([...plan.paths]).toEqual([
       `empty/Empty folder${M}`,
       `onlyhidden/Contains only hidden items (dotfiles, caches)${M}`,
-      `cut/Files not shown${M}`,
+      `cut/Not shown${M}`,
     ])
-    expect(plan.paths.has(`cut/Files not shown${M}`)).toBe(true)
+    expect(plan.paths.has(`cut/Not shown${M}`)).toBe(true)
     expect(plan.paths.has('src/a.ts')).toBe(false)
     // The folders those rows sit under, for the decoration that must not repeat
     // what the row beneath already says.

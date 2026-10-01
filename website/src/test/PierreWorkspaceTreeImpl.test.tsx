@@ -236,6 +236,55 @@ describe('PierreWorkspaceTreeImpl — data loading', () => {
     expect(treeMock.last().calls.resetPaths).toEqual([['README.md', 'src/a.ts']])
   })
 
+  it('keeps the truncation badge of a folder folded into a chain row', async () => {
+    // `flattenEmptyDirectories` folds `p` -- left holding only `a` once the cap
+    // fell after `p/a` -- into one `p/a` row whose path names its LAST folder.
+    // The truncated `p` is asked through the row's segments, not lost.
+    vi.mocked(api.projectTree).mockResolvedValue(mkTree({
+      paths: ['README.md'],
+      directories: ['p', 'p/a'],
+      truncatedDirectories: ['p'],
+      truncated: true,
+    }))
+    renderTree()
+    await waitForTree()
+    const decorate = treeMock.last().options.renderRowDecoration as (
+      context: { item: MenuItem; row: VisibleRow },
+    ) => { text: string; title?: string } | null
+    const chain = { kind: 'directory', name: 'p/a', path: 'p/a/' } as const
+    const segments = [
+      { isTerminal: false, name: 'p', path: 'p/' },
+      { isTerminal: true, name: 'a', path: 'p/a/' },
+    ]
+    const badge = { text: 'some items not shown', title: 'some items not shown' }
+    // `p/a` itself is childless and carries the empty state row, which speaks
+    // for `a` only: the badge is `p`'s and stays whether the chain is open or not.
+    for (const isExpanded of [false, true]) {
+      expect(decorate({
+        item: chain,
+        row: { ...chain, isExpanded, isFlattened: true, flattenedSegments: segments } as unknown as VisibleRow,
+      })).toEqual(badge)
+    }
+    // An unfolded row is asked about itself alone.
+    expect(decorate({ item: chain, row: { ...chain, isExpanded: false } })).toBeNull()
+  })
+
+  it('names the limit, not an empty workspace, when a truncated payload has no row', async () => {
+    // The server stopped reading before it reached anything it lists -- a root
+    // whose first entries are all hidden folders, say. Nothing is known empty.
+    vi.mocked(api.projectTree).mockResolvedValue(mkTree({
+      paths: [],
+      directories: [],
+      repo: false,
+      truncated: true,
+      truncatedDirectories: [''],
+    }))
+    renderTree()
+    const notice = await screen.findByTestId('workspace-tree-root-truncated')
+    expect(notice).toHaveTextContent('limit of 10,000 items reached')
+    expect(screen.queryByText('No files in this workspace yet')).not.toBeInTheDocument()
+  })
+
   it('keeps explicit directory rows and marks directories whose files were sampled', async () => {
     vi.mocked(api.projectTree).mockResolvedValue(mkTree({
       paths: ['alpha/a.ts'],
@@ -258,16 +307,16 @@ describe('PierreWorkspaceTreeImpl — data loading', () => {
     // it is expanded: no state row of its own says the same thing.
     const late = { kind: 'directory', name: 'late', path: 'late' } as const
     expect(decorate({ item: late, row: { ...late, isExpanded: false } })).toEqual({
-      text: 'files not shown',
-      title: 'files not shown',
+      text: 'some items not shown',
+      title: 'some items not shown',
     })
     expect(decorate({ item: late, row: { ...late, isExpanded: true } })).toEqual({
-      text: 'files not shown',
-      title: 'files not shown',
+      text: 'some items not shown',
+      title: 'some items not shown',
     })
     const alpha = { kind: 'directory', name: 'alpha', path: 'alpha' } as const
     expect(decorate({ item: alpha, row: { ...alpha, isExpanded: true } })).toBeNull()
-    expect(screen.getByText(/all folders remain available/i)).toBeInTheDocument()
+    expect(screen.getByText(/limit of 10,000 items reached/i)).toBeInTheDocument()
   })
 
   it('reports an empty workspace instead of an empty tree', async () => {
@@ -1065,6 +1114,56 @@ describe('PierreWorkspaceTreeImpl — state row under a childless folder', () =>
       expect(decorateLocked()).toMatchObject({ title: MARKER })
     })
 
+    it('keeps a dismissal while a truncated payload merely leaves the folder out', async () => {
+      // A truncated payload is partial knowledge: a remembered folder absent
+      // from it may only have fallen past the row cap, and forgetting it would
+      // re-alert the very folder the user dismissed on the next full listing.
+      vi.mocked(api.projectTree).mockResolvedValue(locked())
+      const { qc } = renderTree()
+      await waitForTree()
+      fireEvent.click(await screen.findByRole('button', { name: DISMISS }))
+      expect(recallDismissedUnreadable(ROOT)).toEqual(['vault/locked'])
+
+      vi.mocked(api.projectTree).mockResolvedValue(locked({
+        directories: ['vault'],
+        unreadableDirectories: [],
+        truncated: true,
+        truncatedDirectories: ['vault'],
+      }))
+      await act(async () => { await qc.refetchQueries({ queryKey: ['project-tree', ROOT] }) })
+      await act(async () => { await Promise.resolve() })
+      expect(recallDismissedUnreadable(ROOT)).toEqual(['vault/locked'])
+
+      // Listed as a readable row, even in a truncated payload: it reads again.
+      vi.mocked(api.projectTree).mockResolvedValue(locked({
+        unreadableDirectories: [],
+        truncated: true,
+        truncatedDirectories: [''],
+      }))
+      await act(async () => { await qc.refetchQueries({ queryKey: ['project-tree', ROOT] }) })
+      await waitFor(() => expect(recallDismissedUnreadable(ROOT)).toEqual([]))
+    })
+
+    it('forgets a dismissal once a truncated payload lists the parent whole without the folder', async () => {
+      // The cut did not reach `vault`: it is listed and not truncated, so a
+      // `vault/locked` missing beneath it is gone, not hidden -- and the same
+      // folder recreated unreadable later must alert again.
+      vi.mocked(api.projectTree).mockResolvedValue(locked())
+      const { qc } = renderTree()
+      await waitForTree()
+      fireEvent.click(await screen.findByRole('button', { name: DISMISS }))
+      expect(recallDismissedUnreadable(ROOT)).toEqual(['vault/locked'])
+
+      vi.mocked(api.projectTree).mockResolvedValue(locked({
+        directories: ['vault', 'other'],
+        unreadableDirectories: [],
+        truncated: true,
+        truncatedDirectories: ['other'],
+      }))
+      await act(async () => { await qc.refetchQueries({ queryKey: ['project-tree', ROOT] }) })
+      await waitFor(() => expect(recallDismissedUnreadable(ROOT)).toEqual([]))
+    })
+
     it('does not forget a dismissal before the listing has answered', async () => {
       // A mount that has not heard from the server yet knows nothing about the
       // folders: pruning against that silence would forget every dismissal on
@@ -1095,7 +1194,7 @@ describe('PierreWorkspaceTreeImpl — state row under a childless folder', () =>
     await waitForTree()
 
     expect(treeMock.last().calls.resetPaths).toEqual([
-      ['README.md', 'big/', `big/Files not shown: file limit of 10,000 reached${M}`],
+      ['README.md', 'big/', `big/Not shown: limit of 10,000 items reached${M}`],
     ])
     // The folder row's badge and the state row beneath it make the same claim,
     // so the badge yields while the row is showing (the folder is expanded) and
@@ -1106,8 +1205,8 @@ describe('PierreWorkspaceTreeImpl — state row under a childless folder', () =>
     const big = { kind: 'directory', name: 'big', path: 'big/' } as const
     expect(decorate({ item: big, row: { ...big, isExpanded: true } })).toBeNull()
     expect(decorate({ item: big, row: { ...big, isExpanded: false } })).toEqual({
-      text: 'files not shown',
-      title: 'files not shown',
+      text: 'some items not shown',
+      title: 'some items not shown',
     })
   })
 
@@ -1666,7 +1765,7 @@ describe('PierreWorkspaceTreeImpl — search forwarding', () => {
     const { update } = renderTree()
     await waitForTree()
     const model = treeMock.last()
-    const bigRow = `big/Files not shown: file limit of 10,000 reached${M}`
+    const bigRow = `big/Not shown: limit of 10,000 items reached${M}`
     expect(model.calls.resetPaths.at(-1)).toEqual(['README.md', 'empty/', 'big/', `empty/Empty folder${M}`, bigRow])
     const decorate = model.options.renderRowDecoration as (
       context: { item: MenuItem; row: VisibleRow },
@@ -1677,7 +1776,7 @@ describe('PierreWorkspaceTreeImpl — search forwarding', () => {
     update({ searchQuery: 'emp' })
     expect(model.calls.resetPaths.at(-1)).toEqual(['README.md', 'empty/', 'big/', `empty/Empty folder${M}`])
     expect(model.calls.search.at(-1)).toBe('emp')
-    expect(decorate({ item: big, row: { ...big, isExpanded: true } })).toMatchObject({ text: 'files not shown' })
+    expect(decorate({ item: big, row: { ...big, isExpanded: true } })).toMatchObject({ text: 'some items not shown' })
 
     // "folder" matches every label and no folder: no row is fed.
     update({ searchQuery: 'folder' })
@@ -1688,7 +1787,7 @@ describe('PierreWorkspaceTreeImpl — search forwarding', () => {
     update({ searchQuery: 'big' })
     expect(model.calls.resetPaths.at(-1)).toEqual(['README.md', 'empty/', 'big/', bigRow])
     expect(decorate({ item: big, row: { ...big, isExpanded: true } })).toBeNull()
-    expect(decorate({ item: big, row: { ...big, isExpanded: false } })).toMatchObject({ text: 'files not shown' })
+    expect(decorate({ item: big, row: { ...big, isExpanded: false } })).toMatchObject({ text: 'some items not shown' })
 
     update({ searchQuery: null })
     expect(model.calls.resetPaths.at(-1)).toEqual(['README.md', 'empty/', 'big/', `empty/Empty folder${M}`, bigRow])

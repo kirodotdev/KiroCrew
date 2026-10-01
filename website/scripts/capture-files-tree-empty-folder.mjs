@@ -1,8 +1,8 @@
 /**
  * Screenshot harness for the workspace tree's STATE ROW under a childless
  * folder (#13054): "Empty folder", "Contains only hidden items (dotfiles,
- * caches)", "Link to another folder: contents not listed", "Files not shown:
- * file limit of 10,000 reached" -- for the truncation badge that yields
+ * caches)", "Link to another folder: contents not listed", "Not shown:
+ * limit of 10,000 items reached" -- for the truncation badge that yields
  * to its own state row while the folder is expanded, for the folder the server
  * could not read (no state row beneath it, a lock marker on its row, and a
  * "Folders not readable" alert with the agent hand-off above the tree that the
@@ -21,7 +21,7 @@
  *
  * Fixture: the reporter's shape. A NON-repository workspace whose `_bg/` holds
  * only a hidden `.kiro/` folder (`hiddenOnlyDirectories`), an `empty/` folder
- * that is empty on disk, a `big/` folder whose files fell to the file cap
+ * that is empty on disk, a `big/` folder whose files fell to the row cap
  * (`truncatedDirectories`), a `vault/` folder whose only entry `locked/` the
  * server could not read (`unreadableDirectories` -- the folder is listed as a
  * row of its own, nothing is claimed beneath it, its row carries the lock
@@ -42,7 +42,7 @@
  *                                  notice until another folder becomes
  *                                  unreadable"
  *   <prefix>-11-bg-collapsed       `_bg` and `big` collapsed again (their rows
- *                                  must go; `big`'s "files not shown" badge is
+ *                                  must go; `big`'s "some items not shown" badge is
  *                                  back on the closed folder; `vault/locked`
  *                                  keeps its marker)
  *   <prefix>-12-filter-active      "b" typed in the rail's filter: `_bg`, `big`
@@ -80,6 +80,13 @@
  *                                  agent hand-off after them and Refresh, in
  *                                  the tree's place, not "No files in this
  *                                  workspace yet"
+ *   <prefix>-32-root-truncated     (post-fix dist only) a truncated payload
+ *                                  with no row: the limit notice stands in the
+ *                                  tree's place, not "No files in this
+ *                                  workspace yet"
+ *   <prefix>-33-chain-truncated    (post-fix dist only) `pkg`, cut after its one
+ *                                  subfolder, folded with it into the `pkg/core`
+ *                                  chain row, which carries `pkg`'s badge
  *   <prefix>-31-root-hidden-only   the server names the project root (`.`) as
  *                                  hidden-only: its top level holds only
  *                                  items the listing hides, so "This workspace
@@ -164,20 +171,46 @@ const TREE_ROOT_HIDDEN_ONLY = {
   hiddenOnlyDirectories: ['.'],
   unreadableDirectories: [],
 }
+// The walk stopped before it reached anything it lists -- a root whose first
+// entries are all hidden folders, cut by the scan budget: no row, `truncated`
+// set, the root named in `truncatedDirectories`. Nothing is known to be empty.
+const TREE_ROOT_TRUNCATED = {
+  root: PROJECT,
+  repo: false,
+  paths: [],
+  directories: [],
+  truncated: true,
+  truncatedDirectories: [''],
+  hiddenOnlyDirectories: [],
+  unreadableDirectories: [],
+}
+// The row cap fell right after `pkg/core`: `pkg` keeps one listed subfolder and
+// no file, so Pierre folds the two into one chain row whose path names `core`.
+// The cut is `pkg`'s, and its badge must survive the fold.
+const TREE_CHAIN_TRUNCATED = {
+  root: PROJECT,
+  repo: false,
+  paths: ['README.md'],
+  directories: ['pkg', 'pkg/core'],
+  truncated: true,
+  truncatedDirectories: ['pkg'],
+  hiddenOnlyDirectories: [],
+  unreadableDirectories: [],
+}
 
 const STATE_LABELS = {
   '_bg/': 'Contains only hidden items (dotfiles, caches)',
   'empty/': 'Empty folder',
-  'big/': 'Files not shown: file limit of 10,000 reached',
+  'big/': 'Not shown: limit of 10,000 items reached',
   // `deploy/` holds only the link, so Pierre's `flattenEmptyDirectories` paints
   // the pair as one row whose path is the terminal directory.
   'deploy/current/': 'Link to another folder: contents not listed',
 }
-// The truncation badge on the folder row. Post-fix it says "files not shown"
+// The truncation badge on the folder row. Post-fix it says "some items not shown"
 // and yields while the folder is expanded (its state row says the same thing);
 // a pre-fix dist paints the old "files hidden" whether the folder is open or
 // not -- the collision with the hidden-only row's vocabulary this PR removes.
-const TRUNCATED_BADGE = EXPECT_STATE_ROWS ? 'files not shown' : 'files hidden'
+const TRUNCATED_BADGE = EXPECT_STATE_ROWS ? 'some items not shown' : 'files hidden'
 // The accessible label of the lock marker on a folder the server could not
 // read: it points at the notice above the tree, which is where the failure is
 // reported, and states no failure of its own.
@@ -245,6 +278,8 @@ async function main() {
       if (treeState === 'fails') return json(route, { error: 'Couldn’t list the workspace.', code: 'project_tree_unavailable' }, 503), true
       if (treeState === 'root-unreadable') return json(route, TREE_ROOT_UNREADABLE), true
       if (treeState === 'root-hidden-only') return json(route, TREE_ROOT_HIDDEN_ONLY), true
+      if (treeState === 'root-truncated') return json(route, TREE_ROOT_TRUNCATED), true
+      if (treeState === 'chain-truncated') return json(route, TREE_CHAIN_TRUNCATED), true
       return json(route, TREE), true
     }
     // Not a repository: the git probes say so and the status query never fires.
@@ -792,6 +827,46 @@ async function main() {
       throw new Error(`frame 31 (pre-fix dist): expected the empty-workspace notice over the hidden-only root, got ${JSON.stringify(hiddenRoot)}`)
     }
     await shot('31-root-hidden-only', [`pre-fix dist: "No files in this workspace yet" painted over a root whose top level holds only skipped or hidden folders (text: ${hiddenRoot.text})`])
+  }
+
+  // ── Frames 32-33: the row cap's own surfaces (post-fix dist only) ───────
+  // A pre-fix dist names a file limit and has no chain-row lookup, so there is
+  // nothing of these two to compare against; both frames are gated on the fix.
+  if (EXPECT_STATE_ROWS) {
+    // Frame 32: a truncated payload with no row says the limit was reached,
+    // never "No files in this workspace yet".
+    treeState = 'root-truncated'
+    await load()
+    await panel().waitFor({ state: 'visible', timeout: 20000 })
+    await page.waitForTimeout(1500)
+    const truncatedRoot = await page.evaluate(() => {
+      const panelEl = document.querySelector('div > .side-panel-strip')?.parentElement
+      const text = (panelEl?.innerText ?? '').replace(/\s+/g, ' ')
+      return {
+        limit: text.includes('Large workspace: limit of 10,000 items reached, some not shown'),
+        marked: !!panelEl?.querySelector('[data-testid="workspace-tree-root-truncated"]'),
+        empty: text.includes('No files in this workspace yet'),
+        tree: !!document.querySelector('file-tree-container'),
+        text: text.slice(0, 200),
+      }
+    })
+    console.log('DIAG root-truncated', JSON.stringify(truncatedRoot))
+    if (!truncatedRoot.limit || !truncatedRoot.marked || truncatedRoot.empty || truncatedRoot.tree) {
+      throw new Error(`frame 32: expected the limit notice in the tree's place, got ${JSON.stringify(truncatedRoot)}`)
+    }
+    await shot('32-root-truncated', [`"Large workspace: limit of 10,000 items reached, some not shown" (data-testid workspace-tree-root-truncated) in the tree's place; no "No files in this workspace yet", no tree mounted (text: ${truncatedRoot.text})`])
+
+    // Frame 33: `pkg` folded into the `pkg/core` chain row keeps its badge.
+    treeState = 'chain-truncated'
+    await load()
+    await panel().waitFor({ state: 'visible', timeout: 20000 })
+    const chain = (await waitRows(r => r.some(x => (x.path ?? '').replace(/\/$/, '') === 'pkg/core'), 'the pkg/core chain row'))
+      .find(x => (x.path ?? '').replace(/\/$/, '') === 'pkg/core')
+    console.log('DIAG chain-truncated', JSON.stringify(chain))
+    if (!chain || chain.badge !== 'some items not shown') {
+      throw new Error(`frame 33: expected the folded pkg/core row to carry "some items not shown", got ${JSON.stringify(chain)}`)
+    }
+    await shot('33-chain-truncated', [`the folded "pkg / core" chain row carries the truncated pkg's "some items not shown" badge (row ${chain.path}, label ${chain.text})`])
   }
 
   console.log('\n── SUMMARY ─────────────────────────────')
