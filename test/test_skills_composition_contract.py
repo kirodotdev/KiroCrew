@@ -120,7 +120,8 @@ _LOADER_MEMBERS = {
         _candidate_layout_ok _catalog_fingerprint_hint _catalog_scope_id
         _catalog_scope_key _catalog_worker_loop _collect_scripts_pinned
         _confined_frontmatter_and_size _create_skill_pinned _delivery_count
-        _exact_read_while_building _get_disabled_app_names _invalidate_iter_cache _iter
+        _exact_read_while_building _get_disabled_app_names _holds_auto_skill_mutation_lock
+        _invalidate_iter_cache _iter
         _iter_uncached _iter_visible _legacy_context _load_catalog_snapshot
         _max_triggered_now _on_config_change _owned_hint _owning_app _pending_root
         _pending_scripts_verdict _pending_scripts_verdict_at _prune_versions _rank_key
@@ -194,6 +195,7 @@ _LOADER_SIGNATURES = {
     "_emit_lazy_load_metric": "(t0: 'float', *, hit: 'bool') -> 'None'",
     "_exact_read_while_building": "(self, key: 'str', only: 'list[str] | None', project_dir: 'str | Path | None', max_bytes: 'int', refusal_reasons: 'list[str] | None' = None) -> 'str | None'",
     "_get_disabled_app_names": "(self) -> 'frozenset[str]'",
+    "_holds_auto_skill_mutation_lock": "(self, name: 'str') -> 'bool'",
     "_invalidate_iter_cache": "(self) -> 'None'",
     "_is_pending_slug_safe": "(slug: 'str') -> 'bool'",
     "_iter": "(self, project_dir: 'str | Path | None' = None) -> 'list[tuple[str, Path, str | None]]'",

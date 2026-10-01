@@ -971,6 +971,128 @@ def test_repeat_restage_after_a_hand_edit_stages_a_new_proposal(loader):
     assert second == "auto/deploy-helper-update-2"
 
 
+@pytest.mark.parametrize("tamper", ["removed", "malformed", "rewritten"])
+def test_approval_fails_closed_when_the_restage_digest_is_tampered(loader, tamper):
+    from kiro_crew.skills import PendingApprovalRefused
+
+    _deploy_live(loader)
+    _pending(loader, "deploy-helper", "deploy helper", "deploy")
+    assert loader.restage_as_update("deploy-helper", "auto/deploy-live")
+    edited = _hand_edit_live(loader)
+    meta_path = loader._pending_root() / "deploy-helper-update" / ".meta.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    if tamper == "removed":
+        del meta["base_digest"]
+    elif tamper == "malformed":
+        meta["base_digest"] = 7
+    else:
+        meta["base_digest"] = "0" * 64
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+
+    diff = loader.preview_pending_update("deploy-helper-update")
+    with pytest.raises(PendingApprovalRefused) as refused:
+        loader.approve_pending_update_checked("deploy-helper-update")
+
+    assert diff is not None and diff["stale_base"] is True
+    assert refused.value.reason == "stale_base"
+    live_md = loader._dir / "auto" / "deploy-live" / "SKILL.md"
+    assert live_md.read_text(encoding="utf-8") == edited
+
+
+def test_approval_fails_closed_when_both_digest_copies_are_gone(loader):
+    from kiro_crew import skills as skills_mod
+    from kiro_crew.skills import PendingApprovalRefused
+
+    _deploy_live(loader)
+    _pending(loader, "deploy-helper", "deploy helper", "deploy")
+    assert loader.restage_as_update("deploy-helper", "auto/deploy-live")
+    skills_mod._restage_base_path(loader, "deploy-live", "deploy-helper-update").unlink()
+    meta_path = loader._pending_root() / "deploy-helper-update" / ".meta.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    del meta["base_digest"]
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+
+    with pytest.raises(PendingApprovalRefused) as refused:
+        loader.approve_pending_update_checked("deploy-helper-update")
+
+    assert refused.value.reason == "stale_base"
+
+
+def test_restage_digest_record_is_removed_with_its_proposal(loader):
+    from kiro_crew import skills as skills_mod
+
+    _deploy_live(loader)
+    _pending(loader, "deploy-helper", "deploy helper", "deploy")
+    _pending(loader, "deploy-other", "deploy helper", "deploy")
+    assert loader.restage_as_update("deploy-helper", "auto/deploy-live")
+    assert loader.restage_as_update("deploy-other", "auto/deploy-live")
+    dismissed = skills_mod._restage_base_path(loader, "deploy-live", "deploy-helper-update")
+    approved = skills_mod._restage_base_path(loader, "deploy-live", "deploy-other-update")
+    assert dismissed.is_file() and approved.is_file()
+
+    assert loader.dismiss_pending_skill("deploy-helper-update")
+    assert loader.approve_pending_update_checked("deploy-other-update") == "auto/deploy-live"
+
+    assert not dismissed.exists()
+    assert not approved.exists()
+
+
+def test_approval_refuses_a_target_rewritten_after_its_lock_was_taken(loader, monkeypatch):
+    from kiro_crew.skills import PendingApprovalRefused
+
+    _deploy_live(loader)
+    assert loader.create_auto_skill(
+        "deploy-other",
+        description="other helper",
+        triggers="other",
+        procedure_md="## Steps\n\nOther.",
+        provenance=_provenance(),
+    )
+    _pending(loader, "deploy-helper", "deploy helper", "deploy")
+    # A crystallize-style update (no restage digest), so only the lock check
+    # can catch the rewrite: both targets sit at the same version.
+    meta_path = loader._pending_root() / "deploy-helper" / ".meta.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta.update(kind="update", target="auto/deploy-live", base_version=1)
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+    other_md = loader._dir / "auto" / "deploy-other" / "SKILL.md"
+    other_before = other_md.read_text(encoding="utf-8")
+    original_read = loader._read_pending_meta
+    reads = {"n": 0}
+
+    def rewrite_after_first_read(slug):
+        meta = original_read(slug)
+        reads["n"] += 1
+        if reads["n"] == 1:
+            rewritten = dict(meta, target="auto/deploy-other")
+            meta_path.write_text(json.dumps(rewritten), encoding="utf-8")
+        return meta
+
+    monkeypatch.setattr(loader, "_read_pending_meta", rewrite_after_first_read)
+
+    with pytest.raises(PendingApprovalRefused) as refused:
+        loader.approve_pending_update_checked("deploy-helper")
+
+    assert refused.value.reason == "stale_base"
+    assert other_md.read_text(encoding="utf-8") == other_before
+
+
+def test_mutation_lock_registry_drops_idle_entries():
+    from kiro_crew.skill_runtime import auto_skills
+
+    class _Loader:
+        _dir = "/tmp/lock-registry-probe"
+
+    before = len(auto_skills._AUTO_MUTATION_LOCKS)
+    for n in range(200):
+        with auto_skills._auto_skill_mutation_lock(_Loader(), f"auto/skill-{n}"):
+            with auto_skills._auto_skill_mutation_lock(_Loader(), f"skill-{n}"):
+                assert auto_skills._holds_auto_skill_mutation_lock(_Loader(), f"skill-{n}")
+        assert not auto_skills._holds_auto_skill_mutation_lock(_Loader(), f"skill-{n}")
+
+    assert len(auto_skills._AUTO_MUTATION_LOCKS) == before
+
+
 @pytest.mark.parametrize("shape", ["too_many", "too_large", "nested"])
 def test_restage_refuses_helpers_over_the_script_caps(loader, monkeypatch, shape):
     from kiro_crew import skills as skills_mod

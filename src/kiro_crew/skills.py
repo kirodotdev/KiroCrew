@@ -158,6 +158,71 @@ def _live_body_digest(body: str) -> str:
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
+_DIGEST_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _restage_base_path(loader: SkillsLoader, target_slug: str, pending_slug: str) -> Path:
+    """Loader-owned record of a restage's live-body digest, outside the candidate.
+
+    ``.meta.json`` is agent-writable, so a digest kept only there can be removed
+    to switch the stale-base check off. This copy lives in the live skill's
+    ``.versions`` directory, which skill discovery skips and no candidate writer
+    or approval path copies from a candidate.
+    """
+    return loader._versions_root(target_slug) / f"restage-{pending_slug}.sha256"
+
+
+def _record_restage_base(
+    loader: SkillsLoader, target_slug: str, pending_slug: str, digest: str
+) -> bool:
+    path = _restage_base_path(loader, target_slug, pending_slug)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(digest, encoding="ascii")
+    except OSError:
+        return False
+    return True
+
+
+def _drop_restage_base(loader: SkillsLoader, target_slug: str, pending_slug: str) -> None:
+    try:
+        _restage_base_path(loader, target_slug, pending_slug).unlink()
+    except OSError:
+        pass
+
+
+def _restage_expected_digest(
+    loader: SkillsLoader, slug: str, target_slug: str, meta: dict
+) -> tuple[bool, str | None]:
+    """Return ``(refuse, expected_digest)`` for an update candidate's base check.
+
+    Fails closed: a recorded digest the candidate's copy disagrees with, a
+    present but malformed ``base_digest``, or a restage whose digest is gone
+    all refuse, because each leaves no trustworthy base to compare against.
+    """
+    path = _restage_base_path(loader, target_slug, slug)
+    try:
+        with path.open("rb") as fh:
+            recorded_raw = fh.read(65)
+    except FileNotFoundError:
+        recorded: str | None = None
+    except OSError:
+        return True, None
+    else:
+        recorded = recorded_raw.decode("ascii", "replace")
+        if not _DIGEST_PATTERN.match(recorded):
+            return True, None
+    raw = meta.get("base_digest")
+    if recorded is not None:
+        return raw != recorded, recorded
+    if "base_digest" in meta:
+        valid = isinstance(raw, str) and bool(_DIGEST_PATTERN.match(raw))
+        return not valid, raw if valid else None
+    if meta.get("restaged_from") is not None:
+        return True, None
+    return False, None
+
+
 # One script-entry population budget for the pending verdict and API reports.
 # Reports may additionally retain ONE fixed truncation-summary entry.
 _PENDING_SCRIPT_MAX_ENTRIES = 64
@@ -3868,6 +3933,10 @@ class SkillsLoader:
         with _auto_skills._auto_skill_mutation_lock(self, name):
             yield
 
+    def _holds_auto_skill_mutation_lock(self, name: str) -> bool:
+        """Whether the calling thread holds ``name``'s mutation lock."""
+        return _auto_skills._holds_auto_skill_mutation_lock(self, name)
+
     def run_skill_lifecycle(
         self,
         *,
@@ -4774,6 +4843,14 @@ class SkillsLoader:
             restaged_from=pending_slug,
             base_digest=base_digest,
         )
+        if replacement_name is None:
+            return None
+        staged_slug = replacement_name.split("/", 1)[1]
+        # Approval trusts this loader-owned copy, not the agent-writable meta;
+        # a proposal whose copy cannot be written is withdrawn, not left unguarded.
+        if not _record_restage_base(self, target_slug, staged_slug, base_digest):
+            self.dismiss_pending_skill(staged_slug)
+            return None
         return replacement_name
 
     def _candidate_layout_ok(self, src: Path, name: str) -> bool:
@@ -5029,7 +5106,7 @@ class SkillsLoader:
             )
         )
         raw_base = meta.get("base_version")
-        raw_digest = meta.get("base_digest")
+        digest_refused, expected_digest = _restage_expected_digest(self, slug, target_slug, meta)
         return {
             "live_body": live_safe,
             "proposed_body": proposed_safe,
@@ -5037,10 +5114,11 @@ class SkillsLoader:
             "from_version": current_version,
             "to_version": current_version + 1,
             "base_version": raw_base,
-            # Same test approval applies: a moved version OR, for a restaged
-            # update, a live body whose digest differs from the recorded one.
+            # Same test approval applies: a moved version, a restage digest that
+            # cannot be trusted, or a live body whose digest moved.
             "stale_base": (isinstance(raw_base, int) and raw_base != current_version)
-            or (isinstance(raw_digest, str) and _live_body_digest(live_body) != raw_digest),
+            or digest_refused
+            or (expected_digest is not None and _live_body_digest(live_body) != expected_digest),
         }
 
     def _resolve_snapshot_version(self, versions_dir: Path, fm_version: int) -> int:
@@ -5094,6 +5172,20 @@ class SkillsLoader:
         target_slug = self._auto_slug_from_name(target)
         if not self._is_pending_slug_safe(target_slug):
             raise PendingApprovalRefused("target_missing")
+        target_name = f"{AUTO_SKILL_NAMESPACE}/{target_slug}"
+        # The wrapper locked the target it read BEFORE this re-read. ``.meta.json``
+        # is agent-writable, so a rewrite in between names a target whose
+        # concurrent edits this approval is NOT serialized against; refuse.
+        if not self._holds_auto_skill_mutation_lock(target_slug):
+            logger.warning("Refusing to approve update %s: target changed while locking", slug)
+            sel().log_tool_invocation(
+                session_key="skills",
+                tool_name="auto_skill_update_approve",
+                tool_kind="permission",
+                outcome="rejected",
+                metadata={"target": target_name, "reason": "target_changed"},
+            )
+            raise PendingApprovalRefused("stale_base")
         live_dir = self._dir / AUTO_SKILL_NAMESPACE / target_slug
         live_skill = live_dir / "SKILL.md"
         if not live_skill.exists():
@@ -5101,7 +5193,6 @@ class SkillsLoader:
                 "Refusing to approve update %s: target %r is not a live auto skill", slug, target
             )
             raise PendingApprovalRefused("target_missing")
-        target_name = f"{AUTO_SKILL_NAMESPACE}/{target_slug}"
         # The LIVE side is a write target here (unlike approve_pending_skill, which
         # moves into a fresh dest), so it needs its own symlink guard: a symlinked
         # ``scripts/`` (or any symlinked entry) would let ``mkdir``/``copy2`` follow
@@ -5169,14 +5260,17 @@ class SkillsLoader:
         # one. The candidate stays pending so it can be dismissed (a fresh
         # proposal will be merged against the new base).
         raw_base = meta.get("base_version")
-        raw_digest = meta.get("base_digest")
         # A restaged update also records the live body's digest: a dashboard
         # edit rewrites the body without bumping ``version``, and approving over
         # it would silently discard that edit. An unreadable live body with a
         # recorded digest cannot be shown unchanged, so it refuses too.
-        digest_moved = isinstance(raw_digest, str) and (
-            (live_now := self.read_auto_skill_body(target_name)) is None
-            or _live_body_digest(live_now) != raw_digest
+        digest_refused, expected_digest = _restage_expected_digest(self, slug, target_slug, meta)
+        digest_moved = digest_refused or (
+            expected_digest is not None
+            and (
+                (live_now := self.read_auto_skill_body(target_name)) is None
+                or _live_body_digest(live_now) != expected_digest
+            )
         )
         if (isinstance(raw_base, int) and raw_base != current_version) or digest_moved:
             # The candidate stays pending so the reviewer can dismiss it, which
@@ -5340,6 +5434,7 @@ class SkillsLoader:
         # this instant keeps its notification (see approve_pending_skill).
         consumed_at = datetime.now(tz=timezone.utc).isoformat()
         shutil.rmtree(src, ignore_errors=True)
+        _drop_restage_base(self, target_slug, slug)
         # (j) Audit the approved update.
         sel().log_tool_invocation(
             session_key="skills",
