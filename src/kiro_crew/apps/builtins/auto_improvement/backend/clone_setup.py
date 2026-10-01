@@ -35,7 +35,11 @@ from kiro_crew.platform_compat import (
     is_link_or_junction,
     rmtree_force,
 )
-from kiro_crew.sandbox import LAUNCHER_EXIT_PREFIXES
+from kiro_crew.sandbox import (
+    _LAUNCHER_SCRIPT_SUFFIX,
+    _SANDBOX_ARTIFACT_PREFIX,
+    LAUNCHER_EXIT_PREFIXES,
+)
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 from ..spine.git_safety import GIT_SAFE_CONFIG, require_pinned
@@ -164,7 +168,20 @@ class IsolationProbeError(RuntimeError):
 #: the one tuple is pinned against the generated launcher by a round-trip test
 #: so it cannot drift silently.
 _LAUNCHER_EXIT_PREFIXES = LAUNCHER_EXIT_PREFIXES
-_LAUNCHER_TRACEBACK_RE = re.compile(r'^\s*File "[^"\n]*kirocrew_sandbox_[^"\n]*\.py"', re.MULTILINE)
+#: Built from ``sandbox``'s own tempfile prefix and suffix rather than repeating them,
+#: for the same reason :data:`_LAUNCHER_EXIT_PREFIXES` is imported: the module that
+#: GENERATES the launcher owns what its filename looks like, and a copy here goes quiet
+#: on a rename -- the classifier stops recognising real launcher deaths and falls back to
+#: the misleading push-isolation refusal this pairing exists to prevent. Escaped because
+#: both values are literal filename text, not pattern syntax.
+_LAUNCHER_TRACEBACK_RE = re.compile(
+    r'^\s*File "[^"\n]*'
+    + re.escape(_SANDBOX_ARTIFACT_PREFIX)
+    + r'[^"\n]*'
+    + re.escape(_LAUNCHER_SCRIPT_SUFFIX)
+    + '"',
+    re.MULTILINE,
+)
 
 
 def _launcher_failure_detail(stderr: str) -> str | None:

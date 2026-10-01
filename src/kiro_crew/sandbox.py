@@ -93,6 +93,13 @@ _LAUNCHER_MAX_AGE_SECONDS = 3600
 #: Artifact families the sweep reclaims, by filename prefix -> accepted
 #: suffixes. Every family tags the writing process's PID after the prefix.
 _SANDBOX_ARTIFACT_PREFIX = "kirocrew_sandbox_"
+#: The two artifacts written under that prefix, each named once. Three readers depend on
+#: these agreeing: the ``mkstemp`` calls that write them, the run-dir sweep's accepted
+#: suffixes below, and ``session_pid``'s managed-agent gate, which imports both to tell
+#: the Linux launcher apart from the macOS seatbelt profile sitting beside it under the
+#: same prefix.
+_LAUNCHER_SCRIPT_SUFFIX = ".py"
+_SEATBELT_PROFILE_SUFFIX = ".sb"
 _PI_GATE_ARTIFACT_PREFIX = "kirocrew_pi_gate_"
 # Named ONCE because two sweeps accept this family: the run dir still holds artifacts
 # written before they moved, and the gate dir holds the current ones. Two spellings could
@@ -100,7 +107,7 @@ _PI_GATE_ARTIFACT_PREFIX = "kirocrew_pi_gate_"
 # artifacts pass through before publication.
 _PI_GATE_ARTIFACT_SUFFIXES: tuple[str, ...] = (".sh", ".cmd", ".ts", ".tmp")
 _RUN_DIR_ARTIFACTS: dict[str, tuple[str, ...]] = {
-    _SANDBOX_ARTIFACT_PREFIX: (".sb", ".py"),
+    _SANDBOX_ARTIFACT_PREFIX: (_SEATBELT_PROFILE_SUFFIX, _LAUNCHER_SCRIPT_SUFFIX),
     # The run sweep accepts pi artifacts as well as sandbox launchers.
     _PI_GATE_ARTIFACT_PREFIX: _PI_GATE_ARTIFACT_SUFFIXES,
 }
@@ -8089,9 +8096,42 @@ def _ssh_supports_accept_new() -> bool:
     return False
 
 
+def namespace_launcher_script_dir() -> str:
+    """The directory :func:`namespace_argv` writes its launcher script into.
+
+    ``<config_dir>/run``, normalized, and named here because two readers need the one
+    answer: :func:`_ensure_run_dir`, which creates it, and ``session_pid``'s
+    managed-agent gate, which has to recognise a launcher path it did not build. Normalized
+    HERE so both sides of that comparison see one spelling: ``mkstemp`` returns an
+    ``abspath`` of its ``dir`` on 3.12+, so an uncollapsed path reaches ``/proc``
+    collapsed anyway. The case that needs it is the DEFAULT home under a ``HOME``
+    containing ``..``; an explicit ``KIROCREW_HOME`` is already ``.resolve()``d by
+    ``config.paths``.
+
+    A function rather than a constant because it reads the live data home, and a NAMED one
+    rather than two spellings of ``config_dir() / "run"`` because the writer and the
+    recogniser have to agree about it exactly. The launcher's other three shape values are
+    plain module constants, so the gate imports those directly instead.
+
+    Deliberately only the PREFERRED spelling. ``_ensure_run_dir`` degrades to the system
+    tmpdir when this directory cannot be created or chmod'd, and that directory is shared
+    with every other user of the host -- accepting it as a launcher location on a KILL
+    path would let a path anyone can write decide which process trees are reclaimable.
+    RESIDUAL, stated rather than closed: on a host where the crew ``run/`` directory
+    cannot be created, a sandboxed agent root is not recognised and its tracking entry is
+    retained instead of reaped, exactly as it was before the gate learned this shape.
+    Closing that needs identity the tmpdir path cannot supply.
+
+    This is also the only part of the launcher's shape that touches the filesystem:
+    ``config_dir()`` creates the data home if it is missing and can raise, so the gate
+    asks for it LAST, after every free test on the command line has already matched.
+    """
+    return os.path.normpath(os.path.abspath(str(config_dir() / "run")))
+
+
 def _ensure_run_dir() -> str:
     """Create ``<config_dir>/run/`` with mode 0o700, falling back to tmpdir on failure."""
-    run_dir = str(config_dir() / "run")
+    run_dir = namespace_launcher_script_dir()
     try:
         os.makedirs(run_dir, mode=0o700, exist_ok=True)
         # exist_ok does not re-apply mode on existing dirs — enforce explicitly.
@@ -8101,6 +8141,10 @@ def _ensure_run_dir() -> str:
         # (needs the execute/traverse bit) and would loosen, not tighten, access.
         os.chmod(run_dir, 0o700)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions  # noqa: E501  # fmt: skip
     except OSError:
+        # ``gettempdir()`` probes candidate directories for writability, so it is called
+        # HERE and not beside the preferred spelling: on a read-only-root container with
+        # no writable tmp it raises, and an eager call would have turned every namespace
+        # and seatbelt spawn into a failure instead of a degraded one.
         logger.warning("Cannot create %s; falling back to system tmpdir", run_dir)
         run_dir = tempfile.gettempdir()
     return run_dir
@@ -8300,8 +8344,14 @@ def namespace_argv(
         crew_home_aliases=_crew_home_alias_roots(),
     )
     run_dir = _ensure_run_dir()
+    # Prefix and suffix from the module constants, not a second spelling of them: the
+    # run-dir sweep reclaims this family by prefix and ``session_pid``'s managed-agent
+    # gate RECOGNISES the launcher by prefix and suffix, so a literal here that drifted
+    # from either would leak the tempfile and cost every sandboxed root its reclaim.
     fd, path = tempfile.mkstemp(
-        suffix=".py", prefix=f"kirocrew_sandbox_{os.getpid()}_", dir=run_dir
+        suffix=_LAUNCHER_SCRIPT_SUFFIX,
+        prefix=f"{_SANDBOX_ARTIFACT_PREFIX}{os.getpid()}_",
+        dir=run_dir,
     )
     os.write(fd, script.encode())
     os.close(fd)
@@ -9019,8 +9069,12 @@ def sandbox_exec_argv(
         extra_expose_files=extra_expose_files,
     )
     run_dir = _ensure_run_dir()
+    # Constants, not a second spelling: the run-dir sweep reclaims this family by prefix
+    # and suffix, and a literal here that drifted from either would leak the profile.
     fd, path = tempfile.mkstemp(
-        suffix=".sb", prefix=f"kirocrew_sandbox_{os.getpid()}_", dir=run_dir
+        suffix=_SEATBELT_PROFILE_SUFFIX,
+        prefix=f"{_SANDBOX_ARTIFACT_PREFIX}{os.getpid()}_",
+        dir=run_dir,
     )
     os.write(fd, profile.encode())
     os.close(fd)
@@ -9241,9 +9295,9 @@ def cleanup_stale_sandbox_profiles(*, data_home: Path, legacy_dir: str | None = 
         try:
             with os.scandir(legacy_dir) as it:
                 for dentry in it:
-                    if not dentry.name.startswith("kirocrew_sandbox_"):
+                    if not dentry.name.startswith(_SANDBOX_ARTIFACT_PREFIX):
                         continue
-                    if not dentry.name.endswith(".py"):
+                    if not dentry.name.endswith(_LAUNCHER_SCRIPT_SUFFIX):
                         continue
                     try:
                         mtime = dentry.stat().st_mtime

@@ -12,6 +12,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from kiro_crew import platform_compat
 from kiro_crew.session_pid import (
     _kill_confirmed_and_writeback,
     _periodic_pid_sweep,
@@ -330,6 +331,145 @@ class TestWriteBackPidFile:
         _write_back_pid_file({"1:100"})
 
         assert session_pid_file.read_text(encoding="utf-8") == ""
+
+
+# ── the sandboxed agent root, through the real argv gate ──
+
+
+class TestSweepKillsASandboxedRoot:
+    """A settled-token launcher root around a harness is KILLED, not retained.
+
+    These drive the real :func:`_is_managed_agent_process` off a faked
+    ``/proc/<pid>/cmdline`` rather than patching the gate out, because the gate's answer
+    is the whole subject: on Linux with the namespace backend the tracked root is
+    ``<interpreter> -I -S <run dir>/kirocrew_sandbox_*.py <harness argv…>``, the
+    launcher's parent, which waitpids its child for the life of the session.
+
+    Both arms matter, and the retain arm is the reason recognition is where the fix
+    belongs. A settled-token entry the argv gate does not recognise is RETAINED -- never
+    killed and never pruned -- because dropping the record would leave the process
+    unfindable by every sweep, and the scope reaper also refuses a scope holding a
+    tracked pid. So an unrecognised agent root is unreclaimable rather than merely
+    spared. Full contract: ``docs/system-specs/modules/session.md`` §Reclaim identity.
+    """
+
+    @staticmethod
+    def _launcher_cmdline(*wrapped: str) -> bytes:
+        """Built from the sandbox module's own constants, never from literals."""
+        import kiro_crew.sandbox as sandbox_mod
+
+        flags = sandbox_mod._LAUNCHER_INTERPRETER_FLAGS
+        script = os.path.join(
+            sandbox_mod.namespace_launcher_script_dir(),
+            f"{sandbox_mod._SANDBOX_ARTIFACT_PREFIX}4242_ab12cd"
+            f"{sandbox_mod._LAUNCHER_SCRIPT_SUFFIX}",
+        )
+        return b"\x00".join(
+            token.encode() for token in ("/usr/bin/python3", *flags, script, *wrapped)
+        )
+
+    _ROOT = 99999
+    _ENTRY = f"1:{_ROOT}:tok"
+
+    def _sweep(
+        self, cmdline: bytes, *, children: "dict[int, bytes] | None" = None
+    ) -> tuple[int, set[str], list[int]]:
+        """One sweep of one settled-token entry, with the REAL argv gate.
+
+        *cmdline* is the root's; *children* maps each descendant pid to its own. Returns
+        ``(killed, pruned entries, signalled pids)``.
+        """
+        from kiro_crew.session_pid import _sweep_pid_entries
+
+        lines = {self._ROOT: cmdline, **(children or {})}
+        signalled: list[int] = []
+
+        with (
+            patch(
+                "kiro_crew.session_pid._pid_cmdline",
+                side_effect=lambda pid, *a, **k: lines.get(pid, b""),
+            ),
+            patch("kiro_crew.session_pid._pid_start_token", return_value="tok"),
+            patch(
+                "kiro_crew.session_pid.platform_compat.pid_liveness",
+                return_value=platform_compat.PID_ALIVE,
+            ),
+            patch("kiro_crew.session_pid._pid_in_spawn_grace", return_value=False),
+            patch(
+                "kiro_crew.session_pid.platform_compat.kill_pid",
+                side_effect=lambda pid, sig: signalled.append(pid),
+            ),
+            patch("kiro_crew.acp.client._get_child_pids", return_value=list(children or ())),
+            patch("kiro_crew.session_pid._is_our_descendant", return_value=True),
+        ):
+            killed, dead, _ = _sweep_pid_entries(
+                [self._ENTRY],
+                should_skip_tagged=lambda gw, p: False,
+                should_skip_bare=lambda p: False,
+            )
+        return killed, dead, signalled
+
+    def test_a_settled_token_launcher_root_is_reaped(self) -> None:
+        killed, dead, _ = self._sweep(self._launcher_cmdline("/usr/local/bin/kiro-cli", "acp"))
+
+        assert killed == 1, (
+            "the sandboxed agent root was retained instead of killed, which leaks its "
+            "whole kiro-cli runtime for the life of the gateway"
+        )
+        assert self._ENTRY in dead
+
+    def test_the_launcher_and_the_harness_under_it_are_both_signalled(self) -> None:
+        """The real tree is two processes, and both are the gate's to recognise.
+
+        ``launcher -> kiro-cli`` is what the namespace backend produces. The launcher's
+        own command line is recognised by stepping over the wrapper; the child's is the
+        plain harness argv. Both ends of the tree must be signalled, which is why this
+        asserts the SET of signalled pids and not a count.
+
+        RESIDUAL: ``_kill_pid_tree`` kills the children first and then re-checks the root.
+        A launcher that has already reaped its child and exited by then is a zombie, whose
+        ``/proc/<pid>/cmdline`` is EMPTY, so the gate declines and the root kill is skipped
+        for that pass. The entry is retained (the pid still probes alive), the next pass
+        finds it DEAD and prunes it, so the cost is one extra pass rather than a lost
+        process -- see ``test_a_zombie_launcher_root_is_retained_rather_than_pruned``.
+        """
+        harness = 99998
+        killed, dead, signalled = self._sweep(
+            self._launcher_cmdline("/usr/local/bin/kiro-cli", "acp"),
+            children={harness: b"/usr/local/bin/kiro-cli\x00acp"},
+        )
+
+        assert set(signalled) == {
+            self._ROOT,
+            harness,
+        }, f"the whole sandboxed tree must be signalled, not just one end of it: {signalled}"
+        assert killed == 2
+        assert self._ENTRY in dead
+
+    def test_a_zombie_launcher_root_is_retained_rather_than_pruned(self) -> None:
+        """An empty cmdline is "unknown", and the settled token keeps the record.
+
+        A launcher that exited but has not been reaped reads as an empty
+        ``/proc/<pid>/cmdline``, which the gate declines. The settled-token arm then
+        RETAINS the entry rather than pruning it, which is what makes the residual above
+        self-healing: the next pass sees a DEAD pid and prunes it. Pruning here would
+        drop the record while the process might still be alive.
+        """
+        killed, dead, signalled = self._sweep(b"")
+
+        assert (killed, dead, signalled) == (0, set(), [])
+
+    def test_a_settled_token_non_harness_root_is_still_only_retained(self) -> None:
+        """The retain arm holds for a pid the gate genuinely does not own.
+
+        Same entry, same settled token, a wrapped argv that is not an agent runtime: no
+        kill, and the record is KEPT so the deferred per-platform identity work can still
+        reach it. Asserting both halves is what shows the gate decides RECOGNITION and
+        not disposal.
+        """
+        killed, dead, signalled = self._sweep(self._launcher_cmdline("/usr/bin/make", "-j4"))
+
+        assert (killed, dead, signalled) == (0, set(), [])
 
 
 # ── _periodic_pid_sweep ──

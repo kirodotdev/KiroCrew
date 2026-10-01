@@ -359,7 +359,12 @@ merely counted (`RuntimeReconciler._why_not_yet`, `_reconcile_unowned`):
    guard asked here at the decision point). Most of the unowned population carries
    the inherited spawn marker and is not a harness — a Playwright chromium tree, an
    `mcp start-server` broker, a sandbox shim, another install's interpreter — and
-   the seam declines every one. Asked here they are withheld by name; asked only
+   the seam declines every one. A sandbox shim is declined for what it WRAPS, not
+   for being a shim: on Linux the namespace launcher is the pid a real agent runtime
+   is tracked under, so the gate steps over the launcher and asks its positional
+   rules of the wrapped argv (see [session.md](session.md) §Reclaim identity) — a
+   launcher around an MCP probe or an app backend still answers "not a harness", and
+   one around `kiro-cli` answers that it is. Asked here they are withheld by name; asked only
    inside the seam, each first collects a gate allow and the attribution that allow
    writes. The seam still re-applies it last, because a pid can change hands
    between the two answers;

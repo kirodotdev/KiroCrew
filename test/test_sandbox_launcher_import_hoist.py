@@ -28,6 +28,7 @@ calls ``os.getuid()``, absent on Windows.
 from __future__ import annotations
 
 import ast
+import os
 import sys
 
 import pytest
@@ -151,11 +152,14 @@ def test_probe_failure_markers_round_trip_against_the_launcher(level: str) -> No
     the list has drifted and real launcher deaths fall back to the misleading
     push-isolation refusal this pairing exists to prevent.
     """
-    import inspect
-
-    import kiro_crew.sandbox as sandbox_mod
     from kiro_crew.apps.builtins.auto_improvement.backend.clone_setup import (
         _LAUNCHER_EXIT_PREFIXES,
+        _LAUNCHER_TRACEBACK_RE,
+    )
+    from kiro_crew.sandbox import (
+        _LAUNCHER_SCRIPT_SUFFIX,
+        _SANDBOX_ARTIFACT_PREFIX,
+        namespace_launcher_script_dir,
     )
 
     script = _build_launcher_script(level)
@@ -164,8 +168,23 @@ def test_probe_failure_markers_round_trip_against_the_launcher(level: str) -> No
             f"probe marker {prefix!r} no longer appears in the generated launcher — "
             "update clone_setup._LAUNCHER_EXIT_PREFIXES together with the launcher"
         )
-    # The traceback-frame marker keys on the launcher's on-disk filename prefix.
-    assert 'prefix=f"kirocrew_sandbox_' in inspect.getsource(sandbox_mod), (
-        "the launcher's tempfile prefix changed — update the traceback regex in "
-        "clone_setup (_LAUNCHER_TRACEBACK_RE) to match"
+    # The traceback-frame marker keys on the launcher's on-disk filename, so this is a
+    # ROUND TRIP against a frame built from the two constants ``namespace_argv``'s
+    # ``mkstemp`` is passed -- never a pin on how ``sandbox.py`` spells that call, which
+    # would fail on any refactor of the writer while real drift went unnoticed.
+    launcher_path = os.path.join(
+        namespace_launcher_script_dir(),
+        f"{_SANDBOX_ARTIFACT_PREFIX}4242_ab12cd{_LAUNCHER_SCRIPT_SUFFIX}",
     )
+    frame = f'  File "{launcher_path}", line 1, in <module>'
+    assert _LAUNCHER_TRACEBACK_RE.search(frame) is not None, (
+        "the launcher's tempfile name no longer matches the traceback regex in "
+        f"clone_setup (_LAUNCHER_TRACEBACK_RE); frame was {frame!r}"
+    )
+    # And it is still a TRACEBACK-frame match, not a bare substring: a repository may
+    # legally be named after the prefix, which puts it in a clone path git echoes.
+    assert _LAUNCHER_TRACEBACK_RE.search(f"fatal: could not read {launcher_path}") is None
+    # The regex is keyed on THAT prefix and not on any crew-looking name, so a frame from
+    # a differently-named file is not classified as a launcher death.
+    other = launcher_path.replace(_SANDBOX_ARTIFACT_PREFIX, "kirocrew_other_")
+    assert _LAUNCHER_TRACEBACK_RE.search(f'  File "{other}", line 1, in <module>') is None

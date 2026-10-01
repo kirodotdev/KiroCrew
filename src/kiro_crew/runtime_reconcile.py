@@ -52,7 +52,11 @@ leaves the process alone and merely counted:
    recycle guard asked HERE, at the decision point, rather than only inside the
    seam. A sandbox shim, an ``mcp start-server`` broker and a sibling install's
    python interpreter all reach this point carrying our inherited marker, and the
-   seam declines every one of them. Asked here, they are withheld by name; asked
+   seam declines every one of them -- a shim for what it WRAPS, not for being a shim:
+   Crew's Linux namespace launcher is the pid a real agent runtime is tracked under, so
+   the gate steps over it and asks the wrapped argv, which answers "harness" for
+   ``kiro-cli`` and "not a harness" for an MCP probe or an app backend. Asked here, they
+   are withheld by name; asked
    only inside the seam, each one first collects an ownership-gate allow and the
    kill attribution that allow writes -- 3151 attribution lines for 181 pids
    against 4 real kills, measured over 6.5 hours on one host;
@@ -178,7 +182,10 @@ class ReconcileReading:
     owned_dead: int = 0
     #: Live pids inside our own agent slice that no record claims, EXCEPT those
     #: :meth:`RuntimeReconciler._unowned` excludes: a pid marked as sandboxed tool
-    #: work whose argv0 is not a managed harness. So this is the unclaimed population
+    #: work whose command line does not name a managed harness -- which, for Crew's own
+    #: Linux namespace launcher, is decided by the argv it WRAPS, so a leaked launcher
+    #: around a harness is counted here and one around an MCP probe is not. So this is
+    #: the unclaimed population
     #: this arm can act on, which is what makes it the number to read beside
     #: ``would_kill``. ``resource_status.slice_ownership`` publishes a field of the
     #: same name computed as every unclaimed slice pid, so on a host doing long-lived
@@ -529,7 +536,10 @@ def process_is_a_managed_agent(pid: int) -> bool:
     What asking it HERE changes is who gets recorded. The unowned population is
     dominated by processes that carry our inherited spawn marker and are not
     harnesses at all -- a Playwright chromium tree, an ``mcp start-server`` broker, a
-    sandbox shim, another install's python interpreter. Every one of them satisfies
+    sandbox shim around something that is not a runtime, another install's python
+    interpreter. (A shim around ``kiro-cli`` IS one: the gate steps over Crew's own
+    namespace launcher and asks the wrapped argv, because on Linux that launcher is the
+    pid an agent runtime is tracked under.) Every one of them satisfies
     the other four local conditions, so without this one each would collect an
     ownership-gate allow and have the gate write a kill attribution naming a process
     the seam declines to touch.

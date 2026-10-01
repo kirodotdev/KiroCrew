@@ -472,6 +472,189 @@ def _argv_tokens(cmdline: bytes) -> list[bytes]:
     return cmdline.split()
 
 
+# The CPython executable, as ``sandbox.namespace_argv`` spells it in argv0 of the
+# launcher it builds: ``sys.executable``, so whatever interpreter the GATEWAY itself
+# runs under -- ``python``, ``python3`` or ``python3.<minor>``. Matched as a PREFIX of
+# the lowercased basename because the minor version is open-ended, and the direction of
+# that looseness is the safe one: it cannot admit a command line on its own, since the
+# launcher flags and the generated script name still have to be in their exact
+# positions, and a host whose interpreter is named something else entirely (a renamed or
+# embedded build) costs a MISSED reclaim rather than a signal to a process Crew never
+# spawned.
+_LAUNCHER_INTERPRETER_NAME_PREFIX = b"python"
+
+
+def _sandbox_launcher_wrapped_argv(tokens: list[bytes]) -> list[bytes] | None:
+    """The argv Crew's own Linux sandbox launcher was asked to RUN, or ``None``.
+
+    When the namespace backend is in use -- ``sandbox.detect_backend() == "namespace"``,
+    which is what the shipped ``auto`` resolves to on any Linux host whose kernel allows
+    an unprivileged user namespace -- the pid the gateway tracks for an agent is NOT the
+    harness. ``sandbox.namespace_argv`` wraps the spawn as
+
+        ``<interpreter> -I -S <run dir>/kirocrew_sandbox_<pid>_<rand>.py <harness argv…>``
+
+    and the launcher's parent never execs: it writes the child's uid/gid maps and then
+    blocks in ``waitpid`` for the life of the session (``sandbox_launcher.main``). So the
+    gate's ``argv[0]`` is the interpreter and the harness sits past the script, out of
+    reach of :func:`_harness_naming_tokens`'s two positions.
+
+    Recognising it is not optional, because an unrecognised agent root is UNRECLAIMABLE
+    rather than spared: :func:`_sweep_pid_entries` RETAINS a settled-token entry the argv
+    gate does not recognise (dropping the record would leave the process unfindable by
+    every sweep) and the scope reaper refuses a scope holding a tracked pid, so for as
+    long as the OWNING GATEWAY lives nothing reaches the kiro-cli runtime under it.
+    :func:`cleanup_orphaned_session_roots` applies this same gate, so a restart does not
+    clear it either; what ends the leak is the launcher REPARENTING when its gateway
+    dies, which moves it into the orphan-MCP sweep's population
+    (:func:`_is_orphan_mcp` accepts it on :data:`_SANDBOX_LAUNCHER_MARKER`). A gateway
+    that stays up holds the whole runtime for its own lifetime.
+
+    Recognition is POSITIVE and names exactly the one shape ``namespace_argv`` emits.
+    Five things must all hold, and the first four are what keep an arbitrary Python
+    process out of a KILL path:
+
+    * ``argv[0]``'s basename is a CPython spelling
+      (:data:`_LAUNCHER_INTERPRETER_NAME_PREFIX`);
+    * the launcher's interpreter flags occupy the next positions EXACTLY, in order;
+    * that token's basename carries the prefix AND the suffix ``sandbox.py`` generates
+      its launcher tempfile with -- the suffix because the ``.sb`` seatbelt profile is
+      written beside it under the same prefix;
+    * its DIRECTORY is the one ``namespace_argv`` writes launchers into;
+    * at least one token follows, which is the wrapped argv.
+
+    Every one of those values comes from the ``sandbox`` module rather than being spelled
+    again here -- the three constants through :func:`_namespace_launcher_shape`, the
+    directory through :func:`sandbox.namespace_launcher_script_dir` -- so adding a flag,
+    moving the run directory or renaming the artifact moves this recogniser's idea of the
+    script slot with the builder's instead of silently handing a flag token to the name
+    test.
+
+    A plain ``python foo.py kiro-cli`` fails three of the five, which is the point: the
+    wrapped slot is only consulted for a command line that already presents Crew's own
+    generated launcher, in Crew's own directory, in Crew's own position for it.
+
+    The directory comparison is EXACT and lexical in both directions, because
+    ``namespace_argv`` hands ``mkstemp`` an already-normalized directory and ``mkstemp``
+    returns ``os.path.join`` of it. Normalizing the token instead would widen what a kill
+    path accepts, to ``run/../run`` and to a relative spelling resolved against the
+    SWEEPING gateway's cwd rather than anything the target process named.
+
+    ORDER IS DELIBERATE, and it is about cost and about blast radius. The free tests on
+    the command line run first and the FILESYSTEM-touching one runs last: resolving the
+    launcher directory goes through ``config_dir()``, which creates the data home if it
+    is missing and can raise, and this function is called once per tracked entry by every
+    sweep. An ordinary ``kiro-cli`` argv, which is the common case, now answers without
+    reaching it at all.
+
+    AND IT NEVER RAISES. Returning ``None`` means "not the launcher", which costs a
+    missed reclaim; propagating would abort the whole sweep for every remaining entry,
+    and ``cleanup_orphaned_session_roots``'s caller swallows the error without a
+    per-entry guard, so one unreadable data home would silently stop reclaiming
+    anything. The broad ``except`` is therefore the fail-safe direction, not a widening:
+    the only thing it can do is decline to recognise.
+
+    ONE unwrap, not a loop. A launcher inside a launcher is not merely something Crew
+    declines to build: the launcher's own seccomp-BPF filter DENIES ``unshare`` (and
+    ``mount``/``umount2``/``setns``/``pivot_root``) for everything in the sandboxed tree,
+    and refuses the spawn outright on an architecture where that filter cannot be
+    installed -- so a second launcher inside the first cannot reach its own namespace at
+    all. ``wrap_argv`` detecting the in-sandbox marker and passing through is the layer
+    above that. Accepting the nested shape would therefore be authority granted for one
+    the OS already makes impossible.
+    """
+    if len(tokens) < 3:
+        return None
+    if not _basename_of(tokens[0]).lower().startswith(_LAUNCHER_INTERPRETER_NAME_PREFIX):
+        return None
+    try:
+        flags, script_prefix, script_suffix = _namespace_launcher_shape()
+        script_index = 1 + len(flags)
+        if len(tokens) < script_index + 2:
+            return None
+        if tuple(tokens[1:script_index]) != flags:
+            return None
+        # ONE split for both halves. Taking the name from ``_basename_of`` (which also
+        # splits on ``\``, for a Windows argv0 carried whole into an exact-name test) and
+        # the directory from ``os.path.dirname`` (which on POSIX splits only on ``/``)
+        # let ``<run dir>/zz\kirocrew_sandbox_1.py`` satisfy both at once, though the
+        # real file name there starts with ``zz``.
+        directory, name = os.path.split(tokens[script_index])
+        if not name.startswith(script_prefix) or not name.endswith(script_suffix):
+            return None
+        # Last, because this is the one part that touches the filesystem. The TOKEN is
+        # compared as the writer spelled it, with no normalization of its own: the writer
+        # hands ``mkstemp`` an already-normalized ABSOLUTE directory, so the only spelling
+        # this accepts is the one it produces. Normalizing here would additionally admit
+        # ``run/../run`` and a trailing separator, and would resolve a RELATIVE token
+        # against the SWEEPING gateway's cwd -- so ``run/kirocrew_sandbox_1.py`` would
+        # match whenever that cwd happened to be the data home, naming a path the target
+        # process never did.
+        if directory != _namespace_launcher_script_dir():
+            return None
+        return tokens[script_index + 1 :]
+    except Exception:
+        # WARNING, not debug: the only way here is the launcher shape being unreadable,
+        # which means ``config_dir()`` is failing, and the visible consequence is that
+        # every sandboxed agent root silently stops being reclaimable. Bounded by the
+        # tracked entries one sweep examines, the same way the identity-mismatch warnings
+        # on this path are.
+        logger.warning(
+            "managed-agent gate: could not read the sandbox launcher shape; treating "
+            "the command line as not-the-launcher, so a sandboxed agent root will not "
+            "be reclaimed this pass",
+            exc_info=True,
+        )
+        return None
+
+
+def _namespace_launcher_shape() -> tuple[tuple[bytes, ...], bytes, bytes]:
+    """``sandbox``'s launcher-shape constants, in the bytes domain this module reads in.
+
+    The flags, the artifact prefix and the launcher's suffix, read off the module that
+    GENERATES the launcher rather than spelled again here, so adding a flag or renaming
+    the artifact moves this recogniser's idea of the script slot with the builder's.
+    ``clone_setup`` reads the same two name constants the same way.
+
+    Read through the module object, not bound at import, so a test that repoints any of
+    them gets its own back -- and imported inside the call, for a reason that is not
+    import weight: ``acp.runtime`` already imports ``sandbox`` at module scope, so by the
+    time any sweep runs this is a ``sys.modules`` hit. It is that ``session_pid`` is the
+    pid bookkeeping leaf, and a module-scope import would make
+    ``import kiro_crew.session_pid`` fail for anything that goes wrong in ``sandbox``'s
+    own import graph. That has cost this repository a whole test RUN before: an
+    import-time assertion in ``sandbox`` made every backend test fail at COLLECTION
+    rather than in one test. A gate that must never raise should not be reachable only
+    through an import that can.
+    """
+    from kiro_crew import sandbox
+
+    return (
+        tuple(flag.encode() for flag in sandbox._LAUNCHER_INTERPRETER_FLAGS),
+        sandbox._SANDBOX_ARTIFACT_PREFIX.encode(),
+        sandbox._LAUNCHER_SCRIPT_SUFFIX.encode(),
+    )
+
+
+def _namespace_launcher_script_dir() -> bytes:
+    """:func:`sandbox.namespace_launcher_script_dir`, encoded.
+
+    Already normalized there, which is what lets the comparison against a ``/proc`` token
+    be exact: ``namespace_argv`` hands that same value to ``mkstemp``, so an uncollapsed
+    data home is collapsed on the WRITER's side and both sides agree without this one
+    touching the spelling at all. The case that needs it is the DEFAULT home under a
+    ``HOME`` containing ``..`` — an explicit ``KIROCREW_HOME`` arrives already clean,
+    because ``config.paths._valid_override_home`` calls ``.resolve()`` on it.
+
+    ``os.fsencode``, not ``str.encode``: a data home whose path is not valid UTF-8
+    reaches Python as surrogate escapes, and only ``fsencode`` turns those back into the
+    bytes ``/proc/<pid>/cmdline`` actually holds.
+    """
+    from kiro_crew import sandbox
+
+    return os.fsencode(sandbox.namespace_launcher_script_dir())
+
+
 def _harness_naming_tokens(cmdline: bytes) -> list[bytes]:
     """The argv tokens whose basename is allowed to name a harness.
 
@@ -499,10 +682,21 @@ def _harness_naming_tokens(cmdline: bytes) -> list[bytes]:
     editor opened on a file called ``dsh`` would otherwise be answered "this is a harness"
     -- and on the reclaim path that answer authorizes a SIGKILL of a PID this gateway never
     spawned.
+
+    Both positions are taken on the WRAPPED argv when the command line is Crew's own
+    Linux sandbox launcher (:func:`_sandbox_launcher_wrapped_argv`), because there the
+    kernel execed the launcher and the harness is what the launcher was handed. The two
+    rules above then apply unchanged to that inner argv -- including the Node script
+    slot, so a sandboxed bespoke adapter is recognised the same way an unsandboxed one
+    is. Stepping over the wrapper is the ONLY thing that changes; nothing about which
+    inner position may name a harness is relaxed to pay for it.
     """
     tokens = _argv_tokens(cmdline)
     if not tokens:
         return []
+    wrapped = _sandbox_launcher_wrapped_argv(tokens)
+    if wrapped is not None:
+        tokens = wrapped
     naming = [tokens[0]]
     if (
         _basename_of(tokens[0]) in _HARNESS_INTERPRETERS
@@ -3410,6 +3604,14 @@ _PID_VANISHED_ERRORS = (
     subprocess.CalledProcessError,
 )
 
+#: Must track :data:`kiro_crew.sandbox._SANDBOX_ARTIFACT_PREFIX`. Spelled as a literal
+#: rather than read through the accessor the managed-agent gate uses, because the tuple
+#: below is a MODULE CONSTANT and reading it here would put a ``sandbox`` import at
+#: ``session_pid`` import time -- the one thing :func:`_namespace_launcher_shape` exists
+#: to avoid. Same trade :data:`_BROWSER_SESSION_ENV` makes, and pinned the same way, by
+#: ``test_the_mcp_marker_tracks_the_sandbox_artifact_prefix``.
+_SANDBOX_LAUNCHER_MARKER = b"kirocrew_sandbox_"
+
 # Entrypoints that positively identify a KiroCrew-spawned MCP/worker process.
 # Each marker MUST be unique to a process KiroCrew itself launches — the sweep
 # SIGKILLs any user-owned orphan that matches, so a marker naming a server the
@@ -3418,7 +3620,7 @@ _PID_VANISHED_ERRORS = (
 # fork never spawns that server (the CPP companion contributes it, not the
 # core), so that marker is deliberately omitted here.
 _MCP_ENTRYPOINT_MARKERS = (
-    b"kirocrew_sandbox_",  # sandbox wrapper script (session-spawned)
+    _SANDBOX_LAUNCHER_MARKER,  # sandbox wrapper script (session-spawned)
     b"kiro_crew.mcp_gateway.stub",  # gateway pool worker (not gatewayd itself)
 )
 
@@ -4487,6 +4689,18 @@ def _is_untracked_managed_agent_orphan(pid: int, cmdline: bytes, tracked_pids: s
     (:func:`_tracked_agent_pids`). Peer gateways and CLIs
     (:data:`_GATEWAY_MARKERS`) are excluded: they are not agent runtimes and
     are never tracked as such.
+
+    ARGV0 ONLY, deliberately, and NOT :func:`_cmdline_names_a_harness` — which means this
+    predicate does not recognise Crew's own Linux sandbox launcher even though
+    :func:`_is_managed_agent_process` does. The asymmetry is the point, because the
+    question here is different: not "is this a managed runtime" but "is this one NO
+    REAPER CAN REACH". An orphaned launcher is reached — its command line carries
+    :data:`_SANDBOX_LAUNCHER_MARKER`, so :func:`_is_orphan_mcp` accepts it and the
+    orphan-MCP sweep kills it on the same pass. Recognising it here would make this arm
+    log "leaked agent runtime, not terminated" about a pid that is already a kill
+    candidate, and inflate ``leaked_untracked`` and ``leaked_rss_bytes`` with it. A
+    launcher whose own parent is still alive is not this predicate's subject either: the
+    caller only iterates reparented pids.
 
     This grants NO kill authority and nothing scheduled terminates on it — a
     hit only logs. The one consumer that can end such a process is the
