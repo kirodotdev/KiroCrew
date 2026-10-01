@@ -26,14 +26,22 @@ missing from a copy here would be a wrong record rather than a slow one. It also
 resolves the unit list through the fold's OWNER, which is what makes the value the
 eager path stores equal to the one a reader would have folded.
 
-WHAT IT DOES NOT DO: push. An advanced fold is not broadcast, and that is a decision
-rather than an omission. A slot fold's ``last_seq`` is the NEWEST unit's own seq by
-contract, and conductor units are folded before worker units -- so a conductor-side change
-on a board with any worker bound leaves that number unmoved, and any client rule that
-orders frames by it would discard the changed value. Pushing correctly needs a monotonic
-per-(slot, fold) revision that reads and frames share, which is a new contract in the read
-path; and there is no consumer yet to need it. So the value is folded here and READ from
-here, and the revision question belongs to the change that adds the reader.
+WHAT IT DOES NOT DO: push THE FOLD. An advanced fold is not broadcast, and that is a
+decision rather than an omission. A slot fold's ``last_seq`` is the NEWEST unit's own seq
+by contract, and conductor units are folded before worker units -- so a conductor-side
+change on a board with any worker bound leaves that number unmoved, and any client rule
+that orders frames by it would discard the changed value. Pushing correctly needs a
+monotonic per-(slot, fold) revision that reads and frames share, which is a new contract
+in the read path; and there is no consumer yet to need it. So the value is folded here and
+READ from here, and the revision question belongs to the change that adds the reader.
+
+WHAT IT DOES PUSH is a DEADLINE, and only one: a conductor's armed work-ledger loop is
+pulled forward when a worker bound to it commits a ``work/recorded`` entry
+(:func:`_push_conductor_wakes`). That carries no value and no frame, so none of the
+revision contract above applies to it -- the conductor's own gate then reads the ledger
+itself, under its own identity, exactly as on a scheduled tick. It rides this drain rather
+than the append because the lookup is a file read and the fire crosses onto the event
+loop, neither of which may sit on a worker's own ``work_report``.
 
 WHAT IT IS NOT. Durable. The memo lives in this process, so a restart folds cold; a
 savepoint for a SLOT fold would be a store of its own, keyed by slot rather than by
@@ -325,9 +333,21 @@ def _run() -> None:
             continue
         batch, closers, taken = _coalesce(first)
         try:
-            _fold_batch(batch, closers)
-        except Exception:  # pragma: no cover - the loop outlives one bad batch
-            _log_exc(logging.WARNING, "crew log eager fold batch failed")
+            try:
+                _fold_batch(batch, closers)
+            except Exception:  # pragma: no cover - the loop outlives one bad batch
+                _log_exc(logging.WARNING, "crew log eager fold batch failed")
+            # The SECOND consumer, and the one the module header said was missing: an
+            # advanced fold is not pushed, but a conductor's armed gate wants to know
+            # its worker wrote. Its own ``try`` rather than a shared one, because the
+            # two consumers are independent -- a fold that raised must not cost the
+            # conductor its wake, and a wake that raised must not look like a fold
+            # failure. Both sit inside the ``finally`` that settles, so neither can
+            # strand :func:`drain`.
+            try:
+                _push_conductor_wakes(batch)
+            except Exception:  # pragma: no cover - the loop outlives one bad batch
+                _log_exc(logging.DEBUG, "crew log conductor wake batch failed")
         finally:
             _settle(taken)
 
@@ -466,6 +486,47 @@ def _outranked_by_a_closer(
     suppressing the report there loses a value the conductor's dashboard was handed.
     """
     return wake.seq <= closed.get(wake.unit_id, 0) and slot == own_slots.get(wake.unit_id)
+
+
+def _push_conductor_wakes(batch: "dict[tuple[str, str], _Wake]") -> None:
+    """Pull the conductor forward for every bound worker that reported in *batch*.
+
+    ON THE WORKER THREAD, never on the writer's. That is the whole reason this lives here
+    rather than beside the append in ``emit``: resolving a binding is a file read and the
+    push crosses onto the event loop, so doing it where the entry is committed would put
+    both on the latency of a worker's own ``work_report``.
+
+    The slot is the UNIT's, from its header -- not ``wake.board``. A ``work/recorded``
+    entry names the CONDUCTOR's board in its own field, which is the fold it belongs to
+    and the wrong end of this lookup: what decides whether to push is whether the WRITER
+    is a bound worker. Asking the binding is also what makes a conductor's own
+    ``work/recorded`` entry push nothing -- a conductor slot has no binding as a worker --
+    without this module having to know what a conductor is.
+
+    DEDUPED by worker slot, because a batch can hold several of one worker's entries and
+    the push is a deadline move: firing twice would arm the same timer twice at delay
+    zero for one tick's worth of news.
+
+    Refusals and absences are the callee's to log. Nothing here retries: the conductor's
+    scheduled tick reads the same ledger a cadence later.
+    """
+    # Function-local for the reason ``_projection`` is, and the reason the literal set
+    # above exists: neither the entry-type registry nor the wake path belongs on the
+    # gateway's boot path. ONE authority for the type, though -- a second literal here
+    # would be a thing to keep in step with the first for no gain, since this runs on the
+    # worker thread where an import is free.
+    from kiro_crew.conductor_wake import fire_for_worker_slot_from_thread
+    from kiro_crew.crew_log.entry_types import WORK_ENTRY_TYPE
+
+    seen: set[str] = set()
+    for wake in batch.values():
+        if wake.entry_type != WORK_ENTRY_TYPE:
+            continue
+        slot = _slot_of(wake.unit_id)
+        if not slot or slot in seen:
+            continue
+        seen.add(slot)
+        fire_for_worker_slot_from_thread(slot)
 
 
 def _advance(slot: str, name: str) -> None:

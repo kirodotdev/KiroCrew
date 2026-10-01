@@ -448,20 +448,41 @@ def test_build_serves_the_work_ledger_kind_and_still_refuses_a_stranger():
     assert probes.build("deployment") is None
 
 
-def test_neither_monitor_schema_accepts_watch_yet():
-    """The field is held back until the whole arm chain can land with it.
+def test_both_monitor_schemas_accept_the_work_ledger_watch():
+    """The field the arm chain was waiting for, now that every hop forwards it.
 
-    Pinned as an ABSENCE on purpose. A schema that accepts ``watch`` while no path
-    forwards it is a worse contract than one that rejects it: the caller is told the
-    request was valid and gets an ordinary timer. The field returns in the follow-up
-    that also carries the directive payload, the applier and the authz forward, so
-    main never holds a validate-then-discard parameter between the two.
+    This REPLACES an absence pin. That pin existed because a schema accepting ``watch``
+    while no path forwarded it is a worse contract than one rejecting it -- the caller is
+    told the request was valid and handed an ordinary timer. The payload, the applier and
+    the authz forward all exist now, so the condition it was holding for is met.
+
+    Both schemas, and the same bound on each: a loop must not be updatable into a state
+    the arm would have refused.
     """
     from kiro_crew import validation
 
     for schema in (validation.MONITOR_START_SCHEMA, validation.MONITOR_UPDATE_SCHEMA):
-        assert [f for f in schema.fields if f.name == "watch"] == []
-    assert not hasattr(validation, "_WATCH_WORK_LEDGER")
+        fields = [f for f in schema.fields if f.name == "watch"]
+        assert len(fields) == 1
+        field = fields[0]
+        assert field.required is False, "a loop armed before this field existed must still arm"
+        assert field.allowed == frozenset({validation._WATCH_WORK_LEDGER})
+
+
+def test_the_watch_field_is_spelled_the_same_at_every_layer():
+    """Three modules spell ``work-ledger`` as their own literal; they must agree.
+
+    Each spelling is deliberate and documented at its site: the schema must not import the
+    observation layer to validate a string, the MCP descriptor must not import it to
+    advertise one, and ``probes`` must not import the ledger store to name a kind. What
+    that buys is a clean gateway boot path; what it costs is this test, which is the thing
+    keeping the three equal.
+    """
+    from kiro_crew import probes, validation
+    from kiro_crew.mcp_tools import control
+
+    assert validation._WATCH_WORK_LEDGER == probes.WORK_LEDGER
+    assert control._WATCH_WORK_LEDGER == probes.WORK_LEDGER
 
 
 def test_inference_names_the_sessions_own_ledger_only_when_it_is_asked():
@@ -533,11 +554,42 @@ def test_each_waking_status_produces_one_observation():
         tick = _observe(_probe(), _ctx())
         mine = [o for o in tick.observations if item in o.brief]
         assert len(mine) == 1, status
+        # WAKE, not IMMEDIATE: the kernel delivers an IMMEDIATE alone and masks only
+        # its key, so two reports in one tick would wake twice. The probe's tuning()
+        # sets the coalescing window to zero instead, so every fresh WAKE of the
+        # tick is delivered at once and masked together.
         assert mine[0].severity is irq.Severity.WAKE
         assert f"status={status}" in mine[0].brief
         # Keyed on a content-addressed event id, so the key cannot recur and must
         # NOT be cleared when some other item reports.
         assert mine[0].resets_on is irq.ResetsOn.NEVER
+
+
+def test_two_reports_in_one_tick_deliver_once_and_mask_both():
+    """Two workers report in the same tick: ONE wake carries both, and nothing re-fires.
+
+    The kernel delivers an ``IMMEDIATE`` alone and masks only its own key, so two
+    such observations in one tick would wake for the first and again later for the
+    second -- news the first turn had already read. With ``WAKE`` and the probe's
+    zero coalescing window the kernel folds every fresh wake into one report and
+    masks all of them, so the next tick has nothing to say.
+    """
+    from kiro_crew import irq
+    from kiro_crew.cron_script import Report, Skip
+
+    work_ledger.ensure_conductor(CONDUCTOR, goal="g")
+    first = _create(title="first worker's item")
+    second = _create(title="second worker's item")
+    _report(first, "question", summary="RULING needed on first")
+    _report(second, "blocked", summary="second is blocked")
+
+    with pytest.raises(Report) as delivered:
+        irq.run(_ctx(), _probe())
+    text = str(delivered.value)
+    assert first in text and second in text, "one wake carries both reports"
+
+    with pytest.raises(Skip):
+        irq.run(_ctx(), _probe())
 
 
 def test_a_progress_report_advances_the_epoch_without_waking():

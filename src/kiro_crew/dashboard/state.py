@@ -7441,6 +7441,32 @@ class DashboardState:
         """Check if a slot exists by name."""
         return _registry_for(self).has_slot(self, name)
 
+    def slot_exists(self, name: str) -> bool:
+        """Whether *name* names a session that is open, INCLUDING one still being built.
+
+        The existence question, as opposed to the acquisition one :meth:`get_slot`
+        answers. ``get_slot`` hides an under-construction slot so nobody acquires a
+        half-finished session, and the import path even retracts its slot from
+        ``_slots`` across its async tail while leaving the construction mark set. A
+        caller asking "has this session ENDED" must read both as open: a worker that is
+        rehydrating or resuming has not closed, and treating it as closed would let the
+        work-ledger gate record a permanent "worker gone" for a live worker.
+
+        Two more states are open for the same reason, though no slot object exists for
+        either. A key the last open-tab restore could not READ (``unrestored_slot_keys``)
+        is a session whose metadata read failed transiently, not one proven gone -- the
+        restart-restore snapshot keeps it for exactly that reason. And while a restore is
+        in flight (``restoring_open_slots``), a tab it has not reached yet has no slot, so
+        absence proves nothing about any name until the restore ends.
+        """
+        if _registry_for(self).has_slot(self, name):
+            return True
+        if name in (getattr(self, "_slots_under_construction", None) or ()):
+            return True
+        if name in (getattr(self, "unrestored_slot_keys", None) or ()):
+            return True
+        return bool(getattr(self, "restoring_open_slots", False))
+
     def get_linked_slot(self, session_key: str) -> "_ChatSlot | None":
         """Resolve a Slack link and clean up a stale reverse-index entry."""
         return _registry_for(self).get_linked_slot(self, session_key)

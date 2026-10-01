@@ -8919,6 +8919,19 @@ class GatewayOrchestrator:
 
             return ledger_wake.worker_running(self.dashboard_state, session_key)
 
+        def _worker_slot_closed(session_key: str) -> bool:
+            """Bind the wake gate's "is this worker gone" question to the slot table.
+
+            A second binding rather than a second return value from the one above,
+            because the two answers are read at different strengths: a running worker
+            suppresses a stall wake, a closed one causes it without waiting out the
+            window. The logic is ``ledger_wake.worker_closed``, for the reason its
+            sibling gives -- a closure in this constructor is unreachable from a test.
+            """
+            from kiro_crew import ledger_wake
+
+            return ledger_wake.worker_closed(self.dashboard_state, session_key)
+
         self.autonudge_svc = AutoNudgeService(
             base_dir=data_home(),
             on_fire=_fire,
@@ -8926,6 +8939,7 @@ class GatewayOrchestrator:
             collect_judge_evidence=_collect_judge_evidence,
             emit_judge_notice=_emit_judge_notice,
             worker_running=_worker_slot_running,
+            worker_closed=_worker_slot_closed,
         )
 
         def _monitor_owner_session_id(loop: NudgeLoop) -> str:

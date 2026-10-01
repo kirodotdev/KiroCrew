@@ -47,6 +47,7 @@ from kiro_crew.dashboard.handlers.work_ledger import (
     _find_slot,
     _own_ledger,
     _refuse_if_dirty,
+    _slot_closed,
     _slot_open,
     _slot_running,
     _tail_events,
@@ -321,7 +322,9 @@ async def api_work_ledger_board(request: web.Request) -> web.Response:
         row = item.to_dict()
         row["orphaned"] = work_ledger.is_orphaned(item, conductor_slot_exists=conductor_alive)
         row["stale"] = work_ledger.is_stale(
-            item, worker_running=_slot_running(state, item.worker_session_key or "")
+            item,
+            worker_running=_slot_running(state, item.worker_session_key or ""),
+            worker_closed=_slot_closed(state, item.worker_session_key or ""),
         )
         row["acceptance_concrete"] = work_ledger.is_acceptance_concrete(item.acceptance)
         row["events"] = _mask_events([event.to_dict() for event in event_tails[item.item_id]])

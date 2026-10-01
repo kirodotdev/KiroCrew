@@ -750,6 +750,30 @@ async def test_an_idle_open_worker_past_the_window_is_stale():
 
 
 @pytest.mark.asyncio
+async def test_a_reported_worker_whose_session_closed_is_stale_at_once(monkeypatch):
+    """``stale`` on the ledger read asks the wake gate's resolver whether the worker is
+    gone, so a worker that reported and then closed is flagged on the next read rather
+    than after the window."""
+    ids = await two_by_two()
+    status, _ = await _report(WORKER_A, {"status": "progress", "summary": "half way"})
+    assert status == 200
+    _, body = await _read(CONDUCTOR_A)
+    row = next(r for r in body["items"] if r["item_id"] == ids["item_a"])
+    assert row["stale"] is False
+    seen: list[str] = []
+
+    def _closed(state: Any, key: str) -> bool:
+        seen.append(key)
+        return key == WORKER_A
+
+    monkeypatch.setattr(routes.ledger_wake, "worker_closed", _closed)
+    _, body = await _read(CONDUCTOR_A)
+    row = next(r for r in body["items"] if r["item_id"] == ids["item_a"])
+    assert row["stale"] is True
+    assert WORKER_A in seen
+
+
+@pytest.mark.asyncio
 async def test_a_running_worker_is_never_stale(monkeypatch):
     """The conjunction is the point: silence alone does not flag an item."""
     ids = await two_by_two()

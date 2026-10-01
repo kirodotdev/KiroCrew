@@ -89,6 +89,15 @@ from kiro_crew.validation import (
 
 logger = logging.getLogger(__name__)
 
+#: The one value ``watch`` accepts on ``monitor_start`` / ``monitor_update``, spelled as a
+#: LITERAL for the same reason ``kiro_crew.probes`` and ``kiro_crew.validation`` each spell
+#: it as one: this module builds the model-facing descriptors and must not import the
+#: observation layer to advertise a string. It has to stay equal to
+#: ``validation._WATCH_WORK_LEDGER`` (the schema's own allowed set) and to
+#: ``probes.WORK_LEDGER`` (the kind the service resolves), which
+#: ``test_the_watch_field_is_spelled_the_same_at_every_layer`` pins.
+_WATCH_WORK_LEDGER = "work-ledger"
+
 #: The sentences in the two monitoring descriptors that decide WHICH SIDE has to
 #: justify itself before a supported pull request is armed.
 #: ``monitoring.prefer_structured_arming`` picks one; nothing else in either
@@ -690,6 +699,26 @@ def schemas() -> list[dict[str, Any]]:
                             },
                         },
                     },
+                    "watch": {
+                        "type": "string",
+                        "enum": [_WATCH_WORK_LEDGER],
+                        "description": (
+                            "Optional. Name the SUBJECT this loop observes, for the one "
+                            "subject your instruction cannot name. Pass "
+                            f'"{_WATCH_WORK_LEDGER}" to gate this loop on YOUR OWN work '
+                            "ledger: a cycle where no worker you dispatched said "
+                            "anything you must act on costs no turn, and a worker's "
+                            "report, a worker session closing, or a worker turn ending "
+                            "pulls the next cycle forward to within seconds instead of "
+                            "waiting out interval_secs. For a conductor patrolling "
+                            "dispatched workers this is the field to use, and it lets "
+                            "you set interval_secs in hours -- the timer becomes the "
+                            "liveness fallback, not the delivery path. Omit it and the "
+                            "subject is inferred from `message`, which is how a pull "
+                            "request is named. Gating does not need `gate` as well: "
+                            "naming a watch gates the loop on its own"
+                        ),
+                    },
                 },
                 "required": ["message"],
             },
@@ -822,6 +851,19 @@ def schemas() -> list[dict[str, Any]]:
                                 ),
                             },
                         },
+                    },
+                    "watch": {
+                        "type": "string",
+                        "enum": [_WATCH_WORK_LEDGER],
+                        "description": (
+                            "Optional. Point this loop's observation at YOUR OWN work "
+                            f'ledger by passing "{_WATCH_WORK_LEDGER}", on a loop that '
+                            "was armed as a plain timer -- without tearing it down and "
+                            "losing its cycle count. After it, a cycle where no worker "
+                            "said anything actionable costs no turn, and a worker's "
+                            "report pulls the next cycle forward. Omit it to leave the "
+                            "loop's current subject alone"
+                        ),
                     },
                 },
             },
@@ -1536,6 +1578,9 @@ def monitor_start(name: str, args: dict[str, Any]) -> str:
     # contract test asserts this dict by EXACT equality. The applier reads it
     # with ``.get``, so absent and empty mean the same thing there.
     banner = str(args.get("banner") or "").strip()
+    # The SUBJECT, when the caller names one. Validated by the schema's allowed set, so
+    # anything here is already the one supported kind.
+    watch = str(args.get("watch") or "").strip()
     # The judge brief, bounded HERE rather than at the applier: this is the surface
     # the owner typed it at, so a refusal names the field they can fix. The schema
     # only says the value is an object; these are the bounds on what it may hold.
@@ -1548,13 +1593,22 @@ def monitor_start(name: str, args: dict[str, Any]) -> str:
     # and not in the message is gated, and an ack derived from the message alone
     # would tell its caller the opposite. Scrubbed for the same reason the message
     # above is: the disclosure has to describe the loop that will actually exist.
+    #
+    # ``gate or watch`` mirrors the service's own fold: an explicit watch gates on its
+    # own, so an ack derived from ``gate`` alone would promise a plain re-injection for a
+    # loop that is about to be armed gated. ``slot_key`` is what makes a work-ledger
+    # subject resolvable at all -- a session's key is not in its own prose -- and it is
+    # the BINDING key, the same one the applier passes, so the ack names the subject the
+    # loop will actually carry rather than a second derivation of it.
     gated = (
         autonudge.infer_monitor(
             stored_message,
             time.time(),
             judge=autonudge.scrubbed_judge_spec(judge_spec) if judge_spec else None,
+            watch=watch,
+            slot_key=str(mcp_core._autonudge_binding_key(sk) or ""),
         )
-        if gate
+        if (gate or watch)
         else None
     )
     # Before the payload is built, so the emitted dict is byte-identical to what
@@ -1572,6 +1626,12 @@ def monitor_start(name: str, args: dict[str, Any]) -> str:
     }
     if banner:
         payload["banner"] = banner
+    # CONDITIONAL for the reason ``banner`` and ``judge`` are: a caller that names no
+    # watch must produce the payload shape it produced before this field existed, which
+    # the contract test asserts by exact equality. The applier reads it with ``.get``, so
+    # absent and empty agree there.
+    if watch:
+        payload["watch"] = watch
     # CONDITIONAL for the reason ``banner`` is: a caller that arms no judge must see
     # the payload shape it saw before, which the contract test asserts by exact
     # equality. The applier reads it with ``.get``, so absent and empty agree there.
@@ -2002,13 +2062,19 @@ def monitor_update(name: str, args: dict[str, Any]) -> str:
             patch["judge"] = validate_judge_spec(args["judge"])
         except ValidationError as exc:
             return f"monitor_update: {exc}"
+    # Blank is DROPPED here, unlike ``banner`` and ``judge`` above: there is no "clear the
+    # watch" request to express. Disarming a subject is what ``gate: false`` on a fresh arm
+    # is for, and a loop silently losing its watch through a metadata edit is the "looks
+    # armed, observes nothing" state the service's own fold exists to prevent.
+    if str(args.get("watch") or "").strip():
+        patch["watch"] = str(args["watch"]).strip()
     if not patch:
         mcp_core.sel().log_tool_invocation(
             session_key=sk, source="mcp", tool_name="monitor_update", outcome="noop"
         )
         return (
             "monitor_update: nothing to change — pass at least one of "
-            "message, interval_secs, max_cycles, max_runtime_secs, judge."
+            "message, interval_secs, max_cycles, max_runtime_secs, judge, watch."
         )
     # AFTER the empty-patch no-op so that more specific answer still wins. A
     # retained stop cannot be updated either: ``update_monitor`` answers "not found

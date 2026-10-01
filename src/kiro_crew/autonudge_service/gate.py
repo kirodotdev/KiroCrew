@@ -356,7 +356,8 @@ async def _monitor_tick_is_quiet(self: AutoNudgeService, loop: NudgeLoop) -> boo
     # entirely on any surface where that signal never arrives, and no
     # allowance at all lets a watch go silent while holding half-finished
     # work. Costing one turn per wake is the cheap failure.
-    if monitor.followup_ticks > 0 and not monitor.terminal_pending:
+    pushed = loop.id in (getattr(self, "_pushed_running", None) or ())
+    if monitor.followup_ticks > 0 and not monitor.terminal_pending and not pushed:
         # NOT while a terminal turn is owed. The allowance exists to protect work
         # already in progress, which is why it skips observation -- but a subject
         # with terminal debt is FINISHED, so there is no in-progress work to
@@ -366,6 +367,13 @@ async def _monitor_tick_is_quiet(self: AutoNudgeService, loop: NudgeLoop) -> boo
         # bypass jumped straight over it and the retried delivery settled a
         # terminal state that had ended. Re-observing costs one probe call on
         # a path that is already firing a turn.
+        #
+        # NOT on a tick a worker's push brought forward either. The allowance is the
+        # loop's own second turn, owed on its cadence; a push landing right after a wake
+        # would otherwise arrive on it and buy a turn without the ledger being read --
+        # a worker's close after its ``done`` report would buy exactly that. Such a tick is
+        # observed like any other and wakes only for an observation the delivered turn
+        # did not already carry; the allowance stays for the next scheduled tick.
         monitor.followup_ticks -= 1
         self._persist_soon()
         logger.debug("AutoNudge: loop %s spending a post-wake follow-up tick", loop.id)
@@ -373,6 +381,7 @@ async def _monitor_tick_is_quiet(self: AutoNudgeService, loop: NudgeLoop) -> boo
     probe = probes.build(
         monitor.kind,
         worker_running=self._worker_running,
+        worker_closed=self._worker_closed,
     )
     if probe is None:
         return False
@@ -1001,6 +1010,7 @@ async def _terminal_still_holds(
     probe = probes.build(
         monitor.kind,
         worker_running=self._worker_running,
+        worker_closed=self._worker_closed,
     )
     if target is None or probe is None:
         # Cannot re-check, so cannot confirm. Keep the loop alive.

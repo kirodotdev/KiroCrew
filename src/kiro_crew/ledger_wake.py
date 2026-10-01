@@ -180,6 +180,46 @@ def worker_running(slot_table: Any, session_key: str) -> bool:
     return False
 
 
+def worker_closed(slot_table: Any, session_key: str) -> bool:
+    """Whether *session_key*'s slot is GONE from *slot_table*.
+
+    The other half of the gate's liveness question, and a separate function because it
+    is a separate question: :func:`worker_running` asks whether a turn is in flight, and
+    is False for an idle worker that is still there. This asks whether the session ended.
+    ``is_stale`` makes the window apply to the first and not to the second.
+
+    EXISTENCE, not liveness. A slot answering under either spelling means the session is
+    open, whatever it is doing -- and that includes a slot still under construction,
+    which is why this asks ``slot_exists`` and not ``get_slot``. ``get_slot`` hides a
+    slot being built (so nobody acquires a half-finished session), and a worker that is
+    rehydrating or resuming would then read as closed; for a worker that already
+    reported, that skips the window and records a permanent stall for a live worker.
+
+    Anything unreadable answers False, which is the direction that cannot invent a stall:
+    a slot table this cannot interrogate leaves the staleness window measuring time, which
+    is what shipped. A table with no ``slot_exists`` is unreadable in that sense: no other
+    accessor answers existence for a slot being built. Note the asymmetry with
+    :func:`worker_running`, whose safe direction is also False -- there "unknown" must not
+    SUPPRESS a wake, here it must not CAUSE one, and False happens to be both.
+    """
+    if slot_table is None or not session_key:
+        return False
+    exists = getattr(slot_table, "slot_exists", None)
+    if not callable(exists):
+        return False
+    for candidate in (session_key, f"dashboard_{session_key}"):
+        try:
+            found = bool(exists(candidate))
+        except Exception:
+            # An unreadable table cannot prove a close, so report none rather than
+            # continuing to the next spelling and reading its miss as evidence.
+            logger.debug("wake gate: slot lookup failed for %s", candidate, exc_info=True)
+            return False
+        if found:
+            return False
+    return True
+
+
 def revision(newest_event_ids: dict[str, str]) -> str:
     """The epoch token for one tick: a digest over the newest event id per item.
 

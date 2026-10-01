@@ -117,11 +117,15 @@ That second cron-path kind now exists: `WorkLedgerProbe` in
 `probes/work_ledger.py`, kind `work-ledger`, whose subject is a conductor's own
 work ledger rather than a pull request. It conforms as described -- the two
 required hooks plus both optional overrides, and one branch in `build`. It is
-deliberately cron-path only: it has no `monitoring/registry.py` row and therefore
-no objective of its own, which is the integration the paragraph below calls
-paying for two contracts. Until that row lands, `infer_monitor` stamps it with
-the pull-request `review_ready` objective, which is wrong and is why the kind is
-not reachable from an arming surface yet.
+reachable from an arming surface: `monitor_start` and `monitor_update` accept
+`watch: "work-ledger"`, which `subject.infer_monitor` turns into a monitor of
+this kind on the conductor's own session. The kind still has no
+`monitoring/registry.py` row and therefore no objective of its own, which is the
+integration the paragraph below calls paying for two contracts; until that row
+lands, `infer_monitor` stamps it with the borrowed pull-request `review_ready`
+objective, and the authorization audit record names that borrowed objective.
+Giving the kind its own objective (a registry row plus a per-kind stamp) is the
+next step and is not part of the change that made it reachable.
 
 The `monitoring/` package now has a different extension point:
 `models.MonitorProbe`, a structural Protocol with no behaviour inheritance, plus

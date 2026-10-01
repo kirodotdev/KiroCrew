@@ -1343,6 +1343,7 @@ def is_stale(
     item: WorkItem,
     *,
     worker_running: bool,
+    worker_closed: bool = False,
     now: datetime | None = None,
     window_secs: float = DEFAULT_STALE_WINDOW_SECS,
 ) -> bool:
@@ -1352,6 +1353,19 @@ def is_stale(
     in a thirty-minute build is running, so it is never flagged however long it stays
     silent. The window exists only to cover the gap between binding and the first
     report, and to catch a session that ended without reporting.
+
+    ``worker_closed`` SKIPS THE WINDOW for an item that has REPORTED AT LEAST ONCE, and
+    skips only the window. The window is there because "not running" is true of a worker
+    thinking between turns as well as of one that is gone, so time is what tells the two
+    apart. A session that spoke and then ended is not ambiguous: there is no turn coming,
+    however recently that report landed. An item with NO report keeps the window, because
+    a caller answers this question by failing to find a session, and for a worker that has
+    never reported an absence is as likely to mean "not registered yet" -- the
+    bind-to-first-report gap -- as "gone". Every other clause still holds: a terminal item
+    is not stale, and neither is one whose next move belongs to the conductor, which is
+    what keeps a ``done`` item's close from waking anyone. Defaults to ``False``, so a
+    caller that cannot answer the question gets exactly the behaviour it had before the
+    field existed.
 
     A terminal item is never stale — there is nothing left to report. Neither is one
     whose last report was ``done``: the ball is in the conductor's court (verify,
@@ -1373,6 +1387,20 @@ def is_stale(
         return False
     if not _worker_owns_next_move(item):
         return False
+    if worker_closed and item.last_report_at:
+        # Past both guards above, so this is an OPEN item whose next move is the
+        # worker's -- and its worker is gone. Nothing the window measures can change
+        # that answer, so it is not measured.
+        #
+        # ``last_report_at`` is REQUIRED, and it is what keeps this honest. A caller
+        # answers "closed" by failing to find the worker's session, and an absence has
+        # two causes: a session that existed and ended, or one that was never registered
+        # where that caller could see it -- the bind-to-first-report gap this window was
+        # written for, a slot table still rehydrating, a worker bound under a key that
+        # table does not carry. A report PROVES the first: the worker was there, it spoke,
+        # and now it is not. With no report the two are indistinguishable, so the window
+        # decides as it did before, which is the behaviour that gap always had.
+        return True
     reference = item.last_report_at or item.created_at
     if not reference:
         return True

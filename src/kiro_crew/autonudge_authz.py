@@ -583,6 +583,10 @@ async def authorize_and_update_nudge(
     max_runtime_secs: Any = None,
     banner: Any = None,
     judge: Any = None,
+    #: The subject to start observing, or ``None`` to leave the loop's own alone. There is
+    #: no clear spelling, for the reason the tool surface gives: a loop that silently lost
+    #: its watch through a metadata edit would look armed and observe nothing.
+    watch: Any = None,
     expect_fingerprint: Any = None,
     source: str,
     caller: str = "",
@@ -751,6 +755,7 @@ async def authorize_and_update_nudge(
                         ("max_runtime_secs", max_runtime_secs),
                         ("active", active),
                         ("banner", banner),
+                        ("watch", watch),
                     )
                     if v is not None
                 ),
@@ -773,6 +778,7 @@ async def authorize_and_update_nudge(
             max_runtime_secs=max_runtime_secs,
             banner=banner,
             judge=judge,
+            watch=watch,
             expect_fingerprint=expect_fingerprint,
         )
     except AutoNudgeStaleBaseline:
@@ -819,6 +825,12 @@ async def authorize_and_add_nudge(
     #: brief is bounded by ``validate_judge_spec`` at the tool surface the owner
     #: typed it at, which is where a refusal can name a field they can fix.
     judge: dict | None = None,
+    #: The subject to observe, for the one subject an instruction cannot name. Passed
+    #: straight through to the service, which owns both what it means and the fold that
+    #: makes a named watch gate on its own. Bounded at the tool surface by the schema's
+    #: allowed set, for the reason the judge brief is bounded there: a refusal should name
+    #: a field the caller can fix.
+    watch: str = "",
     monitor: MonitorState | None = None,
     replace_existing: bool = True,
     # Opt-in for the session-directive re-arm path ONLY: with
@@ -1269,6 +1281,11 @@ async def authorize_and_add_nudge(
                 # Only when there IS one, so a caller that armed no judge produces the
                 # same call it produced before this field existed.
                 add_kwargs["judge"] = dict(judge)
+            if watch:
+                # Conditional for the reason ``judge`` is: the contract tests compare
+                # this dict by equality, so a caller that named no watch must produce
+                # the kwargs it produced before the field existed.
+                add_kwargs["watch"] = watch
             if replace_stopped:
                 add_kwargs["replace_stopped"] = True
             if self_armed:

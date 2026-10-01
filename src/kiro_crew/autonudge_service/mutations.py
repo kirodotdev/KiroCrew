@@ -396,6 +396,7 @@ async def update(
     stopped_reason: str | None = None,
     banner: str | None = None,
     judge: dict | None = None,
+    watch: str | None = None,
     expected_generation: int | None = None,
     expect_fingerprint: str | None = None,
     precondition: Callable[[NudgeLoop], bool] | None = None,
@@ -424,6 +425,7 @@ async def update(
             stopped_reason=stopped_reason,
             banner=banner,
             judge=judge,
+            watch=watch,
             expected_generation=expected_generation,
             expect_fingerprint=expect_fingerprint,
             precondition=precondition,
@@ -459,6 +461,7 @@ async def _update_locked(
     stopped_reason: str | None = None,
     banner: str | None = None,
     judge: dict | None = None,
+    watch: str | None = None,
     expected_generation: int | None = None,
     expect_fingerprint: str | None = None,
     precondition: Callable[[NudgeLoop], bool] | None = None,
@@ -478,6 +481,7 @@ async def _update_locked(
             stopped_reason=stopped_reason,
             banner=banner,
             judge=judge,
+            watch=watch,
             expected_generation=expected_generation,
             expect_fingerprint=expect_fingerprint,
             precondition=precondition,
@@ -499,6 +503,7 @@ async def _update_unserialized(
     stopped_reason: str | None = None,
     banner: str | None = None,
     judge: dict | None = None,
+    watch: str | None = None,
     expected_generation: int | None = None,
     expect_fingerprint: str | None = None,
     precondition: Callable[[NudgeLoop], bool] | None = None,
@@ -659,6 +664,20 @@ async def _update_unserialized(
             # Only for a gated loop: a structured monitor is refused far above, and
             # an ungated loop has no judge to read.
             rebind_monitor = rebind_monitor or loop.gate
+        requested_watch = str(watch or "").strip()
+        if requested_watch:
+            # ARM a subject on a live loop. This is the one subject a message edit cannot
+            # reach: a work-ledger watch observes the session's OWN key, which no wording
+            # contains, so without this field a conductor that armed a plain timer has to
+            # tear its loop down -- losing the cycle count the revision path exists to
+            # keep -- in order to start gating.
+            #
+            # ``gate`` is set with it, the same fold the arm path applies for the same
+            # reason: the tick path reads the STORED flag and refuses to poll a loop whose
+            # gate is False even when it carries a monitor, so leaving the two to disagree
+            # produces a loop that looks armed and observes nothing.
+            loop.gate = True
+            rebind_monitor = True
         # ONE place resolves the subject, from the two strings this loop now holds.
         # Reached by a changed instruction and by a replaced brief alike, because
         # either can name a different pull request and only the pair says which.
@@ -669,7 +688,11 @@ async def _update_unserialized(
             # instruction names nothing observable" and CLEAR the monitor --
             # turning the documented way to reword an instruction into a
             # silent way to disarm the watch. For gh-pr it changes nothing.
-            watch_kind = loop.monitor.kind if loop.monitor is not None else ""
+            # A watch REQUESTED by this update wins over the loop's current kind, and has
+            # to: on a loop with no monitor the stored kind is "", which re-infers from
+            # text alone, answers "this instruction names nothing observable", and leaves
+            # the monitor None -- so the field would validate, reach here, and do nothing.
+            watch_kind = requested_watch or (loop.monitor.kind if loop.monitor is not None else "")
             inferred = (
                 infer_monitor(
                     loop.message,
@@ -956,6 +979,14 @@ def remove_sync(
     self._rearm_fail_count.pop(loop_id, None)
     self._start_failure_deferred.pop(loop_id, None)
     self._rearm_pending.discard(loop_id)
+    # Beside the line above, and for its reason: a claim released in one set and
+    # forgotten in another outlives its loop, and an id reused by a later loop would
+    # inherit a pull-forward nobody asked for.
+    self._pulled_forward.discard(loop_id)
+    self._pushed_ticks.discard(loop_id)
+    self._pushed_running.discard(loop_id)
+    self._pull_forward_counts.pop(loop_id, None)
+    self._pull_forward_capped = {pair for pair in self._pull_forward_capped if pair[0] != loop_id}
     self._accepted_monitor_turns.pop(loop_id, None)
     if persist:
         self._save()

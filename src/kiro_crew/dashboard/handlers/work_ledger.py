@@ -48,7 +48,7 @@ from typing import Any
 
 from aiohttp import web
 
-from kiro_crew import session_ledger, work_ledger
+from kiro_crew import ledger_wake, session_ledger, work_ledger
 from kiro_crew.constants import env_file_display
 from kiro_crew.crew_log import emit as crew_log_emit
 from kiro_crew.crew_log.errors import CrewLogError
@@ -1116,7 +1116,9 @@ async def api_work_ledger_get(request: web.Request) -> web.Response:
         row = item.to_dict()
         row["orphaned"] = work_ledger.is_orphaned(item, conductor_slot_exists=conductor_alive)
         row["stale"] = work_ledger.is_stale(
-            item, worker_running=_slot_running(state, item.worker_session_key or "")
+            item,
+            worker_running=_slot_running(state, item.worker_session_key or ""),
+            worker_closed=_slot_closed(state, item.worker_session_key or ""),
         )
         # Why an item is (or is not) in ``accept_batch``, on the item itself. Without
         # it a conductor sees an item it dispatched simply missing from the batch and
@@ -1174,6 +1176,18 @@ def _slot_running(state: DashboardState, key: str) -> bool:
     """
     slot = _find_slot(state, key)
     return bool(getattr(slot, "running", False)) if slot is not None else False
+
+
+def _slot_closed(state: DashboardState, key: str) -> bool:
+    """Whether *key*'s slot is GONE, read the way the work-ledger wake gate reads it.
+
+    ``is_stale`` skips its window for a worker that reported and then closed, and the
+    badge must agree with the gate that wakes the conductor: one resolver,
+    :func:`ledger_wake.worker_closed`, answers both. It counts a slot being built, an
+    unrestored key and any key during a restore as open, so the badge cannot report a
+    live worker as gone, and anything unreadable answers False.
+    """
+    return ledger_wake.worker_closed(state, key)
 
 
 def _find_slot(state: DashboardState, key: str):

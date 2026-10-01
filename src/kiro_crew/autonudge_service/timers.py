@@ -206,6 +206,10 @@ def notify_turn_complete(
     the five is stored: the rule reduces them to one boolean plus two numbers and a
     flag, and that is what the loop's record and the calibration log keep.
     """
+    # TRIGGER THREE of the crew-log wake, and it has to run BEFORE the lookup below.
+    # That lookup asks for a loop on THIS slot; a worker has none, so every early return
+    # under it is the normal case for the slot this trigger is about.
+    _wake_bound_conductor(self, slot_key)
     loop = self._find_by_slot(slot_key)
     if not loop or not loop.active:
         return
@@ -262,6 +266,57 @@ def notify_turn_complete(
         self._rearm_pending.add(loop.id)
         return
     self._arm_from_deadline(loop)
+
+
+def _wake_bound_conductor(svc: AutoNudgeService, slot_key: str) -> None:
+    """Pull *slot_key*'s conductor forward, if *slot_key* is a bound worker's slot.
+
+    OUTCOME-BLIND on purpose, and that is what this trigger adds over the other two. The
+    hook this sits in is called for every turn end after HOOK_EVENT_STOP, so a turn that
+    raised, a turn that produced nothing, and a turn that simply forgot to report all
+    reach it identically -- and those are exactly the endings that write no
+    ``work/recorded`` entry, so trigger one never sees them. The gate still decides
+    whether a turn is spent: a worker that reported ``progress`` and then ended its turn
+    pulls the tick forward and the probe answers quiet.
+
+    DETACHED, because this hook is synchronous and its caller is the gateway finishing a
+    turn. Supervised through ``_inflight_adds`` like the judge label above it, so the task
+    is strongly referenced and its failure is logged rather than swallowed by the garbage
+    collector. Never raises: a turn end must not fail because a push could not be
+    scheduled.
+
+    A PLAIN HELPER taking *svc*, not a service member: it is reached from exactly one
+    call site in this module, and binding it on the class would put a name on the
+    service's surface that nothing outside here can use.
+    """
+    if not slot_key:
+        return
+    try:
+        # Local, for the reason the judge import below is: ``conductor_wake`` reaches the
+        # work-ledger store, and this hook runs on every turn of every session.
+        from kiro_crew import conductor_wake
+
+        asyncio.get_running_loop()
+        task = asyncio.ensure_future(conductor_wake.fire_for_worker_slot(slot_key))
+    except RuntimeError:
+        # No running loop: a synchronous test driver or a shutdown path. Nothing to
+        # schedule onto, and the conductor's own tick still covers it.
+        return
+    except Exception:  # pragma: no cover - a turn end must not fail on this
+        logger.debug("AutoNudge: could not schedule a conductor wake for %s", slot_key)
+        return
+    svc._inflight_adds.add(task)
+
+    def _finish(t: "asyncio.Task[str]") -> None:
+        svc._inflight_adds.discard(t)
+        if not t.cancelled() and t.exception() is not None:
+            logger.debug(
+                "AutoNudge: conductor wake for %s failed",
+                slot_key,
+                exc_info=t.exception(),
+            )
+
+    task.add_done_callback(_finish)
 
 
 def notify_user_input(self: AutoNudgeService, slot_key: str) -> None:
@@ -357,6 +412,9 @@ def _cancel_timer(self: AutoNudgeService, loop_id: str, *, drop_claims: bool = T
 
 def _arm_timer(self: AutoNudgeService, loop: NudgeLoop, delay: float | None = None) -> None:
     self._cancel_timer(loop.id, drop_claims=False)
+    # Any arm replaces the armed timer, so a push mark naming the old one is stale. A
+    # push re-sets it right after this call.
+    self._pushed_ticks.discard(loop.id)
     self._timers[loop.id] = asyncio.create_task(self._timer(loop, delay))
 
 

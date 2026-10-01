@@ -699,6 +699,7 @@ class AutoNudgeService:
         collect_judge_evidence: Callable[[NudgeLoop], Awaitable[Any]] | None = None,
         emit_judge_notice: Callable[[NudgeLoop, str], Awaitable[None]] | None = None,
         worker_running: Callable[[str], bool] | None = None,
+        worker_closed: Callable[[str], bool] | None = None,
     ) -> None:
         self._base_dir = base_dir or config_dir()
         # The durable store's state and file protocol (see autonudge_service.store). The
@@ -728,6 +729,11 @@ class AutoNudgeService:
         #: it is absent every worker reads as idle, which can only make that probe
         #: louder, never quieter. See :mod:`kiro_crew.probes.work_ledger`.
         self._worker_running_resolver = worker_running
+        #: ``session_key -> that slot is GONE``. Injected for the same reason the
+        #: liveness resolver above is, and read by the same probe -- but it answers a
+        #: different question: a closed worker is stale AT ONCE, where an idle one waits
+        #: out the staleness window. Absent means "not closed", which keeps the window.
+        self._worker_closed_resolver = worker_closed
         self._loops: dict[str, NudgeLoop] = {}
         self._timers: dict[str, asyncio.Task] = {}
         # Loop ids whose re-arm was requested while their fire window was open.
@@ -735,6 +741,32 @@ class AutoNudgeService:
         # complete while the firing task is still persisting, and honouring the
         # hook immediately would cancel that task mid-persist.
         self._rearm_pending: set[str] = set()
+        #: Loop ids whose PULL-FORWARD was refused because the loop was mid-fire, so the
+        #: deferred re-arm must run at delay zero rather than toward the loop's own
+        #: deadline. A plain ``_rearm_pending`` entry re-arms from the deadline, which for
+        #: a conductor patrolling on an hours-long cadence would turn a worker's report
+        #: into an hours-long wait -- exactly the delay the crew-log wake removes. Kept
+        #: BESIDE that set rather than replacing it, because the two say different things
+        #: about the same window ("resume the countdown" and "run now"), and released at
+        #: the one site that applies it (``_run_fire_cycle``'s tail) plus the removal
+        #: path, so a claim cannot outlive its loop.
+        self._pulled_forward: set[str] = set()
+        #: Loop ids whose ARMED timer was set by a worker's push and has not started.
+        #: Moved to ``_pushed_running`` when that tick begins, and dropped by every
+        #: other arm, so it always describes the timer actually armed. A push landing
+        #: while it is set buys nothing new: the armed tick has not read the ledger yet.
+        self._pushed_ticks: set[str] = set()
+        #: Loop ids whose RUNNING tick was armed by a worker's push. Such a tick goes
+        #: through the probe gate rather than spending the post-wake follow-up (the
+        #: free follow-up belongs to the loop's own cadence), and a quiet answer keeps
+        #: the loop's earlier deadline rather than pushing it out. Reset at every tick.
+        self._pushed_running: set[str] = set()
+        #: ``loop id -> item id -> wall-clock times`` of the pull-forwards that item
+        #: bought its conductor in the last hour, and the ``(loop id, item id)`` pairs
+        #: whose cap has already been logged in the current window. Read and written by
+        #: ``conductor_wake`` on the event loop; released with the loop.
+        self._pull_forward_counts: dict[str, dict[str, list[float]]] = {}
+        self._pull_forward_capped: set[tuple[str, str]] = set()
         # Loop ids whose CURRENT tick observed a wake but has not yet had its fire
         # confirmed. Transient on purpose: it is a claim about a turn in flight,
         # so a restart must forget it rather than charge a turn that never ran.
@@ -1500,7 +1532,30 @@ class AutoNudgeService:
                     )
             for loop in self._loops.values():
                 if loop.active:
-                    self._arm_from_deadline(loop)
+                    # A work-ledger loop resumes at delay ZERO instead of toward its
+                    # persisted deadline, and only this kind does. The crew-log wake is a
+                    # push off an in-process queue, so every push in flight when this
+                    # process died is gone -- the entry is durable, the notification was
+                    # not. For a pull-request watch that costs nothing (the next poll
+                    # reads the same pull request), but a conductor's whole point in
+                    # setting an hours-long cadence is that the push carries the news, so
+                    # a restart would hide a worker's report for those hours. One tick
+                    # per such loop at boot replays them all, because the probe reads the
+                    # ledger ITSELF: whatever landed while the process was down is in the
+                    # fold, and a tick that finds nothing actionable answers quiet and
+                    # spends no turn. That is also why there is no replay log -- the
+                    # store is the record, and re-reading it is the replay.
+                    if self._observes_work_ledger(loop):
+                        # Marked as a pushed tick for the same reason a worker's push
+                        # is: the gate's post-wake follow-up allowance skips the
+                        # probe, and a replay that took it would spend an unattended
+                        # turn without reading the ledger -- the opposite of why the
+                        # replay exists. A pushed tick always goes through the probe.
+                        # Marked AFTER arming: _arm_timer clears the mark it replaces.
+                        self._arm_timer(loop, delay=0.0)
+                        self._pushed_ticks.add(loop.id)
+                    else:
+                        self._arm_from_deadline(loop)
             global _INSTANCE
             _INSTANCE = self
         # The reconciler is the timer-driven backstop for a loop stranded
@@ -1665,6 +1720,56 @@ class AutoNudgeService:
             return bool(resolver(session_key))
         except Exception:  # pragma: no cover - a liveness read must not fail a tick
             logger.debug("AutoNudge: worker liveness read failed for %s", session_key)
+            return False
+
+    def _observes_work_ledger(self, loop: NudgeLoop) -> bool:
+        """Whether *loop*'s monitor is a work-ledger watch THIS gateway may arm.
+
+        A predicate rather than an inline comparison because the answer decides a
+        STARTUP behaviour (resume now, not at the deadline) and the reason is specific to
+        this kind: its news arrives by an in-process push that a restart loses, where
+        every other kind's arrives by the probe's own poll.
+
+        The VERSION is part of the question, not a separate guard, and leaving it out was
+        a reachable hole rather than a theoretical one. ``_arm_from_deadline`` refuses a
+        monitor record whose ``version`` this gateway does not implement, because such a
+        record belongs to a newer gateway and running the loop would deliver an unattended
+        turn under a policy nothing here can interpret. A work-ledger watch is a
+        ``gate=True`` prompt loop, so ``is_structured_monitor_loop`` is False and ``_load``
+        leaves such a row ACTIVE -- exactly the shape a zero-delay arm here would have
+        bypassed that refusal for. Answering False sends the row to
+        ``_arm_from_deadline``, which refuses it and logs why, so the refusal lives in one
+        place rather than being restated here.
+
+        The kind is compared against ``probes.WORK_LEDGER``, imported locally for the
+        reason the package itself spells its kinds as literals: the observation layer must
+        not land on the gateway's boot path to answer a string comparison.
+        """
+        monitor = getattr(loop, "monitor", None)
+        if monitor is None:
+            return False
+        if getattr(monitor, "version", None) != MONITOR_STATE_VERSION:
+            return False
+        from kiro_crew import probes
+
+        return str(getattr(monitor, "kind", "")) == probes.WORK_LEDGER
+
+    def _worker_closed(self, session_key: str) -> bool:
+        """Whether *session_key*'s slot is gone.
+
+        False when no resolver was injected, and here that is the direction that cannot
+        INVENT a signal: this input removes the staleness window, so answering True
+        without a slot table would flag every freshly created item. A resolver that
+        raises is treated the same way, for the reason the liveness read is -- a
+        slot-table read must not kill a tick.
+        """
+        resolver = self._worker_closed_resolver
+        if resolver is None or not session_key:
+            return False
+        try:
+            return bool(resolver(session_key))
+        except Exception:  # pragma: no cover - a slot read must not fail a tick
+            logger.debug("AutoNudge: worker close read failed for %s", session_key)
             return False
 
     # ── Owner methods ──

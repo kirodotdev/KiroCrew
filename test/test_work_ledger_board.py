@@ -253,6 +253,27 @@ async def test_alive_is_joined_server_side_from_the_worker_slot():
 
 
 @pytest.mark.asyncio
+async def test_a_reported_worker_whose_session_closed_reads_stale_at_once():
+    """The badge reads the gate's own resolver, so it does not wait out the window.
+
+    The worker reported ``progress`` a moment ago, which is inside the stale window.
+    While its slot exists the row is not stale; once the slot is gone the same row is
+    stale on the very next read, as the work-ledger wake gate already decided.
+    """
+    item_id = _item()
+    _bind(item_id)
+    _report(item_id, "progress")
+    table = {WORKER: _slot()}
+    state = _state(table)
+    state.slot_exists = lambda key: key in table
+    body, _ = await _call(state, CONDUCTOR)
+    assert body["items"][0]["stale"] is False
+    table.clear()
+    body, _ = await _call(state, CONDUCTOR)
+    assert body["items"][0]["stale"] is True
+
+
+@pytest.mark.asyncio
 async def test_an_unbound_item_is_closed_not_running():
     """Nothing is running for an item that was never dispatched."""
     _item(title="never dispatched")

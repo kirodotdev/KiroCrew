@@ -13,17 +13,22 @@ even write, how many wakes one item may cause -- lives in
 :mod:`kiro_crew.ledger_wake` as pure functions. What is left here is the reading
 itself, which is the only part that needs a disk.
 
-One fact this probe cannot read for itself and takes as a value instead:
+Two facts this probe cannot read for itself and takes as values instead:
 
 * ``worker_running`` -- whether a worker's slot has a turn in flight. That lives
   in the dashboard's in-process slot table, which a probe running on a worker
   thread has no handle on, so the driver injects a resolver.
+* ``worker_closed`` -- whether that slot is GONE. Same table, same reason, and a
+  separate question: "not running" is true of a worker thinking between turns as
+  well as of one that ended, which is why ``is_stale`` makes the first wait out a
+  window and lets the second skip it.
 
-It defaults to the safe direction rather than to nothing: an absent resolver
-reads as "not running", which can only make the gate LOUDER (a stall wake the
-conductor did not need costs one turn), never quieter. The opposite default would
-turn a missing handle into a watch that never reports a stalled worker, which is
-the failure this gate exists to remove.
+Both default to the safe direction rather than to nothing: an absent resolver
+reads as "not running" and "not closed", which can only make the gate LOUDER (a
+stall wake the conductor did not need costs one turn) or later, never quieter
+about a worker that stopped. The opposite default would turn a missing handle into
+a watch that never reports a stalled worker, which is the failure this gate exists
+to remove.
 """
 
 from __future__ import annotations
@@ -91,23 +96,54 @@ def _always_idle(_session_key: str) -> bool:
     return False
 
 
+def _always_open(_session_key: str) -> bool:
+    """Default close resolver: nothing is closed.
+
+    Not ``True``, and the reason is the opposite side of :func:`_always_idle`'s. This
+    input only ever REMOVES the staleness window, so answering ``True`` without a handle
+    on the slot table would flag every quiet item the instant it was created -- a wake
+    per item for a worker that is simply still working. ``False`` falls back to measuring
+    the window, which is the behaviour that shipped.
+    """
+    return False
+
+
 class WorkLedgerProbe(irq.Probe):
     """Watch one conductor's work ledger.
 
     Args:
         worker_running: ``session_key -> has a turn in flight``. Defaults to
             :func:`_always_idle`.
+        worker_closed: ``session_key -> its slot is gone``. Defaults to
+            :func:`_always_open`, so a build with no resolver measures the staleness
+            window exactly as it did before this input existed.
     """
 
     def __init__(
         self,
         *,
         worker_running: Callable[[str], bool] | None = None,
+        worker_closed: Callable[[str], bool] | None = None,
     ) -> None:
         self._worker_running = worker_running or _always_idle
+        self._worker_closed = worker_closed or _always_open
         self._conductor = ""
 
     # -- Probe contract ---------------------------------------------------
+
+    def tuning(self) -> dict[str, float]:
+        """No coalescing window: every fresh wake in a tick is delivered at once.
+
+        A report is complete the moment it is written, so the kernel's default
+        floor would only hold it back. The observations are WAKE rather than
+        IMMEDIATE because the kernel delivers an IMMEDIATE on its own and masks
+        only that one key: a tick that finds two workers' reports would deliver
+        the first and leave the second to wake the conductor again later for news
+        the first turn already read off the board. With the window at zero the
+        kernel folds every fresh WAKE of the tick into one delivery and masks them
+        all together.
+        """
+        return {"coalesce_secs": 0}
 
     def identity(self, ctx: object) -> tuple[str, str]:
         """``("work-ledger", <conductor session key>)``, parsed from the message.
@@ -222,7 +258,18 @@ class WorkLedgerProbe(irq.Probe):
         item: work_ledger.WorkItem,
         events: list[work_ledger.WorkEvent],
     ) -> list[irq.Observation]:
-        """Everything about one open item that needs the conductor."""
+        """Everything about one open item that needs the conductor.
+
+        Every observation here is ``IMMEDIATE``, not ``WAKE``. A ``WAKE`` waits out the
+        kernel's coalescing floor (``irq.DEFAULT_COALESCE_SECS``) on every entry, and
+        the tick that finds it still young answers quiet and re-arms at the loop's own
+        cadence -- so a ``question`` would reach the conductor one full cadence late,
+        however fast the crew-log push pulled the tick forward. The floor exists for a
+        subject whose sub-observations may not exist yet; a report is complete the
+        moment it is written, and a stall is a decision already made, so waiting
+        observes nothing further. ``IMMEDIATE`` skips the delay and keeps the mask,
+        and these keys never recur anyway.
+        """
         found: list[irq.Observation] = []
         for event in events:
             if not ledger_wake.is_actionable_event(event.kind, event.status):
@@ -246,12 +293,15 @@ class WorkLedgerProbe(irq.Probe):
             )
 
         if work_ledger.is_stale(
-            item, worker_running=self._worker_running(item.worker_session_key or "")
+            item,
+            worker_running=self._worker_running(item.worker_session_key or ""),
+            worker_closed=self._worker_closed(item.worker_session_key or ""),
         ):
             # The whole liveness conjunction is ``is_stale``'s, not this module's:
-            # quiet past the window AND the worker not running AND its last word
-            # still leaving the move with it. Restating any part of it here would be
-            # a second copy of a shipped rule.
+            # quiet past the window -- or the worker's session gone, which needs no
+            # window -- AND the worker not running AND its last word still leaving the
+            # move with it. Restating any part of it here would be a second copy of a
+            # shipped rule.
             token = f"{_STALL_KEY}:{item.last_report_at or 'none'}"
             if self._spend(conductor_key, item.item_id, token):
                 found.append(

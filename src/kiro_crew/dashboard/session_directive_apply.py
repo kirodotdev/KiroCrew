@@ -663,6 +663,12 @@ async def _monitor_start(
         # splat, so a brief the tool accepted and this line omitted would be dropped
         # without a word -- the loop would arm with no judge and nothing would say so.
         judge=args.get("judge") if isinstance(args.get("judge"), dict) else None,
+        # Named explicitly for the reason the two lines above are: this call has no
+        # splat, so a watch the tool accepted and this line omitted would validate
+        # cleanly and then be discarded -- the caller told its request was valid and
+        # handed an ordinary timer, which is the exact contract the schema's own
+        # absence-pin was holding the field back to avoid.
+        watch=str(args.get("watch") or ""),
         source="mcp-directive",
         caller="session-directive",
         gate=gate,
@@ -1043,6 +1049,10 @@ async def _monitor_update(
         # Absent leaves the brief alone; ``{}`` clears it. Same absent-vs-explicit
         # distinction as ``banner`` above, preserved by the tool surface.
         judge=patch.get("judge"),
+        # Absent leaves the loop's subject alone. There is no clear request to pass on:
+        # the tool drops a blank rather than forwarding one, so anything that arrives
+        # here names the watch to arm.
+        watch=patch.get("watch"),
         # A message write with NO baseline SKIPS the stale check rather than failing it, so
         # hand it the token read above -- scoped to the message case, as the handler's 409 is.
         expect_fingerprint=(baseline_token if patch.get("message") is not None else None),
