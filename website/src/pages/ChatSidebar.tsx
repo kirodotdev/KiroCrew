@@ -111,7 +111,7 @@ import { useSidebarResize } from './chat-sidebar/resize'
 import { useSidebarTags } from './chat-sidebar/tags'
 import { useBoardColumns, useColumnPopover, useBoardColumnMutations, useColumnMatches, useBoardFolderCollapse } from './chat-sidebar/board'
 import { useHoverHold, useHoverPinLiveness } from './chat-sidebar/hoverHold'
-import { useLineageSeed, useConductorLane } from './chat-sidebar/conductor'
+import { useLineageSeed, useConductorLane, citedCreatorOf } from './chat-sidebar/conductor'
 import { useShortcutOrder } from './chat-sidebar/shortcuts'
 import { useFolderDropOps, useSidebarMoveUndo, useSidebarDragHandlers } from './chat-sidebar/dnd/useSidebarDrag'
 import { useSidebarReveal } from './chat-sidebar/reveal'
@@ -5760,9 +5760,9 @@ function ChatSidebar({
                 // against the unfiltered population. A creator that is still there is
                 // open and running, so saying it closed would be false.
                 const cited = orphanCitation(slot, tree.parentOf.get(key) ?? null)
-                const citedKey = slot.parent?.key
-                const creatorStillOpen = cited != null && citedKey != null
-                  && (citedCreatorExists.get(slot.peer_id)?.has(citedKey) ?? false)
+                const creator = citedCreatorOf(slot)
+                const creatorStillOpen = cited != null && creator !== null
+                  && (citedCreatorExists.get(creator.origin)?.has(creator.key) ?? false)
                 rows.push({
                   id: key,
                   slot,
