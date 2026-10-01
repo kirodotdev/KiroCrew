@@ -59,6 +59,9 @@ class DefaultProviderRegistry:
     def create_factory(self, cfg: Any) -> Callable[..., Any]:
         return cfg.create_provider_factory()
 
+    def agent_runtime_policy(self, engine_identity: str) -> dict[str, Any] | None:
+        return None
+
     def register_acp_backends(self) -> None:
         # Nothing to register, and nothing this seam could register: the baseline now
         # covers every id in ``ACP_BACKENDS_KNOWN``, and

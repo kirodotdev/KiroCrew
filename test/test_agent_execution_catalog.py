@@ -17,6 +17,9 @@ from kiro_crew.agent_discovery import AgentInfo
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.sections import KiroCrewAgentConfig
 from kiro_crew.dashboard.handlers import agent_catalog
+from kiro_crew.platform import build_default_context, set_context
+from kiro_crew.platform.context import PlatformCompositionError
+from kiro_crew.platform.defaults import DefaultProviderRegistry
 
 
 def _template(name: str, **kwargs) -> AgentInfo:
@@ -249,3 +252,77 @@ def test_lineage_stem_cannot_be_published_as_an_alias(monkeypatch):
     monkeypatch.setattr(agent_catalog, "list_agents", lambda **kwargs: [agent])
     monkeypatch.setattr(agent_catalog.agent_state, "all_fork_info", lambda: {"private-stem": {}})
     assert agent_catalog._templates(Path("project")) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("engine_identity", ["review-engine", ""])
+async def test_member_rows_carry_the_companion_runtime_policy(catalog, engine_identity):
+    catalog.config.agents["reviewer"].kiro_agent = engine_identity
+    policy = {"runtime": "engine-a", "model": "selectable"}
+    lookup_key = engine_identity or "reviewer"
+    policy_getter = Mock(side_effect=lambda key: policy if key == lookup_key else None)
+    provider = SimpleNamespace(agent_runtime_policy=policy_getter)
+    set_context(dataclasses.replace(build_default_context(catalog.config), providers=provider))
+    async with TestClient(TestServer(catalog.app)) as client:
+        response = await client.get("/api/agents/catalog")
+        assert response.status == 200
+        rows = (await response.json())["agents"]
+    members = [r for r in rows if r["selection_kind"] == "member"]
+    templates = [r for r in rows if r["selection_kind"] == "template"]
+    assert members[0]["runtime_policy"] == policy
+    assert all("runtime_policy" not in r for r in members[1:])
+    assert all("runtime_policy" not in r for r in templates)
+    assert [call.args[0] for call in policy_getter.call_args_list] == [
+        lookup_key,
+        "missing-template",
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("caller", ["other-user", "anonymous", "app", "missing-state"])
+async def test_redacted_catalog_neither_reads_nor_emits_runtime_policy(catalog, caller):
+    if caller == "other-user":
+        catalog.caller.user = "another-user"
+    elif caller == "anonymous":
+        catalog.caller.user = ""
+    elif caller == "app":
+        catalog.caller.app = "caller-app"
+    else:
+        del catalog.app["state"]
+    policy_getter = Mock(return_value={"runtime": "private-engine", "model": "selectable"})
+    provider = SimpleNamespace(agent_runtime_policy=policy_getter)
+    set_context(dataclasses.replace(build_default_context(catalog.config), providers=provider))
+    async with TestClient(TestServer(catalog.app)) as client:
+        response = await client.get("/api/agents/catalog")
+        assert response.status == 200
+        rows = (await response.json())["agents"]
+    assert all("runtime_policy" not in row for row in rows)
+    policy_getter.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_catalog_rows_omit_runtime_policy_without_a_companion(catalog):
+    async with TestClient(TestServer(catalog.app)) as client:
+        response = await client.get("/api/agents/catalog")
+        assert response.status == 200
+        rows = (await response.json())["agents"]
+    assert all("runtime_policy" not in r for r in rows)
+
+
+def test_public_provider_has_no_runtime_policy():
+    assert DefaultProviderRegistry().agent_runtime_policy("reviewer") is None
+
+
+@pytest.mark.parametrize("failure", [OSError, PlatformCompositionError])
+def test_runtime_policy_lookup_preserves_composition_failures(catalog, failure, caplog):
+    provider = SimpleNamespace(agent_runtime_policy=Mock(side_effect=failure("lookup failed")))
+    set_context(dataclasses.replace(build_default_context(catalog.config), providers=provider))
+
+    if failure is PlatformCompositionError:
+        with pytest.raises(PlatformCompositionError, match="lookup failed"):
+            agent_catalog._agent_runtime_policy("reviewer", "review-engine")
+    else:
+        with caplog.at_level("DEBUG", logger="kiro_crew.platform.context"):
+            assert agent_catalog._agent_runtime_policy("reviewer", "review-engine") is None
+        assert "Failed to read runtime policy for crew reviewer" in caplog.text
+    provider.agent_runtime_policy.assert_called_once_with("review-engine")
