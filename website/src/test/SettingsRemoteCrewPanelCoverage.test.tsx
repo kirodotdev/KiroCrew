@@ -171,7 +171,7 @@ function storeWithWarm(id: string) {
     ...base,
     instances: {
       ...base.instances,
-      warm: { [id]: { port: 41234, token: 'stub' } },
+      warm: { [id]: { kind: 'direct-loopback', port: 41234, token: 'stub' } },
       mru: [id],
       activeId: id,
     },

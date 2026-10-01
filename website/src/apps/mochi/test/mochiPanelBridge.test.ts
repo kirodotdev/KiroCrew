@@ -636,3 +636,33 @@ describe('mochi panelBridge live events', () => {
     await expect(bridge.setModel('some-model')).resolves.toEqual({ ok: false })
   })
 })
+
+/**
+ * The two URL builders under a relayed pane.
+ *
+ * Same FakeWebSocket harness: the module opens the shared socket at import, so
+ * the socket is stubbed first; the runtime is then pinned to a pane BEFORE the
+ * import, so the builders resolve under the capability prefix. The direct-mode
+ * `localFileUrl` assertion above stays as the identity case.
+ */
+describe('mochi panelBridge URL builders under a relayed pane', () => {
+  let bridge: typeof import('../panel/panelBridge')
+
+  beforeEach(async () => {
+    vi.resetModules()
+    vi.stubGlobal('WebSocket', FakeWebSocket as unknown as typeof WebSocket)
+    FakeWebSocket.last = null
+    const runtime = await import('../../../lib/dashboardRuntime')
+    runtime.initDashboardRuntime({ pathname: '/instance-pane/K_cap01/' })
+    bridge = await import('../panel/panelBridge')
+  })
+
+  it('localFileUrl and galleryPackFileUrl address the pane origin', () => {
+    expect(bridge.localFileUrl('/tmp/a b.png')).toBe(
+      '/instance-pane/K_cap01/api/file-raw?path=%2Ftmp%2Fa%20b.png',
+    )
+    expect(bridge.galleryPackFileUrl('pack1', 'sprite.png')).toBe(
+      '/instance-pane/K_cap01/api/apps/mochi/packs/pack1/file/sprite.png',
+    )
+  })
+})

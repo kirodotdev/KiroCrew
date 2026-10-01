@@ -22,11 +22,21 @@ import { createSlice, type PayloadAction } from '@reduxjs/toolkit'
 
 // The shapes live in a neutral module, so the store does not depend on a page.
 import type { InstanceDraft, InstanceFormValues } from '../types/instanceForm'
+import { type PaneEndpoint, sameEndpoint } from '../lib/paneChannel'
 
-export interface WarmConn {
-  port: number
-  token: string
-}
+/**
+ * One warm pane's resolved, discriminated endpoint (see `lib/paneChannel`):
+ *
+ *  - `direct-loopback` — the loopback `port` + minted `token`; the browser
+ *    reaches the SSH forward itself (desktop / localhost).
+ *  - `same-origin-relay` — a short-lived capability `documentPath` + frame
+ *    `channel` (published HTTPS); NO port and NO remote token are held here.
+ *
+ * Either way it is NEVER persisted and never logged — it lives only for the
+ * dashboard session. The header tab strip writes it (on connect / open-pane) and
+ * the viewport reads it (to build the iframe src + attribute postMessage).
+ */
+export type WarmConn = PaneEndpoint
 
 /** One switcher tab as relayed to an embedded pane (parent → frame). */
 export interface HostTab {
@@ -173,11 +183,12 @@ const instancesSlice = createSlice({
     setWarm(state, action: PayloadAction<{ id: string; conn: WarmConn }>) {
       const { id, conn } = action.payload
       const prev = state.warm[id]
-      // A new port/token changes the iframe src (srcFor), which reloads the
-      // pane — its previous readiness no longer describes what's on screen.
+      // A new endpoint changes the iframe src (srcFor) — a fresh port/token in
+      // direct mode, or a fresh capability/channel in relay mode — which reloads
+      // the pane, so its previous readiness no longer describes what's on screen.
       // Tests preload partial slices, so tolerate a missing `ready` map.
       if (!state.ready) state.ready = {}
-      if (!prev || prev.port !== conn.port || prev.token !== conn.token) {
+      if (!sameEndpoint(prev, conn)) {
         delete state.ready[id]
       }
       state.warm[id] = conn

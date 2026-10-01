@@ -38,6 +38,12 @@
  */
 
 import { safeGetItem, safeSetItem } from '../utils/safeStorage'
+// Relocatable dashboard runtime (R1-A): the ui-prefs endpoint is a
+// same-dashboard gateway path, so in a relayed pane it MUST resolve under the
+// capability prefix instead of escaping to the hub root. Calling through the
+// ENDPOINT constant hid this same-dashboard call from the runtime guard's
+// root-literal scan, so the migration missed it; route it through the seam.
+import { relocateRequestUrl } from './dashboardRuntime'
 import { bottomTerminalPrefsSnapshot } from '../hooks/useBottomTerminal'
 
 /** Terminal labels have per-id write coordinates, but share the layout's
@@ -425,7 +431,7 @@ export async function reconcileNewDurableKeys(): Promise<number> {
   const timer = setTimeout(() => controller.abort(), HYDRATE_TIMEOUT_MS)
   const owned = ownedAtFailure()
   try {
-    const res = await fetch(ENDPOINT, { signal: controller.signal })
+    const res = await fetch(relocateRequestUrl(ENDPOINT), { signal: controller.signal })
     if (!res.ok) {
       markHydrateFailed()
       return -1
@@ -663,7 +669,7 @@ async function putPatch(
   keepalive = false,
 ): Promise<Response | null> {
   try {
-    return await fetch(ENDPOINT, {
+    return await fetch(relocateRequestUrl(ENDPOINT), {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ prefs: patch }),
@@ -738,7 +744,7 @@ export async function hydrateUiPrefs(): Promise<number> {
   // wins (see the key's doc). Null means no failure on record: local wins.
   const owned = ownedAtFailure()
   try {
-    const res = await fetch(ENDPOINT, { signal: controller.signal })
+    const res = await fetch(relocateRequestUrl(ENDPOINT), { signal: controller.signal })
     if (!res.ok) {
       markHydrateFailed()
       return 0

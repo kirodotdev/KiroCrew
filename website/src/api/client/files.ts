@@ -5,6 +5,7 @@
  * completion, composer uploads and screenshots.
  */
 
+import { relocateRequestUrl } from '../../lib/dashboardRuntime'
 import { i18nT } from '../../i18n/t'
 import { resizeImageForModel, type ResizeInfo } from '../../utils/resizeImage'
 import type { ClientTransport } from './transport'
@@ -80,19 +81,19 @@ export function createFilesEndpoints({ post, put, del, j, checkSessionExpired, w
         base?: string
         error?: string
       }>,
-    recentProjects: () => withJournaledDeadline(BROWSE_FILES_TIMEOUT_MS, undefined, '/api/recent-projects', s => fetch('/api/recent-projects', { signal: s }).then(j)) as Promise<{ dirs: string[] }>,
+    recentProjects: () => withJournaledDeadline(BROWSE_FILES_TIMEOUT_MS, undefined, '/api/recent-projects', s => fetch(relocateRequestUrl('/api/recent-projects'), { signal: s }).then(j)) as Promise<{ dirs: string[] }>,
     // Bounded HERE, not per initiator: react-query dedupes on the key, so the weakest
     // initiator would decide the bound.
-    browseDirs: (path?: string) => withJournaledDeadline(BROWSE_FILES_TIMEOUT_MS, undefined, '/api/browse-dirs', s => fetch('/api/browse-dirs' + (path ? '?path=' + encodeURIComponent(path) : ''), { signal: s }).then(j)) as Promise<{ path: string; parent: string; dirs: { name: string; path: string }[] }>,
+    browseDirs: (path?: string) => withJournaledDeadline(BROWSE_FILES_TIMEOUT_MS, undefined, '/api/browse-dirs', s => fetch(relocateRequestUrl('/api/browse-dirs' + (path ? '?path=' + encodeURIComponent(path) : '')), { signal: s }).then(j)) as Promise<{ path: string; parent: string; dirs: { name: string; path: string }[] }>,
     /** Windows only: the mounted drive roots, as the virtual level above every `X:\`. `path` is `""`: this listing is not a directory. */
-    browseDrives: () => withJournaledDeadline(BROWSE_FILES_TIMEOUT_MS, undefined, '/api/browse-dirs', s => fetch('/api/browse-dirs?drives=1', { signal: s }).then(j)) as Promise<{ path: string; parent: string; dirs: { name: string; path: string }[] }>,
-    browseFiles: (path?: string, signal?: AbortSignal) => withJournaledDeadline(BROWSE_FILES_TIMEOUT_MS, signal, '/api/browse-files', s => fetch('/api/browse-files' + (path ? '?path=' + encodeURIComponent(path) : ''), { signal: s }).then(j)) as Promise<{ path: string; parent: string; dirs: { name: string; path: string; mtime: number }[]; files: { name: string; path: string; mtime: number }[] }>,
-    projectGit: (path: string) => fetch('/api/project/git?path=' + encodeURIComponent(path)).then(j) as Promise<{ path: string; repo: boolean; repoRoot?: string; branch?: string; detached?: boolean; head?: string }>,
-    projectGitStatus: (path: string) => fetch('/api/project/git/status?path=' + encodeURIComponent(path)).then(j) as Promise<{ repo: boolean; repoRoot?: string; branch?: string; ahead?: number; behind?: number; truncated?: boolean; files: { path: string; status: string; staged: boolean; additions?: number; deletions?: number }[] }>,
-    projectGitLog: (path: string, limit = 20) => fetch('/api/project/git/log?path=' + encodeURIComponent(path) + '&limit=' + limit).then(j) as Promise<{ repo: boolean; commits: { sha: string; message: string; author: string; date: string; isHead: boolean }[] }>,
+    browseDrives: () => withJournaledDeadline(BROWSE_FILES_TIMEOUT_MS, undefined, '/api/browse-dirs', s => fetch(relocateRequestUrl('/api/browse-dirs?drives=1'), { signal: s }).then(j)) as Promise<{ path: string; parent: string; dirs: { name: string; path: string }[] }>,
+    browseFiles: (path?: string, signal?: AbortSignal) => withJournaledDeadline(BROWSE_FILES_TIMEOUT_MS, signal, '/api/browse-files', s => fetch(relocateRequestUrl('/api/browse-files' + (path ? '?path=' + encodeURIComponent(path) : '')), { signal: s }).then(j)) as Promise<{ path: string; parent: string; dirs: { name: string; path: string; mtime: number }[]; files: { name: string; path: string; mtime: number }[] }>,
+    projectGit: (path: string) => fetch(relocateRequestUrl('/api/project/git?path=' + encodeURIComponent(path))).then(j) as Promise<{ path: string; repo: boolean; repoRoot?: string; branch?: string; detached?: boolean; head?: string }>,
+    projectGitStatus: (path: string) => fetch(relocateRequestUrl('/api/project/git/status?path=' + encodeURIComponent(path))).then(j) as Promise<{ repo: boolean; repoRoot?: string; branch?: string; ahead?: number; behind?: number; truncated?: boolean; files: { path: string; status: string; staged: boolean; additions?: number; deletions?: number }[] }>,
+    projectGitLog: (path: string, limit = 20) => fetch(relocateRequestUrl('/api/project/git/log?path=' + encodeURIComponent(path) + '&limit=' + limit)).then(j) as Promise<{ repo: boolean; commits: { sha: string; message: string; author: string; date: string; isHead: boolean }[] }>,
     projectTree: (path: string) => withJournaledDeadline(FILE_SEARCH_TIMEOUT_MS, undefined, '/api/project/tree', s =>
-      fetch('/api/project/tree?path=' + encodeURIComponent(path), { signal: s }).then(j)) as Promise<{ root: string; paths: string[]; directories?: string[]; repo: boolean; truncated?: boolean; truncatedDirectories?: string[]; hiddenOnlyDirectories?: string[]; unreadableDirectories?: string[]; linkedDirectories?: string[] }>,
-    workspaces: () => fetch('/api/workspaces').then(j),
+      fetch(relocateRequestUrl('/api/project/tree?path=' + encodeURIComponent(path)), { signal: s }).then(j)) as Promise<{ root: string; paths: string[]; directories?: string[]; repo: boolean; truncated?: boolean; truncatedDirectories?: string[]; hiddenOnlyDirectories?: string[]; unreadableDirectories?: string[]; linkedDirectories?: string[] }>,
+    workspaces: () => fetch(relocateRequestUrl('/api/workspaces')).then(j),
     createWorkspace: (body: object) => post('/api/workspaces', body).then(j),
     updateWorkspace: (name: string, body: object) =>
       put('/api/workspaces/' + encodeURIComponent(name), body).then(j),
@@ -116,7 +117,7 @@ export function createFilesEndpoints({ post, put, del, j, checkSessionExpired, w
 
   const fileOps = {
     pickFiles: () => post('/api/upload').then(j) as Promise<{ paths: string[] }>,
-    fileDiff: (path: string) => fetch('/api/file-diff?path=' + encodeURIComponent(path)).then(j) as Promise<{ diff: string; original: string; status?: 'clean' | 'modified' | 'untracked' | 'not_git' | 'error' }>,
+    fileDiff: (path: string) => fetch(relocateRequestUrl('/api/file-diff?path=' + encodeURIComponent(path))).then(j) as Promise<{ diff: string; original: string; status?: 'clean' | 'modified' | 'untracked' | 'not_git' | 'error' }>,
     /** Fuzzy file search for @-mention picker. `kind` distinguishes folder hits from files.
      *  `kinds` narrows the result set server-side — 'files' or 'dirs'; omitted returns both.
      *  Filtering server-side rather than dropping unwanted hits here matters because the
@@ -133,7 +134,7 @@ export function createFilesEndpoints({ post, put, del, j, checkSessionExpired, w
       if (kinds) p.set('kinds', kinds)
       if (limit) p.set('limit', String(limit))
       return withJournaledDeadline(FILE_SEARCH_TIMEOUT_MS, signal, '/api/file-search', s =>
-        fetch(`/api/file-search?${p}`, { signal: s }).then(j)) as Promise<{ results: Array<{ path: string; name: string; size: number; mtime: number; kind?: 'file' | 'dir' }>; root: string }>
+        fetch(relocateRequestUrl(`/api/file-search?${p}`), { signal: s }).then(j)) as Promise<{ results: Array<{ path: string; name: string; size: number; mtime: number; kind?: 'file' | 'dir' }>; root: string }>
     },
     /** One directory level of a project, for the composer's `./` path completion.
      *  `dir` is the literal prefix typed (`./`, `../src/`) and `q` the partial entry
@@ -142,7 +143,7 @@ export function createFilesEndpoints({ post, put, del, j, checkSessionExpired, w
     pathComplete: (project: string, dir: string, q: string, signal?: AbortSignal) => {
       const p = new URLSearchParams({ path: project, dir })
       if (q) p.set('q', q)
-      return fetch(`/api/path-complete?${p}`, signal ? { signal } : undefined).then(j) as Promise<{ results: Array<{ path: string; name: string; size: number; mtime: number; kind?: 'file' | 'dir' }>; root: string; outside?: boolean }>
+      return fetch(relocateRequestUrl(`/api/path-complete?${p}`), signal ? { signal } : undefined).then(j) as Promise<{ results: Array<{ path: string; name: string; size: number; mtime: number; kind?: 'file' | 'dir' }>; root: string; outside?: boolean }>
     },
     /** Upload files via browser File API (cross-platform).
      *  `signal` lets the composer abort an upload still in flight: the
@@ -155,7 +156,7 @@ export function createFilesEndpoints({ post, put, del, j, checkSessionExpired, w
       const resized = prepared.map(p => p.info).filter((i): i is ResizeInfo => i !== null)
       const fd = new FormData()
       prepared.forEach(p => fd.append('file', p.file))
-      const res = await fetch('/api/upload/file', { method: 'POST', body: fd, ...(signal ? { signal } : {}) })
+      const res = await fetch(relocateRequestUrl('/api/upload/file'), { method: 'POST', body: fd, ...(signal ? { signal } : {}) })
       checkSessionExpired(res)
       let body: { paths?: unknown; error?: string }
       try { body = await res.json() } catch { body = {} }

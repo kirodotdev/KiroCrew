@@ -3,6 +3,7 @@
  * startup feature videos, and tips.
  */
 
+import { relocateRequestUrl } from '../../lib/dashboardRuntime'
 import type { ClientTransport } from './transport'
 
 /** Category of a welcome-screen suggestion; drives its icon tile. */
@@ -107,7 +108,7 @@ export interface FeatureVideoStatus {
 export function createFeatureDiscoveryEndpoints({ get, post, j, jNullable }: ClientTransport) {
   const suggestions = {
     // Items are a bare string (legacy / cached payloads) or `{ text, kind }`.
-    suggestions: (force?: boolean) => fetch(`/api/suggestions${force ? '?force=1' : ''}`).then(j) as Promise<{ suggestions: SuggestionItem[]; generated_at: number; stale: boolean }>,
+    suggestions: (force?: boolean) => fetch(relocateRequestUrl(`/api/suggestions${force ? '?force=1' : ''}`)).then(j) as Promise<{ suggestions: SuggestionItem[]; generated_at: number; stale: boolean }>,
   }
 
   const featureVideos = {

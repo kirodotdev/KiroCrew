@@ -9,6 +9,7 @@
 // lib/agentSession.ts) — a repeat click returns to the same conversation instead
 // of starting a new one, which is the main upgrade over the app this was ported
 // from.
+import { relocateRequestUrl } from '../../lib/dashboardRuntime'
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
@@ -70,7 +71,7 @@ interface PrStatus {
 }
 
 async function getJson<T>(path: string): Promise<T> {
-  const res = await fetch(path)
+  const res = await fetch(relocateRequestUrl(path))
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   return (await res.json()) as T
 }
@@ -288,7 +289,7 @@ export default function AutoImprovementPage() {
   // routes it to `commitFinding.error`, which the row renders. Raised by the UX review.
   const commitFinding = useMutation({
     mutationFn: async (fp: string) => {
-      const res = await fetch(`${API}/findings/${encodeURIComponent(fp)}/commit`, {
+      const res = await fetch(relocateRequestUrl(`${API}/findings/${encodeURIComponent(fp)}/commit`), {
         method: 'POST',
       })
       const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string }

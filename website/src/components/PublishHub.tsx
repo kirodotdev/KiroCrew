@@ -12,6 +12,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { AlertCircle, AlertTriangle, Check, ExternalLink, Globe, Settings, Upload, X } from 'lucide-react'
 import { api, type AppPublishProvider } from '../api/client'
+import { relocateRequestUrl } from '../lib/dashboardRuntime'
 import { Card, Btn, ContentSkeleton } from './ui'
 import PublicPublishAckModal from './PublicPublishAckModal'
 import ErrorDetails from './ErrorDetails'
@@ -405,7 +406,11 @@ export function PublishHub({
       if (previewIdentity.profile) payload.expected_profile = previewIdentity.profile
       if (previewIdentity.region) payload.expected_region = previewIdentity.region
       if (overrideScan) payload.override_scan = true
-      const r = await fetch(endpoint, {
+      // Relocate so the root default `/api/deploy/deploy` (or a provider's root
+      // endpoint) stays under the pane's capability prefix in a relayed pane
+      // (identity in direct mode; an already-absolute external endpoint is left
+      // untouched by the loose relocator).
+      const r = await fetch(relocateRequestUrl(endpoint), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Session-Key': 'dashboard:ui' },
         body: JSON.stringify(payload),

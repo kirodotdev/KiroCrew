@@ -37,6 +37,7 @@ import {
   confirmAssumedStart,
   type GateDecision,
 } from './completionGate'
+import { dashboardWebSocket } from '../../lib/dashboardRuntime'
 
 /** What the caller needs in order to raise a bubble. */
 export interface SessionDone {
@@ -105,8 +106,7 @@ export interface SessionWatchOptions {
 
 /** The gateway's socket, same origin as this page. */
 function defaultConnect(): WebSocket {
-  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  return new WebSocket(`${proto}//${window.location.host}/api/ws`)
+  return dashboardWebSocket('/api/ws')
 }
 
 /** Backoff bounds for reconnection. */

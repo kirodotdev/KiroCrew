@@ -31,7 +31,9 @@
 import { api } from '../api/client'
 import { paneLog } from './paneLog'
 import { setWarm, type WarmConn } from '../store/instancesSlice'
+import { paneAccessFor, parsePaneEndpoint, resolvePaneMode } from './paneChannel'
 import type { AppDispatch } from '../store'
+import type { InstanceTunnelStatus } from '../api/client/instances'
 
 /**
  * Which caller asked. One checked vocabulary for the journal's `via` field, so
@@ -67,6 +69,68 @@ export async function connectInstanceInto(
 ) {
   const rebuild = !!opts.rebuild
   const onlyIfConnected = !!opts.onlyIfConnected
+
+  // How this parent addresses panes decides the warm endpoint's shape. In
+  // same-origin-relay mode the owner-only issuer (openInstancePane) connects the
+  // tunnel AND mints a capability in one call and returns a discriminated relay
+  // endpoint (no port, no token). In direct-loopback mode the connect route is
+  // used exactly as before, so that path is byte-identical.
+  const mode = resolvePaneMode(window.location)
+  if (mode.kind === 'same-origin-relay') {
+    // Auto-warm and renewal must never BRING a tunnel up, and must never receive
+    // a remote token. Both are served by ONE atomic gateway call: the
+    // connected-only issue mode (`onlyIfConnected`) mints a relay pane only for
+    // an already-connected forward — decided under the manager lock, so a
+    // background issue racing an explicit disconnect can neither reconnect the
+    // tunnel nor surface a token — and declines (a non-connected 200, no
+    // endpoint) otherwise. The earlier design gated `openInstancePane` behind a
+    // SEPARATE connect probe, which both received the connect route's remote
+    // token and left a disconnect-shaped race between the probe and the (always
+    // connecting) issue. A plain selection/Retry issue keeps connect-or-create.
+    let raw
+    try {
+      raw = await api.openInstancePane(
+        id,
+        paneAccessFor(mode),
+        rebuild ? { rebuild: true } : onlyIfConnected ? { onlyIfConnected: true } : undefined,
+      )
+    } catch (err) {
+      // A non-2xx (remote_upgrade_required, bad_request, connect failure) throws
+      // here; the caller's mutation / fan-out surfaces its `.code` to the user.
+      paneLog('warm-failed', { id, via, rebuild: rebuild || undefined, error: (err as Error)?.message || 'unknown' })
+      throw err
+    }
+    const endpoint = parsePaneEndpoint(raw)
+    if (endpoint && endpoint.kind === 'same-origin-relay') {
+      dispatch(setWarm({ id, conn: endpoint }))
+      paneLog('warm', { id, via, rebuild: rebuild || undefined, relay: true })
+      // Callers branch only on `state`; a valid relay endpoint means connected.
+      const connected: InstanceTunnelStatus = { instance_id: id, state: 'connected' }
+      return connected
+    }
+    // No relay endpoint. Under `onlyIfConnected` this is the gateway declining a
+    // forward that is not up (its body carries the real non-connected state);
+    // otherwise it is a 200 whose shape we could not validate. Either way, leave
+    // any previous warm entry standing. Report the declined state so a background
+    // caller branches on it (auto-warm/renewal treat non-connected as "nothing to
+    // warm") rather than believing the pane came up.
+    const declinedState =
+      (raw && typeof raw === 'object' && (raw as { state?: string }).state) || undefined
+    paneLog('warm-declined', {
+      id,
+      via,
+      state: declinedState,
+      reason: onlyIfConnected ? 'not_connected' : 'no_relay_endpoint',
+    })
+    const synthetic: InstanceTunnelStatus = {
+      instance_id: id,
+      // A plain issue that reached a 200 kept the old "connected" contract; a
+      // connected-only decline reports the forward's real (non-connected) state.
+      state: onlyIfConnected ? ((declinedState as InstanceTunnelStatus['state']) || 'disconnected') : 'connected',
+    }
+    return synthetic
+  }
+
   let st
   try {
     // The options object is passed only when set, so the plain call keeps the
@@ -81,7 +145,7 @@ export async function connectInstanceInto(
     throw err
   }
   if (st.state === 'connected' && st.local_port && st.token) {
-    const conn: WarmConn = { port: st.local_port, token: st.token }
+    const conn: WarmConn = { kind: 'direct-loopback', port: st.local_port, token: st.token }
     dispatch(setWarm({ id, conn }))
     paneLog('warm', { id, port: st.local_port, via, rebuild: rebuild || undefined })
   } else {

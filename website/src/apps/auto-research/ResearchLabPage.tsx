@@ -2,6 +2,7 @@ import { useState, useEffect, useReducer, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { FlaskConical, Play, Pause, Square, MessageCircle, ChevronDown, ChevronRight, Sparkles, ThumbsUp, ArrowRight, HelpCircle, XCircle, CheckCircle, AlertTriangle, Lock, X, Trash2, GitFork, Flame, BookOpen, FileText, RefreshCw, ExternalLink, Loader2 } from 'lucide-react'
 import { api } from '../../api/client'
+import { relocateRequestUrl } from '../../lib/dashboardRuntime'
 import Clickable from '../../components/Clickable'
 import Modal from '../../components/Modal'
 import { Btn } from '../../components/ui'
@@ -615,7 +616,7 @@ function CampaignDetail({ id, onBack, onFork, onOpen }: { id: string; onBack: ()
   // SSE: instant updates; on connection error, fall back to polling above.
   useEffect(() => {
     setSseFailed(false)  // reset on id change so each campaign starts clean
-    const es = new EventSource(`/api/apps/auto-research/campaigns/${id}/stream`)
+    const es = new EventSource(relocateRequestUrl(`/api/apps/auto-research/campaigns/${id}/stream`))
     es.onmessage = () => {
       qc.invalidateQueries({ queryKey: ['research-campaign', id] })
     }

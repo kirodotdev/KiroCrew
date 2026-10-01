@@ -1,3 +1,4 @@
+import { relocateRequestUrl } from '../../lib/dashboardRuntime'
 // Typed fetch wrapper for the Meetings backend.
 //
 // The base path is `/api/apps/meetings` — the routes are registered directly on
@@ -247,7 +248,7 @@ export class MeetingsApiError extends Error {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API}${path}`, {
+  const res = await fetch(relocateRequestUrl(`${API}${path}`), {
     ...init,
     headers: init?.body ? { 'Content-Type': 'application/json', ...init?.headers } : init?.headers,
   })

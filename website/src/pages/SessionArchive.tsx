@@ -1,3 +1,4 @@
+import { relocateRequestUrl } from '../lib/dashboardRuntime'
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { Trans } from 'react-i18next'
 
@@ -27,7 +28,7 @@ export default function SessionArchive() {
     setLoading(true)
     setError('')
     try {
-      const r = await fetch(`/api/session/archive`)
+      const r = await fetch(relocateRequestUrl(`/api/session/archive`))
       if (!r.ok) throw new Error(`HTTP ${r.status}: ${await r.text()}`)
       const d = await r.json()
       setArchives(d.archives || [])
@@ -53,7 +54,7 @@ export default function SessionArchive() {
     setContentError('')
     setContentLoading(true)
     try {
-      const r = await fetch(`/api/session/archive/${encodeURIComponent(name)}`, { signal: controller.signal })
+      const r = await fetch(relocateRequestUrl(`/api/session/archive/${encodeURIComponent(name)}`), { signal: controller.signal })
       if (!r.ok) throw new Error(await r.text())
       const text = await r.text()
       setContent(text.length > 200_000

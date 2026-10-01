@@ -5,6 +5,7 @@
 // /api/apps/ops-mission-control — the same convention as issue-radar and
 // code-review-sage, NOT the /apps/{name}/api reverse-proxy prefix used by apps
 // that run as a separate child process.
+import { relocateRequestUrl } from '../../lib/dashboardRuntime'
 import { i18nT } from '../../i18n/t'
 
 const API = '/api/apps/ops-mission-control'
@@ -1089,7 +1090,7 @@ export class OpsApiError extends Error {
 }
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
-  const resp = await fetch(`${API}${path}`, {
+  const resp = await fetch(relocateRequestUrl(`${API}${path}`), {
     ...init,
     headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
   })

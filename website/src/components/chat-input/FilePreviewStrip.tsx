@@ -6,6 +6,7 @@ import { useScrollEdges } from '../../hooks/useScrollEdges'
 import { IMG_EXT, buildFileLabels } from '../../utils/fileTokens'
 import type { ResizeInfo } from '../../utils/resizeImage'
 import { i18nT } from '../../i18n/t'
+import { relocateRequestUrl } from '../../lib/dashboardRuntime'
 
 /** Accent pill under a downscaled attachment chip. Hover (or focus) shows a
  *  styled tooltip with the resize details through the shared `InstantTip`
@@ -75,7 +76,7 @@ export function FilePreviewStrip({ files, dirs = NO_DIRS, resizedInfo, onRemove,
           THUMBNAILS (the thing being compared) instead of letting the pills hang. */}
       <div ref={attachScroller} data-testid="preview-strip" className="flex gap-2 px-4 py-2 border-t border-border bg-chrome/50 overflow-x-auto items-start" data-image-scope="">
       {imgs.map((path, i) => {
-        const src = `/api/file-raw?path=${encodeURIComponent(path)}`
+        const src = relocateRequestUrl(`/api/file-raw?path=${encodeURIComponent(path)}`)
         const resize = resizedInfo?.[path]
         return (
           <div key={path} role="group" aria-label={path} className="group/preview shrink-0 flex flex-col items-start gap-0.5" title={path}>

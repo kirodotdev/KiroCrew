@@ -14,6 +14,7 @@
  * identical behavior. Source-fetch is done by the parent (since both surfaces
  * already fetch the full run snapshot to drive the tree).
  */
+import { relocateRequestUrl } from '../../lib/dashboardRuntime'
 import { memo, useEffect, useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { FileCode, Pencil, Play, ChevronRight } from 'lucide-react'
@@ -68,7 +69,7 @@ const WorkflowSourcePanel = memo(function WorkflowSourcePanel({
   const rerunMutation = useMutation({
     mutationFn: async (src: string) => {
       const r = await fetch(
-        `${CORE_API_BASE}/runs/${encodeURIComponent(run_id)}/rerun`,
+        relocateRequestUrl(`${CORE_API_BASE}/runs/${encodeURIComponent(run_id)}/rerun`),
         {
           method: 'POST',
           credentials: 'same-origin',

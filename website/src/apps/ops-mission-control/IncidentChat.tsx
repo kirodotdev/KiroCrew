@@ -25,6 +25,7 @@
 import { useCallback } from 'react'
 import { AppScopedApiProvider } from '../../app-sdk/scopedApi'
 import ChatEmbed from '../../app-sdk/ChatEmbed'
+import { dashboardNavigateUrl, type GatewayPath } from '../../lib/dashboardRuntime'
 
 import { i18nT } from '../../i18n/t'
 /**
@@ -67,8 +68,17 @@ export default function IncidentChat({
 }) {
   // Deliberately NOT the router's navigate: this panel sits on a board row, and a
   // full document load is the intended behaviour when the embed navigates away.
+  //
+  // The full-document target is relocated through the runtime so a relayed pane
+  // navigates within its own capability prefix instead of escaping to the hub
+  // root (identity in direct mode). App navigation targets are root-absolute
+  // routes; a non-root path (or a protocol-relative one) is left untouched.
   const navigateFn = useCallback((path: string) => {
-    window.location.assign(path)
+    const target =
+      path.startsWith('/') && !path.startsWith('//')
+        ? dashboardNavigateUrl(path as GatewayPath)
+        : path
+    window.location.assign(target)
   }, [])
 
   return (

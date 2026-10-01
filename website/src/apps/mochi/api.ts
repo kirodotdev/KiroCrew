@@ -25,6 +25,7 @@ export type {
   WatchPriority,
   WatchStatus,
 } from './src/shared/watchlistTypes'
+import { relocateRequestUrl } from '../../lib/dashboardRuntime'
 import { toApiError } from '../../api/apiError'
 import type {
   WatchItem,
@@ -113,7 +114,7 @@ export interface SoulInfo {
 // ── Client ──────────────────────────────────────────────────────────────────
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API}${path}`, {
+  const res = await fetch(relocateRequestUrl(`${API}${path}`), {
     credentials: 'same-origin',
     ...init,
   })
@@ -233,7 +234,7 @@ export function getActivity(): Promise<{ entries: ActivityEntry[] }> {
  * error so a genuine outage is not painted as "sleeping".
  */
 export async function probeEnabled(): Promise<'enabled' | 'disabled' | 'starting'> {
-  const res = await fetch(`${API}/pet-state`, { credentials: 'same-origin' })
+  const res = await fetch(relocateRequestUrl(`${API}/pet-state`), { credentials: 'same-origin' })
   if (res.ok) return 'enabled'
   if (res.status === 403) return 'disabled'
   if (res.status === 503) return 'starting'
@@ -242,7 +243,7 @@ export async function probeEnabled(): Promise<'enabled' | 'disabled' | 'starting
 
 /** Enable the app — reuses core's app registry route, not a Mochi-specific one. */
 export async function enableMochi(): Promise<void> {
-  const res = await fetch('/api/apps/mochi/enable', {
+  const res = await fetch(relocateRequestUrl('/api/apps/mochi/enable'), {
     method: 'POST',
     credentials: 'same-origin',
   })
@@ -258,7 +259,7 @@ export async function enableMochi(): Promise<void> {
  * second source of truth.
  */
 export async function getMochiVersion(): Promise<string> {
-  const res = await fetch('/api/apps/mochi/manifest', { credentials: 'same-origin' })
+  const res = await fetch(relocateRequestUrl('/api/apps/mochi/manifest'), { credentials: 'same-origin' })
   if (!res.ok) return ''
   const body = (await res.json()) as { version?: unknown; manifest?: { version?: unknown } }
   const v = body?.version ?? body?.manifest?.version

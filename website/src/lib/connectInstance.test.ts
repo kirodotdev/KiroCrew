@@ -21,7 +21,7 @@ describe('connectInstanceInto pane journal', () => {
     const dispatch = vi.fn()
     connectInstance.mockResolvedValue({ state: 'connected', local_port: 7781, token: 'supersecret' })
     await connectInstanceInto(dispatch as never, 'shizuka', 'auto-connect')
-    expect(dispatch).toHaveBeenCalledWith(setWarm({ id: 'shizuka', conn: { port: 7781, token: 'supersecret' } }))
+    expect(dispatch).toHaveBeenCalledWith(setWarm({ id: 'shizuka', conn: { kind: 'direct-loopback', port: 7781, token: 'supersecret' } }))
     expect(lines).toEqual(['[pane] warm id=shizuka port=7781 via=auto-connect'])
     expect(lines.join('\n')).not.toContain('supersecret')
   })

@@ -88,7 +88,7 @@ describe('useInstanceShortcuts — top-level (Electron)', () => {
   it('digit 1 switches to Local (null pane)', async () => {
     vi.mocked(api.listInstances).mockResolvedValue(listResp([conn()]))
     const store = createTestStore({
-      instances: { warm: { 'cd-1': { port: 7778, token: 't' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, host: null },
+      instances: { warm: { 'cd-1': { kind: 'direct-loopback', port: 7778, token: 't' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, host: null },
     })
     renderHookWithProviders(() => useInstanceShortcuts(), { store })
     await loaded()
@@ -100,7 +100,7 @@ describe('useInstanceShortcuts — top-level (Electron)', () => {
   it('digit 2 switches to the first remote instance (no reconnect when warm+live)', async () => {
     vi.mocked(api.listInstances).mockResolvedValue(listResp([conn()]))
     const store = createTestStore({
-      instances: { warm: { 'cd-1': { port: 7778, token: 't' } }, activeId: null, mru: ['cd-1'], unread: {}, host: null },
+      instances: { warm: { 'cd-1': { kind: 'direct-loopback', port: 7778, token: 't' } }, activeId: null, mru: ['cd-1'], unread: {}, host: null },
     })
     renderHookWithProviders(() => useInstanceShortcuts(), { store })
     await loaded()
@@ -123,13 +123,13 @@ describe('useInstanceShortcuts — top-level (Electron)', () => {
     pressDigit(2)
     expect(store.getState().instances.activeId).toBe('cd-1')
     await waitFor(() => expect(api.connectInstance).toHaveBeenCalledWith('cd-1'))
-    await waitFor(() => expect(store.getState().instances.warm['cd-1']).toEqual({ port: 7778, token: 'fresh' }))
+    await waitFor(() => expect(store.getState().instances.warm['cd-1']).toEqual({ kind: 'direct-loopback', port: 7778, token: 'fresh' }))
   })
 
   it('ignores a digit with no matching pane (default NOT prevented)', async () => {
     vi.mocked(api.listInstances).mockResolvedValue(listResp([conn()]))
     const store = createTestStore({
-      instances: { warm: { 'cd-1': { port: 7778, token: 't' } }, activeId: null, mru: ['cd-1'], unread: {}, host: null },
+      instances: { warm: { 'cd-1': { kind: 'direct-loopback', port: 7778, token: 't' } }, activeId: null, mru: ['cd-1'], unread: {}, host: null },
     })
     renderHookWithProviders(() => useInstanceShortcuts(), { store })
     await loaded()
@@ -165,7 +165,7 @@ describe('useInstanceShortcuts — top-level (Electron)', () => {
     localStorage.setItem(SHORTCUTS_ENABLED_KEY, '0')
     vi.mocked(api.listInstances).mockResolvedValue(listResp([conn()]))
     const store = createTestStore({
-      instances: { warm: { 'cd-1': { port: 7778, token: 't' } }, activeId: null, mru: ['cd-1'], unread: {}, host: null },
+      instances: { warm: { 'cd-1': { kind: 'direct-loopback', port: 7778, token: 't' } }, activeId: null, mru: ['cd-1'], unread: {}, host: null },
     })
     renderHookWithProviders(() => useInstanceShortcuts(), { store })
     await loaded()
@@ -177,7 +177,7 @@ describe('useInstanceShortcuts — top-level (Electron)', () => {
   it('ignores the chord when the wrong modifier is held', async () => {
     vi.mocked(api.listInstances).mockResolvedValue(listResp([conn()]))
     const store = createTestStore({
-      instances: { warm: { 'cd-1': { port: 7778, token: 't' } }, activeId: null, mru: ['cd-1'], unread: {}, host: null },
+      instances: { warm: { 'cd-1': { kind: 'direct-loopback', port: 7778, token: 't' } }, activeId: null, mru: ['cd-1'], unread: {}, host: null },
     })
     renderHookWithProviders(() => useInstanceShortcuts(), { store })
     await loaded()

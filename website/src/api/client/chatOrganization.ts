@@ -5,6 +5,7 @@
  * drop-to-column, and the board columns.
  */
 
+import { relocateRequestUrl } from '../../lib/dashboardRuntime'
 import type { AgentTagPolicy, SessionLaneKey } from '../../types'
 import type { ClientTransport } from './transport'
 
@@ -44,7 +45,7 @@ export interface ChannelFolderBackfillReport {
 export function createChatOrganizationEndpoints({ post, del, patch, j, sessionKeyHeader: _sk }: ClientTransport) {
   const sidebar = {
     // Folders
-    chatFolders: () => fetch('/api/chat/folders', { headers: { ..._sk } }).then(j),
+    chatFolders: () => fetch(relocateRequestUrl('/api/chat/folders'), { headers: { ..._sk } }).then(j),
     /** `config` carries the folder settings the create modal collects. Each is
      *  omitted when empty so the backend applies its own default. */
     createChatFolder: (name: string, parentId?: string, config?: { project_dir?: string; default_agent?: string; color?: string; icon?: string; tags?: string[]; steering_dirs?: string[] }) =>
@@ -85,18 +86,18 @@ export function createChatOrganizationEndpoints({ post, del, patch, j, sessionKe
     setSlotPin: (slot: string, pinned: boolean) => patch('/api/chat/slots/' + encodeURIComponent(slot) + '/pin', { pinned }).then(j),
     setSlotMode: (slot: string, mode: string) => patch('/api/chat/slots/' + encodeURIComponent(slot) + '/mode', { mode }).then(j),
     // Tags
-    chatTags: () => fetch('/api/chat/tags', { headers: { ..._sk } }).then(j),
+    chatTags: () => fetch(relocateRequestUrl('/api/chat/tags'), { headers: { ..._sk } }).then(j),
     createChatTag: (name: string, color?: string, status?: boolean) => post('/api/chat/tags', { name, color: color || '', status: !!status }).then(j),
     adoptChatTag: (id: string, status: boolean) => post('/api/chat/tags/' + encodeURIComponent(id) + '/adopt', { status }).then(j),
     updateChatTag: (id: string, body: { name?: string; color?: string; order?: number; status?: boolean; agent?: AgentTagPolicy }) => patch('/api/chat/tags/' + encodeURIComponent(id), body).then(j),
     deleteChatTag: (id: string) => del('/api/chat/tags/' + encodeURIComponent(id)).then(j),
-    setSlotTags: (slot: string, tags: string[], baseTagsRevision?: string) => fetch('/api/chat/slots/' + encodeURIComponent(slot) + '/tags', { method: 'PUT', headers: { 'Content-Type': 'application/json', ..._sk }, body: JSON.stringify(baseTagsRevision ? { tags, base_tags_revision: baseTagsRevision } : { tags }) }).then(j),
+    setSlotTags: (slot: string, tags: string[], baseTagsRevision?: string) => fetch(relocateRequestUrl('/api/chat/slots/' + encodeURIComponent(slot) + '/tags'), { method: 'PUT', headers: { 'Content-Type': 'application/json', ..._sk }, body: JSON.stringify(baseTagsRevision ? { tags, base_tags_revision: baseTagsRevision } : { tags }) }).then(j),
     dropSlotToColumn: (slot: string, columnId: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/drop', { column_id: columnId }).then(j),
-    tagColumns: () => fetch('/api/chat/tag-columns', { headers: { ..._sk } }).then(j),
+    tagColumns: () => fetch(relocateRequestUrl('/api/chat/tag-columns'), { headers: { ..._sk } }).then(j),
     createTagColumn: (body: { name?: string; tag_ids?: string[]; mode?: 'any' | 'all' | 'none'; include_untagged?: boolean; source?: 'tags' | 'state'; state_key?: SessionLaneKey }) => post('/api/chat/tag-columns', body).then(j),
     updateTagColumn: (id: string, body: { name?: string; tag_ids?: string[]; mode?: 'any' | 'all' | 'none'; order?: number; include_untagged?: boolean }) => patch('/api/chat/tag-columns/' + encodeURIComponent(id), body).then(j),
     deleteTagColumn: (id: string) => del('/api/chat/tag-columns/' + encodeURIComponent(id)).then(j),
-    reorderTagColumns: (ids: string[]) => fetch('/api/chat/tag-columns/order', { method: 'PUT', headers: { 'Content-Type': 'application/json', ..._sk }, body: JSON.stringify({ ids }) }).then(j),
+    reorderTagColumns: (ids: string[]) => fetch(relocateRequestUrl('/api/chat/tag-columns/order'), { method: 'PUT', headers: { 'Content-Type': 'application/json', ..._sk }, body: JSON.stringify({ ids }) }).then(j),
   }
 
   return { sidebar }

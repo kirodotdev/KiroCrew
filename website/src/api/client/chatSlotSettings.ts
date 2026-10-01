@@ -4,6 +4,7 @@
  * effort, auto-compact threshold, workspace, project and in-place reload.
  */
 
+import { relocateRequestUrl } from '../../lib/dashboardRuntime'
 import { withDeadline } from '../../lib/withDeadline'
 import type { ClientTransport } from './transport'
 
@@ -16,9 +17,9 @@ export const SLASH_COMMANDS_TIMEOUT_MS = 15_000
 
 export function createChatSlotSettingsEndpoints({ post, j }: ClientTransport) {
   const selection = {
-    models: () => fetch('/api/models').then(j),
+    models: () => fetch(relocateRequestUrl('/api/models')).then(j),
     chatSlotSelectionCapabilities: (slot: string) =>
-      fetch('/api/chat/slots/' + encodeURIComponent(slot) + '/selection-capabilities').then(j) as Promise<{
+      fetch(relocateRequestUrl('/api/chat/slots/' + encodeURIComponent(slot) + '/selection-capabilities')).then(j) as Promise<{
         known: boolean
         backend?: string
         effort_supported?: boolean
@@ -26,12 +27,12 @@ export function createChatSlotSettingsEndpoints({ post, j }: ClientTransport) {
         model_effort_pair_ids?: boolean
       }>,
     effortLevels: (slot?: string) =>
-      fetch('/api/effort-levels' + (slot ? '?slot=' + encodeURIComponent(slot) : '')).then(j) as Promise<string[]>,
+      fetch(relocateRequestUrl('/api/effort-levels' + (slot ? '?slot=' + encodeURIComponent(slot) : ''))).then(j) as Promise<string[]>,
     // Bounded HERE, not per initiator: react-query dedupes on the key, so the
     // weakest initiator would otherwise decide whether the promise is bounded.
     slashCommands: (signal?: AbortSignal) =>
       withDeadline(SLASH_COMMANDS_TIMEOUT_MS, signal, s =>
-        fetch('/api/slash-commands', { signal: s }).then(j)),
+        fetch(relocateRequestUrl('/api/slash-commands'), { signal: s }).then(j)),
     /** `kind` names the namespace the user picked from. Omitted, the backend
      *  keeps its legacy name-first resolution; stated, a same-name template and
      *  member are told apart and an unresolvable choice is refused (409) rather
@@ -45,7 +46,7 @@ export function createChatSlotSettingsEndpoints({ post, j }: ClientTransport) {
       post('/api/chat/slots/' + encodeURIComponent(slot) + '/model', { model }).then(j) as Promise<{ ok?: boolean; model?: string }>,
     /** This slot's auto-compact threshold override (null = follows the global). */
     chatSlotAutocompact: (slot: string) =>
-      fetch('/api/chat/slots/' + encodeURIComponent(slot) + '/autocompact').then(j) as Promise<{ pct: number | null; global_pct: number; min: number; max: number }>,
+      fetch(relocateRequestUrl('/api/chat/slots/' + encodeURIComponent(slot) + '/autocompact')).then(j) as Promise<{ pct: number | null; global_pct: number; min: number; max: number }>,
     /** Set (number) or clear (null) this slot's auto-compact threshold override. */
     setChatSlotAutocompact: (slot: string, pct: number | null) =>
       post('/api/chat/slots/' + encodeURIComponent(slot) + '/autocompact', { pct }).then(j) as Promise<{ ok?: boolean; pct: number | null; global_pct: number }>,

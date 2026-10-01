@@ -453,6 +453,12 @@ _BYPASS_PREFIXES = (
     "/artifact-app/",
     "/sandbox-doc/",
     "/browser-view/",
+    # The Remote Crew pane relay (dashboard/instance_pane_relay.py). Like
+    # /browser-view/, a same-origin relay framed in an opaque-origin sandbox that
+    # sends no cookie: it authenticates each request with the capability in the
+    # path and answers a UNIFORM 404 for any tokenless or wrong-capability
+    # request, so it must reach its handler rather than the middleware's 403.
+    "/instance-pane/",
 )
 _BYPASS_EXACT = {
     "/logo.png",
@@ -466,6 +472,10 @@ _BYPASS_EXACT = {
     # first, handing an unauthenticated prober a response that distinguishes
     # the bare path from the tokened misses.
     "/browser-view",
+    # The bare pane-relay path, same rationale as bare /browser-view above: the
+    # /instance-pane/ prefix misses the trailing-slash-free path, and the relay
+    # must answer its own uniform 404 rather than the middleware's 403.
+    "/instance-pane",
     "/manifest.json",
     "/sw.js",
     "/pcm-worklet.js",
@@ -650,6 +660,12 @@ SPA_FALLBACK_EXCLUDED_PREFIXES = (
     # never the SPA shell, which would render the dashboard inside the
     # Browser panel's own frame.
     "/browser-view",
+    # The Remote Crew pane relay (dashboard/instance_pane_relay.py). Same shape
+    # as /browser-view: a capability-authenticated data route whose handler must
+    # always answer (uniform 404 without a live capability, the relayed remote
+    # pane with one), never the hub SPA shell — which would frame the hub inside
+    # the pane instead of the remote dashboard.
+    "/instance-pane",
 )
 
 # App window entries (`/app-windows/<app>/<name>.html`) are their own Vite bundles, served

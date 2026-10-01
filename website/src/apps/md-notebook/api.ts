@@ -7,6 +7,7 @@
  *    folder needs the user's session. `/api/knowledge` is declared in the
  *    manifest's `permissions.api` for exactly that reason.
  */
+import { relocateRequestUrl } from '../../lib/dashboardRuntime'
 import { ApiError as SharedApiError } from '../../api/apiError'
 import { edgeChallengeMessage, noteEdgeAuthChallenge } from '../../api/edgeAuthChallenge'
 import { i18nT } from '../../i18n/t'
@@ -34,7 +35,7 @@ export class ApiError extends Error {
 const STALE_BACKEND_KEY = 'apps.mdNotebook.banner.staleBackendRoute'
 
 async function mdnbCall<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const res = await fetch(API_BASE + path, {
+  const res = await fetch(relocateRequestUrl(API_BASE + path), {
     method,
     credentials: 'same-origin',
     headers: { 'Content-Type': 'application/json' },
@@ -204,7 +205,7 @@ export const notesApi = {
 export async function knowledgeRegister(
   vault: Vault,
 ): Promise<{ sourceId: string; fileCount?: number }> {
-  const res = await fetch('/api/knowledge/sources', {
+  const res = await fetch(relocateRequestUrl('/api/knowledge/sources'), {
     method: 'POST',
     credentials: 'same-origin',
     headers: { 'Content-Type': 'application/json' },
@@ -227,7 +228,7 @@ export async function knowledgeRegister(
   // Folder sources land as pending_confirmation; confirming begins the scan.
   // A swallowed failure here left the vault recorded as indexed while its source
   // sat pending, so the notes were never actually searchable.
-  const confirm = await fetch(`/api/knowledge/sources/${encodeURIComponent(body.id)}/confirm`, {
+  const confirm = await fetch(relocateRequestUrl(`/api/knowledge/sources/${encodeURIComponent(body.id)}/confirm`), {
     method: 'POST',
     credentials: 'same-origin',
   })
@@ -244,7 +245,7 @@ export async function knowledgeRegister(
 /** Remove a vault's Knowledge source. Already-gone is not an error. */
 export async function knowledgeUnregister(sourceId?: string | null): Promise<void> {
   if (!sourceId) return
-  const res = await fetch(`/api/knowledge/sources/${encodeURIComponent(sourceId)}`, {
+  const res = await fetch(relocateRequestUrl(`/api/knowledge/sources/${encodeURIComponent(sourceId)}`), {
     method: 'DELETE',
     credentials: 'same-origin',
   })

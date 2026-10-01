@@ -25,6 +25,7 @@
  */
 import { isEmbeddedPane } from './embedded'
 import { parseLoopbackOriginPort } from './tunnelOrigin'
+import { relayPaneContext, stampPaneChannel } from './embeddedParent'
 
 export const NATIVE_NOTIFY_TYPE = 'mc-native-notify'
 export const NATIVE_NOTIFY_VERSION = 1
@@ -70,6 +71,12 @@ export interface NativeNotifyEnvelope {
  */
 export function relayTargetOrigin(): string | null {
   if (!isEmbeddedPane()) return null
+  // Same-origin-relay pane (opaque origin, no loopback referrer): the pre-module
+  // bootstrap published the parent's exact origin on window.__kcRelayPaneContext.
+  // The parent binds the message on the channel `stampPaneChannel` adds, so this
+  // concrete origin is the correct, non-'*' target.
+  const relay = relayPaneContext()
+  if (relay) return relay.parentOrigin
   try {
     if (window.location.pathname.startsWith('/embed/')) return null
     if (!document.referrer) return null
@@ -115,7 +122,7 @@ export function postNativeNotification(title: string, options: NativeNotifyOptio
         tag: String(options.tag ?? '').slice(0, NATIVE_NOTIFY_MAX_TAG),
         silent,
       }
-      window.parent?.postMessage(envelope, target)
+      window.parent?.postMessage(stampPaneChannel(envelope), target)
     } catch {
       /* never let the relay break the caller */
     }

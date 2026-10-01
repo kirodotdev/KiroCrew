@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from 'react'
+import { dashboardWebSocket } from '../lib/dashboardRuntime'
 import type { Terminal } from '@xterm/xterm'
 import type { FitAddon } from '@xterm/addon-fit'
 
@@ -418,9 +419,8 @@ function connect(sessionId: string, c: Conn) {
     return
   }
   setConnStatus(sessionId, c, 'reconnecting')
-  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
   const qs = c.cwd ? `?cwd=${encodeURIComponent(c.cwd)}` : ''
-  const ws = new WebSocket(`${proto}//${location.host}/api/ws/terminal/${sessionId}${qs}`)
+  const ws = dashboardWebSocket(`/api/ws/terminal/${sessionId}${qs}`)
   ws.binaryType = 'arraybuffer'
   c.ws = ws
 

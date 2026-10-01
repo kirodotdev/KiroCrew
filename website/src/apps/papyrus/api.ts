@@ -1,3 +1,4 @@
+import { relocateRequestUrl } from '../../lib/dashboardRuntime'
 // Thin fetch wrapper for the Papyrus backend.
 //
 // The routes are registered directly on the main gateway's aiohttp Application
@@ -129,13 +130,13 @@ async function toError(r: Response): Promise<PapyrusApiError> {
 async function get<T>(path: string, params: Record<string, string> = {}): Promise<T> {
   const q = new URLSearchParams(params)
   const suffix = q.toString() ? `?${q.toString()}` : ''
-  const r = await fetch(`${API}${path}${suffix}`, { credentials: 'same-origin' })
+  const r = await fetch(relocateRequestUrl(`${API}${path}${suffix}`), { credentials: 'same-origin' })
   if (!r.ok) throw await toError(r)
   return r.json() as Promise<T>
 }
 
 async function send<T>(method: string, path: string, body: unknown): Promise<T> {
-  const r = await fetch(`${API}${path}`, {
+  const r = await fetch(relocateRequestUrl(`${API}${path}`), {
     method,
     credentials: 'same-origin',
     headers: { 'Content-Type': 'application/json' },
@@ -147,7 +148,7 @@ async function send<T>(method: string, path: string, body: unknown): Promise<T> 
 
 async function del<T>(path: string, params: Record<string, string>): Promise<T> {
   const q = new URLSearchParams(params)
-  const r = await fetch(`${API}${path}?${q.toString()}`, {
+  const r = await fetch(relocateRequestUrl(`${API}${path}?${q.toString()}`), {
     method: 'DELETE',
     credentials: 'same-origin',
   })
@@ -163,7 +164,7 @@ async function del<T>(path: string, params: Record<string, string>): Promise<T> 
  * user needs to fix their document.
  */
 async function compile(name: string): Promise<CompileResult> {
-  const r = await fetch(`${API}/compile`, {
+  const r = await fetch(relocateRequestUrl(`${API}/compile`), {
     method: 'POST',
     credentials: 'same-origin',
     headers: { 'Content-Type': 'application/json' },

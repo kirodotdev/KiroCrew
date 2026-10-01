@@ -2660,6 +2660,134 @@ server route set.
   from the gateway `Host`, and browsers forbid scripts from forging either
   header. Non-loopback `Origin == Host` is **not** auto-trusted (still allowlist-only).
 
+### Remote Crew pane relay (`dashboard/instance_pane_relay.py`)
+
+The same-origin capability relay that lets a Remote Crew's dashboard be embedded
+through one published HTTPS origin (no wildcard host, no second port). It is a
+sibling of the browser-view relay and shares its posture; the differences are the
+upstream (a connected peer crew reached over the SSH forward, not a local view
+server) and the credential (the manager's port-scoped session cookie, added
+inside `SshTunnelManager`, never a browser credential).
+
+- **Two-gate model.** The owner-authenticated issuer `POST /api/instances/{id}/pane`
+  (`handlers_instances.api_instances_open_pane`) mints the lease behind the same
+  strict owner gate as the chat proxy — Slack-origin, unauthenticated, non-owner,
+  feature-disabled, disconnected, and unsupported-protocol callers are all denied
+  **before** a lease exists. The self-authenticated route
+  `* /instance-pane/{capability}/{tail}` then authenticates each request with the
+  capability in the path (the frame is an opaque-origin sandbox that sends no
+  hub cookie), so its prefix is on `token_auth`'s bypass list and the handler is
+  the gate. The bare `/instance-pane` path is bypass-listed too so it yields the
+  handler's uniform 404, not the middleware's 403.
+- **Memory-only, generation-bound lease.** `_PaneLease` stores only digests of the
+  capability and channel, bound to the instance id, the live tunnel/forward
+  **generation**, a monotonic expiry, and the channel digest. It is revoked on
+  disconnect, rebuild, removal, manager close, tunnel replacement, and expiry —
+  enforced **fail-closed at serve time** by a generation check (`peer_forward_current`),
+  so the lease is dead the moment its forward moves whether or not any explicit
+  cleanup runs. This also closes the port-reuse window: a reconnect onto the same
+  local port carries a new generation, so the old capability stays dead. Leases
+  are bounded per instance and globally.
+- **Uniform refusal.** Missing, malformed, unknown, expired, and stale-generation
+  capabilities all answer one byte-equivalent `404` **before** the peer, the
+  request body, or any error detail is touched. Every allow/deny decision emits a
+  SEL audit record with a fixed reason (never the capability, channel, token,
+  cookie, full path, query, or body). The capability also rides the request path,
+  which aiohttp's access log records by default, so a route-aware redactor
+  (`install_access_log_redaction`, wired at the server boundary) masks
+  `/instance-pane/<cap>` to `/instance-pane/<redacted>` there too — the guarantee
+  is those two owned sinks, not any log configured outside them.
+- **No SSRF, no credential crossing.** The upstream is always the loopback end of
+  the manager's already-open forward, resolved from the instance id alone —
+  neither the host, the port, nor an upstream redirect can be named by the
+  request, and the manager never follows a 30x on EITHER transport: the HTTP proxy
+  passes `allow_redirects=False`, and the WebSocket handshake (whose `ws_connect`
+  has no such switch) carries an `on_request_redirect` trace that raises before a
+  second request is sent, so a peer 30x reaches no authority the forward never
+  named. Connection establishment is fenced by the manager lock at the CONNECTOR
+  layer (a `TCPConnector.connect` override re-checks the forward generation and
+  dials under the lock, then releases it before the peer's response headers are
+  awaited), so a rebuild cannot reuse the loopback port mid-connect and one slow
+  peer cannot serialize every other crew behind the lock. The relay strips the browser's
+  cookies, `Authorization`, `Origin`, `Referer`, `Host`, and forwarding headers
+  (forwarding only an allow-list — `Range`, the conditionals, `Accept`), and
+  strips the peer's `Set-Cookie`/`Clear-Site-Data` downstream.
+- **Opaque isolation + protocol gate.** Every relayed response except script types
+  carries a `sandbox` CSP, `nosniff`, `no-referrer`, and
+  `Access-Control-Allow-Origin: null` (no credentials), so the frame is opaque
+  even opened as a full tab. The entry HTML is relocated by re-rooting its
+  root-absolute `src`/`href` entry markers under the capability prefix — with
+  **no `<base>` element** (a `<base>` would retarget in-document SVG `url(#id)`
+  fragments and `#hash` anchors, which the build contract forbids; relative
+  chunk/asset refs self-locate against the document URL) — and a **pre-module
+  bootstrap `<script>`** is injected (`_RELAY_PANE_BOOTSTRAP_SCRIPT`, mirroring
+  `website/src/lib/relayPaneBootstrap.ts`); built JavaScript is never rewritten.
+  The bootstrap is a classic inline script that runs during parse, because an
+  opaque origin's `window.localStorage`/`sessionStorage` throw on access and the
+  SPA reads storage during module evaluation. It GATES the app: the entry
+  `<script type="module">` is served inerted (rewritten to a sentinel type the
+  browser never runs), and the bootstrap re-inserts a real module element only
+  once an authenticated port handshake has delivered the channel + storage bank —
+  holding a deferred module in HTML this way is what lets that async step finish
+  before the module graph evaluates. **One protocol governs every document — the
+  first load and every subsequent navigation or reload.** The document derives its
+  capability prefix from `location.pathname` and hands the parent one port of a
+  fresh `MessageChannel` in `mc-relay-bootstrap-request` (with the `documentPath`
+  + a per-document nonce). The parent binds that request on the exact sender frame
+  AND the issued `documentPath` — never the opaque origin — adopts the transferred
+  port (closing any prior one for the pane), and replies OVER the port
+  (`mc-relay-bootstrap-reply`) with the channel + the authoritative storage bank;
+  the child validates the reply by the nonce. Because the port is entangled with
+  the requesting document and is neutered the instant that document is replaced, a
+  successor document in the same iframe — whose `WindowProxy` survives navigation —
+  authenticates nothing, holds no port, and so receives **neither the channel nor
+  any downward state**. A first-load `window.name` envelope may still carry a
+  storage snapshot for a warm first paint (cleared immediately on read); it is a
+  storage accelerator alone — never the channel authority, which arrives only over
+  the port. **Fail closed:** a handshake that never authenticates leaves the
+  module gated (no empty-channel release, so no empty-storage reload loop), and an
+  off-capability or malformed document never releases; the parent's readiness
+  watchdog surfaces its Retry panel instead. Each shim mutation is reported to the
+  parent stamped with the pane channel. The script is only ever injected into a
+  relay document, so a direct dashboard load never carries it and native storage
+  is untouched — direct mode is byte-identical. A same-peer root redirect is
+  re-rooted under the capability prefix; a cross-authority or protocol-relative
+  redirect fails closed. The issuer
+  reads the peer's advertised `pane_relay_protocol` (`/api/status`) and fails
+  closed with `409 remote_upgrade_required` when it does not match — never an HTTP
+  mixed-content or sandbox-less fallback.
+- **Parent-side attribution (opaque frame).** The switcher embeds the relay
+  endpoint with `allow-same-origin` omitted, so the frame is opaque and its
+  `event.origin` is the string `"null"` — which is **never** used as
+  authentication. Every relay message is bound instead on BOTH the exact sender
+  `contentWindow` AND the random per-pane `channel` the issuer minted
+  (`website/src/lib/paneChannel.ts` `resolvePaneMessage`); a stale channel, a
+  foreign frame, an unmounted frame, or a channel-less payload all resolve to no
+  instance and are dropped. **Downward delivery is document-bound, never a
+  wildcard post.** The parent sends every downward message (the host model, the
+  readiness ack, cursor-away replies, storage reconciles) OVER the authenticated
+  `MessageChannel` port the document transferred during its bootstrap handshake —
+  never `frame.postMessage(msg, '*')`, which reaches whatever document currently
+  occupies the iframe. That includes the one downward message produced
+  asynchronously: the chained-crew refusal, which `adoptChainedCrew` answers only
+  after awaiting the owner-side add/connect, by which time the announcing document
+  may have navigated away. A port is entangled with the exact document that
+  authenticated and is closed when the endpoint rotates or the pane goes cold, so
+  a successor document in the same iframe (its `WindowProxy` survives navigation)
+  receives neither the channel nor any host state, and a `sendDownRelay` with no
+  bound port simply drops rather than broadcasting. Every embedded pane's upward
+  `postMessage` still routes its payload through `stampPaneChannel`
+  (`lib/embeddedParent.ts`), which adds the channel in a relay pane and is the
+  identity in a direct-loopback pane; the parent attributes it by the exact frame
+  + channel, and a replacement document — which never received a channel over the
+  port — cannot forge one. The remote pane
+  still drives the parent only through the existing explicit action protocol
+  (unread counts, native-notify, chained-crew adoption, switch, pins, focus,
+  cursor-away, drag gaps); it gains no parent DOM, cookie, storage, or owner-API
+  access. The parent persists each crew's relay Web Storage under its OWN origin,
+  namespaced per instance and bounded (`lib/relayStorage.ts` `RelayStorageBank`),
+  so a hostile or buggy pane cannot exhaust or cross into another crew's keys.
+
 ### Slack Owner Authorization
 
 **Deny-by-default owner lock**:

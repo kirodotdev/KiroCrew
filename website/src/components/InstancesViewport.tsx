@@ -48,7 +48,28 @@ import { SettingsLink } from './SettingsLink'
 import { useAppDispatch, useAppSelector, useAppStore } from '../store'
 import { clearPaneReady, removeWarm, setActiveId, setPaneReady, setUnread, setWarm } from '../store/instancesSlice'
 import InstanceTabBar, { visibleInstanceTabs, chainRows, useCrewPins, toggleCrewPin, useCrewSwitcherStableOrder, setStableOrder } from './InstanceTabBar'
-import { parseLoopbackOriginPort, resolveTunnelOrigin } from '../lib/tunnelOrigin'
+import { parseLoopbackOriginPort } from '../lib/tunnelOrigin'
+import {
+  paneEndpointSrc,
+  paneMessageEnvelope,
+  parsePaneEndpoint,
+  relayRenewDelayMs,
+  RELAY_LEASE_RENEW_RETRY_MS,
+  resolvePaneBootstrapRequest,
+  resolvePaneMessage,
+  resolvePaneMode,
+  type PaneEndpoint,
+  type PaneMessageContext,
+} from '../lib/paneChannel'
+import { RelayStorageBank, memoryStorage, parseRelayStorageMutation } from '../lib/relayStorage'
+import {
+  buildBootstrapEnvelope,
+  PANE_CHANNEL_FIELD,
+  RELAY_BOOTSTRAP_REPLY,
+  RELAY_BOOTSTRAP_REQUEST,
+  RELAY_ENVELOPE_VERSION,
+  RELAY_STORAGE_MESSAGE,
+} from '../lib/relayPaneBootstrap'
 import {
   CURSOR_AWAY_CANCEL_TYPE,
   CURSOR_AWAY_RESULT_TYPE,
@@ -114,6 +135,29 @@ const AUTO_WARM_STAGGER_MS = 1_500
 const MAX_REACTIVE_REMINTS = 3
 
 
+// The relay pane iframe's `sandbox`. It MUST equal the keyword set the backend
+// stamps as the relay response CSP `sandbox` directive
+// (instance_pane_relay._DOCUMENT_CSP), so the iframe attribute and the served CSP
+// agree. Crucially it OMITS `allow-same-origin` — the document is therefore an
+// opaque origin with no parent DOM/cookie/storage/hub-session access — and omits
+// top-navigation, so the pane cannot navigate the parent. Direct-loopback panes
+// are NOT sandboxed (they are a cross-origin loopback SPA, unchanged).
+const RELAY_PANE_SANDBOX = 'allow-scripts allow-forms allow-popups allow-modals allow-downloads'
+
+/** The loopback port of a direct-loopback warm endpoint, else undefined. A relay
+ *  endpoint carries no port (its address is a same-origin capability path), so
+ *  every port-shaped journal field and desktop cache key reads undefined there. */
+function warmPort(conn: PaneEndpoint | undefined): number | undefined {
+  return conn?.kind === 'direct-loopback' ? conn.port : undefined
+}
+
+/** A stable identity for one pane LOAD, for the watchdog + journals: the port in
+ *  direct mode, the capability channel in relay mode. A new value is a new load. */
+function warmLoadKey(conn: PaneEndpoint | undefined): string | undefined {
+  if (!conn) return undefined
+  return conn.kind === 'direct-loopback' ? `p:${conn.port}` : `c:${conn.channel}`
+}
+
 export default function InstancesViewport({ macInset = false }: { macInset?: boolean } = {}) {
   // Windows counterpart of `macInset`: the caption overlay is a shell property,
   // not a window state, so it derives straight from the platform flag rather
@@ -166,6 +210,50 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   // so skip the poll and render nothing — see isEmbeddedPane / InstanceTabBar.
   const embedded = isEmbeddedPane()
 
+  // How this parent dashboard addresses its remote-crew panes, resolved once
+  // from the connection it arrived on (window.location does not change over the
+  // page's life). Two transports (see lib/paneChannel):
+  //  - `direct-loopback` — desktop / localhost: a pane is an http loopback
+  //    `host:port` iframe validated by exact origin. Unchanged, byte for byte.
+  //  - `same-origin-relay` — a published HTTPS parent whose only exposed origin
+  //    is the hub's: a pane is a SANDBOXED, opaque-origin iframe served by the
+  //    hub at a capability `documentPath`, its messages bound to the exact frame
+  //    + a per-pane channel (event.origin is the opaque `'null'`, never trusted).
+  const paneMode = useMemo(() => resolvePaneMode(window.location), [])
+  const relayMode = paneMode.kind === 'same-origin-relay'
+
+  // The parent-side durable banks for relay-pane Web Storage. A relay pane is an
+  // opaque origin that can persist nothing itself, so the parent keeps each
+  // connected crew's local/session storage under its OWN origin, namespaced per
+  // instance and bounded (see lib/relayStorage). Created lazily and only in relay
+  // mode; direct mode never touches them. sessionStorage may be unavailable
+  // (privacy modes) — fall back so a missing area never breaks the viewport.
+  const relayBanksRef = useRef<{ local: RelayStorageBank; session: RelayStorageBank } | null>(null)
+  const relayBanks = useCallback(() => {
+    if (!relayBanksRef.current) {
+      // Accessing window.localStorage/sessionStorage can itself THROW
+      // (SecurityError when storage is disabled, blocked cookies, private modes,
+      // or an opaque parent), so probe each behind a guard and fall back to an
+      // in-memory Storage — persistence is lost for the page's lifetime, but the
+      // viewport never breaks on an unavailable area. The bank guards every
+      // later access too, so a working area that throws on a full write is safe.
+      const safeArea = (pick: () => Storage): Storage => {
+        try {
+          const s = pick()
+          void s.length // some engines only throw on first use, not on the getter
+          return s
+        } catch {
+          return memoryStorage()
+        }
+      }
+      relayBanksRef.current = {
+        local: new RelayStorageBank(safeArea(() => window.localStorage)),
+        session: new RelayStorageBank(safeArea(() => window.sessionStorage)),
+      }
+    }
+    return relayBanksRef.current
+  }, [])
+
   // Poll so token_ttl_remaining (and connection dots) stay current; this also
   // drives the proactive token-refresh effect below.
   const instancesQuery = useQuery({
@@ -213,6 +301,33 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   // bumps `reloadSeq` for the one-shot script-error heal.
   const [timedOut, setTimedOut] = useState<Record<string, boolean>>({})
   const [reloadSeq, setReloadSeq] = useState<Record<string, number>>({})
+  // Terminal relay-lease failure, modelled INDEPENDENTLY of load readiness and
+  // keyed by the channel that failed. The load watchdog only fires while a pane
+  // is NOT ready, so it cannot represent the other terminal outcome: a pane that
+  // booted and went ready, then had its short-lived capability lease exhaust its
+  // renewal budget (see `renewRelayLease`). Such a pane keeps `ready[id]` true —
+  // its shell is still on screen — while every future relayed request 404s once
+  // the lease expires, so it must surface the recovery panel WITHOUT clearing
+  // readiness (clearing it would repopulate the iframe `name` seed and re-arm the
+  // watchdog). The value is the channel the failure was recorded against, so a
+  // later reissue (a new channel via renewal or Retry) no longer matches and the
+  // verdict clears itself; a stale in-flight renewal that resolves against an
+  // already-replaced channel likewise cannot mark the newer lease failed.
+  const [relayLeaseFailed, setRelayLeaseFailed] = useState<Record<string, string>>({})
+  // The document-bootstrap watchdog, keyed by instance id: the nonce + channel
+  // of the CURRENT relay document generation and the timer that fails it if it
+  // authenticates its port but never announces readiness. Modelled INDEPENDENTLY
+  // of the initial load watchdog, which cannot cover a navigation inside an
+  // already-ready pane — that pane keeps `ready[id]` true, so the readiness-gated
+  // watchdog never arms — see the bootstrap-request handler for the full note.
+  const bootstrapWatchRef = useRef<
+    Map<string, { nonce: string; channel: string; timer: ReturnType<typeof setTimeout> }>
+  >(new Map())
+  // Terminal document-bootstrap failure, keyed by the channel it failed against
+  // (like `relayLeaseFailed`) so a reissue/Retry — which mints a new channel —
+  // self-clears it, and surfaced WITHOUT gating on readiness so an already-ready
+  // pane whose newly-navigated document hangs still gets the recovery panel.
+  const [bootstrapFailed, setBootstrapFailed] = useState<Record<string, string>>({})
   // Panes already granted their one automatic cache-evict-and-reload after a
   // `script-error` (see the relay listener). Cleared by Retry.
   const scriptErrorHealsRef = useRef<Set<string>>(new Set())
@@ -240,6 +355,57 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   const postAckToRef = useRef<(id: string) => void>(() => {})
   const instancesRef = useRef<InstanceView[]>([])
 
+  // The AUTHENTICATED downward MessagePort per relay pane, and the channel it was
+  // bound under. A relay document hands the parent one port of a MessageChannel
+  // in its bootstrap request; the parent replies AND sends every later downward
+  // message (host model, readiness ack, cursor replies) over that port, NEVER via
+  // a wildcard `window.postMessage` to the frame. The port is entangled with the
+  // exact document that authenticated, so a successor document in the same iframe
+  // — whose `WindowProxy` survives navigation but which never authenticated —
+  // cannot receive the channel or any host state. The channel is recorded beside
+  // it so a port left over from a superseded endpoint (a lease rotation / Retry
+  // mints a new channel) is closed rather than reused for the new generation.
+  // Relay-only; direct-loopback panes never populate it (they keep the exact
+  // loopback-origin `window.postMessage`, unchanged).
+  const relayPortsRef = useRef<Map<string, { port: MessagePort; channel: string }>>(new Map())
+  // Send one downward message to a relay pane over its authenticated document
+  // port, or drop it. Returns false (and sends nothing) when there is no bound
+  // port yet, or when the bound port belongs to a superseded endpoint — a
+  // downward post is bound to the authenticated document, never broadcast to
+  // whatever occupies the iframe. The channel is stamped so the child's existing
+  // channel checks pass; the port is the actual binding.
+  const sendDownRelay = useCallback((id: string, message: Record<string, unknown>): boolean => {
+    const entry = relayPortsRef.current.get(id)
+    if (!entry) return false
+    const conn = warmRef.current[id]
+    if (!conn || conn.kind !== 'same-origin-relay' || conn.channel !== entry.channel) {
+      // The endpoint rotated (renewal / Retry) and this port is bound to the dead
+      // channel: close it and drop. The replacement document re-binds a fresh one.
+      try { entry.port.close() } catch { /* already closed */ }
+      relayPortsRef.current.delete(id)
+      return false
+    }
+    try {
+      entry.port.postMessage({ ...message, [PANE_CHANNEL_FIELD]: entry.channel })
+    } catch {
+      /* port closed (document replaced mid-post) — the successor cannot reach it */
+    }
+    return true
+  }, [])
+  // Close every relay port and cancel every document-bootstrap timer on unmount
+  // so no entangled peer is left dangling and no timer fires after teardown.
+  useEffect(
+    () => () => {
+      for (const { port } of relayPortsRef.current.values()) {
+        try { port.close() } catch { /* already closed */ }
+      }
+      relayPortsRef.current.clear()
+      for (const { timer } of bootstrapWatchRef.current.values()) clearTimeout(timer)
+      bootstrapWatchRef.current.clear()
+    },
+    [],
+  )
+
   // Whether `refreshToken` would actually mint for this id right now: no mint
   // already in flight, and outside the rate window. Split out of refreshToken so
   // the reactive path can tell a declined call from an answered one BEFORE it
@@ -256,13 +422,18 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   // rate-guarded so the reactive path can't loop.
   const refreshToken = useCallback(
     async (id: string) => {
+      // Direct-loopback only: a browser token exists solely on that transport. A
+      // relay pane holds no token (the capability lease + the manager's own
+      // upstream credential authenticate it), so it is re-issued through
+      // openInstancePane, never re-minted here.
+      if (relayMode) return
       if (!canRefreshNow(id)) return
       refreshingRef.current.add(id)
       try {
         const res = await api.refreshInstanceToken(id)
-        const port = res.local_port || warmRef.current[id]?.port
+        const port = res.local_port || warmPort(warmRef.current[id])
         if (res.token && port) {
-          dispatch(setWarm({ id, conn: { port, token: res.token } }))
+          dispatch(setWarm({ id, conn: { kind: 'direct-loopback', port, token: res.token } }))
           paneLog('remint', { id, port })
         } else {
           // A mint that returns nothing usable leaves the OLD warm entry standing,
@@ -277,8 +448,106 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
         lastRefreshRef.current.set(id, Date.now())
       }
     },
-    [dispatch, canRefreshNow],
+    [dispatch, canRefreshNow, relayMode],
   )
+
+  // Reissue one relay pane's capability lease and rotate the whole endpoint onto
+  // the fresh grant. A same-origin-relay lease expires on the hub
+  // (DEFAULT_LEASE_TTL_SECONDS); after it, every request under the capability —
+  // API, asset, reload, or a socket reconnect — gets the relay's uniform 404. So
+  // reissue BEFORE the deadline: `openInstancePane` mints a fresh capability
+  // (new documentPath + channel + lease), and `setWarm` sees a changed endpoint
+  // (`sameEndpoint` is false on a new documentPath/channel), which clears the
+  // pane's readiness; the iframe key embeds the channel, so the frame remounts
+  // with a freshly-seeded window.name — endpoint, iframe, channel, readiness,
+  // and storage seed rotate together onto the new lease, with the OLD lease
+  // still live until its own deadline so there is no gap. Concurrency-guarded so
+  // a slow reissue cannot overlap itself.
+  const relayRenewingRef = useRef<Set<string>>(new Set())
+  // Pending renewal timers (first attempt and bounded retries), keyed by id, so
+  // an endpoint/warm change or unmount can cancel a retry chain the `warm` effect
+  // did not itself schedule (a retry is armed inside the callback, between effect
+  // runs). The `warm` effect clears every entry on each run — cancel-on-change.
+  const relayRenewTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
+  // A ref to the latest callback so both the `warm` effect and a self-armed retry
+  // call the current identity WITHOUT taking it as an effect dependency (which
+  // would reschedule every renewal whenever the callback's closure changed).
+  const renewRelayLeaseRef = useRef<
+    (id: string, expectedChannel: string, deadlineMs: number) => void
+  >(() => {})
+  const renewRelayLease = useCallback(
+    async (id: string, expectedChannel: string, deadlineMs: number) => {
+      if (!relayMode) return
+      const cur = warmRef.current[id]
+      // Cancel-on-change: the lease we were scheduled against is gone (disconnect
+      // / eviction) or was replaced by a DIFFERENT lease (a new channel is a new
+      // capability), so this attempt is stale. Do nothing.
+      if (!cur || cur.kind !== 'same-origin-relay' || cur.channel !== expectedChannel) return
+      if (relayRenewingRef.current.has(id)) return
+      relayRenewingRef.current.add(id)
+      let renewed = false
+      try {
+        // Connected-only: renewal must never reconnect a tunnel the user
+        // disconnected, and must never surface a remote token. The gateway
+        // decides under its manager lock; a forward that is down declines (no
+        // endpoint) and this reissue simply retries or, at the deadline, surfaces
+        // the timed-out pane.
+        const raw = await api.openInstancePane(id, 'same-origin-relay', { onlyIfConnected: true })
+        const endpoint = parsePaneEndpoint(raw)
+        if (endpoint && endpoint.kind === 'same-origin-relay') {
+          dispatch(setWarm({ id, conn: endpoint }))
+          paneLog('relay-renew', { id })
+          renewed = true
+        } else {
+          // A 200 whose body is not a valid relay endpoint (a connected-only
+          // decline, or an unusable shape): leave the current endpoint standing
+          // and fall through to the bounded retry below.
+          paneLog('relay-renew-declined', { id, reason: 'no_relay_endpoint' })
+        }
+      } catch (err) {
+        paneLog('relay-renew-failed', { id, error: (err as Error)?.message || 'unknown' })
+      } finally {
+        relayRenewingRef.current.delete(id)
+      }
+      // On success, `setWarm` writes a later deadline and the `warm` effect
+      // reschedules against the fresh lease — nothing more to do here.
+      if (renewed) return
+      // Re-read after the await: a disconnect, eviction, or endpoint change during
+      // the request cancels any retry.
+      const after = warmRef.current[id]
+      if (!after || after.kind !== 'same-origin-relay' || after.channel !== expectedChannel) return
+      // Bounded retry WITHIN the remaining lease budget: arm another attempt only
+      // if it can still complete before the deadline. Otherwise the lease can no
+      // longer be renewed in time, so surface the pane's timed-out state (the same
+      // signal the load watchdog uses) instead of letting it silently 404 when the
+      // capability expires.
+      if (Date.now() + RELAY_LEASE_RENEW_RETRY_MS < deadlineMs) {
+        paneLog('relay-renew-retry', { id })
+        relayRenewTimersRef.current.set(
+          id,
+          setTimeout(
+            () => void renewRelayLeaseRef.current(id, expectedChannel, deadlineMs),
+            RELAY_LEASE_RENEW_RETRY_MS,
+          ),
+        )
+      } else {
+        // Terminal: no renewal attempt fits before the deadline. Modelled
+        // independently of the load watchdog because a renewal-exhausted pane is
+        // usually READY (its shell rendered before the lease began expiring), and
+        // `timedOut && !ready` can never surface a ready pane. Keyed on the
+        // channel that failed so a later reissue (renewal or Retry mints a new
+        // channel) stops matching and the verdict clears itself — and a stale
+        // in-flight renewal resolving here cannot mark an already-replaced lease
+        // failed (the `expectedChannel` guard above already returned for that).
+        paneLog('relay-renew-timeout', { id })
+        setRelayLeaseFailed(prev =>
+          prev[id] === expectedChannel ? prev : { ...prev, [id]: expectedChannel },
+        )
+      }
+    },
+    [dispatch, relayMode],
+  )
+  renewRelayLeaseRef.current = renewRelayLease
 
   // Adopt a crew a pane just connected, as a top-level tab of ours.
   //
@@ -372,29 +641,34 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
         // we keep to ourselves reads to the user as a crew that connected and
         // then silently failed to appear.
         paneLog('chain-refused', { parentId, port, error: reason || 'unknown' })
+        const refusal = { type: CHAINED_CREW_REFUSED_MESSAGE, v: 1, id: remoteId, reason }
+        if (relayMode) {
+          // Relay: over the pane's AUTHENTICATED document port, like every other
+          // downward message. This refusal arrives asynchronously, after awaited
+          // owner-side calls, and the announcing document may have navigated away
+          // by then: a wildcard post would hand the live channel to whatever
+          // replacement now occupies the frame, while the port only reaches the
+          // document that authenticated. A rotated or missing port drops it; the
+          // pane's Remote Crew panel already showed the gateway's own reason.
+          sendDownRelay(parentId, refusal)
+          return
+        }
         const el = iframeRefs.current.get(parentId)
         const w = warmRef.current[parentId]
-        if (el?.contentWindow && w) {
-          // Addressed to the pane's exact loopback origin, never '*': the same
-          // rule every other downward post here follows.
-          const origin = `${window.location.protocol}//${window.location.hostname}:${w.port}`
+        // Direct mode: the pane's exact loopback origin. We only reach here from a
+        // message a pane sent, which resolvePaneMessage already attributed, so the
+        // pane is warm and addressable.
+        const env = w ? paneMessageEnvelope(paneMode, w, refusal) : null
+        if (el?.contentWindow && env) {
           try {
-            el.contentWindow.postMessage(
-              {
-                type: CHAINED_CREW_REFUSED_MESSAGE,
-                v: 1,
-                id: remoteId,
-                reason,
-              },
-              origin,
-            )
+            el.contentWindow.postMessage(env.message, env.targetOrigin)
           } catch {
             /* frame mid-navigation: the panel keeps the connect it already reported */
           }
         }
       }
     },
-    [queryClient, dispatch],
+    [queryClient, dispatch, paneMode, relayMode, sendDownRelay],
   )
 
   // Pre-mint + warm one connected instance without surfacing it. Cheap when the
@@ -431,11 +705,28 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   // `mc-embedded-boot` inside that gap, so a map refreshed by an effect on
   // `warm` would still lack the new port and drop the boot as unattributed.
   const store = useAppStore()
-  const currentPortToId = useCallback((): Map<number, string> => {
-    const m = new Map<number, string>()
-    for (const [id, w] of Object.entries(store.getState().instances.warm)) m.set(w.port, id)
-    return m
-  }, [store])
+  // The attribution context read at message time (see lib/paneChannel). Direct
+  // mode maps a loopback port → id; relay mode maps id → endpoint (for the
+  // channel match) and id → live contentWindow (for the exact-frame check). Read
+  // from the store, not a render-time snapshot: a fast pane can post its first
+  // message before an effect that watches `warm` would refresh a memoized map.
+  const paneMessageCtx = useCallback((): PaneMessageContext => {
+    const warmNow = store.getState().instances.warm
+    if (!relayMode) {
+      const portToId = new Map<number, string>()
+      for (const [id, w] of Object.entries(warmNow)) {
+        if (w.kind === 'direct-loopback') portToId.set(w.port, id)
+      }
+      return { portToId }
+    }
+    const endpoints = new Map<string, PaneEndpoint>(Object.entries(warmNow))
+    const frames = new Map<string, Window>()
+    for (const [id, el] of iframeRefs.current) {
+      const cw = el.contentWindow
+      if (cw) frames.set(id, cw)
+    }
+    return { endpoints, frames }
+  }, [store, relayMode])
 
   // Drop relayed drag gaps for panes that are no longer warm, so the map cannot
   // grow without bound and a re-warmed pane starts from its own fresh report.
@@ -458,26 +749,168 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
     for (const id of scriptErrorHealsRef.current) {
       if (!warm[id]) scriptErrorHealsRef.current.delete(id)
     }
+    // Retire the authenticated downward port of any pane that is no longer warm
+    // (eviction / disconnect / delete) OR whose endpoint rotated to a new channel
+    // (lease renewal / Retry). Closing it here — not only lazily on the next send
+    // — keeps the map bounded and guarantees a superseded document's port can
+    // never be reused for the new generation. The replacement document re-binds a
+    // fresh port through its own handshake.
+    for (const [id, entry] of relayPortsRef.current) {
+      const conn = warm[id]
+      if (!conn || conn.kind !== 'same-origin-relay' || conn.channel !== entry.channel) {
+        try { entry.port.close() } catch { /* already closed */ }
+        relayPortsRef.current.delete(id)
+      }
+    }
+    // Cancel the document-bootstrap watchdog of any pane no longer warm or whose
+    // channel rotated (lease renewal / Retry): its generation is gone, and the
+    // replacement document arms its own on its next fresh-port request. A stale
+    // timer left running could otherwise fail a pane whose lease just rotated.
+    for (const [id, w] of bootstrapWatchRef.current) {
+      const conn = warm[id]
+      if (!conn || conn.kind !== 'same-origin-relay' || conn.channel !== w.channel) {
+        clearTimeout(w.timer)
+        bootstrapWatchRef.current.delete(id)
+      }
+    }
   }, [warm])
 
   useEffect(() => {
     const onMessage = (e: MessageEvent) => {
       const data = e.data
       if (!data || typeof data !== 'object') return
-      const portToId = currentPortToId()
-      const id = resolveTunnelOrigin(e.origin, portToId)
+      const ctx = paneMessageCtx()
+      if (relayMode && (data as { type?: unknown }).type === RELAY_BOOTSTRAP_REQUEST) {
+        // Every relay document — the first load and every subsequent navigation —
+        // hands the parent one port of a fresh MessageChannel here. This message
+        // carries NO channel (the document does not have it yet), so it is bound
+        // by the EXACT sender frame + the capability `documentPath` the parent
+        // issued (`resolvePaneBootstrapRequest`); `event.origin` (opaque `'null'`)
+        // is never trusted. The parent adopts the transferred port, closes any
+        // prior one for the pane, and replies OVER the port with the channel + a
+        // bounded bank snapshot — and every later downward message rides that same
+        // port. Because the port is entangled with the requesting document, a
+        // successor document in the same iframe (its `WindowProxy` survives
+        // navigation) receives neither the channel nor any host state, even though
+        // it still matches `ctx.frames`.
+        const grant = resolvePaneBootstrapRequest(
+          {
+            source: e.source,
+            documentPath: (data as { documentPath?: unknown }).documentPath,
+            nonce: (data as { nonce?: unknown }).nonce,
+          },
+          ctx,
+        )
+        const port = e.ports && e.ports[0]
+        if (!grant) {
+          // A well-formed transfer we could NOT authenticate (wrong frame, wrong
+          // or unknown capability): close the port so nothing is ever delivered
+          // over it. An off-capability replacement document lands here and gets
+          // no channel and no host model.
+          if (port) {
+            try { port.close() } catch { /* already closed */ }
+            paneLog('relay-bootstrap-refused', {})
+          }
+          return
+        }
+        // The child transfers its port on the FIRST ask and re-asks WITHOUT one on
+        // its bounded retries (a port cannot be transferred twice). A fresh
+        // transfer (re)binds — closing any prior port for the pane; a port-less
+        // retry re-replies on the port already bound for this exact channel, so a
+        // parent slow to reply the first time still answers on the one inbox the
+        // child is listening on. A retry with no bound port yet (the first ask was
+        // dropped before this listener wired) simply waits for the next ask.
+        let entry = relayPortsRef.current.get(grant.id)
+        if (port) {
+          if (entry && entry.port !== port) {
+            try { entry.port.close() } catch { /* already closed */ }
+          }
+          entry = { port, channel: grant.channel }
+          relayPortsRef.current.set(grant.id, entry)
+          // (Re)arm the document-bootstrap watchdog for THIS generation. A fresh
+          // transferred port is a NEW document, and the initial load watchdog
+          // cannot cover a navigation inside an already-ready pane: that pane
+          // keeps `ready[id]` true, so the readiness-gated watchdog never arms,
+          // and a new document that authenticated its port here but then went
+          // silent before announcing readiness would hang invisibly — the same
+          // exhaustion the initial watchdog exists to catch. Track it here,
+          // independent of readiness and bound to the document's nonce + channel:
+          //  - cancel any prior generation's timer first, so an OLD document's
+          //    timer can never fire against and fail this NEW one;
+          //  - reset any stale verdict, so the fresh document gets a clean window;
+          //  - arm one that, on expiry, surfaces the existing Retry panel WITHOUT
+          //    clearing `ready[id]` (which would repopulate the iframe `name` seed
+          //    and re-arm the initial watchdog).
+          // The clear rides the ordinary `mc-embedded-ready` path below and needs
+          // no per-message nonce: the prior document was destroyed by the
+          // navigation and had already been acked, so every message it ever posted
+          // was enqueued before this fresh-port request and delivered before this
+          // timer was armed — a readiness that arrives AFTER the arm is necessarily
+          // this generation's.
+          const prevWatch = bootstrapWatchRef.current.get(grant.id)
+          if (prevWatch) clearTimeout(prevWatch.timer)
+          const bootId = grant.id
+          const bootNonce = grant.nonce
+          const bootChannel = grant.channel
+          setBootstrapFailed(prev => {
+            if (!(bootId in prev)) return prev
+            const next = { ...prev }
+            delete next[bootId]
+            return next
+          })
+          const timer = setTimeout(() => {
+            // Only the CURRENT generation may fail the pane. A superseded timer
+            // was cleared when its replacement armed; the nonce guard is the belt
+            // to that suspenders, so a stale fire can never mark a newer document
+            // failed.
+            const cur = bootstrapWatchRef.current.get(bootId)
+            if (!cur || cur.nonce !== bootNonce) return
+            bootstrapWatchRef.current.delete(bootId)
+            setBootstrapFailed(prev =>
+              prev[bootId] === bootChannel ? prev : { ...prev, [bootId]: bootChannel },
+            )
+            paneLog('relay-bootstrap-timeout', { id: bootId })
+          }, PANE_LOAD_TIMEOUT_MS)
+          bootstrapWatchRef.current.set(bootId, { nonce: bootNonce, channel: bootChannel, timer })
+        } else if (!entry || entry.channel !== grant.channel) {
+          return
+        }
+        const banks = relayBanks()
+        try {
+          entry.port.postMessage({
+            type: RELAY_BOOTSTRAP_REPLY,
+            nonce: grant.nonce,
+            channel: grant.channel,
+            parentOrigin: window.location.origin,
+            protocol: grant.protocol,
+            storage: {
+              local: banks.local.snapshot(grant.id),
+              session: banks.session.snapshot(grant.id),
+            },
+          })
+          paneLog('relay-bootstrap-reply', { id: grant.id })
+        } catch {
+          /* port closed before the reply — the child's document was replaced */
+        }
+        return
+      }
+      // One attribution authority for both transports (see lib/paneChannel):
+      // direct-loopback validates the exact loopback origin + a port we own;
+      // same-origin-relay binds on the per-pane channel AND the exact
+      // contentWindow, never on event.origin (the opaque `'null'`).
+      const id = resolvePaneMessage({ source: e.source, origin: e.origin, data }, paneMode, ctx)
       if (!id) {
-        // A readiness or boot announce from a loopback origin this parent does
-        // not currently map to a warm pane is the handshake being dropped on
-        // the floor: the pane's bundle ran and said so, and the parent could
-        // not tell whose voice it was (the warm entry moved to another port or
-        // was evicted). Only these two types are journaled -- the child sends
-        // ready at most six times and boot exactly three times per load, so
-        // the lines cannot flood; every other unattributed message stays
-        // silent. Journaling the boot here is what keeps "no `boot` line" a
-        // trustworthy reading of "no JavaScript of ours ran in that frame".
-        if (parseLoopbackOriginPort(e.origin) !== null) {
-          const knownPorts = [...portToId.keys()].join(',')
+        // Unattributed. In DIRECT mode a readiness/boot announce from a loopback
+        // origin this parent no longer maps to a warm pane is the handshake being
+        // dropped on the floor (the warm entry moved to another port or was
+        // evicted): journal only those two types -- the child sends ready at most
+        // six times and boot exactly three per load, so the lines cannot flood --
+        // which keeps "no `boot` line" a trustworthy reading of "no JavaScript of
+        // ours ran in that frame". In RELAY mode event.origin is the opaque
+        // `'null'` and carries no port, and a message is unattributed only when
+        // its channel is stale/absent or its frame foreign, so nothing is logged.
+        if (!relayMode && parseLoopbackOriginPort(e.origin) !== null) {
+          const knownPorts = [...(ctx.portToId ?? new Map<number, string>()).keys()].join(',')
           if (data.type === 'mc-embedded-ready') {
             paneLog('ready-unattributed', { origin: e.origin, knownPorts })
           } else if (data.type === 'mc-embedded-boot') {
@@ -488,6 +921,27 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
             })
           }
         }
+        return
+      }
+      if (data.type === RELAY_STORAGE_MESSAGE) {
+        // A relay pane reported a Web Storage mutation (the opaque origin can
+        // persist nothing itself). Apply it to the parent's per-instance bank,
+        // which enforces the caps and keeps one crew's keys isolated from
+        // another's. Relay-only; a direct pane never sends it. A bad area or
+        // mutation shape is dropped, never thrown — a child message must not
+        // raise in the parent's message loop.
+        if (!relayMode) return
+        const area = (data as { area?: unknown }).area
+        if (area !== 'local' && area !== 'session') return
+        // Parse the UNTRUSTED payload into the exact mutation union before the
+        // bank sees it: a missing field, a wrong type, or an unknown op is
+        // dropped here rather than cast, and the bank's key encoding is
+        // exception-safe, so neither a malformed shape nor an unmatched-surrogate
+        // key can raise in this message listener. A later valid mutation still
+        // applies.
+        const mutation = parseRelayStorageMutation((data as { mutation?: unknown }).mutation)
+        if (mutation === null) return
+        relayBanks()[area].apply(id, mutation)
         return
       }
       if (data.type === 'mc-unread-slots') {
@@ -633,10 +1087,20 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
         // One watch per window: the main process polls once per window, so a
         // newer request supersedes whatever was pending.
         stopPaneCursorWatch()
-        const origin = e.origin
+        const requestOrigin = e.origin
         const reply = (msg: Record<string, unknown>) => {
+          const payload = { v: CURSOR_AWAY_VERSION, id: watchId, ...msg }
           try {
-            frame.postMessage({ v: CURSOR_AWAY_VERSION, id: watchId, ...msg }, origin)
+            if (relayMode) {
+              // Relay: answer over the pane's AUTHENTICATED document port, never a
+              // wildcard post to the frame — the reply must reach only the
+              // document that armed the watch, not a successor in the same iframe.
+              sendDownRelay(id, payload)
+            } else {
+              // Direct: answer the EXACT origin the watch arrived on, unchanged
+              // from before the relay — the frame's own loopback origin.
+              frame.postMessage(payload, requestOrigin)
+            }
           } catch {
             /* frame mid-navigation — nothing left to answer */
           }
@@ -696,6 +1160,21 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
         // evidence the token works. See MAX_REACTIVE_REMINTS.
         dispatch(setPaneReady(id))
         paneLog('ready', { id })
+        // This document reached app-readiness: clear its bootstrap watchdog and
+        // any failed verdict for it. The readiness is necessarily the CURRENT
+        // document's (see the bootstrap-request handler's arming note), so no
+        // per-message nonce is needed to attribute it.
+        const bw = bootstrapWatchRef.current.get(id)
+        if (bw) {
+          clearTimeout(bw.timer)
+          bootstrapWatchRef.current.delete(id)
+        }
+        setBootstrapFailed(prev => {
+          if (!(id in prev)) return prev
+          const next = { ...prev }
+          delete next[id]
+          return next
+        })
         postModelToRef.current(id)
         // Distinct ack so the pane can stop re-announcing. Sent only here (after
         // readiness is recorded), never from the broadcast, so a late announce
@@ -723,7 +1202,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
     }
     window.addEventListener('message', onMessage)
     return () => window.removeEventListener('message', onMessage)
-  }, [dispatch, refreshToken, canRefreshNow, currentPortToId, stopPaneCursorWatch, adoptChainedCrew])
+  }, [dispatch, refreshToken, canRefreshNow, paneMessageCtx, stopPaneCursorWatch, adoptChainedCrew, paneMode, relayMode, relayBanks, sendDownRelay])
 
   // Proactive refresh: when an embedded token passes REFRESH_AT_ELAPSED_FRAC of
   // its TTL, re-mint and reload that iframe ahead of the cap. Skips the active
@@ -743,6 +1222,40 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
       void refreshToken(id)
     }
   }, [instancesQuery.data, warm, activeId, refreshToken])
+
+  // Proactive relay-lease renewal: schedule one timer per warm same-origin-relay
+  // pane to reissue before its lease deadline (see renewRelayLease). Re-runs
+  // whenever `warm` changes — a completed renewal writes a new endpoint with a
+  // later deadline, which reschedules the timer against the fresh lease; a
+  // disconnect/eviction drops the entry and its timer. Direct-loopback panes
+  // carry no lease and are skipped, so direct mode schedules nothing.
+  useEffect(() => {
+    if (!relayMode) return
+    const timers = relayRenewTimersRef.current
+    // Reschedule from scratch on every `warm` change: the cleanup below cleared
+    // any pending first attempt OR bounded retry (cancel-on-change), and here we
+    // arm one fresh first attempt per current relay pane against its live lease.
+    // A completed renewal writes a new endpoint, which re-runs this effect and
+    // reschedules against the later deadline; a disconnect/eviction drops the
+    // entry (and its timer) here. Direct-loopback panes carry no lease and are
+    // skipped. The callback is reached through a ref so this effect does not
+    // depend on its identity (which would churn the schedule needlessly).
+    const now = Date.now()
+    for (const [id, conn] of Object.entries(warm)) {
+      if (conn.kind !== 'same-origin-relay') continue
+      const delay = relayRenewDelayMs(now, conn.leaseExpiresAtEpochMs)
+      const channel = conn.channel
+      const deadline = conn.leaseExpiresAtEpochMs
+      timers.set(
+        id,
+        setTimeout(() => void renewRelayLeaseRef.current(id, channel, deadline), delay),
+      )
+    }
+    return () => {
+      for (const [, t] of timers) clearTimeout(t)
+      timers.clear()
+    }
+  }, [warm, relayMode])
 
   // Retry connect from the in-pane error panel: re-mint a token and warm the
   // iframe. Idempotent on the backend (the tunnel is often already live after a
@@ -794,7 +1307,14 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   }, [activeId, focusMode])
   // Primitive deps for the watchdog effect (a fresh conn object identity on
   // every setWarm would defeat the dep comparison).
-  const activeWarmPort = activeWarmConn?.port
+  // Load identity for the watchdog: the port in direct mode, the capability
+  // channel in relay mode. A new value is a new load and legitimately restarts
+  // the clock; a token re-mint (direct) keeps the same port, so it is NOT part
+  // of it. BOTH are primitives (never the conn object) so a fresh conn identity
+  // on every setWarm does not defeat the effect's dep comparison and re-arm the
+  // countdown-from-scratch — the invariant the watchdog depends on.
+  const activeLoadKey = warmLoadKey(activeWarmConn)
+  const activeWarmPort = warmPort(activeWarmConn)
   const activeReady = activeId ? !!ready[activeId] : true
   const activeSeq = activeId ? reloadSeq[activeId] || 0 : 0
   // The watchdog's countdown is anchored to the identity of the LOAD — (id, port,
@@ -812,7 +1332,11 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   // clears the verdict, because `activeTimedOut` additionally requires
   // `!activeReady`.
   useEffect(() => {
-    if (!activeId || activeWarmPort === undefined || activeReady) return
+    // Arm whenever the active pane is warm but not yet ready, in either mode. A
+    // relay pane mounts a real same-origin src and announces readiness through
+    // its channel exactly like a direct pane, so the watchdog is the same signal
+    // for both — there is no longer an unembeddable case to surface separately.
+    if (!activeId || activeLoadKey === undefined || activeReady) return
     const id = activeId
     const port = activeWarmPort
     // The countdown STARTING is journaled too, not only its expiry. A pane that
@@ -820,22 +1344,23 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
     // whose watchdog never armed — because this effect saw `activeReady` as
     // true while the overlay used a different verdict, or because it re-armed
     // in a loop — and the absence of an arm line is what says so.
-    paneLog('watchdog-armed', { id, port, seq: activeSeq })
+    paneLog('watchdog-armed', { id, port, loadKey: activeLoadKey, seq: activeSeq })
     const t = window.setTimeout(() => {
       setTimedOut(prev => (prev[id] ? prev : { ...prev, [id]: true }))
-      // `frame` is the verdict: `cross-origin` means the pane really loaded the
-      // tunnel URL and then failed to announce readiness, while `about:blank`
-      // means it never navigated at all and no crew bundle could ever have run.
+      // `frame` is the verdict: `cross-origin` (direct) / a live document (relay)
+      // means the pane really loaded and then failed to announce readiness, while
+      // `about:blank` means it never navigated at all and no bundle could run.
       paneLog('load-timeout', {
         id,
         port,
+        loadKey: activeLoadKey,
         seq: activeSeq,
         afterMs: PANE_LOAD_TIMEOUT_MS,
         frame: frameDocumentState(iframeRefs.current.get(id)),
       })
     }, PANE_LOAD_TIMEOUT_MS)
     return () => window.clearTimeout(t)
-  }, [activeId, activeWarmPort, activeSeq, activeReady])
+  }, [activeId, activeLoadKey, activeWarmPort, activeSeq, activeReady])
 
   // See iframeRefCallbacks: the callback is created once per id and reused
   // across renders, so React invokes it only on a real attach/detach. It reads
@@ -856,7 +1381,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
           // the one way the pane can end up parked on about:blank forever.
           paneLog('iframe-mounted', {
             id,
-            port: warmRef.current[id]?.port,
+            port: warmPort(warmRef.current[id]),
             seq: reloadSeqRef.current[id] || 0,
             src: safePaneUrl(el.getAttribute('src')),
           })
@@ -884,7 +1409,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
       // that never navigated (`about:blank`) or whose connect itself failed
       // keeps the cheap path: there is no stalled stream to escape.
       const rebuild = !!timedOutRef.current[id] && frame === 'cross-origin'
-      const port = warmRef.current[id]?.port
+      const port = warmPort(warmRef.current[id])
       // Clear the stale verdict and force a reload even if the re-mint returns
       // an identical token (setWarm would be a no-op for the iframe src).
       paneLog('retry', {
@@ -895,6 +1420,31 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
       })
       const proceed = () => {
         setTimedOut(prev => ({ ...prev, [id]: false }))
+        // Clear any terminal lease-failure verdict too: Retry reissues the lease
+        // (a fresh channel), so the old verdict no longer applies. The reissue's
+        // new channel would stop matching anyway, but clearing here avoids a
+        // flash of the panel while the new endpoint is still in flight.
+        setRelayLeaseFailed(prev => {
+          if (!(id in prev)) return prev
+          const next = { ...prev }
+          delete next[id]
+          return next
+        })
+        // Clear any document-bootstrap failure + its watchdog too: Retry reissues
+        // the lease (a fresh channel), so the verdict no longer applies. The new
+        // channel would stop matching anyway, but clearing here avoids a flash of
+        // the panel while the new endpoint is still in flight.
+        const bw = bootstrapWatchRef.current.get(id)
+        if (bw) {
+          clearTimeout(bw.timer)
+          bootstrapWatchRef.current.delete(id)
+        }
+        setBootstrapFailed(prev => {
+          if (!(id in prev)) return prev
+          const next = { ...prev }
+          delete next[id]
+          return next
+        })
         setReloadSeq(prev => ({ ...prev, [id]: (prev[id] || 0) + 1 }))
         // An explicit user press is a fresh start: re-open the reactive budget so
         // a pane that recovers on the next token can still self-heal afterwards,
@@ -929,7 +1479,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
       // next click re-warms it as a brand-new load. Without this line a pane
       // that was evicted and then failed to re-warm reads, in the log, like a
       // pane that never had a problem until it suddenly did.
-      paneLog('evict', { id: victim, port: warm[victim]?.port, warmCount: ids.length, cap: warmCap })
+      paneLog('evict', { id: victim, port: warmPort(warm[victim]), warmCount: ids.length, cap: warmCap })
       dispatch(removeWarm(victim))
     }
   }, [warm, warmCap, mru, activeId, dispatch])
@@ -951,6 +1501,30 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
     }
     setTimedOut(prev => {
       const stale = Object.keys(prev).filter(id => prev[id] && !warm[id])
+      if (stale.length === 0) return prev
+      const next = { ...prev }
+      for (const id of stale) delete next[id]
+      return next
+    })
+    // Same for the terminal lease-failure verdict: an evicted / disconnected /
+    // deleted pane's failed lease is gone, and its next warm is a fresh load.
+    // (A still-warm pane whose lease was replaced clears via the channel compare
+    // in `activeRelayLeaseFailed`; this only drops verdicts for panes no longer
+    // warm at all, so the map cannot grow without bound.)
+    setRelayLeaseFailed(prev => {
+      const stale = Object.keys(prev).filter(id => !warm[id])
+      if (stale.length === 0) return prev
+      const next = { ...prev }
+      for (const id of stale) delete next[id]
+      return next
+    })
+    // Same for the terminal document-bootstrap verdict: an evicted / disconnected
+    // / deleted pane's failed generation is gone, and its next warm is a fresh
+    // load. (A still-warm pane whose channel rotated clears via the channel
+    // compare in `activeBootstrapFailed`; this only drops verdicts for panes no
+    // longer warm at all, so the map cannot grow without bound.)
+    setBootstrapFailed(prev => {
+      const stale = Object.keys(prev).filter(id => !warm[id])
       if (stale.length === 0) return prev
       const next = { ...prev }
       for (const id of stale) delete next[id]
@@ -1015,15 +1589,19 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   const warmIds = useMemo(() => Object.keys(warm), [warm])
   const srcFor = useCallback(
     (id: string) => {
-      const w = warm[id]
-      // Use the parent dashboard's OWN hostname (not a hardcoded 127.0.0.1) so the iframe
-      // is ALWAYS same-site with the parent. Otherwise SameSite=Lax auth cookies are
-      // withheld on the iframe's subrequests (e.g. parent on localhost + iframe on
-      // 127.0.0.1 = cross-site -> 403 storm). The hostname resolves to the same loopback
-      // the SSH forward binds (127.0.0.1), since the dashboard itself is reached via it.
-      return w ? `http://${window.location.hostname}:${w.port}/?token=${encodeURIComponent(w.token)}` : ''
+      // The single pane-address authority (see lib/paneChannel). In
+      // direct-loopback mode it builds the exact same URL as before — the parent
+      // dashboard's OWN hostname (not a hardcoded 127.0.0.1) so the iframe is
+      // ALWAYS same-site with the parent, or SameSite=Lax auth cookies are
+      // withheld on its subrequests (parent on localhost + iframe on 127.0.0.1 =
+      // cross-site -> 403 storm); that hostname resolves to the same loopback the
+      // SSH forward binds. In same-origin-relay mode it is the capability
+      // `documentPath` (a same-origin, root-relative path the hub serves) — never
+      // a host:port URL and never the token. An empty src (no endpoint yet) fails
+      // closed into the panel below rather than a frame that cannot load.
+      return paneEndpointSrc(paneMode, warm[id])?.src ?? ''
     },
-    [warm],
+    [warm, paneMode],
   )
 
   // Build the switcher model relayed to the embedded pane `id`: the full tab
@@ -1071,30 +1649,41 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
     [instancesQuery.data, warm, unread, activeId, macInset, winInset, focusMode, pinnedCrews, stableOrder],
   )
 
-  // Post the model into one embedded pane, addressed to its exact loopback
-  // origin (never '*') so it can't leak to an unexpected frame.
+  // Post the model into one embedded pane through the one envelope authority:
+  // the pane's exact loopback origin in direct mode (never '*'), or `'*'` + the
+  // per-pane channel in relay mode (the exact-frame send plus the channel bind
+  // it — an opaque frame's origin never matches a concrete string).
   const postModelTo = useCallback(
     (id: string) => {
-      const el = iframeRefs.current.get(id)
       const w = warm[id]
-      if (!el?.contentWindow || !w) return
-      const origin = `${window.location.protocol}//${window.location.hostname}:${w.port}`
-      // A frame still on about:blank inherits THIS origin, so the post below is
-      // rejected with a target-origin mismatch. Chromium reports that as a
-      // console error rather than an exception, so the catch cannot see it —
-      // journal the frame's state here instead. The post is still attempted:
-      // this is instrumentation, and skipping on a mis-read would break a
-      // delivery that would have worked.
+      if (!w) return
+      if (relayMode) {
+        // Relay: deliver over the pane's AUTHENTICATED document port. Drops
+        // silently until the pane's bootstrap handshake has bound one (the model
+        // is (re)sent on `mc-embedded-ready`, which the app posts only after boot,
+        // by which point the port is bound), and never falls back to a wildcard
+        // post that a replacement document could receive.
+        sendDownRelay(id, buildModelFor(id))
+        return
+      }
+      const el = iframeRefs.current.get(id)
+      if (!el?.contentWindow) return
+      const env = paneMessageEnvelope(paneMode, w, buildModelFor(id))
+      if (!env) return
+      // In direct mode a frame still on about:blank inherits THIS origin, so a
+      // post to the exact loopback origin is rejected with a target-origin
+      // mismatch that Chromium logs as a console error the catch cannot see —
+      // journal the frame's state. The post is still attempted (instrumentation only).
       const frame = frameDocumentState(el)
-      if (frame !== 'cross-origin') paneLog('post-model-undeliverable', { id, origin, frame })
+      if (frame !== 'cross-origin') paneLog('post-model-undeliverable', { id, origin: env.targetOrigin, frame })
       try {
-        el.contentWindow.postMessage(buildModelFor(id), origin)
+        el.contentWindow.postMessage(env.message, env.targetOrigin)
       } catch (err) {
         /* frame mid-navigation — the next broadcast / ready ping retries */
-        paneLog('post-model-threw', { id, origin, frame, error: (err as Error)?.message || 'unknown' })
+        paneLog('post-model-threw', { id, origin: env.targetOrigin, frame, error: (err as Error)?.message || 'unknown' })
       }
     },
-    [warm, buildModelFor],
+    [warm, buildModelFor, paneMode, relayMode, sendDownRelay],
   )
   postModelToRef.current = postModelTo
 
@@ -1105,19 +1694,52 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   // mid-navigation) is harmless: the pane's next re-announce re-triggers it.
   const postAckTo = useCallback(
     (id: string) => {
-      const el = iframeRefs.current.get(id)
       const w = warm[id]
-      if (!el?.contentWindow || !w) return
-      const origin = `${window.location.protocol}//${window.location.hostname}:${w.port}`
+      if (!w) return
+      if (relayMode) {
+        // Relay: acknowledge over the authenticated document port, like the model.
+        sendDownRelay(id, { type: 'mc-embedded-ack', v: 1 })
+        return
+      }
+      const el = iframeRefs.current.get(id)
+      if (!el?.contentWindow) return
+      const env = paneMessageEnvelope(paneMode, w, { type: 'mc-embedded-ack', v: 1 })
+      if (!env) return
       try {
-        el.contentWindow.postMessage({ type: 'mc-embedded-ack', v: 1 }, origin)
+        el.contentWindow.postMessage(env.message, env.targetOrigin)
       } catch {
         /* frame mid-navigation — the pane's next re-announce re-triggers this */
       }
     },
-    [warm],
+    [warm, paneMode, relayMode, sendDownRelay],
   )
   postAckToRef.current = postAckTo
+
+  // The versioned `window.name` envelope seeded into a relay pane BEFORE it
+  // navigates (via the iframe `name` attribute). It carries the per-pane channel
+  // the parent authenticates the frame's messages by, the parent's own origin
+  // (the opaque child cannot read it otherwise), the pane-relay protocol, and the
+  // instance's current storage snapshot from the parent bank. `window.name` is
+  // read synchronously at the first line of the injected pre-module bootstrap and
+  // then cleared, so the channel/snapshot never linger in browser-visible state.
+  // Direct panes get `''` — `window.name` stays untouched and native storage is
+  // used, so direct mode is byte-identical.
+  const relaySeed = useCallback(
+    (id: string): string => {
+      const w = warm[id]
+      if (!relayMode || !w || w.kind !== 'same-origin-relay') return ''
+      const banks = relayBanks()
+      return buildBootstrapEnvelope({
+        v: RELAY_ENVELOPE_VERSION,
+        channel: w.channel,
+        parentOrigin: window.location.origin,
+        protocol: w.protocol,
+        storage: { local: banks.local.snapshot(id), session: banks.session.snapshot(id) },
+      })
+    },
+    [warm, relayMode, relayBanks],
+  )
+
   instancesRef.current = instancesQuery.data?.instances ?? []
 
   // Broadcast the model to every warm pane whenever any input changes (active
@@ -1143,7 +1765,41 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   // Watchdog verdict for the active pane: only meaningful while it has still
   // not announced readiness (a late `mc-embedded-ready` clears the alarm).
   const activeTimedOut = activeId !== null && !!timedOut[activeId] && !activeReady
-  const showPanel = activeId !== null && (!warm[activeId] || !activeLive || activeTimedOut)
+  // Terminal relay-lease failure for the active pane. Deliberately NOT gated on
+  // `!activeReady` — a renewal-exhausted pane is usually ready — and matched
+  // against the CURRENT channel so a reissue (renewal/Retry rotates the channel)
+  // clears the verdict on its own. Direct panes have no lease and never set it.
+  const activeRelayLeaseFailed =
+    activeId !== null &&
+    (() => {
+      const c = warm[activeId]
+      return c?.kind === 'same-origin-relay' && relayLeaseFailed[activeId] === c.channel
+    })()
+  // Terminal document-bootstrap failure for the active pane: a new document
+  // authenticated its port but never announced readiness. Like the lease failure
+  // it is deliberately NOT gated on `!activeReady` — the pane it strands is
+  // usually one that WAS ready before it navigated to the new document — and it
+  // is matched against the CURRENT channel so a reissue/Retry (which mints a new
+  // channel) clears it on its own. Direct panes carry no channel and never set it.
+  const activeBootstrapFailed =
+    activeId !== null &&
+    (() => {
+      const c = warm[activeId]
+      return c?.kind === 'same-origin-relay' && bootstrapFailed[activeId] === c.channel
+    })()
+  // The terminal "this pane cannot be served — offer Retry" verdicts. All render
+  // the same recovery panel; a load that never announced readiness
+  // (`activeTimedOut`), a lease that could no longer be renewed
+  // (`activeRelayLeaseFailed`), and a navigated-to document that authenticated
+  // but never went ready (`activeBootstrapFailed`) differ only in cause.
+  const activePaneUnserviceable = activeTimedOut || activeRelayLeaseFailed || activeBootstrapFailed
+  // The published-HTTPS "unembeddable" fail-closed is GONE: a relay endpoint is a
+  // real, same-origin address, so a warm relay pane embeds and announces
+  // readiness like any other. A published parent that CANNOT get an endpoint
+  // (remote too old, forward down) surfaces through the connect/open-pane error
+  // on the panel below (see connectFailure), not a separate unembeddable branch.
+  const showPanel =
+    activeId !== null && (!warm[activeId] || !activeLive || activePaneUnserviceable)
   // Loading overlay: the active pane is warm and the backend says connected,
   // but the embedded SPA hasn't announced readiness yet. Without this the
   // window between Retry succeeding (setWarm) and the remote SPA rendering its
@@ -1176,15 +1832,15 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
       // on `showPanel` would make that branch unreachable — leaving the signature
       // standing after recovery so a later identical failure is suppressed.
       status: showPanel ? inst?.status : undefined,
-      stage: activeTimedOut ? 'pane_load' : 'connect',
-      // The watchdog case has no backend error string at all — the tunnel claims
-      // connected while the pane never loaded — so name that state explicitly
+      stage: activePaneUnserviceable ? 'pane_load' : 'connect',
+      // The watchdog / lease-failure cases have no backend error string at all —
+      // the tunnel can still claim connected — so name that state explicitly
       // rather than journaling nothing for the one failure with no visible cause.
-      fallbackMessage: showPanel && activeTimedOut
+      fallbackMessage: showPanel && activePaneUnserviceable
         ? i18nT('components.instancesViewport.pane_failed_to_load')
         : '',
     }))
-  }, [showPanel, activeId, activeTimedOut, instancesQuery.data])
+  }, [showPanel, activeId, activePaneUnserviceable, instancesQuery.data])
   if (embedded || (warmIds.length === 0 && !showPanel)) return null
 
   const nameFor = (id: string) =>
@@ -1234,15 +1890,45 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
       className="absolute inset-0 bg-bg"
       style={{ display: activeId === null ? 'none' : 'block', zIndex: 1 }}
     >
-      {warmIds.map(id => (
+      {warmIds.map(id => {
+        const conn = warm[id]
+        const relayed = relayMode && conn?.kind === 'same-origin-relay'
+        // The relay pane's browsing context reads `window.name` once and clears
+        // it, so a NEW capability/channel needs a fresh context to re-seed. The
+        // channel in the key remounts the iframe on re-issue (Retry / lease
+        // rotation); direct panes keep the exact `${id}:${seq}` key, unchanged.
+        const key = relayed ? `${id}:${reloadSeq[id] || 0}:${conn.channel}` : `${id}:${reloadSeq[id] || 0}`
+        return (
         // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- onLoad is a document-load lifecycle hook: it posts the model handshake once the pane's document exists. Not a user interaction, and nothing here needs a keyboard path — the pane's own SPA owns focus once loaded.
         <iframe
           // reloadSeq in the key forces a remount (= reload) on Retry even when
-          // the re-minted src is byte-identical to the dead frame's.
-          key={`${id}:${reloadSeq[id] || 0}`}
+          // the re-issued src is byte-identical to the dead frame's; the relay
+          // channel is appended so a re-issued capability also remounts.
+          key={key}
           ref={iframeRefFor(id)}
           title={nameFor(id)}
           src={srcFor(id)}
+          // Relay panes only: seed the bootstrap envelope into the child's
+          // `window.name` (set before navigation, so the pre-module bootstrap
+          // reads it on its first line) and sandbox the frame WITHOUT
+          // allow-same-origin (opaque origin) or top-navigation. Direct panes get
+          // neither — `name=''` leaves window.name untouched and no sandbox keeps
+          // the loopback SPA behaviour exactly as before.
+          //
+          // Seed ONCE per endpoint generation, then clear it after readiness: the
+          // envelope carries the channel and a storage snapshot, so once the
+          // child has consumed and cleared its own `window.name` (on `mc-embedded
+          // -ready`) the parent element's `name` attribute is emptied too, so the
+          // secret does not linger in a browser-visible DOM attribute or
+          // repopulate the browsing-context name on a later same-element reload.
+          // This does not fight lease renewal: a re-issue mints a new channel,
+          // which changes the iframe `key` and REMOUNTS the frame with `ready`
+          // cleared, so the fresh element re-seeds the new envelope before it
+          // loads — the clear only ever applies to a frame that has already
+          // booted on the current generation.
+          {...(relayed
+            ? { name: ready[id] ? '' : relaySeed(id), sandbox: RELAY_PANE_SANDBOX }
+            : {})}
           // The embedded pane is the SAME SPA on the tunnel's loopback port, so
           // it is a CROSS-ORIGIN iframe (same host, different port). Browsers
           // deny microphone, fullscreen and clipboard-write in cross-origin
@@ -1288,7 +1974,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
             // NOT proof the pane loaded. `frame` says which one this was.
             paneLog('iframe-load', {
               id,
-              port: warmRef.current[id]?.port,
+              port: warmPort(warmRef.current[id]),
               seq: reloadSeq[id] || 0,
               frame: frameDocumentState(e.currentTarget),
             })
@@ -1297,7 +1983,8 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
           className="absolute inset-0 w-full h-full border-0"
           style={{ display: id === activeId ? 'block' : 'none' }}
         />
-      ))}
+        )
+      })}
       {/* Draggable title-bar strips for the active remote pane. Rendered AFTER
           the iframe so they follow it in DOM order — Electron collects
           draggable regions in document order, so a `drag` strip here re-adds
@@ -1377,13 +2064,13 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
               <div className="text-xs text-muted">
                 {panelConnecting
                   ? i18nT('components.instancesViewport.connecting')
-                  : activeTimedOut
+                  : activePaneUnserviceable
                     ? i18nT('components.instancesViewport.pane_failed_to_load')
                     : panelState === 'error'
                       ? i18nT('components.instancesViewport.connection_error')
                       : i18nT('components.instancesViewport.disconnected')}
               </div>
-              {!panelConnecting && activeTimedOut && !panelError && (
+              {!panelConnecting && activePaneUnserviceable && !panelError && (
                 // The watchdog case has no backend error string: the tunnel
                 // claims connected while the pane never loaded. Still a
                 // failure, so it carries the same hand-off as the one below.

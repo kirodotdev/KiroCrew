@@ -1,3 +1,4 @@
+import { relocateRequestUrl } from '../lib/dashboardRuntime'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Maximize2, Minimize2, Shrink, Expand } from 'lucide-react'
 import { IconButton, IconButtonGroup } from './ui'
@@ -702,7 +703,7 @@ export default function McpAppFrame({ payload }: { payload: McpAppRenderPayload 
           inFlightRef.current += 1
           void (async () => {
             try {
-              const resp = await fetch('/api/mcp-apps/call', {
+              const resp = await fetch(relocateRequestUrl('/api/mcp-apps/call'), {
                 method: 'POST',
                 headers: {
                   'Content-Type': 'application/json',
@@ -762,7 +763,7 @@ export default function McpAppFrame({ payload }: { payload: McpAppRenderPayload 
           void (async () => {
             try {
               const params = (msg.params ?? {}) as { role?: unknown; content?: unknown }
-              const resp = await fetch('/api/mcp-apps/message', {
+              const resp = await fetch(relocateRequestUrl('/api/mcp-apps/message'), {
                 method: 'POST',
                 headers: {
                   'Content-Type': 'application/json',

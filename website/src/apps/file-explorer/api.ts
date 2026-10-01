@@ -1,9 +1,13 @@
+import { relocateRequestUrl } from '../../lib/dashboardRuntime'
 import { API_BASE } from './constants'
 import { toApiError } from '../../api/apiError'
 import type { TreeEntry, FileMeta, SearchResult } from './types'
 
 async function get<T>(path: string): Promise<T> {
-  const r = await fetch(path, { credentials: 'same-origin' })
+  // Same-dashboard root path; relocate so it stays under the relay prefix in a
+  // relayed pane (identity in direct mode). Every file-explorer call funnels
+  // through here, so this one boundary covers the app.
+  const r = await fetch(relocateRequestUrl(path), { credentials: 'same-origin' })
   if (!r.ok) {
     throw await toApiError(r)
   }

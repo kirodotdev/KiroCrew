@@ -42,7 +42,7 @@ const ORIGIN = 'http://127.0.0.1:7778'
 function warmStore(activeId: string | null = 'cd-1') {
   return createTestStore({
     instances: {
-      warm: { 'cd-1': { port: 7778, token: 'tok' } },
+      warm: { 'cd-1': { kind: 'direct-loopback', port: 7778, token: 'tok' } },
       activeId,
       mru: ['cd-1'],
       unread: {},

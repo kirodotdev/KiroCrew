@@ -30,6 +30,7 @@
  */
 import { ImageOff } from 'lucide-react'
 import { useState } from 'react'
+import { relocateRequestUrl } from '../../lib/dashboardRuntime'
 
 /** File name of a source, used as the fallback label when alt is empty. */
 function srcLabel(src: string): string {
@@ -59,7 +60,7 @@ export function NoteImage({ src, alt, rawSrc }: { src: string | null; alt: strin
   return (
     // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- `onLoad`/`onError` are resource events (release the layout floor, swap in the fallback), not gestures; the image deliberately carries no click, per the note above
     <img
-      src={src}
+      src={relocateRequestUrl(src)}
       alt={alt}
       onLoad={() => setLoaded(true)}
       onError={() => setFailed(true)}

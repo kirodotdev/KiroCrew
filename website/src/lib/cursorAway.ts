@@ -20,6 +20,7 @@
  * visibility and outside-click.
  */
 import { isEmbeddedPane } from './embedded'
+import { stampPaneChannel } from './embeddedParent'
 import { relayTargetOrigin } from './nativeNotify'
 
 /** `true` = far enough away, dismiss. `false` = came back inside instead. */
@@ -102,7 +103,7 @@ function watchViaHost(onResult: CursorAwayResult): (() => void) | null {
 
   window.addEventListener('message', onMessage)
   try {
-    parent.postMessage({ type: CURSOR_AWAY_WATCH_TYPE, v: CURSOR_AWAY_VERSION, id }, target)
+    parent.postMessage(stampPaneChannel({ type: CURSOR_AWAY_WATCH_TYPE, v: CURSOR_AWAY_VERSION, id }), target)
   } catch {
     teardown()
     return null
@@ -111,7 +112,7 @@ function watchViaHost(onResult: CursorAwayResult): (() => void) | null {
     if (done) return
     teardown()
     try {
-      parent.postMessage({ type: CURSOR_AWAY_CANCEL_TYPE, v: CURSOR_AWAY_VERSION, id }, target)
+      parent.postMessage(stampPaneChannel({ type: CURSOR_AWAY_CANCEL_TYPE, v: CURSOR_AWAY_VERSION, id }), target)
     } catch {
       /* host gone — nothing left to disarm */
     }

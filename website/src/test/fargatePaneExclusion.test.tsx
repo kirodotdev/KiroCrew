@@ -63,7 +63,7 @@ describe('shortenEcsTarget', () => {
 })
 
 describe('visibleInstanceTabs and the fargate method', () => {
-  const warm: Record<string, WarmConn> = { f: { port: 7790, token: '' } }
+  const warm: Record<string, WarmConn> = { f: { kind: 'direct-loopback', port: 7790, token: '' } }
 
   it('never gives a fargate crew a switcher tab, whatever its connect state', () => {
     // Every signal that earns an ssm crew a tab is present on the fargate one:

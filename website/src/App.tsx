@@ -1,3 +1,4 @@
+import { relocateRequestUrl } from './lib/dashboardRuntime'
 import { useEffect, useLayoutEffect, useState, useCallback, useRef, useMemo, useSyncExternalStore, createContext, lazy, Suspense, type ComponentType, type HTMLAttributes, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { Routes, Route, Navigate, useLocation, useNavigate, useParams } from 'react-router-dom'
@@ -39,6 +40,7 @@ import { useNavPinned } from './lib/navPinned'
 import { computeHeaderDragGaps, type DragGap } from './lib/dragGaps'
 import { haptic } from './lib/haptic'
 import { isEmbeddedPane } from './lib/embedded'
+import { stampPaneChannel } from './lib/embeddedParent'
 import { OVERLAY_Z_MAX, THEME_DECOR_SLOT_ID, TOPBAR_FOCUS_Z, TOPBAR_Z, registerThemeDecorSlot } from './lib/themeDecorLayer'
 import { useHoverIntent } from './hooks/useHoverIntent'
 import { useNativeNotification } from './hooks/useNativeNotification'
@@ -1770,7 +1772,7 @@ export default function App() {
     // confirm look further down.
     queryFn: async ({ signal }) => {
       const r = await withDeadline(TERMINAL_PROBE_TIMEOUT_MS, signal, s =>
-        fetch('/api/terminal/sessions', { signal: s }))
+        fetch(relocateRequestUrl('/api/terminal/sessions'), { signal: s }))
       // Default-on: the terminal is enabled unless the server explicitly says
       // otherwise. A transient/auth-timing failure of this probe must NOT hide
       // an enabled terminal by falling back to {enabled:false}, which with
@@ -1806,7 +1808,7 @@ export default function App() {
       let second: unknown = null
       try {
         const r = await withDeadline(TERMINAL_PROBE_TIMEOUT_MS, undefined, s =>
-          fetch('/api/terminal/sessions', { signal: s }))
+          fetch(relocateRequestUrl('/api/terminal/sessions'), { signal: s }))
         if (r.ok) second = await r.json()
       } catch { /* null: the confirm look could not rule, so every suspect stays */ }
       confirmRestoredTabs(second)
@@ -2189,7 +2191,7 @@ export default function App() {
     if (!isEmbeddedPane()) return
     try {
       // nosemgrep: javascript.browser.security.wildcard-postmessage-configuration.wildcard-postmessage-configuration
-      window.parent?.postMessage({ type: 'mc-focus-chrome', v: 1, on: !focusActive || topChromeShown }, '*')
+      window.parent?.postMessage(stampPaneChannel({ type: 'mc-focus-chrome', v: 1, on: !focusActive || topChromeShown }), '*')
     } catch {
       /* no parent / cross-origin restriction — the next change re-posts */
     }

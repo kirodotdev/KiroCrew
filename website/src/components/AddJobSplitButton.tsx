@@ -1,5 +1,6 @@
 import { Plus, ChevronDown, LayoutGrid, MessageSquare } from 'lucide-react'
 import { Btn } from './ui'
+import { dashboardNavigateUrl } from '../lib/dashboardRuntime'
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
 } from './ui/dropdown-menu'
@@ -58,7 +59,7 @@ export default function AddJobSplitButton({ onBlank, onBrowseTemplates }: {
               "you can also create schedules by chatting" banner carried. A menu
               item is one text unit, unlike the subtitle sentence it replaced,
               which the i18n render gate flagged as assembled from two keys. */}
-          <DropdownMenuItem onSelect={() => { window.location.href = '/chat' }}>
+          <DropdownMenuItem onSelect={() => { window.location.href = dashboardNavigateUrl('/chat') }}>
             <MessageSquare size={13} className="shrink-0 text-muted" />
             <span>{i18nT('pages.schedulePage.open_chat')}</span>
           </DropdownMenuItem>

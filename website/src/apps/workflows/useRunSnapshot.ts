@@ -11,6 +11,7 @@
  * `running` — no manual setInterval/useRef plumbing (which previously caused an
  * infinite refetch loop when the snapshot was in the effect dependency array).
  */
+import { relocateRequestUrl } from '../../lib/dashboardRuntime'
 import { useQuery } from '@tanstack/react-query'
 import type { WfEvent } from './runModel'
 
@@ -57,7 +58,7 @@ export function useRunSnapshot(
     queryKey: ['workflow-run-snapshot', run_id],
     queryFn: async () => {
       const r = await fetch(
-        `${CORE_API_BASE}/runs/${encodeURIComponent(run_id!)}`,
+        relocateRequestUrl(`${CORE_API_BASE}/runs/${encodeURIComponent(run_id!)}`),
         { credentials: 'same-origin' },
       )
       if (!r.ok) throw new Error(`GET /runs/${run_id} → ${r.status}`)

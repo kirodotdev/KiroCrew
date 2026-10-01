@@ -1,3 +1,4 @@
+import { relocateRequestUrl } from '../lib/dashboardRuntime'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import type { Terminal } from '@xterm/xterm'
@@ -280,7 +281,7 @@ export default function TerminalCompletion({ term, sessionId, active }: {
     refetchOnWindowFocus: false,
     queryFn: async ({ signal }): Promise<CompleteResponse | null> => {
       if (!req) return null
-      const r = await fetch('/api/terminal/complete', {
+      const r = await fetch(relocateRequestUrl('/api/terminal/complete'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

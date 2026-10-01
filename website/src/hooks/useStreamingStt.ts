@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { acquireMicStream, humanizeMicError, createLevelMeter, setPreferredMicId, activeDeviceId } from './mic'
 import type { AudioSample } from './mic'
+import { dashboardWebSocket } from '../lib/dashboardRuntime'
 import { streamErrorMessage } from '../lib/sttProviders'
 import type { SttModelProgress } from '../lib/sttProviders'
 import { joinTranscript } from '../lib/dictationText'
@@ -298,8 +299,7 @@ export function useStreamingStt ({ onPartial, onFinal, onCaptureStop, onError, o
     onDeviceRef.current?.(stream.getAudioTracks()[0]?.label || '', activeDeviceId(stream))
     levelStopRef.current = createLevelMeter(stream, v => onLevelRef.current?.(v), sampleRef)
 
-    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const ws = new WebSocket(`${proto}//${window.location.host}/api/ws/stt`)
+    const ws = dashboardWebSocket('/api/ws/stt')
     ws.binaryType = 'arraybuffer'
     wsRef.current = ws
 

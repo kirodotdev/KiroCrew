@@ -3,6 +3,7 @@
 // Routes are registered directly on the main gateway aiohttp app under
 // ``/api/apps/code-review-sage``, so every call is same-origin and rides the
 // dashboard session cookie — no tokens are added here.
+import { relocateRequestUrl } from '../../lib/dashboardRuntime'
 import type {
   AddRepoResponse,
   ChatState,
@@ -55,13 +56,13 @@ async function parseErrorBody(r: Response): Promise<SageApiError> {
 }
 
 async function getJSON<T>(path: string): Promise<T> {
-  const r = await fetch(`${API}${path}`, { credentials: 'same-origin' })
+  const r = await fetch(relocateRequestUrl(`${API}${path}`), { credentials: 'same-origin' })
   if (!r.ok) throw await parseErrorBody(r)
   return r.json() as Promise<T>
 }
 
 async function sendJSON<T>(path: string, method: string, body?: unknown): Promise<T> {
-  const r = await fetch(`${API}${path}`, {
+  const r = await fetch(relocateRequestUrl(`${API}${path}`), {
     method,
     credentials: 'same-origin',
     headers: { 'Content-Type': 'application/json' },

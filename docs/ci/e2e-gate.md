@@ -24,12 +24,13 @@ namespaces, requires `unshare --mount --map-root-user true` to succeed, and fail
 if either the precondition or the test fails.
 
 `setup.py::E2eTestCommand` is the entry point (registered under `cmdclass` as
-`test_e2e`). It runs exactly two pytest files:
+`test_e2e`). It runs three pytest files:
 
 | File | What it covers |
 |---|---|
 | `test/test_e2e_smoke.py` | Gateway boot and HTTP-level smoke checks. |
 | `test/test_playwright_e2e.py` | The dashboard browser suite, folded in so one command is the whole gate. |
+| `test/e2e/test_instance_pane_relay_e2e.py` | The same-origin capability pane-relay real-Chromium E2E (incident kc-46d84a): boots the **production-source parent dashboard** (a dedicated Vite build mounting the unchanged `InstancesViewport` + relay authorities) plus a real `InstancePaneRelay` over **one published HTTPS origin**, forwarding to a real loopback peer gateway, and drives `playwright-fixtures/instance-pane-relay.spec.ts` in Chromium **twice** (each against a fresh topology), requiring both internal runs to pass. |
 
 The HTTP smoke turns send the nonempty agent identity returned by slot creation.
 They test the configured binding's real ACP round trip without substituting a
@@ -41,9 +42,17 @@ bounded machine code, keeping response prose and credentials out of diagnostics.
 `E2eTestCommand.run()` builds the child pytest invocation itself, so the
 environment is not something a caller has to remember:
 
-- `KIROCREW_E2E=1` lifts the `skipif` on both files. Neither runs in a bare
-  `pytest` invocation, which is deliberate: the browser leg takes minutes per
-  interpreter, far too slow for the per-commit gate.
+- `KIROCREW_E2E=1` lifts the `skipif` on all three files. None runs in a bare
+  `pytest` invocation, which is deliberate: the browser legs take minutes per
+  interpreter, far too slow for the per-commit gate. The pane-relay E2E
+  additionally SELF-SKIPS when its browser/toolchain is unresolved — a resolvable
+  Node.js >=18, the Playwright CLI under `website/node_modules`, a complete
+  non-busy Chromium (or headless-shell), the `pane-host` production bundle it
+  builds via `pane-host.vite.config.ts`, and its `pane-relay.playwright.config.ts`
+  config — unless `KIROCREW_E2E_REQUIRE` is set, which turns an unresolved
+  toolchain into a hard failure (see below). Its heavy temp trees are allocated
+  under the runner temp root (`KC46_ARTIFACT_ROOT`/`RUNNER_TEMP`/`TMPDIR`) and
+  removed on exit unless `KC46_RETAIN_ARTIFACTS` asks to keep the evidence.
 - `KIROCREW_STRICT_ON_LOOP_PERSIST=1` turns the on-loop session-JSONL persistence
   discipline into an enforced invariant for the duration of the run. The harness
   gateway inherits this env, so any raw on-loop `ConversationLog._locked` entry
@@ -53,7 +62,7 @@ environment is not something a caller has to remember:
   `--dist loadgroup`, `--max-worker-restart=2`, `--timeout=120`). xdist would spawn
   one gateway per worker, and coverage of a subprocess gateway measures nothing, so
   the E2E run is **serial** and uninstrumented by construction. This is the one
-  place an `addopts` wipe is correct: it runs two files, not a large selection, so
+  place an `addopts` wipe is correct: it runs three files, not a large selection, so
   the loadgroup invariant that a broad override must preserve does not apply. See
   [../system-specs/common/testing-conventions.md](../system-specs/common/testing-conventions.md).
 - `--timeout=1800` replaces the 120s unit-test cap. The browser leg runs several

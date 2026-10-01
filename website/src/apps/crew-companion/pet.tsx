@@ -28,6 +28,7 @@ import { adoptDashboardTheme, watchThemeChanges } from './dashboardTheme'
 import { initI18n } from '../../i18n/all'
 import { i18nT } from '../../i18n/t'
 import { PENDING_PATH, PRESENCE_PATH } from './constants'
+import { relocateRequestUrl } from '../../lib/dashboardRuntime'
 import { nudgeTextFor } from './nudgeKeys'
 import { PetAvatar, type PetState } from './PetAvatar'
 import { usePlayfulMotion } from './usePlayfulMotion'
@@ -177,7 +178,7 @@ function writeStoredCursor(n: number): void {
 /** Same-origin: the window is loaded from the gateway, so its cookie is present. */
 async function post(path: string): Promise<void> {
   try {
-    await fetch(path, { method: 'POST', credentials: 'same-origin' })
+    await fetch(relocateRequestUrl(path), { method: 'POST', credentials: 'same-origin' })
   } catch {
     /* the companion must never crash on a failed poll */
   }
@@ -909,7 +910,7 @@ function Companion() {
       if (!isOwnerRef.current) return
       try {
         const since = cursorRef.current
-        const r = await fetch(`${PENDING_PATH}?since=${since}`, {
+        const r = await fetch(relocateRequestUrl(`${PENDING_PATH}?since=${since}`), {
           credentials: 'same-origin',
         })
         if (!r.ok) return
@@ -928,7 +929,7 @@ function Companion() {
          * twice rather than swallow something the user asked to be told.
          */
         if (data.cursor < since) {
-          const again = await fetch(`${PENDING_PATH}?since=0`, { credentials: 'same-origin' })
+          const again = await fetch(relocateRequestUrl(`${PENDING_PATH}?since=0`), { credentials: 'same-origin' })
           if (!again.ok) return
           data = (await again.json()) as { cursor: number; fires: Fire[] }
           if (stopped) return

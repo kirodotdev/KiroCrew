@@ -1,3 +1,4 @@
+import { relocateRequestUrl } from '../lib/dashboardRuntime'
 import { safeSetItem } from '../utils/safeStorage'
 import { composerDraftStoreFor } from '../utils/composerDraftStore'
 import { clearAnnotationHighlight, paintAnnotationHighlight } from '../utils/annotationHighlight'
@@ -807,12 +808,12 @@ function useFileKnowledgeState(filePath: string, onError: ReportError) {
   const { data, error: queryError } = useQuery({
     queryKey: ['knowledge-config', filePath],
     queryFn: async () => {
-      const r = await fetch('/api/knowledge/config')
+      const r = await fetch(relocateRequestUrl('/api/knowledge/config'))
       // A failed read used to resolve to `null`, which rendered as "not added"
       // — a failure dressed as a state. Reject instead so the panel can say so.
       if (!r.ok) throw new Error(i18nT('components.markdownPanel.knowledge_status_failed'))
       const cfg = await r.json()
-      const sr = await fetch(`/api/knowledge/sources?uri=${encodeURIComponent(filePath)}`)
+      const sr = await fetch(relocateRequestUrl(`/api/knowledge/sources?uri=${encodeURIComponent(filePath)}`))
       const sources = sr.ok ? await sr.json() : []
       return { ...cfg, alreadyAdded: sources.length > 0 }
     },
@@ -822,7 +823,7 @@ function useFileKnowledgeState(filePath: string, onError: ReportError) {
   const { mutate: add, isPending: adding, isSuccess: added, data: addResult, reset } = useMutation({
     mutationFn: async () => {
       const name = filePath.split('/').pop() || filePath
-      const res = await fetch('/api/knowledge/sources', {
+      const res = await fetch(relocateRequestUrl('/api/knowledge/sources'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name, source_type: 'local_file', uri: filePath }),

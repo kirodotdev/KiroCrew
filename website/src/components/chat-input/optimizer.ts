@@ -1,3 +1,4 @@
+import { relocateRequestUrl } from '../../lib/dashboardRuntime'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import type { useAppStore } from '../../store'
@@ -89,7 +90,7 @@ export function usePromptOptimizer({ slotId, chatStore, valueRef, pasteBlocks, o
         slotId: string | null
       },
     ) => {
-      const resp = await fetch('/api/optimizer/optimize', {
+      const resp = await fetch(relocateRequestUrl('/api/optimizer/optimize'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-session-key': 'dashboard:ui' },
         credentials: 'same-origin',

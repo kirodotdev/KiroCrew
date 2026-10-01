@@ -71,7 +71,7 @@ describe('InstancesViewport under a Windows frameless shell', () => {
   it('relays winInset: true in the mc-host-model payload', async () => {
     const store = createTestStore({
       instances: {
-        warm: { 'cd-1': { port: 7778, token: 'tok' } },
+        warm: { 'cd-1': { kind: 'direct-loopback', port: 7778, token: 'tok' } },
         activeId: 'cd-1',
         mru: ['cd-1'],
         unread: {},
@@ -98,7 +98,7 @@ describe('InstancesViewport under a Windows frameless shell', () => {
     // Any warm write re-runs the broadcast effect; same port/token keeps the
     // pane's readiness so this is purely a re-broadcast trigger.
     act(() => {
-      store.dispatch(setWarm({ id: 'cd-1', conn: { port: 7778, token: 'tok' } }))
+      store.dispatch(setWarm({ id: 'cd-1', conn: { kind: 'direct-loopback', port: 7778, token: 'tok' } }))
     })
 
     await waitFor(() =>

@@ -1,3 +1,4 @@
+import { relocateRequestUrl } from '../lib/dashboardRuntime'
 import { useEffect, useLayoutEffect, useCallback, useRef, useState } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
@@ -215,7 +216,7 @@ export function disposeTerminalSession(sessionId: string): void {
 export function useDeleteTerminalSession() {
   return useMutation({
     mutationFn: async (sessionId: string) => {
-      const res = await fetch(`/api/terminal/sessions/${sessionId}`, { method: 'DELETE', keepalive: true })
+      const res = await fetch(relocateRequestUrl(`/api/terminal/sessions/${sessionId}`), { method: 'DELETE', keepalive: true })
       // 404 means the server has no such session any more: the PTY was already
       // reaped (idle sweep, gateway restart, a second close racing this one).
       // The shell is stopped, which is the outcome the user asked for, so this
@@ -461,7 +462,7 @@ function TerminalView({ sessionId, cwd, visible, onSendToChat }: { sessionId: st
     // that gap. Fail closed: nothing is inserted unless redaction succeeds.
     let redacted: string
     try {
-      const res = await fetch('/api/terminal/redact', {
+      const res = await fetch(relocateRequestUrl('/api/terminal/redact'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text: sel.text }),

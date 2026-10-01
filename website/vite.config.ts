@@ -888,8 +888,44 @@ export default defineConfig({
       '/static/kirocrew-logo.png': `http://localhost:${backendPort}`,
     },
   },
+  // Relocatable dashboard runtime (R1-A), asset half. A RELATIVE base makes every
+  // emitted internal asset self-locate against its own module URL rather than an
+  // origin-root literal: chunk-to-chunk imports, dynamic import() chunks, the
+  // Vite preload helper, worker `new URL(..., import.meta.url)` targets, and CSS
+  // `url()` references all resolve relative to the chunk/stylesheet that Vite
+  // emitted them into. That is what lets the SAME built bundle run both at the
+  // origin root (`direct`) and under a capability prefix (`/instance-pane/<cap>/`,
+  // the future relay) with NO rewrite of the minified JavaScript — the property
+  // `src/lib/dashboardRuntime.ts` documents and the build-output test
+  // (`src/test/buildOutputRelocatable.test.ts`) proves.
+  //
+  // The one exception is the HTML entry: `renderBuiltUrl` below pins the entry
+  // `<script>`/`<link>` (hostType 'html') back to a ROOT-ABSOLUTE `/assets/…` so a
+  // deep-link reload (`/settings/agents`, served the SPA shell by the gateway
+  // fallback) still resolves the entry against the origin root instead of the
+  // current route's directory. That absolute prefix is the STABLE BASE MARKER:
+  // direct mode serves it byte-identically to the previous `base:'/'` output, and
+  // the future relay rewrites the leading `/` to `/instance-pane/<cap>/` in the
+  // served HTML — an HTML transform, never a minified-JS rewrite. There is
+  // deliberately NO `<base>` element (which would retarget in-document SVG
+  // `url(#id)` fragments and `#hash` anchors); leaving it out keeps those intact.
+  base: './',
+  experimental: {
+    renderBuiltUrl(filename, { hostType }) {
+      // Entry refs in index.html: root-absolute (the stable, relay-rewritable
+      // base marker). Everything a chunk or stylesheet references at runtime:
+      // relative, so it self-locates under whatever prefix served the entry.
+      if (hostType === 'html') return '/' + filename
+      return { relative: true }
+    },
+  },
   build: {
     outDir: './dist',
+    // Emit `.vite/manifest.json` so the build-output relocation test can assert
+    // over the REAL emitted graph (entry, chunks, CSS, assets) rather than a
+    // scrape, and so a future relay can resolve capability-prefixed asset paths
+    // from a manifest instead of parsing HTML.
+    manifest: true,
     emptyOutDir: true,
     // The vendor split below extracts the heaviest eager libs into their own
     // chunks, but two are irreducibly large: Monaco's `editor.main` (~3.81MB,

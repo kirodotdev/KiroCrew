@@ -1,3 +1,4 @@
+import { relocateRequestUrl } from '../../lib/dashboardRuntime'
 import { AGENT } from './constants'
 import { toApiError } from '../../api/apiError'
 import type { Scope, SlotData } from './types'
@@ -10,7 +11,7 @@ const DC = '/api/apps/design-critique'
 // so they are plain same-origin fetches — the same convention file-explorer's
 // api.ts uses. An empty body (e.g. 204 on DELETE) is treated as success.
 async function jsonFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const r = await fetch(path, { credentials: 'same-origin', ...init })
+  const r = await fetch(relocateRequestUrl(path), { credentials: 'same-origin', ...init })
   if (!r.ok) {
     throw await toApiError(r)
   }
@@ -97,7 +98,7 @@ export const designCritiqueApi = {
   uploadFiles: async (files: File[]): Promise<{ paths: string[] }> => {
     const fd = new FormData()
     files.forEach(f => fd.append('file', f))
-    const up = await fetch('/api/upload/file', { method: 'POST', body: fd, credentials: 'same-origin' })
+    const up = await fetch(relocateRequestUrl('/api/upload/file'), { method: 'POST', body: fd, credentials: 'same-origin' })
     if (!up.ok) throw await toApiError(up)
     return up.json()
   },

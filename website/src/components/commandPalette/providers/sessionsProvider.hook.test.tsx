@@ -74,7 +74,7 @@ import { useSessionsProvider } from './sessionsProvider'
 
 function storeWithWarm(warm: boolean) {
   const store = createTestStore()
-  if (warm) store.dispatch(setWarm({ id: 'inst-a', conn: { port: 45123, token: 't' } }))
+  if (warm) store.dispatch(setWarm({ id: 'inst-a', conn: { kind: 'direct-loopback', port: 45123, token: 't' } }))
   return store
 }
 

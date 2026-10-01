@@ -1,3 +1,4 @@
+import { relocateRequestUrl } from './dashboardRuntime'
 // Boot-time self-heal for a stale SPA shell.
 //
 // The failure this closes (observed on a real phone over a tunnel): the
@@ -76,7 +77,7 @@ export function installStaleShellHeal(): void {
     const running = document.querySelector<HTMLScriptElement>('script[type="module"][src*="/assets/"]')?.src ?? null
     void healIfStale({
       runningEntry: running,
-      fetchShell: () => fetch('/index.html', { cache: 'no-store' }),
+      fetchShell: () => fetch(relocateRequestUrl('/index.html'), { cache: 'no-store' }),
       origin: window.location.origin,
       now: () => Date.now(),
       readStamp: () => Number(window.sessionStorage.getItem(STAMP_KEY) ?? 0),

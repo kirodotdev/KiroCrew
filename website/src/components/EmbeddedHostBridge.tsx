@@ -17,6 +17,7 @@
  * on both ends. Non-embedded (top-level) dashboards mount this as a no-op.
  */
 import { useEffect } from 'react'
+import { stampPaneChannel } from '../lib/embeddedParent'
 import { useAppDispatch } from '../store'
 import { setHostModel, type HostModel } from '../store/instancesSlice'
 import { isEmbeddedPane } from '../lib/embedded'
@@ -139,7 +140,7 @@ export default function EmbeddedHostBridge() {
     // provider, an error boundary) swallowed the tree.
     try {
       // nosemgrep: javascript.browser.security.wildcard-postmessage-configuration.wildcard-postmessage-configuration
-      window.parent?.postMessage({ type: 'mc-embedded-boot', v: 1, stage: 'bridge' }, '*')
+      window.parent?.postMessage(stampPaneChannel({ type: 'mc-embedded-boot', v: 1, stage: 'bridge' }), '*')
     } catch {
       /* covered by announceReady's retries */
     }
@@ -147,7 +148,7 @@ export default function EmbeddedHostBridge() {
     const announceReady = () => {
       try {
         // nosemgrep: javascript.browser.security.wildcard-postmessage-configuration.wildcard-postmessage-configuration
-        window.parent?.postMessage({ type: 'mc-embedded-ready', v: 1 }, '*')
+        window.parent?.postMessage(stampPaneChannel({ type: 'mc-embedded-ready', v: 1 }), '*')
       } catch {
         /* no parent / cross-origin restriction — a later retry covers it */
       }

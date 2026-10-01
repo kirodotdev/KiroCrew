@@ -5,6 +5,7 @@
  * pool with its stub allowlist and shareability measurement.
  */
 
+import { relocateRequestUrl } from '../../lib/dashboardRuntime'
 import type { McpApplyChange } from '../../types'
 import type { ClientTransport } from './transport'
 
@@ -85,13 +86,13 @@ export type McpManagedServer = {
 
 export function createMcpEndpoints({ get, post, put, j }: ClientTransport) {
   const probeCache = {
-    mcpProbeCache: () => fetch('/api/mcp/probe').then(j),
+    mcpProbeCache: () => fetch(relocateRequestUrl('/api/mcp/probe')).then(j),
   }
 
   const servers = {
     // MCP
-    mcpServers: () => fetch('/api/mcp').then(j),
-    mcpGlobalScopes: () => fetch('/api/mcp/scopes').then(j),
+    mcpServers: () => fetch(relocateRequestUrl('/api/mcp')).then(j),
+    mcpGlobalScopes: () => fetch(relocateRequestUrl('/api/mcp/scopes')).then(j),
     /** Multi-provider MCP server discovery (official registry, plus the
      *  edition capability provider when one is installed). A query
      *  shorter than 2 chars returns {results: [], providers: [...]} without
@@ -113,7 +114,7 @@ export function createMcpEndpoints({ get, post, put, j }: ClientTransport) {
 
     mcpCustomUpdate: (name: string, spec: import('../../types').McpCustomSpec) =>
       put(`/api/mcp/custom/${encodeURIComponent(name)}`, { spec }).then(j) as Promise<{ ok: boolean; name: string }>,
-    mcpActive: (agent?: string) => fetch('/api/mcp/active' + (agent ? `?agent=${encodeURIComponent(agent)}` : '')).then(j),
+    mcpActive: (agent?: string) => fetch(relocateRequestUrl('/api/mcp/active' + (agent ? `?agent=${encodeURIComponent(agent)}` : ''))).then(j),
     mcpProbe: () => post('/api/mcp/probe').then(j),
     mcpResetProbeFailures: (name: string) =>
       post('/api/mcp/quarantine/clear', { name }).then(j) as Promise<{ ok: boolean; name: string; released: boolean }>,
@@ -130,20 +131,20 @@ export function createMcpEndpoints({ get, post, put, j }: ClientTransport) {
 
   const gateway = {
     // MCP Gateway (shared pool)
-    mcpGatewayStatus: () => fetch('/api/mcp-gateway/status').then(j) as Promise<{ enabled: boolean; stub: string[]; stub_count: number; running: boolean; ping_ok: boolean; supported: boolean; launch_refused?: Record<string, { reason: 'added_outside_dashboard' | 'changed_needs_reapproval'; commands?: string[][]; envs?: string[][]; approved_commands?: string[][]; approved_envs?: string[][]; complete?: boolean; expected_launch?: string }> }>,
+    mcpGatewayStatus: () => fetch(relocateRequestUrl('/api/mcp-gateway/status')).then(j) as Promise<{ enabled: boolean; stub: string[]; stub_count: number; running: boolean; ping_ok: boolean; supported: boolean; launch_refused?: Record<string, { reason: 'added_outside_dashboard' | 'changed_needs_reapproval'; commands?: string[][]; envs?: string[][]; approved_commands?: string[][]; approved_envs?: string[][]; complete?: boolean; expected_launch?: string }> }>,
     mcpGatewayEnable: (enabled: boolean) => post('/api/mcp-gateway/enable', { enabled }).then(j) as Promise<{ ok: boolean; enabled: boolean; running: boolean; ping_ok: boolean }>,
-    mcpGatewayMetrics: () => fetch('/api/mcp-gateway/metrics').then(j) as Promise<{ running: boolean; size?: number; max_backends?: number; backends: { server: string; agent: string; pid: number | null; stubs?: number; idle_s: number; rss_kb: number }[]; warm_pool_hits?: number; warm_pool_misses?: number; warm_pool_hit_rate_pct?: number }>,
-    mcpGatewayServers: () => fetch('/api/mcp-gateway/servers').then(j) as Promise<{ servers: McpManagedServer[] }>,
+    mcpGatewayMetrics: () => fetch(relocateRequestUrl('/api/mcp-gateway/metrics')).then(j) as Promise<{ running: boolean; size?: number; max_backends?: number; backends: { server: string; agent: string; pid: number | null; stubs?: number; idle_s: number; rss_kb: number }[]; warm_pool_hits?: number; warm_pool_misses?: number; warm_pool_hit_rate_pct?: number }>,
+    mcpGatewayServers: () => fetch(relocateRequestUrl('/api/mcp-gateway/servers')).then(j) as Promise<{ servers: McpManagedServer[] }>,
     // What the gateway would run for this server, so the operator approves a
     // command rather than a name. `expected_launch` is the identity the approval
     // is written against and is present only when every command could be shown.
-    mcpGatewayLaunchPreview: (name: string) => fetch(`/api/mcp-gateway/servers/launch?name=${encodeURIComponent(name)}`).then(j) as Promise<{ name: string; commands: string[][]; envs: string[][]; complete: boolean; expected_launch?: string }>,
+    mcpGatewayLaunchPreview: (name: string) => fetch(relocateRequestUrl(`/api/mcp-gateway/servers/launch?name=${encodeURIComponent(name)}`)).then(j) as Promise<{ name: string; commands: string[][]; envs: string[][]; complete: boolean; expected_launch?: string }>,
     mcpGatewaySetStub: (name: string, stub: boolean, expectedLaunch?: string, resolveEligibility = false) => post('/api/mcp-gateway/servers/stub', { name, stub, ...(expectedLaunch ? { expected_launch: expectedLaunch } : {}), ...(resolveEligibility ? { resolve_eligibility: true } : {}) }).then(j) as Promise<{ ok: boolean; name: string; stub: boolean; stubbed?: string[]; skipped?: Array<{ name: string; reason: string }>; sharing_on?: boolean; enabled?: boolean; applied?: boolean; restart_required?: boolean; stub_servers?: string[] }>,
     mcpResolveRefresh: () => post('/api/mcp-gateway/resolve-refresh', {}).then(j) as Promise<{ ok: boolean; reason?: string; resolved: Record<string, 'ready' | 'unresolved' | 'error'>; ready?: string[] }>,
     // Starting a measurement pass returns immediately: it spawns two processes per
     // unmeasured server, so the answer arrives through the progress read, not here.
     mcpMeasureStart: () => post('/api/mcp/measure', {}).then(j) as Promise<McpMeasureProgress>,
-    mcpMeasureProgress: () => fetch('/api/mcp/measure').then(j) as Promise<McpMeasureProgress>,
+    mcpMeasureProgress: () => fetch(relocateRequestUrl('/api/mcp/measure')).then(j) as Promise<McpMeasureProgress>,
     // Batch form of the above, for turning stubs OFF -- one config write for the
     // whole set, so "unstub all" can't land the allowlist half-flipped. Like the
     // single form it records rather than applies, and answers `restart_required`.

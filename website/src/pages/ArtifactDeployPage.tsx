@@ -1,3 +1,4 @@
+import { relocateRequestUrl } from '../lib/dashboardRuntime'
 import { useState } from 'react'
 import Clickable from '../components/Clickable'
 import { Link, useNavigate } from 'react-router-dom'
@@ -98,12 +99,12 @@ const READY_COLUMN_KEY: (string | null)[] = [
 // `error`/`detail` text, via the shared factory), so a 4xx/5xx body reaches
 // useQuery/useMutation `.error` instead of being handed back as `data`.
 async function jget<T>(path: string): Promise<T> {
-  const r = await fetch(BASE + path, { headers: { ..._sk } })
+  const r = await fetch(relocateRequestUrl(BASE + path), { headers: { ..._sk } })
   if (!r.ok) throw await toApiError(r)
   return (await r.json()) as T
 }
 async function jsend<T>(path: string, body: unknown, method = 'POST'): Promise<{ status: number; data: T }> {
-  const r = await fetch(BASE + path, { method, headers: { 'Content-Type': 'application/json', ..._sk }, body: JSON.stringify(body) })
+  const r = await fetch(relocateRequestUrl(BASE + path), { method, headers: { 'Content-Type': 'application/json', ..._sk }, body: JSON.stringify(body) })
   if (!r.ok) throw await toApiError(r)
   return { status: r.status, data: (await r.json()) as T }
 }
@@ -170,7 +171,7 @@ export default function ArtifactDeployPage() {
   const webappQ = useQuery<{ artifacts: Artifact[] }>({
     queryKey: ['deploy-web', 'webapps'],
     queryFn: async () => {
-      const r = await fetch('/api/artifacts?kind=webapp')
+      const r = await fetch(relocateRequestUrl('/api/artifacts?kind=webapp'))
       if (!r.ok) throw await toApiError(r)
       return (await r.json()) as { artifacts: Artifact[] }
     },
@@ -958,7 +959,7 @@ function PendingConfirmations({ qc, askAgent }: { qc: ReturnType<typeof useQuery
   const pendingQ = useQuery<{ pending: PendingEntry[] }>({
     queryKey: ['deploy-web', 'pending'],
     queryFn: async () => {
-      const r = await fetch(BASE + '/pending', { headers: { 'X-Session-Key': 'dashboard:ui' } })
+      const r = await fetch(relocateRequestUrl(BASE + '/pending'), { headers: { 'X-Session-Key': 'dashboard:ui' } })
       if (!r.ok) throw await toApiError(r)
       return (await r.json()) as { pending: PendingEntry[] }
     },
@@ -975,7 +976,7 @@ function PendingConfirmations({ qc, askAgent }: { qc: ReturnType<typeof useQuery
       // Entries flagged override_scan_required are blocked by
       // overridable (non-credential) findings — the human's explicit
       // "Deploy anyway" sends override_scan so the backend clears them.
-      const res = await fetch(BASE + `/pending/${id}/confirm`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Session-Key': 'dashboard:ui' }, body: JSON.stringify(overrideScan ? { override_scan: true } : {}) })
+      const res = await fetch(relocateRequestUrl(BASE + `/pending/${id}/confirm`), { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Session-Key': 'dashboard:ui' }, body: JSON.stringify(overrideScan ? { override_scan: true } : {}) })
       const data = await res.json()
       if (!res.ok) {
         // Carry the two technical fields alongside the message so the banner can
@@ -1008,7 +1009,7 @@ function PendingConfirmations({ qc, askAgent }: { qc: ReturnType<typeof useQuery
 
   const dismissMut = useMutation({
     mutationFn: async (id: string) => {
-      const res = await fetch(BASE + `/pending/${id}/dismiss`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Session-Key': 'dashboard:ui' } })
+      const res = await fetch(relocateRequestUrl(BASE + `/pending/${id}/dismiss`), { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Session-Key': 'dashboard:ui' } })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || `Dismiss failed (${res.status})`)
       return data

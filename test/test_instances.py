@@ -8454,6 +8454,10 @@ class TestProxyRequest:
         class _Sess:
             def __init__(self, *a, **k):
                 self.closed = False
+                # proxy_request now passes a real _GenerationFencedConnector; the
+                # real ClientSession owns and closes it, so this stand-in must too
+                # or every fake-session test leaks an unclosed connector.
+                self._connector = k.get("connector")
 
             async def request(self, method, url, **kwargs):
                 calls.append({"method": method, "url": url, **kwargs})
@@ -8461,6 +8465,8 @@ class TestProxyRequest:
 
             async def close(self):
                 self.closed = True
+                if self._connector is not None:
+                    await self._connector.close()
 
         return _Sess
 
@@ -8474,6 +8480,92 @@ class TestProxyRequest:
                 pass
         assert ei.value.code == "proxy_peer_not_connected"
         assert ei.value.http_status == 503
+
+    @pytest.mark.asyncio
+    async def test_expected_forward_mismatch_is_refused_before_any_request(
+        self, tmp_path, monkeypatch
+    ):
+        """A caller (the pane relay) pins a request to the ``(port, generation)``
+        its capability was issued against. If the LIVE forward has moved past that
+        generation by the time the manager selects the url/credential, the request
+        is refused before a single byte crosses the tunnel — the generation-binding
+        race the relay's lease resolution could otherwise lose."""
+        from kiro_crew.instances import ssh_tunnel_manager as m
+        from kiro_crew.instances.ssh_tunnel_manager import ProxyRequestError
+
+        reg, mgr = self._mgr(tmp_path)
+        reg.add(name="CD", ssh_host="cd-1-alias", instance_id="cd-1")
+        await mgr.connect("cd-1")
+        calls: list = []
+        monkeypatch.setattr(m.aiohttp, "ClientSession", self._fake_session(calls, statuses=[200]))
+        live = mgr.peer_forward_snapshot("cd-1")
+        stale = (live[0], live[1] + 1)  # a lease bound to a superseded generation
+        with pytest.raises(ProxyRequestError) as ei:
+            async with mgr.proxy_request("cd-1", "GET", "api/chat/slots", expected_forward=stale):
+                pass
+        assert ei.value.code == "proxy_peer_not_connected"
+        assert calls == []  # refused before any request reached the peer
+
+    @pytest.mark.asyncio
+    async def test_expected_forward_match_proceeds(self, tmp_path, monkeypatch):
+        from kiro_crew.instances import ssh_tunnel_manager as m
+
+        reg, mgr = self._mgr(tmp_path)
+        reg.add(name="CD", ssh_host="cd-1-alias", instance_id="cd-1")
+        await mgr.connect("cd-1")
+        calls: list = []
+        monkeypatch.setattr(m.aiohttp, "ClientSession", self._fake_session(calls, statuses=[200]))
+
+        async def fake_exchange(url, link, cookie_name):
+            return "SESSION_TOK"
+
+        monkeypatch.setattr(mgr, "_exchange_link", fake_exchange)
+        live = mgr.peer_forward_snapshot("cd-1")
+        async with mgr.proxy_request(
+            "cd-1", "GET", "api/chat/slots", expected_forward=live
+        ) as resp:
+            assert resp.status == 200
+        assert len(calls) == 1  # a matching generation forwards normally
+
+    @pytest.mark.asyncio
+    async def test_websocket_expected_forward_mismatch_is_refused_before_handshake(
+        self, tmp_path, monkeypatch
+    ):
+        from kiro_crew.instances import ssh_tunnel_manager as m
+        from kiro_crew.instances.ssh_tunnel_manager import ProxyRequestError
+
+        reg, mgr = self._mgr(tmp_path)
+        reg.add(name="CD", ssh_host="cd-1-alias", instance_id="cd-1")
+        await mgr.connect("cd-1")
+        opened: list = []
+
+        class _WsSess:
+            def __init__(self, *a, **k):
+                pass
+
+            async def ws_connect(self, url, **kwargs):
+                opened.append(url)
+                raise AssertionError("handshake must not be attempted on a stale generation")
+
+            async def close(self):
+                return None
+
+        monkeypatch.setattr(m.aiohttp, "ClientSession", _WsSess)
+        live = mgr.peer_forward_snapshot("cd-1")
+        stale = (live[0], live[1] + 1)
+        with pytest.raises(ProxyRequestError) as ei:
+            async with mgr.proxy_websocket("cd-1", "api/ws", expected_forward=stale):
+                pass
+        assert ei.value.code == "proxy_peer_not_connected"
+        assert opened == []  # no WebSocket handshake reached the replacement peer
+
+    # The connect-time generation fence (a rebuild reusing the port under the next
+    # generation, refused under the manager lock immediately before the dial) and
+    # the manager-lock lifetime (never held across the peer's response-header wait)
+    # now live in ``_GenerationFencedConnector`` — a real ``TCPConnector`` a faked
+    # ``ClientSession`` bypasses. Those are exercised against REAL loopback peers in
+    # ``test_instance_pane_relay_transport.py`` (paused-header concurrency, the
+    # rebuild-before-dial refusal, and WebSocket redirect rejection).
 
     @pytest.mark.asyncio
     async def test_success_sends_port_scoped_cookie_and_refuses_redirects(
@@ -9182,6 +9274,13 @@ class TestPeerRequestSharedDance:
         from kiro_crew.instances.ssh_tunnel_manager import SshTunnelManager
 
         params = inspect.signature(SshTunnelManager.proxy_request).parameters
+        # The invariant this pins is the ABSENCE of a per-call timeout override —
+        # the timeout is a property of the method (connect+read-idle), not a
+        # caller's choice. Other keyword-only forwards may legitimately grow the
+        # signature (``extra_headers`` lets the pane relay forward Range and the
+        # conditional headers; ``expected_forward`` lets it bind a request to the
+        # generation its capability was issued against), but a ``timeout`` knob
+        # must never reappear.
         assert "timeout" not in params
         assert set(params) == {
             "self",
@@ -9191,6 +9290,8 @@ class TestPeerRequestSharedDance:
             "params",
             "data",
             "content_type",
+            "extra_headers",
+            "expected_forward",
         }
 
 

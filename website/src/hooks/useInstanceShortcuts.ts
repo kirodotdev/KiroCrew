@@ -33,6 +33,7 @@
  * double-fire every press.
  */
 import { useCallback, useEffect, useMemo } from 'react'
+import { stampPaneChannel } from '../lib/embeddedParent'
 import { useQuery } from '@tanstack/react-query'
 import { api, ApiError } from '../api/client'
 import { useAppSelector } from '../store'
@@ -95,7 +96,7 @@ export function useInstanceShortcuts() {
       const id = idx === 0 ? null : host.tabs[idx - 1]?.id
       if (idx !== 0 && !id) return false
       // nosemgrep: javascript.browser.security.wildcard-postmessage-configuration.wildcard-postmessage-configuration
-      window.parent?.postMessage({ type: 'mc-switch-instance', v: 1, id }, '*')
+      window.parent?.postMessage(stampPaneChannel({ type: 'mc-switch-instance', v: 1, id }), '*')
       return true
     },
     [host],

@@ -10,6 +10,7 @@
 // route moves), and query strings go through `URLSearchParams` rather than
 // string templates, so an id containing `&` or `#` cannot smuggle a parameter.
 
+import { relocateRequestUrl } from '../../lib/dashboardRuntime'
 import { toApiError } from '../../api/apiError'
 import type {
   AddProjectResponse, ChatSlotResponse, DeleteCommentResponse,
@@ -27,12 +28,12 @@ async function parse<T>(r: Response): Promise<T> {
 }
 
 async function get<T>(path: string): Promise<T> {
-  const r = await fetch(path, { credentials: 'same-origin' })
+  const r = await fetch(relocateRequestUrl(path), { credentials: 'same-origin' })
   return parse<T>(r)
 }
 
 async function post<T>(path: string, body?: unknown): Promise<T> {
-  const r = await fetch(path, {
+  const r = await fetch(relocateRequestUrl(path), {
     method: 'POST',
     credentials: 'same-origin',
     headers: body !== undefined ? { 'Content-Type': 'application/json' } : undefined,
@@ -225,7 +226,11 @@ function slotDetailUrl(key: string): string {
 const CHAT_SEND = '/api/chat' + '?' + new URLSearchParams({ ws: '1' }).toString()
 
 async function chatApi<T = unknown>(url: string, method: string, body?: unknown): Promise<T> {
-  const r = await fetch(url, {
+  // Relocate the root `/api/chat…` target so a relayed pane's host-chat calls
+  // stay under its capability prefix (identity in direct mode). The callers pass
+  // root chat constants (`CHAT_SLOTS`, `CHAT_SEND`, `slotDetailUrl(key)`), which
+  // the guard cannot prove through this parameter, so it is relocated here.
+  const r = await fetch(relocateRequestUrl(url), {
     method,
     headers: body ? { 'Content-Type': 'application/json' } : undefined,
     body: body ? JSON.stringify(body) : undefined,

@@ -1,3 +1,4 @@
+import { relocateRequestUrl } from '../lib/dashboardRuntime'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -222,7 +223,7 @@ export function useAppPreview(slug: string, enabled: boolean) {
   const { data } = useQuery<{ available: boolean; base?: string; remote_framable?: boolean }>({
     queryKey: ['webapp-preview', slug],
     queryFn: async () => {
-      const r = await fetch(`/api/artifacts/${encodeURIComponent(slug)}/app-preview`)
+      const r = await fetch(relocateRequestUrl(`/api/artifacts/${encodeURIComponent(slug)}/app-preview`))
       if (!r.ok) return { available: false }
       return (await r.json()) as { available: boolean; base?: string; remote_framable?: boolean }
     },
@@ -379,7 +380,7 @@ export default function WebAppArtifactCard({
   const { data: profilesResp } = useQuery<{ profiles: { name: string }[]; default: string }>({
     queryKey: ['deploy-web', 'profiles'],
     queryFn: async () => {
-      const r = await fetch('/api/deploy/profiles')
+      const r = await fetch(relocateRequestUrl('/api/deploy/profiles'))
       if (!r.ok) return { profiles: [], default: '' }
       return (await r.json()) as { profiles: { name: string }[]; default: string }
     },

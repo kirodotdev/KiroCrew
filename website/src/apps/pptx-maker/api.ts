@@ -1,3 +1,4 @@
+import { relocateRequestUrl } from '../../lib/dashboardRuntime'
 /**
  * PPTX Maker — typed API client.
  *
@@ -132,7 +133,7 @@ class PptxMakerError extends Error {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, { credentials: 'same-origin', ...init })
+  const res = await fetch(relocateRequestUrl(`${API_BASE}${path}`), { credentials: 'same-origin', ...init })
   if (!res.ok) {
     let message = `HTTP ${res.status}`
     try {
@@ -162,7 +163,12 @@ function postJson<T>(path: string, body: unknown): Promise<T> {
  * artifact reference becomes a request.
  */
 export function artifactUrl(relative: string): string {
-  return `${API_BASE}/${relative.replace(/^\/+/, '')}`
+  // Relocated like the `request` transport above: this is the single builder a
+  // deck artifact reference flows through, feeding BOTH the `fetchArtifact*`
+  // reads and element `src=` bindings (thumbnail/pptx/preview), so relocating
+  // here keeps every consumer under the pane's capability prefix in a relayed
+  // pane (identity in direct mode).
+  return relocateRequestUrl(`${API_BASE}/${relative.replace(/^\/+/, '')}`)
 }
 
 /** Fetch a deck artifact as text (a spec document or a style board). */

@@ -5,14 +5,15 @@
  * (persistent-agent-channels.md).
  */
 
+import { relocateRequestUrl } from '../../lib/dashboardRuntime'
 import type { ClientTransport } from './transport'
 
 export function createAgentChannelsEndpoints({ post, del, patch, j }: ClientTransport) {
   const channels = {
     // Channels
-    channelsList: () => fetch('/api/channels').then(j),
-    channelPresets: () => fetch('/api/channels/presets').then(j),
-    channelGet: (id: string) => fetch('/api/channels/' + encodeURIComponent(id)).then(j),
+    channelsList: () => fetch(relocateRequestUrl('/api/channels')).then(j),
+    channelPresets: () => fetch(relocateRequestUrl('/api/channels/presets')).then(j),
+    channelGet: (id: string) => fetch(relocateRequestUrl('/api/channels/' + encodeURIComponent(id))).then(j),
     channelCreate: (topic: string, agents: object[]) => post('/api/channels', { topic, agents }).then(j),
     channelClose: (id: string) => del('/api/channels/' + encodeURIComponent(id)).then(j),
     channelPost: (id: string, content: string, mention?: string | string[], thread_id?: string) => post('/api/channels/' + encodeURIComponent(id) + '/messages', { content, mention, thread_id }).then(j),
