@@ -546,6 +546,71 @@ class TestShutdownExtras:
         orch._socket_client.close.assert_awaited_once()
         assert model.cancelled() and migrate.cancelled() and update.cancelled()
 
+    @pytest.mark.asyncio
+    async def test_the_update_task_finishes_stopping_before_the_teardown(self):
+        """An installer's rollback finishes before services are torn down.
+
+        The update task's own cancel arm stops the installer with SIGTERM and a
+        grace. Shutdown cancels it first and waits for it before the teardown,
+        or its 10 s cap can exit the process with the installer orphaned
+        mid-write.
+        """
+        orch = _make_orchestrator()
+        orch.cron_svc = None
+        orch.heartbeat_svc = None
+        orch.subagent_mgr = None
+        orch.sessions = None
+        orch.dashboard_state = None
+        orch._dashboard_runner = None
+        stopped: list[str] = []
+        orch._stop_mcp_broker = AsyncMock(side_effect=lambda: stopped.append("teardown"))
+
+        async def _installer_running() -> None:
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                await asyncio.sleep(0.05)  # the installer's own rollback
+                stopped.append("update")
+                raise
+
+        orch._update_check_task = asyncio.create_task(_installer_running())
+        await asyncio.sleep(0)
+        with patch.object(gw.registry, "shutdown_tasks", return_value=[]):
+            await asyncio.wait_for(orch._shutdown(), timeout=10)
+
+        assert stopped == ["update", "teardown"]
+
+    @pytest.mark.asyncio
+    async def test_an_update_task_that_will_not_stop_does_not_hold_shutdown(self, monkeypatch):
+        orch = _make_orchestrator()
+        orch.cron_svc = None
+        orch.heartbeat_svc = None
+        orch.subagent_mgr = None
+        orch.sessions = None
+        orch.dashboard_state = None
+        orch._dashboard_runner = None
+        orch._stop_mcp_broker = AsyncMock()
+        monkeypatch.setattr(gw, "UPDATE_INSTALLER_STOP_SECS", 0.05)
+        release = asyncio.Event()
+
+        async def _wedged() -> None:
+            while not release.is_set():
+                try:
+                    await release.wait()
+                except asyncio.CancelledError:
+                    continue
+
+        update = asyncio.create_task(_wedged())
+        orch._update_check_task = update
+        await asyncio.sleep(0)
+        try:
+            with patch.object(gw.registry, "shutdown_tasks", return_value=[]):
+                await asyncio.wait_for(orch._shutdown(), timeout=10)
+            assert not update.done()
+        finally:
+            release.set()
+            await asyncio.wait_for(update, timeout=5)
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Tests: _init_dashboard / _init_api_server port handling

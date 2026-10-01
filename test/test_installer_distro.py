@@ -1116,8 +1116,9 @@ def test_tolerate_restores_the_moved_aside_venv_on_an_interrupt(tmp_path: Path) 
     """Ctrl-C during the tolerated pip upgrade must not strand the old install.
 
     By then the working venv has been moved to the backup path and the new
-    one has no kirocrew yet; every other exit after the move-aside restores
-    it, and this one has to as well.
+    one has no kirocrew yet. ``_tolerate`` exits, and the rollback the rebuild
+    arms on EXIT (``_venv_rollback_on_exit``, armed here as cli.sh arms it)
+    puts the old venv back.
     """
     helpers = tmp_path / "helpers.sh"
     venv = tmp_path / "venv"
@@ -1132,8 +1133,9 @@ def test_tolerate_restores_the_moved_aside_venv_on_an_interrupt(tmp_path: Path) 
     end = restore.index("\n}\n", start) + 3
     helpers.write_text(_progress_helpers() + restore[start:end])
     script = (
-        f'set -eu; TMP="{tmp_path}"; . "{helpers}"; '
-        f'VENV="{venv}"; _VENV_BACKUP="{backup}"; '
+        f'set -eu; TMP="{tmp_path / "tmp"}"; . "{helpers}"; '
+        f'VENV="{venv}"; _VENV_BACKUP="{backup}"; _VENV_MOVED=1; '
+        f"trap '_venv_rollback_on_exit' EXIT; "
         f'_tolerate 130; echo "after-interrupt"'
     )
     result = subprocess.run(
@@ -1255,3 +1257,350 @@ def test_run_step_prefix_is_cut_on_a_terminal_narrower_than_the_message(
     assert frames, "no redrawn frames on the forced-terminal path"
     assert max(len(f) for f in frames) < 40, max(frames, key=len)
     assert all(f.startswith(("|", "/", "-", "\\")) for f in frames), frames
+
+
+def _cli_sh_function(name: str) -> str:
+    """The text of one top-level function in cli.sh, as cli.sh defines it."""
+    match = re.search(rf"^{name}\(\) \{{\n.*?^\}}\n", CLI_SH.read_text(), re.M | re.S)
+    assert match is not None, f"cli.sh no longer defines {name}()"
+    return match.group(0)
+
+
+def _cli_sh_move_aside_block() -> str:
+    """cli.sh's venv move-aside, from arming the rollback to the rename."""
+    text = CLI_SH.read_text()
+    start = text.index('  _VENV_BACKUP=""\n  _VENV_MOVED=0\n')
+    end = text.index("  # EVERY failure after the move-aside", start)
+    return text[start:end]
+
+
+def test_cli_arms_the_venv_rollback_around_the_whole_rebuild() -> None:
+    """Armed before the move-aside, gated on the rename, disarmed at the commit."""
+    text = CLI_SH.read_text()
+    block = _cli_sh_move_aside_block()
+    for arm in (
+        "trap '_venv_rollback_on_exit' EXIT",
+        "trap 'exit 130' INT",
+        "trap 'exit 143' TERM",
+        "trap 'exit 129' HUP",
+    ):
+        assert block.index(arm) < block.index('mv "$VENV" "$_VENV_BACKUP"'), arm
+    # The flag is raised after a FREE backup path is picked and before the
+    # rename, and dropped again if the rename fails: a TERM whose trap runs
+    # the instant `mv` returns must still restore, while a stop before the
+    # rename finds no backup directory and restores nothing.
+    assert block.index('while [ -e "$_VENV_BACKUP" ]') < block.index("    _VENV_MOVED=1\n")
+    assert re.search(
+        r'_VENV_MOVED=1\n\s*if ! mv "\$VENV" "\$_VENV_BACKUP" 2>/dev/null; then\n\s*_VENV_MOVED=0',
+        block,
+    )
+    # Disarmed after the venv branch's wheel install, before the backup is
+    # deleted (a restore during that delete would replace the finished venv).
+    pip_step = text.index('"$VENV/bin/pip" install --progress-bar off', text.index(block))
+    disarm = text.index("  _VENV_MOVED=0\n  trap 'rm -rf \"$TMP\"' EXIT INT TERM", pip_step)
+    commit = text.index('rm -rf "$_VENV_BACKUP" 2>/dev/null || true', pip_step)
+    assert pip_step < disarm < commit
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell signals")
+def test_a_term_right_after_the_move_aside_still_restores_the_venv(tmp_path: Path) -> None:
+    """A TERM whose trap runs the instant the move-aside `mv` returns restores.
+
+    A PATH stub for ``mv`` does the real rename, then TERMs the installer
+    shell before returning, so the trap runs before the next statement.
+    """
+    venv_dir = tmp_path / "crew-venv"
+    venv_dir.mkdir()
+    (venv_dir / "pyvenv.cfg").write_text("home = /usr/bin\n")
+    (venv_dir / "marker").write_text("previous working install")
+    stubs = tmp_path / "bin"
+    stubs.mkdir()
+    real_mv = shutil.which("mv")
+    assert real_mv is not None
+    mv_stub = stubs / "mv"
+    mv_stub.write_text(
+        "#!/bin/sh\n"
+        f'"{real_mv}" "$@" || exit $?\n'
+        'case "$2" in *.pre-rebuild.*) kill -TERM "$PPID";; esac\n'
+        "exit 0\n"
+    )
+    mv_stub.chmod(0o755)
+    script = "\n".join(
+        [
+            "set -eu",
+            f'TMP="{tmp_path / "tmp"}"; mkdir -p "$TMP"',
+            f'VENV="{venv_dir}"',
+            _cli_sh_function("_restore_tree"),
+            _cli_sh_function("_venv_rollback_on_exit"),
+            _cli_sh_move_aside_block(),
+            "echo after-move-aside",
+            "exit 9",
+        ]
+    )
+    env = {**os.environ, "PATH": f"{stubs}{os.pathsep}{os.environ.get('PATH', '')}"}
+    result = subprocess.run(
+        ["sh", "-c", script],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=30,
+    )
+    assert result.returncode == 143, result.stderr
+    assert "after-move-aside" not in result.stdout
+    assert (venv_dir / "marker").read_text() == "previous working install"
+    assert not list(tmp_path.glob("crew-venv.pre-rebuild.*"))
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell signals")
+@pytest.mark.parametrize(
+    ("where", "sig_name", "status"),
+    [
+        # Names, not signal numbers: SIGHUP does not exist on Windows, and the
+        # parameters are built at collection time there too.
+        ("between steps", "SIGTERM", 143),
+        ("inside a step", "SIGTERM", 143),
+        ("between steps", "SIGHUP", 129),
+    ],
+)
+def test_cli_restores_the_venv_when_stopped_mid_rebuild(
+    tmp_path: Path, where: str, sig_name: str, status: int
+) -> None:
+    """A stop anywhere in the rebuild puts the moved-aside venv back.
+
+    Runs cli.sh's own rollback, step runner and move-aside block, and signals
+    the installer's process GROUP, the way the gateway stops it. Inside a step
+    the step runner's trap stops the setsid'd child; between steps only the
+    rebuild's own traps stand between the signal and an exit past every
+    restore.
+    """
+    venv_dir = tmp_path / "crew-venv"
+    venv_dir.mkdir()
+    (venv_dir / "pyvenv.cfg").write_text("home = /usr/bin\n")
+    (venv_dir / "marker").write_text("previous working install")
+    phase = tmp_path / "phase"
+    if where == "inside a step":
+        step = f"echo $$ > {tmp_path / 'steppid'}; exec sleep 30"
+        gap = (
+            f'echo ready > "{phase}"; '
+            f"_run_step \"$TMP/step.log\" \"Step\" sh -c '{step}' || exit $?"
+        )
+    else:
+        gap = f'echo ready > "{phase}"; sleep 30 & wait $!'
+    script = "\n".join(
+        [
+            "set -eu",
+            f'TMP="{tmp_path / "tmp"}"; mkdir -p "$TMP"',
+            "trap 'rm -rf \"$TMP\"' EXIT INT TERM",
+            f'VENV="{venv_dir}"',
+            "_tty=0; _rs_optional=0",
+            _cli_sh_function("_restore_tree"),
+            _cli_sh_function("_venv_rollback_on_exit"),
+            _cli_sh_function("_rs_interrupt"),
+            _cli_sh_function("_run_step"),
+            "if true; then",
+            _cli_sh_move_aside_block(),
+            "fi",
+            'mkdir "$VENV"',
+            gap,
+            "exit 9",
+        ]
+    )
+    proc = subprocess.Popen(["sh", "-c", script], cwd=tmp_path, start_new_session=True)
+    try:
+        deadline = time.monotonic() + 10
+        while not phase.exists():
+            assert time.monotonic() < deadline, "the stand-in never reached its gap"
+            time.sleep(0.02)
+        time.sleep(0.2)
+        os.killpg(proc.pid, getattr(signal, sig_name))
+        assert proc.wait(timeout=15) == status
+    finally:
+        # Only while the shell is unreaped: once it has exited, its stopped
+        # step went with it and both group numbers are free for another
+        # worker's session to take. The step runs under setsid, in a group of
+        # its own, so reap that too.
+        if proc.returncode is None:
+            groups = [proc.pid]
+            steppid = tmp_path / "steppid"
+            if steppid.is_file():
+                groups.append(int(steppid.read_text().strip()))
+            for pgid in groups:
+                try:
+                    os.killpg(pgid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    pass
+            proc.wait(timeout=10)
+
+    assert (venv_dir / "marker").read_text() == "previous working install"
+    assert not list(tmp_path.glob("crew-venv.pre-rebuild.*"))
+
+
+def _cli_sh_rebuild_steps() -> str:
+    """cli.sh's venv rebuild steps and their failure branches, up to the commit."""
+    text = CLI_SH.read_text()
+    start = text.index('  if ! _run_step "$TMP/venv-create.log"')
+    end = text.index("  # Committed: the wheel landed", start)
+    return text[start:end]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell signals")
+@pytest.mark.parametrize("failing", ["venv create", "wheel install"])
+def test_a_stop_during_a_failure_branch_restore_keeps_the_venv(tmp_path: Path, failing: str) -> None:
+    """A TERM that lands inside a failed step's restore must not strand the venv.
+
+    The failure branch deletes the half-built venv and renames the backup
+    back. A TERM between the two (the gateway's group TERM after a step it
+    stopped) must not cut that short: the restore runs with INT, TERM and HUP
+    ignored. The delete is slowed by a PATH stub for ``rm`` so the signal lands inside
+    it deterministically.
+    """
+    venv_dir = tmp_path / "crew-venv"
+    venv_dir.mkdir()
+    (venv_dir / "pyvenv.cfg").write_text("home = /usr/bin\n")
+    (venv_dir / "marker").write_text("previous working install")
+    phase = tmp_path / "phase"
+    stubs = tmp_path / "bin"
+    stubs.mkdir()
+    real_rm = shutil.which("rm")
+    assert real_rm is not None
+    rm_stub = stubs / "rm"
+    rm_stub.write_text(
+        "#!/bin/sh\n"
+        'for a; do last="$a"; done\n'
+        f'case "$last" in "{venv_dir}"|"{venv_dir}".failed.*) '
+        f'echo in-restore > "{phase}"; sleep 1;; esac\n'
+        f'exec "{real_rm}" "$@"\n'
+    )
+    rm_stub.chmod(0o755)
+    # Stands in for `python -m venv "$VENV"`: leaves a half-built tree whose
+    # pip always fails, and fails itself on the venv-create parametrization.
+    py_stub = tmp_path / "python"
+    py_stub.write_text(
+        "#!/bin/sh\n"
+        'mkdir -p "$3/bin"; echo half > "$3/half"\n'
+        "printf '#!/bin/sh\\nexit 4\\n' > \"$3/bin/pip\"; chmod +x \"$3/bin/pip\"\n"
+        f"exit {3 if failing == 'venv create' else 0}\n"
+    )
+    py_stub.chmod(0o755)
+    err_line = re.search(r"^err\(\) \{.*\}$", CLI_SH.read_text(), re.M)
+    assert err_line is not None
+    script = "\n".join(
+        [
+            "set -eu",
+            f'TMP="{tmp_path / "tmp"}"; mkdir -p "$TMP"',
+            "trap 'rm -rf \"$TMP\"' EXIT INT TERM",
+            f'VENV="{venv_dir}"; PY="{py_stub}"; VER=0; WHL=wheel; PIP_BINARY_ONLY=""',
+            "_tty=0; _rs_optional=0",
+            err_line.group(0),
+            _cli_sh_function("_restore_tree"),
+            _cli_sh_function("_venv_rollback_on_exit"),
+            _cli_sh_function("_venv_restore_after_failure"),
+            _cli_sh_function("_tolerate"),
+            _cli_sh_function("_report_pip_failure"),
+            _cli_sh_function("_rs_interrupt"),
+            _cli_sh_function("_run_step"),
+            "if true; then",
+            _cli_sh_move_aside_block(),
+            _cli_sh_rebuild_steps(),
+            "fi",
+            "exit 9",
+        ]
+    )
+    env = {**os.environ, "PATH": f"{stubs}{os.pathsep}{os.environ.get('PATH', '')}"}
+    proc = subprocess.Popen(
+        ["sh", "-c", script],
+        cwd=tmp_path,
+        env=env,
+        start_new_session=True,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+    )
+    try:
+        deadline = time.monotonic() + 15
+        while not phase.exists():
+            assert proc.poll() is None, proc.stderr.read() if proc.stderr else ""
+            assert time.monotonic() < deadline, "the restore never started"
+            time.sleep(0.02)
+        os.killpg(proc.pid, signal.SIGTERM)
+        _, stderr = proc.communicate(timeout=15)
+    finally:
+        # Only while the shell is unreaped: once it is, its group number is
+        # free for another worker's session to take.
+        if proc.returncode is None:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+            proc.wait(timeout=10)
+
+    assert proc.returncode == 1, stderr
+    assert "The previous install was restored and keeps working" in stderr
+    assert (venv_dir / "marker").read_text() == "previous working install"
+    assert not (venv_dir / "half").exists()
+    assert not list(tmp_path.glob("crew-venv.pre-rebuild.*"))
+    assert not list(tmp_path.glob("crew-venv.failed.*"))
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell signals")
+def test_a_sigkill_during_the_restore_delete_still_leaves_the_previous_venv(
+    tmp_path: Path,
+) -> None:
+    """A SIGKILL inside ``_restore_tree``'s slow delete must not leave no venv.
+
+    The gateway SIGKILLs the installer once its grace runs out. The restore
+    renames the half-built tree aside and the backup into place BEFORE it
+    deletes anything, so the kill can only cut short the delete of the
+    discarded tree. The delete is slowed by a PATH stub for ``rm``.
+    """
+    venv_dir = tmp_path / "crew-venv"
+    venv_dir.mkdir()
+    (venv_dir / "half").write_text("half-built\n")
+    backup = tmp_path / "crew-venv.pre-rebuild.1"
+    backup.mkdir()
+    (backup / "marker").write_text("previous working install")
+    phase = tmp_path / "phase"
+    stubs = tmp_path / "bin"
+    stubs.mkdir()
+    real_rm = shutil.which("rm")
+    assert real_rm is not None
+    rm_stub = stubs / "rm"
+    rm_stub.write_text(
+        "#!/bin/sh\n"
+        'for a; do last="$a"; done\n'
+        f'case "$last" in "{venv_dir}"|"{venv_dir}".failed.*) '
+        f'echo in-delete > "{phase}"; sleep 30;; esac\n'
+        f'exec "{real_rm}" "$@"\n'
+    )
+    rm_stub.chmod(0o755)
+    script = "\n".join(
+        [
+            "set -eu",
+            _cli_sh_function("_restore_tree"),
+            f'_restore_tree "{backup}" "{venv_dir}"',
+            "exit 9",
+        ]
+    )
+    env = {**os.environ, "PATH": f"{stubs}{os.pathsep}{os.environ.get('PATH', '')}"}
+    proc = subprocess.Popen(["sh", "-c", script], cwd=tmp_path, env=env, start_new_session=True)
+    try:
+        deadline = time.monotonic() + 15
+        while not phase.exists():
+            assert proc.poll() is None, "the restore ended before its delete"
+            assert time.monotonic() < deadline, "the restore never reached its delete"
+            time.sleep(0.02)
+        os.killpg(proc.pid, signal.SIGKILL)
+        proc.wait(timeout=15)
+    finally:
+        if proc.returncode is None:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+            proc.wait(timeout=10)
+
+    assert (venv_dir / "marker").read_text() == "previous working install"
+    assert not (venv_dir / "half").exists()
+    assert not backup.exists()

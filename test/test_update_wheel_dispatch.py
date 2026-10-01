@@ -348,16 +348,18 @@ class TestUpdateWheelCli:
 
         monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: FakeResp())
 
-        # Mock subprocess.run to capture the installer invocation
+        # Mock subprocess.Popen to capture the installer invocation
         calls: list[tuple] = []
 
-        def fake_run(*args, **kwargs):
+        def fake_popen(*args, **kwargs):
             calls.append(args)
-            result = MagicMock()
-            result.returncode = 0
-            return result
+            proc = MagicMock()
+            # Above every pid_max: no stop path could signal a live process.
+            proc.pid = 99_999_999_999
+            proc.wait.return_value = 0
+            return proc
 
-        monkeypatch.setattr("subprocess.run", fake_run)
+        monkeypatch.setattr("subprocess.Popen", fake_popen)
         # Ensure the platform guard doesn't short-circuit on Windows CI.
         monkeypatch.setattr("sys.platform", "linux")
 

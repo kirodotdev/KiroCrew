@@ -693,14 +693,15 @@ def test_pipx_restore_never_claims_success_over_residue(
     """When the failed venv cannot be removed (a read-only file left behind),
     `mv` of the backup onto the surviving directory would NEST the backup
     inside it and exit 0 -- a "restored and keeps working" message over a
-    broken install. The restore must check the path is gone first, report
-    that it could not restore, and leave the backup copy intact where it is."""
+    broken install. The restore renames the failed tree aside FIRST (a
+    rename needs only the parent writable), so the backup lands at the venv
+    path itself and the unremovable residue is left beside it, not under it."""
     if os.name == "nt":
         pytest.skip("cli.sh is supported on macOS and Linux only")
     if hasattr(os, "geteuid") and os.geteuid() == 0:
         pytest.skip("root removes the residue, so the failure cannot be staged")
     case = tmp_path / "residue"
-    stuck = case / "run" / "pipx-venvs" / "kirocrew" / "stuck"
+    pipx_venvs = case / "run" / "pipx-venvs"
     try:
         result, argv = _run_installer(
             case,
@@ -713,23 +714,20 @@ def test_pipx_restore_never_claims_success_over_residue(
         )
         assert result.returncode != 0
         assert argv, "pipx install was never invoked"
-        assert "could not be restored" in result.stderr, result.stderr
-        assert "The previous install was restored" not in result.stderr, result.stderr
-        assert "left intact at" in result.stderr, result.stderr
-        venv = case / "run" / "pipx-venvs" / "kirocrew"
-        # The residue is still the only thing at the venv path -- nothing nested.
-        assert (venv / "stuck" / "pin").exists()
-        assert not list(
-            venv.glob("kirocrew.pre-rebuild.*")
-        ), "the backup was nested inside the residue"
-        # The working copy is where the message says it is, whole.
-        backups = list(venv.parent.glob("kirocrew.pre-rebuild.*"))
-        assert len(backups) == 1, backups
-        assert (backups[0] / "bin" / "kirocrew").read_text(encoding="utf-8") == "old\n"
-        assert (backups[0] / "bin" / "extra").read_text(encoding="utf-8") == "injected\n"
-        assert str(backups[0]) in result.stderr
+        assert "The previous install was restored" in result.stderr, result.stderr
+        venv = pipx_venvs / "kirocrew"
+        # The working copy is back at the venv path, whole -- nothing nested.
+        assert (venv / "bin" / "kirocrew").read_text(encoding="utf-8") == "old\n"
+        assert (venv / "bin" / "extra").read_text(encoding="utf-8") == "injected\n"
+        assert not (venv / "stuck").exists()
+        assert not list(venv.glob("kirocrew.*")), "a tree was nested inside the venv"
+        assert not list(pipx_venvs.glob("kirocrew.pre-rebuild.*"))
+        # The residue that could not be deleted was moved aside, not lost.
+        discarded = list(pipx_venvs.glob("kirocrew.failed.*"))
+        assert len(discarded) == 1, discarded
+        assert (discarded[0] / "stuck" / "pin").exists()
     finally:
-        if stuck.exists():
+        for stuck in pipx_venvs.glob("kirocrew*/stuck"):
             stuck.chmod(0o755)  # let tmp_path be cleaned up
 
 
@@ -737,9 +735,11 @@ def test_restore_checks_the_path_is_gone_before_moving() -> None:
     """Every restore site uses the helper; no bare `rm -rf ... || true` followed
     by `mv backup target` remains, since that pair is what nests on residue."""
     body = INSTALLER.read_text(encoding="utf-8")
-    # pipx rollback, venv-create failure, wheel-install failure, and the
-    # interrupt exit in _tolerate.
-    assert body.count("_restore_tree ") == 4, body.count("_restore_tree ")
+    # pipx rollback, the venv rebuild's EXIT rollback, and
+    # _venv_restore_after_failure, which the venv-create and wheel-install
+    # failure branches both call.
+    assert body.count("_restore_tree ") == 3, body.count("_restore_tree ")
+    assert body.count("      _venv_restore_after_failure \\\n") == 2
     assert 'if [ -e "$2" ] || [ -L "$2" ]; then\n    return 1' in body
     for target in ('"$_PIPX_VENV"', '"$VENV"'):
         assert f"rm -rf {target} 2>/dev/null || true\n      mv " not in body, target
