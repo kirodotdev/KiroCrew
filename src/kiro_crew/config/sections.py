@@ -1879,6 +1879,22 @@ class SessionConfig:
         default=DEFAULT_SESSION_TIMEOUT,
         metadata=_meta("Session Timeout", "Idle session timeout in seconds."),
     )
+    idle_exempt_keys: list[str] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Idle-Exempt Sessions",
+            "Session keys the idle timeout never ends, for a chat that automation wakes "
+            "hours apart. A dashboard chat's key is dashboard: followed by the sid in its "
+            "URL, e.g. dashboard:chat-12-1790000000, unless the tab is linked to a cron job "
+            "or a channel thread, which uses that link's key instead, e.g. cron:<job id>. "
+            "Closing a dashboard or cron tab still ends its process; a channel thread's "
+            "session belongs to the channel, so closing its viewer does not. The Watchdog "
+            "RSS Limit, when set, still applies. A listed session with no tab, such as a "
+            "cron job that runs without one, is reaped only by that limit or a gateway "
+            "restart, even after its job is deleted, so take a deleted job's key off the "
+            "list. At most 10 keys are kept.",
+        ),
+    )
     empty_response_auto_continue: bool = field(
         default=True,
         metadata=_meta(
@@ -3743,6 +3759,11 @@ EXTRACTION_POOL_SIZE_MAX = 10
 # "every bound is shared with the write gate" claim stays true.
 EMPTY_RESPONSE_MAX_CONTINUES_MIN = 1
 EMPTY_RESPONSE_MAX_CONTINUES_MAX = 10
+# A hand-edited ``session.idle_exempt_keys`` can be any size, and every idle sweep copies it.
+# Each listed key can also keep a whole kiro-cli process and its MCP servers running, the
+# per-entry cost ``POOL_SIZE_MAX`` bounds for the warm pool, so the count shares that ceiling.
+IDLE_EXEMPT_KEYS_MAX = POOL_SIZE_MAX
+IDLE_EXEMPT_KEY_MAX_CHARS = 512
 # Ceiling on ``session.reconcile_max_kills``, equal to the arm's own shipped budget
 # (``runtime_reconcile.DEFAULT_MAX_KILLS``, pinned equal by
 # ``test_the_configured_ceiling_cannot_exceed_the_shipped_budget``). Equal rather

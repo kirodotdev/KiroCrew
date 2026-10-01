@@ -1603,6 +1603,15 @@ class SessionCleanup:
             return False
         return key.startswith("dashboard:") or key in self.state.slot_owned_keys
 
+    def _idle_exempt_keys(self) -> frozenset[str]:
+        """The keys ``session.idle_exempt_keys`` takes off the idle clock.
+
+        Read at every sweep, so a config write applies at the next one. Only the
+        idle axis asks: a listed session whose slot has closed is still reaped as
+        orphaned, and the RSS recycle never consults the list.
+        """
+        return frozenset(self._owner._cfg.session.idle_exempt_keys)
+
     async def _expire_idle(self, timeout_secs: int) -> None:
         now = self._deps.monotonic()
         # The session object travels with its key: every judgement below is
@@ -1612,6 +1621,7 @@ class SessionCleanup:
         total_checked = 0
         persistent_keys = self._deps.get_persistent_keys()
         channel_prefix = self._deps.get_channel_prefix()
+        idle_exempt_keys = self._idle_exempt_keys()
         async with self._owner._lock:
             for key, session in self._owner._sessions.items():
                 if key in persistent_keys or key.startswith(channel_prefix):
@@ -1619,7 +1629,7 @@ class SessionCleanup:
                 total_checked += 1
                 if session.semaphore.locked():
                     continue
-                idle = now - session.last_used > timeout_secs
+                idle = key not in idle_exempt_keys and now - session.last_used > timeout_secs
                 orphaned = self._owner_is_gone(key)
                 if idle or orphaned:
                     expired.append((key, orphaned, session))

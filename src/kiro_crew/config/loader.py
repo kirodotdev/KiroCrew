@@ -3195,6 +3195,45 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
     )
 
 
+def _load_idle_exempt_keys(raw: object) -> list[str]:
+    """Return the configured keys, stripped because the idle sweep matches them exactly.
+
+    A non-list loads as no exemptions. An over-long key is dropped rather than
+    truncated, because a truncated key could match a different session.
+    """
+    if not isinstance(raw, list):
+        return []
+
+    idle_exempt_keys: list[str] = []
+    overlong_count = 0
+    overflow_count = 0
+    for candidate in raw:
+        if not isinstance(candidate, str):
+            continue
+        key = candidate.strip()
+        if not key:
+            continue
+        if len(key) > _sections.IDLE_EXEMPT_KEY_MAX_CHARS:
+            overlong_count += 1
+            continue
+        if len(idle_exempt_keys) >= _sections.IDLE_EXEMPT_KEYS_MAX:
+            overflow_count += 1
+            continue
+        idle_exempt_keys.append(key)
+
+    if overlong_count or overflow_count:
+        logger.warning(
+            "session.idle_exempt_keys: dropped %d key(s) longer than %d characters "
+            "and %d past the %d-key limit; kept %d",
+            overlong_count,
+            _sections.IDLE_EXEMPT_KEY_MAX_CHARS,
+            overflow_count,
+            _sections.IDLE_EXEMPT_KEYS_MAX,
+            len(idle_exempt_keys),
+        )
+    return idle_exempt_keys
+
+
 def _build_session_config(session_data: dict) -> SessionConfig:
     section = _sections.SectionReader(SessionConfig, session_data)
     return SessionConfig(
@@ -3208,6 +3247,7 @@ def _build_session_config(session_data: dict) -> SessionConfig:
         timeout_secs=section.read(
             "timeout_secs", _safe_int, SESSION_TIMEOUT_MIN, SESSION_TIMEOUT_MAX
         ),
+        idle_exempt_keys=_load_idle_exempt_keys(section.get("idle_exempt_keys")),
         empty_response_auto_continue=bool(section.get("empty_response_auto_continue")),
         # RANGE-clamped like the other session ints: a hand-edited 0
         # or 999 must load as a sane budget, never disable recovery or
