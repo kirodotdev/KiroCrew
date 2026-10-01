@@ -9263,6 +9263,98 @@ class TestRuntimeWiring:
         assert "frozen retained answer" in replay
 
     @pytest.mark.parametrize(
+        ("message_kind", "resumed", "expect_restore"),
+        [
+            ("manual_resume", True, True),
+            ("conn_recover", True, True),
+            # A cold start that did NOT natively resume carries the Kiro Crew
+            # replay, which already holds the interrupted turn.
+            ("manual_resume", False, False),
+            # Continue on a turn that ended normally: kiro-cli logged it.
+            ("manual_continue", True, False),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_resume_on_a_natively_loaded_session_restores_the_interrupted_turn(
+        self, tmp_path, monkeypatch, message_kind, resumed, expect_restore
+    ):
+        """kiro-cli logs a prompt only once it is answered, so a turn cut off by
+        the process dying is absent from what ``session/load`` restores. A
+        resumed session gets no replay, so the Resume press on that turn must
+        carry the turn itself, or the model is told to finish a request it cannot
+        see and answers the one before it (or reports nothing to continue)."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+
+        from kiro_crew.context import ContextBuilder
+        from kiro_crew.dashboard.chat_utils import (
+            _CONN_RECOVER_MSG,
+            _MANUAL_CONTINUE_MSG,
+            _MANUAL_RESUME_MSG,
+        )
+        from kiro_crew.memory import MemoryStore
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+        from kiro_crew.skills import SkillsLoader
+
+        resume_text = {
+            "manual_resume": _MANUAL_RESUME_MSG,
+            "conn_recover": _CONN_RECOVER_MSG,
+            "manual_continue": _MANUAL_CONTINUE_MSG,
+        }[message_kind]
+        built: list[str] = []
+
+        def mock_build_message(text, context_is_new, session_key=None, **kwargs):
+            built.append(text)
+            return text, MagicMock(action=None, text="")
+
+        ctx_builder = ContextBuilder(
+            memory=MemoryStore(workspace=tmp_path / "ws"),
+            skills=SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False),
+        )
+        ctx_builder.conversation_log = MagicMock()
+        monkeypatch.setattr(ctx_builder, "build_message", mock_build_message)
+        monkeypatch.setattr("kiro_crew.context.build_session_replay", lambda *a, **k: "")
+
+        state = _make_state(tmp_path, context_builder=ctx_builder)
+        hook_store = MagicMock()
+        hook_store.fire = AsyncMock(return_value=[])
+        state._hook_store = hook_store
+        slot = state.get_or_create_slot("resume-native")
+        slot.append("user", "Earlier request, answered long ago")
+        slot.append("assistant", "Earlier answer")
+        slot.append("user", "Summarise the incident timeline for TICKET-42")
+        slot.append("assistant", "Pulling the timeline now; first event at 09:14")
+        resume_row = slot.append("inject", resume_text, meta={"injectKind": "recovery"})
+
+        async def stream(_message):
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="ok")
+            yield LLMEvent(kind=EVENT_COMPLETE, stop_reason="end_turn")
+
+        mock_client = MagicMock()
+        mock_client.stream = stream
+        mock_client.stream_command = stream
+        mock_client.context_usage_pct = MagicMock(return_value=10.0)
+        state.sessions.get_or_create = AsyncMock(return_value=(mock_client, True, resumed))
+        state.sessions.get_pid = MagicMock(return_value=None)
+
+        from kiro_crew.dashboard.chat import _run_chat
+
+        await _run_chat(
+            state,
+            slot,
+            resume_text,
+            _current_message=resume_row,
+            _synthetic_recovery_turn=True,
+        )
+
+        assert len(built) == 1
+        sent = built[0]
+        assert sent.endswith(resume_text)
+        assert ("Summarise the incident timeline for TICKET-42" in sent) is expect_restore
+        assert ("first event at 09:14" in sent) is expect_restore
+        # Only the interrupted turn is restored, never the one before it.
+        assert "Earlier request, answered long ago" not in sent
+
+    @pytest.mark.parametrize(
         ("accepts_inbound", "expected_channel"),
         [(True, "chat-42"), (False, None)],
     )

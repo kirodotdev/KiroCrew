@@ -415,7 +415,9 @@ logger = logging.getLogger(__name__)
 from kiro_crew.dashboard.chat_utils import (  # noqa: E402
     _ACTIVITY_NO_REPLY_CONTINUE_MSG,
     _COMPACTION_CONTINUE_MSG,
+    _CONN_RECOVER_MSG,
     _EMPTY_AUTO_CONTINUE_MSG,
+    _MANUAL_RESUME_MSG,
     _POSTTOKEN_RECOVER_MSG,
     _PROMISE_ONLY_CONTINUE_MSG,
     _REFUSAL_FALLBACK_RESUME_MSG,
@@ -12600,6 +12602,31 @@ async def _run_chat(
                     )
                     if preamble:
                         message = preamble + "\n\n" + message
+            # A turn that CONTINUES an interrupted one, on a session this turn
+            # natively resumed (session/load). kiro-cli logs a prompt only once it
+            # is answered, so the turn cut off by the process dying is missing
+            # from what the load restored, and a resumed session gets no replay
+            # above. Re-inject that turn from the slot's own transcript, or the
+            # model is told to finish a request it cannot see.
+            if (
+                is_new
+                and _provider_has_history
+                and _synthetic_recovery_turn
+                and message in (_MANUAL_RESUME_MSG, _CONN_RECOVER_MSG)
+            ):
+                from kiro_crew.context import (  # circular: context -> chat
+                    build_interrupted_turn_preamble,
+                )
+
+                preamble = build_interrupted_turn_preamble(
+                    list(slot.messages), current=_current_replay_message
+                )
+                if preamble:
+                    logger.info(
+                        "Restoring the interrupted turn for natively resumed session %s",
+                        session_key,
+                    )
+                    message = preamble + "\n\n" + message
             logger.info("🔍 Chat slot=%s is_new=%s mode=%r", slot.key, is_new, slot.mode)
             # Drain any pending subagent delivery failures so the LLM knows
             # about timed-out results and can read them from disk.

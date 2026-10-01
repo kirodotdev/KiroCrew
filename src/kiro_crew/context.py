@@ -2751,6 +2751,77 @@ def build_cancelled_turn_preamble(
     return "\n".join(lines)
 
 
+# Roles that OPEN a turn in a dashboard transcript: the row an interrupted turn
+# was answering. Every other row between it and the resume (tool cards, error and
+# notice rows, the resume's own ``inject``) is walked past.
+_TURN_OPENER_ROLES = frozenset({"user", "nudge", "subagent"})
+
+
+def build_interrupted_turn_preamble(
+    messages: list[dict],
+    current: dict | None = None,
+    *,
+    user_cap: int = 8000,
+    assist_cap: int = 4000,
+) -> str:
+    """Restore the interrupted turn for a backend that natively resumed without it.
+
+    kiro-cli appends a prompt to its session log only once the model has
+    answered it. When the process serving a turn dies mid-answer -- a gateway
+    restart, a crash, a recycled runtime -- that turn's request is never written,
+    so ``session/load`` brings the conversation back WITHOUT it. A resumed
+    session gets no Kiro Crew replay (the native history is trusted to be
+    complete), so a Resume pressed on that turn reaches the model as a bare
+    "finish the user's most recent request" with the request missing: the model
+    answers the turn before it, or reports there is nothing to continue.
+
+    *messages* is the slot's transcript window, which still holds the turn (the
+    turn-in-flight marker restores its opener after a restart). Walk back from
+    *current* -- the resume row this turn is running, excluded -- to the row that
+    opened the interrupted turn, collecting the assistant text it had streamed.
+    Returns "" when no opener is found.
+    """
+    end = len(messages)
+    if current is not None:
+        for i in range(len(messages) - 1, -1, -1):
+            if messages[i] is current:
+                end = i
+                break
+    opener_idx = -1
+    for i in range(end - 1, -1, -1):
+        if messages[i].get("role") in _TURN_OPENER_ROLES:
+            opener_idx = i
+            break
+    if opener_idx < 0:
+        return ""
+    user_text = str(messages[opener_idx].get("content") or "").strip()
+    if not user_text:
+        return ""
+    assistant_parts = [
+        str(m.get("content") or "").strip()
+        for m in messages[opener_idx + 1 : end]
+        if m.get("role") == "assistant" and str(m.get("content") or "").strip()
+    ]
+    assistant_text = "\n".join(assistant_parts)
+    if len(user_text) > user_cap:
+        user_text = user_text[:user_cap] + "… [truncated]"
+    if len(assistant_text) > assist_cap:
+        assistant_text = assistant_text[:assist_cap] + "… [truncated]"
+    lines = [
+        "[INTERRUPTED TURN — context restore]",
+        "The turn below was cut off when the agent process serving this "
+        "conversation stopped, so the restored conversation may not include it. "
+        "It is the user's most recent request, the one you are being asked to "
+        "carry on with. Tool calls it made may already have taken effect.",
+        "",
+        f"Interrupted request:\n{user_text}",
+    ]
+    if assistant_text:
+        lines += ["", f"Partial response before the interruption:\n{assistant_text}"]
+    lines.append("[END INTERRUPTED TURN]")
+    return "\n".join(lines)
+
+
 # ── Provider-Agnostic Session Replay ──
 
 
