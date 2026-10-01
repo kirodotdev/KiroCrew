@@ -1236,12 +1236,327 @@ describe('ChatPanel screenshot capture', () => {
       await userEvent.type(composer(), 'crop it')
       expect(composer()).toHaveValue('crop it')
       await userEvent.click(screen.getByRole('button', { name: 'Send' }))
-      // Referenced by path, so the crop reaches the agent as a real image
-      // instead of living only in this window.
+      // Referenced by path in the text (so the sent bubble renders it) AND
+      // handed over as the structured image list, which is what puts the
+      // crop in front of the model -- the gateway never scans the text.
       await waitFor(() =>
         expect(sendMessage).toHaveBeenCalledWith(
           'crop it\n\n![image](/home/u/uploads/snip.png)',
           undefined,
+          ['/home/u/uploads/snip.png'],
+        ),
+      )
+    } finally {
+      fetchSpy.mockRestore()
+    }
+  })
+
+  it('merges a refused caption into a draft typed while the picture send was in flight', async () => {
+    // The refusal may land after the user has started the next message. Dropping
+    // the refused caption while re-staging its picture would attach that picture
+    // to text it was never sent with; both come back together, caption after the
+    // draft, the way the dashboard composer merges a recovered payload.
+    const fetchSpy = stubUpload({ ok: true, body: { paths: ['/home/u/uploads/snip.png'] } })
+    try {
+      await renderPanel()
+      emit('onCaptureDone', 'QUJD')
+      expect(await screen.findByAltText('snip.png')).toBeInTheDocument()
+      let refuse: (err: Error) => void = () => {}
+      sendMessage.mockImplementationOnce(() => new Promise((_resolve, reject) => { refuse = reject }))
+      await userEvent.type(composer(), 'what is this')
+      await userEvent.click(screen.getByRole('button', { name: 'Send' }))
+      await waitFor(() => expect(sendMessage).toHaveBeenCalledTimes(1))
+      expect(composer()).toHaveValue('')
+      await userEvent.type(composer(), 'next thought')
+      refuse(new SendRefusedError(409, 'the slot is busy'))
+      await screen.findByText('Send failed: the slot is busy')
+      expect(composer()).toHaveValue('next thought\n\nwhat is this')
+      expect(await screen.findByAltText('snip.png')).toBeInTheDocument()
+    } finally {
+      fetchSpy.mockRestore()
+    }
+  })
+
+  it.each([false, true])('restores the typed text and crop after a definite refusal (fallback: %s)', async (fallback) => {
+    if (fallback) history = [{ role: 'user', content: 'original', timestamp: 1700000000000 }]
+    const fetchSpy = stubUpload({ ok: true, body: { paths: ['/home/u/uploads/snip.png'] } })
+    try {
+      await renderPanel()
+      if (fallback) {
+        await userEvent.click(await screen.findByRole('button', { name: 'Edit & resend' }))
+        await userEvent.clear(composer())
+        editResend.mockResolvedValueOnce({ ok: false })
+      }
+      emit('onCaptureDone', 'QUJD')
+      expect(await screen.findByAltText('snip.png')).toBeInTheDocument()
+      sendMessage.mockRejectedValueOnce(new SendRefusedError(409, 'the slot is busy'))
+      await userEvent.type(composer(), 'what is this')
+      await userEvent.click(screen.getByRole('button', { name: 'Send' }))
+      await screen.findByText('Send failed: the slot is busy')
+      expect(composer()).toHaveValue('what is this')
+      expect(await screen.findByAltText('snip.png')).toBeInTheDocument()
+      await waitFor(() => expect(composer()).toHaveFocus())
+      await userEvent.click(screen.getByRole('button', { name: 'Send' }))
+      await waitFor(() => {
+        expect(sendMessage).toHaveBeenCalledTimes(2)
+        expect(sendMessage).toHaveBeenLastCalledWith(
+          'what is this\n\n![image](/home/u/uploads/snip.png)',
+          undefined,
+          ['/home/u/uploads/snip.png'],
+        )
+      })
+      expect(composer()).toHaveValue('')
+      expect(screen.queryByAltText('snip.png')).not.toBeInTheDocument()
+    } finally {
+      fetchSpy.mockRestore()
+    }
+  })
+
+  it('leaves the typed text and crop cleared after a transport failure on the fallback send', async () => {
+    // Only the edit-resend fallback withholds the draft: its send may have run
+    // (the echo stays), so re-filling the composer would invite a double send.
+    const fallback = true
+    history = [{ role: 'user', content: 'original', timestamp: 1700000000000 }]
+    const fetchSpy = stubUpload({ ok: true, body: { paths: ['/home/u/uploads/snip.png'] } })
+    try {
+      await renderPanel()
+      if (fallback) {
+        await userEvent.click(await screen.findByRole('button', { name: 'Edit & resend' }))
+        await userEvent.clear(composer())
+        editResend.mockResolvedValueOnce({ ok: false })
+      }
+      emit('onCaptureDone', 'QUJD')
+      await screen.findByAltText('snip.png')
+      sendMessage.mockRejectedValueOnce(new TypeError('Failed to fetch'))
+      await userEvent.type(composer(), 'what is this')
+      await userEvent.click(screen.getByRole('button', { name: 'Send' }))
+      await screen.findByText("Couldn't send — check your connection and try again.")
+      expect(sendMessage).toHaveBeenCalledWith(
+        'what is this\n\n![image](/home/u/uploads/snip.png)',
+        undefined,
+        ['/home/u/uploads/snip.png'],
+      )
+      expect(composer()).toHaveValue('')
+      expect(screen.queryByAltText('snip.png')).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: /Stop/ })).not.toBeInTheDocument()
+    } finally {
+      fetchSpy.mockRestore()
+    }
+  })
+
+  it.each([
+    { removeLine: true, added: [] },
+    { removeLine: false, added: [] },
+    { removeLine: true, added: ['/home/u/uploads/b.png'] },
+    { removeLine: false, added: ['/home/u/uploads/a.png'] },
+  ])('refuses fallback for picture rows (remove line: $removeLine, new chips: $added)', async ({ removeLine, added }) => {
+    const content = '![image](/home/u/uploads/a.png)\n\noriginal caption'
+    history = [{ role: 'user', content, timestamp: 1700000000000, meta: { images: ['/home/u/uploads/a.png'] } }]
+    const fetchSpy = stubUpload({ ok: true, body: { paths: added } })
+    try {
+      await renderPanel()
+      await userEvent.click(await screen.findByRole('button', { name: 'Edit & resend' }))
+      const edited = removeLine ? 'revised caption' : content.replace('original caption', 'revised caption')
+      fireEvent.change(composer(), { target: { value: edited } })
+      if (added.length) {
+        emit('onCaptureDone', 'QUJD')
+        await screen.findByAltText(added[0].split('/').pop()!)
+      }
+      editResend.mockResolvedValueOnce({ ok: false })
+      await userEvent.click(screen.getByRole('button', { name: 'Send' }))
+      expect(await screen.findByText(/^Send failed: .*resend the edited message\. Your text is still in the composer and the message keeps its pictures/)).toBeInTheDocument()
+      expect(editResend).toHaveBeenCalledTimes(1)
+      expect(sendMessage).not.toHaveBeenCalled()
+      expect(composer()).toHaveValue(edited)
+      await waitFor(() => expect(composer()).toHaveFocus())
+      expect(screen.queryByRole('button', { name: /Stop/ })).not.toBeInTheDocument()
+      if (added.length) expect(await screen.findByAltText(added[0].split('/').pop()!)).toBeInTheDocument()
+    } finally {
+      fetchSpy.mockRestore()
+    }
+  })
+
+  it('treats a picture row that arrived live (pictures only in meta) as a picture edit', async () => {
+    // A channel picture reaches an open panel as a live frame whose text is the
+    // caption alone and whose pictures ride `meta.images`; the row must be
+    // classified like a history row, so a refused edit never falls back to a
+    // text-only send.
+    history = []
+    await renderPanel()
+    emit('onChatMessage', {
+      id: 'live-1', role: 'user', content: 'look at this',
+      timestamp: 1700000000000, meta: { images: ['/home/u/uploads/live.png'] },
+    })
+    await screen.findByText(/look at this/)
+    // The live frame opens a turn; the slot going idle closes it so the row can be edited.
+    emit('onSlotsUpdate', [{ key: 'mochi', running: true }])
+    emit('onSlotsUpdate', [{ key: 'mochi', running: false }])
+    await waitFor(() => expect(screen.queryByRole('button', { name: /Stop/ })).not.toBeInTheDocument())
+    await userEvent.click(await screen.findByRole('button', { name: 'Edit & resend' }))
+    editResend.mockResolvedValueOnce({ ok: false })
+    await userEvent.click(screen.getByRole('button', { name: 'Send' }))
+    expect(await screen.findByText(/^Send failed: .*resend the edited message\. Your text is still in the composer and the message keeps its pictures/)).toBeInTheDocument()
+    expect(editResend).toHaveBeenCalledTimes(1)
+    expect(sendMessage).not.toHaveBeenCalled()
+    expect(screen.getByText('Editing — send to replace, or cancel')).toBeInTheDocument()
+  })
+
+  it.each([true, false])('keeps edit mode after a refused picture edit so the retry takes the edit route (remove line: %s)', async (removeLine) => {
+    const content = '![image](/home/u/uploads/a.png)\n\noriginal caption'
+    history = [{ role: 'user', content, timestamp: 1700000000000, meta: { images: ['/home/u/uploads/a.png'] } }]
+    await renderPanel()
+    await userEvent.click(await screen.findByRole('button', { name: 'Edit & resend' }))
+    const edited = removeLine ? 'revised caption' : content.replace('original caption', 'revised caption')
+    fireEvent.change(composer(), { target: { value: edited } })
+    editResend.mockResolvedValueOnce({ ok: false })
+    await userEvent.click(screen.getByRole('button', { name: 'Send' }))
+    await screen.findByText(/^Send failed: .*resend the edited message\. Your text is still in the composer and the message keeps its pictures/)
+    expect(composer()).toHaveValue(edited)
+    // The refused edit is still an edit: the banner stays and the retry
+    // replaces the same row instead of sending a new message without its pictures.
+    expect(screen.getByText('Editing — send to replace, or cancel')).toBeInTheDocument()
+    editResend.mockResolvedValueOnce({ ok: true })
+    await userEvent.click(screen.getByRole('button', { name: 'Send' }))
+    await waitFor(() => expect(editResend).toHaveBeenCalledTimes(2))
+    expect(editResend).toHaveBeenLastCalledWith(edited, '1700000000000')
+    expect(sendMessage).not.toHaveBeenCalled()
+    expect(screen.queryByText('Editing — send to replace, or cancel')).not.toBeInTheDocument()
+  })
+
+  it.each([
+    { image: '/home/u/uploads/a.png', content: 'original caption' },
+    {
+      image: '/home/u/uploads/0123456789abcdef0123456789abcdef_[REDACTED: credential].png',
+      content: '![image](/home/u/project/typed-only.png)\n\noriginal caption',
+    },
+  ])('refuses fallback for picture metadata without matching image lines ($image)', async ({ image, content }) => {
+    history = [
+      { role: 'user', content: 'earlier turn', timestamp: 1699999999000, meta: { images: ['/home/u/uploads/other.png'] } },
+      { role: 'user', content, timestamp: 1700000000000, meta: { images: [image] } },
+    ]
+    await renderPanel()
+    const editButtons = await screen.findAllByRole('button', { name: 'Edit & resend' })
+    await userEvent.click(editButtons[editButtons.length - 1])
+    const edited = content.replace('original caption', 'revised caption')
+    fireEvent.change(composer(), { target: { value: edited } })
+    editResend.mockResolvedValueOnce({ ok: false })
+    await userEvent.click(screen.getByRole('button', { name: 'Send' }))
+    expect(await screen.findByText(/^Send failed: .*resend the edited message\. Your text is still in the composer and the message keeps its pictures/)).toBeInTheDocument()
+    expect(editResend).toHaveBeenCalledWith(edited, '1700000000000')
+    expect(sendMessage).not.toHaveBeenCalled()
+    expect(composer()).toHaveValue(edited)
+  })
+
+  it.each([
+    { image: '/home/u/uploads/[REDACTED: credential].png', withChip: false },
+    { image: '/home/u/uploads/[REDACTED: credential].png', withChip: true },
+    { image: '/home/u/uploads/a.png', withChip: false },
+    { image: '/home/u/uploads/a.png', withChip: true },
+    { image: '/home/u/project/typed-only.png', withChip: false },
+  ])('refuses fallback image lines without an authoritative list ($image, new chip: $withChip)', async ({ image, withChip }) => {
+    const content = `![image](${image})\n\noriginal caption`
+    history = [{ role: 'user', content, timestamp: 1700000000000 }]
+    const fetchSpy = stubUpload({ ok: true, body: { paths: ['/home/u/uploads/snip.png'] } })
+    try {
+      await renderPanel()
+      await userEvent.click(await screen.findByRole('button', { name: 'Edit & resend' }))
+      const edited = content.replace('original caption', 'revised caption')
+      fireEvent.change(composer(), { target: { value: edited } })
+      if (withChip) {
+        emit('onCaptureDone', 'QUJD')
+        await screen.findByAltText('snip.png')
+      }
+      editResend.mockResolvedValueOnce({ ok: false })
+      await userEvent.click(screen.getByRole('button', { name: 'Send' }))
+      expect(await screen.findByText(/^Send failed: .*resend the edited message\. Your text is still in the composer and the message keeps its pictures/)).toBeInTheDocument()
+      expect(editResend).toHaveBeenCalledTimes(1)
+      expect(sendMessage).not.toHaveBeenCalled()
+      expect(composer()).toHaveValue(edited)
+      await waitFor(() => expect(composer()).toHaveFocus())
+      expect(screen.queryByRole('button', { name: /Stop/ })).not.toBeInTheDocument()
+      if (withChip) expect(await screen.findByAltText('snip.png')).toBeInTheDocument()
+    } finally {
+      fetchSpy.mockRestore()
+    }
+  })
+
+  it.each([
+    null,
+    {},
+    { images: '/home/u/uploads/a.png' },
+    { images: ['/home/u/uploads/a.png', 7] },
+    { images: [] },
+  ])('does not promote image lines from invalid or empty metadata (%j)', async (meta) => {
+    const content = '![image](/home/u/uploads/a.png)\n\noriginal caption'
+    history = [{ role: 'user', content, timestamp: 1700000000000, meta }]
+    await renderPanel()
+    await userEvent.click(await screen.findByRole('button', { name: 'Edit & resend' }))
+    editResend.mockResolvedValueOnce({ ok: false })
+    await userEvent.click(screen.getByRole('button', { name: 'Send' }))
+    await screen.findByText(/^Send failed: .*resend the edited message\. Your text is still in the composer and the message keeps its pictures/)
+    expect(sendMessage).not.toHaveBeenCalled()
+    expect(composer()).toHaveValue(content)
+  })
+
+  it.each([false, true])('falls back from a text-only row (new chip: %s)', async (withChip) => {
+    history = [{ role: 'user', content: 'original caption', timestamp: 1700000000000 }]
+    const fetchSpy = stubUpload({ ok: true, body: { paths: ['/home/u/uploads/snip.png'] } })
+    try {
+      await renderPanel()
+      await userEvent.click(await screen.findByRole('button', { name: 'Edit & resend' }))
+      fireEvent.change(composer(), { target: { value: 'revised caption' } })
+      if (withChip) {
+        emit('onCaptureDone', 'QUJD')
+        await screen.findByAltText('snip.png')
+      }
+      editResend.mockResolvedValueOnce({ ok: false })
+      await userEvent.click(screen.getByRole('button', { name: 'Send' }))
+      await waitFor(() => expect(sendMessage).toHaveBeenCalledTimes(1))
+      if (withChip) {
+        expect(sendMessage).toHaveBeenCalledWith(
+          'revised caption\n\n![image](/home/u/uploads/snip.png)', undefined, ['/home/u/uploads/snip.png'],
+        )
+      } else {
+        expect(sendMessage).toHaveBeenCalledWith('revised caption', undefined)
+      }
+    } finally {
+      fetchSpy.mockRestore()
+    }
+  })
+
+  it.each([false, true])('resends picture rows through the successful edit route only (remove line: %s)', async (removeLine) => {
+    const content = '![image](/home/u/uploads/a.png)\n\noriginal caption'
+    history = [{ role: 'user', content, timestamp: 1700000000000, meta: { images: ['/home/u/uploads/a.png'] } }]
+    await renderPanel()
+    await userEvent.click(await screen.findByRole('button', { name: 'Edit & resend' }))
+    const edited = removeLine ? 'revised caption' : content.replace('original caption', 'revised caption')
+    fireEvent.change(composer(), { target: { value: edited } })
+    await userEvent.click(screen.getByRole('button', { name: 'Send' }))
+    await waitFor(() => expect(editResend).toHaveBeenCalledWith(edited, '1700000000000'))
+    expect(editResend).toHaveBeenCalledTimes(1)
+    expect(sendMessage).not.toHaveBeenCalled()
+    expect(composer()).toHaveValue('')
+    expect(screen.queryByText(/^Send failed:/)).not.toBeInTheDocument()
+  })
+
+  it('hands a crop attached while editing to the edit route as the image list', async () => {
+    // An edit that ADDS a picture must send it structurally too: the gateway
+    // merges it with the pictures the original row kept and builds the turn's
+    // image blocks from that list alone, never from the `![image](dest)` line.
+    history = [{ role: 'user', content: 'what is this?', timestamp: 1700000000000 }]
+    const fetchSpy = stubUpload({ ok: true, body: { paths: ['/home/u/uploads/snip.png'] } })
+    try {
+      await renderPanel()
+      await screen.findByText('what is this?')
+      await userEvent.click(screen.getByRole('button', { name: 'Edit & resend' }))
+      emit('onCaptureDone', 'QUJD')
+      expect(await screen.findByAltText('snip.png')).toBeInTheDocument()
+      await userEvent.click(screen.getByRole('button', { name: 'Send' }))
+      await waitFor(() =>
+        expect(editResend).toHaveBeenCalledWith(
+          'what is this?\n\n![image](/home/u/uploads/snip.png)',
+          '1700000000000',
+          ['/home/u/uploads/snip.png'],
         ),
       )
     } finally {

@@ -3487,6 +3487,7 @@
         "ask_placeholder": "Chiedi a {{name}}...",
         "edit_cancel": "Annulla",
         "edit_mode": "Modifica — invia per sostituire o annulla",
+        "edit_pictures_unrecoverable": "Non è stato possibile reinviare il messaggio modificato. Il tuo testo è ancora nel campo di scrittura e il messaggio conserva le sue immagini. Invialo di nuovo per riprovare.",
         "load_earlier": "Carica messaggi precedenti",
         "scroll_bottom": "Vai agli ultimi",
         "send": "Invia",

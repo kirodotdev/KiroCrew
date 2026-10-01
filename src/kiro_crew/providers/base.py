@@ -8,7 +8,7 @@ concrete provider.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Sequence
 from functools import cached_property
 from typing import TYPE_CHECKING, AsyncContextManager, Literal, Protocol, runtime_checkable
 
@@ -36,6 +36,7 @@ from kiro_crew.essential_delivery import EssentialDelivery
 # import-light rule: ``abort`` imports only ``mcp_gateway.transport`` outside the
 # standard library, and that module is already loaded by the time this one is.
 from kiro_crew.mcp_gateway.abort import RuntimeAbortTarget
+from kiro_crew.prompt_attachments import PromptAttachment
 from kiro_crew.start_priority import StartPriority
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -154,11 +155,17 @@ class LLMProvider(ABC):
         """Gracefully shut down."""
 
     @abstractmethod
-    async def stream(self, message: str, *, allow_image: bool = True) -> AsyncIterator[LLMEvent]:
+    async def stream(
+        self, message: str, *, attachments: Sequence[PromptAttachment] = ()
+    ) -> AsyncIterator[LLMEvent]:
         """Send a message and yield events.
 
-        ``allow_image=False`` sends *message* as text only: no image path in it
-        is read or inlined as an image block.
+        ``attachments`` is the receiving channel's structured list of the files
+        the user attached to THIS message (``kiro_crew.prompt_attachments``).
+        It is the only way an image reaches the model: the text is never
+        scanned for image paths. Callers pass it only when it is non-empty, so
+        a provider (or a test double) that predates the parameter still takes
+        every text-only turn.
         """
         yield LLMEvent(kind=EVENT_COMPLETE)  # pragma: no cover
 

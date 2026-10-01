@@ -135,12 +135,16 @@ describe('ChatPane send — attachment serialization (parity with ChatPage)', ()
 
     await waitFor(() => expect(api.sendChat).toHaveBeenCalledTimes(1))
     const { wireText, meta } = lastSend()
-    // The agent's image extraction matches an absolute path in the prompt
-    // TEXT: this line is what turns the upload into a real image block.
+    // The markdown line renders the picture in the bubble and in history; the
+    // upload reaches the model through `meta.images`, the structured list the
+    // gateway builds its image block from (it never scans the text).
     expect(wireText).toBe('![image](/home/u/.kiro/crew/uploads/shot.png)\n\nwhat is wrong here?')
     // Images never ride meta.files (prepareSendPayload keeps it image-free);
-    // the row's ONE image source of truth is the markdown line.
-    expect(meta).toEqual({ sendId: expect.stringMatching(/^s-/) })
+    // they ride meta.images.
+    expect(meta).toEqual({
+      images: ['/home/u/.kiro/crew/uploads/shot.png'],
+      sendId: expect.stringMatching(/^s-/),
+    })
     // The optimistic bubble carries the same markdown, so the picture renders
     // the moment it is sent -- the main chat's contract.
     const row = userRow(store, 'pane-img')
@@ -175,7 +179,12 @@ describe('ChatPane send — attachment serialization (parity with ChatPage)', ()
     expect(wireText).toBe('![image](/tmp/a.png)\n\nboth\n[attached_file 1] /tmp/notes.txt')
     // Token 1 indexes meta.files[0]: the list is the image-FILTERED order, the
     // same list ChatPage persists, so a history replay resolves the marker.
-    expect(meta).toEqual({ files: ['/tmp/notes.txt'], sendId: expect.stringMatching(/^s-/) })
+    // The image rides meta.images instead.
+    expect(meta).toEqual({
+      files: ['/tmp/notes.txt'],
+      images: ['/tmp/a.png'],
+      sendId: expect.stringMatching(/^s-/),
+    })
   })
 
   it('an image-only send has a non-empty wire text, so the server no longer refuses it', async () => {

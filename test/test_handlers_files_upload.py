@@ -83,6 +83,40 @@ def test_write_file_restricted_preserves_binary_bytes_in_windows_text_mode(
     assert state["translated"] == 0
 
 
+def test_write_file_restricted_completes_a_short_write(tmp_path: Path, monkeypatch) -> None:
+    """A write the kernel accepts only in part must be continued, not reported
+    done: a prefix left under the upload key would be served as the picture."""
+    import os
+
+    destination = tmp_path / "payload.bin"
+    payload = bytes(range(64)) * 4
+    real_write = os.write
+    calls: list[int] = []
+
+    def short_write(fd: int, data: bytes) -> int:
+        # First call writes a prefix only; later calls behave normally.
+        chunk = data[: len(data) // 3] if not calls else data
+        calls.append(len(chunk))
+        return real_write(fd, chunk)
+
+    monkeypatch.setattr(os, "write", short_write)
+    _write_file_restricted(destination, payload)
+
+    assert destination.read_bytes() == payload
+    assert len(calls) >= 2
+
+
+def test_write_file_restricted_raises_when_nothing_is_accepted(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import os
+
+    destination = tmp_path / "payload.bin"
+    monkeypatch.setattr(os, "write", lambda fd, data: 0)
+    with pytest.raises(OSError):
+        _write_file_restricted(destination, b"picture bytes")
+
+
 @pytest.mark.asyncio
 async def test_upload_docx_emits_match_true_diagnostic(
     upload_dir: Path,

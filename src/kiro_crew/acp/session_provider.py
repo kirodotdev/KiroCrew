@@ -18,7 +18,7 @@ import asyncio
 import functools
 import logging
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from contextlib import aclosing
 from pathlib import Path
 from typing import Any
@@ -60,6 +60,7 @@ from kiro_crew.agent_sdk import host_auth
 from kiro_crew.config.paths import kiro_sessions_dir
 from kiro_crew.constants import COMPACT_WAIT_TIMEOUT_SECS
 from kiro_crew.mcp_gateway.claim import schedule_claim
+from kiro_crew.prompt_attachments import PromptAttachment
 from kiro_crew.providers.base import CancelOutcome, LLMEvent, LLMProvider
 from kiro_crew.recovery.ladder import InfraError
 from kiro_crew.runtime_ownership import (
@@ -579,8 +580,17 @@ class AcpSessionProvider(LLMProvider):
 
         return self.backend == ACP_BACKEND_KAS
 
-    async def stream(self, message: str, *, allow_image: bool = True) -> AsyncIterator[LLMEvent]:
-        """Send a prompt and yield LLMEvent objects until the turn completes."""
+    async def stream(
+        self, message: str, *, attachments: Sequence[PromptAttachment] = ()
+    ) -> AsyncIterator[LLMEvent]:
+        """Send a prompt and yield LLMEvent objects until the turn completes.
+
+        ``attachments`` is the channel's structured list of the files the user
+        attached to this message -- the only source of image blocks. It rides
+        beside the text down to ``AcpSessionHandle.prompt`` (bound onto the
+        send callable here, so the essential-delivery seam, which only rewrites
+        text, stays unchanged).
+        """
         # Re-establish this session's gateway claim before the turn can call a
         # tool. The shared identity publisher does the same at every surface that
         # drives a USER turn, and this is the boundary the sessions it cannot see
@@ -601,10 +611,12 @@ class AcpSessionProvider(LLMProvider):
         except Exception:
             logger.debug("stream: stub re-claim failed", exc_info=True)
         claim = self._claim_shared_turn()
-        send = self._handle.prompt
-        if not allow_image:
-            send = functools.partial(send, allow_image=False)
         try:
+            send = (
+                functools.partial(self._handle.prompt, attachments=tuple(attachments))
+                if attachments
+                else self._handle.prompt
+            )
             async with aclosing(
                 self.essential_delivery.stream(message, send, lambda: self.context_incarnation)
             ) as events:
@@ -1360,7 +1372,9 @@ class AcpSessionProvider(LLMProvider):
 
     # ── Streaming (AcpClient-compatible method name) ──
 
-    def stream_events(self, message: str, *, allow_image: bool = True) -> AsyncIterator[LLMEvent]:
+    def stream_events(
+        self, message: str, *, attachments: Sequence[PromptAttachment] = ()
+    ) -> AsyncIterator[LLMEvent]:
         """Send a prompt and yield events. AcpClient-compatible name for stream().
 
         Delegates to stream() (NOT self._handle.prompt() directly) so it
@@ -1369,7 +1383,7 @@ class AcpSessionProvider(LLMProvider):
         AcpRuntimeError, not an AcpError) escape chat_runner's handlers on a
         runtime death at prompt start -> unhandled crash instead of retry/login.
         """
-        return self.stream(message, allow_image=allow_image)
+        return self.stream(message, attachments=attachments)
 
     @property
     def resumed(self) -> bool:

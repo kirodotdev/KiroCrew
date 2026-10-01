@@ -133,6 +133,7 @@ from kiro_crew.hook_runtime.pinned_writes import (  # noqa: F401
     verified_replace_file_nolink,
 )
 from kiro_crew.hook_runtime.safe_reads import (  # noqa: F401
+    safe_content_digest,
     safe_copy_file_nolink,
     safe_file_identity,
     safe_read_file,

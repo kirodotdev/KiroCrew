@@ -2497,56 +2497,274 @@ The `audit_source` constructor param of `AcpClient` (default `None`) tags a clie
 
 ## Image Support
 
-`_send_prompt()` auto-detects image file paths in messages (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.bmp`) via regex. When a valid image path is found:
+An image reaches the model as an ACP image block ONLY from the **structured
+attachment list** the receiving channel supplies with the prompt
+(`kiro_crew/prompt_attachments.py`: `PromptAttachment{path, name}`).
+The prompt TEXT is never scanned for image paths. Every seam between a channel
+and the wire carries the list beside the text: `LLMProvider.stream(message, *,
+attachments=())` → `AcpProvider.stream` / `AcpSessionProvider.stream` (which bind
+it onto the send callable, so the essential-delivery seam, which only rewrites
+text, is untouched) → `AcpSessionHandle.prompt(message, *, attachments=())` /
+`AcpClient._send_prompt(message, attachments)` → `build_prompt_blocks(message,
+attachments=...)`. Callers pass the keyword only when the list is non-empty, so a
+provider or driver stand-in that predates it still takes every text-only turn.
 
-1. Reads the file (paths over `MAX_IMAGE_BYTES` = 10 MB stay as text, not inlined)
-2. Identifies the raster type from its leading bytes; unsupported or truncated content stays as a path
-3. Downscales so the longest edge is <= `MAX_IMAGE_EDGE_PX` (2000 px), preserving aspect ratio and re-encoding according to the decoded format (an oversized GIF becomes a PNG still frame)
-4. Shrinks further while the base64 payload still exceeds `MAX_IMAGE_B64_BYTES` (5 MiB), stopping at `MIN_IMAGE_EDGE_PX` (256 px)
-5. Base64-encodes the (possibly downscaled) bytes
-6. Appends an image content block with the content-derived `mimeType`
-7. Replaces the path in the text with `[image: filename.png]`
-8. Sends both text and image blocks in the `prompt` array
+**Why a list and not the text.** Before this, any text that merely CONTAINED a
+readable image path became an attachment: the session ledger's
+`artifact <name>: <path>.png` snapshot line in every nudge cycle, a nudge body,
+an injected envelope, an agent's own `![shot](...png)` reply quoted back, a
+consolidation prompt. Because the backend replays every stored image block, one
+screenshot named in a per-cycle snapshot grew the request by its full encoded
+size (megabytes per turn) on every turn until the backend rejected the body
+(`Improperly formed request`). A path deep in the process chain is a mention,
+not an upload; only the channel that received the file knows the difference, so
+only the channel's list says so. A path the user TYPES is therefore text too: a
+tool-capable agent can still open it, but no vision block is built for it.
 
-**One prompt's own rules** (`build_prompt_blocks`). The marker lands only where the path grammar matched: a URL's own path or a longer path that merely contains the same characters is left alone (one pass over the grammar's match spans, never a whole-text replace), while a local path quoted as a URL query value (`?src=/tmp/a.png`) is a path to the grammar and is rewritten like any other; and the shared path grammar refuses a name that merely begins with a picture's path (`/var/a.png.backup`, `/var/a.png~`, `/var/a.png/other`), so neither this builder nor the replay scrubber treats it as a picture -- nothing is read, rewritten or scrubbed for it; a period followed by a capital letter is sentence punctuation (`/var/a.png.Then`), so the path ends there and the picture is attached. A second distinct file with the same basename in one message gets `[image: filename.png (2)]`, and so on, so every block's marker is unique within the prompt. The same bytes under two names are one block, marked at both places with the first name: the digest of the file's bytes is compared before any cap is consulted, so a duplicate of an attached picture past the cap maps to that picture's block instead of being dropped. A `[image: ...]` or `[image not attached: ...]` token the user typed, in any case, is escaped with a backslash, so only a marker this builder wrote reads as an attachment; the replay scrubber's own `[image not carried into this context]` is left as it is. A kept-out picture written as a markdown image (`![alt](path)`, `![alt](<path>)` or `![alt](path "title")`) gets its note after the closing parenthesis, so the link stays intact. A typed marker is escaped even when the agent takes no images, since the text still reaches the model. One prompt inlines at most `MAX_PROMPT_IMAGE_BLOCKS` (20) images and `MAX_PROMPT_IMAGE_B64_BYTES` (12 MiB) of base64; a picture past either cap stays a path in the text, followed by `[image not attached: prompt image limit]`, exactly as one over the per-image cap (or one that cannot be rendered within the size caps) is followed by `[image not attached: image size limit]`, so neither the user nor the model takes a dropped picture as seen (the notes speak about images, so only bytes that sniff as a raster earn one -- a text file named like a picture stays plain text, and so does an oversize picture reached through a hardlink, which the bounded sniff refuses to read); each is logged, the pictures past the block cap tallied into one line, and a picture past the block cap is read only to tell a duplicate from a new one, never decoded. The byte cap is half of the images' share (three quarters) of the smallest backend request-body ceiling measured so far -- 32 MiB, bracketed by a replayed request of 30.4 MB of base64 that was accepted and one of 33.8 MB that was refused as improperly formed; the count is where the backend's many-image dimension rule begins, and each replayed image costs about 1,600 tokens on every later turn. Both caps bound one prompt alone; what the conversation's replayed history carries in total is not measured here. Nothing here remembers earlier prompts: what a conversation's replayed history may carry in total is the backend's contract, not this builder's.
+**Who supplies the list.** The dashboard composer sends its uploaded pictures
+as `meta.images` (beside `meta.files` / `meta.dirs`; the `![image](dest)` lines
+in the wire text are a rendering for the bubble and history, never the source)
+on a plain send AND on a steer POST -- a live steer is text-only, but a steer the
+gateway cannot inject falls through to the queue, and the queued turn builds its
+image blocks from that list alone. Both lists come out of the one composer module
+every dashboard surface submits through (`chat-core/composer/outgoingTurn.ts`,
+`OutgoingTurnMeta.images`), so the main chat, a pane and a steer cannot drift
+apart on what rides the wire. A send whose `meta.images` exceeds the bounds
+is refused with HTTP 400 `images_over_bound` at admission, before any row or
+queue entry is written, mirroring edit-resend's `edit_resend_images_over_bound`.
+`chat_delivery.attachment_meta(user_meta, *, redact=True)` validates the image
+and marker lists through the shared `bounded_attachment_list`: at most
+`ATTACHMENT_LIST_MAX_ITEMS` entries of `ATTACHMENT_PATH_MAX_LEN` chars, refused whole.
+Redaction remains the default for persisted rows, the runner's `_attachment_meta` copy used by the crew log and refusal replay, recovery and channel-origin copies.
+Live queue entries and pending steers from the session's own human retain bounded raw lists so their wire metadata can match their as-typed text.
+Every queue or steer wire reader uses the text's provenance decision for the lists too: `queue_entry_view`, `steer_push`, the queue-ack, held-slot and requeued-steer `queue_push`, `queue_edit`, and `queue_pop`.
+Non-user-origin entries, including channel, app, peer, restored and recovery entries, expose redacted text and lists.
+Persisted drained rows and durable queue snapshots retain redacted attachment metadata even when their text is the human's own words.
+Redacting only the wire list would break cancel restore: the client matches an image's markdown destination against `meta.images` before staging it.
+An entry carrying attachments drains alone, and an edit
+prunes a removed image (`slot_queue_repository._prune_image_meta`, deciding
+presence in every spelling the composer writes, against both the as-typed
+and display-redacted text, and only where it stands delimited, so a longer
+path that merely starts the same way -- `/tmp/a.png.bak`
+for `/tmp/a.png` -- neither keeps a removed picture nor counts as naming it; see
+below), and `_run_chat`
+turns the list into the runner's records (`_turn_prompt_attachments`).
+The PROVIDER copy (`chat_delivery.prompt_image_paths`: the same bounds, no
+redaction) is what the prompt builder opens, because the upload writer keeps
+the caller's filename in the path and a credential-shaped name (a CDN object
+key, a `ghp_` prefix) comes back from the redactor as a path that exists
+nowhere. That copy rides the dispatch as `_run_chat(_prompt_images=)`, a queued
+send's entry under the process-local `PROMPT_IMAGES_ENTRY_KEY` (never persisted,
+never in a frame; the steer fall-through and the refusal replay stamp it too;
+a queued edit prunes it in step with `meta.images` -- `prune_queued_entry`
+judges each picture in both its raw and its display-redacted spelling, and an
+emptied copy stays on the entry as authoritative so the drain never falls back
+to a list the edit pruned),
+and nothing else: the turn relay to a remote crew is retired, so no copy of the
+list crosses a hop. Every rebuild that only has a persisted or
+client-visible copy -- a regenerate, an edit-resend (`retained_image_meta`,
+which re-applies the bounds, plus `with_added_images` on the retained-plus-added
+union, refusing edit-resend with HTTP 400 `edit_resend_images_over_bound` if that
+union exceeds the bound instead of committing the edited row without its
+images), a rewind, an entry restored from disk, a row the restart marker
+re-appended -- goes through ONE server-side resolver
+at the point every turn reaches: `_turn_prompt_attachments` hands the list to
+`chat_delivery.resolve_image_paths`, which maps a spelling the redactor rewrote
+back to the file the server minted through the upload writer's own `<uuid>_`
+key (no redaction rule touches it), only inside the server's upload directory
+and only when exactly one file carries the key. If the upload key cannot resolve,
+the entry is found in the directory its spelling still names through the
+identity the send recorded beside the list (`meta.image_ids`, one portable
+`inode:size` token per picture from `platform_compat.stat_identity_token`, read
+by `lstat` off the raw path before redaction, behind the reader's own path screen,
+and carried through every prune, union and restart-marker copy position for
+position); the directory is pinned (`platform_compat.pinned_directory`, a link at
+its name refused, at most 4096 entries) and each entry is judged by its own
+`lstat` through the pin, so nothing is followed and no host name is probed; the
+edit-resend union deduplicates by identity, so two pictures whose redacted
+spellings collide both stay. No spelling and no text ever chooses the file, so
+two credential-shaped names that redact to one string cannot let an edit swap in
+a picture the send never attached. No match or no recorded identity leaves the
+entry unchanged, and the
+builder retains every file-read gate. The construction runs off the event loop
+(`asyncio.to_thread` at the dispatch site): a list with no redacted spelling
+touches no file, and one with some costs a single listing of the upload
+directory per call plus one listing of each unresolved entry's own directory,
+never retained across calls. The
+restart marker's
+opening-row copy (`_LOCAL_TURN_PROMPT_META_KEYS`, mirrored in `chat_runner` and
+`chat_persistence`) carries `images` and `image_ids`
+beside `files` / `dirs` under the same bounds, so a turn interrupted after the
+marker save and before the transcript flush is restored with its picture and a
+later regenerate or edit-resend can replay it.
+Mochi's panel sends the same key on its send and its edit-resend. A slot whose
+metadata still says `executor: "remote"` is a read-only archive: every run path
+refuses it with `409 relay_archive_read_only`, so no list is ever relayed to a
+peer. Every
+messaging channel gets it from `IngestResult.prompt_attachments()`: the
+records ingestion builds (`IngestResult.image_attachments` -- the temp path and
+the SENDER'S filename as the marker's name; the type is sniffed from the bytes
+by the builder) --
+Slack through `process_slack_files` (and the busy-queue
+entry's `prompt_attachments` kwarg) on both its native and transport routes,
+forwarded again by the native route's compaction replay and into a thread
+linked to a dashboard slot (`maybe_route_linked_thread`, which adopts the
+images as dashboard uploads -- copies the linked slot owns, since the Slack
+handler unlinks its temp files when it returns -- and whose immediate arm
+passes `_prompt_images` / `_attachment_meta` while its queued arm stamps the
+entry the way a dashboard send does); Telegram straight into
+`TurnDriver.run(..., attachments=)`; Discord through the shared channel-turn
+pipeline (`messaging/dispatch.ChannelTurns.answer`), whose `prepare` step
+fetches the message's files only once the session is held and answers with a
+`ChannelTurns.Prepared` carrying the text and the list together, so nothing is
+downloaded for a message that ends up refused or queued and the pipeline hands
+the driver the same list a channel that ingested first passes as
+`answer(attachments=)`; Teams / Webex / WeCom / Weixin / WhatsApp through
+`ChannelTurn.attachments` on that pipeline (WhatsApp ingests before dispatch and
+carries it on `InboundMessage.prompt_attachments`). Automation never has one:
+cron notifications, sub-agent completions, nudge cycles, ledger snapshots,
+`session_send` and consolidation prompts hand the provider text alone and
+therefore ship no image, whatever paths they name. The CLI has no attach
+gesture; a path typed there is text.
 
-Within a path run delimited by whitespace or punctuation -- ASCII punctuation
-outside a path, Unicode punctuation such as a dash or a bullet, the arrow blocks,
-CJK/fullwidth punctuation, and for the replay scrubber a code span -- the shared grammar takes the
-last supported image suffix: `/var/a.png版本/final.jpg` and `/var/a.png.jpg` each
-name one picture. Whitespace, commas, parentheses and the other delimiters stop that
-lookahead, so pictures separated by any of them remain separate
-(`/tmp/a.png—/tmp/b.png` inlines two pictures, as a comma between them would), and
-CJK prose without a later suffix can still follow a path. A path begins only at
-the start of the text or after a delimiter, except a colon, which reads as a URL
-scheme's (`/a.png:/b.png` names the first picture only). Two paths glued by letters
-with nothing between them (`/tmp/a.png和/tmp/b.png`, and on Windows
-`C:/x/a.png和C:/y/b.png` -- the second path's drive colon does not split the token,
-though only a drive letter glued to the token continues it: after whitespace a
-drive begins its own path, and a URL scheme's colon ends the token, so
-`C:\me\report.md and https://example.com/logo.png` names no picture, the URL
-stays as written, and `C:\docs\readme.txt and D:\tmp\shot.png` names exactly
-the picture)
-read as one token, so the
-builder inlines nothing for them and the replay scrubber replaces them with one
-marker; two paths glued by a symbol (an emoji, or on POSIX a backslash, which is
-not a path character there) start no path at all, so the builder inlines nothing
-and the replay scrubber leaves the text as written -- never the second picture
-alone with the first dropped silently. On Windows a backslash is a path
-character, so a backslash-glued pair is one path like the letter-glued one. A later
-separator in that run makes the earlier suffix a directory
-component, so non-image descendants stay text; without a later separator or image
-suffix, non-ASCII text glued to the suffix is read as prose even if it could be a
-directory name mentioned alone. The path body and every guard scan inspect at
-most 512 characters (a UNC share's host segment too), so a path longer than that
-stays text: space is legal inside a path, so an unbounded body would re-walk a
-message of spaced fragments from every start before the tail guard refused it.
+For each entry `build_prompt_blocks` (the gated read is
+`prompt_attachments.read_image_attachment`, the rest the builder's own):
 
-This leverages kiro-cli's `promptCapabilities.image: true` capability. The LLM receives the image inline — no tool call needed.
+1. Refuses UNC-shaped, link-ancestored and leaf-linked paths on Windows before
+   any filesystem probe (the dashboard's list is client JSON)
+2. Reads the file through the sensitive-path gate (unreadable or refused files
+   are skipped: the text is left as the channel wrote it, so a tool-capable
+   agent can still open the file). A file over `MAX_IMAGE_BYTES` (10 MB) is
+   skipped the same way and, when a bounded read of its head sniffs as a
+   raster, earns `[image not attached: image size limit]` (see step 9)
+3. Identifies the raster type from its leading bytes -- the record carries no
+   declared type, the attachment type is sniffed from the bytes -- and
+   unsupported or truncated content is skipped the same way, with no note
+4. Compares the file's bytes (sha256) with every picture already inlined in
+   THIS prompt, before any cap is consulted: the same bytes under a second
+   name are the picture already attached -- one block, both places marked with
+   the first name -- so a cap never turns a duplicate into a dropped picture
+5. Stops inlining past `MAX_PROMPT_IMAGE_BLOCKS` (20) blocks in one prompt: a
+   further picture stays text, earns `[image not attached: prompt image limit]`,
+   is tallied into one log line, and is never decoded to learn that
+6. Downscales so the longest edge is <= `MAX_IMAGE_EDGE_PX` (2000 px), preserving
+   aspect ratio and re-encoding according to the decoded format (an oversized
+   GIF becomes a PNG still frame); a picture with no rendition within the caps
+   stays text and earns the size note
+7. Shrinks further while the base64 payload still exceeds `MAX_IMAGE_B64_BYTES`
+   (5 MiB), stopping at `MIN_IMAGE_EDGE_PX` (256 px), and base64-encodes the
+   result; a picture that would take this prompt past
+   `MAX_PROMPT_IMAGE_B64_BYTES` (12 MiB) of base64 stays text and earns the
+   prompt-limit note
+8. Appends an image content block with the content-derived `mimeType`, under
+   the marker `[image: <name>]` -- a second DISTINCT file with the same name in
+   one prompt gets `[image: <name> (2)]`, and so on, so every block's marker is
+   unique within the prompt
+9. Marks the text: the attachment's path is rewritten to its marker
+   wherever the channel also wrote it into the text -- a substitution of the
+   KNOWN string in every spelling a channel writes
+   (`prompt_attachments.path_spellings`: the bare path, its forward-slash form
+   for a Windows path, and the escaped or `<...>`-wrapped destination the
+   dashboard composer emits, mirrored from the frontend's `mdImageDest` by
+   `markdown_image_dest`, compiled with `re.ASCII` because JavaScript's `\w` is
+   ASCII-only while Python's is Unicode-aware -- the two halves of that grammar
+   are pinned to one checked-in vector file,
+   `test/fixtures/markdown_image_dest.json`, which the frontend and backend
+   tests both consume), and only where that spelling stands DELIMITED
+   (`prompt_attachments.path_spans`: the text's edges, whitespace, a
+   destination's parentheses or a quote on both sides; linear in the text and
+   `k log k` in the spans, since the queued-edit prune runs it on the loop),
+   so `/tmp/a.png.bak`
+   beside an attached `/tmp/a.png` is another file and is never rewritten, and
+   a URL that merely contains the same characters is left alone. A kept-out
+   picture's path is followed by its note where the text names it -- after the
+   closing parenthesis when the path sits in a markdown destination
+   (`![alt](path)`, `![alt](<path>)` or `![alt](path "title")`), so the link
+   stays intact. When the text never named the picture, the marker (or its
+   name and the note) is appended on its own line, so the model is told what
+   it was given either way. One pass over the original text, in text order:
+   no rewrite can create or hide a span for another attachment.
+   `<name>` is the sender's own filename, bounded to one line of
+   `NAME_MAX_CHARS` by `prompt_attachments.bounded_name` -- applied where the
+   record is BUILT (ingestion stores the bounded value, never the raw one) and
+   again to the basename fallback when no name was given
+10. Escapes a `[image: ...]` or `[image not attached: ...]` token the user typed,
+   in any case, with a backslash, so only a marker this builder wrote reads as
+   an attachment; the replay scrubber's own `[image not carried into this
+   context]` is left as it is. The escape runs even when the agent takes no
+   images, since the text still reaches the model
+11. Sends both text and image blocks in the `prompt` array
 
-**Text-only turns.** Every prompt entry point (`LLMProvider.stream`, the handle's `prompt`, the direct client's `stream_events`) takes a keyword-only `allow_image` (default `True`) and forwards it down to `build_prompt_blocks`. `False` builds the blocks with `allow_image=False`, whatever the agent advertises: no path in the message is read or inlined, and it stays in the text. `llm_helpers.stream_and_collect` (and `stream_and_collect_json`) forward the same keyword to every attempt. `run_bg_oneliner` sends every background one-liner this way, and the history consolidator every turn it sends, because its prompt is text about a session and any path in it is quoted history (see the history-scrub section of [session](session.md)). The default call shape is unchanged for every other caller.
+**One prompt's own rules.** Nothing above remembers earlier prompts: the
+duplicate check, the two caps and the `(2)` numbering are decided within the
+one call, and what a conversation's replayed history may carry in total is the
+backend's contract, not this builder's. The byte cap is half of the images'
+share (three quarters) of the smallest backend request-body ceiling measured so
+far -- 32 MiB, bracketed by a replayed request of 30.4 MB of base64 that was
+accepted and one of 33.8 MB that was refused as improperly formed; the count is
+where the backend's many-image dimension rule begins, and each replayed image
+costs about 1,600 tokens on every later turn. The notes speak about images, so
+only bytes that sniff as a raster earn one: a text file named like a picture
+stays plain text, and so does an oversize picture reached through a hardlink,
+which the bounded sniff refuses to read. Each kept-out picture is logged.
 
-The suffix selects only which paths are candidates. `messaging.raster.sniff_raster_mime` derives the wire media type from the file content, and Pillow verifies the complete container when available. A real image with a misleading name is still inlined with truthful metadata; non-raster, unsupported, or truncated content fails closed and remains a path that a tool-capable agent can inspect.
+The replay scrubber's grammar (`image_refs._PATH_RE`; the builder reads no
+grammar) decides where a path a channel appended to a HISTORY row ends. Within
+a path run delimited by whitespace or punctuation -- ASCII punctuation outside a
+path, Unicode punctuation such as a dash or a bullet, the arrow blocks,
+CJK/fullwidth punctuation, and a code span -- it takes the last supported image
+suffix: `/var/a.png版本/final.jpg` and `/var/a.png.jpg` each name one picture.
+Whitespace, commas, parentheses and the other delimiters stop that lookahead, so
+pictures separated by any of them remain separate (`/tmp/a.png—/tmp/b.png` is
+two references, as a comma between them would make it), and CJK prose without a
+later suffix can still follow a path. It refuses a name that merely begins with
+a picture's path (`/var/a.png.backup`, `/var/a.png~`, `/var/a.png/other`), while
+a period followed by a capital letter is sentence punctuation (`/var/a.png.Then`),
+so the path ends there. A path begins only at the start of the text or after a
+delimiter, except a colon, which reads as a URL scheme's (`/a.png:/b.png` names
+the first picture only). Two paths glued by letters with nothing between them
+(`/tmp/a.png和/tmp/b.png`, and on Windows `C:/x/a.png和C:/y/b.png` -- the second
+path's drive colon does not split the token, though only a drive letter glued to
+the token continues it: after whitespace a drive begins its own path, and a URL
+scheme's colon ends the token, so `C:\me\report.md and https://example.com/logo.png`
+names no picture, the URL stays as written, and `C:\docs\readme.txt and
+D:\tmp\shot.png` names exactly the picture) read as one token, so the scrubber
+replaces them with one marker; two paths glued by a symbol (an emoji, or on
+POSIX a backslash, which is not a path character there) start no path at all,
+so the scrubber leaves the text as written -- never the second picture alone
+with the first dropped silently. On Windows a backslash is a path character, so
+a backslash-glued pair is one path like the letter-glued one. A later separator
+in that run makes the earlier suffix a directory component, so non-image
+descendants stay text; without a later separator or image suffix, non-ASCII text
+glued to the suffix is read as prose even if it could be a directory name
+mentioned alone. The path body and every guard scan inspect at most 512
+characters (a UNC share's host segment too), so a path longer than that stays
+text: space is legal inside a path, so an unbounded body would re-walk a message
+of spaced fragments from every start before the tail guard refused it. None of
+this derives an image for the CURRENT prompt: the builder's marker lands only
+where the attachment's own spelling stands delimited, and a picture glued to
+prose or punctuation is still attached from the list and announced on its own
+line, with the glued text left as written.
+
+This leverages kiro-cli's `promptCapabilities.image: true` capability. The LLM
+receives the image inline — no tool call needed. `allow_image=False` (the agent
+did not advertise the capability) emits no block and leaves every path in the
+text as written; a typed marker is still escaped.
+
+**Text-only turns.** No prompt entry point takes a per-call switch for them: a
+turn whose caller passes no attachment list -- every background one-liner
+(`llm_helpers.run_bg_oneliner`), every `stream_and_collect` attempt, every turn
+the history consolidator sends -- emits no image block whatever paths its text
+names, because the builder reads no path out of the text.
+
+The channel's list selects only which files are candidates.
+`messaging.raster.sniff_raster_mime` derives the wire media type from the file
+content, and Pillow verifies the complete container when available. A real image
+with a misleading name is still inlined with truthful metadata; non-raster,
+unsupported, or truncated content fails closed and remains a path that a
+tool-capable agent can inspect. The history scrubber
+(`image_refs.strip_image_refs`, see `session.md`) keeps its own path grammar for
+replayed rows; the builder reads no grammar at all.
 
 **Dimension backstop** (`build_prompt_blocks` in `acp/prompt_blocks.py`). This shared builder is the single funnel every channel's images cross before reaching kiro-cli, so the `MAX_IMAGE_EDGE_PX` (2000 px) downscale runs for all of them — dashboard upload/paste/screenshot, Slack, Discord. Anthropic rejects the ENTIRE request when a many-image conversation (>20 images) carries any image over 2000 px on a side; because kiro-cli replays the full message history every turn, one oversized image would otherwise sit at a fixed history index and wedge the session permanently (a follow-up resize cannot evict the original). The browser's client-side resize (1568 px, `website/src/utils/resizeImage.ts`) is a token-cost optimization on top; this server-side cap is the correctness guarantee that still holds when that resize is skipped or bypassed (e.g. the native `/api/screenshot` capture, or non-dashboard channels).
 

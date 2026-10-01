@@ -26,6 +26,7 @@ import chatReducer, { appendSlotMessage, setActiveSlot, sseChatMessage } from '.
 import dashboardReducer from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
 import { i18nT } from '../i18n/t'
+import { api } from '../api/client'
 import { DRAFTS_KEY } from '../utils/chatDrafts'
 
 vi.mock('react-virtuoso', () => ({
@@ -114,6 +115,7 @@ function makeStore(extraSlots: Array<ReturnType<typeof slotRow>> = []) {
 async function steerWithReceipt(
   receipt: Record<string, unknown> | { reject: unknown } | { httpStatus: number; body: Record<string, unknown> },
   echo?: 'ordinary' | 'steer' | 'another-send',
+  text = STEERED_TEXT,
 ) {
   const store = makeStore()
   // A mid-turn steer is the same `/api/chat` POST as a send, flagged `steer`,
@@ -123,7 +125,7 @@ async function steerWithReceipt(
   if ('reject' in receipt) sendChat.mockImplementation(async (_text, slot, _signal, _files, meta) => {
     if (echo) {
       const message = {
-        role: 'user', content: STEERED_TEXT, cls: 'msg msg-u',
+        role: 'user', content: text, cls: 'msg msg-u',
         ts: '2026-09-10T00:00:00Z',
         meta: { ...meta, mid: 'm-delivered', ...(echo === 'steer' ? { steer: true } : {}), ...(echo === 'another-send' ? { sendId: 's-another-tab' } : {}) },
       }
@@ -146,7 +148,7 @@ async function steerWithReceipt(
     )
   })
   const input = await waitFor(() => screen.getByLabelText('Message input') as HTMLTextAreaElement)
-  fireEvent.change(input, { target: { value: STEERED_TEXT } })
+  fireEvent.change(input, { target: { value: text } })
   await act(async () => {
     fireEvent.keyDown(input, { key: 'Enter' })
     await Promise.resolve()
@@ -156,7 +158,7 @@ async function steerWithReceipt(
   expect(sendChat.mock.calls[0][5]).toBe(true)
   // onSuccess must finish before checking that it did NOT restore the draft.
   await waitFor(() => expect(qc.isMutating()).toBe(0))
-  const rows = (store.getState().chat.messages as ChatMessage[]).filter(m => m.role === 'user' && m.content === STEERED_TEXT)
+  const rows = (store.getState().chat.messages as ChatMessage[]).filter(m => m.role === 'user' && m.content === text)
   return Object.assign(rows, { store, input })
 }
 
@@ -229,6 +231,222 @@ describe('optimistic steer bubble vs the steer receipt', { timeout: 20_000 }, ()
     await waitFor(() => expect(
       (rows.store.getState().chat.messages as ChatMessage[]).filter(m => m.role === 'user' && m.content === STEERED_TEXT),
     ).toHaveLength(0))
+  })
+
+  it('a refused steer keeps a typed image line as text on retry', async () => {
+    const typed = '![image](/tmp/private.png)'
+    const { input } = await steerWithReceipt(
+      { httpStatus: 409, body: { ok: false, error: 'no running turn' } }, undefined, typed,
+    )
+    expect(input.value).toBe(typed)
+    expect(screen.queryByRole('group', { name: '/tmp/private.png' })).not.toBeInTheDocument()
+    expect(sendChat.mock.calls[0][0]).toBe(typed)
+    expect(sendChat.mock.calls[0][4]).not.toHaveProperty('images')
+
+    sendChat.mockResolvedValue({ ok: true, json: () => Promise.resolve({ ok: true, steered: true }) })
+    await act(async () => { fireEvent.keyDown(input, { key: 'Enter' }) })
+    await waitFor(() => expect(sendChat).toHaveBeenCalledTimes(2))
+    expect(sendChat.mock.calls[1][0]).toBe(typed)
+    expect(sendChat.mock.calls[1][4]).not.toHaveProperty('images')
+    expect(sendChat.mock.calls[1][5]).toBe(true)
+  })
+
+  it('a refused steer hands the staged picture back with the text, and the steer carried it as meta.images', async () => {
+    // The picture rides the steer POST as `meta.images` (the list the gateway
+    // builds image blocks from when it queues the steer instead). A refusal
+    // that handed back only the text would leave a composer whose next send
+    // ships no picture, so the staged file comes back as a chip too.
+    const store = makeStore()
+    vi.mocked(api.uploadFiles).mockResolvedValueOnce({ paths: ['/tmp/uploads/shot.png'] })
+    sendChat.mockResolvedValue({ ok: false, status: 409, json: () => Promise.resolve({ ok: false, error: 'no running turn' }) })
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    await act(async () => {
+      render(
+        <QueryClientProvider client={qc}>
+          <Provider store={store}>
+            <ThemeProvider>
+              <MemoryRouter><ChatPage /></MemoryRouter>
+            </ThemeProvider>
+          </Provider>
+        </QueryClientProvider>,
+      )
+    })
+    const input = await waitFor(() => screen.getByLabelText('Message input') as HTMLTextAreaElement)
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement
+    Object.defineProperty(fileInput, 'files', { value: [new File(['x'], 'shot.png', { type: 'image/png' })] })
+    fireEvent.change(fileInput)
+    await waitFor(() => expect(api.uploadFiles).toHaveBeenCalled())
+    // An image chip is a group named by its path (and an <img alt=path>).
+    expect(await screen.findByRole('group', { name: '/tmp/uploads/shot.png' })).toBeInTheDocument()
+    fireEvent.change(input, { target: { value: STEERED_TEXT } })
+    await act(async () => {
+      fireEvent.keyDown(input, { key: 'Enter' })
+      await Promise.resolve()
+    })
+    await waitFor(() => expect(sendChat).toHaveBeenCalled())
+    const [wireText, , , , meta, steer] = sendChat.mock.calls[0]
+    expect(steer).toBe(true)
+    expect(wireText).toBe(`![image](/tmp/uploads/shot.png)\n\n${STEERED_TEXT}`)
+    expect(meta).toEqual({ sendId: expect.stringMatching(/^s-/), images: ['/tmp/uploads/shot.png'] })
+    await waitFor(() => expect(qc.isMutating()).toBe(0))
+    // Text AND chip are back: the composer can re-send the picture.
+    await waitFor(() => expect(input.value).toBe(STEERED_TEXT))
+    expect(await screen.findByRole('group', { name: '/tmp/uploads/shot.png' })).toBeInTheDocument()
+    sendChat.mockResolvedValue({ ok: true, json: () => Promise.resolve({ ok: true, steered: true }) })
+    await act(async () => { fireEvent.keyDown(input, { key: 'Enter' }) })
+    await waitFor(() => expect(sendChat).toHaveBeenCalledTimes(2))
+    expect(sendChat.mock.calls[1][0]).toBe(wireText)
+    expect(sendChat.mock.calls[1][4]).toEqual(expect.objectContaining({ images: ['/tmp/uploads/shot.png'] }))
+    expect(sendChat.mock.calls[1][5]).toBe(true)
+  })
+
+  it('a refused steer with a picture and an @-mentioned file hands back both chips and the words', async () => {
+    const store = makeStore()
+    vi.mocked(api.uploadFiles)
+      .mockResolvedValueOnce({ paths: ['/tmp/uploads/shot.png'] })
+      .mockResolvedValueOnce({ paths: ['/tmp/uploads/notes.txt'] })
+    sendChat.mockResolvedValue({ ok: false, status: 409, json: () => Promise.resolve({ ok: false, error: 'no running turn' }) })
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    await act(async () => {
+      render(
+        <QueryClientProvider client={qc}>
+          <Provider store={store}>
+            <ThemeProvider>
+              <MemoryRouter><ChatPage /></MemoryRouter>
+            </ThemeProvider>
+          </Provider>
+        </QueryClientProvider>,
+      )
+    })
+    const input = await waitFor(() => screen.getByLabelText('Message input') as HTMLTextAreaElement)
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement
+    Object.defineProperty(fileInput, 'files', { value: [new File(['x'], 'shot.png', { type: 'image/png' })], configurable: true })
+    fireEvent.change(fileInput)
+    await screen.findByRole('group', { name: '/tmp/uploads/shot.png' })
+    Object.defineProperty(fileInput, 'files', { value: [new File(['y'], 'notes.txt', { type: 'text/plain' })], configurable: true })
+    fireEvent.change(fileInput)
+    await screen.findByRole('group', { name: '/tmp/uploads/notes.txt' })
+    fireEvent.change(input, { target: { value: `@notes.txt\n${STEERED_TEXT}` } })
+    await act(async () => {
+      fireEvent.keyDown(input, { key: 'Enter' })
+      await Promise.resolve()
+    })
+    await waitFor(() => expect(sendChat).toHaveBeenCalled())
+    const [wireText, , , , meta, steer] = sendChat.mock.calls[0]
+    expect(steer).toBe(true)
+    expect(wireText).toBe(`![image](/tmp/uploads/shot.png)\n\n[attached_file 1] /tmp/uploads/notes.txt\n${STEERED_TEXT}`)
+    // Both lists ride the POST: the gateway queues a steer that carries a
+    // picture, and the queued entry indexes its `[attached_file N]` marker
+    // from `meta.files` -- without it the drained row and a cancel from
+    // another surface have no file to restore.
+    expect(meta).toEqual({ sendId: expect.stringMatching(/^s-/), images: ['/tmp/uploads/shot.png'], files: ['/tmp/uploads/notes.txt'] })
+    await waitFor(() => expect(qc.isMutating()).toBe(0))
+    // The draft comes back as typed, with both chips: the mention is a token
+    // again and the picture is a chip the next send ships as meta.images.
+    await waitFor(() => expect(input.value).toBe(`@notes.txt\n${STEERED_TEXT}`))
+    expect(await screen.findByRole('group', { name: '/tmp/uploads/shot.png' })).toBeInTheDocument()
+    expect(await screen.findByRole('group', { name: '/tmp/uploads/notes.txt' })).toBeInTheDocument()
+    sendChat.mockResolvedValue({ ok: true, json: () => Promise.resolve({ ok: true, steered: true }) })
+    await act(async () => { fireEvent.keyDown(input, { key: 'Enter' }) })
+    await waitFor(() => expect(sendChat).toHaveBeenCalledTimes(2))
+    expect(sendChat.mock.calls[1][0]).toBe(wireText)
+    expect(sendChat.mock.calls[1][4]).toEqual(expect.objectContaining({ images: ['/tmp/uploads/shot.png'], files: ['/tmp/uploads/notes.txt'] }))
+    expect(sendChat.mock.calls[1][5]).toBe(true)
+  })
+
+  it('a refused steer with a collapsed paste hands the paste back as a chip, not a dangling token', async () => {
+    const store = makeStore()
+    sendChat.mockResolvedValue({ ok: false, status: 409, json: () => Promise.resolve({ ok: false, error: 'no running turn' }) })
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    await act(async () => {
+      render(
+        <QueryClientProvider client={qc}>
+          <Provider store={store}>
+            <ThemeProvider>
+              <MemoryRouter><ChatPage /></MemoryRouter>
+            </ThemeProvider>
+          </Provider>
+        </QueryClientProvider>,
+      )
+    })
+    const input = await waitFor(() => screen.getByLabelText('Message input') as HTMLTextAreaElement)
+    const pasted = 'line one\nline two\nline three\nline four\nline five\nline six'
+    await act(async () => {
+      fireEvent.paste(input, { clipboardData: { types: ['text/plain'], items: [], getData: () => pasted } })
+    })
+    await waitFor(() => expect(input.value).toMatch(/\[ Paste #1(?:\u2063[\u200b\u200c]+\u2063)? · \d+ lines \]/))
+    const token = input.value.match(/\[ Paste #1(?:\u2063[\u200b\u200c]+\u2063)? · \d+ lines \]/)![0]
+    await act(async () => { fireEvent.change(input, { target: { value: `${token}\n${STEERED_TEXT}` } }) })
+    await act(async () => {
+      fireEvent.keyDown(input, { key: 'Enter' })
+      await Promise.resolve()
+    })
+    await waitFor(() => expect(sendChat).toHaveBeenCalled())
+    const [wireText, , , , , steer] = sendChat.mock.calls[0]
+    expect(steer).toBe(true)
+    // The wire carries the pasted lines expanded; the composer showed the token.
+    expect(wireText).toBe(`${pasted}\n${STEERED_TEXT}`)
+    await waitFor(() => expect(qc.isMutating()).toBe(0))
+    // Hand-back keeps what the user HAD: the collapsed token in the draft and the
+    // paste block behind it, so the next send expands the same lines again.
+    await waitFor(() => expect(input.value).toBe(`${token}\n${STEERED_TEXT}`))
+    sendChat.mockResolvedValue({ ok: true, json: () => Promise.resolve({ ok: true, steered: true }) })
+    await act(async () => { fireEvent.keyDown(input, { key: 'Enter' }) })
+    await waitFor(() => expect(sendChat).toHaveBeenCalledTimes(2))
+    expect(sendChat.mock.calls[1][0]).toBe(wireText)
+  })
+
+  it('a refused steer with a paste, a picture and an @-mentioned file hands back all three', async () => {
+    const store = makeStore()
+    vi.mocked(api.uploadFiles)
+      .mockResolvedValueOnce({ paths: ['/tmp/uploads/shot.png'] })
+      .mockResolvedValueOnce({ paths: ['/tmp/uploads/notes.txt'] })
+    sendChat.mockResolvedValue({ ok: false, status: 409, json: () => Promise.resolve({ ok: false, error: 'no running turn' }) })
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    await act(async () => {
+      render(
+        <QueryClientProvider client={qc}>
+          <Provider store={store}>
+            <ThemeProvider>
+              <MemoryRouter><ChatPage /></MemoryRouter>
+            </ThemeProvider>
+          </Provider>
+        </QueryClientProvider>,
+      )
+    })
+    const input = await waitFor(() => screen.getByLabelText('Message input') as HTMLTextAreaElement)
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement
+    Object.defineProperty(fileInput, 'files', { value: [new File(['x'], 'shot.png', { type: 'image/png' })], configurable: true })
+    fireEvent.change(fileInput)
+    await screen.findByRole('group', { name: '/tmp/uploads/shot.png' })
+    Object.defineProperty(fileInput, 'files', { value: [new File(['y'], 'notes.txt', { type: 'text/plain' })], configurable: true })
+    fireEvent.change(fileInput)
+    await screen.findByRole('group', { name: '/tmp/uploads/notes.txt' })
+    const pasted = 'line one\nline two\nline three\nline four\nline five\nline six'
+    await act(async () => {
+      fireEvent.paste(input, { clipboardData: { types: ['text/plain'], items: [], getData: () => pasted } })
+    })
+    await waitFor(() => expect(input.value).toMatch(/\[ Paste #1(?:\u2063[\u200b\u200c]+\u2063)? · \d+ lines \]/))
+    const token = input.value.match(/\[ Paste #1(?:\u2063[\u200b\u200c]+\u2063)? · \d+ lines \]/)![0]
+    const draft = `@notes.txt\n${token}\n${STEERED_TEXT}`
+    await act(async () => { fireEvent.change(input, { target: { value: draft } }) })
+    await act(async () => {
+      fireEvent.keyDown(input, { key: 'Enter' })
+      await Promise.resolve()
+    })
+    await waitFor(() => expect(sendChat).toHaveBeenCalled())
+    const [wireText, , , , , steer] = sendChat.mock.calls[0]
+    expect(steer).toBe(true)
+    expect(wireText).toBe(`![image](/tmp/uploads/shot.png)\n\n[attached_file 1] /tmp/uploads/notes.txt\n${pasted}\n${STEERED_TEXT}`)
+    await waitFor(() => expect(qc.isMutating()).toBe(0))
+    await waitFor(() => expect(input.value).toBe(draft))
+    expect(await screen.findByRole('group', { name: '/tmp/uploads/shot.png' })).toBeInTheDocument()
+    expect(await screen.findByRole('group', { name: '/tmp/uploads/notes.txt' })).toBeInTheDocument()
+    sendChat.mockResolvedValue({ ok: true, json: () => Promise.resolve({ ok: true, steered: true }) })
+    await act(async () => { fireEvent.keyDown(input, { key: 'Enter' }) })
+    await waitFor(() => expect(sendChat).toHaveBeenCalledTimes(2))
+    expect(sendChat.mock.calls[1][0]).toBe(wireText)
+    expect(sendChat.mock.calls[1][4]).toEqual(expect.objectContaining({ images: ['/tmp/uploads/shot.png'] }))
   })
 
   it('a deadline-aborted steer removes the unconfirmed bubble and hands the text back under a WARN notice', async () => {

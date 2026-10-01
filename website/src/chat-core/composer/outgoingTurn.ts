@@ -85,6 +85,10 @@ export interface KnowledgeMeta {
 
 /** The fields this module contributes to the message's `meta`, in wire order. */
 export interface OutgoingTurnMeta {
+  /** Staged pictures. The ONLY source of the turn's image blocks: the gateway
+   *  never scans the text for paths, so the `![image](dest)` lines in the wire
+   *  are a rendering for the bubble and history, not the attachment. */
+  images?: string[]
   /** Non-image attachments; `[attached_file N]` names `files[N-1]`. */
   files?: string[]
   /** Folder paths; `[attached_dir N]` names `dirs[N-1]` (send only). */
@@ -146,7 +150,7 @@ export function isEmptyTurn(input: OutgoingTurnInput): boolean {
 export function buildOutgoingTurn(input: OutgoingTurnInput, mode: OutgoingTurnMode): OutgoingTurn {
   const send = mode === 'send'
   const quote = input.quote ?? null
-  const { txt, displayTxt, filePaths } = prepareSendPayload(input.text.trim(), [...(input.files ?? [])])
+  const { txt, displayTxt, imgPaths, filePaths } = prepareSendPayload(input.text.trim(), [...(input.files ?? [])])
   const { llm: typedWire, dirPaths } = send ? serializeDirTokens(txt, input.project || '') : { llm: txt, dirPaths: [] }
   const refs = send ? [...(input.sessionRefs ?? [])] : []
   const linked = appendSessionRefLinks(typedWire, refs)
@@ -160,6 +164,7 @@ export function buildOutgoingTurn(input: OutgoingTurnInput, mode: OutgoingTurnMo
   if (quote) wire = prependQuote(wire, quote)
   const bubble = !send ? wire : quote ? prependQuote(display, quote) : display
   const meta: OutgoingTurnMeta = {}
+  if (imgPaths.length) meta.images = imgPaths
   if (filePaths.length) meta.files = filePaths
   if (dirPaths.length) meta.dirs = dirPaths
   if (send && pastes.length) meta.pastes = pastes

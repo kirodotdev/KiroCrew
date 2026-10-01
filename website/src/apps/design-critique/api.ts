@@ -70,7 +70,10 @@ export const designCritiqueApi = {
 
   // Fire a message at a slot. The response body is not JSON we care about, so a
   // parse error is swallowed — only a real HTTP/network error propagates.
-  send: (slotKey: string, message: string): Promise<void> =>
+  // `images` is the structured list the gateway builds the turn's image blocks
+  // from; the `![screen](...)` lines in the prompt are the transcript's
+  // rendering only, never scanned for pictures.
+  send: (slotKey: string, message: string, images?: string[]): Promise<void> =>
     jsonFetch<void>('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -85,6 +88,7 @@ export const designCritiqueApi = {
       // mode for existing slots, and both match what openSlot() asked for.
       body: JSON.stringify({
         message, slot: slotKey, agent: AGENT, memory_mode: 'temporary', mode: 'design-critique',
+        ...(images && images.length ? { meta: { images } } : {}),
       }),
     }).catch((e: unknown) => {
       if (e instanceof SyntaxError) return

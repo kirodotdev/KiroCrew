@@ -32,7 +32,7 @@ class _FakeBgSession:
     async def set_model(self, model):  # noqa: D401 — best-effort no-op
         return None
 
-    async def prompt(self, _prompt, *, allow_image=True):
+    async def prompt(self, _prompt):
         yield SimpleNamespace(kind=EVENT_TEXT_CHUNK, text=self._reply)
         yield SimpleNamespace(kind=EVENT_COMPLETE, text="")
 

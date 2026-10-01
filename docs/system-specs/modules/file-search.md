@@ -355,12 +355,30 @@ project root (`dirFullPath`; a rel that is already absolute passes through,
 and with no project the rel path is used as-is). N is the 1-based appearance
 order and indexes `meta.dirs[N-1]`, the ordered absolute paths persisted on
 the message. The display text keeps the `@rel/` tokens — the same
-fresh-vs-wire split files use with `[attached_file N]` + `meta.files`. The
-server persists `meta` opaquely (`_redact_meta` filters values, not keys), so
-no backend change is involved. Steer deliberately does NOT serialize: its
-transport is text-only (no meta), so a marker would have no `meta.dirs` index
+fresh-vs-wire split files use with `[attached_file N]` + `meta.files`. Uploaded
+pictures ride a third list, `meta.images` (the ordered image paths, from
+`prepareSendPayload`'s `imgPaths`, on ChatPage, ChatPane and Mochi's panel
+alike): their `![image](dest)` wire lines render the bubble, but the gateway
+builds the turn's image blocks from `meta.images` alone and never scans the
+text for a path, so a send without the list ships no picture to the model. A
+send whose `meta.images` exceeds the bounds is refused with HTTP 400
+`images_over_bound` at admission, before any row or queue entry is written,
+mirroring edit-resend's `edit_resend_images_over_bound`. The server validates
+the three lists together (`attachment_meta`), persists `meta`
+otherwise opaquely (`_redact_meta` filters values, not keys), and reads
+`meta.images` back off the row for regenerate, edit-resend and rewind,
+re-applying the same list bounds on the way back (`retained_image_meta`,
+`with_added_images`: a persisted row is a writable file, and two admitted lists
+can exceed the bound together, in which case edit-resend is refused with HTTP
+400 `edit_resend_images_over_bound` instead of committing the edited row without
+its images). Steer
+deliberately does NOT serialize folder markers: its transport is text-only, so a
+marker would have no `meta.dirs` index
 to replay against and a spaced path would truncate under the `\S+` fallback —
-the raw `@rel/` token stays correct there.
+the raw `@rel/` token stays correct there. The one list a steer POST does carry
+is `meta.images` (with `meta.files` for the transcript chip): a steer the
+gateway cannot inject falls through to the queue, and the queued turn builds its
+image blocks from that list alone.
 
 **Inline file markers.** A picked file mention woven into a sentence is
 rewritten in place to `[attached_file N] /abs/path`. When a marker's neighbour

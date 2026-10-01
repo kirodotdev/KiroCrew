@@ -512,6 +512,60 @@ def assert_rejected_without_backtracking(
         previous = (n, cost)
 
 
+class CountingText(str):
+    """A ``str`` that counts the characters a pure-Python scan touches.
+
+    Hand one to a function that reads its text through ``find`` / ``index`` /
+    ``count``, indexing, slicing or iteration, and read ``visits`` afterwards:
+    a scan that walked to a hit is charged the distance it walked plus the
+    needle it verified there, one that found nothing the rest of the text, an
+    index one character and a slice its length. The reading is the WORK the
+    algorithm did, so it is the same on every host, under coverage and beside
+    any neighbour -- where a clock reads the scheduler. Bound it in units of
+    the input (``visits <= k * len(text)``) or as a ratio between two sizes;
+    work done outside these primitives (arithmetic over the spans a scan
+    returned) is not counted and needs its own structural assertion.
+    """
+
+    def __new__(cls, text: str) -> "CountingText":
+        made = super().__new__(cls, text)
+        made.visits = 0
+        return made
+
+    def __iter__(self):
+        for ch in str.__iter__(self):
+            self.visits += 1
+            yield ch
+
+    def __getitem__(self, key):
+        if isinstance(key, slice):
+            self.visits += len(range(*key.indices(len(self))))
+        else:
+            self.visits += 1
+        return str.__getitem__(self, key)
+
+    def _walked(self, hit: int, args) -> None:
+        start = args[1] if len(args) > 1 and args[1] is not None else 0
+        if hit >= 0:
+            self.visits += max(hit - start, 0) + len(args[0])
+        else:
+            self.visits += max(len(self) - start, 0)
+
+    def find(self, *args):
+        hit = str.find(self, *args)
+        self._walked(hit, args)
+        return hit
+
+    def index(self, *args):
+        hit = str.index(self, *args)
+        self._walked(hit, args)
+        return hit
+
+    def count(self, *args):
+        self._walked(-1, args)
+        return str.count(self, *args)
+
+
 def cap_project_root_walk(monkeypatch, ceiling: pathlib.Path) -> None:
     """Make ``kiro_crew.artifact_source`` see NO project root above ``ceiling``.
 

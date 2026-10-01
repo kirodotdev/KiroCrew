@@ -22,7 +22,7 @@ import asyncio
 import contextlib
 import logging
 import re
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Sequence
 
 from kiro_crew import name_grant, session_directive
 from kiro_crew.acp.types import (
@@ -76,6 +76,7 @@ from kiro_crew.monitoring.completion import (
     is_monitor_completion_evidence,
 )
 from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR
+from kiro_crew.prompt_attachments import PromptAttachment
 from kiro_crew.security import StreamRedactor, redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 from kiro_crew.tool_call_title import derive_tool_call_title
@@ -573,8 +574,16 @@ class TurnDriver:
         # behaviour, so a stand-in predating the parameter still works.
         self.closing_gate = closing_gate
 
-    async def run(self, message: str) -> str:
-        """Drive one turn; return the accumulated channel-safe assistant text."""
+    async def run(self, message: str, *, attachments: Sequence[PromptAttachment] = ()) -> str:
+        """Drive one turn; return the accumulated channel-safe assistant text.
+
+        ``attachments`` is the channel's structured list of the files the user
+        attached to this message -- the only way an image reaches the model, so
+        a transport that ingested one MUST pass it here rather than rely on the
+        path it wrote into the text. Forwarded to the provider only when
+        non-empty, so a provider stand-in predating the keyword still takes
+        every text-only turn.
+        """
         accumulated = ""
         self.empty_turn_notice = ""
         self.terminal_directive_applied = False
@@ -677,7 +686,12 @@ class TurnDriver:
             self.closing_gate()
         if self.monitor_completion is not None:
             self.monitor_completion.mark_accepted()
-        async for event in self.provider.stream(message):
+        stream = (
+            self.provider.stream(message, attachments=tuple(attachments))
+            if attachments
+            else self.provider.stream(message)
+        )
+        async for event in stream:
             kind = event.kind
             if kind == EVENT_TEXT_CHUNK:
                 filtered = compaction_filter.feed(event.text or "")

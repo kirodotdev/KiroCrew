@@ -91,7 +91,7 @@ export function clampToolOutput(output: string): { text: string; cut: ToolPayloa
  *  the `queue_pop` frame already uses). `files` is the
  *  ORDERED non-image list an `[attached_file N]` marker indexes (`files[N-1]`),
  *  `dirs` the folder list `[attached_dir N]` indexes. */
-export type QueueEntryAttachments = { files?: string[]; dirs?: string[] }
+export type QueueEntryAttachments = { files?: string[]; dirs?: string[]; images?: string[] }
 
 /** Reduce a wire `meta` to its attachment lists. Only a non-empty list of
  *  strings is kept: the lists are indexed by marker number, so a malformed
@@ -109,7 +109,7 @@ export function queueEntryQuote(meta: unknown): { quote?: MessageQuote } {
 export function queueEntryAttachments(meta: unknown): QueueEntryAttachments {
   const out: QueueEntryAttachments = {}
   if (!meta || typeof meta !== 'object') return out
-  for (const key of ['files', 'dirs'] as const) {
+  for (const key of ['files', 'dirs', 'images'] as const) {
     const raw = (meta as Record<string, unknown>)[key]
     if (Array.isArray(raw) && raw.length && raw.every((p) => typeof p === 'string' && p)) out[key] = [...raw] as string[]
   }

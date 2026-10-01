@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Awaitable, Callable, Literal, Optional
@@ -93,6 +94,7 @@ from kiro_crew.messaging.turn_bracket import TurnBracket
 from kiro_crew.messaging.turn_ceiling import TurnCeilingExceeded
 from kiro_crew.monitoring.completion import MonitorCompletionHook
 from kiro_crew.monitoring.models import MonitorDispatchResult
+from kiro_crew.prompt_attachments import PromptAttachment
 from kiro_crew.safety_override import safety_override
 from kiro_crew.security import (
     redact,
@@ -322,6 +324,13 @@ class ChannelTurn:
     """A :class:`kiro_crew.messaging.renderer.Renderer`."""
 
     approval_mode: str
+    attachments: tuple[PromptAttachment, ...] = ()
+    """The files the user attached to THIS message, as the channel ingested them
+    (``IngestResult.prompt_attachments``). The ONLY way an image reaches the
+    model: the prompt text is never scanned for image paths, so a channel that
+    ingested a photo and wrote only its path into ``user_text`` ships no image.
+    Empty for a text-only message."""
+
     decider: Optional[Any] = None
     """``None`` for channels with no interactive approval affordance
     (deny-by-default for INTERACTIVE mode; ``auto``/``trust`` still work)."""
@@ -1678,6 +1687,21 @@ class ChannelTurns:
     * ``drift`` -- this dispatcher's remaining divergences (:class:`Drift`).
     """
 
+    @dataclass(frozen=True)
+    class Prepared:
+        """What a channel's ``prepare`` resolved once the session existed.
+
+        ``text`` is the prompt to build from; ``attachments`` is the structured
+        list of the pictures the message carried, fetched after the session was
+        acquired so nothing is downloaded for a message that ends up refused or
+        queued. A ``prepare`` that only rewrites the text may still answer with a
+        plain string. Nested here so a channel reaches it through the entry class
+        it already holds instead of a further pipeline export.
+        """
+
+        text: str
+        attachments: tuple[PromptAttachment, ...] = ()
+
     def __init__(
         self,
         channel: str,
@@ -1716,7 +1740,8 @@ class ChannelTurns:
         renderer: RendererSource,
         *,
         decider: Any = None,
-        prepare: Callable[[Any, str], Awaitable[str]] | None = None,
+        prepare: Callable[[Any, str], Awaitable[str | ChannelTurns.Prepared]] | None = None,
+        attachments: Sequence[PromptAttachment] = (),
         monitor: MonitorWake | None = None,
     ) -> TurnOutcome:
         """Answer *text* from *asker*, rendering into *renderer*.
@@ -1725,8 +1750,12 @@ class ChannelTurns:
         decision: with a factory nothing is built before that decision, and on a
         monitor wake nothing is built before the claim. *decider* is honoured only
         when ``asker.can_prompt``. *prepare(provider, text)* runs once per attempt,
-        after the session exists, and returns the prompt to build from; it must be
-        idempotent, and an empty answer ends the turn EMPTY with nothing recorded.
+        after the session exists, and returns the prompt to build from -- a string,
+        or a :class:`ChannelTurns.Prepared` when the channel fetches the message's pictures
+        only once the session is held; it must be idempotent, and an empty prompt
+        ends the turn EMPTY with nothing recorded. *attachments* is the structured
+        image list of a channel that ingested before it answered; it is the ONLY
+        way a picture reaches the model, since the prompt text is never scanned.
 
         Every classified ending returns a :class:`TurnOutcome`. Once the turn body
         is entered only ``CancelledError`` propagates, after the turn is finalized --
@@ -1764,6 +1793,7 @@ class ChannelTurns:
                 )
             ),
             prepare=prepare,
+            attachments=attachments,
             monitor=monitor,
         )
 
@@ -1870,7 +1900,8 @@ class ChannelTurns:
         minimal_context: bool,
         deny_all_tools: bool,
         directive_consumer: DirectiveConsumer | None,
-        prepare: Callable[[Any, str], Awaitable[str]] | None = None,
+        prepare: Callable[[Any, str], Awaitable[str | ChannelTurns.Prepared]] | None = None,
+        attachments: Sequence[PromptAttachment] = (),
         bind: Callable[[Any], None] | None = None,
         is_muted: Callable[[], bool] | None = None,
         quiet: bool = False,
@@ -1882,7 +1913,9 @@ class ChannelTurns:
         that pipeline always ran it; it never ends the turn. *is_muted* replaces
         the mute read with :func:`drive_turn`'s :func:`conversation_is_muted`.
         *quiet* silences the tool-less refusal without touching the record, which
-        is all ``ChannelTurn.unprompted`` ever meant.
+        is all ``ChannelTurn.unprompted`` ever meant. *attachments* is the list
+        the driver hands the provider beside the text; a :class:`ChannelTurns.Prepared`
+        from *prepare* supplies it instead for a channel that fetches late.
         """
         channel = self.channel
         sessions = self._sessions
@@ -1983,6 +2016,7 @@ class ChannelTurns:
         bracket = TurnBracket(sessions, ctx_builder, session_key)
         driver: Any = None
         prompt = text
+        turn_attachments = tuple(attachments)
         accumulated = ""
         verdict = Verdict.FAILED
         try:
@@ -2125,7 +2159,12 @@ class ChannelTurns:
                     # (an upload root, an attachment fetch), before the session is
                     # bound or built for: a message with nothing left to send ends
                     # here, having changed nothing about the conversation.
-                    prompt = await prepare(provider, text)
+                    prepared = await prepare(provider, text)
+                    if isinstance(prepared, ChannelTurns.Prepared):
+                        prompt = prepared.text
+                        turn_attachments = tuple(prepared.attachments)
+                    else:
+                        prompt = prepared
                     if not prompt:
                         verdict = Verdict.EMPTY
                         return self._outcome(verdict, monitor, acquired=True)
@@ -2292,7 +2331,14 @@ class ChannelTurns:
                         return self._outcome(verdict, monitor, acquired=True)
                     # The replay's own completion supersedes the one the guard held.
                     retry_guard.drop_held()
-                accumulated = await driver.run(full_message)
+                # The channel's structured image list rides beside the text; passed
+                # only when there is one, so a driver stand-in predating the keyword
+                # still takes every text-only turn.
+                accumulated = await (
+                    driver.run(full_message, attachments=turn_attachments)
+                    if turn_attachments
+                    else driver.run(full_message)
+                )
 
                 # Defensive lookup, like every other attribute read on this seam: a
                 # driver stand-in may predate this field. A missing reason means "no
@@ -2658,6 +2704,7 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
         minimal_context=turn.minimal_context,
         deny_all_tools=turn.deny_all_tools,
         directive_consumer=turn.directive_consumer,
+        attachments=turn.attachments,
         bind=turn.bind_provider,
         is_muted=lambda: conversation_is_muted(sessions, turn),
         quiet=turn.unprompted,

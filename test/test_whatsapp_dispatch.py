@@ -514,6 +514,39 @@ def test_busy_session_folds_into_current_reply_when_steerable():
     assert any("folded" in t.lower() for _, t in transport.sent)
 
 
+def test_busy_session_does_not_steer_a_picture():
+    """A steer carries text only, so a photo folded into the running reply would
+    reach the model as a caption with no picture while the sender is told it was
+    folded. The picture waits for the next turn instead, and the receipt says so."""
+    from kiro_crew.prompt_attachments import PromptAttachment
+
+    class Steering(FakeProvider):
+        supports_steer = True
+
+        def __init__(self):
+            super().__init__()
+            self.steered: list[str] = []
+
+        def has_active_turn(self):
+            return True
+
+        async def steer(self, text):
+            self.steered.append(text)
+            return True
+
+    provider = Steering()
+    d, _client, _sessions, transport = _make(provider=provider, busy=True)
+    msg = _msg("look at this")
+    msg.prompt_attachments = [PromptAttachment(path="/tmp/wa/photo.png", name="photo.png")]
+    asyncio.run(d.handle_message(msg))
+    assert provider.steered == []
+    assert provider.prompts == []
+    sent = [t for _, t in transport.sent]
+    assert len(sent) == 1
+    assert "folded" not in sent[0].lower()
+    assert "picture" in sent[0].lower() and "resend" in sent[0].lower()
+
+
 def test_busy_flips_free_reprocesses_the_message():
     """If the session frees between is_busy checks, the message is re-handled."""
     provider = FakeProvider("late reply")

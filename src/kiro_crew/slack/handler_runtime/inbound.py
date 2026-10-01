@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -21,9 +22,11 @@ if TYPE_CHECKING:
         _BANG_TO_SLASH,
         _INCOGNITO_TOKEN_RE,
         _TEMPORARY_TOKEN_RE,
+        AttachmentAdoptionError,
         ConfigReadError,
         ConversationLog,
         KiroCrewConfig,
+        PromptAttachment,
         SessionManager,
         SlackClientOps,
         _dashboard_state,
@@ -31,8 +34,10 @@ if TYPE_CHECKING:
         _is_sessions_keyword,
         _thread_agents,
         _thread_projects,
+        adopt_attachment_copies,
         agent_switch_target,
         append_and_surface,
+        cleanup,
         config_path,
         is_allowed_user,
         is_sensitive_path,
@@ -40,6 +45,7 @@ if TYPE_CHECKING:
         privacy_mode,
         redact_credentials,
         redact_exfiltration_urls,
+        rewrite_adopted_paths,
         sel,
         update_config_locked,
     )
@@ -303,12 +309,22 @@ async def maybe_route_linked_thread(
     reply_ts: str,
     target_slot: Any | None = None,
     route_pinned: bool = False,
+    attachments: Sequence[PromptAttachment] | None = None,
 ) -> bool:
     """Route a Slack message to a linked dashboard slot, if one is linked.
 
     Shared by the native ``handle_message`` path and the messaging-transport
     ``handle_message_transport`` path so a thread linked via
     ``/kirocrew link-to-dashboard`` behaves identically on both.
+
+    *attachments* is the structured list of the images the message carried
+    (``process_slack_files``). It is the ONLY thing that puts a picture in
+    front of the model -- the prompt builder never scans the text for the
+    appended path -- so this route hands it to the linked slot's turn exactly
+    as the dashboard's own send does: the raw paths as the provider copy
+    (``_prompt_images`` on an immediate dispatch, the process-local entry key
+    on a queued one) and the redacted, bounded list as ``images`` on the copy
+    every observer reads.
 
     Returns ``True`` when the caller MUST return without further handling —
     either the message was routed into the linked dashboard slot, or an
@@ -378,14 +394,98 @@ async def maybe_route_linked_thread(
     # Redact for UI display only — LLM receives original text so it can process
     # user intent fully (redaction strips URLs/creds that may be relevant
     # context). The LLM's own output is redacted before display.
+    # The linked slot's turn takes the picture the way a dashboard send does,
+    # and so does its ROW. Adopt FIRST: the copies (`adopt_attachment_copies` --
+    # files this slot owns, not Slack's temp paths, which the Slack handler
+    # unlinks when it returns) are the provider copy, the redacted bounded list
+    # is the copy every observer reads (`chat_delivery.attachment_meta`), and
+    # the text is rewritten to name the copies, so the persisted row -- what a
+    # later regenerate or edit-resend re-runs -- carries `meta.images` pointing
+    # at files that still exist, exactly like a row the composer sent.
+    try:
+        _adopted = await adopt_attachment_copies(attachments or ())
+    except AttachmentAdoptionError as exc:
+        # Fail closed and visibly: no row, no turn, one reply where the user
+        # is. Running without the picture would answer about an image the
+        # model never saw; queueing would lose it when the temp path is gone.
+        logger.warning("linked thread %s: refusing the turn: %s", session_key, exc)
+        sel().log_tool_invocation(
+            session_key=session_key,
+            agent="kirocrew",
+            source="slack",
+            tool_name="linked_thread_intercept",
+            tool_kind="permission",
+            outcome="denied",
+            metadata={"user_id": user_id, "reason": "image_adoption_failed"},
+        )
+        await slack.post_message(
+            channel, f"Not sent: {exc}. Nothing was sent to the linked session.", reply_ts
+        )
+        return True
+    _image_paths = [copy for _temp, copy in _adopted]
+    _linked_meta: dict[str, list[str]] = {}
+    if _image_paths:
+        # circular import: chat_delivery pulls in dashboard modules at module level.
+        from kiro_crew.dashboard.chat_delivery import attachment_meta, with_image_identities
+        from kiro_crew.dashboard.slot_queue_repository import IMAGE_ATTACHMENT_META_KEY
+
+        # Read off the loop like the copy, and BEFORE the link recheck below:
+        # nothing may suspend between that recheck and the append.
+        _linked_meta = attachment_meta(
+            await with_image_identities({IMAGE_ATTACHMENT_META_KEY: _image_paths})
+        )
+    # The copy and the identity read ran off the loop: an unlink, relink or
+    # close that landed meanwhile would make the slot resolved above a stale
+    # target for this send.
+    if _adopted:
+        _target_now = target_slot if route_pinned else _dashboard_state.get_linked_slot(reply_ts)
+        if _target_now is not _linked_slot or _linked_slot.is_closing is True:
+            await asyncio.to_thread(cleanup, _image_paths)
+            logger.warning(
+                "linked thread %s: refusing the turn: the link changed while the picture was stored",
+                session_key,
+            )
+            sel().log_tool_invocation(
+                session_key=session_key,
+                agent="kirocrew",
+                source="slack",
+                tool_name="linked_thread_intercept",
+                tool_kind="permission",
+                outcome="denied",
+                metadata={"user_id": user_id, "reason": "link_changed_during_adoption"},
+            )
+            await slack.post_message(
+                channel,
+                "Not sent: this thread's link changed or its session closed while the picture was being stored. "
+                "Send it again. Nothing was sent to the linked session.",
+                reply_ts,
+            )
+            return True
+    if _adopted:
+        text = rewrite_adopted_paths(text, _adopted)
+    _linked_kwargs: dict[str, Any] = {}
+    if _linked_meta:
+        from kiro_crew.dashboard.slot_queue_repository import attachment_paths
+
+        _linked_kwargs["_attachments"] = attachment_paths(_linked_meta)
+        _linked_kwargs["_attachment_meta"] = _linked_meta
+        _linked_kwargs["_prompt_images"] = list(_image_paths)
     _safe_text, _ = redact_exfiltration_urls(text)
     _safe_text, _ = redact_credentials(_safe_text)
     # Nothing rendered this Slack-typed row optimistically in the dashboard, so
     # broadcast_user=True: append delivers the ONE identity-carrying frame
     # (a frame without ``meta.mid`` lets a client receiving the row through a
-    # second door render it a second time as a duplicate).
+    # second door render it a second time as a duplicate). The row carries the
+    # redacted image list under the same key every dashboard row uses, or no
+    # meta at all for a text-only message (the prior call shape).
     append_and_surface(
-        _dashboard_state, _linked_slot, "user", _safe_text, "msg msg-u", broadcast_user=True  # type: ignore[arg-type]
+        _dashboard_state,  # type: ignore[arg-type]
+        _linked_slot,
+        "user",
+        _safe_text,
+        "msg msg-u",
+        broadcast_user=True,
+        **({"meta": dict(_linked_meta)} if _linked_meta else {}),
     )
     if not _linked_slot.running:
         from kiro_crew.dashboard.chat import _run_chat
@@ -397,6 +497,7 @@ async def maybe_route_linked_thread(
                 text,
                 _directive_user_origin=True,
                 _directive_channel_origin=True,
+                **_linked_kwargs,
             )
         )
         _linked_slot.task = _chat_task
@@ -409,11 +510,22 @@ async def maybe_route_linked_thread(
         # Stamp the admission-time containment. A linked slot records
         # linked=True here, so its own channel's queued messages keep draining;
         # only a constraint that appears AFTER this enqueue drops the entry.
+        # The image list rides the entry like a dashboard send's: the redacted
+        # copy on its meta, the provider copy under the process-local key.
+        # Passed only when there IS one, so the call shape is unchanged for a
+        # text-only message (and for the test doubles of ``queue_append``).
+        _queue_kwargs: dict[str, Any] = {}
+        if _linked_kwargs.get("_prompt_images"):
+            _queue_kwargs["prompt_images"] = _linked_kwargs["_prompt_images"]
         _linked_slot.queue_append(
             text,
-            meta=containment_meta(_dashboard_state, _linked_slot),  # type: ignore[arg-type]
+            meta={
+                **containment_meta(_dashboard_state, _linked_slot),  # type: ignore[arg-type]
+                **_linked_kwargs.get("_attachment_meta", {}),
+            },
             directive_user_origin=True,
             directive_channel_origin=True,
+            **_queue_kwargs,
         )
     _dashboard_state.push_slots_update()  # type: ignore[attr-defined]
     sel().log_tool_invocation(

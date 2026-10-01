@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { addPendingFile, extendsConsumably, findUnreferencedAttachments, foldWinSep, isWindowsShapedPath, mentionBoundary, mentionBoundaryFor, mentionTokenRegex, normalizeWindowsPath, parseFiles, prepareSendPayload, buildFileLabels, resolveFileSegment, mdImageDest, mdImageDestToPath, restoreQueuedContent, restoreUnreferencedImages, serializeDirTokens } from '../utils/fileTokens'
 
 describe('buildFileLabels uniqueness', () => {
@@ -284,6 +286,24 @@ describe('prepareSendPayload', () => {
       // on-disk name, not an encoding.
       expect(mdImageDestToPath('/tmp/photo%20copy.png')).toBe('/tmp/photo%20copy.png')
     })
+
+    it('mdImageDest matches the shared vectors the gateway mirror is pinned to', () => {
+      // The gateway re-implements this grammar (`markdown_image_dest` in
+      // src/kiro_crew/prompt_attachments.py) to rewrite an inlined picture's
+      // line to its `[image: <name>]` marker and to see, on a queued edit, that
+      // the user removed a picture whose destination the composer escaped. One
+      // vector file pins both halves: the backend test asserts the same cases,
+      // so a change here that is not mirrored there goes red instead of
+      // silently keeping a deleted picture in the turn.
+      const fixturePath = resolve(__dirname, '../../../test/fixtures/markdown_image_dest.json')
+      const cases: { name: string; path: string; dest: string }[] = JSON.parse(
+        readFileSync(fixturePath, 'utf8'),
+      ).cases
+      expect(cases.length).toBeGreaterThanOrEqual(8)
+      for (const c of cases) {
+        expect(mdImageDest(c.path), c.name).toBe(c.dest)
+      }
+    })
   })
 
   it('includes @-referenced files inline and unreferenced as appended tokens', () => {
@@ -499,6 +519,17 @@ describe('restoreQueuedContent (cancel-queued parser fallback)', () => {
     expect(new Set(r.files)).toEqual(new Set(['/tmp/a.csv', '/tmp/b.log']))
   })
 
+  it('restages a picture and a file whose marker the user placed before the text', () => {
+    // An @-mention puts the marker mid-text; re-serializing appends it, which
+    // reorders only the marker, never the user's words, so both chips come back.
+    const sent = prepareSendPayload('@notes.txt\ncompare this picture', ['/home/u/uploads/shot.png', '/home/u/uploads/notes.txt']).txt
+    expect(sent).toBe('![image](/home/u/uploads/shot.png)\n\n[attached_file 1] /home/u/uploads/notes.txt\ncompare this picture')
+    expect(restoreQueuedContent(sent, ['/home/u/uploads/notes.txt'], ['/home/u/uploads/shot.png'])).toEqual({
+      text: 'compare this picture',
+      files: ['/home/u/uploads/shot.png', '/home/u/uploads/notes.txt'],
+    })
+  })
+
   it('leaves an embedded (@-mentioned) marker verbatim — its path boundary is not provable', () => {
     // `[attached_file 1] /a/b c` inline in prose: a whitespace-bounded capture
     // truncates a spaced path, staging a nonexistent file and re-sending the
@@ -509,20 +540,82 @@ describe('restoreQueuedContent (cancel-queued parser fallback)', () => {
     expect(r.files).toEqual([])
   })
 
-  it('restores a producer-form image line as a staged image path', () => {
-    const { txt } = prepareSendPayload('what is in this picture', ['/tmp/photo.png'])
-    const r = restoreQueuedContent(txt)
+  it.each([
+    { caption: 'what is in this picture', paths: ['/tmp/photo.png'] },
+    { caption: 'look', paths: ['/tmp/My Shots/pic 1.png'] },
+    { caption: 'line one\n\nline  two', paths: ['/tmp/photo.png'] },
+    { caption: '\n  indented first line\nsecond', paths: ['/tmp/pic.png'] },
+    { caption: 'diff these', paths: ['/tmp/a.png', '/tmp/b shots/b 2.png'] },
+  ])('leaves image markdown verbatim without structured images: $caption', ({ caption, paths }) => {
+    const { txt } = prepareSendPayload(caption, paths)
+    expect(restoreQueuedContent(txt)).toEqual({ text: txt, files: [] })
+  })
+
+  it.each([
+    { images: undefined }, { images: [] }, { images: ['/tmp/other.png'] },
+  ])('leaves a typed image line verbatim with images $images', ({ images }) => {
+    const typed = '![image](/tmp/private.png)'
+    const restored = restoreQueuedContent(typed, undefined, images)
+    expect(restored).toEqual({ text: typed, files: [] })
+    const resent = prepareSendPayload(restored.text, restored.files)
+    expect(resent.txt).toBe(typed)
+    expect(resent.imgPaths).toEqual([])
+  })
+
+  it.each([
+    '/tmp/photo.png',
+    'C:\\Users\\me\\photo.png',
+    'C:\\Users\\me\\My Shots\\photo (1).png',
+    '\\\\server\\share\\photo.png',
+    '/tmp/weird\\name.png',
+  ])('restores a producer-form image line as a staged image path: %s', (path) => {
+    const { txt, imgPaths } = prepareSendPayload('what is in this picture', [path])
+    const r = restoreQueuedContent(txt, undefined, imgPaths)
     expect(r.text).toBe('what is in this picture')
-    expect(r.files).toEqual(['/tmp/photo.png'])
+    expect(r.files).toEqual([normalizeWindowsPath(path)])
+    expect(prepareSendPayload(r.text, r.files).txt).toBe(txt)
   })
 
   it('restores an image path containing spaces from its wrapped destination', () => {
-    // mdImageDest's <...> wrap gives the destination an exact boundary, so an
-    // image is the one spaced-path shape the parser CAN claim losslessly.
-    const { txt } = prepareSendPayload('look', ['/tmp/My Shots/pic 1.png'])
-    const r = restoreQueuedContent(txt)
+    const { txt, imgPaths } = prepareSendPayload('look', ['/tmp/My Shots/pic 1.png'])
+    const r = restoreQueuedContent(txt, undefined, imgPaths)
     expect(r.text).toBe('look')
     expect(r.files).toEqual(['/tmp/My Shots/pic 1.png'])
+  })
+
+  it.each(['', 'look', '\n  indented caption\nsecond'])('restores a raw redacted image from its authoritative list: %j', (body) => {
+    const path = '/tmp/uploads/[REDACTED: credential].png'
+    const content = [`![image](${path})`, body].filter(Boolean).join('\n\n')
+    const restored = restoreQueuedContent(content, undefined, [path])
+    expect(restored).toEqual({ text: body, files: [path] })
+    expect(prepareSendPayload(restored.text, restored.files).imgPaths).toEqual([path])
+  })
+
+  it('leaves a raw redacted image unchanged without an authoritative list', () => {
+    const content = '![image](/tmp/uploads/[REDACTED: credential].png)\n\nlook'
+    expect(restoreQueuedContent(content)).toEqual({ text: content, files: [] })
+  })
+
+  it('restores mixed authoritative image spellings and a document without changing the body', () => {
+    const images = ['/tmp/uploads/[REDACTED: credential].png', '/tmp/My Shots/pic 1.png']
+    const files = ['/tmp/report final.pdf']
+    const body = '\n  compare these\n\ncarefully'
+    const imageBlock = `![image](${images[0]})\n![image](${mdImageDest(images[1])})`
+    const content = `${imageBlock}\n\n${prepareSendPayload(body, files).txt}`
+    const restored = restoreQueuedContent(content, files, [...images].reverse())
+    expect(restored).toEqual({ text: body, files: [...images, ...files] })
+    const resent = prepareSendPayload(restored.text, restored.files)
+    const canonicalBlock = images.map((path) => `![image](${mdImageDest(path)})`).join('\n')
+    expect(imageBlock + resent.txt.slice(canonicalBlock.length)).toBe(content)
+  })
+
+  it.each([
+    '![image](/tmp/uploads/[REDACTED: credential].png)\ncaption',
+    '![image](/tmp/uploads/[REDACTED: credential].png)\n![image](/tmp/unlisted.png)\n\ncaption',
+    '![image](/tmp/uploads/[REDACTED: credential].png)\n\n[attached_file 1] /tmp/a.txt\nthen explain',
+  ])('keeps a non-round-tripping redacted payload verbatim: %s', (content) => {
+    expect(restoreQueuedContent(content, undefined, ['/tmp/uploads/[REDACTED: credential].png']))
+      .toEqual({ text: content, files: [] })
   })
 
   it('leaves an inline image reference the user typed themselves alone', () => {
@@ -610,15 +703,18 @@ describe('restoreQueuedContent (cancel-queued parser fallback)', () => {
   })
 
   it('restores a mixed image + document + text payload completely', () => {
-    const { txt } = prepareSendPayload('compare these', ['/tmp/shot.png', '/tmp/data.csv'])
-    const r = restoreQueuedContent(txt)
+    const { txt, imgPaths } = prepareSendPayload('compare these', ['/tmp/shot.png', '/tmp/data.csv'])
+    expect(restoreQueuedContent(txt)).toEqual({
+      text: '![image](/tmp/shot.png)\n\ncompare these', files: ['/tmp/data.csv'],
+    })
+    const r = restoreQueuedContent(txt, undefined, imgPaths)
     expect(r.text).toBe('compare these')
     expect(new Set(r.files)).toEqual(new Set(['/tmp/shot.png', '/tmp/data.csv']))
   })
 
   it('preserves interior whitespace and strips only the blank lines removed markers left', () => {
-    const { txt } = prepareSendPayload('line one\n\nline  two', ['/tmp/photo.png'])
-    const r = restoreQueuedContent(txt)
+    const { txt, imgPaths } = prepareSendPayload('line one\n\nline  two', ['/tmp/photo.png'])
+    const r = restoreQueuedContent(txt, undefined, imgPaths)
     expect(r.text).toBe('line one\n\nline  two')
   })
 
@@ -636,8 +732,8 @@ describe('restoreQueuedContent (cancel-queued parser fallback)', () => {
   it('preserves a body that begins with a newline (expanded paste) byte-exact', () => {
     // The image block match consumes exactly the producer's `\n\n` separator,
     // so a paste whose expansion starts with a blank/indented line keeps it.
-    const { txt } = prepareSendPayload('\n  indented first line\nsecond', ['/tmp/pic.png'])
-    const r = restoreQueuedContent(txt)
+    const { txt, imgPaths } = prepareSendPayload('\n  indented first line\nsecond', ['/tmp/pic.png'])
+    const r = restoreQueuedContent(txt, undefined, imgPaths)
     expect(r.text).toBe('\n  indented first line\nsecond')
     expect(r.files).toEqual(['/tmp/pic.png'])
   })
@@ -653,16 +749,22 @@ describe('restoreQueuedContent (cancel-queued parser fallback)', () => {
     // The producer never emits a relative path, so a block containing one is
     // foreign text; claiming the valid line alone would tear pasted markdown.
     const pasted = '![image](/tmp/real.png)\n![image](docs/logo.png)\n\nfrom the README'
-    const r = restoreQueuedContent(pasted)
+    const r = restoreQueuedContent(pasted, undefined, ['/tmp/real.png', 'docs/logo.png'])
     expect(r.text).toBe(pasted)
     expect(r.files).toEqual([])
   })
 
-  it('restores a two-image leading block completely', () => {
-    const { txt } = prepareSendPayload('diff these', ['/tmp/a.png', '/tmp/b shots/b 2.png'])
-    const r = restoreQueuedContent(txt)
+  it('restores a two-image leading block completely when all paths are listed in any order', () => {
+    const { txt, imgPaths } = prepareSendPayload('diff these', ['/tmp/a.png', '/tmp/b shots/b 2.png'])
+    const r = restoreQueuedContent(txt, undefined, [...imgPaths].reverse())
     expect(r.text).toBe('diff these')
     expect(r.files).toEqual(['/tmp/a.png', '/tmp/b shots/b 2.png'])
+    expect(prepareSendPayload(r.text, r.files).txt).toBe(txt)
+  })
+
+  it('leaves the whole leading block verbatim when one image path is unlisted', () => {
+    const { txt } = prepareSendPayload('diff these', ['/tmp/a.png', '/tmp/b shots/b 2.png'])
+    expect(restoreQueuedContent(txt, undefined, ['/tmp/a.png'])).toEqual({ text: txt, files: [] })
   })
 })
 
@@ -699,8 +801,11 @@ describe('restoreQueuedContent with the entry\'s own attachment list', () => {
   })
 
   it('restores a leading image block together with a listed spaced document', () => {
-    const { txt, filePaths } = prepareSendPayload('caption', ['/tmp/pic.png', spaced])
-    const r = restoreQueuedContent(txt, filePaths)
+    const { txt, filePaths, imgPaths } = prepareSendPayload('caption', ['/tmp/pic.png', spaced])
+    expect(restoreQueuedContent(txt, filePaths)).toEqual({
+      text: '![image](/tmp/pic.png)\n\ncaption', files: [spaced],
+    })
+    const r = restoreQueuedContent(txt, filePaths, imgPaths)
     expect(r.text).toBe('caption')
     expect(r.files).toEqual(['/tmp/pic.png', spaced])
   })

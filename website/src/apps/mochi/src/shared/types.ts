@@ -78,6 +78,7 @@ export interface ChatMessage {
   role: 'user' | 'assistant'
   content: string
   timestamp: number
+  images?: readonly string[]
   screenshot?: string   // base64, if attached
   backfill?: boolean    // true for messages backfilled from dashboard (don't trigger waiting state)
 }

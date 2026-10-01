@@ -435,7 +435,7 @@ in [agent-host-contract.md](agent-host-contract.md).
 
 **Key APIs:**
 - `start()` → `AcpClient.ensure_ready()` (spawns process, handshake, session/new)
-- `stream()` → maps events from `stream_events()`; `allow_image=False` makes the turn text-only (see [acp-client](acp-client.md#image-support))
+- `stream()` → maps events from `stream_events()`; `attachments` is the channel's structured image list, the only source of image blocks (see [acp-client](acp-client.md#image-support))
 - `stream_command()` → native slash command execution
 - `approve_tool()`/`reject_tool()` → JSON-RPC response
 - `context_usage_pct()` → reads `last_prompt_stats.context_pct`

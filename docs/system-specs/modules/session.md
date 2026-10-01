@@ -2562,54 +2562,54 @@ each row out through
 `kiro_crew.image_refs.strip_image_refs`, which replaces every local image
 reference with `[image not carried into this context]`. Markdown references go
 through the attachment store's own `iter_local_refs`; bare paths go through the
-inliner's own `_PATH_RE`, narrowed to paths outside code spans that stand alone
-rather than sit inside a URL query, because the inliner rewrites text only after
-reading a file and an unconditional substitution would corrupt a URL or a code
-snippet instead of scrubbing it. The grammar also admits a space or tab, since
-an attachment name can carry one, and that is the shape the text cannot settle:
-such a span has that token replaced when its last token is a path on its own,
-and is replaced whole only when it is a channel's own attachment line — alone on
-its line (list and quote markers allowed) AND ending in the `mkstemp` file name
-every channel's shared ingest writer mints, which is what vouches for the space
-before it (a temp directory under a profile like `John Smith`) — or a markdown
-link's angle-form destination, which can hold nothing but a path. Being alone
-on a line is not enough: `/var/log/app has the broken logo.png.` is a whole line
-a person types. No delimiter pair vouches for one either, quotes included.
-Otherwise the span keeps its text, so prose such as
+grammar in `image_refs._PATH_RE`, narrowed to paths outside code spans that stand
+alone rather than sit inside a URL query, because an unconditional substitution
+would corrupt a URL or a code snippet instead of scrubbing it. The grammar also
+admits a space or tab, since an attachment name can carry one, and that is the
+shape the text cannot settle: such a span has that token replaced when its last
+token is a path on its own, and is replaced whole only when it is a channel's own
+attachment line — alone on its line (list and quote markers allowed) AND ending
+in the `mkstemp` file name every channel's shared ingest writer mints, which is
+what vouches for the space before it (a temp directory under a profile like
+`John Smith`) — or a markdown link's angle-form destination, which can hold
+nothing but a path. Being alone on a line is not enough: `/var/log/app has the
+broken logo.png.` is a whole line a person types. No delimiter pair vouches for
+one either, quotes included. Otherwise the span keeps its text, so prose such as
 `check /var/log/app and tell me why logo.png is broken` survives intact. Every
 rule is lexical: the scrubber makes no filesystem call, because it runs inline
-on the event loop while the inliner's own probes are offloaded through
+on the event loop while the builder's own file reads are offloaded through
 `asyncio.to_thread`, and resolving a data home to settle a span would put a
 network stat in front of every history row. The residue is every other spaced
 path, a `Screen Shot 2024.png` a person typed alone on its line included: it
-stays as text, which the inliner can still pick up on a replayed turn while the
-file is there — the deliberate cost of not deleting the sentence around it.
+stays as text — and only as text, since the builder reads no path out of a
+replayed row — the deliberate cost of not deleting the sentence around it.
 
 A background one-liner (`llm_helpers.run_bg_oneliner`: titles, summaries,
 suggestions, status cards, folder picks) never inlines at all. Its prompt is
-text ABOUT a session, so a path in it is quoted history, and the turn goes out
-with `allow_image=False` on whichever handle `get_bg_session()` returned; every
-layer down to `build_prompt_blocks` forwards it (see
+text ABOUT a session, so a path in it is quoted history; the turn carries no
+attachment list, and the builder emits image blocks from that list alone (see
 [acp-client](acp-client.md#image-support)). So no shape a caller composes (a
 flattened row, a `  - User: ` prefix, a JSON string) can become an image block
 for a text-only background model. The scrub it also runs only tidies the text.
 The history consolidator's turns (the consolidation itself, the skill dedupe
 judge and the skill merge) quote transcript rows the same way and go out the
-same way, through `stream_and_collect(..., allow_image=False)`.
+same way, through `stream_and_collect` with no attachment list.
 `chat_title._title_text` does not call the scrubber at all: it strips markdown
 images and attachment markers its own way and keeps an escaped or code-quoted
 `![x](…)` readable, while the scrubber's bare-path pass replaces the
 destination inside an escaped one (a code-quoted one survives both passes). A
-channel's bare path is neither, so it stays in the title prompt as text. A row's picture belonged
-to an earlier turn and a text vehicle cannot carry bytes, so the reference is
-the only thing that would arrive, and both readings of it are wrong: while the
-file is still readable `build_prompt_blocks` re-inlines it (a picture an earlier
-compaction already dropped returns at full byte cost on every later cold start),
-and once the file is gone the path is left in the prose next to the assistant's
-own earlier description of what it showed. Stripping at the row builders rather
-than at each consumer is what makes the guarantee hold for all three. The
-CURRENT turn is unaffected — it is excluded from the replay by identity, so a
-freshly attached image still becomes a real image block.
+channel's bare path is neither, so it stays in the title prompt as text. A
+row's picture belonged to an earlier turn and a text vehicle cannot carry bytes,
+so the reference is the only thing that would arrive, and a path left in the
+prose next to the assistant's own earlier description of what it showed is what
+makes a model narrate a screenshot it cannot see. The prompt builder itself
+builds image blocks only from the channel's structured attachment list, which a
+replay never has, so a replayed path can never come back as pixels; the strip is
+what keeps it from coming back as prose. Stripping at the
+row builders rather than at each consumer is what makes the guarantee hold for
+all three. The CURRENT turn is unaffected — it is excluded from the replay by
+identity, and its freshly attached image arrives as a structured attachment, so
+it still becomes a real image block.
 
 **Same-provider resume:** unaffected. Normal `session/load` path with full
 native fidelity.
@@ -2989,9 +2989,10 @@ so absence clears it.
   restart is not that event happening again); an entry carrying a `payload` is a
   synthetic recovery continuation; an entry carrying `_on_consumed` /
   `_on_irreversibly_consumed` acknowledges an automatic payload through a
-  callback that does not survive the process. `meta` rides along verbatim,
-  because it holds the admission-time containment snapshot the drain
-  re-validates against and an entry without one fails closed.
+  callback that does not survive the process.
+  Apart from attachment lists, `meta` rides along verbatim because it holds the admission-time containment snapshot the drain re-validates against and an entry without one fails closed.
+  Attachment lists are redacted in the durable projection: provenance does not survive a restart, so their paths must match the redacted text a restored card displays and edits.
+  Live user-origin entries retain bounded raw lists; their wire lists follow the same as-typed rule as their text.
 - **Provenance does NOT survive the restart, and that is a security property.**
   `_directive_user_origin` / `_directive_channel_origin` record that an entry's
   words came from an authenticated human, and the drain reduces the consumed

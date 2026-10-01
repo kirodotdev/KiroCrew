@@ -13,10 +13,57 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from kiro_crew.context import ContextBuilder
     from kiro_crew.dashboard.chat_runner import (
+        IMAGE_ATTACHMENT_META_KEY,
         DashboardState,
         _ChatSlot,
+        aligned_image_identities,
+        image_attachments,
         logger,
+        resolve_image_paths,
     )
+    from kiro_crew.prompt_attachments import PromptAttachment
+
+
+def _turn_prompt_attachments(
+    attachment_meta: dict[str, list[str]] | None,
+    prompt_images: list[str] | None = None,
+) -> tuple[PromptAttachment, ...]:
+    """The structured image list this turn hands to the provider.
+
+    Read off the send's image list -- the PROVIDER copy *prompt_images*
+    (``chat_delivery.prompt_image_paths``: validated raw paths) when the
+    dispatch carries it, else the redacted ``meta.images`` of *attachment_meta*
+    (``IMAGE_ATTACHMENT_META_KEY``), the copy the crew log and the refusal
+    replay read and the only copy a regenerate, an edit-resend, a rewind, an
+    entry restored from disk or a row the restart marker re-appended still
+    has. Either way the list goes through ``chat_delivery.resolve_image_paths``,
+    the one server-side resolver: a spelling the redactor rewrote (a
+    sender-chosen filename that looked like a credential) is mapped back to
+    the file the server minted through the upload's own key, or to the file in
+    its own directory whose identity the send recorded beside the list.
+    Persisted copies stay redacted. This list is the ONLY source of image blocks: the
+    prompt builder never scans the message text for paths, so the
+    ``![image](path)`` line the composer writes into the text is a rendering
+    for the bubble, not the upload. Empty for a turn whose send carried no
+    image -- including every injected turn (cron, sub-agent completion, nudge
+    cycle, ledger snapshot), which is exactly what keeps a path those texts
+    name from becoming a re-inlined image on every cycle.
+    """
+    paths: list[str] | tuple[str, ...] = ()
+    if prompt_images is not None:
+        # A PRESENT provider copy is authoritative, empty included: the drain
+        # passes one for every entry that carried it, and a queued edit that
+        # removed the last picture leaves it empty on purpose.
+        paths = prompt_images
+    elif attachment_meta:
+        paths = attachment_meta.get(IMAGE_ATTACHMENT_META_KEY) or ()
+    if not paths:
+        return ()
+    # The identities the send recorded beside the list, position for position
+    # (the provider copy and the meta list are parallel); a redacted spelling
+    # is recovered only through them.
+    identities = aligned_image_identities(attachment_meta, list(paths)) or []
+    return image_attachments(resolve_image_paths(paths, identities=identities))
 
 
 async def _session_replay_history(

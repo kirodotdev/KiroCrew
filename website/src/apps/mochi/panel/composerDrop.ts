@@ -9,9 +9,10 @@
  * HOW MANY IMAGES: as many as you like, and this is why the fork's approach was
  * replaced. The fork read one image into base64 and put it in Mochi's single
  * `screenshot` slot, so a second photo was impossible. KiroCrew's own mechanism
- * has no such limit: core's ACP client scans the outgoing message for absolute
- * image PATHS and inlines each one as its own image block. So every dropped file
- * is uploaded and referenced by path:
+ * has no such limit: every dropped image is uploaded, its path rides the send's
+ * `meta.images` (the STRUCTURED list the gateway builds one image block per
+ * entry from -- the gateway never scans the message text for paths), and the
+ * text references it so the sent bubble renders it:
  *
  *   - images       -> `![image](/path.png)`     (markdown, so the sent bubble
  *                                                renders a thumbnail too)
@@ -55,7 +56,9 @@ export function cropToFile(base64: string): File {
 /** Core's upload route rejects anything outside its own extension allow-list. */
 const UPLOAD_URL = '/api/upload/file'
 
-/** Mirrors the extensions core's ACP client will inline (client.py). */
+/** Mirrors the raster extensions core's prompt builder can inline (SVG is
+ *  kept here only so a dropped vector renders as a thumbnail; the gateway
+ *  decides by the file's bytes what actually reaches the model). */
 const IMAGE_PATH_RE = /\.(?:png|jpe?g|gif|webp|bmp|svg)$/i
 
 export interface IngestResult {
@@ -136,8 +139,8 @@ export async function ingestFiles(files: File[]): Promise<IngestResult> {
  * are therefore held as state and only serialised on send -- still one source of
  * truth, just not the visible one.
  *
- * Images use markdown so the SENT bubble shows thumbnails; core's ACP client
- * finds the path inside the markdown just the same and inlines the real image.
+ * Images use markdown so the SENT bubble shows thumbnails; the real image reaches
+ * the model through the send's `meta.images` list, not through this markdown.
  * Non-image files use the `[attached_file N]` convention, numbered from 1 in the
  * order shown in the strip.
  */

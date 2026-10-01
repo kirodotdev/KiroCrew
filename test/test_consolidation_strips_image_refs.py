@@ -1,11 +1,13 @@
 """A consolidation prompt quotes history, so it must not re-inline the pictures.
 
-``build_prompt_blocks`` turns every readable image path in a prompt into a real
-image block. A consolidation prompt is built from transcript rows, and a row
-that pasted a screenshot names that file by absolute path, so an unstripped
-prompt carried one full-size attachment per screenshot the session ever took
-(83 of them, 67 MB, on one measured span). These tests pin the boundary where
-that reference is replaced: :func:`kiro_crew.history_consolidation._fmt_message`.
+A consolidation prompt is built from transcript rows, and a row that pasted a
+screenshot names that file by absolute path. A builder that turned every
+readable image path in a prompt into a real image block shipped one full-size
+attachment per screenshot the session ever took (83 of them, 67 MB, on one
+measured span). ``build_prompt_blocks`` emits image blocks only from the
+channel's structured attachment list, which no consolidation prompt has; the
+strip at :func:`kiro_crew.history_consolidation._fmt_message` keeps a dead path
+out of the quoted prose, and these tests pin both.
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ import pytest
 from kiro_crew.acp.prompt_blocks import build_prompt_blocks
 from kiro_crew.history_consolidation import _fmt_message
 from kiro_crew.image_refs import STRIPPED_IMAGE_MARKER
+from kiro_crew.prompt_attachments import image_attachments
 
 # A 1x1 PNG: enough bytes to pass the raster sniff so the builder would inline it.
 _PNG_1X1 = base64.b64decode(
@@ -72,32 +75,42 @@ def test_rendered_row_yields_no_image_block_even_when_file_is_readable(screensho
     row = {"ts": "2026-09-29T05:12:00", "role": "tool", "content": f"see {screenshot}"}
     blocks = build_prompt_blocks(_fmt_message(row), allow_image=True)
     assert [b["type"] for b in blocks] == ["text"]
-    # Control: the unstripped row WOULD have carried the picture, which is the
-    # behaviour this change removes from the consolidation path.
+    # Control: the builder itself never reads a path out of the text any more,
+    # so the unstripped row carries no picture either -- what puts a picture
+    # in a prompt is the channel's structured attachment list, which no
+    # consolidation prompt has. The strip remains load-bearing for the prose:
+    # the rendered row carries the marker, not a dead path.
     control = build_prompt_blocks(row["content"], allow_image=True)
-    assert [b["type"] for b in control] == ["text", "image"]
+    assert [b["type"] for b in control] == ["text"]
+    attached = build_prompt_blocks(
+        row["content"],
+        attachments=image_attachments([str(screenshot)]),
+        allow_image=True,
+    )
+    assert [b["type"] for b in attached] == ["text", "image"]
+    assert str(screenshot) not in _fmt_message(row)
 
 
-# ── The consolidator's turns go out text-only ───────────────────────────────
+# ── The consolidator's turns carry no attachment list ───────────────────────
 #
 # The scrub keeps a spaced path a person typed (``Screen Shot 2024.png``), since
 # no lexical rule tells it from prose. A consolidation prompt quotes such a row
-# verbatim, so the turn itself must not inline the file: every turn the
-# consolidator sends -- the consolidation, the dedupe judge, the skill merge --
-# asks for a text-only prompt.
+# verbatim, and the builder emits an image block only from the attachment list a
+# turn carries, so every turn the consolidator sends -- the consolidation, the
+# dedupe judge, the skill merge -- must hand the provider no such list.
 
 
 class _RecordingProvider:
-    """A background provider that records how each turn asked to be sent."""
+    """A background provider that records the attachment list each turn carried."""
 
     def __init__(self, reply: str) -> None:
-        self.allow_image: list[bool] = []
+        self.attachments: list[tuple] = []
         self._reply = reply
 
-    async def stream(self, message, *, allow_image=True):
+    async def stream(self, message, *, attachments=()):
         from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
 
-        self.allow_image.append(allow_image)
+        self.attachments.append(tuple(attachments))
         yield LLMEvent(kind=EVENT_TEXT_CHUNK, text=self._reply)
         yield LLMEvent(kind=EVENT_COMPLETE)
 
@@ -118,18 +131,18 @@ def _consolidator_on(provider, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_the_consolidation_turn_is_text_only(monkeypatch):
+async def test_the_consolidation_turn_carries_no_attachment_list(monkeypatch):
     provider = _RecordingProvider('{"facts": []}')
     consolidator = _consolidator_on(provider, monkeypatch)
 
     await consolidator._call_llm("history quoting /Users/me/Screen Shot 2024.png")
 
-    assert provider.allow_image == [False]
+    assert provider.attachments == [()]
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("judge", ["dedupe", "merge"])
-async def test_the_skill_judge_turns_are_text_only(monkeypatch, judge):
+async def test_the_skill_judge_turns_carry_no_attachment_list(monkeypatch, judge):
     provider = _RecordingProvider("ok")
     consolidator = _consolidator_on(provider, monkeypatch)
 
@@ -138,4 +151,4 @@ async def test_the_skill_judge_turns_are_text_only(monkeypatch, judge):
     else:
         await consolidator._merge_skill_update("body", "desc", "triggers", "steps")
 
-    assert provider.allow_image == [False]
+    assert provider.attachments == [()]

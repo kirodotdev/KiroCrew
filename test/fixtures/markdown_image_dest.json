@@ -1,0 +1,31 @@
+{
+  "_comment": [
+    "Shared contract for the composer's markdown image DESTINATION grammar, which",
+    "lives twice: `mdImageDest` in website/src/utils/fileTokens.ts (the composer",
+    "writes it into the wire text as `![image](<dest>)`) and",
+    "`markdown_image_dest` in src/kiro_crew/prompt_attachments.py (the gateway",
+    "must recognise that exact spelling to rewrite an inlined picture's line to",
+    "its `[image: <name>]` marker and to see, on a queued edit, that the user",
+    "removed a picture whose destination the composer had to escape). The",
+    "FRONTEND test (website/src/test/fileTokens.test.ts) asserts mdImageDest(path)",
+    "=== dest for every case; the BACKEND test (test/test_prompt_attachments.py)",
+    "asserts markdown_image_dest(path) == dest for the same cases. A change to",
+    "either implementation that is not mirrored in the other goes red HERE",
+    "instead of silently keeping a deleted picture in the turn. Each case names",
+    "the shape it pins; `path` is the local path exactly as the composer holds",
+    "it (Windows separators are single backslashes in the JSON string)."
+  ],
+  "cases": [
+    { "name": "plain posix path", "path": "/tmp/shot.png", "dest": "/tmp/shot.png" },
+    { "name": "space forces the wrap", "path": "/tmp/my shot.png", "dest": "</tmp/my shot.png>" },
+    { "name": "percent is escaped and wrapped", "path": "/tmp/100%.png", "dest": "</tmp/100%25.png>" },
+    { "name": "angle brackets are backslash-escaped and wrapped", "path": "/tmp/a<b>.png", "dest": "</tmp/a\\<b\\>.png>" },
+    { "name": "parentheses force the wrap", "path": "/tmp/screenshot (1).png", "dest": "</tmp/screenshot (1).png>" },
+    { "name": "drive letter is forward-slashed", "path": "C:\\Users\\me\\shot.png", "dest": "C:/Users/me/shot.png" },
+    { "name": "drive letter with a space is forward-slashed and wrapped", "path": "C:\\Users\\me\\my shot.png", "dest": "<C:/Users/me/my shot.png>" },
+    { "name": "unc share is forward-slashed", "path": "\\\\host\\share\\shot.png", "dest": "//host/share/shot.png" },
+    { "name": "a posix backslash is not a separator", "path": "/tmp/my dir\\.hidden.png", "dest": "</tmp/my dir\\\\.hidden.png>" },
+    { "name": "plain chars incl @ : ~ - stay verbatim", "path": "/home/me/pic@2x~v1-final:copy.png", "dest": "/home/me/pic@2x~v1-final:copy.png" },
+    { "name": "non-ascii letters are not plain (js \\w is ascii) so the dest is wrapped", "path": "/tmp/uploads/ab12_скриншот.png", "dest": "</tmp/uploads/ab12_скриншот.png>" }
+  ]
+}

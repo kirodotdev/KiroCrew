@@ -855,6 +855,75 @@ class TestTransportCompactionReinjection:
         assert ledger["marks"] == 1 and ledger["armed"] is True
 
 
+class TestTransportImageAttachmentsRideAsAList:
+    """The transport route forwards the message's structured image list to the
+    driver: the prompt builder emits image blocks from that list alone and never
+    scans the text, so the path ``process_slack_files`` appended to the text is
+    for agent tools only."""
+
+    def _prep(self, monkeypatch):
+        monkeypatch.setattr(transport_dispatch, "_get_default_agent", lambda: "kirocrew")
+        monkeypatch.setattr(
+            transport_dispatch,
+            "_hydrate_thread_overrides",
+            AsyncMock(return_value=None),
+        )
+        monkeypatch.setattr(transport_dispatch, "_hydrate_conv_flags", lambda *a, **k: None)
+        monkeypatch.setattr(transport_dispatch, "_thread_agents", {})
+
+    def _run(self, sessions, text, **kw):
+        asyncio.run(
+            transport_dispatch.handle_message_transport(
+                slack=RecordingSlackClient(),
+                sessions=sessions,
+                channel="C1",
+                text=text,
+                thread_ts=None,
+                msg_ts=_MSG_TS,
+                user_id="U_OWNER",
+                context_builder=_CapturingCtxBuilder(),
+                conversation_log=None,
+                **kw,
+            )
+        )
+
+    def _provider(self):
+        return ScriptedProvider(
+            [
+                make_event(EVENT_TEXT_CHUNK, text="hi"),
+                make_event(EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN),
+            ]
+        )
+
+    def test_the_list_reaches_the_driver_and_a_text_turn_passes_no_keyword(
+        self, monkeypatch, tmp_path
+    ):
+        from kiro_crew.prompt_attachments import image_attachments
+
+        self._prep(monkeypatch)
+        runs: list[tuple[str, dict]] = []
+
+        class _Recorder:
+            def __init__(self, *a, **k):
+                pass
+
+            async def run(self, message, **kw):
+                runs.append((message, kw))
+                return "ok"
+
+        monkeypatch.setattr(transport_dispatch, "TurnDriver", _Recorder)
+        shot = str(tmp_path / "shot.png")
+        atts = image_attachments([shot])
+        self._run(_CapturingSessions(self._provider()), f"look\n{shot}", attachments=atts)
+        assert len(runs) == 1
+        assert shot in runs[0][0]
+        assert runs[0][1] == {"attachments": atts}
+
+        runs.clear()
+        self._run(_CapturingSessions(self._provider()), "plain words")
+        assert runs[0][1] == {}
+
+
 class TestTransportTemporaryBlocksMemoryReads:
     """``!temporary`` must block memory READS on the DEFAULT transport path.
 

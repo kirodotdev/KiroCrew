@@ -107,7 +107,8 @@ import TranscriptScrollShell, { useTranscriptWidth } from './chat/TranscriptScro
 import { devLog, devWatchMessages, inspectorOn } from '../dev/scrollInspector'
 import TurnNavigationMinimap from './chat/TurnNavigationMinimap'
 import { useVirtualChat } from '../hooks/virtualizer/useVirtualChat'
-import { carryPastes, expandAll as expandPasteTokens, mergeCarriedDraft } from '../utils/pasteTokens'
+import { restoreQueuedContent } from '../utils/fileTokens'
+import { type PasteBlock, carryPastes, expandAll as expandPasteTokens, mergeCarriedDraft } from '../utils/pasteTokens'
 import { extractPromptFromToken, extractSlackContextFromToken } from '../utils/tokenPrompt'
 /** Map message index → displayItems index, for scroll-to-match and the turn minimap. */
 function buildMessageToDisplayIdx(items: DisplayItem[]): Map<number, number> {
@@ -1063,14 +1064,36 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // (`decisions/points/message_steer.py`). The receipt policy below is unchanged,
     // because the answer arrives as the `dispatched` of a steer or the `queued` of
     // a queue -- both rulings `applySteerReceipt` already owns.
-    mutationFn: ({ text, sendId, slot, auto, quote }: { text: string; sendId?: string; slot: string; auto?: boolean; quote?: MessageQuote | null; askId?: string | null }) =>
-      sendTurn({ message: text, slot, steer: auto ? 'auto' : true, ...(sendId ? { meta: { sendId, ...(quote ? { quote } : {}) } } : {}) }),
-    onSuccess: (receipt, { text, sendId, slot, quote, askId }) => {
+    // `images` is the structured image list the gateway builds image blocks
+    // from. A live steer is text-only and ignores it, but a steer the gateway
+    // cannot inject falls through to the QUEUE, and the queued turn reads its
+    // pictures from this list alone -- without it the drained turn would render
+    // the `![image](dest)` line and ship no picture. `files` is the ordered
+    // list the text's `[attached_file N]` markers index, so that queued entry
+    // (and the row its drain writes) names the file instead of a truncated
+    // path. `raw`, `staged` and `pastes` are the typed draft, the staged chips
+    // and the collapsed paste blocks as they were before serialization; none
+    // is sent (the steer POST carries only the two lists and the quote beside
+    // the id), they let the hand-back below give back exactly what the user had.
+    mutationFn: ({ text, sendId, slot, auto, quote, images, files }: { text: string; sendId?: string; slot: string; auto?: boolean; quote?: MessageQuote | null; images?: string[]; files?: string[]; raw?: string; staged?: string[]; pastes?: PasteBlock[]; askId?: string | null }) =>
+      sendTurn({
+        message: text,
+        slot,
+        steer: auto ? 'auto' : true,
+        ...(sendId || images?.length || files?.length
+          ? { meta: { ...(sendId ? { sendId } : {}), ...(images?.length ? { images } : {}), ...(files?.length ? { files } : {}), ...(quote ? { quote } : {}) } }
+          : {}),
+      }),
+    onSuccess: (receipt, { text, sendId, slot, quote, askId, raw, staged, pastes }) => {
       // Receipt policy for a steer, owned once in chat-core (issue #9457):
       // applySteerReceipt decides WHICH ruling applies; the adapter below is
       // ChatPage's HOW. The composer was cleared at submit and the optimistic
       // bubble is NOT persisted -- the next transcript rebuild drops it -- so a
-      // steer that did not provably reach the gateway hands its text back.
+      // steer that did not provably reach the gateway hands its text back,
+      // and its staged files with it: the picture rode the POST as
+      // `meta.images`, so a refused steer that returned only the text would
+      // leave the `![image](dest)` line in the composer with nothing behind
+      // it, and the next send would ship no picture.
       // Everything here is addressed to the SENDING slot, not the active one:
       // the user can switch sessions inside the deadline window, and this text
       // and its rows belong to the transcript they were typed into (the same
@@ -1084,18 +1107,45 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       // updating the live input instead is what the flush then persists.
       const onScreenNow = composerSlotRef.current === slot
       const handBack = () => {
+        // The wire text is the SERIALIZED form (a leading `![image](dest)`
+        // block, `[attached_file N] path` markers, pastes expanded). Hand back
+        // what the user HAD: the typed draft, the staged chips and the paste
+        // blocks snapshotted at steer time, so a re-send serializes
+        // identically. Restoring the wire text beside the chips would send
+        // each picture twice; restoring it alone would ship none (the gateway
+        // builds image blocks from `meta.images`, never from the line). A
+        // steer with no snapshot is text-only and passes through the same
+        // inverse the queue-cancel restore uses.
+        // The wire text opens with the quote's block when one was staged; the
+        // block comes off before the parse (the producer-block patterns are
+        // anchored at offset 0, so a block ahead of them would turn a picture
+        // line into literal text) and goes back below. The snapshot never
+        // carried it: the quote was a card, not typed text.
+        const recovered = raw !== undefined ? { text: raw, files: staged ?? [] } : restoreQueuedContent(quote ? stripQuoteBlock(text, quote) : text)
         const kept = onScreenNow ? inputRef.current : (drafts.current[slot] ?? '')
-        // On screen the quote goes back as a staged CARD and the text without
-        // its block; off screen (no card store per slot) the block stays in
-        // the text, so nothing is lost either way.
         // On screen: the quote goes back on the stage when it is free, else
         // its block stays in the text. Off screen (no stage per slot): the
         // block stays in the parked text. Nothing is lost either way.
-        const typed = onScreenNow && quote ? messageQuote.recoverInto(stripQuoteBlock(text, quote), quote, composerMountedRef.current) : text
-        const back = mergeRecoveredDraft(kept, typed)
+        const typed = quote ? messageQuote.recoverInto(recovered.text, quote, onScreenNow && composerMountedRef.current) : recovered.text
+        // Paste blocks MERGE like the text does (the rule send()'s restore
+        // follows): re-sequenced against the blocks already staged, so two
+        // blocks never claim one `[ Paste #N ]` token.
+        const keptPastes = onScreenNow ? pasteBlocksRef.current : (pasteDrafts.current[slot] ?? [])
+        const carried = carryPastes(typed, pastes ?? [], keptPastes)
+        const back = mergeCarriedDraft(kept, carried)
         setDraft(drafts.current, slot, back)
+        setPasteDraft(pasteDrafts.current, slot, carried.pastes)
+        if (recovered.files.length) {
+          // Chips MERGE like the text does (the same rule restoreQueuedDraft
+          // and send()'s restore follow): deduped, so a re-send serializes each
+          // attachment exactly once.
+          const keptFiles = onScreenNow ? pendingFilesRef.current : (fileDrafts.current[slot] ?? [])
+          const backFiles = [...new Set([...keptFiles, ...recovered.files])]
+          setFileDraft(fileDrafts.current, slot, backFiles)
+          if (onScreenNow) setPendingFiles(backFiles)
+        }
         saveDrafts()
-        if (onScreenNow) setInput(back)
+        if (onScreenNow) { setInput(back); setPasteBlocks(carried.pastes) }
       }
       const row = (message: ChatMessage) => dispatch(appendSlotMessage({ slot, message }))
       applySteerReceipt(receipt, {
@@ -1126,13 +1176,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         // Kept out of the catalog string so the copy stays shared with the
         // surfaces that render it in their own strip.
         warnUnconfirmed: () => row({ role: 'notice', content: '\u26A0\uFE0F ' + i18nT('pages.chatPage.delivery_unconfirmed'), cls: '' }),
-        // ChatPage's steer is TEXT-ONLY and carries no raw/files split into the
-        // mutation (`text` is already the wire text; attachments are excluded
-        // from ChatPage steer by design, see steer()). It never stashed on a
-        // queued demotion and structurally cannot do so losslessly, so this arm
-        // stays a no-op -- the queue card falls to the parser fallback exactly
-        // as it did before #9457. resolveBubble('drop') still fires for the
-        // demotion via the helper's queued path.
+        // A steer the gateway queued instead is not stashed: the stash shape
+        // also wants the slot-token aliases, which steer() does not snapshot,
+        // so the queue card falls to the parser fallback exactly as it did
+        // before #9457. resolveBubble('drop') still fires for the demotion via
+        // the helper's queued path.
         stashDemoted: () => undefined,
       })
       // Release a blocking card only once the gateway accepted the steer, so the agent is told to read a message that arrived.
@@ -2385,7 +2433,13 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       // blocks cannot claim one `[ Paste #N ]` marker.
       const keepText = onScreenNow ? inputRef.current : (drafts.current[slot] ?? '')
       const keepPastes = onScreenNow ? pasteBlocksRef.current : (pasteDrafts.current[slot] ?? [])
-      const carried = carryPastes(turn.inlined, activePastes, keepPastes)
+      // Hand back the typed draft and the staged chips as they were before
+      // serialization: a re-send then serializes identically, and the picture
+      // rides `meta.images` again instead of a line the gateway reads as prose.
+      const recovered = { text: raw, files: stagedFilesAtSend }
+      const carried = carryPastes(recovered.text, activePastes, keepPastes)
+      const keptFiles = onScreenNow ? pendingFilesRef.current : (fileDrafts.current[slot] ?? [])
+      const filesBack = [...new Set([...keptFiles, ...recovered.files])]
       const pastesBack = carried.pastes
       // Same merge rule as the create-failure path above, and the separator lives
       // in `mergeRecoveredDraft` rather than in a template literal here: the blank
@@ -2397,9 +2451,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       setDraft(drafts.current, slot, textBack)
       setPasteDraft(pasteDrafts.current, slot, pastesBack)
       setSessionRefDraft(sessionRefDrafts.current, slot, refsBack)
+      if (filesBack.length) setFileDraft(fileDrafts.current, slot, filesBack)
       saveDrafts()
       if (onScreenNow) {
         setInput(textBack); setPasteBlocks(pastesBack); setPendingSessions(refsBack)
+        if (filesBack.length) setPendingFiles(filesBack)
       }
       // Aliases come back with the text they describe -- MERGE, never
       // overwrite, so a file picked while the send was in flight keeps its

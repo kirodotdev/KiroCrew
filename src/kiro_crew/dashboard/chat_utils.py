@@ -30,7 +30,7 @@ if TYPE_CHECKING:
     from kiro_crew.slack.outbound import PostedOptions
 
 from kiro_crew.context_blocks import attributable_user_chars
-from kiro_crew.dashboard.slot_queue_repository import ATTACHMENT_META_KEYS
+from kiro_crew.dashboard.slot_queue_repository import ALL_ATTACHMENT_META_KEYS
 from kiro_crew.dashboard.state import (
     BUSY_RECOVERY_PREFIX,
     COMPACTION_RECOVERY_PREFIX,
@@ -3952,7 +3952,7 @@ STEER_POSSIBLY_DELIVERED_NOTE = (
 
 
 def carries_attachments(item: dict) -> bool:
-    """Whether a queue entry's meta names attachment lists (``files``/``dirs``).
+    """Whether a queue entry's meta names attachment lists (``files``/``dirs``/``images``).
 
     Such an entry drains ALONE. Its text indexes those lists by marker number
     (``[attached_file 1]`` is ``files[0]``), and a merged row has one meta for
@@ -3960,7 +3960,9 @@ def carries_attachments(item: dict) -> bool:
     would resolve against it -- an attachment card that opens a DIFFERENT
     file, not merely a truncated path. The renumbering a correct merge would
     need is not worth building for a message shape the merge feature was never
-    about.
+    about. The image list indexes no marker, but it is the structured source
+    of the turn's image blocks, so a merge would hand one entry's pictures to a
+    turn made of several entries' text.
     """
     meta = item.get("meta")
     if not isinstance(meta, dict):
@@ -3970,7 +3972,7 @@ def carries_attachments(item: dict) -> bool:
     # and a merged row would open with another entry's text instead.
     if isinstance(meta.get("quote"), dict) and meta.get("quote"):
         return True
-    return any(isinstance(meta.get(k), list) and meta.get(k) for k in ATTACHMENT_META_KEYS)
+    return any(isinstance(meta.get(k), list) and meta.get(k) for k in ALL_ATTACHMENT_META_KEYS)
 
 
 def _stamped_turn_actor(item: dict) -> Any:

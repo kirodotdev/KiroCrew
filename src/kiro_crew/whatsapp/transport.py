@@ -648,6 +648,9 @@ class WhatsAppTransport(MessagingTransport):
             result = await ingest_media(self._client, inner, desc, message_id)
             temp_paths = list(result.temp_paths)
             msg.text = append_attachment_context(msg.text, result)
+            # The structured list is what puts the photo in front of the model;
+            # the path appended to the text above is for agent tools only.
+            msg.prompt_attachments = result.prompt_attachments()
             # Populated because downstream readers gate on it (the shared
             # cancellation exemption among them), and a field that is always empty
             # is a guarantee that silently does not hold.

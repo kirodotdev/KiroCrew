@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -43,6 +44,22 @@ from kiro_crew.dashboard.state import (
     _ChatSlot,
 )
 from kiro_crew.history import ConversationLog
+
+
+#: Smallest valid 1x1 PNG, for tests that need a real image file on disk.
+async def _accepted_by_the_runner(*_args, **kwargs):
+    """A route may only call the runner with keywords its real signature takes."""
+    import inspect
+
+    from kiro_crew.dashboard.chat_runner import _run_chat
+
+    unknown = set(kwargs) - set(inspect.signature(_run_chat).parameters)
+    assert not unknown, f"the route passes keywords the runner does not take: {sorted(unknown)}"
+
+
+_PNG_BYTES = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+)
 
 
 def _provider_mock() -> AsyncMock:
@@ -5602,7 +5619,7 @@ class TestTitleGenerationSessionLeak:
         mock_client = MagicMock()
         mock_client.destroy = AsyncMock()
 
-        async def _exploding_prompt(prompt, *, allow_image=True):
+        async def _exploding_prompt(prompt):
             raise RuntimeError("throttle / ACP error")
             yield  # noqa: unreachable — makes this an async generator
 
@@ -5632,7 +5649,7 @@ class TestTitleGenerationSessionLeak:
         mock_client.reject_tool = AsyncMock()
         mock_client.destroy = AsyncMock()
 
-        async def _prompt(prompt, *, allow_image=True):
+        async def _prompt(prompt):
             yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="My Title")
             yield LLMEvent(kind=EVENT_PERMISSION_REQUEST, request_id="req-1")
             yield LLMEvent(kind=EVENT_COMPLETE)
@@ -5656,7 +5673,7 @@ class TestTitleGenerationSessionLeak:
         mock_client = MagicMock()
         mock_client.destroy = AsyncMock()
 
-        async def _prompt(prompt, *, allow_image=True):
+        async def _prompt(prompt):
             yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="Good")
             yield LLMEvent(kind=EVENT_COMPLETE)
             yield LLMEvent(kind=EVENT_TEXT_CHUNK, text=" SHOULD NOT APPEAR")
@@ -10681,7 +10698,7 @@ class TestRunChatModelRefusal:
         client = _provider_mock()
         client.context_usage_pct = MagicMock(return_value=10.0)
 
-        async def _stream(msg):
+        async def _stream(msg, attachments=None):
             if prompts is not None:
                 prompts.append(str(msg))
             for ev in events:
@@ -11031,7 +11048,14 @@ class TestRunChatRefusalFallback:
 
         from kiro_crew.dashboard.chat import _run_chat
 
-        await _run_chat(state, slot, "hello", _attachments=[str(tmp_path / "a.txt")])
+        (tmp_path / "shot.png").write_bytes(_PNG_BYTES)
+        await _run_chat(
+            state,
+            slot,
+            "hello",
+            _attachments=[str(tmp_path / "a.txt")],
+            _prompt_images=[str(tmp_path / "shot.png")],
+        )
 
         client.set_model.assert_awaited_once_with("opus-test")
         assert slot._refusal_fallback_attempted is True
@@ -11046,6 +11070,11 @@ class TestRunChatRefusalFallback:
         # ...and the original's attachments do not ride along — the refused
         # turn already delivered them into the session.
         assert not any(k in kwargs.get("meta", {}) for k in ("files", "dirs"))
+        # The provider image copy is gated the same way: a continuation body
+        # carrying it would re-inline the full image block on a turn whose text
+        # is runner prose, and spend the one-shot poisoned-image reset on that
+        # (Opus review).
+        assert kwargs.get("prompt_images") is None
         notices = [
             m
             for m in slot.messages
@@ -14153,6 +14182,184 @@ class TestApiChatAgentPassing:
             mock_emit.assert_called_once_with("slot-r", "new-agent", outcome="denied_running")
 
 
+class TestApiChatImageBounds:
+    @pytest.mark.asyncio
+    async def test_an_immediate_send_row_keeps_the_identities_its_redacted_list_needs(
+        self, tmp_path, monkeypatch
+    ):
+        """The idle-slot send is the common path: its row is persisted redacted,
+        so a credential-shaped project picture is only recoverable later if the
+        row also carries the identities read off the raw list at the send."""
+        from kiro_crew.dashboard import chat_delivery
+        from kiro_crew.dashboard.chat_runner import _turn_prompt_attachments
+        from kiro_crew.dashboard.slot_queue_repository import (
+            IMAGE_IDENTITY_META_KEY,
+            retained_image_meta,
+        )
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.files._UPLOAD_DIR", tmp_path / "uploads")
+        # The identities are read through the worker-thread seam, never on the loop.
+        hops: list[object] = []
+        real_hop = chat_delivery.drained_to_thread
+
+        async def _counted_hop(fn, /, *args):
+            hops.append(fn)
+            return await real_hop(fn, *args)
+
+        monkeypatch.setattr(chat_delivery, "drained_to_thread", _counted_hop)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        slot._titled = True
+        picture = tmp_path / ("shot_ghp_" + "A" * 36 + ".png")
+        picture.write_bytes(_PNG_BYTES)
+        raw = picture.as_posix()
+        text = f"![image]({raw})\n\nlook"
+        with patch("kiro_crew.dashboard.chat_handlers._run_chat", new_callable=AsyncMock):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post(
+                    "/api/chat?ws=1",
+                    json={"message": text, "slot": "s1", "meta": {"images": [raw]}},
+                )
+                assert resp.status == 200
+                if slot.task is not None:
+                    await asyncio.wait_for(slot.task, timeout=5)
+        row_meta = slot.messages[0]["meta"]
+        assert row_meta["images"] != [raw] and "[REDACTED" in row_meta["images"][0]
+        assert len(row_meta[IMAGE_IDENTITY_META_KEY]) == 1 and row_meta[IMAGE_IDENTITY_META_KEY][0]
+        assert [fn.__name__ for fn in hops] == ["image_identities"]
+        retained = retained_image_meta(row_meta, text, text)
+        assert [a.path for a in _turn_prompt_attachments(retained)] == [raw]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "case", ["over_bound", "over_path", "malformed", "not_a_list", "at_bound"]
+    )
+    async def test_send_images_over_bound(self, tmp_path, monkeypatch, case):
+        from kiro_crew.dashboard.slot_queue_repository import (
+            ATTACHMENT_LIST_MAX_ITEMS,
+            ATTACHMENT_PATH_MAX_LEN,
+        )
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        slot._titled = True
+        images = [
+            str(tmp_path / f"image-{i}.png")
+            for i in range(ATTACHMENT_LIST_MAX_ITEMS + (case == "over_bound"))
+        ]
+        if case == "over_path":
+            images = ["/" + "x" * ATTACHMENT_PATH_MAX_LEN + ".png"]
+        elif case == "malformed":
+            images = [""]
+        elif case == "not_a_list":
+            # A string under the list's key is bounded by nothing a list bound
+            # measures; it must be refused, never retained on the row.
+            images = "/" + "x" * (ATTACHMENT_PATH_MAX_LEN * 4) + ".png"
+        with patch(
+            "kiro_crew.dashboard.chat_handlers._run_chat", new_callable=AsyncMock
+        ) as run_chat:
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post(
+                    "/api/chat?ws=1",
+                    json={"message": "look", "slot": "s1", "meta": {"images": images}},
+                )
+                if slot.task is not None:
+                    await asyncio.wait_for(slot.task, timeout=5)
+                if case != "at_bound":
+                    assert resp.status == 400
+                    body = await resp.json()
+                    assert body["code"] == "images_over_bound"
+                    if case == "over_bound":
+                        assert body["error"] == (
+                            "Too many pictures attached. A message can carry at most "
+                            f"{ATTACHMENT_LIST_MAX_ITEMS}. Remove some and try again."
+                        )
+                    else:
+                        assert body["error"] == (
+                            "This picture couldn't be attached. Remove it and try again."
+                        )
+                    assert slot.messages == []
+                    assert slot._queue == []
+                    assert slot.task is None
+                    run_chat.assert_not_called()
+                else:
+                    assert resp.status == 200
+                    run_chat.assert_awaited_once()
+                    assert run_chat.call_args.kwargs["_prompt_images"] == images
+                    assert slot.messages[0]["meta"]["images"] == images
+
+
+class TestApiChatBusyImages:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("steer_mode", [True, "auto"])
+    @pytest.mark.parametrize("with_image", [False, True], ids=["text", "image"])
+    async def test_images_queue_without_steering_or_deciding(
+        self, tmp_path, monkeypatch, steer_mode, with_image
+    ):
+        from kiro_crew.dashboard import chat_handlers
+        from kiro_crew.dashboard.slot_queue_repository import PROMPT_IMAGES_ENTRY_KEY
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        slot = state.get_or_create_slot("busy-images")
+        slot.task = MagicMock()
+        slot.task.done.return_value = False
+        steer_client = MagicMock(supports_steer=True)
+        steer_client.steer = AsyncMock(return_value=True)
+        slot._acp_client = steer_client
+        decide = AsyncMock(return_value=(False, None))
+        monkeypatch.setattr(chat_handlers, "decided_message_handling", decide)
+        picture = tmp_path / "picture.png"
+        picture.write_bytes(_PNG_BYTES)
+        images = [str(picture)] if with_image else []
+        message = "look at this"
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat",
+                json={
+                    "slot": slot.key,
+                    "message": message,
+                    "steer": steer_mode,
+                    "meta": {"sendId": "s-busy-image", "images": images},
+                },
+            )
+            assert resp.status == 200
+            receipt = await resp.json()
+
+        if not with_image:
+            assert receipt == {"ok": True, "steered": True}
+            steer_client.steer.assert_awaited_once_with(message)
+            assert slot._queue == []
+            if steer_mode == "auto":
+                decide.assert_awaited_once_with(slot, message)
+            else:
+                decide.assert_not_awaited()
+            return
+
+        assert receipt.get("queued") is True
+        steer_client.steer.assert_not_awaited()
+        decide.assert_not_awaited()
+        (entry,) = slot._queue
+        assert receipt == {"ok": True, "queued": True, "queue_id": entry["id"]}
+        assert entry["content"] == message
+        assert entry["meta"]["images"] == images
+        assert entry["meta"]["sendId"] == "s-busy-image"
+        assert entry[PROMPT_IMAGES_ENTRY_KEY] == images
+        assert slot._pending_steers == []
+        assert slot._steer_attachment_meta == {}
+        assert slot._steer_delivery_ids == {}
+        assert slot._steer_send_ids == {}
+        assert slot._steer_admissions == {}
+        assert slot._steer_user_origin == {}
+        events = [call.args[0] for call in state.broadcast_ws.call_args_list]
+        assert "steer_push" not in events
+        assert "queue_push" in events
+
+
 class TestApiChatSendReceiptMid:
     """The immediate-dispatch receipt carries the user row's server-minted `mid`.
 
@@ -16195,24 +16402,40 @@ class TestRegenerateAndVariants:
             assert resp.status == 400
 
     @pytest.mark.asyncio
-    async def test_regenerate_passes_hint_to_run_chat(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("with_image", [False, True])
+    async def test_regenerate_passes_hint_to_run_chat(self, tmp_path, monkeypatch, with_image):
         """_run_chat should receive a non-empty regenerate_hint kwarg."""
+        from kiro_crew.dashboard.chat_delivery import attachment_meta, with_image_identities
+        from kiro_crew.dashboard.chat_runner import _turn_prompt_attachments
+
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         slot = state.get_or_create_slot("s1")
-        slot.append("user", "hi")
+        picture = tmp_path / ("diagram_ghp_" + "A" * 36 + ".png")
+        picture.write_bytes(_PNG_BYTES)
+        image = picture.as_posix()
+        text = f"![image]({image})" if with_image else "hi"
+        # The row as the send boundary writes it: identities read first, then normalized.
+        meta = (
+            attachment_meta(await with_image_identities({"images": [image]}))
+            if with_image
+            else None
+        )
+        slot.append("user", text, meta=meta)
         slot.append("assistant", "reply")
         slot.drain()
-        mock_run = AsyncMock()
+        mock_run = AsyncMock(side_effect=_accepted_by_the_runner)
         with patch("kiro_crew.dashboard.chat_regenerate._run_chat", new=mock_run):
             async with TestClient(TestServer(_make_app(state))) as client:
                 resp = await client.post("/api/chat/slots/s1/regenerate")
                 assert resp.status == 200
-                # Let the scheduled task actually run so the mock records args
-                await asyncio.sleep(0)
+                await asyncio.wait_for(slot.task, timeout=5)
         mock_run.assert_called_once()
         _args, kwargs = mock_run.call_args
         assert kwargs.get("regenerate_hint"), "regenerate_hint must be non-empty"
+        if with_image:
+            rebuilt = _turn_prompt_attachments(kwargs["_attachment_meta"])
+            assert [a.path for a in rebuilt] == [image]
 
     @pytest.mark.asyncio
     async def test_regenerate_preserves_existing_variants(self, tmp_path, monkeypatch):
@@ -16444,6 +16667,193 @@ class TestRegenerateAndVariants:
                     headers={"Content-Type": "application/json"},
                 )
                 assert resp.status == 400, f"body={bad!r} gave {resp.status}"
+
+    @pytest.mark.asyncio
+    async def test_a_send_that_lands_during_the_edits_identity_read_is_not_erased(
+        self, tmp_path, monkeypatch
+    ):
+        """The identity read suspends, so it runs before the lock: a turn that
+        starts meanwhile is seen by the busy guard and the edit is refused, instead
+        of the rewrite truncating rows the guard never saw."""
+        from copy import deepcopy
+
+        from kiro_crew.dashboard import chat_regenerate
+        from kiro_crew.dashboard.chat import _save_slot_to_history
+        from kiro_crew.dashboard.chat_regenerate import api_chat_slot_edit_resend
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.files._UPLOAD_DIR", tmp_path / "uploads")
+        state = _make_state(tmp_path)
+        state.sessions.discard_conversation.return_value = True
+        slot = state.get_or_create_slot("s1")
+        picture = tmp_path / "added.png"
+        picture.write_bytes(_PNG_BYTES)
+        slot.append("user", "look", meta={"images": [str(tmp_path / "first.png")]})
+        slot.append("assistant", "original reply")
+        slot.drain()
+        await asyncio.to_thread(_save_slot_to_history, state, slot)
+        before = deepcopy(slot.messages)
+        real_read = chat_regenerate.with_image_identities
+
+        async def read_while_a_turn_starts(meta):
+            out = await real_read(meta)
+            # A send lands and its turn starts while the edit waits on the read.
+            slot.append("user", "meanwhile", "msg msg-u")
+            slot.task = asyncio.create_task(asyncio.sleep(30))
+            return out
+
+        monkeypatch.setattr(chat_regenerate, "with_image_identities", read_while_a_turn_starts)
+        app = _make_app(state)
+        app.router.add_post("/api/chat/slots/{slot}/edit-resend", api_chat_slot_edit_resend)
+        try:
+            with patch(
+                "kiro_crew.dashboard.chat_regenerate._run_chat", new=AsyncMock()
+            ) as run_chat:
+                async with TestClient(TestServer(app)) as client:
+                    resp = await client.post(
+                        "/api/chat/slots/s1/edit-resend",
+                        json={
+                            "ts": before[0]["ts"],
+                            "content": "look again",
+                            "meta": {"images": [str(picture)]},
+                        },
+                    )
+            assert resp.status == 409, await resp.text()
+            run_chat.assert_not_called()
+            # Nothing was rewritten: the original rows and the row that landed meanwhile stand.
+            assert slot.messages[: len(before)] == before
+            assert slot.messages[len(before)]["content"] == "meanwhile"
+        finally:
+            if slot.task is not None:
+                slot.task.cancel()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "case", ["union", "over_bound", "over_path", "malformed", "not_a_list"]
+    )
+    async def test_edit_resend_refuses_image_union_over_bound(self, tmp_path, monkeypatch, case):
+        from copy import deepcopy
+
+        from kiro_crew.dashboard.chat import _history_key_for, _save_slot_to_history
+        from kiro_crew.dashboard.chat_regenerate import api_chat_slot_edit_resend
+        from kiro_crew.dashboard.slot_queue_repository import (
+            ATTACHMENT_LIST_MAX_ITEMS,
+            ATTACHMENT_PATH_MAX_LEN,
+        )
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.sessions.discard_conversation.return_value = True
+        slot = state.get_or_create_slot("s1")
+        images = [f"/tmp/f{i}.png" for i in range(ATTACHMENT_LIST_MAX_ITEMS)]
+        additions = {
+            "union": ["/tmp/one-more.png"],
+            "over_bound": images + ["/tmp/one-more.png"],
+            "over_path": ["/" + "x" * ATTACHMENT_PATH_MAX_LEN + ".png"],
+            "malformed": ["/tmp/one-more.png", ""],
+            "not_a_list": "/" + "x" * (ATTACHMENT_PATH_MAX_LEN * 4) + ".png",
+        }[case]
+        slot.append("user", "look", meta={"images": images})
+        slot.append("assistant", "original reply")
+        slot.drain()
+        await asyncio.to_thread(_save_slot_to_history, state, slot)
+        original_messages = deepcopy(slot.messages)
+        history_path = state.conversation_log._path(_history_key_for(slot.key))
+        original_history = await asyncio.to_thread(history_path.read_bytes)
+        app = _make_app(state)
+        app.router.add_post("/api/chat/slots/{slot}/edit-resend", api_chat_slot_edit_resend)
+
+        with patch("kiro_crew.dashboard.chat_regenerate._run_chat", new=AsyncMock()) as run_chat:
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post(
+                    "/api/chat/slots/s1/edit-resend",
+                    json={
+                        "ts": original_messages[0]["ts"],
+                        "content": "look again",
+                        "meta": {"images": additions},
+                    },
+                )
+                if slot.task is not None:
+                    await asyncio.wait_for(slot.task, timeout=5)
+                assert resp.status == 400
+                body = await resp.json()
+                assert body["code"] == "edit_resend_images_over_bound"
+                if case in ("union", "over_bound"):
+                    assert body["error"] == (
+                        "Too many pictures attached. A message can carry at most "
+                        f"{ATTACHMENT_LIST_MAX_ITEMS}. Remove some and try again."
+                    )
+                else:
+                    assert body["error"] == (
+                        "This picture couldn't be attached. Remove it and try again."
+                    )
+                assert slot.messages == original_messages
+                assert slot.messages[0]["meta"]["images"] == images
+                assert slot._pending == []
+                assert await asyncio.to_thread(history_path.read_bytes) == original_history
+                assert slot.task is None
+                run_chat.assert_not_called()
+                state.sessions.discard_conversation.assert_not_called()
+                state.sessions.aflush.assert_not_called()
+
+                resp = await client.post(
+                    "/api/chat/slots/s1/edit-resend",
+                    json={
+                        "ts": original_messages[0]["ts"],
+                        "content": "look again",
+                        "meta": {"images": [images[0]]},
+                    },
+                )
+                assert resp.status == 200
+                await asyncio.wait_for(slot.task, timeout=5)
+                run_chat.assert_awaited_once()
+                assert run_chat.call_args.kwargs["_attachment_meta"] == {"images": images}
+                assert slot.messages[0]["meta"]["images"] == images
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("endpoint", ["edit-resend", "rewind"])
+    @pytest.mark.parametrize("edit", ["remove", "keep_raw", "keep_redacted", "unnamed"])
+    async def test_edit_prunes_redacted_image_meta_with_as_typed_text(
+        self, tmp_path, monkeypatch, endpoint, edit
+    ):
+        from kiro_crew.dashboard.chat_delivery import attachment_meta, queued_text_for_display
+        from kiro_crew.dashboard.chat_regenerate import api_chat_slot_edit_resend
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.sessions.discard_conversation.return_value = True
+        slot = state.get_or_create_slot("s1")
+        raw = "/tmp/uploads/ab12_ghp_" + "A" * 36 + ".png"
+        meta = attachment_meta({"images": [raw]})
+        assert meta["images"] != [raw]
+        previous = "look" if edit == "unnamed" else f"![image]({raw})\n\nlook"
+        content = {
+            "remove": "look again",
+            "keep_raw": previous + " again",
+            "keep_redacted": queued_text_for_display(previous, user_origin=False) + " again",
+            "unnamed": "look again",
+        }[edit]
+        slot.append("user", previous, meta=meta)
+        slot.append("assistant", "original reply")
+        slot.drain()
+        app = _make_app(state)
+        app.router.add_post("/api/chat/slots/{slot}/edit-resend", api_chat_slot_edit_resend)
+        module = "chat_regenerate" if endpoint == "edit-resend" else "chat_rewind"
+        with patch(
+            f"kiro_crew.dashboard.{module}._run_chat",
+            new=AsyncMock(side_effect=_accepted_by_the_runner),
+        ) as run_chat:
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post(
+                    f"/api/chat/slots/s1/{endpoint}", json={"index": 0, "content": content}
+                )
+                assert resp.status == 200
+                await asyncio.wait_for(slot.task, timeout=5)
+        run_chat.assert_awaited_once()
+        expected = {} if edit == "remove" else meta
+        assert run_chat.call_args.kwargs.get("_attachment_meta", {}) == expected
+        assert (slot.messages[0].get("meta") or {}).get("images", []) == expected.get("images", [])
+        assert slot.messages[0]["content"] == content
 
     @pytest.mark.asyncio
     async def test_regenerate_clears_pending_on_task_error(self, tmp_path, monkeypatch):
@@ -21709,13 +22119,51 @@ class TestRunChatTransientRetry:
         state.sessions.discard_conversation.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_new_image_attachment_is_not_automatically_discarded(self, tmp_path, monkeypatch):
-        """A current attachment may itself be invalid. Preserve the healthy
-        native conversation and let the actionable terminal error tell the user
-        to remove or re-encode that image instead of discarding history."""
+    async def test_a_listed_image_that_cannot_be_read_still_allows_the_recovery(
+        self, tmp_path, monkeypatch
+    ):
+        """A listed path that is not a readable picture inlines no block, so the
+        model never received it and the rejection is of an image carried by the
+        native history: the recovery fires instead of blaming the attachment."""
+        from kiro_crew.dashboard.chat import _run_chat
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+        calls: list[str] = []
+
+        async def _stream(msg, attachments=None):
+            calls.append(msg)
+            if len(calls) == 1:
+                raise self._image_error()
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="recovered")
+            yield LLMEvent(kind=EVENT_COMPLETE)
+
+        state = self._make_state(tmp_path, monkeypatch)
+        client = self._client(_stream)
+        self._wire_sessions(state, client)
+        slot = state.get_or_create_slot("s1")
+        slot._titled = True
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            await _run_chat(state, slot, "inspect this", _attachments=["/tmp/current.png"])
+            await self._drain_bg(state)
+
+        assert len(calls) == 2
+        state.sessions.discard_conversation.assert_awaited_once()
+        state.sessions.reset.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_turn_carrying_a_provider_image_copy_never_spends_the_reset(
+        self, tmp_path, monkeypatch
+    ):
+        """The dashboard hands the turn's pictures as the provider copy, not as
+        `_attachments`; the image rejection then names one of THOSE pictures,
+        so the healthy conversation must stay and the one-shot reset must stay
+        unspent -- exactly as for a file attachment (Opus review: the guard
+        read the empty `_attachments` list, dropped the SID and re-sent the
+        rejected bytes)."""
         from kiro_crew.dashboard.chat import _run_chat
 
-        async def _fail(msg):
+        async def _fail(msg, attachments=None):
             raise self._image_error()
             yield  # pragma: no cover
 
@@ -21724,13 +22172,81 @@ class TestRunChatTransientRetry:
         self._wire_sessions(state, client)
         slot = state.get_or_create_slot("s1")
         slot._titled = True
+        shot = tmp_path / "shot.png"
+        shot.write_bytes(_PNG_BYTES)
 
-        await _run_chat(state, slot, "inspect this", _attachments=["/tmp/current.png"])
+        await _run_chat(state, slot, "inspect this", _prompt_images=[str(shot)])
 
         state.sessions.discard_conversation.assert_not_awaited()
         state.sessions.reset.assert_not_awaited()
         assert slot._queue == []
         assert any(t.startswith("❌") for t in self._err_texts(slot))
+        assert slot._poisoned_reset_used is False
+
+    @pytest.mark.asyncio
+    async def test_a_listed_picture_that_inlines_nothing_still_allows_the_recovery(
+        self, tmp_path, monkeypatch
+    ):
+        """An SVG is listed as a picture but the builder inlines no block for it,
+        so a rejection on that turn is of an image carried by the native history,
+        not of anything the user just sent: the recovery must fire."""
+        from kiro_crew.dashboard.chat import _run_chat
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+        calls: list[str] = []
+
+        async def _stream(msg, attachments=None):
+            calls.append(msg)
+            if len(calls) == 1:
+                raise self._image_error()
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="recovered")
+            yield LLMEvent(kind=EVENT_COMPLETE)
+
+        state = self._make_state(tmp_path, monkeypatch)
+        client = self._client(_stream)
+        self._wire_sessions(state, client)
+        slot = state.get_or_create_slot("s1")
+        slot._titled = True
+        drawing = tmp_path / "drawing.svg"
+        drawing.write_bytes(b'<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"></svg>')
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            await _run_chat(
+                state,
+                slot,
+                "inspect this",
+                _attachments=[str(drawing)],
+                _prompt_images=[str(drawing)],
+            )
+            await self._drain_bg(state)
+
+        assert len(calls) == 2
+        state.sessions.discard_conversation.assert_awaited_once()
+        assert any("recovered" in t for t in self._assistant_texts(slot))
+
+    @pytest.mark.asyncio
+    async def test_a_mixed_list_with_one_real_picture_never_spends_the_reset(
+        self, tmp_path, monkeypatch
+    ):
+        from kiro_crew.dashboard.chat import _run_chat
+
+        async def _fail(msg, attachments=None):
+            raise self._image_error()
+            yield  # pragma: no cover
+
+        state = self._make_state(tmp_path, monkeypatch)
+        client = self._client(_fail)
+        self._wire_sessions(state, client)
+        slot = state.get_or_create_slot("s1")
+        slot._titled = True
+        shot = tmp_path / "shot.png"
+        shot.write_bytes(_PNG_BYTES)
+        drawing = tmp_path / "drawing.svg"
+        drawing.write_bytes(b'<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"></svg>')
+
+        await _run_chat(state, slot, "inspect these", _prompt_images=[str(drawing), str(shot)])
+
+        state.sessions.discard_conversation.assert_not_awaited()
         assert slot._poisoned_reset_used is False
 
     @pytest.mark.asyncio
@@ -21760,18 +22276,20 @@ class TestRunChatTransientRetry:
         assert slot._poisoned_reset_used is True
 
     @pytest.mark.asyncio
-    async def test_a_current_turn_image_path_in_text_is_not_retained_history(
+    async def test_a_current_turn_image_attachment_is_not_retained_history(
         self, tmp_path, monkeypatch
     ):
-        """Empty dashboard attachment lists do not prove the turn shipped no
-        image: a channel turn (and a dashboard turn that types a path) carries it
-        as a bare path in the message text, which ``build_prompt_blocks`` inlines
-        as a CURRENT-turn image block. Such a rejection is of the image the user
-        just sent, so the healthy conversation must survive and the verbatim
-        replay must never re-inline the same bytes."""
+        """A send whose ``meta.images`` names a picture shipped it as a
+        CURRENT-turn image block, so a rejection is of the image the user just
+        sent: the healthy conversation must survive and the verbatim replay must
+        never re-inline the same bytes. The structured list is the ONLY proof --
+        ``build_prompt_blocks`` never scans the text for a path."""
         from kiro_crew.dashboard.chat import _run_chat
 
-        async def _fail(msg):
+        seen: list[dict] = []
+
+        async def _fail(msg, **kw):
+            seen.append(kw)
             raise self._image_error()
             yield  # pragma: no cover
 
@@ -21781,18 +22299,147 @@ class TestRunChatTransientRetry:
         slot = state.get_or_create_slot("s1")
         slot._titled = True
 
-        # No _attachments: the image rides in the text, exactly as the Slack
-        # event handler appends its attachment paths. Use the host's own path
-        # grammar: ``image_refs._PATH_RE`` is platform-gated, so a POSIX path
-        # is prose on Windows and would not be inlined there.
-        shot = r"C:\Users\me\shot.bmp" if os.name == "nt" else "/home/me/shot.bmp"
-        await _run_chat(state, slot, f"{shot} look at this")
+        shot_file = tmp_path / "shot.png"
+        shot_file.write_bytes(_PNG_BYTES)
+        shot = str(shot_file)
+        await _run_chat(
+            state,
+            slot,
+            f"![image]({shot})\n\nlook at this",
+            _attachments=[shot],
+            _attachment_meta={"images": [shot]},
+        )
 
+        # The runner handed the provider the structured list, not just text.
+        assert [a.path for a in seen[0]["attachments"]] == [shot]
         state.sessions.discard_conversation.assert_not_awaited()
         state.sessions.reset.assert_not_awaited()
         assert slot._queue == []
         assert any(t.startswith("❌") for t in self._err_texts(slot))
         assert slot._poisoned_reset_used is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("source", ["upload", "project"])
+    async def test_a_retry_from_the_redacted_row_copy_opens_the_real_upload(
+        self, tmp_path, monkeypatch, source
+    ):
+        """Regenerate, edit-resend and rewind rebuild the turn from the
+        PERSISTED row's ``meta.images`` -- the copy the redactor rewrote -- and
+        edit-resend adds the client's newly attached paths through the same
+        redacting normalizer. A picture whose sender-chosen filename looked
+        like a credential must still reach the builder as the file the server
+        minted, or exactly the paths a user retries with drop it silently."""
+        from kiro_crew.dashboard.chat import _run_chat
+        from kiro_crew.dashboard.chat_delivery import attachment_meta, with_image_identities
+        from kiro_crew.dashboard.slot_queue_repository import (
+            retained_image_meta,
+            with_added_images,
+        )
+        from kiro_crew.prompt_attachments import markdown_image_dest
+
+        uploads = tmp_path / "uploads"
+        uploads.mkdir()
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.files._UPLOAD_DIR", uploads)
+        directory = uploads if source == "upload" else tmp_path
+        real = directory / f"{'0' * 32}_ghp_{'A' * 36}.png"
+        real.write_bytes(_PNG_BYTES)
+        added = directory / f"{'1' * 32}_sk-ant-api03-{'x' * 40}.png"
+        added.write_bytes(_PNG_BYTES)
+
+        # The persisted row: text and list as the transcript stores them.
+        paths = (
+            [str(real), str(added)] if source == "upload" else [real.as_posix(), added.as_posix()]
+        )
+        row_meta = attachment_meta(await with_image_identities({"images": paths[:1]}))
+        assert row_meta["images"] != paths[:1]
+        text = f"![image]({row_meta['images'][0]})\n\nlook again"
+        if source == "project":
+            text = (
+                "\n".join(f"![image]({markdown_image_dest(p)})" for p in paths) + "\n\nlook again"
+            )
+        # Edit-resend's shape: the row's list plus the request's added list,
+        # both through the redacting normalizer.
+        added_meta = attachment_meta(await with_image_identities({"images": paths[1:]}))
+        rebuilt = with_added_images(
+            retained_image_meta(row_meta, text, text),
+            added_meta["images"],
+            added_identities=added_meta["image_ids"],
+        )
+        assert all("[REDACTED" in p for p in rebuilt["images"])
+
+        seen: list[dict] = []
+
+        async def _ok(msg, **kw):
+            from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+            seen.append(kw)
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="done")
+            yield LLMEvent(kind=EVENT_COMPLETE)
+
+        # The resolver may list the upload directory; that work must not run
+        # on the gateway's event-loop thread.
+        import threading
+
+        from kiro_crew.dashboard import chat_runner as _runner
+
+        loop_thread = threading.get_ident()
+        built_on: list[int] = []
+        _orig = _runner._turn_prompt_attachments
+
+        def _spy(*args, **kwargs):
+            built_on.append(threading.get_ident())
+            return _orig(*args, **kwargs)
+
+        monkeypatch.setattr(_runner, "_turn_prompt_attachments", _spy)
+
+        state = self._make_state(tmp_path, monkeypatch)
+        client = self._client(_ok)
+        self._wire_sessions(state, client)
+        slot = state.get_or_create_slot("s1")
+        slot._titled = True
+
+        await _run_chat(
+            state,
+            slot,
+            text,
+            _attachments=list(rebuilt["images"]),
+            _attachment_meta=rebuilt,
+        )
+
+        assert [a.path for a in seen[0]["attachments"]] == paths
+        assert built_on and all(t != loop_thread for t in built_on), "list built on the loop thread"
+
+    @pytest.mark.asyncio
+    async def test_a_typed_image_path_in_text_is_a_mention_so_the_recovery_runs(
+        self, tmp_path, monkeypatch
+    ):
+        """A path typed into the message is prose, never an upload: the builder
+        emits no image block for it, so a rejection on such a turn can only be of
+        an image retained in NATIVE history -- exactly what the discard-once
+        recovery exists for."""
+        from kiro_crew.dashboard.chat import _run_chat
+
+        calls: list[str] = []
+
+        async def _fail(msg, **kw):
+            calls.append(msg)
+            assert "attachments" not in kw, "a typed path must not become an attachment"
+            raise self._image_error()
+            yield  # pragma: no cover
+
+        state = self._make_state(tmp_path, monkeypatch)
+        client = self._client(_fail)
+        self._wire_sessions(state, client)
+        slot = state.get_or_create_slot("s1")
+        slot._titled = True
+
+        shot = r"C:\Users\me\shot.bmp" if os.name == "nt" else "/home/me/shot.bmp"
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            await _run_chat(state, slot, f"{shot} look at this")
+            await self._drain_bg(state)
+
+        state.sessions.discard_conversation.assert_awaited_once()
+        assert slot._poisoned_reset_used is True
 
     @pytest.mark.asyncio
     async def test_a_stop_during_the_discard_drops_the_queued_recovery(self, tmp_path, monkeypatch):
