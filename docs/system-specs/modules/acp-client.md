@@ -801,7 +801,8 @@ The details below describe the Kiro and Claude paths implemented directly here:
     project third-party declarations. Override eligibility reads project and
     global MCP settings through the bounded sensitive-path reader. A refused,
     unreadable or malformed settings file withholds these overrides, preserving
-    native restrictions; only an absent settings file contributes no restrictions.
+    native restrictions; only an absent settings file, or one that is empty or
+    holds only whitespace, contributes no restrictions.
     kiro-cli loads
     servers from the agent config (respects `mcpServers` in the agent's config
     file). Non-kirocrew agents (e.g. AIM-installed) load only their own
