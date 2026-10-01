@@ -222,6 +222,8 @@ let composerSync = createProductionSync()
 export function holdComposerSend(slot: Slot) { composerSync.holdComposerSend(slot) }
 export function releaseComposerSend(slot: Slot) { composerSync.releaseComposerSend(slot) }
 export function isComposerSendHeld(slot: Slot) { return composerSync.isComposerSendHeld(slot) }
+export function landComposerAttachments(slot: Slot, paths: string[]) { composerSync.landComposerAttachments(slot, paths) }
+export function takeComposerArrivals(slot: Slot) { return composerSync.takeComposerArrivals(slot) }
 export function finishComposerAttachment(slot: Slot, paths: string[] = []) { composerSync.finishComposerAttachment(slot, paths) }
 export function registerComposerUpload(slot: Slot, controller: AbortController) { composerSync.registerComposerUpload(slot, controller) }
 export function unregisterComposerUpload(slot: Slot, controller: AbortController) { composerSync.unregisterComposerUpload(slot, controller) }
