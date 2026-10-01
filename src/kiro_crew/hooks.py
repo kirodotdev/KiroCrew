@@ -43,6 +43,11 @@ from kiro_crew.atomic_write import (
 )
 from kiro_crew.config import paths as _config_paths
 
+# ``_coerce_bool`` reads a hand-edited bool without the ``bool("false")`` trap;
+# one copy, owned with the other config field coercers. Re-exported here because
+# ``dashboard/handlers/security.py`` imports it from this module.
+from kiro_crew.config.fields import _coerce_bool  # noqa: F401
+
 # Canonical home of the descriptor-path primitive (Windows fail-closed branch
 # included). The module-local alias is load-bearing: the gate helpers below
 # call it through this module's global, which the seam tests monkeypatch to
@@ -374,27 +379,6 @@ class TransformHook:
 
 
 _BUNDLED_AUTO_APPROVE_TOOLS: list[str] = []
-
-
-def _coerce_bool(value: object, default: bool) -> bool:
-    """Coerce an operator-editable config value to a bool without ``bool()`` traps.
-
-    ``config.json`` is hand-editable, and plain ``bool("false")`` is ``True`` in
-    Python — a footgun that would let ``"disable_all": "false"`` silently turn
-    OFF every opt-out-capable protection.  A real bool is returned as-is; a
-    recognized string spelling (``true``/``false``/``1``/``0``/``yes``/``no``/
-    ``on``/``off``, case-insensitive) maps to its value; anything else falls back
-    to *default* (chosen by the caller to fail safe).
-    """
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        v = value.strip().lower()
-        if v in ("true", "1", "yes", "on"):
-            return True
-        if v in ("false", "0", "no", "off"):
-            return False
-    return default
 
 
 @dataclass

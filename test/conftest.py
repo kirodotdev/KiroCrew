@@ -1934,6 +1934,7 @@ def _no_carried_auto_update_effect(_floor_monkeypatch) -> None:
 
     _floor_monkeypatch.setattr(updates, "_auto_effect", None)
     _floor_monkeypatch.setattr(updates, "_auto_effect_task", None)
+    _floor_monkeypatch.setattr(updates, "_shape_effect", None)
 
 
 @pytest.fixture(autouse=True)

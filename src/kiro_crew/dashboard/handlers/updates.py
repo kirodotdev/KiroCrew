@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import contextlib
 import functools
 import hmac
 import json
@@ -28,6 +29,7 @@ from kiro_crew.config.loader import (
     KiroCrewConfig,
     coerce_dict_section,
     config_path,
+    overlay_pins,
     update_config_locked,
 )
 from kiro_crew.dashboard.chat_utils import run_config_write
@@ -66,6 +68,7 @@ from kiro_crew.platform.update_capability import (
     AutoUpdateEffect,
     UpdateCapability,
     auto_update_effect,
+    bundled_by_desktop_app,
     derive_capability,
 )
 from kiro_crew.platform.update_governance import (
@@ -166,6 +169,10 @@ _AUTO_EFFECT_TTL_SECS = 300.0
 #: no update loop never shells out to git from its status frame.
 _auto_effect: tuple[float, str] | None = None
 _auto_effect_task: "asyncio.Task[None] | None" = None
+#: The git-free answer a frame serves before the loop's first derivation,
+#: memoized: it depends on install shape alone, so one derivation per process
+#: keeps its layout stats off every subsequent frame.
+_shape_effect: str | None = None
 _last_update_check: float = 0.0
 
 #: The finite operation shared by concurrent manual checks and the automatic
@@ -203,8 +210,11 @@ def get_update_info() -> dict[str, object]:
 def remediation_command(info: dict[str, object]) -> str:
     """The copyable command from a check result's ``remediation``, or ``""``.
 
-    Display/copy only: no caller executes it, and it is composed locally from
-    validated inputs rather than from any feed field.
+    Composed locally from validated inputs, never from a feed field, which is
+    what makes it safe for the one caller that RUNS it: the gateway's
+    managed-venv auto-apply hands it to a trusted shell
+    (``_auto_apply_wheel_update``). Every other reader displays it for the
+    operator to copy.
     """
     remediation = info.get("remediation")
     if isinstance(remediation, dict):
@@ -359,6 +369,20 @@ def record_auto_update_effect(effect: AutoUpdateEffect) -> None:
     _auto_effect = (time.monotonic(), effect.effect)
 
 
+def _start_auto_effect_refresh() -> "asyncio.Task[None]":
+    """The in-flight re-derivation, started if none is. Needs a running loop."""
+    global _auto_effect_task
+
+    if _auto_effect_task is None or _auto_effect_task.done():
+        _auto_effect_task = asyncio.get_running_loop().create_task(_refresh_auto_update_effect())
+    return _auto_effect_task
+
+
+async def _refresh_auto_update_effect_once() -> None:
+    """Await the shared derivation, starting it only when none is in flight."""
+    await asyncio.shield(_start_auto_effect_refresh())
+
+
 async def _refresh_auto_update_effect() -> None:
     global _auto_effect
     try:
@@ -370,26 +394,48 @@ async def _refresh_auto_update_effect() -> None:
         if _auto_effect is not None:
             _auto_effect = (time.monotonic(), _auto_effect[1])
         return
-    record_auto_update_effect(effect)
+    if effect is not None:  # git_probes defaults True, so it always answers
+        record_auto_update_effect(effect)
 
 
 def _status_auto_update_effect() -> str:
     """The last derived effect; re-derived off the loop once it is stale.
 
-    ``unknown`` only until the update loop's first derivation lands: deriving
-    runs git and reads policy, which the status frame must not wait on.
+    Before the update loop's first derivation lands, the shapes whose answer
+    needs no git subprocess are derived right here, so a desktop bundle or a
+    managed venv is never reported as unknown on a first frame. Only a checkout
+    waits: its branch and remote are what git alone can report, and the status
+    frame must not shell out.
     """
-    global _auto_effect_task
     cached = _auto_effect
-    stale = cached is not None and time.monotonic() - cached[0] > _AUTO_EFFECT_TTL_SECS
-    if stale and (_auto_effect_task is None or _auto_effect_task.done()):
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = None
-        if loop is not None:
-            _auto_effect_task = loop.create_task(_refresh_auto_update_effect())
-    return cached[1] if cached is not None else AUTO_EFFECT_UNKNOWN
+    if cached is not None and time.monotonic() - cached[0] > _AUTO_EFFECT_TTL_SECS:
+        # A frame built outside a loop (a test, a CLI) just serves the cache.
+        with contextlib.suppress(RuntimeError):
+            _start_auto_effect_refresh()
+    if cached is not None:
+        return cached[1]
+    # Read, never computed here: deriving it stats the install tree, which can
+    # be network-backed, and this reader runs on the event loop. The status
+    # funnel primes it off the loop first (``prime_status_auto_update_effect``).
+    return _shape_effect if _shape_effect is not None else AUTO_EFFECT_UNKNOWN
+
+
+async def prime_status_auto_update_effect() -> None:
+    """Derive the git-free effect once, OFF the event loop, for the status frame.
+
+    Called by the status funnel before it reads :func:`status_update_fields`,
+    so a frame served before the update loop's first derivation still answers
+    every shape but a checkout. Memoized: it depends on install shape alone.
+    """
+    global _shape_effect
+    if _shape_effect is not None or _auto_effect is not None:
+        return
+    try:
+        answer = await asyncio.to_thread(auto_update_effect, git_probes=False)
+    except Exception:
+        logger.debug("auto_update_effect could not be derived without git", exc_info=True)
+        answer = None
+    _shape_effect = answer.effect if answer is not None else AUTO_EFFECT_UNKNOWN
 
 
 def status_update_fields() -> dict[str, object]:
@@ -473,6 +519,13 @@ def status_update_fields() -> dict[str, object]:
         # gateway's update loop acts on, so the switch's label cannot promise
         # what the loop will not do.
         "update_auto_effect": _status_auto_update_effect(),
+        # Whether the desktop app bundles and launches this gateway, from the
+        # baked packaging stamp. Independent of who owns the update: a policy
+        # ``updates`` provider makes ``update_managed_by`` read ``command`` on
+        # that same bundle. ``update_auto_effect`` still reports what THIS
+        # gateway's loop does there — the provider's answer — because the
+        # provider, not the app's updater, is what the loop runs.
+        "update_bundled_by_app": bundled_by_desktop_app(),
         # The RUNNING build's version folded for display (clean base on the
         # stable channel), so the About page's version chip can show `0.4.0`
         # instead of the promoted candidate's baked-in `0.4.0rc14` stamp.
@@ -494,12 +547,21 @@ async def api_update_check(request: web.Request) -> web.Response:
     lifecycle that does not exist yet, and serving them as constants would
     advertise transitions a consumer could poll for forever.
     """
-    await _do_update_check()
-    cfg = KiroCrewConfig.load()
+    # The manual Check is the other way the effect becomes known before the
+    # update loop's first cycle: the user asked, so the derivation's git probes
+    # are warranted here where a status frame could not afford them. Alongside
+    # the check (the two are independent), and through the shared single-flight
+    # task, so N tabs opening About at once derive once.
+    await asyncio.gather(_do_update_check(), _refresh_auto_update_effect_once())
+    # Offloaded for the same reason as every other config read on this module's
+    # handlers: the data home can be network-backed.
+    cfg = await asyncio.to_thread(KiroCrewConfig.load)
+    overlay_override = await asyncio.to_thread(overlay_pins, "auto_update")
     return web.json_response(
         {
             **_update_info,
             "current_version": _display_local_version(),
+            "update_auto_effect": _status_auto_update_effect(),
             # DISPLAY-ONLY sibling of the raw `latest_version` above (unpacked
             # via `**_update_info`) — folds a promoted stable candidate's
             # insider/rc stamp to the clean release it means. `latest_version`
@@ -511,6 +573,10 @@ async def api_update_check(request: web.Request) -> web.Response:
                 str(_update_info.get("channel") or ""),
             ),
             "auto_update": cfg.auto_update,
+            # Whether config.local.json pins it, so the panel can explain a
+            # switch that snaps back: this endpoint's writer updates the base
+            # file, which the overlay deep-merges over.
+            "overlay_override": overlay_override,
             # Surface the pin so the dashboard can say WHY an update is mandatory
             # rather than showing a bare button. ``minimum_version_enforced``
             # stays governance-only (its historical meaning); the combined
@@ -714,6 +780,23 @@ def _capability_fields(capability: UpdateCapability) -> dict[str, object]:
     return capability.to_dict()
 
 
+async def _can_arm_this_install() -> bool:
+    """Whether the in-app arm+approve path applies here. Best-effort.
+
+    Probed rather than derived from ``managed_by``: that value also covers bare
+    source installs the arm endpoint refuses, so the wider signal would render a
+    dead button. Offloaded — it resolves venv paths on disk — and a failure
+    answers False, since this runs on the paths that are already reporting one.
+    """
+    from kiro_crew.platform.wheel_engine import running_from_managed_venv
+
+    try:
+        return await asyncio.to_thread(running_from_managed_venv)
+    except Exception:
+        logger.debug("managed-venv probe failed; reporting can_arm False", exc_info=True)
+        return False
+
+
 def _release_update_check_task(task: asyncio.Task[None]) -> None:
     """Drop ownership even when every caller stopped waiting for the worker."""
     global _check_task, _check_task_generation
@@ -809,6 +892,9 @@ async def _run_update_check() -> None:
         requires_restart=True,
     )
     proj = os.environ.get("KIROCREW_PROJECT_DIR", "")
+    # Seeded beside the capability above and for the same reason: the except
+    # path reads it, and the resolution itself can be what failed.
+    provider: object | None = None
     try:
         # A policy-defined provider OWNS the update on this host, the check
         # included. Consulted before the built-in capability derivation for the
@@ -817,7 +903,7 @@ async def _run_update_check() -> None:
         # not have its badge computed against the feed/git mechanism that
         # policy excluded — the badge would then advertise updates the Update
         # button (which honors the provider) can never deliver.
-        provider = resolve_provider()
+        provider = await asyncio.to_thread(resolve_provider)
         if provider is not None:
             await _check_via_provider(provider)
         else:
@@ -840,8 +926,17 @@ async def _run_update_check() -> None:
                 await _check_release_feed(capability)
     except Exception:
         logger.debug("Update check failed", exc_info=True)
+        # ``can_arm`` rides along for the same reason the feed-failure paths
+        # carry it: ``_set_update_info`` re-seeds it to False, so an unexpected
+        # raise (a signature probe, a venv-layout read) would otherwise make a
+        # managed venv look notify-only until the next successful check.
+        # ``can_arm`` only where the arm endpoint could ever say yes. A policy
+        # provider owns the update and that endpoint refuses outright, so
+        # probing the venv after the PROVIDER branch raised would offer a
+        # button whose answer is 409.
         _set_update_info(
             **_capability_fields(capability),
+            can_arm=(provider is None and await _can_arm_this_install()),
             check_status=CHECK_FAILED,
             error_code=ERR_UNKNOWN,
         )
@@ -1174,9 +1269,7 @@ async def _check_release_feed(capability: UpdateCapability) -> None:
     # `managed_by == "kirocrew"` also covers bare source installs the arm
     # endpoint refuses, so shipping the wider signal would render a dead button.
     # Offloaded — the probe resolves venv paths on disk.
-    from kiro_crew.platform.wheel_engine import running_from_managed_venv
-
-    can_arm = await asyncio.to_thread(running_from_managed_venv)
+    can_arm = await _can_arm_this_install()
     base: dict[str, object] = {
         **_capability_fields(capability.for_channel(channel)),
         "channel": channel,
@@ -1316,7 +1409,37 @@ async def api_update_auto(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
+    if not isinstance(body, dict):
+        return web.json_response(
+            {"error": "body must be a JSON object", "code": "invalid_json"}, status=400
+        )
     enabled = body.get("enabled", True)
+    if not isinstance(enabled, bool):
+        # Stored verbatim below, and the update loop reads it for truthiness:
+        # a string would read as ON whatever it says, and no switch can render
+        # it. Refuse rather than coerce — which value the caller meant by
+        # ``"false"`` is not ours to guess.
+        return web.json_response(
+            {"error": "enabled must be a boolean", "code": "invalid_enabled"}, status=400
+        )
+
+    # 409, not 200, when config.local.json owns the key — the same refusal the
+    # trust-settings and MCP writers give an overlay-owned setting. Writing
+    # config.json here would change NOTHING (the overlay deep-merges over it),
+    # and a success response would show the switch flipped while the next load
+    # snaps it back.
+    if await asyncio.to_thread(overlay_pins, "auto_update"):
+        return web.json_response(
+            {
+                "error": (
+                    "auto_update is set in config.local.json, which overrides this "
+                    "switch — change or remove it there"
+                ),
+                "code": "auto_update_overlay_owned",
+                "overlay_override": True,
+            },
+            status=409,
+        )
 
     def _set_auto_update(data: dict) -> dict:
         data["auto_update"] = enabled
@@ -1356,7 +1479,26 @@ async def api_update_auto(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "failed to read config file", "code": "config_unreadable"}, status=500
         )
-    return web.json_response({"ok": True, "auto_update": enabled})
+    # The EFFECTIVE value, re-read after the write: ``config.local.json``
+    # deep-merges over the file this endpoint wrote, so reporting ``enabled``
+    # would promise a state the next load does not produce.
+    cfg = await asyncio.to_thread(KiroCrewConfig.load)
+    overlay_override = await asyncio.to_thread(overlay_pins, "auto_update")
+    # Any refresh frame invalidates the SPA's config query, so a second open tab
+    # stops showing the old switch position instead of waiting for an unrelated
+    # frame to arrive. Best-effort by design: the write is already committed, so
+    # a state that cannot broadcast must not turn it into a 500 — the other tab
+    # catches up on its next frame.
+    with contextlib.suppress(Exception):
+        request.app["state"].push_refresh("config")
+    return web.json_response(
+        {
+            "ok": True,
+            "auto_update": cfg.auto_update,
+            "requested": enabled,
+            "overlay_override": overlay_override,
+        }
+    )
 
 
 def _changelog_path() -> Path | None:
@@ -2484,6 +2626,7 @@ async def api_update_channel(request: web.Request) -> web.Response:
             "ok": True,
             **_update_info,
             "auto_update": cfg.auto_update,
+            "overlay_override": await asyncio.to_thread(overlay_pins, "auto_update"),
             # AFTER the spread, deliberately. When a check was already in flight
             # `_do_update_check` returns early and the cache still holds the
             # invalidated ``channel: ""`` / ``update_command: ""``; letting those

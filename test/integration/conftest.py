@@ -717,6 +717,7 @@ def _reset_home_bound_globals() -> None:
     sandbox._SHIM_ARGV_CACHE.clear()
     dashboard_updates._auto_effect = None
     dashboard_updates._auto_effect_task = None
+    dashboard_updates._shape_effect = None
     browser_launch._warned_lifecycle_losses.clear()
     live_nudge = autonudge._INSTANCE
     if live_nudge is not None:

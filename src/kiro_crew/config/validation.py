@@ -34,6 +34,8 @@ import copy
 import logging
 import threading
 
+from kiro_crew.config.fields import _coerce_bool
+
 # Top-level config.json sections a BUILTIN APP owns and reads from the file
 # directly, with no modelled field in this core. Not in _KNOWN_CONFIG_SECTIONS
 # (no dataclass parses them) and not in CONFIG_RESERVED_TOP_KEYS (they must
@@ -503,6 +505,16 @@ def validate_config_data(data: dict) -> dict:
     agent = data.get("agent")
     if isinstance(agent, dict) and isinstance(agent.get("log_level"), str):
         agent["log_level"] = agent["log_level"].upper()
+
+    # 3b. ``auto_update`` decides whether an unattended installer runs, and its
+    # two wrong answers are not symmetric, so a type mismatch must not be
+    # "repaired" to this field's True default: a hand-edited ``"false"`` (or a
+    # ``0``) would then install on a host whose owner wrote the opposite. A
+    # recognized spelling becomes its bool here, before the type check sees it,
+    # and anything else unreadable becomes False. The loader applies the same
+    # rule (``fields._coerce_bool``) for a host without ``jsonschema``.
+    if "auto_update" in data and not isinstance(data["auto_update"], bool):
+        data["auto_update"] = _coerce_bool(data["auto_update"], False)
 
     # 3a. Resolve the STT provider and model through the loader's own degradation
     # rules before the enum check can discard them. Both fields accept values that

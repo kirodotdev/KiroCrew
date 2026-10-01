@@ -60,6 +60,11 @@ from kiro_crew.atomic_write import atomic_write, on_event_loop
 # after the split must not join it.
 from kiro_crew.config import migration as _migration
 from kiro_crew.config import sections as _sections
+
+# Section DTOs and their field-level coercion live in a one-way sibling module.
+# Re-export every historical loader name so existing imports keep working while
+# KiroCrewConfig remains the compatibility facade and owns read/merge/save.
+from kiro_crew.config.fields import _coerce_bool
 from kiro_crew.config.migration import (  # noqa: F401
     _REPORTED_SUPERSEDED_KEYS,
     CONNECTIONS_UI_MIGRATION_MARKER,
@@ -173,10 +178,6 @@ from kiro_crew.config.section_builders import (  # noqa: F401
     _build_whatsapp_config,
     coerce_runtime_ceiling,
 )
-
-# Section DTOs and their field-level coercion live in a one-way sibling module.
-# Re-export every historical loader name so existing imports keep working while
-# KiroCrewConfig remains the compatibility facade and owns read/merge/save.
 from kiro_crew.config.sections import (  # noqa: F401
     _BOT_NAME_MAX,
     _BOT_NAME_RE,
@@ -702,6 +703,35 @@ def outbox_dir() -> Path:
 
 def config_path() -> Path:
     return config_dir() / "config.json"
+
+
+def overlay_pins(*key_path: str) -> bool:
+    """Whether ``config.local.json`` sets the key at *key_path*.
+
+    That overlay deep-merges OVER ``config.json``, so a Settings switch that
+    writes the BASE file snaps back to the overlay's value after a successful
+    write. A surface reporting this can say why instead of looking broken.
+
+    Best-effort: an unreadable, non-UTF-8 or malformed overlay reports "not
+    pinned" rather than raising, matching the loader itself (it warns and marks
+    the file degraded). The effective value a caller reports is authoritative
+    either way. One helper rather than one per key: the shadowing mechanism is
+    the overlay, not the key.
+    """
+    try:
+        path = config_local_path()
+        if not path.is_file():
+            return False
+        # ValueError covers JSONDecodeError AND the UnicodeDecodeError a file
+        # saved in a non-UTF-8 code page raises.
+        node: object = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    for key in key_path[:-1]:
+        if not isinstance(node, dict):
+            return False
+        node = node.get(key)
+    return isinstance(node, dict) and key_path[-1] in node
 
 
 def config_local_path() -> Path:
@@ -4197,7 +4227,18 @@ class KiroCrewConfig:
             # There is deliberately NO ``enabled`` key read here — see
             # ComputerUseConfig's docstring and computer_use_state_path().
             computer_use=_build_computer_use_config(computer_use_data),
-            auto_update=data.get("auto_update", True),
+            # ``_coerce_bool``, not ``_safe_bool``: this one key decides whether
+            # an unattended installer runs, and the two wrong answers are not
+            # symmetric. A hand-edited ``"auto_update": "false"`` is truthy to
+            # the loop, and ``_safe_bool`` would fold it (and ``0``, and
+            # ``null``) to this field's True default — installing on a host whose
+            # owner wrote the opposite. So a recognized spelling is honoured, and
+            # anything else unreadable falls back to OFF: an update not applied
+            # is a notification, while one applied against the owner's wish is a
+            # restart they did not ask for. An ABSENT key still defaults ON.
+            auto_update=(
+                True if "auto_update" not in data else _coerce_bool(data.get("auto_update"), False)
+            ),
             connections_ui=_safe_bool(data.get("connections_ui", True), True),
             _degraded_sections=frozenset(_degraded | _OBSERVED_DEGRADED_SECTIONS),
             timezone=data.get("timezone", ""),

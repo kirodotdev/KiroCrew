@@ -320,6 +320,7 @@ from kiro_crew.platform.update_capability import (
     AUTO_EFFECT_MANDATORY,
     AUTO_EFFECT_NOTIFY,
     AUTO_ROUTE_GIT,
+    AUTO_ROUTE_PROVIDER,
     AUTO_ROUTE_WHEEL,
     CHECK_SUCCEEDED,
     CHECK_UNCHECKED,
@@ -10502,6 +10503,8 @@ class GatewayOrchestrator:
         update this install will not apply.
         """
         effect = await asyncio.to_thread(auto_update_effect, provider=provider)
+        # git_probes defaults True, so the derivation always answers here.
+        assert effect is not None
         record_auto_update_effect(effect)
         return effect
 
@@ -10550,6 +10553,12 @@ class GatewayOrchestrator:
         # dashboard need not run its own check to learn it.
         _update_info["managed_by"] = MANAGED_BY_COMMAND
         effect = await self._auto_update_effect(provider)
+        # ``can_apply`` read off that one derivation rather than asked of the
+        # provider again: it is the PROVIDER's answer, not the install shape's
+        # (a reader told "cannot apply" because the shape is a wheel would be
+        # wrong on every policy-managed host), and the apply paths below never
+        # reach ``_publish_provider_update_state`` where a verdict is published.
+        _update_info["can_apply"] = effect.route == AUTO_ROUTE_PROVIDER
         result = await provider.check()
 
         # The mandatory floor is an enterprise ceiling and is evaluated FIRST,
@@ -10809,6 +10818,7 @@ class GatewayOrchestrator:
                     None,
                     "a policy update command now owns this install",
                 )
+                record_auto_update_effect(effect)
             from kiro_crew.platform.update_governance import min_version, update_required
 
             mandatory_target_key = (

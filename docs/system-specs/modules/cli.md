@@ -1840,13 +1840,52 @@ HTTPS CDN, the pinned source); anything else is updated by its own updater. The
 gateway's update loop branches on that answer, and `notify` never reaches
 `_prepare_auto_update_apply`, so admission is not paused for an update the install
 will not apply (a provider with no `apply_command`, a feature-branch checkout).
+`notify` is also what a source pin produces, and no badge then points at a
+`kirocrew update` the same pin refuses.
 Dynamic conditions stay with the update itself: the git route still requires
 `version_newer`, the installer route a newer build. The status frame carries the
-same answer as `update_auto_effect` (`unknown` until the loop's first
-derivation), re-derived off the loop at most once every five minutes; the
-update loop's first cycle arms that refresh. A policy provider the CHECK
-resolves after the derivation (a live policy refresh) downgrades the cycle to
-notify: a provider owns the update, so no built-in route applies it. `test_every_unattended_apply_consults_the_effect_first`
+same answer as `update_auto_effect`, re-derived off the loop at most once every
+five minutes once the update loop's first cycle has armed that refresh. A frame
+served BEFORE that derivation answers for itself wherever no git subprocess is
+needed — the packaged shapes from their baked stamp, a policy provider from the
+boot-frozen pins, the managed venv from its own layout — so only a checkout
+reads `unknown`, its branch and remote being what git alone can report. That
+matters because the update modal opens on the first boot after an app update,
+before any check has run. `GET /api/update/check` derives and records it too,
+and returns it: the user asked, so its git probes are warranted where a status
+frame could not afford them. A policy provider the CHECK resolves after the
+derivation (a live policy refresh) downgrades the cycle to notify: a provider
+owns the update, so no built-in route applies it.
+
+The frame also carries `update_bundled_by_app`, the baked packaging stamp's
+answer to "is this the backend the desktop app bundles and launches"
+(`bundled_by_desktop_app`). It is independent of `update_managed_by`, which reads
+`command` on that same bundle once a policy `updates` provider is configured,
+because the provider is resolved before the desktop deferral. On such a bundle
+`update_auto_effect` reports the provider's answer (`install`, `mandatory`, or
+`notify` without a runnable `apply_command`), since the provider is what the
+gateway's loop runs; on a bundle with no provider it reports `notify`, the app's
+own updater owning the update.
+
+**`auto_update` is validated on read and on write.** Validation and the loader
+run it through `fields._coerce_bool(..., False)`: a recognized spelling is
+honoured (`"false"`/`"off"`/`"0"` read OFF, `"true"`/`"on"`/`"1"` read ON) and
+anything else unreadable reads OFF rather than being repaired to the ON
+default; an absent key still defaults ON. And `POST /api/update/auto` refuses a non-boolean
+`enabled` with 400 `invalid_enabled` (and a non-object body with 400
+`invalid_json`) instead of storing it. That endpoint writes `config.json`, which
+`config.local.json` deep-merges OVER, so when the overlay sets `auto_update` it
+refuses with 409 `auto_update_overlay_owned` and writes nothing — the same
+refusal the trust-settings and MCP writers give an overlay-owned key — rather
+than a 200 the next load would undo. A successful response carries the
+EFFECTIVE value read back after the merge, the `requested` one beside it, and
+`overlay_override`, the flag (and the best-effort read,
+`config.loader.overlay_pins`) the telemetry switches share. `GET /api/update/check` and the
+channel switch carry `overlay_override` too, since those are where the UI reads
+`auto_update`, and the POST sends a `refresh` frame so a second open tab stops
+showing the old position. A check that fails unexpectedly carries `can_arm`
+the way the feed-failure paths do, so one transient raise cannot make a managed
+venv look notify-only. `test_every_unattended_apply_consults_the_effect_first`
 pins that every apply branch reads it before pausing admission.
 
 **`POST /api/update` refuses before it moves the tree, and fast-forwards to a

@@ -6838,6 +6838,7 @@ class DashboardState:
         update_min_version: str = "",
         update_can_arm: bool = False,
         update_auto_effect: str = "unknown",
+        update_bundled_by_app: bool = False,
         version_display: str = "",
         bundle_id: str = "",
     ) -> dict[str, Any]:
@@ -6932,6 +6933,9 @@ class DashboardState:
             # What an available update leads to on this install; see
             # ``update_capability.auto_update_effect``.
             "update_auto_effect": update_auto_effect,
+            # Whether the desktop app bundles this gateway; see
+            # ``update_capability.bundled_by_desktop_app``.
+            "update_bundled_by_app": update_bundled_by_app,
             "update_last_checked_at": update_last_checked_at,
             "update_check_interval_secs": update_check_interval_secs,
             # Mandatory-update verdict (enterprise governance pin OR the release
