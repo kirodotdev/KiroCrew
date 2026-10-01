@@ -16923,6 +16923,8 @@
       "filters_clear": "Filter zurücksetzen",
       "star": "{{name}} markieren",
       "unstar": "Markierung von {{name}} entfernen",
+      "default_agent_failed_title": "Der Standard-Crewmate konnte nicht gelesen werden, daher werden alle Crewmates angezeigt",
+      "all_hidden_hint": "Crewmates, die du noch nicht genutzt hast, sind ausgeblendet. Suche, um sie zu finden.",
       "star_failed_title": "Markierung nicht gespeichert",
       "star_failed": "Die Markierung dieses Crewmates konnte nicht aktualisiert werden.",
       "filter_source_mine_description": "Crews, die du im Crew-Manager erstellt hast",

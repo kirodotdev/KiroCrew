@@ -17166,6 +17166,8 @@
       "filters_clear": "Limpar filtros",
       "star": "Favoritar {{name}}",
       "unstar": "Desfavoritar {{name}}",
+      "default_agent_failed_title": "Não foi possível ler o crewmate padrão, então todos os crewmates são exibidos",
+      "all_hidden_hint": "Os crewmates que você ainda não usou estão ocultos. Pesquise para encontrá-los.",
       "star_failed_title": "Favorito não salvo",
       "star_failed": "Não foi possível atualizar o favorito deste colega.",
       "filter_source_mine_description": "Crews que você criou no gerenciador de crews",

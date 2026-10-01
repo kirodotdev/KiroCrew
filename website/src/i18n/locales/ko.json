@@ -16680,6 +16680,8 @@
       "filters_clear": "필터 지우기",
       "star": "{{name}} 즐겨찾기",
       "unstar": "{{name}} 즐겨찾기 해제",
+      "default_agent_failed_title": "기본 크루메이트를 읽지 못해 모든 크루메이트를 표시합니다",
+      "all_hidden_hint": "아직 사용하지 않은 크루메이트는 숨겨져 있습니다. 검색하여 찾으세요.",
       "star_failed_title": "즐겨찾기가 저장되지 않음",
       "star_failed": "이 크루메이트의 즐겨찾기를 업데이트할 수 없습니다.",
       "filter_source_mine_description": "크루 관리자에서 직접 만든 크루",

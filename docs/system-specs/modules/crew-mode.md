@@ -792,6 +792,41 @@ is gone falls back the same way, under the existing swap notice. The page's copy
 says crewmate / Crewmates and "Built from"; the crew record, its API and its
 identifiers are unchanged.
 
+The roster lists a row unasked when EITHER its Crewmates-page DM thread already
+holds a message (any origin) OR it was created on the dashboard (`source` is
+`kirocrew` AND the record carries a `member_id`, which covers a greeting that
+never landed) OR the user starred it; the default crew (whichever crew the top-level `default_agent` names) is
+always listed. Every other row (an app's own source stamp, with or without a
+member id, a sync-generated row, a legacy `kirocrew` row without a member id,
+none of them chatted with) is hidden and appears when the search text matches
+it. The star, origin and status filters narrow the rows the roster shows, so
+choosing an origin does not reach a hidden row; the search is the one door
+within the roster list. A team's view (`?team=`) and the team dialog are built
+from the whole roster, so they still list every crewmate the user put on that
+team -- placing a crewmate on a team is itself a choice to use it -- and a team
+whose crewmates are all hidden keeps its (empty) roster header. The crewmate
+open in the thread stays listed while open, and a remembered crewmate is
+restored even when the rule hides it; with nothing but the default crew
+listed while hidden crewmates exist, the landing opens the most recently used
+hidden one (listed while open); where nothing auto-opens (below md) and every
+row is hidden, the roster says so and names the search. If
+the default-crew lookup fails, every row is listed and an error notice says why. `GET /api/members` carries the two facts as booleans, `dashboard_created`
+and `has_dm_message` (`ConversationLog.has_messages` on the bound thread, which
+stops at the first non-metadata row, or rows held by the live slot; an
+unreadable transcript counts as a message); the member id itself is not on the
+wire. The client also treats a non-empty live `last_message` as a message, so a
+row the user just chatted with stays listed before the next roster read. A row
+from an older gateway carrying neither field is listed. The header count and
+the filter tallies count the listed rows plus any hidden row the search
+reaches. The landing fallback opens a remembered crewmate first (even a
+hidden one, which is then listed while open), then the most recently used listed
+crewmate, then the most recently used hidden one when only the default crew is
+listed.
+
+Deleting a crewmate is not on this page: it lives in the crewmate's settings
+on the Customize page's Crewmates tab (the editor's Danger pane), which also
+reaches rows this page hides.
+
 Reopening a running Member DM, including a turn awaiting tool approval,
 reuses its captured execution record. The canonical session key, selected
 member, live slot store and execution record must agree. This read does

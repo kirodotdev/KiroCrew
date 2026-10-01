@@ -142,10 +142,12 @@ import { sessionTitleRoster } from '../../utils/sessionRoster'
 import { SearchFilterBar, FilterMenuButton, FilterChip, FILTER_CHIP_ROW_CLS, FilterMenuLabel, FilterMenuContent } from '../../components/SearchFilterBar'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '../../components/ui/dropdown-menu'
 import {
-  countByFilter, narrowRoster, parseSort, parseSourceFilter, parseStatusFilters, queryNarrows, sortRoster,
+  countByFilter, listedByDefault, narrowRoster, parseSort, parseSourceFilter, parseStatusFilters, queryNarrows,
+  rosterPopulation, sortRoster,
   SORT_OPTIONS, SOURCE_FILTERS, STATUS_FILTERS,
   type MemberSignals, type MemberSort, type MemberSourceFilter, type MemberStatusFilter, type RosterQuery,
 } from './rosterFilter'
+import { defaultAgentQuery } from '../../api/defaultAgentQuery'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import { isSidePanelHidden, shouldMountSidePanel, sidePanelDockMotion } from '../chat/sidePanelMount'
 import SidePanel, { SIDE_PANEL_MIN_W, SIDE_PANEL_RESERVED_W, type SidePanelLeadingTab, type SidePanelWithholdable } from '../chat/SidePanel'
@@ -1593,11 +1595,37 @@ export default function MembersPage() {
     committedOrderRef.current = { sort, names, openName: activeName, openTs }
     return names.map((n) => byName.get(n)).filter((m): m is MemberRosterRow => !!m)
   }, [members, sort, activeName])
+  // The default crew, through the shared ['default-agent'] query (the crew
+  // manager's promotion write and every `refresh` frame invalidate it). The
+  // hide rule lists the default crew whatever its record says. `''` while
+  // unknown: the hide rule then treats an uncreated default row like any other
+  // until the answer lands. A FAILED read is `null`, even when an older value
+  // is still cached (that value may name a crew that is no longer the
+  // default): the hide rule then lists every row and the roster says why
+  // through ErrorNotice below.
+  const defaultAgentRead = useQuery(defaultAgentQuery)
+  const defaultAgentFailed = defaultAgentRead.isError
+  // Settled = an answer or a terminal failure (retries keep it pending).
+  const defaultAgentSettled = defaultAgentRead.data !== undefined || defaultAgentRead.isError
+  const defaultAgent: string | null = defaultAgentFailed ? null : defaultAgentRead.data ?? ''
   // Named apart from `rosterQuery` above: that one is the React Query READ of
   // the roster, this one is the user's filter/sort question asked of it.
   const rosterFilterQuery = useMemo<RosterQuery>(
-    () => ({ search: filter, starredOnly, source: sourceFilter, status: statusFilter, sort }),
-    [filter, starredOnly, sourceFilter, statusFilter, sort],
+    () => ({ search: filter, starredOnly, source: sourceFilter, status: statusFilter, sort, defaultAgent, chosen: activeName }),
+    [filter, starredOnly, sourceFilter, statusFilter, sort, defaultAgent, activeName],
+  )
+  // The rows the roster is about right now: created crewmates and the default
+  // crew, or -- with a search typed -- whatever the search reaches, hidden rows
+  // included. The header count, the "N of M" and the filter menu's tallies read
+  // THIS list, never `members`, so no count includes a row the user cannot see.
+  const shownMembers = useMemo(() => rosterPopulation(members, rosterFilterQuery), [members, rosterFilterQuery])
+  // The auto-open's candidates: only rows the roster lists unasked. A hidden
+  // row can still be opened by name (a deep link, the search), but must not be
+  // what the page opens on its own -- a thread standing over a roster that does
+  // not show its row reads as a misroute.
+  const listedMembers = useMemo(
+    () => orderedMembers.filter((m) => listedByDefault(m, defaultAgent)),
+    [orderedMembers, defaultAgent],
   )
   const activeSlot = active ? threadOutcome?.slot_key ?? '' : ''
   // Two distinct verdicts with two different sentences: a collision is a
@@ -2676,7 +2704,8 @@ export default function MembersPage() {
   )
   // Per-row counts in the filter menu: the one-word labels do not explain
   // themselves and a zero-count row is exactly the one that blanks the list.
-  const filterCounts = useMemo(() => countByFilter(members, signalsOf), [members, signalsOf])
+  // Over the shown population, so a tally never counts a hidden row.
+  const filterCounts = useMemo(() => countByFilter(shownMembers, signalsOf), [shownMembers, signalsOf])
   const narrowed = queryNarrows(rosterFilterQuery)
   // What the aggregate chip says: each active filter's menu label with its
   // count (Starred (2), In progress (1), Mine (6)) — and the bare names for
@@ -2696,9 +2725,15 @@ export default function MembersPage() {
     return out
   }, [t, starredOnly, statusFilter, sourceFilter, filterCounts])
   // True when the filters (not the search) hid everything — the empty-roster
-  // copy would be wrong then, since the roster is not empty.
+  // copy would be wrong then, since the roster is not empty. Judged against
+  // the shown population: hidden rows are not "filtered out", they are unlisted.
   const filteredOut =
-    loaded && !loadError && members.length > 0 && sortedMembers.length === 0 && !filter.trim()
+    loaded && !loadError && shownMembers.length > 0 && sortedMembers.length === 0 && !filter.trim()
+  // Every crewmate exists but the listing rule hides them all (none chatted,
+  // created here, starred or the default crew): say so and name the search as
+  // the way in, rather than an empty list under "0 crewmates".
+  const allHidden =
+    loaded && !loadError && !filter.trim() && shownMembers.length === 0 && !hasNoCrewmates(members)
   // Which of the block's three verdicts to render. Two sources, two roles:
   // the live loop registry is PRESENCE — a loop it holds as active is active,
   // full stop — while the pushed `wake` projection is the DURABLE record, so
@@ -3000,10 +3035,28 @@ export default function MembersPage() {
       return
     }
     // Desktop, URL names no crewmate (or names a gone one): restore the
-    // remembered crewmate if it is still on the roster, else open the most
-    // recently used one. `undefined` here means the roster is EMPTY — the
-    // chat column shows the New crewmate hero instead.
-    const target = resolveDefaultMember(safeGetItem(LAST_MEMBER_KEY), orderedMembers)
+    // remembered crewmate if it is still listed, else open the most recently
+    // used listed one. `undefined` here means nothing is listed — the chat
+    // column shows the New crewmate hero instead (or, with only hidden rows,
+    // stays empty until a search or a link names one).
+    // The fallback reads the LISTED rows, and the listing rule exempts the
+    // default crew by name: until the default-crew read has settled (data or
+    // a terminal error) the remembered crewmate may be that unlisted default,
+    // and resolving now would open a substitute and overwrite the memory.
+    if (!defaultAgentSettled) return
+    // A remembered crewmate the user opened themselves is restored even when the
+    // listing rule hides it (it was reached through the search): it is listed
+    // again while open (`chosen`), and resolving among listed rows only would
+    // open a substitute and overwrite the memory. Only with no usable memory
+    // does the fallback pick among the listed rows -- and when nothing but the
+    // default crew is listed while hidden crewmates exist, it opens the most
+    // recently used of those (listed while open), so the page never lands on an
+    // empty pane or claims there are no crewmates.
+    const remembered = safeGetItem(LAST_MEMBER_KEY)
+    const rememberedRow =
+      remembered && remembered !== 'default' ? members.find((m) => m.name === remembered) : undefined
+    const target =
+      rememberedRow ?? resolveDefaultMember(null, listedMembers) ?? resolveDefaultMember(null, orderedMembers)
     if (!target) {
       // Named a gone crewmate on an empty roster: say where they went above
       // the roster (shown: '' marks the roster variant of the notice, as
@@ -3035,7 +3088,7 @@ export default function MembersPage() {
       goneStandInRef.current = target.name
     }
     setSearchParams({ [MEMBER_PARAM]: target.name }, { replace: true })
-  }, [loaded, loadError, urlMember, urlTeam, teamsQ.data, members, orderedMembers, activeName, isMobile, activate, setSearchParams, rosterQuery.isFetching])
+  }, [loaded, loadError, urlMember, urlTeam, teamsQ.data, members, listedMembers, activeName, isMobile, activate, setSearchParams, rosterQuery.isFetching, defaultAgentSettled, orderedMembers])
 
   // Team open: the header row's click. Same history rule as openMember -- one
   // entry above md or while something is already open, a PUSHED step from the
@@ -3068,7 +3121,14 @@ export default function MembersPage() {
   }, [location.state, navigate, setSearchParams])
   // The roster, grouped: the DISPLAYED rows (after search / filter / sort) under
   // their team headers, in the teams' stored order, unlisted rows last.
-  const rosterGroups = useMemo(() => groupRosterByTeam(teams, sortedMembers, members), [teams, sortedMembers, members])
+  // Team headers are judged against the rows the roster is ABOUT (`shownMembers`),
+  // not the whole roster: a team whose every crewmate is hidden still gets its
+  // header (empty), so the team view, its Needs-you inbox and its editor stay
+  // reachable.
+  const rosterGroups = useMemo(
+    () => groupRosterByTeam(teams, sortedMembers, shownMembers),
+    [teams, sortedMembers, shownMembers],
+  )
   const grouped = teams.length > 0
   // The open team's crewmates for the team view -- the WHOLE team in roster
   // order, not the filtered rows: a search typed into the roster narrows the
@@ -3294,9 +3354,9 @@ export default function MembersPage() {
             : narrowed
               ? t('pages.membersPage.member_count_filtered', {
                   shown: sortedMembers.length,
-                  count: members.length,
+                  count: shownMembers.length,
                 })
-              : t('pages.membersPage.member_count', { count: members.length })}
+              : t('pages.membersPage.member_count', { count: shownMembers.length })}
         </div>
         {greetingNoticeInRoster && postCreateNotice}
         {/* A failed registry read blanks EVERY roster badge at once. That is
@@ -3462,6 +3522,20 @@ export default function MembersPage() {
         {/* Mounted only while there IS an error: the wrapper sits on the dock's
             shelf, and an empty wrapper would keep the shelf (and its 4px scrim)
             open under a bare field. */}
+        {/* Default-crew lookup failed: the hide rule is off (every row listed),
+            and this says why in localized copy, never the raw server text.
+            Mounted only while failing, like the star error. */}
+        {defaultAgentFailed && (
+          <div className="px-2">
+            <ErrorNotice
+              message={t('pages.membersPage.default_agent_failed_title')}
+              report={findReport(defaultAgentRead.error instanceof Error ? defaultAgentRead.error.message : undefined)}
+              askAgent
+              actionPlacement="below"
+              testId="member-default-agent-error"
+            />
+          </div>
+        )}
         {starError && (
           <div className="px-2">
             <ErrorNotice
@@ -3545,6 +3619,11 @@ export default function MembersPage() {
               <Btn onClick={() => void rosterQuery.refetch()} data-testid="member-roster-retry">
                 {t('pages.membersPage.roster_load_retry')}
               </Btn>
+            </li>
+          )}
+          {allHidden && (
+            <li className="px-4 py-6 text-xs text-muted" data-testid="member-all-hidden">
+              <p>{t('pages.membersPage.all_hidden_hint')}</p>
             </li>
           )}
           {filteredOut && (

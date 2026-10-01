@@ -50,6 +50,13 @@ export interface MemberRosterRow {
   source?: 'kirocrew' | 'builtin' | 'package' | string
   /** User's favourite mark; toggled via PUT /api/agents/{name}. */
   starred?: boolean
+  /** Created on the dashboard: `source` is `kirocrew` AND the record carries
+   *  a member id. Listed on the roster unasked. Absent on an older gateway. */
+  dashboard_created?: boolean
+  /** The Crewmates-page DM thread holds at least one message (a live slot's
+   *  unflushed rows included). Listed on the roster unasked. Absent on an
+   *  older gateway. */
+  has_dm_message?: boolean
   /** Baseline projections (roster/activity/wake/driving) at a known seq, fed
    *  to the per-member projection store so the page renders from pushed
    *  frames. Absent on an older gateway that predates the event log. */

@@ -16680,6 +16680,8 @@
       "filters_clear": "フィルターをクリア",
       "star": "{{name}} にスターを付ける",
       "unstar": "{{name}} のスターを外す",
+      "default_agent_failed_title": "既定のクルーメイトを読み込めなかったため、すべてのクルーメイトを表示しています",
+      "all_hidden_hint": "まだ使っていないクルーメイトは非表示です。検索すると見つかります。",
       "star_failed_title": "スターを保存できませんでした",
       "star_failed": "このクルーメイトのスターを更新できませんでした。",
       "filter_source_mine_description": "クルーマネージャーで自分が作成したクルー",

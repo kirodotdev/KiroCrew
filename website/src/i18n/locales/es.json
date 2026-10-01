@@ -17166,6 +17166,8 @@
       "filters_clear": "Borrar filtros",
       "star": "Destacar {{name}}",
       "unstar": "Quitar destacado de {{name}}",
+      "default_agent_failed_title": "No se pudo leer el crewmate predeterminado, así que se muestran todos los crewmates",
+      "all_hidden_hint": "Los crewmates que aún no has usado están ocultos. Busca para encontrarlos.",
       "star_failed_title": "Destacado no guardado",
       "star_failed": "No se pudo actualizar el destacado de este compañero.",
       "filter_source_mine_description": "Crews que creaste en el gestor de crews",

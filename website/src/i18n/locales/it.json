@@ -17166,6 +17166,8 @@
       "filters_clear": "Cancella filtri",
       "star": "Aggiungi {{name}} ai preferiti",
       "unstar": "Rimuovi {{name}} dai preferiti",
+      "default_agent_failed_title": "Impossibile leggere il crewmate predefinito, quindi vengono mostrati tutti i crewmate",
+      "all_hidden_hint": "I crewmate che non hai ancora usato sono nascosti. Cercali per trovarli.",
       "star_failed_title": "Preferito non salvato",
       "star_failed": "Impossibile aggiornare il preferito di questo compagno.",
       "filter_source_mine_description": "Crew che hai creato nel gestore crew",
