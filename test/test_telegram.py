@@ -6405,6 +6405,38 @@ class TestRotationSeamCredentialSafety:
         assert frames, "nothing was delivered at all"
         self._assert_no_key_on_screen(frames)
 
+    @pytest.mark.parametrize(("head", "tail"), CREDENTIAL_STRADDLE_SHAPES)
+    def test_a_provider_notice_is_a_graded_predecessor(
+        self, monkeypatch: pytest.MonkeyPatch, head: str, tail: str
+    ) -> None:
+        """A notice is a bubble of its own: a key begun at its end and completed by
+        the reply below it must not read whole down the screen."""
+        r, cli = self._renderer(monkeypatch)
+
+        async def _go() -> None:
+            await r.on_notice("Provider warning: " + head)
+            r._buf = [tail + " and the answer continues here."]
+            await r._seal_current(extract_uploads=False)
+
+        asyncio.run(_go())
+        frames = [text for text, _kb in cli.sent]
+        assert len(frames) == 2, f"expected the notice and the reply: {frames}"
+        self._assert_no_key_on_screen(frames)
+
+    def test_a_notice_under_the_open_bubble_stays_the_predecessor(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Sealing the live bubble in place leaves the notice below it, so the next
+        message is graded against the notice, not the bubble."""
+        r, _cli = self._renderer(monkeypatch)
+        r._stream_mid = 7
+
+        asyncio.run(r.on_notice("Provider warning: AKIA"))
+        r._record_sent("the bubble above", in_place=True)
+        assert r._sent_tail == "Provider warning: AKIA"
+        r._record_sent("a new message below")
+        assert r._sent_tail == "a new message below"
+
     def test_an_innocent_body_still_rotates(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Control: the grading refuses boundaries, it does not stop rotating."""
         r, cli = self._renderer(monkeypatch)

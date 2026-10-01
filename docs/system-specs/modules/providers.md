@@ -369,6 +369,12 @@ harness can get wrong:
 
 ### LLMEvent (`providers/base.py`)
 
+Ordinary ACP notices use `EVENT_NOTICE` with `title`, `text` (description), and
+`notice_severity`. `AcpProvider` preserves these fields; runtime-backed providers
+forward the handle's event unchanged. Notices do not contribute assistant text
+or satisfy an empty-turn answer check. Existing assistant messages retain their
+previous behavior; typed session failures and AIR are not negotiated here.
+
 Provider-agnostic event dataclass (aliased from `AcpEvent`):
 
 | Kind | Description |

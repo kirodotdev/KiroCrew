@@ -99,6 +99,10 @@ class FeishuRenderer(Renderer):
         # Renderer contract.
         logger.debug("Feishu: prompt_choice ignored (no interactive buttons)")
 
+    async def on_notice(self, text: str) -> None:
+        if not await self._client.send_reply(self._message_id, text):
+            raise RuntimeError("Feishu refused provider notice delivery")
+
     async def on_compaction(self, context_usage_pct: float) -> None:
         # Threshold notices are surfaced post-turn by the dispatcher; a
         # mid-turn frame would corrupt the single-shot answer bubble.

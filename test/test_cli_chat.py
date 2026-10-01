@@ -84,3 +84,21 @@ def test_run_chat_renders_keyboard_interrupt_as_clean_exit(monkeypatch, capsys) 
     cli_chat._run_chat(None, None)
 
     assert capsys.readouterr().out == "\nBye! 👻\n"
+
+
+@pytest.mark.asyncio
+async def test_provider_notice_uses_stderr_and_preserves_stdout_answer(capsys):
+    from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_NOTICE, EVENT_TEXT_CHUNK, AcpEvent
+
+    class Provider:
+        async def stream(self, message):
+            yield AcpEvent(
+                kind=EVENT_NOTICE, title="Warning", text="Detail", notice_severity="warning"
+            )
+            yield AcpEvent(kind=EVENT_TEXT_CHUNK, text="Answer")
+            yield AcpEvent(kind=EVENT_COMPLETE)
+
+    await cli_chat._send_and_print(Provider(), "question")
+    captured = capsys.readouterr()
+    assert captured.out == "Answer\n"
+    assert "[warning] Warning\nDetail" in captured.err

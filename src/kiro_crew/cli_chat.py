@@ -35,6 +35,7 @@ from kiro_crew.permission_floor import (
 )
 from kiro_crew.providers.base import (
     EVENT_COMPLETE,
+    EVENT_NOTICE,
     EVENT_PERMISSION_REQUEST,
     EVENT_TEXT_CHUNK,
     LLMEvent,
@@ -1050,7 +1051,10 @@ async def _send_and_print(
     """
     try:
         async for event in provider.stream(message):
-            if event.kind == EVENT_TEXT_CHUNK:
+            if event.kind == EVENT_NOTICE:
+                detail = f"\n{event.text}" if event.text else ""
+                print(f"\n[{event.notice_severity}] {event.title}{detail}", file=sys.stderr)
+            elif event.kind == EVENT_TEXT_CHUNK:
                 print(event.text, end="", flush=True)
             elif event.kind == EVENT_PERMISSION_REQUEST:
                 # The backend holds the turn open until this is answered, so an

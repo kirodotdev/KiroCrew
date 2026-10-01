@@ -1188,6 +1188,8 @@ async def test_an_export_streams_layer_b_from_its_snapshot_and_removes_it(monkey
 async def test_a_sent_export_streams_its_staged_file_and_removes_it(tmp_path, monkeypatch):
     """The body goes out of the staged file, a chunk at a time, and the file is
     removed once the send ends. Nothing reads it whole into memory."""
+    import threading
+
     from aiohttp import web
     from aiohttp.test_utils import TestClient, TestServer
 
@@ -1198,6 +1200,16 @@ async def test_a_sent_export_streams_its_staged_file_and_removes_it(tmp_path, mo
     monkeypatch.setattr(st, "_egress_tmp_dir", lambda: out)
     document = {"bundle_version": 2, "messages": [{"role": "user", "content": "hi", "ts": ""}]}
     staged = se._stage_export(document)
+    cleaned = threading.Event()
+    real_cleanup = se._rm_import_temps
+
+    def _tracked_cleanup(*args):
+        try:
+            return real_cleanup(*args)
+        finally:
+            cleaned.set()
+
+    monkeypatch.setattr(se, "_rm_import_temps", _tracked_cleanup)
 
     def _no_whole_read(self, *a, **k):
         raise AssertionError("the staged export was read whole")
@@ -1213,6 +1225,8 @@ async def test_a_sent_export_streams_its_staged_file_and_removes_it(tmp_path, mo
         resp = await client.get("/x")
         assert resp.status == 200
         assert json.loads(gzip.decompress(await resp.read())) == document
+        # Receiving the body does not join the server's cleanup worker.
+        assert await asyncio.to_thread(cleaned.wait, 10), "export cleanup never finished"
     assert not staged.exists()
 
 

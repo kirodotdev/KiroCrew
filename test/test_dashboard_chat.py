@@ -5963,6 +5963,75 @@ class TestRunChatSegmentFlush:
         assert "tool_call" in ws_types
 
     @pytest.mark.asyncio
+    async def test_mid_turn_provider_notice_is_a_segment_boundary(self, tmp_path, monkeypatch):
+        """Text streamed before a provider notice is finalized above it.
+
+        Appending the notice over live chunks would strand them: the trailing
+        chunk walk in `_flush_segment` stops at the notice row, so the answer's
+        opening would render twice when the window is rebuilt.
+        """
+        from kiro_crew.acp.types import EVENT_NOTICE
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+        events = [
+            LLMEvent(kind=EVENT_TEXT_CHUNK, text="Before notice"),
+            LLMEvent(kind=EVENT_NOTICE, title="Model fallback", notice_severity="warning"),
+            LLMEvent(kind=EVENT_TEXT_CHUNK, text="After notice"),
+            LLMEvent(kind=EVENT_COMPLETE),
+        ]
+        state = self._make_state_for_run_chat(tmp_path, monkeypatch)
+        slot = state.get_or_create_slot("s1")
+        client = self._make_mock_client(events)
+        state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+
+        from kiro_crew.dashboard.chat import _run_chat
+
+        await _run_chat(state, slot, "hello")
+
+        assert not [m for m in slot.messages if m.get("role") == "chunk"]
+        rows = [
+            (m["role"], m["content"])
+            for m in slot.messages
+            if m.get("role") == "assistant"
+            or (m.get("role") == "notice" and m.get("meta", {}).get("kind") == "provider_notice")
+        ]
+        assert rows == [
+            ("assistant", "Before notice"),
+            ("notice", "Model fallback"),
+            ("assistant", "After notice"),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_notice_after_a_tool_does_not_strand_its_pill(self, tmp_path, monkeypatch):
+        """A tool that sent no result frame is completed by the text after it, even
+        when a provider notice lands in between."""
+        from kiro_crew.acp.types import EVENT_NOTICE
+        from kiro_crew.providers.base import (
+            EVENT_COMPLETE,
+            EVENT_TEXT_CHUNK,
+            EVENT_TOOL_CALL,
+            LLMEvent,
+        )
+
+        events = [
+            LLMEvent(kind=EVENT_TOOL_CALL, title="read_file", tool_kind="read"),
+            LLMEvent(kind=EVENT_NOTICE, title="Model fallback", notice_severity="warning"),
+            LLMEvent(kind=EVENT_TEXT_CHUNK, text="After the tool"),
+            LLMEvent(kind=EVENT_COMPLETE),
+        ]
+        state = self._make_state_for_run_chat(tmp_path, monkeypatch)
+        slot = state.get_or_create_slot("s1")
+        client = self._make_mock_client(events)
+        state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+
+        from kiro_crew.dashboard.chat import _run_chat
+
+        await _run_chat(state, slot, "hello")
+
+        tools = [m for m in slot.messages if m.get("role") == "tool"]
+        assert tools and all(m.get("meta", {}).get("done") for m in tools)
+
+    @pytest.mark.asyncio
     async def test_tool_turn_progress_claim_surfaces_idle_notice(self, tmp_path, monkeypatch):
         """A mixed turn must not replay tools, but it must not claim it keeps running."""
         from kiro_crew.acp.types import STOP_REASON_END_TURN

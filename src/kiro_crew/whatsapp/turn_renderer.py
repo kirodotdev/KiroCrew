@@ -532,6 +532,9 @@ class WhatsAppRenderer(Renderer):
         except Exception:  # noqa: BLE001: the tool is already denied
             logger.warning("whatsapp: could not deliver the approval timeout", exc_info=True)
 
+    async def on_notice(self, text: str) -> None:
+        await self._transport.send_message(self._chat, text)
+
     async def on_compaction(self, context_usage_pct: float) -> None:
         logger.debug("whatsapp: compaction status %.0f%%", context_usage_pct)
 

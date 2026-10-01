@@ -131,6 +131,9 @@ class IMessageRenderer(Renderer):
         # reached -- kept as a safe no-op per the Renderer contract.
         logger.debug("imessage: prompt_choice ignored (no interactive buttons)")
 
+    async def on_notice(self, text: str) -> None:
+        await self._client.send(self._handle, text)
+
     async def on_compaction(self, context_usage_pct: float) -> None:
         # The dispatcher surfaces threshold notices as separate messages.
         logger.debug("imessage: compaction status %.0f%%", context_usage_pct)

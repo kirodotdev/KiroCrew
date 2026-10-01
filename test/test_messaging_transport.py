@@ -10,6 +10,7 @@ import pytest
 from kiro_crew.messaging import (
     COMPACTION,
     DONE,
+    NOTICE,
     OUTPUT_KINDS,
     PROMPT_CHOICE,
     STEER_CONSUMED,
@@ -172,6 +173,9 @@ class _RecordingRenderer(Renderer):
     async def on_compaction(self, context_usage_pct):
         self.calls.append(("compaction", context_usage_pct))
 
+    async def on_notice(self, text):
+        self.calls.append(("notice", text))
+
     async def on_done(self, stop_reason=""):
         self.calls.append(("done", stop_reason))
 
@@ -184,6 +188,7 @@ class TestRendererDispatch:
             TOOL_CALL,
             PROMPT_CHOICE,
             COMPACTION,
+            NOTICE,
             DONE,
             STEER_CONSUMED,
         }
@@ -204,6 +209,35 @@ class TestRendererDispatch:
         asyncio.run(run())
         assert [c[0] for c in r.calls] == ["text_chunk", "tool_call", "prompt_choice", "done"]
         assert r.calls[2] == ("prompt_choice", [{"id": "a"}], "r1")
+
+    def test_notice_serialization_and_bounded_delivery(self):
+        renderer = _RecordingRenderer(TransportCapabilities(max_message_chars=20))
+        event = OutputEvent(kind=NOTICE, text="x" * 50, notice_severity="warning")
+        assert event.to_dict()["notice_severity"] == "warning"
+        asyncio.run(renderer.dispatch(event))
+        assert "".join(call[1] for call in renderer.calls) == "⚠️ " + "x" * 50
+        assert all(call[0] == "notice" for call in renderer.calls)
+        assert all(len(call[1]) <= 20 for call in renderer.calls)
+
+    @pytest.mark.parametrize(
+        ("severity", "prefix"),
+        [("info", "ℹ️"), ("warning", "⚠️"), ("error", "⛔"), ("future-severity", "ℹ️")],
+    )
+    def test_notice_severity_uses_channel_prefixes(self, severity, prefix):
+        renderer = _RecordingRenderer(TransportCapabilities(max_message_chars=200))
+        event = OutputEvent(kind=NOTICE, text="Deprecated option", notice_severity=severity)
+        asyncio.run(renderer.dispatch(event))
+        assert renderer.calls == [("notice", f"{prefix} Deprecated option")]
+
+    def test_notice_defangs_broadcast_mentions(self):
+        renderer = _RecordingRenderer(TransportCapabilities(max_message_chars=200))
+        event = OutputEvent(
+            kind=NOTICE, text="ping <!channel> and @everyone", notice_severity="warning"
+        )
+        asyncio.run(renderer.dispatch(event))
+        sent = "".join(call[1] for call in renderer.calls)
+        assert "<!channel>" not in sent
+        assert "@everyone" not in sent
 
     def test_unknown_kind_raises(self):
         r = _RecordingRenderer(TransportCapabilities())
