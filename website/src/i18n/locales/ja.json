@@ -10426,6 +10426,7 @@
         "copied": "コピーしました",
         "copy_failed": "コピーできませんでした",
         "steering": "追加しています…",
+        "delivery_pending": "送信確認待ち…",
         "redirecting_the_running_turn_not_yet_confirmed": "実行中のターンをリダイレクトしています — まだ確認されていません。",
         "turn_ended_before_this_applied_runs_as_its_own_message": "適用される前にターンが終了したため、別のメッセージとして実行されます。"
       },
@@ -10904,6 +10905,7 @@
       "send_failed_with_error": "送信に失敗しました: {{error}}",
       "send_failed_with_error_restored": "このメッセージを送信できませんでした: {{error}}。入力欄にテキストを戻しました。",
       "delivery_unconfirmed": "送信が確認できません — 入力欄にテキストを戻しました。再送信する前に会話履歴を確認してください。",
+      "delivery_unconfirmed_pending": "送信が確認できません — このメッセージはまだ確認待ちの可能性があります。返信が届かない場合は、もう一度送信してください。",
       "could_not_read_file_reason": "{{path}} を読み取れませんでした（{{reason}}）",
       "screenshot_failed_reason": "スクリーンショットに失敗しました：{{reason}}",
       "http_status": "HTTP {{status}}",

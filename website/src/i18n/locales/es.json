@@ -10730,6 +10730,7 @@
         "copied": "Copiado",
         "copy_failed": "No se pudo copiar",
         "steering": "Redirigiendo…",
+        "delivery_pending": "Entrega pendiente…",
         "redirecting_the_running_turn_not_yet_confirmed": "Redirigiendo el turno en curso — aún sin confirmar.",
         "turn_ended_before_this_applied_runs_as_its_own_message": "El turno terminó antes de que esto se aplicara — se ejecuta como un mensaje independiente."
       },
@@ -11212,6 +11213,7 @@
       "send_failed_with_error": "Error al enviar: {{error}}",
       "send_failed_with_error_restored": "No se pudo enviar este mensaje: {{error}}. Tu texto ha vuelto al cuadro de redacción.",
       "delivery_unconfirmed": "Entrega sin confirmar: tu texto ha vuelto al cuadro de redacción; revisa la conversación antes de enviarlo de nuevo.",
+      "delivery_unconfirmed_pending": "Entrega sin confirmar: es posible que este mensaje siga pendiente. Si no llega ninguna respuesta, envíalo de nuevo.",
       "could_not_read_file_reason": "No se pudo leer {{path}} ({{reason}})",
       "screenshot_failed_reason": "Error en la captura de pantalla: {{reason}}",
       "http_status": "HTTP {{status}}",

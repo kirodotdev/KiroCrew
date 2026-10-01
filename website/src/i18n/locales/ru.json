@@ -10882,6 +10882,7 @@
         "copied": "Скопировано",
         "copy_failed": "Не удалось скопировать",
         "steering": "Направляется…",
+        "delivery_pending": "Ожидание доставки...",
         "redirecting_the_running_turn_not_yet_confirmed": "Перенаправление выполняющегося хода — ещё не подтверждено.",
         "turn_ended_before_this_applied_runs_as_its_own_message": "Ход завершился до того, как это применилось, — сообщение выполняется отдельно."
       },
@@ -11366,6 +11367,7 @@
       "send_failed_with_error": "Не удалось отправить: {{error}}",
       "send_failed_with_error_restored": "Не удалось отправить это сообщение: {{error}}. Ваш текст возвращён в поле ввода.",
       "delivery_unconfirmed": "Доставка не подтверждена — ваш текст возвращён в поле ввода; проверьте переписку, прежде чем отправлять снова.",
+      "delivery_unconfirmed_pending": "Доставка не подтверждена — возможно, это сообщение ещё ожидает доставки. Если ответ не придёт, отправь его снова.",
       "could_not_read_file_reason": "Не удалось прочитать {{path}} ({{reason}})",
       "screenshot_failed_reason": "Не удалось сделать снимок экрана: {{reason}}",
       "http_status": "HTTP {{status}}",

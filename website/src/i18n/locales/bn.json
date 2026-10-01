@@ -10578,6 +10578,7 @@
         "copied": "কপি হয়েছে",
         "copy_failed": "কপি করা যায়নি",
         "steering": "স্টিয়ার করা হচ্ছে…",
+        "delivery_pending": "ডেলিভারি অপেক্ষমাণ…",
         "redirecting_the_running_turn_not_yet_confirmed": "চলমান টার্ন পুনর্নির্দেশ করা হচ্ছে — এখনও নিশ্চিত হয়নি।",
         "turn_ended_before_this_applied_runs_as_its_own_message": "এটি প্রযোজ্য হওয়ার আগেই টার্ন শেষ হয়ে গেছে — এটি একটি আলাদা বার্তা হিসেবে চলে।"
       },
@@ -11058,6 +11059,7 @@
       "send_failed_with_error": "পাঠানো যায়নি: {{error}}",
       "send_failed_with_error_restored": "এই বার্তাটি পাঠানো যায়নি: {{error}}। আপনার লেখা ইনপুট বাক্সে ফিরিয়ে দেওয়া হয়েছে।",
       "delivery_unconfirmed": "ডেলিভারি নিশ্চিত হয়নি — আপনার লেখা ইনপুট বাক্সে ফিরিয়ে দেওয়া হয়েছে; আবার পাঠানোর আগে কথোপকথনটি দেখে নিন।",
+      "delivery_unconfirmed_pending": "ডেলিভারি নিশ্চিত হয়নি — এই বার্তাটি এখনও অপেক্ষমাণ থাকতে পারে। কোনো উত্তর না এলে, আবার পাঠাও।",
       "could_not_read_file_reason": "{{path}} পড়া যায়নি ({{reason}})",
       "screenshot_failed_reason": "স্ক্রিনশট ব্যর্থ হয়েছে: {{reason}}",
       "http_status": "HTTP {{status}}",

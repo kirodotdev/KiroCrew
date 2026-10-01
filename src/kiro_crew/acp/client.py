@@ -4164,6 +4164,26 @@ _RE_IMAGE_FORMAT_UNSUPPORTED = re.compile(
     re.IGNORECASE,
 )
 
+# kiro-cli's OWN refusal of a request no compaction round can make fit: "This
+# message is too large to send, and it contains no text that can be shortened.
+# Remove or reduce the attached content and try again." It is raised when the
+# context overflowed and the pending message is IRREDUCIBLE (image blocks have no
+# truncated form), and kiro-cli deliberately does not compact on the way to
+# saying so, nor does it append the failed message to the native history -- so the
+# conversation is byte-identical before and after the failure, and re-sending the
+# same context reproduces the verdict on every attempt. That makes it a
+# STRUCTURAL rejection in the same sense as _RE_MALFORMED_REQUEST (a size verdict
+# rather than a shape verdict, but equally deterministic), and a self-driving
+# caller that re-inlines the same attachment each cycle must stop rather than
+# re-fire it. Matched against the provider `data` field only, like its two
+# siblings: the ACP server hands the agent-loop error to `internal_error(text)`,
+# so the sentence rides in `data` beside the -32603 boilerplate `message`, and a
+# phrase echo carried only by `message` must not stamp an unrelated error. The
+# wording ends in "try again", so the terminal verdict is stated explicitly in
+# _is_transient_raw_error rather than left to the unknown fall-through: a
+# co-occurring retry hint or 5xx wrapper must not rescue a size verdict.
+_RE_OVERSIZED_REQUEST = re.compile(r"[Tt]his message is too large to send")
+
 # kiro-cli's wording for a concurrent in-flight prompt on the session, read by
 # the user-facing formatter below and by `_raise_acp_error`'s AcpPromptBusy
 # classification. One pattern, but two haystacks: the formatter scopes to the
@@ -4247,15 +4267,17 @@ def _is_transient_raw_error(error: object, available_models: Sequence[str] | Non
     wording. :class:`AcpError` carries this verdict (``.transient``) to the
     retry layer (``llm_helpers``, ``chat_runner``). Precedence:
     unentitled-model(terminal) → usage-limit(terminal) →
-    malformed-request(terminal) → model-unavailable → throttle →
+    malformed-request(terminal) → unsupported-image(terminal) →
+    oversized-request(terminal) → model-unavailable → throttle →
     credential-propagation(transient) → auth(terminal) →
     session-expiry(terminal) → connection failure(transient) → generic 5xx /
     pre-stream generation failure → unknown(terminal). Every step mirrors
-    :func:`_format_acp_error`'s if/elif order EXCEPT malformed-request, which
-    that formatter checks LAST: this
-    classifier deliberately hoists it above the 5xx family so a co-occurring
-    connector token or retry hint cannot rescue a payload the backend rejected
-    for its shape (see
+    :func:`_format_acp_error`'s if/elif order EXCEPT the structural branches:
+    that formatter checks malformed-request LAST and has no oversized-request
+    branch at all (the provider's own sentence is shown verbatim), while this
+    classifier deliberately hoists all three above the 5xx family so a
+    co-occurring connector token or retry hint cannot rescue a payload the
+    backend rejected for its shape or size (see
     ``test_terminal_branches_outrank_a_co_occurring_dispatch_failure``). A frame
     carrying both wordings therefore reads as 5xx prose with a terminal verdict;
     only the verdict drives retries.
@@ -4292,6 +4314,14 @@ def _is_transient_raw_error(error: object, available_models: Sequence[str] | Non
         # Terminal and structural: the validator rejected image data in this
         # exact conversation payload. A co-occurring generic 5xx wrapper must
         # not spend retries replaying the same unsupported bytes.
+        return False
+    if _RE_OVERSIZED_REQUEST.search(data):
+        # Terminal and structural: kiro-cli found no compaction round that could
+        # make this request fit and did not alter the conversation on the way to
+        # saying so, so the identical payload is refused identically on every
+        # retry. Stated here because the sentence itself ends in "try again":
+        # left to the unknown fall-through, a retry-hint pattern added below
+        # could read a size verdict as a momentary blip.
         return False
     if _RE_MODEL_UNAVAILABLE.search(data):
         return True
@@ -5231,10 +5261,17 @@ def _raise_acp_error(
     err = AcpError(formatted, transient=_is_transient_raw_error(error, available_models))
     # Tag deterministic STRUCTURAL rejections so self-driving callers can
     # stop resending identical context. Keep the classifier data-scoped: a phrase
-    # echoed only in JSON-RPC ``message`` cannot stamp an unrelated error.
+    # echoed only in JSON-RPC ``message`` cannot stamp an unrelated error. Three
+    # answers carry the tag: the backend's malformed-request rejection, its image
+    # validator's rejection, and kiro-cli's own refusal of a request it could not
+    # shrink to fit -- each reproduced exactly by re-sending the same context.
     raw_data_field = str(error.get("data", "") or "") if isinstance(error, dict) else ""
     _image_format_unsupported = bool(_RE_IMAGE_FORMAT_UNSUPPORTED.search(raw_data_field))
-    if _RE_MALFORMED_REQUEST.search(raw_data_field) or _image_format_unsupported:
+    if (
+        _RE_MALFORMED_REQUEST.search(raw_data_field)
+        or _image_format_unsupported
+        or _RE_OVERSIZED_REQUEST.search(raw_data_field)
+    ):
         err.structural_terminal = True
     if _image_format_unsupported:
         err.image_format_unsupported = True

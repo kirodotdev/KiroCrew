@@ -10730,6 +10730,7 @@
         "copied": "Copié",
         "copy_failed": "Échec de la copie",
         "steering": "Réorientation en cours…",
+        "delivery_pending": "Envoi en attente…",
         "redirecting_the_running_turn_not_yet_confirmed": "Réorientation du tour en cours — pas encore confirmé.",
         "turn_ended_before_this_applied_runs_as_its_own_message": "Le tour s'est terminé avant que ceci ne s'applique — s'exécute comme un message distinct."
       },
@@ -11212,6 +11213,7 @@
       "send_failed_with_error": "Échec de l'envoi : {{error}}",
       "send_failed_with_error_restored": "Impossible d'envoyer ce message : {{error}}. Votre texte est de retour dans le champ de saisie.",
       "delivery_unconfirmed": "Envoi non confirmé — votre texte est de retour dans le champ de saisie ; vérifiez la conversation avant de renvoyer.",
+      "delivery_unconfirmed_pending": "Envoi non confirmé — ce message est peut-être encore en attente. Si aucune réponse n'arrive, renvoie-le.",
       "could_not_read_file_reason": "Impossible de lire {{path}} ({{reason}})",
       "screenshot_failed_reason": "Échec de la capture d’écran : {{reason}}",
       "http_status": "HTTP {{status}}",
