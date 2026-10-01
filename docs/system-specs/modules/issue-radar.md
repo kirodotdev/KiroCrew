@@ -233,8 +233,9 @@ module, such as `_pr_action_preamble` from the PR handlers, is bound there, so
 patching it on the facade reaches only the callers that read it through the
 facade. `test/test_issue_radar_http_routes_surface.py` fails an owner module that
 binds a gate or a seam itself. The import is function-local because the facade
-imports the owners, so a module-scope import back would be a cycle. The same test
-extends the per-repo store-scoping guard over every owner module.
+imports the owners, so a module-scope import back would be a cycle.
+`tests/test_gitlab.py` holds the facade and every `http_routes` module to the
+per-repo store-scoping rule.
 
 | Method | Path | Purpose |
 |--------|------|---------|

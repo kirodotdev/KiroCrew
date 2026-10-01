@@ -1285,18 +1285,38 @@ class TestRoutesScopeEveryStoreCall(unittest.TestCase):
         issues -- a bug with no error and no visible symptom except wrong data. The
         only ``store`` functions allowed to be called directly are the
         config-identity ones, which are keyed by provider+host instead of by root.
+
+        Scanned: ``routes.py`` and every ``http_routes`` module its handlers are
+        composed from, enumerated from the package directory so a new owner is
+        scanned without an edit here.
         """
-        source = Path(inspect.getfile(routes)).read_text(encoding="utf-8")
+        facade = Path(inspect.getfile(routes))
+        paths = [facade, *sorted((facade.parent / "http_routes").rglob("*.py"))]
+        # Not vacuous: the per-repo handlers live in the scanned files.
+        for fn in (
+            routes._handle_issues,
+            routes._handle_pull_ai,
+            routes._run_pr_action,
+            routes._rebuild_deps,
+        ):
+            self.assertIn(Path(inspect.getsourcefile(fn) or ""), paths, fn.__name__)
         allowed = {
             "list_connected_repos", "set_repo_permissions", "remove_connected_repo",
             "read_repo_settings", "write_repo_settings", "add_setting_label",
             "add_connected_repo", "is_repo_connected",
         }
-        offenders = [
-            name
-            for name in re.findall(r"asyncio\.to_thread\(\s*store\.([a-z_]+)", source)
-            if name not in allowed
+        calls = [
+            (path.name, name)
+            for path in paths
+            for name in re.findall(
+                r"asyncio\.to_thread\(\s*store\.([a-z_]+)", path.read_text(encoding="utf-8")
+            )
         ]
+        # A floor on what the scan must find: the repositories handlers' direct
+        # config-identity reads. Fewer means the scan stopped reaching the code
+        # that makes these calls, and an empty scan would pass on nothing.
+        self.assertGreaterEqual(len(calls), 2, f"store calls found: {calls}")
+        offenders = [f"{file}: {name}" for file, name in calls if name not in allowed]
         self.assertEqual(offenders, [], f"unscoped per-repo store calls: {offenders}")
 
 

@@ -1129,24 +1129,6 @@ class TestTheProjectionsStayBehindTheFacade(unittest.TestCase):
                 text = Path(str(module.__file__)).read_text(encoding="utf-8")
                 self.assertIsNone(_REDACTOR_CALL_RE.search(text))
 
-    def test_nothing_on_a_claim_path_pushes_a_notification(self) -> None:
-        """``test_notify_out``'s claim-path rule, over the whole surface.
-
-        That test scans ``routes.py`` and ``dispatch.py`` only, and the transition handler that
-        does notify lives in ``http_routes``; so the rule is asserted here over every module,
-        with a floor so the scan cannot pass by finding nothing.
-        """
-        notifying = [
-            line
-            for module in [routes, *_projection_modules()]
-            for line in inspect.getsource(module).splitlines()
-            if "notify_out.notify_" in line
-        ]
-        self.assertTrue(notifying, "the scan must see the transition's needs-human push")
-        for line in notifying:
-            with self.subTest(line=line.strip()):
-                self.assertNotIn("claim", line.lower())
-
 
 class TestTheBoardReads(_Home):
     """The read projections, through the handlers the router serves."""

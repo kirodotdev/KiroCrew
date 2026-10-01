@@ -1580,11 +1580,15 @@ it and writing the original back -- under `create=True` it only deletes -- and t
 reaches every holder, so such a patch never passes `create=True` and a thread started
 inside it is joined before the patch ends. The contract test pins
 that every module holding a name holds the same object, that a write, a delete and
-their undo reach all of them, that every name in its frozen inventory resolves, that a
-star import carries exactly the inventory's public names, and that `_run_sequence`, the
-one name an owner rebinds through `global`, is read live from `ledger`. Every part logs
-through the facade's logger name, and each lock object has one identity, so log routing
-and the lock order above hold across the parts.
+their undo reach all of them, that `mock.patch` and `monkeypatch.setattr` nested up to
+four deep, in any mix, unwind on every holder as they do on a flat module, that no test
+passes `create=True` to a patch of a name the facade forwards to a part except the one
+allowlisted premise case, that every name in its frozen inventory resolves, that a star
+import carries exactly the inventory's public names, that `_run_sequence`, the one
+name an owner rebinds through `global`, is read live from `ledger`, and that no test
+module writes into a part's namespace apart from the contract test's own premise cases.
+Every part logs through the facade's logger name, and each lock object has one identity,
+so log routing and the lock order above hold across the parts.
 
 ## Dashboard surface
 
