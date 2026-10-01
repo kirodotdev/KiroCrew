@@ -1436,11 +1436,25 @@ class TestThePinnedPendingRead:
         assert detail is not None and detail["meta"] == {} and detail["kind"] == "new"
 
     def test_an_oversized_body_refuses_the_candidate(self, make_loader) -> None:
+        loader, pdir = self._candidate(make_loader)
+        (pdir / "SKILL.md").write_bytes(b"#" * (sk._PENDING_BODY_MAX_BYTES + 1))
+        assert loader.get_pending_skill("cand") is None
+        assert loader.pending_candidate_is_staged("cand") is True
+
+    def test_the_body_is_bounded_by_its_own_cap_not_the_script_cap(self, make_loader) -> None:
+        """A body is not a script: it is read under ``_PENDING_BODY_MAX_BYTES``.
+
+        Bounding it by ``MAX_SCRIPT_BYTES`` refused every generated candidate past
+        4 KiB as "not a plain tree of files" while its row stayed in the list.
+        """
         from kiro_crew.skills_script_validator import MAX_SCRIPT_BYTES
 
         loader, pdir = self._candidate(make_loader)
-        (pdir / "SKILL.md").write_text("# pad\n" * (MAX_SCRIPT_BYTES // 6 + 10), encoding="utf-8")
-        assert loader.get_pending_skill("cand") is None
+        body = "# pad\n" * (MAX_SCRIPT_BYTES // 6 + 10)
+        assert MAX_SCRIPT_BYTES < len(body) < sk._PENDING_BODY_MAX_BYTES
+        (pdir / "SKILL.md").write_text(body, encoding="utf-8")
+        detail = loader.get_pending_skill("cand")
+        assert detail is not None and detail["content"] == body
 
     def test_staged_probe_only_names_a_candidate_by_its_safe_slug(self, make_loader) -> None:
         loader, _pdir = self._candidate(make_loader)

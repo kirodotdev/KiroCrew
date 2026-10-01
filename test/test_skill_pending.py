@@ -847,6 +847,36 @@ def test_detail_rejects_symlinked_candidate(loader):
     assert loader.get_pending_skill("sym-cand") is None
 
 
+def test_detail_serves_body_larger_than_one_script_cap(loader):
+    """A SKILL.md over MAX_SCRIPT_BYTES is an ordinary candidate, not a refusal.
+
+    The pinned detail read once bounded the body by the per-SCRIPT cap (4 KiB).
+    A generated body carries up to AUTO_SKILL_MAX_PROCEDURE_CHARS of procedure,
+    so every candidate past 4 KiB answered 404 ``pending_skill_unreadable`` while
+    its row stayed in the pending list. The body is bounded by its own cap.
+    """
+    from kiro_crew.skills import AUTO_SKILL_MAX_PROCEDURE_CHARS, _PENDING_BODY_MAX_BYTES
+    from kiro_crew.skills_script_validator import MAX_SCRIPT_BYTES
+
+    line = "- step that is long enough to pad the body past the script cap\n"
+    procedure = "## Steps\n\n" + line * (MAX_SCRIPT_BYTES // len(line) + 8)
+    assert MAX_SCRIPT_BYTES < len(procedure) <= AUTO_SKILL_MAX_PROCEDURE_CHARS
+    assert loader.stage_skill_candidate(
+        "big-body",
+        description="desc big-body",
+        triggers="big-body",
+        procedure_md=procedure,
+        provenance=_prov(),
+    ) == "auto/big-body"
+    body_on_disk = (loader._pending_root() / "big-body" / "SKILL.md").read_bytes()
+    assert MAX_SCRIPT_BYTES < len(body_on_disk) < _PENDING_BODY_MAX_BYTES
+    assert loader.pending_candidate_is_staged("big-body")
+    detail = loader.get_pending_skill("big-body")
+    assert detail is not None
+    assert detail["content"].count(line) == procedure.count(line)
+    assert detail["meta"]["slug"] == "big-body"
+
+
 def test_nested_meta_credentials_redacted(loader):
     """Credentials nested inside .meta.json values must be redacted (GPT HIGH:
     top-level-only redaction leaked nested values)."""

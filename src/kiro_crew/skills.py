@@ -152,6 +152,17 @@ _PENDING_SCRIPT_MAX_ENTRIES = 64
 # the two walks must agree: a tree the verdict already declines to judge must not
 # be one the detail read still descends.
 _PENDING_SCRIPT_MAX_DEPTH = 8
+# Byte bound on a candidate's SKILL.md and .meta.json when the detail read opens
+# them through the pin. Deliberately NOT ``MAX_SCRIPT_BYTES``: that caps one
+# helper SCRIPT at 4 KiB, and a generated body is a different object. It carries
+# up to ``AUTO_SKILL_MAX_PROCEDURE_CHARS`` of procedure (10 KiB of ASCII, four
+# times that in multibyte text) plus frontmatter and provenance, so an ordinary
+# candidate exceeds the script cap and reading it under that cap refused the
+# candidate as "not a plain tree of files" -- on one real machine, 102 of 221
+# staged candidates. The bound here is the aggregate the scripts walk may spend
+# (entries x per-file), so one detail response stays within twice that budget
+# whatever an agent writes, and nothing a generator produces comes near it.
+_PENDING_BODY_MAX_BYTES = _PENDING_SCRIPT_MAX_ENTRIES * MAX_SCRIPT_BYTES
 _VALIDATION_REPORT_MAX_FINDINGS = 16
 _VALIDATION_REPORT_MAX_STRING_CHARS = 1024
 _VALIDATION_REPORT_TRUNCATION_KEY = "<truncated>"
@@ -3705,13 +3716,13 @@ class SkillsLoader:
             if any(pinned.is_link(name) for name in names):
                 return None
             try:
-                body = pinned.read_text("SKILL.md", max_bytes=MAX_SCRIPT_BYTES)
+                body = pinned.read_text("SKILL.md", max_bytes=_PENDING_BODY_MAX_BYTES)
             except (OSError, UnicodeDecodeError):
                 return None
             meta: dict = {}
             if ".meta.json" in names:
                 try:
-                    raw = pinned.read_text(".meta.json", max_bytes=MAX_SCRIPT_BYTES)
+                    raw = pinned.read_text(".meta.json", max_bytes=_PENDING_BODY_MAX_BYTES)
                 except (OSError, UnicodeDecodeError):
                     # Unreadable THROUGH THE PIN is a fence signal, not bad content:
                     # the name is not the plain file it screened as, which is the same
