@@ -6,8 +6,9 @@ import i18next from 'i18next'
 
 import { api } from '../../../api/client'
 import { useSimplifiedToolNames } from '../../../hooks/useSimplifiedToolNames'
-import { useAppDispatch, useAppSelector } from '../../../store'
+import { useAppDispatch, useAppSelector, useAppStore } from '../../../store'
 import { createSlot, resumeFromHistory, switchSlot } from '../../../store/chatSlice'
+import { focusComposerForOpenedSession, focusComposerForResumedSession } from '../../../pages/chat/composerFocus'
 import type { ChatSlot, ChatFolder, CronJob } from '../../../types'
 import type { Result, ResourceProvider } from '../types'
 import { toolStatusLabel, type ToolStatusDetail } from '../../../utils/toolStatusLabel'
@@ -240,6 +241,10 @@ export function sessionStatus(
  */
 export function useRecentsProvider(): ResourceProvider {
   const dispatch = useAppDispatch()
+  // A store HANDLE for the current rows' post-switch focus: the palette has
+  // closed by the time a `switchSlot` settles, so only the store can still say
+  // which slot is active. Read, never subscribed.
+  const store = useAppStore()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const slots = useAppSelector((s) => s.dashboard.slots)
@@ -313,8 +318,14 @@ export function useRecentsProvider(): ResourceProvider {
             isNew: isNew || undefined,
             timestamp: isNew ? undefined : fmtRelativeTime(slotRecency(s).timestamp),
             onActivate: () => {
-              dispatch(switchSlot({ key: s.key, announceOnMissing: true }))
+              // The slot is entered at `switchSlot.pending`, synchronously, and the
+              // composer's own autofocus skips a same-key open; the composer is
+              // focused once the switch has LANDED (#15732), never while the gateway
+              // round trip is still in flight -- a caret placed before that would
+              // file the keystrokes typed meanwhile under a slot a 404 then evicts.
+              const switched = dispatch(switchSlot({ key: s.key, announceOnMissing: true })).unwrap()
               navigate('/chat')
+              focusComposerForOpenedSession(switched, s.key, store)
             },
           }
         })
@@ -388,7 +399,11 @@ export function useRecentsProvider(): ResourceProvider {
             folder: folderName(s.folder_id),
             timestamp: fmtRelativeTime(s.modified),
             onActivate: () => {
-              void dispatch(resumeFromHistory({ key: s.key, title: s.title || s.key }))
+              // Same contract as the sessions provider's openSession: focus once
+              // the resume has entered the session, nothing on failure (#15732).
+              focusComposerForResumedSession(
+                dispatch(resumeFromHistory({ key: s.key, title: s.title || s.key })).unwrap(),
+              )
               navigate('/chat')
             },
           }))
@@ -396,5 +411,5 @@ export function useRecentsProvider(): ResourceProvider {
         return [...current, ...planned, ...older]
       },
     }
-  }, [dispatch, navigate, queryClient, slots, unread, slotStatusDetail, simplifiedToolNames])
+  }, [dispatch, store, navigate, queryClient, slots, unread, slotStatusDetail, simplifiedToolNames])
 }

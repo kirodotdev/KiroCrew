@@ -56,10 +56,12 @@ vi.mock('../../../store/chatSlice', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../store/chatSlice')>()
   return {
     ...actual,
-    // Thunk factory: dispatching the returned function is a no-op beyond the spy.
+    // Thunk factory: dispatching the returned function is a no-op beyond the
+    // spy, but it answers with the real dispatch shape -- the row unwraps it to
+    // focus the composer once the resume has entered the session.
     resumeFromHistory: (ref: unknown) => {
       resumeSpy(ref)
-      return () => Promise.resolve()
+      return () => ({ unwrap: () => Promise.resolve({ ok: true, surface: '' }) })
     },
   }
 })

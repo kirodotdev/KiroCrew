@@ -32,6 +32,9 @@ const storeState: {
 vi.mock('../../store', () => ({
   useAppDispatch: () => dispatch,
   useAppSelector: (fn: (s: unknown) => unknown) => fn(storeState),
+  // The session rows read the active slot through a store HANDLE once their
+  // switch settles; the same fixture state answers that read.
+  useAppStore: () => ({ getState: () => storeState }),
 }))
 vi.mock('../../store/chatSlice', () => ({
   createSlot: (arg: unknown) => ({ type: 'createSlot', arg }),
@@ -639,6 +642,9 @@ describe('CommandBarOverlay rows', () => {
     // The column carries live state INSTEAD of a static kind word.
     expect(rows[0].textContent).not.toContain('Command')
     // Activating one switches to it, the same way every other surface opens a session.
+    // The row unwraps the dispatch (the composer is focused once the switch lands),
+    // so the mock answers with the thunk's shape.
+    resolvingDispatch()
     fireEvent.mouseDown(rows[0])
     expect(dispatch).toHaveBeenCalledWith({ type: 'switchSlot', key: 'slot-a', announceOnMissing: true })
   })
@@ -680,6 +686,7 @@ describe('CommandBarOverlay rows', () => {
     // A session row carries no static kind word; its column is for live state.
     expect(rows[0].textContent).not.toContain('Command')
     // Activating one switches to it, the same way every other surface opens a session.
+    resolvingDispatch()
     fireEvent.mouseDown(rows[0])
     expect(dispatch).toHaveBeenCalledWith({
       type: 'switchSlot',

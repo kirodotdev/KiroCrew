@@ -34,6 +34,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock('../../../store', () => ({
   useAppDispatch: () => mocks.dispatch,
   useAppSelector: (selector: (state: MockState) => unknown) => selector(mocks.state),
+  useAppStore: () => ({ getState: () => mocks.state }),
 }))
 
 vi.mock('react-router-dom', () => ({

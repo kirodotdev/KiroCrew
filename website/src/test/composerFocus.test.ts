@@ -23,7 +23,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, extname, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { focusComposer, focusComposerAfter, queryComposer, revealComposer, releaseComposerForKeyboardSwitch, consumeComposerRelease } from '../pages/chat/composerFocus'
+import { COMPOSER_EXPAND_EVENT, focusComposer, focusComposerAfter, focusComposerForOpenedSession, focusComposerForResumedSession, queryComposer, revealComposer, releaseComposerForKeyboardSwitch, consumeComposerRelease } from '../pages/chat/composerFocus'
 
 let touch = false
 vi.mock('../utils/isTouchDevice', () => ({ isTouchDevice: () => touch }))
@@ -124,6 +124,233 @@ describe('focusComposerAfter', () => {
     const unhandled = vi.fn()
     process.on('unhandledRejection', unhandled)
     focusComposerAfter(Promise.reject(new Error('gateway offline')))
+    await flushFrame()
+    await flushFrame()
+    process.off('unhandledRejection', unhandled)
+    expect(document.activeElement).not.toBe(composer)
+    expect(unhandled).not.toHaveBeenCalled()
+  })
+})
+
+describe('focusComposerForOpenedSession — a quick-search surface opened a session (#15732)', () => {
+  const OPENED = 'zzq-opened'
+  type Claim = { requestId: string | null; target: string | null }
+  /** A store whose active slot and switch claim the test moves by hand, standing
+   *  in for the `switchSlot` reducers: `pending` enters the target and takes the
+   *  claim, `fulfilled` clears the claim it owns, a 404's `rejected` clears it
+   *  and unwinds to the origin, a later gesture moves the slot elsewhere. */
+  const storeOn = (initial: string, claim: Claim = { requestId: null, target: null }) => {
+    let activeSlot = initial
+    let current = claim
+    const listeners = new Set<() => void>()
+    return {
+      getState: () => ({ chat: { activeSlot, slotSwitchRequestId: current.requestId, slotSwitchTarget: current.target } }),
+      subscribe: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener) } },
+      set: (patch: { activeSlot?: string; claim?: Claim }) => {
+        if (patch.activeSlot !== undefined) activeSlot = patch.activeSlot
+        if (patch.claim !== undefined) current = patch.claim
+        listeners.forEach(listener => listener())
+      },
+    }
+  }
+
+  it('does NOT focus while the switch is in flight, then focuses once it has fulfilled', async () => {
+    // The window under test: `pending` has already entered the target, so a caret
+    // placed here would route keystrokes to a slot the gateway may still refuse.
+    let resolve!: (v: unknown) => void
+    const store = storeOn(OPENED)
+    focusComposerForOpenedSession(new Promise(r => { resolve = r }), OPENED, store)
+    await flushFrame()
+    expect(document.activeElement).not.toBe(composer)
+    resolve({ key: OPENED })
+    await flushFrame()
+    expect(document.activeElement).toBe(composer)
+  })
+
+  it('focuses on the frame after an already-fulfilled switch, not synchronously', async () => {
+    focusComposerForOpenedSession(Promise.resolve({ key: OPENED }), OPENED, storeOn(OPENED))
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(document.activeElement).not.toBe(composer)
+    await flushFrame()
+    expect(document.activeElement).toBe(composer)
+  })
+
+  it('focuses nothing when the switch rejects — the unwind restored the origin — and does not leak the rejection', async () => {
+    const unhandled = vi.fn()
+    process.on('unhandledRejection', unhandled)
+    // The store reads as the reducers leave it after a 404: back on the origin.
+    focusComposerForOpenedSession(Promise.reject(Object.assign(new Error('not found'), { status: 404 })), OPENED, storeOn('zzq-origin'))
+    await flushFrame()
+    await flushFrame()
+    process.off('unhandledRejection', unhandled)
+    expect(document.activeElement).not.toBe(composer)
+    expect(unhandled).not.toHaveBeenCalled()
+  })
+
+  it('focuses nothing when the user has moved on before the switch fulfilled', async () => {
+    // A second gesture during the round trip: `pending` for the newer target has
+    // taken the active slot, and the fulfilled reducer ignores this payload. So
+    // does the focus -- the newer switch owns the composer now.
+    let resolve!: (v: unknown) => void
+    const store = storeOn(OPENED)
+    focusComposerForOpenedSession(new Promise(r => { resolve = r }), OPENED, store)
+    store.set({ activeSlot: 'zzq-newer' })
+    resolve({ key: OPENED })
+    await flushFrame()
+    expect(document.activeElement).not.toBe(composer)
+  })
+
+  it('reads the active slot ON the frame, so a slot change between settlement and paint still counts', async () => {
+    const store = storeOn(OPENED)
+    focusComposerForOpenedSession(Promise.resolve({ key: OPENED }), OPENED, store)
+    await Promise.resolve()
+    await Promise.resolve()
+    store.set({ activeSlot: 'zzq-newer' })
+    await flushFrame()
+    expect(document.activeElement).not.toBe(composer)
+  })
+
+  it('defers to a newer SAME-KEY switch that still owns the claim, and focuses once it has landed', async () => {
+    // The older of two overlapping reads of the same slot fulfilled first: the
+    // slot is active, but the newer request owns the claim and may yet unwind the
+    // selection. Focus waits for that claim to clear with the slot still active.
+    const store = storeOn(OPENED, { requestId: 'zzq-req-2', target: OPENED })
+    focusComposerForOpenedSession(Promise.resolve({ key: OPENED }), OPENED, store)
+    await flushFrame()
+    await flushFrame()
+    expect(document.activeElement).not.toBe(composer)
+    // An unrelated store change while the claim is still pending changes nothing.
+    store.set({})
+    await flushFrame()
+    expect(document.activeElement).not.toBe(composer)
+    store.set({ claim: { requestId: null, target: null } })
+    await flushFrame()
+    expect(document.activeElement).toBe(composer)
+  })
+
+  it('drops the deferred focus when the newer same-key switch unwinds the selection (404)', async () => {
+    const store = storeOn(OPENED, { requestId: 'zzq-req-2', target: OPENED })
+    focusComposerForOpenedSession(Promise.resolve({ key: OPENED }), OPENED, store)
+    await flushFrame()
+    await flushFrame()
+    expect(document.activeElement).not.toBe(composer)
+    // The rejected reducer clears the claim and restores the origin in one write.
+    store.set({ activeSlot: 'zzq-origin', claim: { requestId: null, target: null } })
+    await flushFrame()
+    await flushFrame()
+    expect(document.activeElement).not.toBe(composer)
+    // And a later switch back to the slot is not this gesture's to focus.
+    store.set({ activeSlot: OPENED })
+    await flushFrame()
+    expect(document.activeElement).not.toBe(composer)
+  })
+
+  it('does not defer to a pending switch for ANOTHER slot — that one moved the active slot already', async () => {
+    const store = storeOn('zzq-newer', { requestId: 'zzq-req-2', target: 'zzq-newer' })
+    focusComposerForOpenedSession(Promise.resolve({ key: OPENED }), OPENED, store)
+    await flushFrame()
+    await flushFrame()
+    expect(document.activeElement).not.toBe(composer)
+    store.set({ claim: { requestId: null, target: null } })
+    await flushFrame()
+    expect(document.activeElement).not.toBe(composer)
+  })
+
+  it('skips touch devices, as the sidebar autofocus does', async () => {
+    touch = true
+    focusComposerForOpenedSession(Promise.resolve({ key: OPENED }), OPENED, storeOn(OPENED))
+    await flushFrame()
+    expect(document.activeElement).not.toBe(composer)
+  })
+
+  it('leaves a collapsed composer collapsed: opening a session is navigation, not a typing intent', async () => {
+    // A collapsed composer is unmounted; the only way to reach it is the expand
+    // request, which `focusComposer` sends and this helper deliberately does not —
+    // the sidebar's autofocus leaves the reading preference alone too.
+    composer.remove()
+    const expandRequested = vi.fn((e: Event) => e.preventDefault())
+    window.addEventListener(COMPOSER_EXPAND_EVENT, expandRequested)
+    try {
+      focusComposerForOpenedSession(Promise.resolve({ key: OPENED }), OPENED, storeOn(OPENED))
+      await flushFrame()
+      expect(expandRequested).not.toHaveBeenCalled()
+    } finally {
+      window.removeEventListener(COMPOSER_EXPAND_EVENT, expandRequested)
+    }
+  })
+
+  it('declines while an editable element holds focus — a field the user chose mid-flight keeps the caret', async () => {
+    // The sidebar's own rule, read on the frame. The surfaces leave focus on
+    // `<body>` when they close (the Command Bar's trap captures its own autoFocus
+    // input, so its restore reaches nothing), so an editable element focused by
+    // the time the switch lands is one the user chose during the round trip --
+    // the sidebar's search box, a title editor, the bar opened again -- and the
+    // late caret must not take it from them.
+    const searchBox = document.createElement('input')
+    document.body.appendChild(searchBox)
+    try {
+      searchBox.focus()
+      expect(document.activeElement).toBe(searchBox)
+      focusComposerForOpenedSession(Promise.resolve({ key: OPENED }), OPENED, storeOn(OPENED))
+      await flushFrame()
+      await flushFrame()
+      expect(document.activeElement).toBe(searchBox)
+    } finally {
+      searchBox.remove()
+    }
+  })
+
+  it('focuses nothing while a session-grid pane is mounted: in split view no composer is provably the opened slot\'s', async () => {
+    // Split view: every pane mounts its own composer bound to its own slot, and
+    // the grid's focus model never follows `activeSlot`. The only composer the
+    // lookup can offer is the grid-focused pane's -- a session the gesture did
+    // not open -- so the surface says nothing, as it did before this helper.
+    const pane = document.createElement('div')
+    pane.setAttribute('data-chat-pane', 'focused')
+    document.body.appendChild(pane)
+    pane.appendChild(composer)
+    try {
+      focusComposerForOpenedSession(Promise.resolve({ key: OPENED }), OPENED, storeOn(OPENED))
+      await flushFrame()
+      await flushFrame()
+      expect(document.activeElement).not.toBe(composer)
+    } finally {
+      document.body.appendChild(composer)
+      pane.remove()
+    }
+  })
+})
+
+describe('focusComposerForResumedSession — only once the resume entered the session', () => {
+  const entered = { ok: true, surface: '' }
+
+  it('does NOT focus while the resume is in flight, then focuses once it has entered', async () => {
+    let resolve!: (r: { ok: boolean; surface?: string }) => void
+    focusComposerForResumedSession(new Promise(r => { resolve = r }))
+    await flushFrame()
+    expect(document.activeElement).not.toBe(composer)
+    resolve(entered)
+    await flushFrame()
+    expect(document.activeElement).toBe(composer)
+  })
+
+  it('focuses nothing for an `ok: false` answer — the reducer left the active slot where it was', async () => {
+    focusComposerForResumedSession(Promise.resolve({ ok: false, surface: '' }))
+    await flushFrame()
+    expect(document.activeElement).not.toBe(composer)
+  })
+
+  it('focuses nothing for a surface the chat page cannot display (#3624)', async () => {
+    focusComposerForResumedSession(Promise.resolve({ ok: true, surface: 'slack' }))
+    await flushFrame()
+    expect(document.activeElement).not.toBe(composer)
+  })
+
+  it('focuses nothing when the resume rejects, and does not leak the rejection', async () => {
+    const unhandled = vi.fn()
+    process.on('unhandledRejection', unhandled)
+    focusComposerForResumedSession(Promise.reject(new Error('404')))
     await flushFrame()
     await flushFrame()
     process.off('unhandledRejection', unhandled)

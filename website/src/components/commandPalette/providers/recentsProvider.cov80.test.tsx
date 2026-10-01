@@ -29,8 +29,10 @@ vi.mock('../../../api/client', () => ({ api: apiMock }))
 
 const thunks = vi.hoisted(() => ({
   createSlot: vi.fn(() => () => ({ unwrap: () => Promise.resolve('zzq-new') })),
-  switchSlot: vi.fn((key: string) => ({ type: 'zzq/switchSlot', payload: key })),
-  resumeFromHistory: vi.fn((arg: unknown) => ({ type: 'zzq/resume', payload: arg })),
+  // Thunks, like the real ones: the rows unwrap the dispatch to focus the
+  // composer once the switch, or the resume, has entered the session.
+  switchSlot: vi.fn((arg: { key: string }) => () => ({ unwrap: () => Promise.resolve({ key: arg.key }) })),
+  resumeFromHistory: vi.fn(() => () => ({ unwrap: () => Promise.resolve({ ok: true, surface: '' }) })),
 }))
 vi.mock('../../../store/chatSlice', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),

@@ -8,6 +8,7 @@ import { api } from '../../../api/client'
 import { useAppDispatch, useAppSelector } from '../../../store'
 import { resumeFromHistory } from '../../../store/chatSlice'
 import { useSelectInstance } from '../../../hooks/useSelectInstance'
+import { focusComposerForResumedSession } from '../../../pages/chat/composerFocus'
 import { fuzzyMatch, substringIndices } from '../../../utils/fuzzyMatch'
 import { i18nT } from '../../../i18n/t'
 import type { Result, ResourceProvider } from '../types'
@@ -348,7 +349,12 @@ export function useSessionsProvider(opts?: {
             selectInstance(ref.instanceId)
             return
           }
-          void dispatch(resumeFromHistory(ref))
+          // Focus the composer once the resume has entered the session (#15732):
+          // ChatInput's own autofocus never runs when the chosen session is the one
+          // already active, and declines while this surface's input still holds
+          // focus. Unwrapped, so a failed resume focuses nothing; the slice records
+          // the failure either way (see resumeFromHistory.rejected).
+          focusComposerForResumedSession(dispatch(resumeFromHistory(ref)).unwrap())
           // The palette can be opened from ANY page (artifacts, settings, …);
           // resumeFromHistory only activates the slot in the store, so land
           // the user on the chat surface where that slot renders.
