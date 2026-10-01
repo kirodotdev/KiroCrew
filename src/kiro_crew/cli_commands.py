@@ -216,6 +216,16 @@ def _cli_validated_workspace_dst(ws_dir: str, *, operation: str, name: str) -> P
     return validated
 
 
+def _ws_dir_composed(ws_dir: str) -> Path:
+    """*ws_dir* as a path: ``~`` expanded, a relative dir joined onto the data home.
+
+    NOT resolved. The one composition the containment check resolves and the
+    create hands to the link screen as the unresolved leaf.
+    """
+    expanded = Path(ws_dir).expanduser()
+    return expanded if expanded.is_absolute() else config_dir() / expanded
+
+
 def _ws_dir_resolves_inside_home(ws_dir: str) -> Path | None:
     """The resolved path when *ws_dir* is a STRICT descendant of the data home, else None.
 
@@ -260,8 +270,7 @@ def _ws_dir_resolves_inside_home(ws_dir: str) -> Path | None:
     thing that crashes.
     """
     try:
-        expanded = Path(ws_dir).expanduser()
-        candidate = (expanded if expanded.is_absolute() else config_dir() / expanded).resolve()
+        candidate = _ws_dir_composed(ws_dir).resolve()
         root = config_dir().resolve()
         if candidate == root or not candidate.is_relative_to(root):
             return None
@@ -640,7 +649,9 @@ def _handle_workspace(args: argparse.Namespace) -> None:
             # write -- a concurrent create can already have adopted and registered it.
             else:
                 try:
-                    materialize_workspace_dir(dst_path, display=ws_dir)
+                    materialize_workspace_dir(
+                        dst_path, leaf=_ws_dir_composed(ws_dir), display=ws_dir
+                    )
                 except WorkspaceDirUnusable as exc:
                     raise _CliConflict(str(exc)) from exc
             workspaces[args.name] = dataclasses.asdict(WorkspaceConfig(dir=ws_dir))

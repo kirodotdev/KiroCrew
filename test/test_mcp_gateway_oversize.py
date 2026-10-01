@@ -16,6 +16,7 @@ import os
 import time
 from unittest.mock import patch
 
+from conftest import make_dir_link
 from kiro_crew import platform_compat as pc
 from kiro_crew.mcp_gateway.spill import (
     cleanup_old_spill_files,
@@ -361,3 +362,30 @@ class TestSpillCleanup:
 
         assert deleted == 0
         assert fresh_file.exists()
+
+    def test_cleanup_refuses_a_junction_at_the_spill_dir(self, tmp_path):
+        """A directory JUNCTION at the spill dir name must not be swept THROUGH.
+
+        A junction answers ``is_dir()`` True and ``is_symlink()`` False, so an
+        ``is_symlink()`` guard let it past and the sweep deleted 24h-old files
+        under the junction's target -- a confused-deputy delete outside the data
+        home. ``is_link_or_junction`` refuses it. ``make_dir_link`` plants a real
+        junction on Windows and a directory symlink on POSIX, so the refusal is
+        pinned on every shard.
+        """
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        old_file = outside / "old-response.json"
+        old_file.write_text("not ours to delete")
+        old_time = time.time() - (25 * 3600)
+        os.utime(old_file, (old_time, old_time))
+
+        # KIROCREW_HOME/mcp_spill IS the junction, aimed at ``outside``.
+        make_dir_link(tmp_path / "mcp_spill", outside)
+
+        with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
+            deleted = cleanup_old_spill_files()
+
+        assert deleted == 0
+        # The sweep never followed the junction: the target's old file survives.
+        assert old_file.exists()

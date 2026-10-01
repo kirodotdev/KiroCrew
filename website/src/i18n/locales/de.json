@@ -13172,7 +13172,8 @@
         "update": "Aktualisieren",
         "validation_findings": "Validierungsergebnisse",
         "version_range": "(v{{from}} → v{{to}})",
-        "workspace": "Workspace"
+        "workspace": "Workspace",
+        "detail_unreadable": "Die Dateien dieses Kandidaten lassen sich nicht sicher lesen, daher ist die Prüfung nicht möglich. Verwirf ihn, um ihn aus der Warteschlange zu entfernen."
       },
       "steeringTab": {
         "always_on_markdown_conventions_injected_into_eve": "Markdown-Konventionen, die der Agent liest. Der Einbindungsmodus jeder Datei entscheidet wann: immer, nur für passende Dateien oder bei Bedarf. Globale Dateien liegen in ~/.kiro/steering und gelten überall; Workspace-Dateien liegen in <project>/.kiro/steering und gelten nur für dieses Projekt.",

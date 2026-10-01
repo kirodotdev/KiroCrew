@@ -18,7 +18,7 @@ import pytest
 from oauth_url_corpus import OPERATOR_EXTENSION_OAUTH_URLS
 from test_connections_mint import _FS_ATTRS, _FS_NAMES, _called_names
 
-from conftest import requires_symlinks
+from conftest import make_dir_link, requires_symlinks
 from kiro_crew import security
 from kiro_crew.agent_files import AGENT_FILENAME
 from kiro_crew.connections import mint, tool_aliases, warm
@@ -1073,6 +1073,24 @@ def test_a_dangling_symlink_at_the_spec_path_reads_as_foreign(_agents_dir: Path)
     planted.symlink_to(_agents_dir / "nowhere" / "target.json")
 
     assert warm._warm_spec_is_foreign(planted) is True
+
+
+def test_a_junction_at_the_spec_path_reads_as_foreign(_agents_dir: Path):
+    """A directory JUNCTION is the only directory link an unprivileged Windows writer can
+    plant, and it answers ``is_symlink()`` False (and ``exists()`` False when its target is
+    absent), so an ``is_symlink() or exists()`` guard read a junction at a warm-spec name as
+    a free path -- the writer replaced it and the sweep unlinked it, destroying an occupant
+    this module does not own. make_dir_link plants a junction on Windows and a directory
+    symlink on POSIX, so the occupied verdict is pinned on every shard."""
+    outside = _agents_dir / "outside"
+    outside.mkdir()
+    (outside / "keep.txt").write_text("not ours", encoding="utf-8")
+    planted = _agents_dir / "kirocrew-mint-warm-notion.json"
+    make_dir_link(planted, outside)
+
+    assert warm._warm_spec_is_foreign(planted) is True
+    # The refusal never followed the link: its target is untouched.
+    assert (outside / "keep.txt").read_text(encoding="utf-8") == "not ours"
 
 
 def test_every_spec_a_warm_plan_writes_carries_the_ownership_sentinel(_agents_dir: Path):

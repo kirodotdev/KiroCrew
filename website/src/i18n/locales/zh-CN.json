@@ -12975,7 +12975,8 @@
         "update": "更新",
         "validation_findings": "验证结果",
         "version_range": "(v{{from}} → v{{to}})",
-        "workspace": "工作区"
+        "workspace": "工作区",
+        "detail_unreadable": "该候选项的文件无法安全读取，因此无法审核。驳回它即可将其从队列中移除。"
       },
       "steeringTab": {
         "always_on_markdown_conventions_injected_into_eve": "智能体读取的 Markdown 约定。每个文件的包含模式决定何时生效：始终、仅匹配文件时，或按需。全局文件位于 ~/.kiro/steering 并处处生效；工作区文件位于 <project>/.kiro/steering，仅对该项目生效。",

@@ -47,9 +47,11 @@ from kiro_crew.hooks import (
 from kiro_crew.memory_recall import recall_terms
 from kiro_crew.metrics.provider import get_recorder
 from kiro_crew.platform_compat import (
+    PinnedDirectory,
     ensure_owner_rwx_dirs,
     file_lock,
     is_link_or_junction,
+    pinned_directory,
     rmtree_force,
 )
 from kiro_crew.project_scope import project_scope_satisfied
@@ -80,6 +82,13 @@ _CATALOG_READ_BATCH = 64
 # One script-entry population budget for the pending verdict and API reports.
 # Reports may additionally retain ONE fixed truncation-summary entry.
 _PENDING_SCRIPT_MAX_ENTRIES = 64
+# Depth bound shared by BOTH pinned traversals of a pending candidate -- the
+# verdict walk and the detail read. A candidate tree is written directly by an
+# agent, so a nesting chain is free to produce; bounding well below Python's
+# recursion limit keeps it from turning a read into a crash. One constant because
+# the two walks must agree: a tree the verdict already declines to judge must not
+# be one the detail read still descends.
+_PENDING_SCRIPT_MAX_DEPTH = 8
 _VALIDATION_REPORT_MAX_FINDINGS = 16
 _VALIDATION_REPORT_MAX_STRING_CHARS = 1024
 _VALIDATION_REPORT_TRUNCATION_KEY = "<truncated>"
@@ -5575,15 +5584,28 @@ class SkillsLoader:
 
     @staticmethod
     def _candidate_has_symlink(pdir: Path) -> bool:
-        """True if the candidate dir itself or any entry under it is a symlink —
+        """True if the candidate dir itself or any entry under it is a link —
         so the read/approve paths never follow an LLM-planted link to a
         sensitive file. (Scripts always require human review before going live;
-        this is defense-in-depth, not the primary control.)"""
-        if os.path.islink(str(pdir)):
+        this is defense-in-depth, not the primary control.)
+
+        "Link" is :func:`platform_compat.is_link_or_junction`, not
+        ``os.path.islink``: a Windows directory junction is a reparse point
+        ``islink`` reports as a plain directory, so the fence answered False for
+        one AND ``os.walk`` descended through it -- the read path then reached
+        whatever it pointed at, which is the exact escape this refuses.
+        Directories are tested before files because a topdown walk offers a
+        directory in ``dirs`` before descending into it, so answering there is
+        what keeps this from ever walking THROUGH a link to reach its verdict.
+        """
+        if is_link_or_junction(pdir):
             return True
         for root, dirs, files in os.walk(pdir):
-            for nm in list(dirs) + list(files):
-                if os.path.islink(os.path.join(root, nm)):
+            for nm in list(dirs):
+                if is_link_or_junction(os.path.join(root, nm)):
+                    return True
+            for nm in files:
+                if is_link_or_junction(os.path.join(root, nm)):
                     return True
         return False
 
@@ -5629,6 +5651,179 @@ class SkillsLoader:
         return out
 
     _ALLOWED_CANDIDATE_TOP = frozenset({"SKILL.md", ".meta.json", "scripts"})
+
+    def _collect_scripts_pinned(
+        self,
+        pinned: PinnedDirectory,
+        rel: tuple[str, ...],
+        out: list[dict],
+        budget: dict[str, int],
+    ) -> bool:
+        """Collect ``{filename, content}`` under *pinned*, refusing a link anywhere.
+
+        Returns False when the tree is not readable as plain files and directories, or
+        when it does not fit the budget, which the caller turns into a refusal of the
+        whole candidate. Relative filenames carry the platform separator, because they
+        are served through the API.
+
+        Every bound here is the verdict walk's bound, deliberately: the SAME
+        ``_PENDING_SCRIPT_MAX_ENTRIES`` entries and the same ``MAX_SCRIPT_BYTES`` per
+        file. Those two ARE the bound on what this accumulates -- at most
+        ``entries * per-file`` bytes -- so there is deliberately no third, aggregate
+        check: with both of the above in force it could never fire, and a guard that
+        cannot fire reads as protection while providing none. This runs per request
+        against a tree an agent writes directly, so reusing the verdict's numbers is
+        also what keeps the two from disagreeing about which candidates are readable.
+        *budget* is threaded through the recursion rather than recreated per directory,
+        or a planted tree of many small directories would each get a fresh allowance and
+        the total would be unbounded again. Names are enumerated LAZILY against the
+        entry cap for the same reason the verdict walk does it: an eager
+        ``sorted(names())`` spends the allocation before any budget can refuse it.
+
+        Depth is bounded by ``_PENDING_SCRIPT_MAX_DEPTH``, the same cap the verdict
+        walk uses, and bounded the SAME WAY: that walk refuses to descend when the
+        directory it is standing in is already at the cap, so it enumerates the level
+        AT the cap. The comparison here is ``>`` rather than ``>=`` for exactly that
+        reason -- one level tighter would refuse a tree the verdict judged fine, and
+        the detail read would answer 404 for a candidate that is waiting for review. The tree is written directly by an agent, so a nesting chain deep
+        enough to exhaust the interpreter's recursion limit is free to produce, and
+        the resulting ``RecursionError`` would surface as a failed request rather
+        than a refused candidate. Refusing at the cap also keeps the two traversals
+        in step: a tree the verdict declines to judge is not one this still reads.
+        """
+        if len(rel) > _PENDING_SCRIPT_MAX_DEPTH:
+            return False
+        listed = pinned.names_bounded(_PENDING_SCRIPT_MAX_ENTRIES)
+        if listed is None:
+            return False
+        for name in sorted(listed):
+            if pinned.is_link(name):
+                return False
+            budget["entries"] += 1
+            if budget["entries"] > _PENDING_SCRIPT_MAX_ENTRIES:
+                # Directories spend the entry budget too, so a planted tree of many
+                # nearly-empty ones cannot buy traversal the files could not.
+                return False
+            if pinned.is_dir(name):
+                sub = pinned.child_if_real_dir(name)
+                if sub is None:
+                    # The open refusing IS the protection: what is at the name is not
+                    # the real directory it screened as. Refuse the candidate.
+                    return False
+                with sub:
+                    if not self._collect_scripts_pinned(sub, (*rel, name), out, budget):
+                        return False
+                continue
+            try:
+                text = pinned.read_text(name, max_bytes=MAX_SCRIPT_BYTES)
+            except (OSError, UnicodeDecodeError):
+                # ONE refusal policy, so nothing here reasons about error classes.
+                # An entry that cannot be read as text is not shown to the reviewer,
+                # and this API exists for INFORMED approval -- silently omitting it
+                # would let a clean-looking detail stand for a candidate that approve
+                # then refuses, or worse, promotes unreviewed. A hardlink, a
+                # non-regular entry and one over the per-file cap arrive here too,
+                # each refused by the read itself.
+                return False
+            out.append(
+                {
+                    "filename": os.path.join(*rel, name) if rel else name,
+                    "content": text,
+                }
+            )
+        return True
+
+    def _read_candidate_pinned(self, pdir: Path) -> tuple[str, dict, list[dict]] | None:
+        """Read a candidate's ``SKILL.md``, ``.meta.json`` and scripts through ONE pin chain.
+
+        The traversal both judges and reads. The screen-then-read shape this replaces
+        refused a link that was PRESENT at the check, so a candidate tree the LLM can
+        write needed only to have the link absent at the screen and present by the
+        ``read_text`` a few statements later, and the contents of a file of its
+        choosing were served -- the redaction passes cover credential and exfil-URL
+        shapes only, so anything else came back intact. Here every open refuses a link
+        at the name itself, so there is no gap between the judgement and the read.
+
+        Returns None when the candidate cannot be read as a plain tree: a link
+        anywhere, a non-regular entry, or a directory replaced underneath. "Anywhere"
+        is the whole top level, not only the names this reads: the approve path
+        refuses an unexpected top-level entry outright, so a detail read that served
+        one would be MORE permissive than the approve it exists to inform.
+        """
+        try:
+            pinned = pinned_directory(pdir)
+        except OSError:
+            return None
+        with pinned:
+            # Screen the whole top level BEFORE a byte is read, so the refusal this
+            # docstring promises is structural rather than a side effect of which
+            # names happen to be read. `_collect_scripts_pinned` refuses a link
+            # anywhere under `scripts/`; this covers every OTHER top-level name --
+            # `.meta.json`, and an unexpected entry the approve path refuses outright,
+            # which nothing on this path opens and so nothing else would check. It
+            # does not REPLACE the per-name refusals below: it cannot see a swap that
+            # happens after it, which is what those catch.
+            #
+            # Enumeration is BOUNDED by the same entry budget the verdict walk spends,
+            # because this runs per request against a tree an agent writes directly: a
+            # planted crowd of names would otherwise be materialized in one allocation
+            # here, before any later check could refuse it. Over budget refuses the
+            # candidate rather than serving a partial view of its directory.
+            listed = pinned.names_bounded(_PENDING_SCRIPT_MAX_ENTRIES)
+            if listed is None:
+                return None
+            names = set(listed)
+            if any(pinned.is_link(name) for name in names):
+                return None
+            try:
+                body = pinned.read_text("SKILL.md", max_bytes=MAX_SCRIPT_BYTES)
+            except (OSError, UnicodeDecodeError):
+                return None
+            meta: dict = {}
+            if ".meta.json" in names:
+                try:
+                    raw = pinned.read_text(".meta.json", max_bytes=MAX_SCRIPT_BYTES)
+                except (OSError, UnicodeDecodeError):
+                    # Unreadable THROUGH THE PIN is a fence signal, not bad content:
+                    # the name is not the plain file it screened as, which is the same
+                    # class as SKILL.md failing above. Refuse the candidate rather
+                    # than serve it with empty metadata.
+                    return None
+                try:
+                    parsed = json.loads(raw)
+                except ValueError:
+                    # Malformed JSON is the agent writing nonsense, not a swap. The
+                    # reviewer still sees SKILL.md and the scripts.
+                    parsed = None
+                if isinstance(parsed, dict):
+                    # Recursively redact secrets from LLM-produced metadata before it
+                    # can surface via the pending detail API: the crystallize skill
+                    # writes ``.meta.json`` directly, bypassing the consolidation
+                    # redaction path, so a credential in ANY nested value is scrubbed.
+                    scrubbed = self._redact_deep(parsed)
+                    meta = scrubbed if isinstance(scrubbed, dict) else {}
+            scripts: list[dict] = []
+            if "scripts" in names:
+                if pinned.is_link("scripts"):
+                    # NOT redundant with the screen above, and the difference is
+                    # timing: that screen refuses a link PRESENT when the traversal
+                    # started, this one refuses a link swapped in while the reads
+                    # above were running. A tree written by an agent can change
+                    # between the two.
+                    return None
+                if pinned.is_dir("scripts"):
+                    sub = pinned.child_if_real_dir("scripts")
+                    if sub is None:
+                        return None
+                    # ONE budget for the whole subtree, spent the way the verdict walk
+                    # spends it: entries and aggregate bytes, same constants. Per-call
+                    # rather than per-directory, or a planted tree of many small
+                    # directories would each get a fresh allowance.
+                    budget = {"entries": 0}
+                    with sub:
+                        if not self._collect_scripts_pinned(sub, (), scripts, budget):
+                            return None
+            return body, meta, scripts
 
     def _candidate_layout_findings_at(self, root_fd: int) -> list[str]:
         """Top-level layout check mirroring ``_candidate_layout_ok``.
@@ -5787,7 +5982,7 @@ class SkillsLoader:
         # refusal claim; the approve path remains the authority on the full
         # set.
         max_files = _PENDING_SCRIPT_MAX_ENTRIES
-        max_depth = 8
+        max_depth = _PENDING_SCRIPT_MAX_DEPTH
         budget = {"files": 0, "bytes": 0, "breached": False}
         max_total_bytes = max_files * MAX_SCRIPT_BYTES
 
@@ -5934,22 +6129,44 @@ class SkillsLoader:
             v_report.setdefault(fn, []).extend(findings)
         return (v_ok and not extra), v_report
 
+    def pending_candidate_is_staged(self, slug: str) -> bool:
+        """Whether a candidate is still staged at *slug*, for CHOOSING A MESSAGE.
+
+        ``get_pending_skill`` answers None for two different situations -- there is no
+        such candidate, and there is one whose tree the pinned read refuses -- and a
+        caller that renders both as "approved or dismissed elsewhere" tells the user
+        their candidate is gone while it sits in the list. This separates them.
+
+        Deliberately a by-name probe, and deliberately not a security check: the pinned
+        read is the authority on whether anything may be READ, and this runs only after
+        that read already refused. Losing the race changes which refusal message a user
+        sees and can never turn a refusal into a read, which is why a second traversal
+        would be cost without a property.
+        """
+        if not self._is_pending_slug_safe(slug):
+            return False
+        return (self._pending_root() / slug / "SKILL.md").exists()
+
     def get_pending_skill(self, slug: str) -> dict | None:
         """Return full pending-candidate detail incl. SKILL.md body + script bodies."""
         if not self._is_pending_slug_safe(slug):
             return None
         pdir = self._pending_root() / slug
-        skill_file = pdir / "SKILL.md"
-        if not skill_file.exists():
+        if not (pdir / "SKILL.md").exists():
+            # The ordinary "no such candidate" answer. Not a security check -- the
+            # pinned read below is -- so probing by name here costs nothing.
             return None
-        # Reject any symlink in the candidate on the read path too (approval
-        # already rejects them) so the detail API can't be tricked into reading
-        # a sensitive file a candidate symlinked SKILL.md / a nested file to.
-        if self._candidate_has_symlink(pdir):
-            logger.warning("Refusing to read pending %s: candidate contains a symlink", slug)
+        # ONE descriptor-pinned traversal both validates and reads: the body, the
+        # metadata and every script come back from opens that refuse a link AT THE
+        # NAME, so there is no screen-then-read gap for a candidate to flip a name
+        # through and no way to point the detail API at a file outside the candidate.
+        read = self._read_candidate_pinned(pdir)
+        if read is None:
+            logger.warning(
+                "Refusing to read pending %s: candidate is not a plain tree of files", slug
+            )
             return None
-        meta = self._read_pending_meta(slug)
-        scripts = self._collect_scripts(pdir / "scripts")
+        body, meta, scripts = read
         # Same hardened verdict as the pending LIST (descriptor-pinned walk,
         # fail-closed on unreadable/oversized entries) — deriving it from the
         # display collection instead would let a silently omitted unreadable
@@ -5968,7 +6185,7 @@ class SkillsLoader:
             "kind": meta.get("kind", "new"),
             "target": meta.get("target"),
             "base_version": meta.get("base_version"),
-            "content": self._redact_text(skill_file.read_text(encoding="utf-8")),
+            "content": self._redact_text(body),
             "scripts": scripts,
         }
         if verdict is not None:

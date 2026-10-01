@@ -2181,9 +2181,8 @@ async def api_workspaces_create(request: web.Request) -> web.Response:
     # below receives this same object: a second resolve after the checks would
     # follow a parent swapped for a link in between, and the pinned create can
     # only refuse a swap that happens AFTER the path it is handed was resolved.
-    validated_dir = (  # lgtm[py/path-injection]
-        Path(ws_dir).expanduser() if _abs else data_home() / ws_dir
-    ).resolve()
+    unresolved_dir = Path(ws_dir).expanduser() if _abs else data_home() / ws_dir
+    validated_dir = unresolved_dir.resolve()  # lgtm[py/path-injection]
 
     # Check for directory collision with existing workspaces (resolve both sides)
     existing_resolved = {_resolve_ws_dir(ws.dir) for ws in cfg.workspaces.values()}
@@ -2322,7 +2321,7 @@ async def api_workspaces_create(request: web.Request) -> web.Response:
         # a concurrent create can already have adopted and registered it.
         else:
             try:
-                materialize_workspace_dir(validated_dir, display=ws_dir)
+                materialize_workspace_dir(validated_dir, leaf=unresolved_dir, display=ws_dir)
             except WorkspaceDirUnusable as exc:
                 raise _WorkspaceConflict(409, str(exc), exc.code) from exc
         workspaces[name] = asdict(WorkspaceConfig(dir=ws_dir))

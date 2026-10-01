@@ -12975,7 +12975,8 @@
         "update": "更新",
         "validation_findings": "検証結果",
         "version_range": "(v{{from}} → v{{to}})",
-        "workspace": "ワークスペース"
+        "workspace": "ワークスペース",
+        "detail_unreadable": "この候補のファイルは安全に読み取れないため、レビューできません。却下するとキューから削除されます。"
       },
       "steeringTab": {
         "always_on_markdown_conventions_injected_into_eve": "エージェントが読む Markdown 規約。適用タイミングは各ファイルのインクルードモードで決まります: 常時、一致するファイルのときだけ、または必要時。グローバルファイルは ~/.kiro/steering にあり、どこでも適用されます。ワークスペースファイルは <project>/.kiro/steering にあり、そのプロジェクトだけに適用されます。",

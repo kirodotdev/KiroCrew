@@ -628,7 +628,14 @@ def _warm_spec_is_foreign(path: Path) -> bool:
         # module does not own; the link itself occupying the path is what counts. Every
         # refusal therefore reads as foreign, which is refused and left in place: the safe
         # direction.
-        return path.is_symlink() or path.exists()
+        #
+        # ``is_link_or_junction``, not ``Path.is_symlink()``: a Windows directory JUNCTION
+        # is a reparse point ``is_symlink()`` answers False for (and answers False to
+        # ``exists()`` when dangling), and it is the only directory link an unprivileged
+        # Windows writer can plant here. An ``is_symlink()`` guard read a junction at this
+        # name as a free path, so the writer replaced it and the sweep unlinked it --
+        # destroying an occupant this module does not own.
+        return platform_compat.is_link_or_junction(path) or path.exists()
     marks = _warm_ownership_marks(path.stem)
     if body.get("name") != path.stem or any(body.get(key) != value for key, value in marks.items()):
         return True

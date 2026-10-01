@@ -50,15 +50,22 @@ def _sanitize_server_name(name: str) -> str:
 def cleanup_old_spill_files() -> int:
     """Delete spill files older than 24h. Returns count deleted. Best-effort.
 
-    Symlink-hardened: ``is_dir()``/``is_file()``/``stat()`` all FOLLOW
+    Link-hardened: ``is_dir()``/``is_file()``/``stat()`` all FOLLOW
     symlinks, so an agent that swapped the spill dir (or planted a link
     inside it) could otherwise aim this sweep at an arbitrary directory and
     have the gateway delete 24h-old files there (confused deputy). The dir
     itself and every entry are checked with lstat semantics; links are
     skipped, never followed.
+
+    ``is_link_or_junction``, not ``Path.is_symlink()``: a Windows directory
+    JUNCTION is a reparse point ``is_symlink()`` answers False for while
+    ``is_dir()`` answers True, and it is the only directory link an
+    unprivileged Windows writer can plant. An ``is_symlink()`` guard let a
+    junction at the spill dir name through, so the sweep followed it and
+    deleted 24h-old files under the junction's target.
     """
     spill_dir = _spill_dir()
-    if spill_dir.is_symlink() or not spill_dir.is_dir():
+    if platform_compat.is_link_or_junction(spill_dir) or not spill_dir.is_dir():
         return 0
     now = time.time()
     deleted = 0
@@ -126,10 +133,13 @@ def maybe_spill_response(
         filename = f"{safe_server}-{request_id}-{timestamp}.json"
 
         spill_dir = _spill_dir()
-        # Never operate through a symlinked spill dir (agent-swappable): an
+        # Never operate through a linked spill dir (agent-swappable): an
         # attacker-planted link would redirect the write outside the data home.
-        if spill_dir.is_symlink():
-            logger.warning("spill dir is a symlink — refusing to spill")
+        # ``is_link_or_junction``, not ``Path.is_symlink()``: a Windows directory
+        # JUNCTION is a reparse point ``is_symlink()`` answers False for, and it
+        # is the only directory link an unprivileged Windows writer can plant.
+        if platform_compat.is_link_or_junction(spill_dir):
+            logger.warning("spill dir is a link — refusing to spill")
             return line
         # Not a bare mkdir(mode=0o700): that is umask-masked, is ignored for
         # an already-existing directory, and is inert on Windows -- yet this

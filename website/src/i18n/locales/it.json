@@ -13369,7 +13369,8 @@
         "update": "Aggiorna",
         "validation_findings": "Risultati della convalida",
         "version_range": "(v{{from}} → v{{to}})",
-        "workspace": "workspace"
+        "workspace": "workspace",
+        "detail_unreadable": "I file di questo candidato non possono essere letti in modo sicuro, quindi la revisione non è disponibile. Scartalo per rimuoverlo dalla coda."
       },
       "steeringTab": {
         "always_on_markdown_conventions_injected_into_eve": "Convenzioni Markdown che l’agente legge. La modalità di inclusione di ogni file decide quando: sempre, solo per i file corrispondenti o su richiesta. I file globali stanno in ~/.kiro/steering e valgono ovunque; quelli del workspace stanno in <project>/.kiro/steering e valgono solo per quel progetto.",

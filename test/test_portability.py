@@ -1397,6 +1397,54 @@ class TestImportReplace:
         finally:
             os.unlink(str(zip_path))
 
+    def test_a_junction_at_skills_auto_is_not_rmtreed_through(self, patched_config_dir, tmp_path):
+        """Replace mode strips ``skills/auto`` before copying the tree in.
+
+        The strip was a bare ``auto_dir.is_dir()`` guard on a ``shutil.rmtree``.
+        A directory JUNCTION answers ``is_dir()`` True and ``is_symlink()`` False,
+        and ``rmtree`` follows one into its target -- so a junction planted at
+        ``skills/auto`` in the extraction tree aimed the delete OUTSIDE the archive.
+        ``is_link_or_junction`` refuses it: the LINK is unlinked, its target
+        untouched. ``make_dir_link`` plants a real junction on Windows and a
+        directory symlink on POSIX, so the arm the defect lived in is exercised.
+
+        The junction is planted in ``_strip_host_local_store_state``, which runs on
+        the extracted snapshot immediately before the replace branch reaches the
+        ``skills/auto`` strip -- the only in-flight seam, since a zip cannot carry a
+        reparse point.
+        """
+        zip_path = self._make_export(patched_config_dir)
+        victim = tmp_path / "victim"
+        victim.mkdir()
+        (victim / "precious.txt").write_text("not the import's to delete", encoding="utf-8")
+        try:
+            target = tmp_path / "target_mc"
+            target.mkdir()
+
+            real_strip = portability._strip_host_local_store_state
+
+            def _plant_then_strip(snap: Path) -> None:
+                auto_dir = snap / "skills" / "auto"
+                auto_dir.parent.mkdir(parents=True, exist_ok=True)
+                make_dir_link(auto_dir, victim)
+                real_strip(snap)
+
+            with patch("kiro_crew.portability.config_dir", return_value=target):
+                with patch.dict(os.environ, {"KIROCREW_HOME": str(target)}):
+                    with patch.object(
+                        portability, "_strip_host_local_store_state", _plant_then_strip
+                    ):
+                        apply_import_zip(zip_path, mode="replace")
+
+            # The rmtree never followed the junction into ``victim``.
+            assert (victim / "precious.txt").read_text(encoding="utf-8") == (
+                "not the import's to delete"
+            )
+            # And the replace still landed (the import was not aborted by the link).
+            assert (target / "config.json").is_file()
+        finally:
+            os.unlink(str(zip_path))
+
 
 # ── Exclusion Logic Tests ──
 

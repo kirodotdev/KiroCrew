@@ -65,7 +65,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator
 from typing import List as _List
 
-from kiro_crew import hooks, pinned_fs
+from kiro_crew import hooks, pinned_fs, platform_compat
 from kiro_crew.artifact_source import is_verifiable_root
 from kiro_crew.artifact_store import comments as _threads
 from kiro_crew.artifact_store import records as _records
@@ -2487,16 +2487,63 @@ class ArtifactStore:
 
     @staticmethod
     def _rmtree(path: Path) -> None:
-        # Stdlib-only recursive delete (we don't depend on shutil here for clarity).
-        for sub in sorted(path.rglob("*"), key=lambda p: -len(str(p))):
-            try:
-                if sub.is_file() or sub.is_symlink():
-                    sub.unlink()
-                elif sub.is_dir():
-                    sub.rmdir()
-            except OSError as exc:  # pragma: no cover — best-effort cleanup
-                logger.warning("rmtree partial failure at %s: %s", sub, exc)
-        path.rmdir()
+        """Remove *path* and everything under it, anchored to PINNED directories.
+
+        Stdlib-only (no ``shutil``), and deliberately not a walker. Screening a name
+        for a link and then acting on that name are two operations on two objects,
+        and every walker in the stdlib re-resolves the name in between:
+        ``os.walk``'s own descent-time re-check is ``os.path.islink``, which answers
+        False for a Windows junction, and ``rglob`` descends one unconditionally. A
+        junction planted at a child that screened clean was therefore still
+        descended, and this function unlinked the link target's files -- outside the
+        artifact store. Creating a junction needs no elevation, and the agent both
+        triggers a delete and can retry it, so the window is ordinary.
+
+        :class:`platform_compat.PinnedDirectory` is what closes it, and it closes
+        BOTH halves: the descent refuses a link in the open itself rather than in a
+        check before it, and each removal is anchored to the directory that was
+        inspected -- ``dir_fd``-relative on POSIX, and by a path the Windows pin
+        holds still. A parent stays pinned while its child is being emptied, so the
+        whole chain is pinned for the length of the sweep.
+
+        Failures: each entry that will not go is logged and the sweep continues, so
+        the warnings name every residual rather than stopping at the first. The
+        removal of *path* itself is NOT guarded -- a residual anywhere keeps it
+        non-empty, so it fails, and the caller must see that: it logs a successful
+        delete and fires its ``"delete"`` event unconditionally, and a Windows
+        sharing violation on a store file is an ordinary occurrence.
+        """
+
+        def _empty(pinned: platform_compat.PinnedDirectory) -> None:
+            for name in sorted(pinned.names()):
+                try:
+                    if pinned.is_link(name) or not pinned.is_dir(name):
+                        pinned.unlink(name)
+                        continue
+                    child = pinned.child_if_real_dir(name)
+                    if child is None:
+                        # Replaced between the screen above and the open, and the open
+                        # refusing IS the protection working. Whatever is at the name
+                        # now is a link or a plain file, so remove it as one; a real
+                        # directory (including a chain too deep to sweep) re-raises out
+                        # of the helper and is reported as a residual below.
+                        pinned.unlink(name)
+                        continue
+                    with child:
+                        _empty(child)
+                    pinned.rmdir(name)
+                except OSError as exc:
+                    logger.warning(
+                        "rmtree partial failure at %s: %s", os.path.join(pinned.path, name), exc
+                    )
+
+        # The PARENT is pinned too, so even the root's own removal is anchored
+        # rather than a by-name ``rmdir`` the pinning above would leave as the one
+        # unprotected step.
+        with platform_compat.pinned_directory(path.parent) as parent:
+            with parent.child(path.name) as root:
+                _empty(root)
+            parent.rmdir(path.name)
 
 
 # ── Module-level singleton ──────────────────────────────────────────────────

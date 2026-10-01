@@ -367,15 +367,26 @@ def _stage_tree_safe(source: Path, staging_root: Path) -> Path:
     os.makedirs(str(dst), mode=0o700, exist_ok=True)
 
     for dirpath, dirnames, filenames in os.walk(str(source), followlinks=False):
-        # A symlinked DIRECTORY appears in dirnames but is not
+        # A linked DIRECTORY appears in dirnames but is not
         # descended (followlinks=False) and carries no file entries — it would
         # silently vanish from the snapshot, deploying something different
         # from the approved tree. Reject explicitly instead.
+        #
+        # ``is_link_or_junction``, not ``Path.is_symlink()``: a Windows directory
+        # junction is a reparse point ``is_symlink()`` does not report, and
+        # ``followlinks=False`` does NOT stop ``os.walk`` descending one, so a
+        # junction reached this fence and passed it. It is not a way into the
+        # deployment — ``within_root`` below pins containment to the OPENED
+        # descriptor, so a file behind the link is refused there — but it was
+        # refused as ``staging-read-blocked`` rather than as the link it is, and a
+        # link with nothing readable behind it passed the whole walk and was
+        # staged as an ordinary empty directory: the snapshot-differs-from-the-
+        # approved-tree outcome this fence exists to reject.
         for dname in dirnames:
             dpath = Path(dirpath) / dname
-            if dpath.is_symlink():
+            if platform_compat.is_link_or_junction(dpath):
                 raise RuntimeError(
-                    f"symlink-in-tree: symlinked directory at {dpath} — deploy blocked"
+                    f"symlink-in-tree: linked directory at {dpath} — deploy blocked"
                 )
         rel_dir = os.path.relpath(dirpath, str(source))
         target_dir = dst / rel_dir if rel_dir != "." else dst
@@ -1024,14 +1035,19 @@ async def _do_deploy(params: dict[str, Any]) -> tuple[int, dict[str, Any]]:
                         )
 
                 staged = Path(staged_copy)
-                # Reject ANY symlink in the staged snapshot (fail closed)
+                # Reject ANY link in the staged snapshot (fail closed).
+                # ``is_link_or_junction``, not ``Path.is_symlink()``: a Windows
+                # junction is a reparse point ``is_symlink()`` answers False for,
+                # so this second fence passed one. Enumeration is not the hazard
+                # here — the scan only reads names, and the staging walk writes
+                # plain dirs and files, so a link at this point is a racer's.
                 symlinks_found = [
-                    str(p) for p in staged.rglob("*") if p.is_symlink()
+                    str(p) for p in staged.rglob("*") if platform_compat.is_link_or_junction(p)
                 ]
                 if symlinks_found:
                     shutil.rmtree(str(sp), True)
                     raise RuntimeError(
-                        f"symlink-in-tree: {len(symlinks_found)} symlink(s) "
+                        f"symlink-in-tree: {len(symlinks_found)} link(s) "
                         f"found in staged snapshot — deploy blocked"
                     )
                 return sp, staged

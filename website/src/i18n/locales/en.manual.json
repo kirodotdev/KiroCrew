@@ -5692,7 +5692,8 @@
         "update": "Update",
         "validation_findings": "Validation findings",
         "version_range": "(v{{from}} → v{{to}})",
-        "workspace": "workspace"
+        "workspace": "workspace",
+        "detail_unreadable": "This candidate's files can't be read safely, so review is unavailable. Dismiss it to remove it from the queue."
       },
       "steeringTab": {
         "delete_confirm": "Delete “{{path}}”?",

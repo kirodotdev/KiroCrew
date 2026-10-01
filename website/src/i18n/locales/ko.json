@@ -12975,7 +12975,8 @@
         "update": "업데이트",
         "validation_findings": "검증 결과",
         "version_range": "(v{{from}} → v{{to}})",
-        "workspace": "워크스페이스"
+        "workspace": "워크스페이스",
+        "detail_unreadable": "이 후보의 파일을 안전하게 읽을 수 없어 검토할 수 없습니다. 기각하면 대기열에서 제거됩니다."
       },
       "steeringTab": {
         "always_on_markdown_conventions_injected_into_eve": "에이전트가 읽는 Markdown 규칙. 언제 적용되는지는 각 파일의 포함 모드가 정합니다: 항상, 일치하는 파일에만, 또는 필요할 때. 전역 파일은 ~/.kiro/steering에 있으며 어디서나 적용되고, 작업 공간 파일은 <project>/.kiro/steering에 있으며 해당 프로젝트에만 적용됩니다.",
