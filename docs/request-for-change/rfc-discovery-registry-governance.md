@@ -5,7 +5,7 @@ author: hkrishg-aws
 created: 2026-10-01
 last-audited: 2026-10-01
 audited-at: 0d0b4598d
-doc-pr:
+doc-pr: 16007
 implementation-prs: []
 tracking-issues: [12677]
 supersedes: []
