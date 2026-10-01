@@ -76,6 +76,13 @@ export interface StatusData {
   update_managed_by?: string
   update_can_arm?: boolean
   /**
+   * What an available update leads to on this install: `install` (with the
+   * auto-update switch on), `notify` (the switch cannot install here),
+   * `mandatory` (a policy floor installs it regardless), or `unknown` before
+   * the gateway first derives it. The update loop acts on the same answer.
+   */
+  update_auto_effect?: 'install' | 'notify' | 'mandatory' | 'unknown'
+  /**
    * Commit distance from a git checkout's upstream, both directions. Diverged
    * (both > 0) reports `update_available: false` exactly like a current
    * checkout — the destructive apply paths must never be offered local

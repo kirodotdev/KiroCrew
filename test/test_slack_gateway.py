@@ -35,6 +35,21 @@ from kiro_crew.slack.gateway import (
 )
 
 
+def _install_effect(effect: str = "install", route: str | None = "git"):
+    """State the install's shape the way the update loop reads it.
+
+    The loop branches on ``auto_update_effect``, not on the check's cached
+    ``can_apply``; a test standing in for a git checkout says so here instead of
+    hoping the real derivation agrees with a fake tree.
+    """
+    from kiro_crew.platform.update_capability import AutoUpdateEffect
+
+    return patch(
+        "kiro_crew.slack.gateway.auto_update_effect",
+        return_value=AutoUpdateEffect(effect, route),
+    )
+
+
 def _make_orchestrator(
     *,
     slack_enabled: bool = False,
@@ -1114,7 +1129,8 @@ class TestCheckForUpdates:
                         "kiro_crew.platform.update_governance.update_required",
                         return_value=False,
                     ):
-                        await orch._check_for_updates()
+                        with _install_effect():
+                            await orch._check_for_updates()
         finally:
             _h._update_info.clear()
             _h._update_info.update(orig)
@@ -1142,7 +1158,8 @@ class TestCheckForUpdates:
                         "kiro_crew.platform.update_governance.update_required",
                         return_value=False,
                     ):
-                        await orch._check_for_updates()
+                        with _install_effect():
+                            await orch._check_for_updates()
         finally:
             _h._update_info.clear()
             _h._update_info.update(orig)
@@ -1174,7 +1191,8 @@ class TestCheckForUpdates:
                 with patch(
                     "kiro_crew.platform.update_governance.update_required", return_value=True
                 ):
-                    await orch._check_for_updates()
+                    with _install_effect("mandatory"):
+                        await orch._check_for_updates()
         finally:
             _h._update_info.clear()
             _h._update_info.update(orig)
@@ -9229,7 +9247,8 @@ class TestMandatoryUpdateOnWheelInstall:
         wheel_apply_called = AsyncMock()
         monkeypatch.setattr(orch, "_auto_apply_wheel_update", wheel_apply_called)
 
-        await orch._check_for_updates()
+        with _install_effect("mandatory", "wheel"):
+            await orch._check_for_updates()
 
         # Must NOT attempt the git apply on a non-git tree.
         apply_called.assert_not_awaited()
@@ -9387,7 +9406,8 @@ class TestMandatoryUpdateOnWheelInstall:
         apply_called = AsyncMock()
         monkeypatch.setattr(orch, "_auto_apply_update", apply_called)
 
-        await orch._check_for_updates()
+        with _install_effect("mandatory"):
+            await orch._check_for_updates()
         apply_called.assert_awaited_once()
 
 

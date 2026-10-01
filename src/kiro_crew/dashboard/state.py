@@ -6837,6 +6837,7 @@ class DashboardState:
         update_required: bool = False,
         update_min_version: str = "",
         update_can_arm: bool = False,
+        update_auto_effect: str = "unknown",
         version_display: str = "",
         bundle_id: str = "",
     ) -> dict[str, Any]:
@@ -6928,6 +6929,9 @@ class DashboardState:
             "update_commits_ahead": update_commits_ahead,
             "update_commits_behind": update_commits_behind,
             "update_can_arm": update_can_arm,
+            # What an available update leads to on this install; see
+            # ``update_capability.auto_update_effect``.
+            "update_auto_effect": update_auto_effect,
             "update_last_checked_at": update_last_checked_at,
             "update_check_interval_secs": update_check_interval_secs,
             # Mandatory-update verdict (enterprise governance pin OR the release

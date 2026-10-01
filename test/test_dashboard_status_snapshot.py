@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import pathlib
 import time
 from unittest.mock import MagicMock
@@ -197,6 +198,7 @@ class TestAllStatusSnapshotCallersPassTheUpdateFields:
             "update_commits_ahead",
             "update_commits_behind",
             "update_can_arm",
+            "update_auto_effect",
             "update_last_checked_at",
             "update_check_interval_secs",
             "update_required",
@@ -533,3 +535,67 @@ class TestGatewayMemoryFields:
         assert '"watchdog_rss_max_mb": watchdog_rss_max_mb' in source
         # procfs + config read: never inline on the event loop.
         assert "to_thread(_gateway_memory_fields)" in source
+
+
+class TestAutoUpdateEffectOnTheStatusFrame:
+    """``update_auto_effect`` is the update loop's own derivation, served cached."""
+
+    @pytest.fixture(autouse=True)
+    def _fresh(self, monkeypatch):
+        from kiro_crew.dashboard.handlers import updates
+
+        monkeypatch.setattr(updates, "_auto_effect", None)
+        monkeypatch.setattr(updates, "_auto_effect_task", None)
+        return updates
+
+    def test_unknown_until_the_loop_derives_it(self, _fresh) -> None:
+        from kiro_crew.platform.update_capability import AutoUpdateEffect
+
+        assert status_fields_of(_fresh)["update_auto_effect"] == "unknown"
+        _fresh.record_auto_update_effect(AutoUpdateEffect("notify", None, "why"))
+        assert status_fields_of(_fresh)["update_auto_effect"] == "notify"
+
+    @pytest.mark.asyncio
+    async def test_a_stale_effect_is_rederived_off_the_loop(self, _fresh, monkeypatch) -> None:
+        """A branch switch or policy edit shows within one TTL, never blocking the frame."""
+        from kiro_crew.platform.update_capability import AutoUpdateEffect
+
+        _fresh.record_auto_update_effect(AutoUpdateEffect("install", "git"))
+        monkeypatch.setattr(_fresh, "_AUTO_EFFECT_TTL_SECS", -1.0)
+        monkeypatch.setattr(
+            _fresh, "auto_update_effect", lambda: AutoUpdateEffect("notify", None, "feature")
+        )
+
+        # Served from the cache while the re-derivation runs in the background.
+        assert status_fields_of(_fresh)["update_auto_effect"] == "install"
+        await asyncio.wait_for(_fresh._auto_effect_task, timeout=5)
+        monkeypatch.setattr(_fresh, "_AUTO_EFFECT_TTL_SECS", 60.0)
+        assert status_fields_of(_fresh)["update_auto_effect"] == "notify"
+
+    @pytest.mark.asyncio
+    async def test_a_failing_rederivation_is_retried_once_per_ttl(self, _fresh, monkeypatch):
+        from kiro_crew.platform.update_capability import AutoUpdateEffect
+
+        _fresh.record_auto_update_effect(AutoUpdateEffect("install", "git"))
+        monkeypatch.setattr(_fresh, "_AUTO_EFFECT_TTL_SECS", 60.0)
+        monkeypatch.setattr(_fresh, "_auto_effect", (time.monotonic() - 120.0, "install"))
+        calls = {"n": 0}
+
+        def _boom():
+            calls["n"] += 1
+            raise RuntimeError("git wedged")
+
+        monkeypatch.setattr(_fresh, "auto_update_effect", _boom)
+        status_fields_of(_fresh)
+        await asyncio.wait_for(_fresh._auto_effect_task, timeout=5)
+        for _ in range(5):
+            assert status_fields_of(_fresh)["update_auto_effect"] == "install"
+        # The failed attempt was stamped: no re-derivation on the frames after it.
+        assert calls["n"] == 1
+
+    @pytest.mark.asyncio
+    async def test_no_rederivation_until_the_update_loop_armed_it(self, _fresh) -> None:
+        # A process that runs no update loop (an endpoint test, a CLI) never
+        # shells out to git from its status path.
+        assert status_fields_of(_fresh)["update_auto_effect"] == "unknown"
+        assert _fresh._auto_effect_task is None

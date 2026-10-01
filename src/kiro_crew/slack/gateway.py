@@ -144,7 +144,7 @@ from kiro_crew.dashboard.handlers.autonudge import (
     compose_nudge_body,
     render_nudge_message,
 )
-from kiro_crew.dashboard.handlers.updates import _update_info
+from kiro_crew.dashboard.handlers.updates import _update_info, record_auto_update_effect
 from kiro_crew.dashboard.handlers.updates import remediation_command as _remediation_command
 from kiro_crew.dashboard.handlers.usage import (
     persist_token_record_async,
@@ -301,10 +301,17 @@ from kiro_crew.platform.governance_profiles import (
     vet_and_audit,
 )
 from kiro_crew.platform.update_capability import (
+    AUTO_EFFECT_INSTALL,
+    AUTO_EFFECT_MANDATORY,
+    AUTO_EFFECT_NOTIFY,
+    AUTO_ROUTE_GIT,
+    AUTO_ROUTE_WHEEL,
     CHECK_SUCCEEDED,
     CHECK_UNCHECKED,
     EXTERNALLY_MANAGED_STAMPS,
     MANAGED_BY_COMMAND,
+    AutoUpdateEffect,
+    auto_update_effect,
 )
 from kiro_crew.platform.update_governance import (
     commits_ahead,
@@ -12849,6 +12856,18 @@ class GatewayOrchestrator:
         # Legacy path: existing behavior for builtin/git auto-detected installs.
         await self._check_for_updates_legacy()
 
+    async def _auto_update_effect(self, provider: object | None) -> AutoUpdateEffect:
+        """What an available update leads to here: the one answer every apply path acts on.
+
+        Recorded for the status surface too, so the dashboard's auto-update
+        switch reads the same derivation this loop branches on. ``notify`` never
+        reaches ``_prepare_auto_update_apply``: admission is not paused for an
+        update this install will not apply.
+        """
+        effect = await asyncio.to_thread(auto_update_effect, provider=provider)
+        record_auto_update_effect(effect)
+        return effect
+
     def _publish_provider_update_state(self, result: object) -> None:
         """Mirror a provider's verdict into the dashboard's authoritative status.
 
@@ -12893,6 +12912,7 @@ class GatewayOrchestrator:
         # Say who owns updates on every path, "already latest" included, so the
         # dashboard need not run its own check to learn it.
         _update_info["managed_by"] = MANAGED_BY_COMMAND
+        effect = await self._auto_update_effect(provider)
         result = await provider.check()
 
         # The mandatory floor is an enterprise ceiling and is evaluated FIRST,
@@ -12918,6 +12938,20 @@ class GatewayOrchestrator:
                     "but no newer build is available to apply — notifying, not looping",
                     _running_version,
                     min_version(),
+                )
+                self._publish_provider_update_state(result)
+                if self.dashboard_state:
+                    self.dashboard_state.push_refresh("update_available")
+                return
+            if effect.effect != AUTO_EFFECT_MANDATORY:
+                # The floor mandates it but nothing here can apply it: tell the
+                # operator instead of pausing admission for an apply that fails.
+                logger.warning(
+                    "Version compliance: running %s is below the policy minimum %s, "
+                    "but %s — notifying",
+                    _running_version,
+                    min_version(),
+                    effect.reason,
                 )
                 self._publish_provider_update_state(result)
                 if self.dashboard_state:
@@ -12959,7 +12993,7 @@ class GatewayOrchestrator:
 
         if result.available:
             cfg = await asyncio.to_thread(KiroCrewConfig.load)
-            if cfg.auto_update:
+            if cfg.auto_update and effect.effect == AUTO_EFFECT_INSTALL:
                 if not await self._prepare_auto_update_apply(mandatory=False):
                     self._publish_provider_update_state(result)
                     return
@@ -12977,6 +13011,8 @@ class GatewayOrchestrator:
                 finally:
                     await self._finish_auto_update_apply()
             else:
+                if cfg.auto_update:
+                    logger.info("Auto-update is on, but %s — notifying instead", effect.reason)
                 self._publish_provider_update_state(result)
                 if self.dashboard_state:
                     self.dashboard_state.push_refresh("update_available")
@@ -13117,16 +13153,25 @@ class GatewayOrchestrator:
             from kiro_crew import __version__ as _running_version
             from kiro_crew.dashboard.handlers import _do_update_check, _update_info
 
+            # Before the check: it reads no check result, and the status frame
+            # should not wait out a slow fetch to learn it.
+            effect = await self._auto_update_effect(None)
             await _do_update_check()
             # Snapshot: the branches below read several keys with awaits
             # between them, and a dashboard-triggered check running
             # concurrently replaces the cache wholesale.
             info = dict(_update_info)
-            managed_venv = False
-            if _remediation_command(info):
-                from kiro_crew.platform.wheel_engine import running_from_managed_venv
-
-                managed_venv = await asyncio.to_thread(running_from_managed_venv)
+            if info.get("managed_by") == MANAGED_BY_COMMAND and effect.route is not None:
+                # The check resolved a policy provider that was not configured
+                # when the effect was derived, which a live policy refresh can
+                # do between the two. A provider OWNS the update, so no
+                # built-in route may apply it: the next cycle resolves the
+                # provider up front and routes there.
+                effect = AutoUpdateEffect(
+                    AUTO_EFFECT_NOTIFY,
+                    None,
+                    "a policy update command now owns this install",
+                )
             from kiro_crew.platform.update_governance import min_version, update_required
 
             mandatory_target_key = (
@@ -13149,18 +13194,17 @@ class GatewayOrchestrator:
                 self._mandatory_update_deferred_at = None
                 self._mandatory_update_deferred_key = None
             if mandatory_required:
-                # A mandatory floor is handled by layout, because "apply" means
-                # different things per install shape:
-                #   * git checkout (`can_apply`) -> git fetch + reset applies.
-                #   * wheel/cli.sh (no `can_apply`, but carries an installer
-                #     command in `remediation`) -> the installer can apply it, so
-                #     a floor does drive it; a floor above the newest build
-                #     notifies instead of reinstalling the same bytes forever.
+                # A mandatory floor is handled by the route `auto_update_effect`
+                # chose, because "apply" means different things per install shape:
+                #   * git checkout -> git fetch + reset applies.
+                #   * managed venv -> the installer can apply it, so a floor does
+                #     drive it; a floor above the newest build notifies instead of
+                #     reinstalling the same bytes forever.
                 #   * externally managed (dmg/appimage/deb/rpm/nsis/docker: no
                 #     `can_apply` and no command) -> its own updater owns this; the
                 #     backend must not drive a git reset on a non-git tree nor show
                 #     an inapplicable CLI-update badge.
-                if info.get("can_apply"):
+                if effect.effect == AUTO_EFFECT_MANDATORY and effect.route == AUTO_ROUTE_GIT:
                     if not await self._prepare_auto_update_apply(
                         mandatory=True,
                         mandatory_key=mandatory_target_key,
@@ -13181,7 +13225,14 @@ class GatewayOrchestrator:
                 # installer can, and a policy floor outranks auto_update. Runtime
                 # ownership is authoritative: older managed wheels have no build
                 # stamp, while a foreign source or wheel must never be rewritten.
-                if _remediation_command(info) and managed_venv:
+                if (
+                    effect.effect == AUTO_EFFECT_MANDATORY
+                    and effect.route == AUTO_ROUTE_WHEEL
+                    # The installer command is composed by the CHECK, so it is
+                    # not part of the static derivation: without it the apply
+                    # would pause admission and then warn-skip.
+                    and _remediation_command(info)
+                ):
                     # Only apply when a NEWER build is available; otherwise the
                     # installer reinstalls the same below-floor version and the
                     # execv-restart re-enters this branch forever (the git path's
@@ -13213,6 +13264,17 @@ class GatewayOrchestrator:
                     finally:
                         await self._finish_auto_update_apply()
                     return
+                if effect.blocked:
+                    # The source pin refuses every update path, `kirocrew update`
+                    # included, so there is nothing to point the operator at.
+                    logger.warning(
+                        "Version compliance: running %s is below the policy minimum %s, "
+                        "but %s — not applying",
+                        _running_version,
+                        min_version(),
+                        effect.reason,
+                    )
+                    return
                 # Everything below cannot apply here, so the operator has to act.
                 # Two of the three cases light the badge; the third deliberately
                 # does not, because a dmg/appimage/deb/rpm/nsis/docker install cannot
@@ -13227,11 +13289,12 @@ class GatewayOrchestrator:
                 if _remediation_command(info):
                     logger.warning(
                         "Version compliance: running %s is below the policy minimum %s, "
-                        "but this install (%s) updates by re-running the installer — "
+                        "but this install (%s) cannot apply it unattended (%s) — "
                         "run `kirocrew update`",
                         _running_version,
                         min_version(),
                         info.get("managed_by") or "unknown",
+                        effect.reason,
                     )
                     _badge = True
                 elif info.get("check_status") in ("unchecked", "checking"):
@@ -13271,11 +13334,9 @@ class GatewayOrchestrator:
 
                 cfg = await asyncio.to_thread(KiroCrewConfig.load)
                 # `_auto_apply_update` replaces code with git fetch + reset, so it
-                # can only serve a GIT CHECKOUT (`can_apply`). A wheel install
-                # replaces itself by re-running the installer, which the branch
-                # below drives instead; without that half of the guard the wheel
-                # path in `_do_update_check` would drive a git reset in a tree
-                # that has no `.git`.
+                # serves only the git route `auto_update_effect` chose. A managed
+                # venv replaces itself by re-running the installer, which the
+                # branch below drives instead.
                 #
                 # `version_newer` is the other half, and it is not redundant:
                 # `update_available` is true on commit distance alone, which for a
@@ -13285,7 +13346,8 @@ class GatewayOrchestrator:
                 # without a version bump lights the badge below instead, and the
                 # dashboard's own apply path (`git pull`, dirty tree refused) is
                 # the non-destructive way in.
-                if cfg.auto_update and info.get("can_apply") and info.get("version_newer"):
+                installs = cfg.auto_update and effect.effect == AUTO_EFFECT_INSTALL
+                if installs and effect.route == AUTO_ROUTE_GIT and info.get("version_newer"):
                     if not await self._prepare_auto_update_apply(mandatory=False):
                         return
                     try:
@@ -13293,7 +13355,7 @@ class GatewayOrchestrator:
                         await self._auto_apply_update()
                     finally:
                         await self._finish_auto_update_apply()
-                elif cfg.auto_update and _remediation_command(info) and managed_venv:
+                elif installs and effect.route == AUTO_ROUTE_WHEEL and _remediation_command(info):
                     if not await self._prepare_auto_update_apply(mandatory=False):
                         return
                     try:
@@ -13305,11 +13367,12 @@ class GatewayOrchestrator:
                     finally:
                         await self._finish_auto_update_apply()
                 else:
-                    if cfg.auto_update:
+                    if cfg.auto_update and not installs:
                         logger.warning(
-                            "Auto-update is on, but this install (%s) updates by "
-                            "re-running the installer, not by git — notifying instead",
+                            "Auto-update is on, but this install (%s) cannot apply it "
+                            "unattended (%s) — notifying instead",
                             info.get("managed_by") or "unknown",
+                            effect.reason,
                         )
                     if self.dashboard_state:
                         self.dashboard_state.push_refresh("update_available")
@@ -14111,10 +14174,13 @@ class GatewayOrchestrator:
 
         Preconditions (checked by the caller):
         * ``auto_update`` is True in config, or a policy floor mandates the update.
-        * The capability's ``remediation`` carries the installer command (the feed
-          check succeeded and composed it locally from validated inputs).
-        * The install is NOT a git checkout (no ``can_apply``) and NOT externally
-          managed (not a desktop app or container).
+        * ``auto_update_effect`` chose the wheel route: a managed venv on POSIX
+          with a safe, policy-permitted CDN (not a git checkout, not externally
+          managed).
+
+        Re-checked here, after the caller paused admission: the capability's
+        ``remediation`` carries the installer command (the feed check succeeded
+        and composed it locally from validated inputs).
 
         The command is composed by
         :func:`kiro_crew.platform.update_layout.wheel_update_command` from a

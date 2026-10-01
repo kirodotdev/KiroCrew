@@ -47,6 +47,7 @@ from kiro_crew.git_divergence import (
 )
 from kiro_crew.platform import feed_trust
 from kiro_crew.platform.update_capability import (
+    AUTO_EFFECT_UNKNOWN,
     CHECK_DEFERRED,
     CHECK_FAILED,
     CHECK_SUCCEEDED,
@@ -62,7 +63,9 @@ from kiro_crew.platform.update_capability import (
     MANAGED_BY_GIT,
     MODE_NONE,
     MODE_NOTIFY,
+    AutoUpdateEffect,
     UpdateCapability,
+    auto_update_effect,
     derive_capability,
 )
 from kiro_crew.platform.update_governance import (
@@ -152,6 +155,17 @@ _update_info: dict[str, object] = {
 _check_generation = 0
 
 _UPDATE_CHECK_INTERVAL = 43200  # 12 hours
+
+#: How long a derived ``auto_update_effect`` is served before the status surface
+#: re-derives it (off the loop). Install shape changes by hand (a branch switch,
+#: a policy edit), so five minutes is fresh enough while keeping the git probes
+#: it costs off every frame.
+_AUTO_EFFECT_TTL_SECS = 300.0
+#: (when derived, effect). ``None`` until the update loop's first derivation,
+#: which is also what arms the status path's re-derivation: a process that runs
+#: no update loop never shells out to git from its status frame.
+_auto_effect: tuple[float, str] | None = None
+_auto_effect_task: "asyncio.Task[None] | None" = None
 _last_update_check: float = 0.0
 
 #: The finite operation shared by concurrent manual checks and the automatic
@@ -335,6 +349,49 @@ def _downgrade_target_below_min_version(version: str, channel: str) -> bool:
     return target_below_floor and target_below_running
 
 
+def record_auto_update_effect(effect: AutoUpdateEffect) -> None:
+    """Serve *effect* on the status surface; the update loop records each one it acts on.
+
+    Also arms the status path's own re-derivation, so a branch switch or policy
+    edit shows within one TTL rather than at the loop's next cycle.
+    """
+    global _auto_effect
+    _auto_effect = (time.monotonic(), effect.effect)
+
+
+async def _refresh_auto_update_effect() -> None:
+    global _auto_effect
+    try:
+        effect = await asyncio.to_thread(auto_update_effect)
+    except Exception:
+        logger.debug("auto_update_effect could not be derived", exc_info=True)
+        # Stamp the attempt so a persistent failure is retried once per TTL,
+        # not on every frame; the last answer keeps being served.
+        if _auto_effect is not None:
+            _auto_effect = (time.monotonic(), _auto_effect[1])
+        return
+    record_auto_update_effect(effect)
+
+
+def _status_auto_update_effect() -> str:
+    """The last derived effect; re-derived off the loop once it is stale.
+
+    ``unknown`` only until the update loop's first derivation lands: deriving
+    runs git and reads policy, which the status frame must not wait on.
+    """
+    global _auto_effect_task
+    cached = _auto_effect
+    stale = cached is not None and time.monotonic() - cached[0] > _AUTO_EFFECT_TTL_SECS
+    if stale and (_auto_effect_task is None or _auto_effect_task.done()):
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop is not None:
+            _auto_effect_task = loop.create_task(_refresh_auto_update_effect())
+    return cached[1] if cached is not None else AUTO_EFFECT_UNKNOWN
+
+
 def status_update_fields() -> dict[str, object]:
     """The update fields ``/api/status`` and the WebSocket push both carry.
 
@@ -409,6 +466,13 @@ def status_update_fields() -> dict[str, object]:
         # gates its Update button on this, never on managed_by alone — that
         # value also covers bare source installs whose arm would 409.
         "update_can_arm": bool(_update_info.get("can_arm")),
+        # What an available update leads to here: ``install`` (with the
+        # auto-update switch on), ``notify`` (the switch cannot install on this
+        # install), ``mandatory`` (a policy floor installs it regardless), or
+        # ``unknown`` before the first derivation. The same derivation the
+        # gateway's update loop acts on, so the switch's label cannot promise
+        # what the loop will not do.
+        "update_auto_effect": _status_auto_update_effect(),
         # The RUNNING build's version folded for display (clean base on the
         # stable channel), so the About page's version chip can show `0.4.0`
         # instead of the promoted candidate's baked-in `0.4.0rc14` stamp.

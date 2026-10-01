@@ -1826,6 +1826,29 @@ so at a release. Requiring both keeps that path firing no more often than
 before. Commit distance without a version bump lights the dashboard badge, and
 `POST /api/update` is the non-destructive way to apply it.
 
+**What `auto_update` does on this install is derived once.**
+`update_capability.auto_update_effect()` answers `install` (with the switch on,
+an available update is installed and the gateway restarts), `notify` (the switch
+cannot install here, so it only notifies), or `mandatory` (a policy floor this
+build is below installs it whatever the switch says). It is read from install
+shape and policy alone, before any check runs: a policy provider owns the update
+and installs only with an `apply_command` it can run; a git checkout installs only
+past the unattended git apply's static gates (a trusted `git`, a primary branch,
+no repository-named exec driver, tracking `origin/<branch>`, the pinned source);
+a managed venv only past the installer's (POSIX, the managed venv itself, a safe
+HTTPS CDN, the pinned source); anything else is updated by its own updater. The
+gateway's update loop branches on that answer, and `notify` never reaches
+`_prepare_auto_update_apply`, so admission is not paused for an update the install
+will not apply (a provider with no `apply_command`, a feature-branch checkout).
+Dynamic conditions stay with the update itself: the git route still requires
+`version_newer`, the installer route a newer build. The status frame carries the
+same answer as `update_auto_effect` (`unknown` until the loop's first
+derivation), re-derived off the loop at most once every five minutes; the
+update loop's first cycle arms that refresh. A policy provider the CHECK
+resolves after the derivation (a live policy refresh) downgrades the cycle to
+notify: a provider owns the update, so no built-in route applies it. `test_every_unattended_apply_consults_the_effect_first`
+pins that every apply branch reads it before pausing admission.
+
 **`POST /api/update` refuses before it moves the tree, and fast-forwards to a
 pinned commit rather than pulling.** In order: a dirty tracked tree is 409
 `dirty_tree`; a pre-apply `git fetch` that fails is 409 `git_fetch_failed`
