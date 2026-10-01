@@ -14,11 +14,14 @@
  * one thing that must not drift: React/context-singleton `dedupe` (so a single
  * React instance backs the store, query client and router) and the `@` alias, so
  * the imported `InstancesViewport` and the relay authorities behave exactly as in
- * the app.
+ * the app — plus the Tailwind compile of `src/index.css`, so the viewport's
+ * `absolute inset-0` pane stack and `w-full h-full` iframe lay out as they do in
+ * the shell and the evidence screenshots show the pane at its real size.
  */
 import { fileURLToPath, URL } from 'node:url'
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+import tailwindcss from '@tailwindcss/vite'
 import path from 'node:path'
 import { CONTEXT_SINGLETON_DEDUPE } from './vite.shared'
 
@@ -27,7 +30,7 @@ import { CONTEXT_SINGLETON_DEDUPE } from './vite.shared'
 export default defineConfig({
   root: 'playwright-fixtures/pane-host',
   base: '/',
-  plugins: [react()],
+  plugins: [react(), tailwindcss()],
   resolve: {
     alias: { '@': path.resolve(fileURLToPath(new URL('./src', import.meta.url))) },
     // Identical to vite.config.ts: one React/redux/query/router instance, or the

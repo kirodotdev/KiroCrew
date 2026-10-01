@@ -50,6 +50,15 @@ const WATCHDOG_MS = 15_000
 /** The relay pane iframe the production InstancesViewport mounted (no test id). */
 const PANE_IFRAME = 'iframe[src^="/instance-pane/"]'
 
+/** A viewport capture of the production parent with the relayed remote dashboard
+ *  painted inside the pane, written beside the JSON evidence. Waits for the pane
+ *  SPA's root to have rendered so the shot shows the remote UI, not a blank frame. */
+async function captureShot(page: Page, paneFrame: Frame, name: string): Promise<void> {
+  await paneFrame.locator('#root > *').first().waitFor({ state: 'visible', timeout: 10_000 })
+  fs.mkdirSync(OUT, { recursive: true })
+  await page.screenshot({ path: OUT + '/' + name })
+}
+
 test('kc-46d84a: production parent relay pane boots, rotates its lease, raw port unreachable', async ({
   page,
 }) => {
@@ -313,6 +322,8 @@ test('kc-46d84a: production parent relay pane boots, rotates its lease, raw port
   expect(forged.noChannel).toBeNull()
   expect(forged.wrongFrame).toBeNull()
 
+  await captureShot(page, frame!, 'pane-loaded-https-lease1.png')
+
   // ── Short-TTL lease ROTATION: path + channel + iframe rotate, HTTP/WS live ──
   // The hub issues a short lease, so the production renewal timer reissues before
   // the deadline: openInstancePane mints a fresh capability (new documentPath +
@@ -379,6 +390,8 @@ test('kc-46d84a: production parent relay pane boots, rotates its lease, raw port
   expect(persisted, 'the parent storage bank persisted the value across the lease rotation').toBe(
     'lease1',
   )
+
+  await captureShot(page, frame2!, 'pane-after-lease-rotation.png')
 
   // ── The raw remote-pane loopback port is unreachable from Chromium ──────────
   const rawReach = await page.evaluate(async (peerPort) => {

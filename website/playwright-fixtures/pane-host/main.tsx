@@ -32,6 +32,11 @@ import { Provider } from 'react-redux'
 import { BrowserRouter } from 'react-router-dom'
 import { QueryClientProvider } from '@tanstack/react-query'
 
+// The shell's stylesheet: `html,body,#root{height:100%}` plus the utilities the
+// viewport's pane stack and iframe are sized with. Without it the iframe falls
+// back to the 300×150 default and the evidence screenshot shows a thumbnail.
+import '../../src/index.css'
+
 import { store } from '../../src/store'
 import { queryClient } from '../../src/api/queryClient'
 import InstancesViewport from '../../src/components/InstancesViewport'
