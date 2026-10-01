@@ -10443,6 +10443,7 @@
         "reject": "Refuser",
         "rejected": "Refusé",
         "resolved": "Résolu",
+        "never_started": "Jamais démarré",
         "resolving": "Résolution…",
         "resolving_2": "résolution...",
         "resource_type_issue": "Issue",
@@ -10834,7 +10835,9 @@
         "waiting_to_start_queued_behind_the_concurrency_l": "En attente de démarrage — mis en file derrière la limite de concurrence",
         "stop_failed": "Impossible d’arrêter le sous-agent {{name}}",
         "stop_all_failed": "Impossible d’arrêter les sous-agents",
-        "retry_failed_error": "Impossible de réessayer certains sous-agents en échec"
+        "retry_failed_error": "Impossible de réessayer certains sous-agents en échec",
+        "checking_whether_it_started": "Vérification du démarrage…",
+        "liveness_check_failed": "Impossible de vérifier s'il a démarré. Nouvelle tentative…"
       },
       "subagentQueued": {
         "adaptive_cap_zero": "en attente de démarrage — les démarrages sont suspendus tant que cet ordinateur manque de mémoire ou est surchargé ; ils reprennent d’eux-mêmes une fois la situation rétablie",

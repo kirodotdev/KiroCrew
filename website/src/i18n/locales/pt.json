@@ -10443,6 +10443,7 @@
         "reject": "Rejeitar",
         "rejected": "Rejeitado",
         "resolved": "Resolvido",
+        "never_started": "Nunca iniciado",
         "resolving": "Resolvendo…",
         "resolving_2": "resolvendo...",
         "resource_type_issue": "Issue",
@@ -10834,7 +10835,9 @@
         "waiting_to_start_queued_behind_the_concurrency_l": "Aguardando para iniciar — na fila devido ao limite de simultaneidade",
         "stop_failed": "Não foi possível parar o subagente {{name}}",
         "stop_all_failed": "Não foi possível parar os subagentes",
-        "retry_failed_error": "Não foi possível repetir alguns subagentes com falha"
+        "retry_failed_error": "Não foi possível repetir alguns subagentes com falha",
+        "checking_whether_it_started": "Verificando se foi iniciado…",
+        "liveness_check_failed": "Não foi possível verificar se foi iniciado. Tentando novamente…"
       },
       "subagentQueued": {
         "adaptive_cap_zero": "aguardando para iniciar — os inícios estão pausados enquanto este computador está com pouca memória ou sobrecarregado; eles retomam sozinhos quando ele se recupera",

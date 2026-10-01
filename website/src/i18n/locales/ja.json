@@ -10157,6 +10157,7 @@
         "reject": "却下",
         "rejected": "却下済み",
         "resolved": "解決済み",
+        "never_started": "開始されませんでした",
         "resolving": "解決中…",
         "resolving_2": "解決中…",
         "resource_type_issue": "イシュー",
@@ -10540,7 +10541,9 @@
         "waiting_to_start_queued_behind_the_concurrency_l": "開始待ち — 同時実行数の上限により待機中",
         "stop_failed": "サブエージェント {{name}} を停止できませんでした",
         "stop_all_failed": "サブエージェントを停止できませんでした",
-        "retry_failed_error": "失敗したサブエージェントの一部を再試行できませんでした"
+        "retry_failed_error": "失敗したサブエージェントの一部を再試行できませんでした",
+        "checking_whether_it_started": "起動したかどうかを確認しています…",
+        "liveness_check_failed": "開始したかどうかを確認できませんでした。再試行しています…"
       },
       "subagentQueued": {
         "adaptive_cap_zero": "開始待ち — このコンピューターのメモリ不足または高負荷のため新しい開始を一時停止中です。回復すると自動的に再開します",

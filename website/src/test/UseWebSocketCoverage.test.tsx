@@ -1323,6 +1323,9 @@ describe('useWebSocket frame router', () => {
       expect(chat().messages.find(m => m.meta?.approval_id === 'spawn:gone')?.meta?.resolved).toBe('stale')
       expect(lifecycleFor('gone')).toHaveLength(0)
       expect(chat().subagents['gone']?.status).toBe('pending')
+      // ...but no surface keeps asking for it: the same gone verdict a refused
+      // press records, left for the spawn inventory to settle.
+      expect(chat().subagents['gone']?.approvalGone).toBe('spawn:gone')
 
       // A decided rejection still terminates its card after reconnect.
       act(() => {

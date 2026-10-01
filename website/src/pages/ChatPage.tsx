@@ -33,6 +33,7 @@ import {
   requestSlotReveal,
   requestFolderReveal,
   mcpAppKey,
+  selectSlotSubagentsActive,
   } from '../store/chatSlice'
 import { confirmedDelivered } from '../utils/sendDelivery'
 import { sendTurn } from '../chat-core/transport/sendTurn'
@@ -731,7 +732,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // Active subagents render the progress bar in the same above-composer
     // zone the floating tip occupies — the tip always yields: never crowd
     // the queue/subagent surfaces.
-    Object.values(s.chat.subagents).some(a => a.status === 'running' || a.status === 'tool' || a.status === 'pending') ||
+    (!!s.chat.activeSlot && selectSlotSubagentsActive(s, s.chat.activeSlot)) ||
     // Workflow runs render WorkflowProgressBar in the same band — but only
     // runs belonging to THIS slot show a bar here, so filter by ownership or
     // a terminal run parked in another slot would suppress tips everywhere

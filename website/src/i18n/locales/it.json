@@ -10443,6 +10443,7 @@
         "reject": "Rifiuta",
         "rejected": "Rifiutato",
         "resolved": "Risolto",
+        "never_started": "Mai avviato",
         "resolving": "Risoluzione in corso…",
         "resolving_2": "risoluzione in corso...",
         "resource_type_issue": "Issue",
@@ -10834,7 +10835,9 @@
         "waiting_to_start_queued_behind_the_concurrency_l": "In attesa di avvio — in coda a causa del limite di concorrenza",
         "stop_failed": "Impossibile arrestare il subagente {{name}}",
         "stop_all_failed": "Impossibile arrestare i subagenti",
-        "retry_failed_error": "Impossibile riprovare alcuni subagenti non riusciti"
+        "retry_failed_error": "Impossibile riprovare alcuni subagenti non riusciti",
+        "checking_whether_it_started": "Verifica dell’avvio in corso…",
+        "liveness_check_failed": "Impossibile verificare se è stato avviato. Nuovo tentativo…"
       },
       "subagentQueued": {
         "adaptive_cap_zero": "in attesa di avvio — gli avvii sono in pausa finché questo computer ha poca memoria o è sovraccarico; riprendono da soli quando si ristabilisce",
