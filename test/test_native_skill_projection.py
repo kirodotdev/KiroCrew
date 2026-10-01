@@ -3668,6 +3668,24 @@ async def test_set_mode_sends_the_fresh_alias_never_a_changed_spawn_one(
         _native_skill_projection = spawn
         _spawn_skill_projection = spawn
         _work_dir = tmp_path
+        # The bracket's own projection-ordering helpers, borrowed unchanged.
+        _skill_projection_lock = runtime_module.AcpRuntime._skill_projection_lock
+        _issue_skill_projection_generation = (
+            runtime_module.AcpRuntime._issue_skill_projection_generation
+        )
+        _adopted_skill_projection_generation = (
+            runtime_module.AcpRuntime._adopted_skill_projection_generation
+        )
+        _adopt_skill_projection = runtime_module.AcpRuntime._adopt_skill_projection
+        _superseding_alias = runtime_module.AcpRuntime._superseding_alias
+        _refuse_if_view_superseded = runtime_module.AcpRuntime._refuse_if_view_superseded
+        _refuse_if_view_unverified = runtime_module.AcpRuntime._refuse_if_view_unverified
+        _note_unadopted_skill_projection = (
+            runtime_module.AcpRuntime._note_unadopted_skill_projection
+        )
+        _unadopted_skill_projection_generation = (
+            runtime_module.AcpRuntime._unadopted_skill_projection_generation
+        )
 
         async def terminate_session(self, sid):
             terminated.append(sid)
