@@ -3721,12 +3721,23 @@ def _refresh_dynamic_fields(
             entry, spec, registry_mode, auto_approve="seed" if is_new else "preserve"
         )
 
-    # Edition-contributed MCP servers (PlatformContext).  ADD-only: only seed a
-    # server the user doesn't already have, so user customizations on a refresh
-    # are preserved.  Standalone contributes {} (unchanged); Amazon adds
-    # the internal MCP server etc.  Already kiro-spec-shaped — no restructuring.
+    # Edition-contributed MCP servers (PlatformContext).  Seed a missing entry
+    # whole.  On an existing entry the edition owns only the invocation
+    # (``command``/``args``, which can name a versioned interpreter that a later
+    # install deletes), so refresh those and keep every other key the user set
+    # (env, autoApprove, disabled, ...).  A non-object entry (null included)
+    # occupies the name as the user's and is left alone.  Standalone
+    # contributes {} (unchanged).
     for name, extra_spec in _extra_mcp_servers().items():
-        mcp.setdefault(name, dict(extra_spec))
+        if name not in mcp:
+            mcp[name] = dict(extra_spec)
+            continue
+        entry = mcp[name]
+        if isinstance(entry, dict):
+            for key in ("command", "args"):
+                if key in extra_spec:
+                    value = extra_spec[key]
+                    entry[key] = list(value) if isinstance(value, list) else value
 
     # Security: hooks always from bundled config.
     # Hard-fail if bundled defaults are missing — deny-by-default.

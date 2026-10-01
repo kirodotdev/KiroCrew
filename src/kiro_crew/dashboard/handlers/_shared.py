@@ -50,7 +50,7 @@ from kiro_crew.messaging.privacy_mode import is_incognito as is_thread_incognito
 from kiro_crew.messaging.privacy_mode import is_temporary as is_thread_temporary
 from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
 from kiro_crew.skill_trust import is_project_trusted as _is_project_trusted
-from kiro_crew.skills import _trusted_skill_roots, skills_dir
+from kiro_crew.skills import _trusted_skill_roots, _with_canonical_globs, skills_dir
 from kiro_crew.terminal_safe import normalize_for_scanning, strip_control_characters
 
 if TYPE_CHECKING:
@@ -1743,13 +1743,14 @@ def _agent_loads_skill(agent_json: dict[str, Any], agent_path: Path, skill_md: P
     if not isinstance(resources, list):
         return False
     target = str(skill_md)
-    for res in resources:
-        if not isinstance(res, str):
-            continue
-        glob = _expand_resource_uri(res, agent_path)
-        if glob and fnmatch.fnmatch(target, glob):
-            return True
-    return False
+    globs = [
+        g
+        for res in resources
+        if isinstance(res, str)
+        for g in (_expand_resource_uri(res, agent_path),)
+        if g
+    ]
+    return any(fnmatch.fnmatch(target, g) for g in _with_canonical_globs(globs))
 
 
 def _expand_agent_globs(
@@ -1763,6 +1764,9 @@ def _expand_agent_globs(
     all skills avoids re-running :func:`_expand_resource_uri` once per
     (skill, agent, resource), which on a large catalog is the dominant cost.
     Agents with no skill:// resources are dropped (they can match nothing).
+    Each glob is paired with its canonical spelling, as the loader's scope
+    match does, so a ``~`` mapping under a symlinked ``$HOME`` still matches
+    the resolved catalog path the loader injects.
     """
     expanded: list[tuple[str, list[str]]] = []
     for name, data, agent_path in parsed_agents:
@@ -1777,7 +1781,7 @@ def _expand_agent_globs(
             if g
         ]
         if globs:
-            expanded.append((name, globs))
+            expanded.append((name, _with_canonical_globs(globs)))
     return expanded
 
 

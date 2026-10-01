@@ -6945,6 +6945,43 @@ class TestRefreshDynamicFieldsStripsStaleUrl:
         assert entry["scopes"] == ["read:user", "read:org"]
         assert entry["clientId"] == "public-client-id"
 
+    def test_edition_extra_invocation_refreshed_user_keys_kept(self):
+        """An edition extra's command/args are the edition's; everything else is
+        the user's. A stale versioned interpreter must be replaced on refresh."""
+        from kiro_crew.agent import _refresh_dynamic_fields
+
+        extra = {
+            "edition-extra": {"command": "/v2/python3", "args": ["-m", "extra"]},
+            "cmd-only": {"command": "/v2/tool"},
+            "user-nulled": {"command": "/v2/python3"},
+        }
+        mine = {"command": "/opt/mine", "args": ["serve"], "env": {"K": "v"}}
+        config = {
+            "mcpServers": {
+                "edition-extra": {
+                    "command": "/v1/python3",
+                    "args": ["-m", "old"],
+                    "env": {"TOKEN_PATH": "/home/u/t"},
+                    "disabled": True,
+                },
+                "mine": dict(mine),
+                "cmd-only": {"command": "/v1/tool", "args": ["--user-flag"]},
+                "user-nulled": None,
+            }
+        }
+        with patch("kiro_crew.agent._extra_mcp_servers", return_value=extra):
+            _refresh_dynamic_fields(config)
+        entry = config["mcpServers"]["edition-extra"]
+        assert entry["command"] == "/v2/python3"
+        assert entry["args"] == ["-m", "extra"]
+        assert entry["env"] == {"TOKEN_PATH": "/home/u/t"}
+        assert entry["disabled"] is True
+        assert config["mcpServers"]["mine"] == mine
+        # Only invocation keys the edition supplies are re-pinned.
+        assert config["mcpServers"]["cmd-only"] == {"command": "/v2/tool", "args": ["--user-flag"]}
+        # A non-object entry occupies the name as the user's.
+        assert config["mcpServers"]["user-nulled"] is None
+
     def test_refresh_strips_legacy_denied_commands(self):
         # Upgrade path: an existing config injected by an older build carries a
         # stale toolsSettings.deniedCommands + autoAllowReadonly that kiro-cli

@@ -9267,7 +9267,7 @@ class TestAdfToMarkdown:
         """`_URL_RE` stops at `)`, so a paren in the path puts the whole query
         outside every exfiltration check. The href is scanned paren-encoded and
         the link is dropped rather than emitted partly redacted."""
-        blob = "Xk7Qm2Rt9Wz4Yb6Nc1Vf8Hj3Lp5Sd0Ag7Ke4Ou2"
+        blob = "Xk7Qm2Rt9Wz4Yb6Nc1Vf8Hj3Lp5Sd0Ag7Ke4Ou2B"
         href = f"https://evil.example.com/a)b?data={blob}"
         adf = self._doc(
             self._para(self._text("click", [{"type": "link", "attrs": {"href": href}}]))
@@ -9530,7 +9530,7 @@ class TestAdfToMarkdown:
         so a space does not end the URL there. All ten characters are therefore
         sealed on this path -- each one measured as leaking before.
         """
-        blob = "Xk7Qm2Rt9Wz4Yb6Nc1Vf8Hj3Lp5Sd0Ag7Ke4Ou2"
+        blob = "Xk7Qm2Rt9Wz4Yb6Nc1Vf8Hj3Lp5Sd0Ag7Ke4Ou2B"
         for ch in (")", "'", '"', ">", " ", "\t", "\n", "\r", "\v", "\f"):
             href = f"https://evil.example.com/a{ch}b?data={blob}"
             adf = self._doc(
@@ -9656,7 +9656,7 @@ class TestAdfToMarkdown:
         mention label, an inline card and a media URL each still leaked a
         high-entropy query -- measured one by one. All of them now go through the
         one redaction primitive."""
-        blob = "Xk7Qm2Rt9Wz4Yb6Nc1Vf8Hj3Lp5Sd0Ag7Ke4Ou2"
+        blob = "Xk7Qm2Rt9Wz4Yb6Nc1Vf8Hj3Lp5Sd0Ag7Ke4Ou2B"
         url = f"https://evil.example.com/a)b?data={blob}"
         sites = {
             "expand title": self._doc(
@@ -9698,7 +9698,7 @@ class TestAdfToMarkdown:
         renderer: bare text `https://host/a)b?data=<blob>` becomes an anchor whose
         href carries the paren AND the whole query, so the truncated scan has to
         be corrected here or a fetchable address reaches the panel."""
-        blob = "Xk7Qm2Rt9Wz4Yb6Nc1Vf8Hj3Lp5Sd0Ag7Ke4Ou2"
+        blob = "Xk7Qm2Rt9Wz4Yb6Nc1Vf8Hj3Lp5Sd0Ag7Ke4Ou2B"
         text = f"look at https://evil.example.com/a)b?data={blob} please"
         rendered = source._adf_to_markdown(self._doc(self._para(self._text(text))))
         assert blob not in rendered
@@ -9719,7 +9719,7 @@ class TestAdfToMarkdown:
         Credentials are still covered: the payload-level pass is token-shaped, so
         it catches `ghp_...` inside a code block regardless of any URL truncation.
         """
-        blob = "Xk7Qm2Rt9Wz4Yb6Nc1Vf8Hj3Lp5Sd0Ag7Ke4Ou2"
+        blob = "Xk7Qm2Rt9Wz4Yb6Nc1Vf8Hj3Lp5Sd0Ag7Ke4Ou2B"
         url = f"https://api.example.com/v1)x?token={blob}"
         adf = self._doc(
             {"type": "codeBlock", "content": [{"type": "text", "text": f"curl {url}"}]}
@@ -9743,7 +9743,7 @@ class TestAdfToMarkdown:
         """
         head = "ghp_Ab3Df6Hj9Kl2Np5Qr8Tv"
         tail = "Wx4Yz7Bc0Ef3"
-        blob = "Xk7Qm2Rt9Wz4Yb6Nc1Vf8Hj3Lp5Sd0Ag7Ke4Ou2"
+        blob = "Xk7Qm2Rt9Wz4Yb6Nc1Vf8Hj3Lp5Sd0Ag7Ke4Ou2B"
         for url in (
             "https://ex.com/a.png",
             # Fails the destination scan (whitespace is encoded there), so the

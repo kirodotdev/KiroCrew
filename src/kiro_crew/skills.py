@@ -7,6 +7,7 @@ import difflib
 import errno
 import fnmatch
 import functools
+import glob as glob_module
 import hashlib
 import json
 import logging
@@ -188,14 +189,107 @@ def _family_line(skills: list[dict]) -> str:
     return text
 
 
+_GLOB_CHARS = "*?["
+
+
+def _literal_split(pattern: str) -> tuple[tuple[str, ...], int]:
+    """*pattern*'s path parts and how many lead it before the first wildcard."""
+    parts = Path(pattern).parts
+    literal = 0
+    while literal < len(parts) and not any(char in parts[literal] for char in _GLOB_CHARS):
+        literal += 1
+    return parts, literal
+
+
+def _canonical_prefix(pattern: str, project_dir: str | Path | None = None) -> str | None:
+    """The literal (wildcard-free) prefix of *pattern* resolved through symlinks.
+
+    ``skills.extra_paths`` and edition roots are stored resolved, but
+    ``expand_skill_uri`` expands ``~`` from ``$HOME`` as spelled, so a
+    symlinked home names the same file through two paths.
+
+    The prefix is resolved through ``validate_file_path``, which applies the
+    Windows UNC gate before any resolution and refuses sensitive paths: a
+    mapping glob comes from an agent spec, possibly a project's, so resolving
+    it directly could open an SMB connection to a host the spec names. A
+    prefix inside *project_dir* is never resolved, because project paths are
+    walked by descriptor and not canonicalized before consent. Returns None
+    for a refused, project-local or wildcard-first pattern.
+    """
+    parts, literal = _literal_split(pattern)
+    if literal == 0:
+        return None
+    literal_prefix = str(Path(*parts[:literal]))
+    try:
+        if project_dir and _within_any(
+            os.path.abspath(literal_prefix), (os.path.abspath(project_dir),)
+        ):
+            return None
+        return validate_file_path(literal_prefix)
+    except (OSError, ValueError):
+        return None
+
+
+def _project_prefix(pattern: str, project_dir: str | Path | None, project_key: str) -> str | None:
+    """*pattern*'s literal prefix respelled under the trusted *project_key*.
+
+    A workspace-relative mapping expands against *project_dir* as spelled,
+    while the project tier is enumerated under its canonical trust key, so a
+    project reached through a symlink names the same row through two paths.
+    The swap is lexical: *project_key* is already the resolved form of
+    *project_dir* and is set only once the project is trusted, so no project
+    path is resolved here. Returns None outside a trusted project.
+    """
+    if not project_dir or not project_key:
+        return None
+    parts, literal = _literal_split(pattern)
+    if literal == 0:
+        return None
+    literal_prefix = os.path.abspath(str(Path(*parts[:literal])))
+    spelled = os.path.abspath(project_dir)
+    if not _within_any(literal_prefix, (spelled,)):
+        return None
+    return os.path.normpath(os.path.join(project_key, os.path.relpath(literal_prefix, spelled)))
+
+
+def _glob_with_prefix(pattern: str, head: str | None) -> str:
+    """*pattern* with its literal prefix replaced by the resolved *head*.
+
+    Only the literal prefix changes; the wildcard tail is kept as written so
+    it still matches every entry it did before. *head* is glob-escaped, so a
+    link target whose name holds ``*``, ``?`` or ``[`` matches only itself.
+    A None *head* leaves *pattern* as written.
+    """
+    if head is None:
+        return pattern
+    parts, literal = _literal_split(pattern)
+    return str(Path(glob_module.escape(head), *parts[literal:]))
+
+
+def _canonical_glob(pattern: str, project_dir: str | Path | None = None) -> str:
+    """*pattern* with its literal prefix resolved by :func:`_canonical_prefix`."""
+    return _glob_with_prefix(pattern, _canonical_prefix(pattern, project_dir))
+
+
+def _with_canonical_globs(globs: list[str], project_dir: str | Path | None = None) -> list[str]:
+    """*globs* plus each one's canonical spelling, original order first, no duplicates."""
+    out = list(globs)
+    for glob in globs:
+        canonical = _canonical_glob(glob, project_dir)
+        if canonical not in out:
+            out.append(canonical)
+    return out
+
+
 def _matches_any(path: str, globs: list[str]) -> bool:
     """True if *path* matches any fnmatch glob in *globs*.
 
     Used to narrow the injected skills block to an agent template's
-    ``skill://`` mapping. Both sides are compared as real filesystem paths
-    (the URIs are pre-expanded by ``agent_discovery.expand_skill_uri``), and a
-    symlinked skill dir is tried in resolved form too so a mapping written
-    against the link target still matches the catalog's listed path.
+    ``skill://`` mapping. A symlinked skill dir is tried in resolved form too
+    so a mapping written against the link target still matches the catalog's
+    listed path. Callers comparing against resolved catalog paths pass the
+    globs through :func:`_with_canonical_globs` so a glob spelled through a
+    symlink (a symlinked ``$HOME``) matches as well.
     """
     if not path:
         return False
@@ -7546,22 +7640,45 @@ class SkillsLoader:
         entries = [_ScopedSkillEntry(*entry) for entry in self._iter_visible(project_dir)]
         if only is None:
             return entries
-        selected = [entry for entry in entries if _matches_any(str(entry[1]), only)]
+        project_key = self._trusted_project_key(project_dir) if project_dir else ""
+        heads = {
+            pattern: _canonical_prefix(pattern, project_dir)
+            or _project_prefix(pattern, project_dir, project_key)
+            for pattern in only
+        }
+        canonicals = {pattern: _glob_with_prefix(pattern, heads[pattern]) for pattern in only}
+        globs = list(dict.fromkeys([*only, *canonicals.values()]))
+        selected = [entry for entry in entries if _matches_any(str(entry[1]), globs)]
         known = {os.path.normcase(os.path.abspath(entry[1])) for entry in entries}
+        loader_roots = [self._dir, *self._extra_paths]
+        catalog_roots = list(loader_roots)
+        if project_dir:
+            catalog_roots.append(Path(project_dir) / ".kiro" / "skills")
+        # Compared both as spelled and resolved: ``skills.extra_paths`` roots
+        # are stored resolved while a ``~`` mapping may name them through a
+        # symlink. Only loader-owned roots are resolved, through the same
+        # UNC-gated fence as the glob prefix; the project root stays lexical
+        # because a project path is never canonicalized before consent.
+        real_roots = [real for root in loader_roots if (real := validate_file_path(str(root)))]
+        # An ancestor glob must not descend through a catalog's filtered
+        # rows or probe a project skills junction before consent admission.
+        excluded = tuple(
+            dict.fromkeys([*(os.path.abspath(path) for path in catalog_roots), *real_roots])
+        )
         # Mapping paths are spec-owned, never caller-supplied read keys. Walk the
         # literal prefix through the same provider/sensitive-path fence as the
         # global catalog; do not use glob's unconstrained link traversal.
         for pattern in only:
+            canonical = canonicals[pattern]
             prefix = Path(pattern)
-            while any(char in str(prefix) for char in "*?["):
+            while any(char in str(prefix) for char in _GLOB_CHARS):
                 prefix = prefix.parent
-            catalog_roots = [self._dir, *self._extra_paths]
-            if project_dir:
-                catalog_roots.append(Path(project_dir) / ".kiro" / "skills")
+            head = heads[pattern]
+            real_prefix = Path(head) if head is not None else prefix
             if any(
                 _within_any(os.path.abspath(prefix), (os.path.abspath(root),))
                 for root in catalog_roots
-            ):
+            ) or _within_any(str(real_prefix), tuple(real_roots)):
                 # The regular enumerator owns precedence, disabled apps and
                 # project consent. A mapping must not re-admit a filtered row.
                 continue
@@ -7569,12 +7686,9 @@ class SkillsLoader:
             if not root.is_absolute() or validate_file_path(str(root)) is None:
                 continue
             admitted_roots = (os.path.realpath(root), *_trusted_skill_roots())
-            # An ancestor glob must not descend through a catalog's filtered
-            # rows or probe a project skills junction before consent admission.
-            excluded = tuple(os.path.abspath(path) for path in catalog_roots)
             for _name, path in _iter_skill_files(root, exclude_roots=excluded):
                 identity = os.path.normcase(os.path.abspath(path))
-                if identity in known or not _matches_any(str(path), [pattern]):
+                if identity in known or not _matches_any(str(path), [pattern, canonical]):
                     continue
                 target = os.path.realpath(path)
                 admitted_root = next(
@@ -7684,7 +7798,9 @@ class SkillsLoader:
                 continue
             # Precedence is the enumeration's: the first root holding the key wins,
             # so a refusal here is final rather than a reason to try a lower root.
-            if only is not None and not _matches_any(str(candidate), only):
+            if only is not None and not _matches_any(
+                str(candidate), _with_canonical_globs(only, project_dir)
+            ):
                 return None
             if disabled_apps and self._owning_app(key, candidate) in disabled_apps:
                 return None
