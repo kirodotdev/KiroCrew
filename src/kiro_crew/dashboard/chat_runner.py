@@ -8378,6 +8378,28 @@ def _drop_stale_admissions(state: DashboardState, slot: _ChatSlot) -> None:
         )
 
 
+def _current_turn_carries_image_ref(message: str) -> bool:
+    """Whether *message* itself names a local image the builder would inline.
+
+    The unsupported-image recovery must only fire for an image retained in
+    NATIVE history, because it clears a healthy conversation's resume SID and
+    replays the text verbatim. Empty dashboard attachment lists are not that
+    proof: a channel turn (``slack/events.py`` appends its attachment paths to
+    the text) and a dashboard turn that simply types a path both carry the image
+    as a bare path INSIDE the message, and ``build_prompt_blocks`` inlines it as
+    a real image block for the CURRENT turn. So read the builder's own scanner on
+    the builder's own haystack -- ``_PATH_RE`` over the raw message, image
+    suffixes only -- rather than re-deriving the grammar here; a match means the
+    rejection may be of the image the user just sent, and the recovery declines.
+
+    Imported inside the function on purpose: ``kiro_crew.image_refs`` documents a
+    load-bearing import rule, and this is the shape its other consumers use.
+    """
+    from kiro_crew.image_refs import _PATH_RE
+
+    return bool(_PATH_RE.search(message or ""))
+
+
 def _session_stop_generation_for(sessions: Any, session_key: str) -> int:
     """The session manager's Stop count for *session_key*, read defensively.
 
@@ -8666,6 +8688,77 @@ async def _start_next_queued_turn(
                 )
             if not slot._queue:
                 return False
+
+    # The unsupported-history-image recovery carries the identical hazard, and it
+    # is NOT covered by either guard above: it is enqueued at index 0 under the
+    # shared SYNTHETIC_RECOVERY_KIND, carries neither continuation constant nor
+    # the model-access latch, and the awaits that follow its enqueue (the
+    # conversation discard, then the pending-reset consume) are exactly the window
+    # a soft Stop lands in — one that preserves the queue and leaves `_stopping`
+    # back at idle. Dispatching it there would re-run a cancelled turn's remaining
+    # destructive step on the fresh conversation. Identified by queue id (the
+    # replay is the user's own words, so there is no fixed text to match).
+    _img_qid = getattr(slot, "_image_recovery_queue_id", "")
+    if _img_qid:
+        _img_entry = next((q for q in slot._queue if q.get("id") == _img_qid), None)
+        if _img_entry is None:
+            # Already consumed or removed elsewhere (the admission sweep drops a
+            # containment-changed entry without touching slot state). Drop the
+            # record so a later unrelated entry cannot inherit this gate.
+            slot._image_recovery_queue_id = ""
+            slot._image_recovery_session_key = ""
+        else:
+            _img_cur_stop_gen = getattr(slot, "_stop_generation", 0)
+            _img_bound_key = getattr(slot, "_image_recovery_session_key", "")
+            _img_cur_key = effective_session_key(slot)
+            _img_rebound = bool(_img_bound_key) and _img_cur_key != _img_bound_key
+            _img_cur_session_stop_gen = _session_stop_generation_for(
+                getattr(state, "sessions", None), _img_bound_key or _img_cur_key
+            )
+            _img_stopped = _img_cur_stop_gen != getattr(
+                slot, "_image_recovery_stop_gen", _img_cur_stop_gen
+            ) or _img_cur_session_stop_gen != getattr(
+                slot, "_image_recovery_session_stop_gen", _img_cur_session_stop_gen
+            )
+            _img_superseded = bool(getattr(slot, "_pending_steers", None)) or (
+                _has_user_queued_followup(slot)
+            )
+            if (
+                _should_suppress_requeue(slot)
+                or slot._stopping
+                or _img_stopped
+                or _img_superseded
+                or _img_rebound
+            ):
+                slot.queue_remove_by_id(_img_qid)
+                if _remove_queued_by_id(slot.messages, _img_qid):
+                    state.broadcast_ws(
+                        "queue_pop",
+                        {"slot": slot.key, "content": "", "queue_id": _img_qid},
+                    )
+                slot._image_recovery_queue_id = ""
+                slot._image_recovery_session_key = ""
+                # The episode was aborted before dispatch, so refund the shared
+                # one-shot: the user's own next turn keeps its first legitimate
+                # discard. The SID discard itself is NOT unwound — a cold start on
+                # the next turn is the safe direction, and the transcript and
+                # channel identity were preserved by design.
+                slot._poisoned_reset_used = False
+                slot.append(
+                    "notice",
+                    "ℹ️ Image-history recovery cancelled — nothing was run.",
+                    "msg msg-info",
+                )
+                logger.info(
+                    "Dropped unsupported-image recovery before dispatch for slot "
+                    "%s (stop_since_enqueue=%s superseded=%s rebound=%s)",
+                    slot.key,
+                    _img_stopped,
+                    _img_superseded,
+                    _img_rebound,
+                )
+                if not slot._queue:
+                    return False
 
     # The refusal replay carries the same hazard on its own snapshots: it was
     # enqueued at index 0 BEFORE any Stop or correction that landed while it
@@ -9133,6 +9226,9 @@ async def _start_next_queued_turn(
         and consumed[0].get("id") == _replay_dispatch_qid
     ):
         _run_kwargs["_refusal_replay"] = True
+    _image_dispatch_qid = getattr(slot, "_image_recovery_queue_id", "")
+    if _image_dispatch_qid and len(consumed) == 1 and consumed[0].get("id") == _image_dispatch_qid:
+        _run_kwargs["_image_recovery"] = True
     if is_recovery:
         _run_kwargs["_synthetic_recovery_turn"] = True
     task = spawn_guarded_turn(
@@ -9696,6 +9792,11 @@ async def _run_chat(
     # to draw a refusal, and a mutable slot flag could be re-read after a
     # correction landed. Only the queue drain sets this.
     _refusal_replay: bool = False,
+    # The drained entry is the unsupported-history-image recovery whose queue id
+    # matched the slot's recorded recovery id. Identity travels structurally from
+    # the drain so a Stop or correction in the spawn-to-consume window can veto
+    # the destructive continuation before the provider sees it.
+    _image_recovery: bool = False,
     # The drained entry carried the synthetic-recovery ``kind`` tag (a runner
     # requeue after a pre-output failure, including a re-queue of the USER'S OWN
     # words on a poisoned-conversation discard). Structural, from the entry --
@@ -10396,6 +10497,60 @@ async def _run_chat(
             )
         return _recovery_qid
 
+    if _image_recovery:
+        # The drain validated this replay before spawning the guarded task, but
+        # task scheduling creates another revocation window. Recheck the same
+        # immutable snapshots at the consume seam so a Stop, correction, steer,
+        # or session rebind cannot run a cancelled destructive continuation.
+        _img_recorded_key = getattr(slot, "_image_recovery_session_key", "")
+        _img_live_key = effective_session_key(slot)
+        _img_rebound_consume = bool(_img_recorded_key) and _img_live_key != _img_recorded_key
+        _img_cur_stop_gen = getattr(slot, "_stop_generation", 0)
+        _img_session_stop_gen = _session_stop_generation_for(
+            getattr(state, "sessions", None), _img_recorded_key or _img_live_key
+        )
+        _img_stopped_consume = _img_cur_stop_gen != getattr(
+            slot, "_image_recovery_stop_gen", _img_cur_stop_gen
+        ) or _img_session_stop_gen != getattr(
+            slot, "_image_recovery_session_stop_gen", _img_session_stop_gen
+        )
+        _img_superseded_consume = bool(getattr(slot, "_pending_steers", None)) or (
+            _has_user_queued_followup(slot)
+        )
+        if (
+            _img_rebound_consume
+            or _img_stopped_consume
+            or _img_superseded_consume
+            or slot._stopping
+            or _should_suppress_requeue(slot)
+        ):
+            slot._image_recovery_queue_id = ""
+            slot._image_recovery_session_key = ""
+            slot._poisoned_reset_used = False
+            slot.append(
+                "notice",
+                "ℹ️ Image-history recovery cancelled — nothing was run.",
+                "msg msg-info",
+            )
+            logger.info(
+                "Unsupported-image recovery aborted at consume for slot %s "
+                "(rebound=%s stopped=%s superseded=%s)",
+                slot.key,
+                _img_rebound_consume,
+                _img_stopped_consume,
+                _img_superseded_consume,
+            )
+            try:
+                state.broadcast_ws("chat_done", await chat_done_payload(state, slot))
+            except Exception:  # pragma: no cover - unblock is best-effort
+                logger.debug(
+                    "chat_done broadcast failed for aborted image recovery",
+                    exc_info=True,
+                )
+            return
+        slot._image_recovery_queue_id = ""
+        slot._image_recovery_session_key = ""
+
     # Model-activity marker for the poisoned-conversation streak ONLY:
     # flipped True on thinking chunks. Deliberately separate from
     # _turn_emitted — thinking is ephemeral/broadcast-only, so retrying
@@ -10715,8 +10870,8 @@ async def _run_chat(
     # conversation), discard_conversation CLEARS the sid so the next turn
     # cold-starts a fresh conversation — while keeping the session-map entry,
     # whose Slack thread/channel linkage must survive the recovery. Set only
-    # by the consecutive pre-stream-exhaustion branch in the AcpError handler
-    # below.
+    # by the consecutive pre-stream-exhaustion branch or the typed
+    # unsupported-history-image recovery in the AcpError handler below.
     needs_conversation_discard = False
     _auth_required = False
     saw_compaction = False
@@ -18829,6 +18984,78 @@ async def _run_chat(
                     else "⟳ Session busy — please retry."
                 )
                 slot.append("error", _retry_msg, "msg msg-err")
+        elif (
+            getattr(exc, "image_format_unsupported", False)
+            and not _attachments
+            and not _current_turn_carries_image_ref(message)
+            and not slot._poisoned_reset_used
+            and _prompt_depth == 0
+            and not _should_suppress_requeue(slot)
+            and not _has_user_queued_followup(slot)
+            and not getattr(slot, "_pending_steers", None)
+        ):
+            # Kiro accepted this turn with no new attachment, then rejected an
+            # image carried by the native conversation. Retrying that same
+            # session is deterministic; discard only its resume SID so the
+            # dashboard/channel identity and text transcript survive. The fresh
+            # session receives Kiro Crew's bounded text replay, never native
+            # binary image blocks. One-shot accounting is shared with the
+            # canary-based poison recovery, so a failed fresh attempt cannot
+            # enter a discard loop.
+            #
+            # "No new image" is TWO facts, not one. `_attachments` covers the
+            # dashboard upload lists, but a channel turn (and a dashboard turn
+            # that types a path) carries its image as a bare path inside the
+            # message TEXT, which `build_prompt_blocks` inlines as a real image
+            # block for the CURRENT turn while `_attachments` stays empty. Such a
+            # rejection is of the image the user just sent: discarding the
+            # conversation would clear a healthy resume SID and the verbatim
+            # replay would re-inline the same bytes, so it must fall through to
+            # the terminal error whose formatted text already says to remove or
+            # re-encode the attachment.
+            _persist_partial_reply()
+            slot._prestream_exhausted_cycles = 0
+            slot._poisoned_reset_used = True
+            needs_conversation_discard = True
+            if _turn_emitted:
+                # A tool or assistant output already landed. Continue from the
+                # persisted transcript rather than replaying the original user
+                # request and potentially repeating a completed side effect.
+                _image_recovery_text = _POSTTOKEN_RECOVER_MSG
+                _image_recovery_payload = RecoveryPayload.CONTINUATION
+            else:
+                # No model activity landed, so the current text is safe to
+                # replay verbatim after removing the poisoned native history.
+                _image_recovery_text = message
+                _image_recovery_payload = payload_for_replay(_is_synthetic)
+            slot.append(
+                "error",
+                "⟳ The backend retained an image it can no longer process — "
+                "restarting the model session without binary image history and "
+                "continuing…",
+                "msg msg-err",
+                meta={"kind": TRANSIENT_RETRY_KIND},
+            )
+            # Snapshot the stop counters and the binding BEFORE the enqueue: the
+            # conversation discard and the pending-reset consume are awaited
+            # between here and the drain's dispatch, and a soft Stop landing in
+            # that window preserves the queue while `_stopping` snaps back to
+            # idle. A SYNTHETIC_RECOVERY_KIND item carries no family latch of its
+            # own, so without these the drain would dispatch a cancelled turn and
+            # re-run a remaining destructive step. Same guard, same words, as the
+            # sibling poisoned-conversation canary recovery.
+            slot._image_recovery_stop_gen = getattr(slot, "_stop_generation", 0)
+            slot._image_recovery_session_stop_gen = _session_stop_generation()
+            slot._image_recovery_session_key = session_key
+            slot._image_recovery_queue_id = (
+                _queue_recovery(
+                    0,
+                    _image_recovery_text,
+                    kind=SYNTHETIC_RECOVERY_KIND,
+                    payload=_image_recovery_payload,
+                )
+                or ""
+            )
         elif (
             not _turn_emitted
             and acp_error_is_transient(exc)
