@@ -455,7 +455,17 @@ async def _spawn_scope_refusal(
     )
     if refusal is not None:
         return refusal
-    if request.get("internal_auth") is not True:
+    # A NON-INTERNAL caller carrying a non-empty str app claim is an app token;
+    # the dashboard owner carries no app claim. An INTERNAL session is bound by
+    # per-session ownership below even when it carries a derived app claim, so
+    # the app bound is gated on ``not internal`` -- otherwise two sessions of
+    # one app would reach each other's runs. ``isinstance`` str-guards the claim.
+    internal = request.get("internal_auth") is True
+    _app_claim = request.get("app")
+    app_scope = (
+        "" if internal else (_app_claim if isinstance(_app_claim, str) and _app_claim else "")
+    )
+    if not internal and not app_scope:
         return None  # the dashboard owner's own surface
     caller = request.headers.get("X-Session-Key", "")
     state = request.app["state"]
@@ -463,13 +473,16 @@ async def _spawn_scope_refusal(
     info = state.subagents.get(run_id) if state.subagents else None
     record = None if info is not None else await asyncio.to_thread(read_state, run_id)
     parent: object
+    run_app: str = ""
     if info is not None:
         parent = info.parent_session_key
+        run_app = str(getattr(info, "app", "") or "")
     elif record is not None:
         # The persisted record spells the field ``parent_session``
         # (``subagent_persistence.write_state``). A record that lacks it is an
         # unknown owner, not a parentless run: ``None`` stays ``None``.
         parent = record.get("parent_session")
+        run_app = str(record.get("app") or "")
     else:
         # A harness-native child has no managed run and no persisted record; its
         # ownership is the dashboard slot that tracks its card. Anything else
@@ -479,6 +492,25 @@ async def _spawn_scope_refusal(
         # caller's identity is that slot's session key, ``dashboard:<slot>``.
         slot = card.get("slot") if isinstance(card, dict) else None
         parent = f"dashboard:{slot}" if isinstance(slot, str) and slot else None
+    # An app-token caller (``request["app"]`` set, no ``internal_auth``) is
+    # bound to its own app's runs -- otherwise it reaches this control as the
+    # owner and can read another app's run (started OR queued) by id. The
+    # dashboard owner (no app) still takes the early return above.
+    if app_scope:
+        if run_app == app_scope:
+            return None
+        _sel().log_api_access(
+            caller=f"app:{app_scope}",
+            operation="spawn.access",
+            outcome="denied",
+            source="subagent",
+            error="The run belongs to another app.",
+            resources=f"run={run_id} scope={'private' if scope else 'global'}",
+        )
+        return web.json_response(
+            {"error": "not found", "code": "task_scope_denied"},
+            status=404,
+        )
     if _run_belongs_to_caller(caller, run_id, parent):
         return None
     _sel().log_api_access(
@@ -1357,6 +1389,16 @@ async def api_spawn_status(request: web.Request) -> web.Response:
         # separate `spawn list` or a log grep.
         if _awaiting_spawn_approval(info):
             data["awaiting_approval"] = True
+        # Present only for a run still waiting behind the concurrency / adaptive
+        # cap (a queued-view projection served from ``_queue``; see
+        # SubagentManager.get). Without it a run that has not started yet is
+        # byte-identical to one executing, so the CLI/MCP waiter renders
+        # "RUNNING" for a run with no process -- the state contradiction this
+        # endpoint exists to resolve.
+        if getattr(info, "queued", False):
+            data["queued"] = True
+            if info.queued_reason:
+                data["queued_reason"] = info.queued_reason
     return web.json_response(data)
 
 
@@ -1417,8 +1459,19 @@ async def api_spawn_list(request: web.Request) -> web.Response:
     # needs, so the list must not hand out what the control route would refuse.
     # The dashboard owner (no ``internal_auth``) still sees everything.
     internal = request.get("internal_auth") is True
+    # A real app token publishes a NON-EMPTY str claim; the owner/internal
+    # callers leave it empty. Scope an app caller's listing to its own app's
+    # runs, started AND queued, so one app's run id/task/parent is not disclosed
+    # to another app. ``isinstance`` str-guards the claim.
+    _app_claim = request.get("app")
+    app_scope = (
+        "" if internal else (_app_claim if isinstance(_app_claim, str) and _app_claim else "")
+    )
     for info in state.subagents.all_agents:
         if internal and not _run_belongs_to_caller(caller, info.id, info.parent_session_key):
+            continue
+        if app_scope and str(getattr(info, "app", "") or "") != app_scope:
+            _audit_deny(str(request.get("app") or "<owner>"), "api_spawn_list", "live_app_mismatch")
             continue
         entry: dict[str, object] = {
             "id": info.id,
@@ -1444,6 +1497,14 @@ async def api_spawn_list(request: web.Request) -> web.Response:
             # has no child process and is only ever waiting to be approved.
             if _awaiting_spawn_approval(info):
                 entry["awaiting_approval"] = True
+            # Present only for a run waiting behind the concurrency / adaptive
+            # cap (a queued-view projection served from ``_queue``). Lets the
+            # panel and `spawn_list` distinguish "waiting to start" from
+            # "executing" instead of showing the same hourglass for both.
+            if getattr(info, "queued", False):
+                entry["queued"] = True
+                if info.queued_reason:
+                    entry["queued_reason"] = info.queued_reason
         # Present only when a group was actually withheld, so the default
         # (everything on) payload is unchanged.
         withheld = [

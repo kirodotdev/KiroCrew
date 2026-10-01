@@ -148,6 +148,9 @@ def _info(**kw: Any) -> Any:
         "include_memory": True,
         "include_lessons": True,
         "include_project": True,
+        "queued": False,
+        "queued_reason": "",
+        "app": "",
     }
     base.update(kw)
     return SimpleNamespace(**base)
@@ -646,6 +649,66 @@ class TestSpawnResultView:
 # ── api_spawn_status ──
 
 
+class TestSpawnScopeRefusalAppOwnership:
+    def test_app_caller_refused_a_foreign_apps_run(self, monkeypatch) -> None:
+        """An app-token caller (request["app"] set, no internal_auth) is
+        refused a run owned by another app -- status, like list, must not
+        confirm a foreign app's run id/state."""
+        mgr = _mgr()
+        mgr.get.return_value = _info(id="r1", app="app-b")
+        req = _Req(_state(subagents=mgr), extra={"app": "app-a"}, match_info={"agent_id": "r1"})
+        resp = asyncio.run(mod._spawn_scope_refusal(req))
+        assert resp is not None and resp.status == 404
+        assert _payload(resp)["code"] == "task_scope_denied"
+
+    def test_app_caller_admitted_to_its_own_apps_run(self, monkeypatch) -> None:
+        mgr = _mgr()
+        mgr.get.return_value = _info(id="r1", app="app-a")
+        req = _Req(_state(subagents=mgr), extra={"app": "app-a"}, match_info={"agent_id": "r1"})
+        assert asyncio.run(mod._spawn_scope_refusal(req)) is None
+
+    def test_owner_still_admitted_without_app_bound(self, monkeypatch) -> None:
+        mgr = _mgr()
+        mgr.get.return_value = _info(id="r1", app="app-b")
+        # Owner: app == "" and no internal_auth -> early owner return, no bound.
+        req = _Req(_state(subagents=mgr), match_info={"agent_id": "r1"})
+        assert asyncio.run(mod._spawn_scope_refusal(req)) is None
+
+    def test_internal_caller_with_app_claim_still_bound_by_session_ownership(
+        self, monkeypatch
+    ) -> None:
+        """An internal session carries a derived app claim, but must still be
+        bound by per-session ownership -- the app bound is for non-internal app
+        tokens only, else two sessions of one app reach each other's runs."""
+        monkeypatch.setattr(mod, "_sel", lambda: MagicMock())
+        monkeypatch.setattr(mod, "internal_memory_scope", AsyncMock(return_value=(None, None)))
+        mgr = _mgr()
+        # Run owned by session B, same app; caller is internal session A.
+        mgr.get.return_value = _info(id="r1", app="app-a", parent_session_key="dashboard:B")
+        req = _Req(
+            _state(subagents=mgr),
+            extra={"app": "app-a", "internal_auth": True},
+            match_info={"agent_id": "r1"},
+        )
+        req.headers["X-Session-Key"] = "dashboard:A"
+        resp = asyncio.run(mod._spawn_scope_refusal(req))
+        assert resp is not None and resp.status == 404  # session ownership denies A
+        assert _payload(resp)["code"] == "task_scope_denied"
+
+    def test_internal_caller_admitted_to_its_own_run(self, monkeypatch) -> None:
+        monkeypatch.setattr(mod, "_sel", lambda: MagicMock())
+        monkeypatch.setattr(mod, "internal_memory_scope", AsyncMock(return_value=(None, None)))
+        mgr = _mgr()
+        mgr.get.return_value = _info(id="r1", app="app-a", parent_session_key="dashboard:A")
+        req = _Req(
+            _state(subagents=mgr),
+            extra={"app": "app-a", "internal_auth": True},
+            match_info={"agent_id": "r1"},
+        )
+        req.headers["X-Session-Key"] = "dashboard:A"
+        assert asyncio.run(mod._spawn_scope_refusal(req)) is None
+
+
 class TestApiSpawnStatus:
     def test_503_without_manager(self) -> None:
         req = _Req(_state(), None, match_info={"agent_id": "a1"})
@@ -807,6 +870,24 @@ class TestApiSpawnStatus:
         assert data["turns"] == 2 and data["last_tool"] == "fs_read"
         assert isinstance(data["elapsed"], int)
 
+    def test_queued_agent_reports_queued_flag(self) -> None:
+        """A run waiting behind the concurrency cap (served from `_queue` via
+        the manager's queued-view projection) reports `queued: True` so the
+        caller/CLI can tell "waiting to start" from "executing" instead of
+        rendering RUNNING for a run with no process."""
+        mgr = _mgr()
+        mgr.get.return_value = _info(
+            done=False,
+            queued=True,
+            queued_reason="concurrency_limit",
+            streaming_text="",
+        )
+        req = _Req(_state(subagents=mgr), None, match_info={"agent_id": "a1"})
+        data = _payload(_run(mod.api_spawn_status, req))
+        assert data["done"] is False
+        assert data["queued"] is True
+        assert data["queued_reason"] == "concurrency_limit"
+
     def test_running_agent_pages_partial_transcript(self) -> None:
         mgr = _mgr()
         mgr.get.return_value = _info(done=False, streaming_text="l0\nl1\nl2")
@@ -889,6 +970,61 @@ class TestApiSpawnList:
         assert agents[0]["error"] == ""
         assert "elapsed" not in agents[0]
         assert "credits" not in agents[0]
+
+    def test_lists_queued_run_with_queued_flag(self) -> None:
+        """A run waiting behind the concurrency cap is included (manager's
+        all_agents appends queued-view projections), with `queued: True` so
+        the panel shows "waiting to start" instead of "No subagents running"
+        for a run the caller was just handed."""
+        mgr = _mgr(
+            all_agents=[
+                _info(id="run", done=False),
+                _info(id="wait", done=False, queued=True, queued_reason="concurrency_limit"),
+            ]
+        )
+        agents = _payload(_run(mod.api_spawn_list, _Req(_state(subagents=mgr))))["agents"]
+        by_id = {a["id"]: a for a in agents}
+        assert "wait" in by_id
+        assert by_id["wait"]["queued"] is True
+        assert by_id["wait"]["queued_reason"] == "concurrency_limit"
+        assert "queued" not in by_id["run"]
+
+    def test_app_caller_sees_only_its_own_apps_runs(self, monkeypatch) -> None:
+        """An app-token caller (request["app"] set, no internal_auth) is scoped
+        to its own app's runs -- started AND queued -- so one app's run id,
+        task and parent are not disclosed to another app via the list, and each
+        cross-app skip is recorded as a SEL denial."""
+        denials: list[tuple[str, str, str]] = []
+        monkeypatch.setattr(
+            mod, "_audit_deny", lambda a, op, reason: denials.append((a, op, reason))
+        )
+        mgr = _mgr(
+            all_agents=[
+                _info(id="mine_run", done=False, app="app-a"),
+                _info(id="mine_wait", done=False, queued=True, queued_reason="", app="app-a"),
+                _info(id="other_run", done=False, app="app-b"),
+                _info(id="other_wait", done=False, queued=True, queued_reason="", app="app-b"),
+            ]
+        )
+        req = _Req(_state(subagents=mgr), extra={"app": "app-a"})
+        ids = {a["id"] for a in _payload(_run(mod.api_spawn_list, req))["agents"]}
+        assert ids == {"mine_run", "mine_wait"}
+        # Both cross-app skips are audited as live_app_mismatch.
+        assert [d[2] for d in denials].count("live_app_mismatch") == 2
+
+    def test_owner_sees_every_apps_runs(self) -> None:
+        """The dashboard owner (app == "") is not app-scoped and still sees all."""
+        mgr = _mgr(
+            all_agents=[
+                _info(id="a", done=False, app="app-a"),
+                _info(id="b", done=False, app="app-b"),
+            ]
+        )
+        ids = {
+            a["id"]
+            for a in _payload(_run(mod.api_spawn_list, _Req(_state(subagents=mgr))))["agents"]
+        }
+        assert ids == {"a", "b"}
 
 
 class TestApiSpawnRetry:

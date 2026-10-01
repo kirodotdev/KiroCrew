@@ -365,8 +365,90 @@ class RunEventCoordinator(ManagerComponent):
         ]
 
     def get_impl(self, agent_id: str) -> SubagentInfo | None:
-        """Get agent info by ID."""
-        return self._manager._agents.get(agent_id)
+        """Get agent info by ID.
+
+        Falls back to the stagger/capacity queue when the id names a run that
+        was accepted but has not started yet. A queued spawn returns its real
+        id to the caller (``spawn_run`` prints it) but lives in ``_queue`` as a
+        params dict with no entry in ``_agents`` until it drains -- so a bare
+        ``_agents`` read answered "not found" for an id the caller was just
+        handed, and if the effective cap stayed at 0 the run never drained and
+        the caller could never observe it at all (no completion event, no
+        status, nothing listed). Projecting the queued row keeps the queryable
+        state consistent with the accepted state.
+        """
+        info = self._manager._agents.get(agent_id)
+        if info is not None:
+            return info
+        return self._queued_info_for(agent_id)
+
+    def _queued_info_for(self, agent_id: str) -> SubagentInfo | None:
+        """Build a read-only queued view for *agent_id*, or ``None``.
+
+        Projects the matching ``_queue`` params dict into a ``SubagentInfo``
+        with ``queued=True`` / ``done=False`` -- never stored in ``_agents``,
+        so it cannot inflate the ``running`` set the concurrency gate and the
+        teardown predicates read. ``_queue`` is the single source of truth
+        (every drain/cancel pop maintains it), so a projection stays correct
+        without new mutable state to keep in sync.
+        """
+        for params in self._manager._queue:
+            if not self._is_fresh_queued(params):
+                continue
+            if params.get("_preassigned_id", "") == agent_id:
+                return self._queued_view(params)
+        return None
+
+    @staticmethod
+    def _is_fresh_queued(params: "dict[str, Any]") -> bool:
+        """Whether a ``_queue`` entry is a fresh queued spawn to project.
+
+        A ``_resume_id`` entry is a resume/continuation re-entry that reuses an
+        existing ``_agents`` row rather than a newly-accepted spawn, so
+        projecting it would surface a duplicate (its real row is already in
+        ``_agents``) under a possibly-empty ``_preassigned_id``. An entry with
+        no id has no handle a caller could query by. Skip both.
+        """
+        return bool(params.get("_preassigned_id")) and not params.get("_resume_id")
+
+    def _queued_view(self, params: "dict[str, Any]") -> "SubagentInfo":
+        """A ``SubagentInfo`` view of one queued ``_queue`` params dict."""
+        # circular import: ``subagent`` imports this manager package at module
+        # scope, so a top-level import of ``SubagentInfo`` here would close the
+        # cycle; the type-only import lives under this module's TYPE_CHECKING
+        # block and the runtime construction takes this deferred import.
+        from ..subagent import SubagentInfo
+
+        return SubagentInfo(
+            id=str(params.get("_preassigned_id", "")),
+            task=str(params.get("task", "")),
+            parent_session_key=str(params.get("parent_session_key", "")),
+            agent=str(params.get("agent", "")),
+            app=str(params.get("app", "")),
+            queued=True,
+            memory_mode=str(params.get("_memory_mode") or "persistent"),
+            batch_id=str(params.get("batch_id", "")),
+            batch_total=int(params.get("batch_total", 0) or 0),
+            delegation=dict(params.get("delegation") or {}),
+            include_memory=bool(params.get("include_memory", True)),
+            include_lessons=bool(params.get("include_lessons", True)),
+            include_project=bool(params.get("include_project", True)),
+        )
+
+    def queued_views_impl(self) -> list[SubagentInfo]:
+        """Queued-view records for every spawn waiting in the in-memory queue.
+
+        One per fresh queued ``_queue`` entry (skipping resume re-entries and
+        id-less rows; see ``_is_fresh_queued``), in queue order. Used by
+        ``all_agents`` so a queued run shows in ``spawn_list`` instead of the
+        panel reading "No subagents running" while a spawn the caller was
+        handed waits.
+        """
+        return [
+            self._queued_view(params)
+            for params in self._manager._queue
+            if self._is_fresh_queued(params)
+        ]
 
     async def _teardown_run_session_impl(self, info: SubagentInfo, session_key: str) -> None:
         """Release and reset the run's own session (skipped when reaped).

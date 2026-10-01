@@ -228,13 +228,19 @@ def build_done_probe(subagents: object) -> DoneProbe:
     """Adapt a live ``SubagentManager`` to :data:`DoneProbe`.
 
     An id the manager does not track reads as done: the reaper prunes
-    records, and "gone" must never hold a caller's serial lock open.
+    records, and "gone" must never hold a caller's serial lock open. A run the
+    manager still tracks reads as done only when it has actually finished --
+    a run waiting behind the concurrency cap is pending work the serial lane
+    must still wait for, so reporting it done would clear the guard and let the
+    caller queue a duplicate.
     """
 
     def _probe(spawn_id: str) -> bool:
         if subagents is None or not spawn_id:
             return True
         info = subagents.get(spawn_id)  # type: ignore[attr-defined]
-        return info is None or bool(getattr(info, "done", False))
+        if info is None:
+            return True
+        return bool(getattr(info, "done", False))
 
     return _probe

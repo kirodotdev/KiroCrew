@@ -1077,6 +1077,8 @@ def spawn_list(name: str, args: dict[str, Any]) -> str:
                 status = "done"
             elif a.get("awaiting_approval"):
                 status = "awaiting-approval"
+            elif a.get("queued"):
+                status = "queued"
             else:
                 status = "running"
             err = f" error: {_redact(a['error'])}" if a.get("error") else ""
@@ -1160,6 +1162,11 @@ def spawn_status(name: str, args: dict[str, Any]) -> str:
     # "approve it ... to start this run", so this tool must not report work
     # under way for it either.
     awaiting = running and d.get("awaiting_approval") is True
+    # Present-only, set by api_spawn_status for a run still waiting behind the
+    # concurrency / adaptive cap: accepted, id handed to the caller, but no
+    # process yet. Reported like the approval wait rather than as RUNNING, so a
+    # queued run the caller just spawned is not mistaken for one in flight.
+    queued = running and d.get("queued") is True
     result = d.get("result") or ""
     if running and not result:
         turns = d.get("turns", 0)
@@ -1167,6 +1174,13 @@ def spawn_status(name: str, args: dict[str, Any]) -> str:
             result = (
                 "(not started — waiting for spawn approval; approve it in the "
                 "dashboard (Approvals) to start this run)"
+            )
+        elif queued:
+            reason = d.get("queued_reason") or ""
+            result = (
+                "(not started — waiting for dispatch capacity"
+                + (f": {reason}" if reason else "")
+                + "; it starts once capacity is available)"
             )
         elif isinstance(meta, dict) and meta.get("total_lines", 0) > 0:
             result = (
@@ -1200,7 +1214,7 @@ def spawn_status(name: str, args: dict[str, Any]) -> str:
         result = f"[{' | '.join(hdr)}]\n{result}"
 
     if running:
-        status = ["AWAITING-APPROVAL" if awaiting else "RUNNING"]
+        status = ["AWAITING-APPROVAL" if awaiting else "QUEUED" if queued else "RUNNING"]
         if "elapsed" in d:
             status.append(f"{d['elapsed']}s")
         if "turns" in d:

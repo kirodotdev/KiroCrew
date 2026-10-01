@@ -279,6 +279,100 @@ class TestSpawnWithoutApprovalCallback:
         assert manager.has_pending_work_for("cron:j1") is True
         assert manager.queued_count_for("cron:other") == 0
 
+    @pytest.mark.asyncio
+    async def test_queued_spawn_is_visible_to_get_and_all_agents(self) -> None:
+        """A spawn waiting behind the concurrency cap returns its real id to the
+        caller but lives only in `_queue` with no `_agents` entry. `get()` and
+        `all_agents` must still find it, so `spawn_status` does not answer "not
+        found" and `spawn_list` does not report "No subagents running" for an id
+        the caller was just handed -- and so that a run which never drains (cap
+        stuck low) stays observable rather than vanishing."""
+        approval_callback = AsyncMock(return_value=True)
+        manager = SubagentManager(
+            sessions=_mock_sessions(),
+            ctx_builder=_mock_ctx_builder(),
+            max_concurrent=1,
+            on_spawn_approval=approval_callback,
+        )
+
+        with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
+            started = manager.spawn("task one", parent_session_key="dashboard:tab")
+            queued = manager.spawn("task two", parent_session_key="dashboard:tab")
+
+        assert started is not None and started.queued is False
+        assert queued is not None and queued.queued is True
+
+        # get() finds the queued run by its real id -- the id spawn_run printed.
+        found = manager.get(queued.id)
+        assert found is not None
+        assert found.id == queued.id
+        assert found.queued is True
+        assert found.done is False
+        # The projection carries the fields the status/list payloads read, so
+        # ownership (parent_session_key) and the context flags survive.
+        assert found.parent_session_key == "dashboard:tab"
+        assert found.task == "task two"
+
+        # all_agents lists BOTH the started run and the queued one, so the
+        # Subagents panel shows the waiting run instead of "No subagents
+        # running". The queued view must not land in `_agents` (it would
+        # inflate the `running` set the concurrency gate reads).
+        ids = {a.id for a in manager.all_agents}
+        assert started.id in ids
+        assert queued.id in ids
+        assert queued.id not in manager._agents
+        assert queued.id not in {a.id for a in manager.running}
+
+        # An unknown id is still not found.
+        assert manager.get("ffffffffffffffff") is None
+
+    @pytest.mark.asyncio
+    async def test_queued_projection_skips_resume_and_idless_entries(self) -> None:
+        """The queued-view projection surfaces only fresh queued spawns: a
+        resume re-entry (`_resume_id`, whose real row is already in `_agents`)
+        and an id-less entry are skipped, so neither becomes a duplicate or an
+        empty-id queued agent in `get`/`all_agents`."""
+        manager = SubagentManager(
+            sessions=_mock_sessions(),
+            ctx_builder=_mock_ctx_builder(),
+            max_concurrent=1,
+            on_spawn_approval=AsyncMock(return_value=True),
+        )
+        with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
+            manager.spawn("task one", parent_session_key="dashboard:tab")
+            queued = manager.spawn("task two", parent_session_key="dashboard:tab")
+
+        # Inject a resume re-entry and an id-less row alongside the real one.
+        manager._queue.append({"_resume_id": "abc", "_preassigned_id": "abc"})
+        manager._queue.append({"_preassigned_id": "", "parent_session_key": "dashboard:tab"})
+
+        views = {v.id for v in manager.queued_views()}
+        assert views == {queued.id}
+        assert manager.get("abc") is None
+        assert manager.get("") is None
+
+    def test_done_probe_holds_the_guard_for_a_queued_run(self) -> None:
+        """The app serial-lock done-probe reports done only for a finished or
+        untracked run. A queued (pending) run reads as NOT done so it keeps the
+        caller's serial guard -- clearing it would let the caller queue a
+        duplicate of work that has not run yet."""
+        from types import SimpleNamespace
+
+        from kiro_crew.apps.spawn_sdk import build_done_probe
+
+        subagents = SimpleNamespace(
+            get=lambda sid: {
+                "run": SimpleNamespace(done=False, queued=False),
+                "wait": SimpleNamespace(done=False, queued=True),
+                "fin": SimpleNamespace(done=True, queued=False),
+            }.get(sid)
+        )
+        probe = build_done_probe(subagents)
+        assert probe("wait") is False  # queued pending work -> holds the guard
+        assert probe("run") is False  # executing -> holds the guard
+        assert probe("fin") is True  # finished -> releases
+        assert probe("gone") is True  # untracked -> done
+
 
 class TestSpawnWithApprovalCallback:
     """When on_spawn_approval is set, spawns are gated behind approval."""

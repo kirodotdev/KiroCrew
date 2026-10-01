@@ -5335,8 +5335,17 @@ class SubagentManager:
 
     @property
     def all_agents(self) -> list[SubagentInfo]:
-        """Return all tracked subagents (running and done)."""
-        return list(self._agents.values())
+        """Return all tracked subagents (running, done, and queued).
+
+        Started/finished runs live in ``_agents``; a spawn still waiting behind
+        the concurrency / adaptive cap lives only in ``_queue`` as a params
+        dict. Appending its queued view keeps ``spawn_list`` from reporting "No
+        subagents running" while a run the caller was just handed waits to
+        start -- the exact state contradiction users hit when the effective cap
+        is low. The queued views are read-only projections (never stored in
+        ``_agents``), so nothing that counts off ``_agents`` is affected.
+        """
+        return list(self._agents.values()) + self.queued_views()
 
     def batch_members_pending(self, batch_id: str) -> bool:
         return self._waves.batch_members_pending_impl(batch_id)
@@ -5395,6 +5404,9 @@ class SubagentManager:
 
     def get(self, agent_id: str) -> SubagentInfo | None:
         return self._run_events.get_impl(agent_id)
+
+    def queued_views(self) -> list[SubagentInfo]:
+        return self._run_events.queued_views_impl()
 
     @property
     def count(self) -> int:
