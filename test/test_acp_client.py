@@ -16,7 +16,7 @@ import pytest
 from spawn_test_helpers import strip_spawn_shim
 
 import kiro_crew.acp.client as acp_client
-from conftest import requires_symlinks
+from conftest import cap_node_module_walk, requires_symlinks
 from kiro_crew.acp.client import (
     _CLAUDE_ACP_PKG_ENTRY,
     _DRAIN_DURATION,
@@ -162,13 +162,16 @@ class TestVendoredClaudeAcp:
         assert _resolve_vendored_claude_acp(pkg_dir=pkg_dir) is None
 
     def test_skips_incomplete_copy_missing_deps(self, tmp_path, monkeypatch):
-        # Regression: an entry script with no hoisted deps must be rejected
-        # (it would crash with ERR_MODULE_NOT_FOUND @agentclientprotocol/sdk),
+        # Regression: an entry script whose dependency Node could not import must
+        # be rejected (it would crash with ERR_MODULE_NOT_FOUND @agentclientprotocol/sdk),
         # falling through to a complete copy under KIROCREW_PROJECT_DIR.
         pkg_dir = tmp_path / "site-packages" / "kiro_crew"
         pkg_dir.mkdir(parents=True)
-        # Incomplete copy in _vendor (entry only, no deps) — must be skipped.
+        # Incomplete copy in _vendor (entry only, no deps) — must be skipped. The
+        # dependency walk runs to the filesystem root like Node's; cap it at tmp_path
+        # so a node_modules the host keeps above the temp root cannot complete it.
         self._make_vendored(pkg_dir / "_vendor" / "node_modules", with_deps=False)
+        cap_node_module_walk(monkeypatch, tmp_path)
         # Complete copy in the project dir — must win.
         (tmp_path / "proj").mkdir()
         good = self._make_vendored(tmp_path / "proj" / "node_modules")

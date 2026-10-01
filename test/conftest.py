@@ -451,6 +451,32 @@ def cap_project_root_walk(monkeypatch, ceiling: pathlib.Path) -> None:
     monkeypatch.setattr(artifact_source, "project_root_marker", _capped)
 
 
+def cap_node_module_walk(monkeypatch, ceiling: pathlib.Path) -> None:
+    """Make the ACP adapter resolvers' ``node_modules`` walk stop at ``ceiling``.
+
+    ``acp.client._node_module_search_dirs`` walks every ancestor of an adapter
+    entry's real path the way Node resolves a bare import -- to the filesystem
+    root. A test that asserts "this adapter's dependency is reachable NOWHERE" is
+    therefore also asserting that no ``node_modules`` above ``tmp_path`` holds it,
+    which is the host's to decide, not the test's: a ``TMPDIR`` inside a checkout
+    that ran ``npm install`` at its root would make the refusal pass. Directories
+    outside ``ceiling`` are dropped from the walk; inside it the real walk runs, so
+    the ``node_modules`` a test plants beside a link target still counts.
+    """
+    from kiro_crew.acp import client as acp_client
+
+    real_walk = acp_client._node_module_search_dirs
+    top = os.path.normcase(os.path.realpath(str(ceiling)))
+
+    def _capped(start: pathlib.Path):
+        for node_modules in real_walk(start):
+            here = os.path.normcase(os.path.realpath(str(node_modules)))
+            if here == top or here.startswith(top + os.sep):
+                yield node_modules
+
+    monkeypatch.setattr(acp_client, "_node_module_search_dirs", _capped)
+
+
 #: ``pytest_collection_modifyitems`` -- which applies the
 #: ``windows-expected-failures.txt`` skips -- lives in the ROOTDIR ``conftest.py``.
 #: That list already names node ids under

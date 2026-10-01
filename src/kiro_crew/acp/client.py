@@ -43,6 +43,7 @@ from typing import (
     AsyncIterator,
     Callable,
     Collection,
+    Iterator,
     Mapping,
     Sequence,
     TypeVar,
@@ -409,11 +410,16 @@ CLAUDE_ACP_NPM_PKG = ACP_BACKEND_NODE_ADAPTER_PACKAGES[ACP_BACKEND_CLAUDE]
 # Entry script relative to the installed package directory (its package.json
 # "bin" field).  Used to locate a copy under a project ``node_modules``.
 _CLAUDE_ACP_PKG_ENTRY = Path(CLAUDE_ACP_NPM_PKG, *NODE_ADAPTER_ENTRY_SEGMENTS)
-# A direct runtime dependency of the adapter that npm hoists flat into the
-# same node_modules root.  Its presence is a cheap completeness check: a
-# copy missing it would crash at import with
-# ``ERR_MODULE_NOT_FOUND: @agentclientprotocol/sdk``, so we reject such an
-# incomplete root and fall through to the next candidate.
+# A direct runtime dependency of the adapter.  Its reachability is a cheap
+# completeness check: a copy that cannot import it would crash at import with
+# ``ERR_MODULE_NOT_FOUND: @agentclientprotocol/sdk`` -- after the spawn -- so
+# such a copy is rejected and the ladder moves to the next candidate.  "Reachable"
+# means what it means to Node: present in some ``node_modules`` on the walk UP
+# from the entry script's REAL path (``_vendored_adapter_entry``).  An ordinary
+# ``npm install`` hoists the dependency flat into the same root as the adapter; a
+# ``file:`` / ``npm link`` install is a symlink whose dependencies sit under the
+# link target's own ``node_modules`` and hoists nothing, so a check pinned to the
+# hoisted root alone would reject every linked adapter as incomplete.
 _CLAUDE_ACP_DEP_MARKER = Path("@agentclientprotocol") / "sdk"
 
 # ── codex-acp (ACP_BACKEND_CODEX) ──
@@ -1048,20 +1054,13 @@ def _vendored_acp_roots(pkg_dir: Path | None = None) -> list[Path]:
 def _resolve_vendored_claude_acp(pkg_dir: Path | None = None) -> str | None:
     """Return the path to a vendored claude-agent-acp entry script, or None.
 
-    Looks for ``<root>/@agentclientprotocol/claude-agent-acp/dist/index.js``
-    under each candidate ``node_modules`` root.  Returns the first existing
-    entry script (a plain Node script — the caller wraps it with ``node``).
-
-    A root is accepted only when the adapter's hoisted dependency marker
-    (``@agentclientprotocol/sdk``) is also present, so an incomplete vendored
-    copy (entry script but missing deps) is skipped in favour of a complete
-    one rather than picked and crashed at ESM import time.
+    The claude spelling of the ONE shared check, :func:`_vendored_adapter_entry`:
+    ``<root>/@agentclientprotocol/claude-agent-acp/dist/index.js`` under each
+    candidate ``node_modules`` root, accepted only when Node could import the
+    adapter's dependency from the entry's real location.  *pkg_dir* is threaded
+    through so tests can inject a fake package layout.
     """
-    for root in _vendored_acp_roots(pkg_dir):
-        entry = root / _CLAUDE_ACP_PKG_ENTRY
-        if entry.is_file() and (root / _CLAUDE_ACP_DEP_MARKER).is_dir():
-            return str(entry)
-    return None
+    return _vendored_adapter_entry(_CLAUDE_ACP_PKG_ENTRY, _CLAUDE_ACP_DEP_MARKER, pkg_dir=pkg_dir)
 
 
 def _resolve_node_adapter_argv(
@@ -1086,9 +1085,11 @@ def _resolve_node_adapter_argv(
       1. *override_env* (explicit override; need not be executable -- a
          non-executable script is auto-wrapped with node).
       2. *vendored_entry*: a project-local ``node_modules`` copy (from ``npm
-         install`` in the repo or a copy bundled next to the package), accepted
-         only with the adapter's hoisted dependency beside it -- no global install
-         required, and no ESM import crash after the spawn.
+         install`` in the repo, a ``file:`` / ``npm link`` install, or a copy
+         bundled next to the package), accepted only when Node could import the
+         adapter's dependency from the entry's real path -- no global install
+         required, and no ESM import crash after the spawn. A copy that is
+         skipped is logged, so the fall-through to a global copy is never silent.
       3. ``mise which <bin_name>`` (respects all mise config).
       4. Direct glob under mise installs (fallback if mise exec fails).
       5. Augmented PATH (includes mise shims, nvm, fnm, volta, npm -g).
@@ -1148,12 +1149,62 @@ def _resolve_node_adapter_argv(
     return None, search_path
 
 
-def _vendored_adapter_entry(pkg_entry: Path, dep_marker: Path) -> str | None:
-    """The first vendored copy of an adapter whose dependency marker sits beside it."""
-    for root in _vendored_acp_roots():
+def _node_module_search_dirs(start: Path) -> Iterator[Path]:
+    """The ``node_modules`` directories Node searches for a bare import from *start*.
+
+    Node's ``NODE_MODULES_PATHS``: every ancestor of *start* (itself included)
+    contributes ``<ancestor>/node_modules``, except an ancestor that IS a
+    ``node_modules`` directory, from the innermost outward to the filesystem root.
+    *start* must already be a REAL path: Node resolves a module's symlinks before
+    looking for that module's imports (``--preserve-symlinks`` is off by default),
+    which is why a ``file:`` / ``npm link`` install finds its dependencies beside
+    the link TARGET rather than at the hoisted root it is linked from.
+    """
+    for ancestor in (start, *start.parents):
+        if ancestor.name == "node_modules":
+            continue
+        yield ancestor / "node_modules"
+
+
+def _vendored_adapter_entry(
+    pkg_entry: Path, dep_marker: Path, pkg_dir: Path | None = None
+) -> str | None:
+    """The first project-local copy of a Node ACP adapter that Node itself could run.
+
+    ONE check for the three adapter resolvers (claude-agent-acp, codex-acp,
+    pi-acp): each joins its own package entry and dependency marker onto the
+    shared roots (:func:`_vendored_acp_roots`), so there is no per-harness copy of
+    the completeness rule to drift. The helper is harness-neutral and adds nothing
+    to the Kiro path (H13).
+
+    A copy is accepted when its dependency marker is reachable the way Node
+    resolves a bare import from the ENTRY'S REAL PATH -- some ``node_modules`` on
+    the walk up from where the entry script really lives holds it. An ordinary
+    ``npm install`` satisfies that at the hoisted root; a ``file:`` / ``npm link``
+    install is a symlink that hoists nothing and satisfies it under the link
+    target's own ``node_modules``, which a check pinned to the hoisted root alone
+    cannot see. An entry whose dependency is reachable nowhere would die at ESM
+    import -- after the spawn -- so it is refused, and the refusal is logged: a
+    silent fall-through to a global copy on PATH is how a locally patched adapter
+    runs as the unpatched global build with nothing to say so.
+    """
+    for root in _vendored_acp_roots(pkg_dir):
         entry = root / pkg_entry
-        if entry.is_file() and (root / dep_marker).is_dir():
-            return str(entry)
+        if not entry.is_file():
+            continue
+        real_entry = Path(os.path.realpath(entry))
+        for node_modules in _node_module_search_dirs(real_entry.parent):
+            if (node_modules / dep_marker).is_dir():
+                return str(entry)
+        logger.warning(
+            "Skipping project-local ACP adapter %s: %s is not importable from its real "
+            "location %s (no node_modules on the walk up from there holds it); the next "
+            "candidate on the ladder that resolves, if any, is used instead. For a file: "
+            "or npm link install, run npm install inside the linked checkout.",
+            entry,
+            dep_marker.as_posix(),
+            real_entry.parent,
+        )
     return None
 
 
