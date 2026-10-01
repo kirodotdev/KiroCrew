@@ -6182,7 +6182,8 @@
       "judge_outcome_terminal": "concluído",
       "judge_outcome_fallback": "sem veredicto",
       "judge_outcome_unknown": "desconhecido",
-      "judge_no_verdict": "ainda sem veredicto"
+      "judge_no_verdict": "ainda sem veredicto",
+      "default_goal": "Sua estrela-guia está em {{northStar}}, o roteiro em {{roadmap}} e as tarefas em {{tasks}}. Escolha o próximo passo de maior impacto rumo ao objetivo e execute-o. Atualize {{tasks}}. Publique um bloqueio UMA única vez se realmente travar. Quando o objetivo for alcançado, chame a ferramenta {{stopTool}} para encerrar o loop."
     },
     "bottomTerminalPanel": {
       "close_terminal": "Fechar terminal",

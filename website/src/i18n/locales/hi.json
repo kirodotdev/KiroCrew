@@ -6085,7 +6085,8 @@
       "judge_outcome_terminal": "पूरा",
       "judge_outcome_fallback": "फ़ैसला नहीं हुआ",
       "judge_outcome_unknown": "अज्ञात",
-      "judge_no_verdict": "अभी कोई निर्णय नहीं"
+      "judge_no_verdict": "अभी कोई निर्णय नहीं",
+      "default_goal": "तुम्हारा नॉर्थ स्टार {{northStar}} में है, रोडमैप {{roadmap}} में, और कार्य {{tasks}} में। लक्ष्य की ओर सबसे अधिक असर वाला अगला एक कदम चुनो और उसे पूरा करो। {{tasks}} अपडेट करो। सच में अटकने पर केवल एक बार ब्लॉकर पोस्ट करो। लक्ष्य पूरा होने पर लूप रोकने के लिए {{stopTool}} टूल कॉल करो।"
     },
     "bottomTerminalPanel": {
       "close_terminal": "टर्मिनल बंद करें",

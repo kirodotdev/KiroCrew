@@ -5988,7 +5988,8 @@
       "judge_outcome_terminal": "완료",
       "judge_outcome_fallback": "판정 불가",
       "judge_outcome_unknown": "알 수 없음",
-      "judge_no_verdict": "아직 판정 없음"
+      "judge_no_verdict": "아직 판정 없음",
+      "default_goal": "북극성은 {{northStar}}, 로드맵은 {{roadmap}}, 작업은 {{tasks}}에 있습니다. 목표를 향해 가장 효과가 큰 다음 단계 하나를 골라 실행하세요. {{tasks}}을(를) 업데이트하세요. 정말 막혔을 때만 블로커를 한 번 게시하세요. 목표를 달성하면 {{stopTool}} 도구를 호출해 루프를 멈추세요."
     },
     "bottomTerminalPanel": {
       "close_terminal": "터미널 닫기",

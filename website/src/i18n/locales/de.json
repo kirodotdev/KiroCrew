@@ -6085,7 +6085,8 @@
       "judge_outcome_terminal": "abgeschlossen",
       "judge_outcome_fallback": "keine Bewertung",
       "judge_outcome_unknown": "unbekannt",
-      "judge_no_verdict": "noch kein Urteil"
+      "judge_no_verdict": "noch kein Urteil",
+      "default_goal": "Dein Nordstern steht in {{northStar}}, die Roadmap in {{roadmap}}, die Aufgaben in {{tasks}}. Wähle den einen nächsten Schritt mit der größten Wirkung auf das Ziel und führe ihn aus. Aktualisiere {{tasks}}. Melde eine Blockade nur EINMAL, wenn du wirklich festsitzt. Wenn das Ziel erreicht ist, rufe das Tool {{stopTool}} auf, um die Schleife zu beenden."
     },
     "bottomTerminalPanel": {
       "close_terminal": "Terminal schließen",

@@ -1952,7 +1952,8 @@
       "judge_outcome_wake": "waking",
       "judge_outcome_terminal": "finished",
       "judge_outcome_fallback": "could not judge",
-      "judge_outcome_unknown": "unknown"
+      "judge_outcome_unknown": "unknown",
+      "default_goal": "Your north star is in {{northStar}}, roadmap in {{roadmap}}, tasks in {{tasks}}. Pick the single highest-leverage next step toward the goal and execute it. Update {{tasks}}. Post a blocker ONCE if genuinely stuck. When the goal is met, call the {{stopTool}} tool to halt the loop."
     },
     "bottomTerminalPanel": {
       "close_failed": "Couldn't stop this terminal's shell on the server. It will be cleaned up automatically.",

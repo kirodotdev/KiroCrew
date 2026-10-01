@@ -6182,7 +6182,8 @@
       "judge_outcome_terminal": "terminado",
       "judge_outcome_fallback": "sin veredicto",
       "judge_outcome_unknown": "desconocido",
-      "judge_no_verdict": "aún sin veredicto"
+      "judge_no_verdict": "aún sin veredicto",
+      "default_goal": "Tu estrella polar está en {{northStar}}, la hoja de ruta en {{roadmap}} y las tareas en {{tasks}}. Elige el siguiente paso de mayor impacto hacia el objetivo y ejecútalo. Actualiza {{tasks}}. Publica un bloqueo UNA sola vez si de verdad te atascas. Cuando se cumpla el objetivo, llama a la herramienta {{stopTool}} para detener el bucle."
     },
     "bottomTerminalPanel": {
       "close_terminal": "Cerrar la terminal",

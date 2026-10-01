@@ -6182,7 +6182,8 @@
       "judge_outcome_terminal": "terminato",
       "judge_outcome_fallback": "nessun verdetto",
       "judge_outcome_unknown": "sconosciuto",
-      "judge_no_verdict": "nessun verdetto ancora"
+      "judge_no_verdict": "nessun verdetto ancora",
+      "default_goal": "La tua stella polare è in {{northStar}}, la roadmap in {{roadmap}} e le attività in {{tasks}}. Scegli il prossimo passo con il maggiore impatto verso l'obiettivo ed eseguilo. Aggiorna {{tasks}}. Segnala un blocco UNA sola volta se sei davvero bloccato. Quando l'obiettivo è raggiunto, chiama lo strumento {{stopTool}} per fermare il ciclo."
     },
     "bottomTerminalPanel": {
       "close_terminal": "Chiudi il terminale",

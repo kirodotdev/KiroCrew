@@ -873,11 +873,16 @@ describe('AutoNudgePopover {{STOP_FILE}} help line (#10458)', () => {
   const helpLine = () => screen.queryByText(/is filled in when each nudge is sent/i)
   const noneLine = () => screen.queryByText(/armed without a stop file/i)
 
-  it('explains the raw token under the default template and names it verbatim', () => {
+  it('the default template tells the model to call autonudge_stop, not to create a stop file', () => {
     renderPopover(null)
-    // The stored template is untouched: the server substitutes the token at
-    // fire time, so the textarea must still carry it.
-    expect(goalBox().value).toContain(STOP_FILE_TOKEN)
+    expect(goalBox().value).toContain('call the autonudge_stop tool')
+    expect(goalBox().value).not.toContain(STOP_FILE_TOKEN)
+    expect(helpLine()).toBeNull()
+  })
+
+  it('explains the raw token in a typed goal and names it verbatim', () => {
+    renderPopover(null)
+    fireEvent.change(goalBox(), { target: { value: `Keep going. To halt, create ${STOP_FILE_TOKEN}` } })
     const help = helpLine()
     expect(help, 'no help line rendered under the goal textarea').toBeTruthy()
     // The token is interpolated as text, not left as an i18next placeholder
@@ -901,6 +906,7 @@ describe('AutoNudgePopover {{STOP_FILE}} help line (#10458)', () => {
 
   it('Start loop posts the message with the token intact (display never rewrites what is stored)', async () => {
     renderPopover(null)
+    fireEvent.change(goalBox(), { target: { value: `Keep going. To halt, create ${STOP_FILE_TOKEN}` } })
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: /Start loop/i })) })
     const calls = (fetch as unknown as { mock: { calls: [string, { body?: string }?][] } }).mock.calls
     const save = calls.find(c => String(c[0]).startsWith('/api/autonudge') && c[1]?.body)

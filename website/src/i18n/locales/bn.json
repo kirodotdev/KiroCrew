@@ -6085,7 +6085,8 @@
       "judge_outcome_terminal": "শেষ",
       "judge_outcome_fallback": "রায় দেওয়া যায়নি",
       "judge_outcome_unknown": "অজানা",
-      "judge_no_verdict": "এখনও কোনো রায় নেই"
+      "judge_no_verdict": "এখনও কোনো রায় নেই",
+      "default_goal": "তোমার নর্থ স্টার {{northStar}}-এ, রোডম্যাপ {{roadmap}}-এ, আর কাজগুলো {{tasks}}-এ আছে। লক্ষ্যের দিকে সবচেয়ে বেশি কাজের পরের একটি ধাপ বেছে নিয়ে তা সম্পন্ন করো। {{tasks}} আপডেট করো। সত্যিই আটকে গেলে মাত্র একবার ব্লকার পোস্ট করো। লক্ষ্য পূরণ হলে লুপ থামাতে {{stopTool}} টুলটি কল করো।"
     },
     "bottomTerminalPanel": {
       "close_terminal": "টার্মিনাল বন্ধ করুন",

@@ -5988,7 +5988,8 @@
       "judge_outcome_terminal": "已完成",
       "judge_outcome_fallback": "无法判定",
       "judge_outcome_unknown": "未知",
-      "judge_no_verdict": "尚无判定"
+      "judge_no_verdict": "尚无判定",
+      "default_goal": "你的北极星在 {{northStar}}，路线图在 {{roadmap}}，任务在 {{tasks}}。选出朝目标推进最有价值的下一步并执行。更新 {{tasks}}。如果真的卡住，只发一次阻塞说明。目标达成后，调用 {{stopTool}} 工具停止循环。"
     },
     "bottomTerminalPanel": {
       "close_terminal": "关闭终端",

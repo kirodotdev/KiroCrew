@@ -43,12 +43,20 @@ interface Props {
  * the loop's `stop_sentinel_path`). It must travel to `/api/autonudge`
  * verbatim -- substituting it in the form would leave the server nothing to
  * replace -- so the textarea keeps the raw token and the help line under it
- * explains what the token becomes (#10458). `DEFAULT_MSG` below ends with this
- * exact spelling; a test pins that the template still carries it.
+ * explains what the token becomes (#10458). A goal typed with the token still
+ * works; the default goal (`defaultMsg`) names the `autonudge_stop` tool instead.
  */
 export const STOP_FILE_TOKEN = '{{STOP_FILE}}'
 
-const DEFAULT_MSG = `Your north star is in north_star.md, roadmap in roadmap.md, tasks in tasks.md. Pick the single highest-leverage next step toward the goal and execute it. Update tasks.md. Post a blocker ONCE if genuinely stuck. To halt the loop, create {{STOP_FILE}}`
+/** The pre-filled goal, read per call so it follows the active language. The
+ *  file and tool names are interpolated so no translation or pseudolocale can
+ *  rewrite them: the agent must receive them verbatim. */
+const defaultMsg = () => i18nT('components.autoNudgePopover.default_goal', {
+  northStar: 'north_star.md',
+  roadmap: 'roadmap.md',
+  tasks: 'tasks.md',
+  stopTool: 'autonudge_stop',
+})
 
 /** One armed script cron owned by this chat slot. */
 interface SlotWatch {
@@ -62,7 +70,7 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
   // `||` (not `??`) is deliberate on the loop tier: it preserves the fallback
   // so a loop with idle_secs/max_cycles of 0 or an empty message still shows
   // the 60 / 0 / default template rather than a bare 0 / "".
-  const [message, setMessage] = useState(() => loop?.message || DEFAULT_MSG)
+  const [message, setMessage] = useState(() => loop?.message || defaultMsg())
   // Idle-seconds and max-cycles are held as RAW STRINGS while the popover is
   // open so every edit (including a fully-cleared field or a transient "") is
   // allowed as-typed. Coercing to a number on each keystroke would snap a
@@ -138,7 +146,7 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
   function draftToPersist(s: typeof latest.current): GoalDraft | null {
     const idleSecs = parseIdle(s.idleInput)
     const maxCycles = parseCycles(s.maxCyclesInput)
-    const isPristineDefault = s.message === DEFAULT_MSG && idleSecs === 60 && maxCycles === 0
+    const isPristineDefault = s.message === defaultMsg() && idleSecs === 60 && maxCycles === 0
     return isPristineDefault ? null : { message: s.message, idleSecs, maxCycles }
   }
 
@@ -170,12 +178,12 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
     if (loop) {
       // `||` (not `??`) is deliberate: a loop with idle_secs/max_cycles of 0
       // or an empty message shows the 60 / 0 / default template.
-      setMessage(loop.message || DEFAULT_MSG)
+      setMessage(loop.message || defaultMsg())
       setIdleInput(String(loop.idle_secs || 60))
       setMaxCyclesInput(String(loop.max_cycles || 0))
     } else {
       const remembered = loadGoalDraft(slotKey)
-      setMessage(remembered ? remembered.message : DEFAULT_MSG)
+      setMessage(remembered ? remembered.message : defaultMsg())
       setIdleInput(String(remembered ? remembered.idleSecs : 60))
       setMaxCyclesInput(String(remembered ? remembered.maxCycles : 0))
     }

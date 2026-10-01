@@ -5988,7 +5988,8 @@
       "judge_outcome_terminal": "完了",
       "judge_outcome_fallback": "判定不能",
       "judge_outcome_unknown": "不明",
-      "judge_no_verdict": "まだ判定なし"
+      "judge_no_verdict": "まだ判定なし",
+      "default_goal": "北極星は {{northStar}}、ロードマップは {{roadmap}}、タスクは {{tasks}} にあります。目標に向けて最も効果の高い次の一手を選び、実行してください。{{tasks}} を更新してください。本当に行き詰まったときだけ、ブロッカーを一度だけ投稿してください。目標を達成したら、{{stopTool}} ツールを呼び出してループを止めてください。"
     },
     "bottomTerminalPanel": {
       "terminal_is_in_its_own_window": "ターミナルは別ウィンドウで開いています",

@@ -6182,7 +6182,8 @@
       "judge_outcome_terminal": "terminé",
       "judge_outcome_fallback": "sans verdict",
       "judge_outcome_unknown": "inconnu",
-      "judge_no_verdict": "pas encore de verdict"
+      "judge_no_verdict": "pas encore de verdict",
+      "default_goal": "Ton étoile polaire est dans {{northStar}}, la feuille de route dans {{roadmap}} et les tâches dans {{tasks}}. Choisis la prochaine étape la plus utile vers l'objectif et exécute-la. Mets à jour {{tasks}}. Signale un blocage UNE seule fois si tu es vraiment bloqué. Quand l'objectif est atteint, appelle l'outil {{stopTool}} pour arrêter la boucle."
     },
     "bottomTerminalPanel": {
       "close_terminal": "Fermer le terminal",
