@@ -17,7 +17,7 @@ import math
 import re
 import time as _time
 from collections.abc import Awaitable, Callable
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 from kiro_crew.config import live
@@ -48,6 +48,7 @@ from kiro_crew.vector_memory_constants import (
     _MAX_EPISODIC_PER_CONSOLIDATION,
     _MAX_LESSONS_PER_CONSOLIDATION,
     _MAX_SEMANTIC_PER_CONSOLIDATION,
+    _SEMANTIC_PROMPT_CAP_PER_CONSOLIDATION,
 )
 
 if TYPE_CHECKING:
@@ -78,6 +79,144 @@ _SKILL_DETECTION_WINDOW = 200
 #: Deferred rows are filled in by the standing repair sweep
 #: (``backfill_missing_embeddings``), which is what makes deferral lossless.
 _EMBED_BUDGET_SECS_PER_PASS = 60.0
+
+#: The one line under a bounded ``## Current Semantic Memory`` table. The prompt
+#: tells the model to update or delete the keys it can see, so a table that lost
+#: rows silently would read as "those facts do not exist" and invite a deletion
+#: of nothing or a near-duplicate of a dropped key. Same vocabulary as the chat
+#: path's startup omission notice, so a reader learns one shape.
+_SEMANTIC_OMISSION_NOTICE = (
+    "[Context budget: omitted {count} of {total} semantic rows above the "
+    "{limit}-character consolidation budget; the least recently updated rows were "
+    "left out. The table above is PARTIAL: a key you do not see may still exist, "
+    "so update or delete only keys listed above and treat a missing key as "
+    "unknown, not absent.]"
+)
+
+
+class _BoundedTable(NamedTuple):
+    """A rendered semantic table, how many rows it left out, and the keys it shows."""
+
+    text: str
+    omitted: int
+    visible_keys: frozenset[str]
+
+
+def _recency(updated_at: object) -> tuple[int, float]:
+    """Rank an ``updated_at`` for the newest-first cut.
+
+    Stamps are parsed, not compared as text: the store writes ISO 8601 with an
+    offset, while imported or older rows can carry a naive stamp, a space
+    separator or an epoch, and as text those shapes rank by their separator
+    before their instant. A stamp that parses ranks by instant; one that does
+    not ranks after every one that does.
+    """
+    if isinstance(updated_at, (int, float)) and math.isfinite(updated_at):
+        return 1, float(updated_at)
+    if not isinstance(updated_at, str):
+        return 0, 0.0
+    text = updated_at.strip()
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        try:
+            return 1, float(text)
+        except ValueError:
+            return 0, 0.0
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return 1, parsed.timestamp()
+
+
+def _bounded_semantic_table(rows: list[dict], entries: list[dict], cap: int) -> _BoundedTable:
+    """Render ``entries`` as the prompt's semantic table within ``cap`` characters.
+
+    ``rows`` are the store rows (in the store's key order) that ``entries`` were
+    rendered from, one to one. A table that fits renders whole and byte-identical
+    to the uncapped form. Over the cap, the most recently updated rows are kept
+    -- the order the chat path's ``semantic_cap`` reads without a query -- and
+    rendered in the same key order, so the block keeps its shape and only loses
+    its oldest rows. Returns the block, the number of rows left out, and the keys
+    the block shows, which is what the writers may update or delete.
+
+    The fit is found by bisection on the row count with the real renderer rather
+    than by an estimate per row, so the bound is exact for whatever ``indent``
+    and escaping produce, at the cost of O(log n) serialisations. A row is kept
+    whole or not at all: when even the newest row alone is over the cap the
+    table is ``[]`` and every row counts as omitted, because a value cut short
+    would read as the fact itself.
+    """
+    whole = json.dumps(entries, indent=1) if entries else "[]"
+    if len(whole) <= cap:
+        return _BoundedTable(whole, 0, frozenset(str(r.get("key", "")) for r in rows))
+    # Newest first; key as the tiebreak so rows written in the same second keep
+    # one order across runs (a stable sort on top of the key order given).
+    by_recency = sorted(range(len(rows)), key=lambda i: str(rows[i].get("key", "")))
+    by_recency.sort(key=lambda i: _recency(rows[i].get("updated_at")), reverse=True)
+
+    def _render(count: int) -> str:
+        kept = sorted(by_recency[:count])
+        return json.dumps([entries[i] for i in kept], indent=1) if kept else "[]"
+
+    fits, overflows = 0, len(rows)
+    rendered = "[]"
+    while overflows - fits > 1:
+        middle = (fits + overflows) // 2
+        candidate = _render(middle)
+        if len(candidate) <= cap:
+            fits, rendered = middle, candidate
+        else:
+            overflows = middle
+    visible = frozenset(str(rows[i].get("key", "")) for i in by_recency[:fits])
+    return _BoundedTable(rendered, len(rows) - fits, visible)
+
+
+def _withhold_unseen_deletes(
+    result: dict, visible_keys: frozenset[str] | None, logger: logging.Logger
+) -> tuple[dict, int]:
+    """Drop every ``delete`` naming a key the bounded semantic table never showed.
+
+    Keys are guessable (``user.work_email``, ``project.*``), so a model reading a
+    partial table can name a row it never read, and the omission notice alone
+    does not stop it. A delete has nothing behind it to arbitrate, so it is
+    withheld here, on the model's answer, before either write path reads it --
+    ``_write_structured_memory`` and the member store's ``apply_consolidation``
+    share this one fence so they cannot drift. An update is NOT withheld: the
+    new value's authority is the transcript, not the rendered table, and the
+    store arbitrates the old one (``_write_semantic`` skips a consolidation
+    overwrite of a user-stated row; the member store turns a conflicting update
+    into an owner proposal). Refusing it would also refuse a user's genuine
+    correction for a key the cap cut from the table, and the span is marked
+    consolidated either way, so that correction would be gone for good. ``None``
+    means no bounded table was rendered and nothing is withheld.
+
+    Returns the result (a shallow copy when anything was dropped) and how many
+    distinct keys were withheld; each is logged once, however often it is named.
+    """
+    items = result.get("semantic")
+    if visible_keys is None or not isinstance(items, list):
+        return result, 0
+    kept: list = []
+    withheld: set[str] = set()
+    for item in items:
+        if (
+            isinstance(item, dict)
+            and item.get("delete")
+            and isinstance(item.get("key"), str)
+            and item["key"] not in visible_keys
+        ):
+            if item["key"] not in withheld:
+                withheld.add(item["key"])
+                logger.warning(
+                    "Semantic consolidation refused delete of %r: key not in the rendered table"
+                    " (omitted above the prompt budget), so the model never saw its value",
+                    item["key"],
+                )
+            continue
+        kept.append(item)
+    if not withheld:
+        return result, 0
+    return {**result, "semantic": kept}, len(withheld)
 
 
 class _EmbedBudget:
@@ -1224,29 +1363,42 @@ class HistoryConsolidator:
                     current_semantic = await run_in_embed_pool(
                         vector_store.with_record_metadata, current_semantic
                     )
-                semantic_json = (
-                    json.dumps(
-                        [
+                semantic_entries = [
+                    {
+                        "key": e["key"],
+                        "value_json": _prompt_value(e),
+                        "confidence": e["confidence"],
+                        **(
                             {
-                                "key": e["key"],
-                                "value_json": _prompt_value(e),
-                                "confidence": e["confidence"],
-                                **(
-                                    {
-                                        "record_revision": e.get("record_revision", 0),
-                                        "metadata": e.get("record_metadata", {}),
-                                    }
-                                    if private_policy
-                                    else {}
-                                ),
+                                "record_revision": e.get("record_revision", 0),
+                                "metadata": e.get("record_metadata", {}),
                             }
-                            for e in current_semantic
-                        ],
-                        indent=1,
-                    )
-                    if current_semantic
-                    else "[]"
+                            if private_policy
+                            else {}
+                        ),
+                    }
+                    for e in current_semantic
+                ]
+                # The PROMPT's copy of the table is bounded; ``current_semantic``
+                # itself stays whole, because the writers below read it as the
+                # snapshot that decides update-versus-create and the revision a
+                # correction is checked against. The keys the bounded copy shows
+                # travel with it: a row the model never read is not its to
+                # delete. Offloaded like the fetch: the fit is
+                # found by re-serialising a table that can run to megabytes,
+                # and this coroutine is on the gateway event loop.
+                semantic_json, semantic_omitted, semantic_visible = await asyncio.to_thread(
+                    _bounded_semantic_table,
+                    current_semantic,
+                    semantic_entries,
+                    _SEMANTIC_PROMPT_CAP_PER_CONSOLIDATION,
                 )
+                if semantic_omitted:
+                    semantic_json += "\n" + _SEMANTIC_OMISSION_NOTICE.format(
+                        count=semantic_omitted,
+                        total=len(current_semantic),
+                        limit=_SEMANTIC_PROMPT_CAP_PER_CONSOLIDATION,
+                    )
                 semantic_fields = (
                     '"delete": false, "metadata": {"category": "contact", "subject": "user", '
                     '"predicate": "work_email", "scope": "", "source_ref": "brief evidence", '
@@ -1430,7 +1582,11 @@ class HistoryConsolidator:
                 # scope's narrowing: the closure would see the un-narrowed
                 # ``VectorMemoryStore | None`` and ``dict | None``.
                 store = vector_store
-                consolidation: dict = result
+                # The member store arbitrates the model's updates itself (a
+                # conflicting one becomes an owner proposal); a delete of a row
+                # the model never read is withheld here, the same fence the V1
+                # writer applies, so the two paths cannot drift.
+                consolidation, _ = _withhold_unseen_deletes(result, semantic_visible, self._logger)
 
                 def _apply_member_consolidation() -> dict:
                     with self._publication_hold_checked(key, commit_state) as publication:
@@ -1478,6 +1634,7 @@ class HistoryConsolidator:
                     vector_store,
                     facets=facets,
                     snapshot={row["key"]: row for row in current_semantic},
+                    visible_keys=semantic_visible,
                     messages=unconsolidated,
                     commit_state=commit_state,
                 )
@@ -2115,6 +2272,7 @@ class HistoryConsolidator:
         *,
         facets: "MemoryFacets | None" = None,
         snapshot: dict | None = None,
+        visible_keys: frozenset[str] | None = None,
         messages: list[dict] | None = None,
         commit_state: _RunCommitState | None = None,
     ) -> None:
@@ -2124,6 +2282,11 @@ class HistoryConsolidator:
         global handle, which is what the workspace and default arms want; an
         explicit ``None`` means the silo has no vector store and the tier is
         skipped, the same distinction :meth:`_save_lessons` draws.
+
+        *visible_keys* is the set of keys the prompt's bounded semantic table
+        showed the model; a ``delete`` of a key outside it is withheld before the
+        loop (``_withhold_unseen_deletes`` says why an update is not). ``None``
+        means the caller rendered no bounded table and nothing is withheld.
         """
         if isinstance(vector_store, _InheritGlobal):
             vector_store = self._vector_store
@@ -2134,6 +2297,8 @@ class HistoryConsolidator:
         # Shared by both tiers below: each embeds inline, so both charge the same
         # pass and either can arm the latch for the other.
         budget = _EmbedBudget(_EMBED_BUDGET_SECS_PER_PASS, self._logger)
+
+        result, withheld = _withhold_unseen_deletes(result, visible_keys, self._logger)
 
         # Semantic entries
         semantic_items = result.get("semantic")
@@ -2329,11 +2494,13 @@ class HistoryConsolidator:
                 or absent
                 or unreadable
                 or stale_skipped
+                or withheld
             ):
                 self._logger.info(
                     "Semantic consolidation: %d written, %d deleted, %d skipped (no value), "
                     "%d refused, %d protected (standing rule), %d absent, %d unreadable, "
-                    "%d stale-skipped (compare-and-delete no-op)",
+                    "%d stale-skipped (compare-and-delete no-op), "
+                    "%d withheld (delete of a key not in the rendered table)",
                     written,
                     deleted,
                     skipped,
@@ -2342,6 +2509,7 @@ class HistoryConsolidator:
                     absent,
                     unreadable,
                     stale_skipped,
+                    withheld,
                 )
 
         # Episodic entries

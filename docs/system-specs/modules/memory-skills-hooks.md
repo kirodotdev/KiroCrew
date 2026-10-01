@@ -387,6 +387,37 @@ interpolated into the LLM prompt so the model is told the same numbers):
 `_MAX_BACKFILLS_PER_CALL = 5` lazy backfills), so an uncapped LLM array could
 occupy a worker thread for minutes.
 
+The prompt's `## Current Semantic Memory` block is bounded too, on BOTH passes
+(the preference-only pass builds the same block): the active table is read
+whole with `get_all_semantic()`, rendered as the JSON array the model updates
+against, and the rendering is held under
+`_SEMANTIC_PROMPT_CAP_PER_CONSOLIDATION = 65_536` characters
+(`_bounded_semantic_table`). A table that fits renders byte-identical to the
+uncapped form. Over the cap the most recently updated rows are kept -- the
+order the chat path's `semantic_cap` reads with no query
+([context-management](../../architecture/context-management.md)) -- and
+rendered in the same key order, followed by one `[Context budget: omitted N of
+M semantic rows ...]` line telling the model the table is partial and to
+update or delete only keys it can see. The cap bounds the prompt copy only:
+the whole table stays the `snapshot` the writers read for update-versus-create
+and the revision check, and the keys the bounded copy showed travel with the
+model's answer as `visible_keys`: a `delete` of a key the model never saw is
+withheld (logged once per key) on both write paths, the V1 writer and the
+member store's `apply_consolidation`, since keys are guessable and the notice
+alone cannot stop a blind delete. An update is not withheld: the new value's
+authority is the transcript, the store arbitrates it against the old one
+(`_write_semantic` skips a consolidation overwrite of a user-stated row; the
+member store turns a conflicting update into an owner proposal), and refusing
+it would also refuse a user's correction for a key the cap cut from the table
+while the span is marked consolidated anyway. Rows are ranked for the cut by
+their parsed `updated_at` instant (stamps in mixed formats rank by time, an
+unparseable stamp last), and a row is kept whole or not at all -- a single row
+wider than the cap renders `[]` with the notice counting it, never a cut value.
+The allowance is wider than the per-turn 12,000 because
+a pass runs rarely and merges into this table; sending only retrieval-matched
+rows was considered and not taken, since it changes which keys the model can
+dedupe against rather than how many.
+
 The `preferences_update` / `projects_update` prompt keys and whole-file writes
 are enabled only for V1 when `memory.migrated` is false. V2 always treats its
 current preference/project documents as read-only extraction context, regardless
