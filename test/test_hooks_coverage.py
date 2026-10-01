@@ -2106,7 +2106,7 @@ class TestFireToolHooks:
         assert seen[0]["agent_role"] == "worker"
 
     @pytest.mark.asyncio
-    async def test_unparseable_tool_input_degrades_to_none(self):
+    async def test_unparseable_tool_input_is_preserved(self):
         seen: list[dict] = []
 
         class _Store:
@@ -2115,7 +2115,7 @@ class TestFireToolHooks:
                 return []
 
         await fire_tool_hooks(_Store(), "", "{not json")  # type: ignore[arg-type]
-        assert seen[0]["tool_input"] is None
+        assert seen[0]["tool_input"] == "{not json"
         assert seen[0]["tool_name"] == ""
 
     @pytest.mark.asyncio

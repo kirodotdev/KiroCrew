@@ -102,17 +102,34 @@ class TestFireToolHooks:
             )
 
     @pytest.mark.asyncio
-    async def test_invalid_json_passes_none(self, hook_store: ScriptHookStore):
+    async def test_non_json_string_is_preserved(self, hook_store: ScriptHookStore):
         with patch.object(hook_store, "fire", new_callable=AsyncMock) as mock_fire:
             await fire_tool_hooks(hook_store, "ReadFile", "not-json")
             mock_fire.assert_called_once_with(
                 HOOK_EVENT_PRE_TOOL_USE,
                 tool_name="ReadFile",
-                tool_input=None,
+                tool_input="not-json",
                 subagent_id=None,
                 parent_session_key=None,
                 agent_role=None,
             )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ("true", True),
+            ("42", 42),
+            ('"value"', "value"),
+            ("", ""),
+        ],
+    )
+    async def test_scalar_tool_input_is_preserved(
+        self, hook_store: ScriptHookStore, raw: str, expected: object
+    ):
+        with patch.object(hook_store, "fire", new_callable=AsyncMock) as mock_fire:
+            await fire_tool_hooks(hook_store, "ReadFile", raw)
+            assert mock_fire.call_args.kwargs["tool_input"] == expected
 
     @pytest.mark.asyncio
     async def test_empty_title(self, hook_store: ScriptHookStore):
@@ -130,7 +147,10 @@ class TestFireToolHooks:
     @pytest.mark.asyncio
     async def test_fire_exception_swallowed(self, hook_store: ScriptHookStore):
         with patch.object(
-            hook_store, "fire", new_callable=AsyncMock, side_effect=RuntimeError("boom"),
+            hook_store,
+            "fire",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("boom"),
         ):
             # Should not raise
             await fire_tool_hooks(hook_store, "ReadFile")
@@ -181,18 +201,30 @@ class TestScriptHookStoreFire:
     @pytest.fixture
     def fire_store(self, tmp_path: Path) -> ScriptHookStore:
         store = ScriptHookStore(tmp_path)
-        store.create({
-            "name": "test-hook",
-            "event": HOOK_EVENT_PRE_TOOL_USE,
-            "matcher": "",
-            "command": "echo test",
-        })
+        store.create(
+            {
+                "name": "test-hook",
+                "event": HOOK_EVENT_PRE_TOOL_USE,
+                "matcher": "",
+                "command": "echo test",
+            }
+        )
         return store
 
     @pytest.mark.asyncio
     async def test_fire_emits_subagent_id_when_set(self, fire_store: ScriptHookStore):
         with patch("kiro_crew.hooks.run_script_hook", new_callable=AsyncMock) as mock_run:
-            mock_run.return_value = type("R", (), {"hook_name": "test-hook", "exit_code": 0, "stdout": "", "stderr": "", "duration_ms": 1})()
+            mock_run.return_value = type(
+                "R",
+                (),
+                {
+                    "hook_name": "test-hook",
+                    "exit_code": 0,
+                    "stdout": "",
+                    "stderr": "",
+                    "duration_ms": 1,
+                },
+            )()
             await fire_store.fire(
                 HOOK_EVENT_PRE_TOOL_USE,
                 tool_name="ReadFile",
@@ -206,7 +238,17 @@ class TestScriptHookStoreFire:
     @pytest.mark.asyncio
     async def test_fire_emits_parent_session_key_when_set(self, fire_store: ScriptHookStore):
         with patch("kiro_crew.hooks.run_script_hook", new_callable=AsyncMock) as mock_run:
-            mock_run.return_value = type("R", (), {"hook_name": "test-hook", "exit_code": 0, "stdout": "", "stderr": "", "duration_ms": 1})()
+            mock_run.return_value = type(
+                "R",
+                (),
+                {
+                    "hook_name": "test-hook",
+                    "exit_code": 0,
+                    "stdout": "",
+                    "stderr": "",
+                    "duration_ms": 1,
+                },
+            )()
             await fire_store.fire(
                 HOOK_EVENT_PRE_TOOL_USE,
                 tool_name="ReadFile",
@@ -220,7 +262,17 @@ class TestScriptHookStoreFire:
     @pytest.mark.asyncio
     async def test_fire_emits_agent_role_when_set(self, fire_store: ScriptHookStore):
         with patch("kiro_crew.hooks.run_script_hook", new_callable=AsyncMock) as mock_run:
-            mock_run.return_value = type("R", (), {"hook_name": "test-hook", "exit_code": 0, "stdout": "", "stderr": "", "duration_ms": 1})()
+            mock_run.return_value = type(
+                "R",
+                (),
+                {
+                    "hook_name": "test-hook",
+                    "exit_code": 0,
+                    "stdout": "",
+                    "stderr": "",
+                    "duration_ms": 1,
+                },
+            )()
             await fire_store.fire(
                 HOOK_EVENT_PRE_TOOL_USE,
                 tool_name="ReadFile",
@@ -234,7 +286,17 @@ class TestScriptHookStoreFire:
     @pytest.mark.asyncio
     async def test_fire_emits_all_three_together(self, fire_store: ScriptHookStore):
         with patch("kiro_crew.hooks.run_script_hook", new_callable=AsyncMock) as mock_run:
-            mock_run.return_value = type("R", (), {"hook_name": "test-hook", "exit_code": 0, "stdout": "", "stderr": "", "duration_ms": 1})()
+            mock_run.return_value = type(
+                "R",
+                (),
+                {
+                    "hook_name": "test-hook",
+                    "exit_code": 0,
+                    "stdout": "",
+                    "stderr": "",
+                    "duration_ms": 1,
+                },
+            )()
             await fire_store.fire(
                 HOOK_EVENT_PRE_TOOL_USE,
                 tool_name="ReadFile",
@@ -251,7 +313,17 @@ class TestScriptHookStoreFire:
     async def test_fire_omits_all_three_when_none(self, fire_store: ScriptHookStore):
         """Backward compatibility: when all three are None (default), payload is byte-identical to pre-CR behavior."""
         with patch("kiro_crew.hooks.run_script_hook", new_callable=AsyncMock) as mock_run:
-            mock_run.return_value = type("R", (), {"hook_name": "test-hook", "exit_code": 0, "stdout": "", "stderr": "", "duration_ms": 1})()
+            mock_run.return_value = type(
+                "R",
+                (),
+                {
+                    "hook_name": "test-hook",
+                    "exit_code": 0,
+                    "stdout": "",
+                    "stderr": "",
+                    "duration_ms": 1,
+                },
+            )()
             await fire_store.fire(HOOK_EVENT_PRE_TOOL_USE, tool_name="ReadFile")
             (_, _, hook_event), _ = mock_run.call_args
             assert "subagent_id" not in hook_event
@@ -274,12 +346,14 @@ class TestScriptHookStoreStopContext:
     @pytest.fixture
     def stop_store(self, tmp_path: Path) -> ScriptHookStore:
         store = ScriptHookStore(tmp_path)
-        store.create({
-            "name": "stop-hook",
-            "event": HOOK_EVENT_STOP,
-            "matcher": "",
-            "command": "echo test",
-        })
+        store.create(
+            {
+                "name": "stop-hook",
+                "event": HOOK_EVENT_STOP,
+                "matcher": "",
+                "command": "echo test",
+            }
+        )
         return store
 
     @pytest.mark.asyncio
@@ -287,7 +361,17 @@ class TestScriptHookStoreStopContext:
         # The load-bearing marker sits at the tail, past the 500-char env cap.
         full = ("x" * 900) + "\n[OPTIONS: A | B | C]"
         with patch("kiro_crew.hooks.run_script_hook", new_callable=AsyncMock) as mock_run:
-            mock_run.return_value = type("R", (), {"hook_name": "stop-hook", "exit_code": 0, "stdout": "", "stderr": "", "duration_ms": 1})()
+            mock_run.return_value = type(
+                "R",
+                (),
+                {
+                    "hook_name": "stop-hook",
+                    "exit_code": 0,
+                    "stdout": "",
+                    "stderr": "",
+                    "duration_ms": 1,
+                },
+            )()
             await stop_store.fire(HOOK_EVENT_STOP, context=full)
             (_, ctx_arg, hook_event), _ = mock_run.call_args
             # stdin payload carries the FULL segment, tail marker intact.
@@ -303,17 +387,31 @@ class TestScriptHookStoreStopContext:
         # A Stop hook whose matcher targets tail content must still fire — fire()
         # matches against the full context, not the 500-char env slice.
         store = ScriptHookStore(tmp_path)
-        store.create({
-            "name": "options-stop-hook",
-            "event": HOOK_EVENT_STOP,
-            "matcher": "*[OPTIONS:*",
-            "command": "echo test",
-        })
+        store.create(
+            {
+                "name": "options-stop-hook",
+                "event": HOOK_EVENT_STOP,
+                "matcher": "*[OPTIONS:*",
+                "command": "echo test",
+            }
+        )
         full = ("x" * 900) + "\n[OPTIONS: A | B | C]"
         with patch("kiro_crew.hooks.run_script_hook", new_callable=AsyncMock) as mock_run:
-            mock_run.return_value = type("R", (), {"hook_name": "options-stop-hook", "exit_code": 0, "stdout": "", "stderr": "", "duration_ms": 1})()
+            mock_run.return_value = type(
+                "R",
+                (),
+                {
+                    "hook_name": "options-stop-hook",
+                    "exit_code": 0,
+                    "stdout": "",
+                    "stderr": "",
+                    "duration_ms": 1,
+                },
+            )()
             await store.fire(HOOK_EVENT_STOP, context=full)
-            assert mock_run.await_count == 1, "tail-matching Stop hook was filtered out by env truncation"
+            assert (
+                mock_run.await_count == 1
+            ), "tail-matching Stop hook was filtered out by env truncation"
 
     @pytest.mark.asyncio
     async def test_stop_empty_turn_still_emits_key(self, stop_store: ScriptHookStore):
@@ -321,7 +419,17 @@ class TestScriptHookStoreStopContext:
         # be present (unconditional, not truthiness-gated) so a hook that always
         # reads hook_event["assistant_text"] gets "" rather than KeyError-ing.
         with patch("kiro_crew.hooks.run_script_hook", new_callable=AsyncMock) as mock_run:
-            mock_run.return_value = type("R", (), {"hook_name": "stop-hook", "exit_code": 0, "stdout": "", "stderr": "", "duration_ms": 1})()
+            mock_run.return_value = type(
+                "R",
+                (),
+                {
+                    "hook_name": "stop-hook",
+                    "exit_code": 0,
+                    "stdout": "",
+                    "stderr": "",
+                    "duration_ms": 1,
+                },
+            )()
             await stop_store.fire(HOOK_EVENT_STOP, context="")
             (_, _, hook_event), _ = mock_run.call_args
             assert hook_event["assistant_text"] == ""
@@ -331,14 +439,26 @@ class TestScriptHookStoreStopContext:
         # Regression guard: the Stop change must not bleed into UPS, which keeps
         # delivering its full context under the existing ``prompt`` key.
         store = ScriptHookStore(tmp_path)
-        store.create({
-            "name": "ups-hook",
-            "event": HOOK_EVENT_USER_PROMPT_SUBMIT,
-            "matcher": "",
-            "command": "echo test",
-        })
+        store.create(
+            {
+                "name": "ups-hook",
+                "event": HOOK_EVENT_USER_PROMPT_SUBMIT,
+                "matcher": "",
+                "command": "echo test",
+            }
+        )
         with patch("kiro_crew.hooks.run_script_hook", new_callable=AsyncMock) as mock_run:
-            mock_run.return_value = type("R", (), {"hook_name": "ups-hook", "exit_code": 0, "stdout": "", "stderr": "", "duration_ms": 1})()
+            mock_run.return_value = type(
+                "R",
+                (),
+                {
+                    "hook_name": "ups-hook",
+                    "exit_code": 0,
+                    "stdout": "",
+                    "stderr": "",
+                    "duration_ms": 1,
+                },
+            )()
             await store.fire(HOOK_EVENT_USER_PROMPT_SUBMIT, context="hello")
             (_, _, hook_event), _ = mock_run.call_args
             assert hook_event["prompt"] == "hello"
@@ -359,7 +479,9 @@ class TestRunScriptHookStopEnvCap:
         payload that fire() built. Captures both channels off a mocked subprocess.
         """
         full = ("x" * 900) + "\n[OPTIONS: A | B | C]"
-        hook = ScriptHook(id="s1", name="stop-hook", event=HOOK_EVENT_STOP, command="cat", timeout=5)
+        hook = ScriptHook(
+            id="s1", name="stop-hook", event=HOOK_EVENT_STOP, command="cat", timeout=5
+        )
         hook_event = {"hook_event_name": HOOK_EVENT_STOP, "cwd": "/", "assistant_text": full}
 
         class FakeStdin:

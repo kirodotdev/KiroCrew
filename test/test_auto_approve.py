@@ -22,11 +22,12 @@ from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 from body_stream_helpers import BodyStreamPayload
 
+from kiro_crew import task_executor
 from kiro_crew.dashboard.handlers.taskrunner import (
     api_taskrunner_execute_plan,
     api_taskrunner_start,
 )
-from kiro_crew.hooks import TOOL_AUTO_APPROVE, TOOL_DENY
+from kiro_crew.hooks import HOOK_EVENT_PRE_TOOL_USE, TOOL_AUTO_APPROVE, TOOL_DENY, ScriptHookResult
 from kiro_crew.providers.base import LLMEvent
 from kiro_crew.safety_override import reset_singleton, safety_override
 from kiro_crew.task_models import Project
@@ -39,6 +40,14 @@ def _reset_safety_override():
     reset_singleton()
     yield
     reset_singleton()
+
+
+@pytest.fixture(autouse=True)
+def _hook_store(monkeypatch):
+    store = MagicMock()
+    store.fire = AsyncMock(return_value=[])
+    monkeypatch.setattr(task_executor, "get_global_hook_store", lambda: store)
+    return store
 
 
 # ── Helpers ──
@@ -249,7 +258,9 @@ class TestAutoApprovePersistence:
 
 class TestAutoApproveExecution:
     @pytest.mark.asyncio
-    async def test_auto_approve_skips_interactive_handler(self, tmp_path: Path) -> None:
+    async def test_auto_approve_skips_interactive_handler(
+        self, tmp_path: Path, _hook_store
+    ) -> None:
         sessions = _mock_sessions()
         provider = _perm_then_done_provider()
         sessions.get_or_create = AsyncMock(return_value=(provider, True, False))
@@ -272,6 +283,7 @@ class TestAutoApproveExecution:
         # Auto-approved WITHOUT prompting the interactive handler.
         provider.approve_tool.assert_awaited_once_with("req-1")
         on_tool_approval.assert_not_called()
+        _hook_store.fire.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_expired_trust_is_revoked_and_not_auto_approved(self, tmp_path: Path) -> None:
@@ -352,6 +364,45 @@ class TestAutoApproveRespectsHookDeny:
         provider.reject_tool.assert_awaited_with("req-1")
         provider.approve_tool.assert_not_called()
         runner._on_tool_approval.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_script_hook_deny_still_rejects_when_auto_approve(
+        self, tmp_path: Path, _hook_store
+    ) -> None:
+        sessions = _mock_sessions()
+        provider = _perm_then_done_provider()
+        sessions.get_or_create = AsyncMock(return_value=(provider, True, False))
+        _hook_store.fire.return_value = [
+            ScriptHookResult(
+                hook_id="deny-1",
+                hook_name="deny",
+                event=HOOK_EVENT_PRE_TOOL_USE,
+                exit_code=2,
+                stderr="script deny",
+            )
+        ]
+
+        on_tool_approval = AsyncMock(return_value=True)
+        runner = TaskRunner(sessions=sessions, auto_test=False, work_dir=tmp_path)
+        runner._on_tool_approval = on_tool_approval
+        run = TaskRun(
+            spec_path=str(tmp_path / "t.md"),
+            spec_content="s",
+            status="running",
+            task_id="t1",
+        )
+        run.auto_approve = True
+        safety_override().activate_scoped(_auto_approve_scope("t1"), source="dashboard")
+        step = Step(index=1, title="Delete", description="d")
+        run.tasks = [step]
+
+        with patch("kiro_crew.task_executor.self_review", return_value=True):
+            await runner._execute_single_task(run, step)
+
+        provider.reject_tool.assert_awaited_once_with("req-1")
+        provider.approve_tool.assert_not_called()
+        on_tool_approval.assert_not_called()
+        _hook_store.fire.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_hook_auto_approve_reason_preserved(self, tmp_path: Path) -> None:

@@ -878,6 +878,13 @@ Two-layer approval during step execution:
 1. `task_executor.execute_task()` evaluates hook rules first; an explicit hook auto-approval remains eligible, while a deny remains a denial. A hook auto-approval for a **shell** command is honoured only after `name_grant.refusal_for_event(event)` confirms each program name in the command still resolves to the program it appears to name; a refusal downgrades to the interactive prompt (or the headless deny-by-default) and is audited as `outcome=auto_approve_declined` with `reason=name_grant`.
 2. When no hook grants the request, `on_tool_approval` decides it if the runner has a callback; otherwise the headless path rejects the tool with `headless_no_authorization`.
 
+The global `ScriptHookStore` is part of the permission gate: it must be
+initialized, and a PreToolUse exit code 0 allows the request while exit code
+2 or any other result rejects it before approval. A tool-call notification
+without a permission request remains informational. When one provider emits
+both forms for a call, the runner uses the stable tool-call/request identity
+to fire and evaluate one hook result; different identities remain separate.
+
 ### Per-run auto-approve (trust) toggle
 
 `Project.auto_approve` is a per-run trust-intent flag (default `False`); the live authorization is the scoped `SafetyOverride` grant described below. The intent is opt-in

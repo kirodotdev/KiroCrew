@@ -1202,6 +1202,12 @@ more before any `allow` leaves the process. Approval consumers run the complete
 identity-bearing gate first, including governance, while the transport repeats
 only the identity-free security floor without counting it. See acp-client.md
 § Approval floor in `approve_tool`.
+Task-runner and subagent permission requests also pass through the global
+`ScriptHookStore` PreToolUse gate. A missing store, exit code 2, or any
+non-verdict result rejects before approval and is audited before the wire
+response; tool-call-only notifications remain informational. If a provider
+emits both event kinds for one call, the stable tool-call/request identity
+prevents a second hook execution while distinct identities remain separate.
 
 **Credential exfiltration blocks**:
 - `.*echo.*\$AWS_SECRET.*`, `.*echo.*\$AWS_ACCESS.*`, `.*echo.*\$AWS_SESSION.*` — env var echo

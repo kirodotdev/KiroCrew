@@ -121,6 +121,7 @@ Default 365 days. Pruned daily by heartbeat service (`_PRUNE_TICKS`).
 | Chat persist seams | `output_anomaly` / `options_footer_glued_text` (`outcome=labelled`, `source` from the turn's session key, `metadata` `{count, chars, preview (redacted, 200 chars), directive_shaped}`) when a persisted turn carried text glued to its own `[OPTIONS:]` footer; skipped while SEL is cold so the first open never runs on the event loop | `dashboard/chat_runner.py` (`_log_glued_footer_text`) |
 | TaskRunner | Permission requests during decomposition and step execution | `taskrunner.py` |
 | Subagent | Permission requests during subagent execution | `subagent.py` |
+| TaskRunner/Subagent PreToolUse script gate | One `tool_invocation` row per permission decision, including `hook_blocked` and `hook_error`, written before the reject response; a combined tool-call/permission event does not duplicate the hook outcome | `task_executor.py`, `subagent_manager/run.py` |
 | Background tasks | Permission requests via `_resolve_permission()` | `llm_helpers.py` |
 | MCP core tools | `spawn_run`, `learn_add`, `task_run` calls and outcomes | `mcp_core.py` |
 | MCP cron tools | `cron_add`, `cron_remove`, etc. calls and outcomes | `mcp_cron.py` |

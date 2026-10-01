@@ -551,7 +551,6 @@ test/test_file_send_units.py
 test/test_file_sheet.py
 test/test_file_stream.py
 test/test_file_watch.py
-test/test_fire_tool_hooks.py
 test/test_fixtures_helper.py
 test/test_folder_watch_handlers.py
 test/test_folder_watcher.py
@@ -868,7 +867,6 @@ test/test_tailnet_origin.py
 test/test_tailnet_serve.py
 test/test_tailnet_session_url.py
 test/test_taskrunner_atomic_persistence.py
-test/test_taskrunner_autoapprove.py
 test/test_taskrunner_v2_scenarios.py
 test/test_tcc_protected_dirs.py
 test/test_teams_config.py

@@ -18,6 +18,11 @@ from ._component import ManagerComponent
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from kiro_crew.hooks import (
+        HOOK_EVENT_PRE_TOOL_USE,
+        _should_block_results,
+        hook_event_identity,
+    )
     from ..subagent import (
         _CANCEL_RESUME_PREFIX,
         _ON_DONE_TIMEOUT,
@@ -1136,7 +1141,10 @@ class RunEventCoordinator(ManagerComponent):
             raise ValueError("memory_unavailable: the recorded memory identity is malformed")
         # Local imports: this body runs on ``kiro_crew.subagent``'s globals
         # (bind_component_globals), which do not export these names.
+        from typing import cast
+
         from kiro_crew.agent_sdk.drivers.acp_vocab import EVENT_STRUCTURED_STATUS
+        from kiro_crew.hooks import ScriptHookResult
         from kiro_crew.recovery.ladder import InfraError
         from kiro_crew.taskq.dependency import classify_exception
 
@@ -1775,6 +1783,7 @@ class RunEventCoordinator(ManagerComponent):
         # On such a backend PreToolUse hooks gate each permission request below;
         # the KAS projection turns every call they cover into one.
         _spec = await turn_spec_hooks(client, agent)
+        _hook_fire_cache: dict[tuple[str, str], list[ScriptHookResult] | Exception] = {}
 
         async def _stream_with_transient_retry():
             """Yield stream events, retrying transient backend errors.
@@ -1787,6 +1796,7 @@ class RunEventCoordinator(ManagerComponent):
             Non-transient errors and exhausted budgets propagate unchanged
             (handled by _run's generic exception arm → error tombstone).
             """
+            nonlocal _hook_fire_cache
             attempts = 0
             # One-shot post-activity allowance, mirroring the main path's
             # ``_posttoken_retry_used`` rule (dashboard/chat_runner.py ~L4324):
@@ -1836,6 +1846,7 @@ class RunEventCoordinator(ManagerComponent):
                     # by a continuation on the same session.
                     _withheld: LLMEvent | None = None
                     _infra: Any = None
+                    _hook_fire_cache = {}
                     async for _ev in client.stream(msg):
                         if not _ev.runtime_global:
                             # A frame addressed to THIS session: the run's own
@@ -2242,6 +2253,79 @@ class RunEventCoordinator(ManagerComponent):
                         client, event.request_id, session_key, event, error="hook_deny"
                     )
                     continue
+                _hook_identity = hook_event_identity(event)
+                _cached_hook = (
+                    _hook_fire_cache.get(_hook_identity) if _hook_identity is not None else None
+                )
+                if isinstance(_cached_hook, Exception):
+                    await self._manager._reject_and_log(
+                        client,
+                        event.request_id,
+                        session_key,
+                        event,
+                        error="hook_error",
+                        metadata={"subagent_id": info.id, "detail": str(_cached_hook)[:200]},
+                    )
+                    continue
+                if _cached_hook is not None:
+                    _hook_results = _cached_hook
+                else:
+                    _store = self._manager.hook_store
+                    if _store is None:
+                        await self._manager._reject_and_log(
+                            client,
+                            event.request_id,
+                            session_key,
+                            event,
+                            error="hook_blocked",
+                            metadata={
+                                "subagent_id": info.id,
+                                "detail": "hook store not initialized",
+                            },
+                        )
+                        continue
+                    try:
+                        _hook_results = cast(
+                            list[ScriptHookResult],
+                            await fire_tool_hooks(
+                                _store,
+                                event.title,
+                                event.tool_input,
+                                subagent_id=info.id,
+                                parent_session_key=info.parent_session_key or None,
+                                agent_role=info.agent or None,
+                                raise_on_error=True,
+                                return_results=True,
+                            ),
+                        )
+                        if _hook_identity is not None:
+                            _hook_fire_cache[_hook_identity] = _hook_results
+                    except Exception as exc:  # noqa: BLE001 - fail-closed
+                        if _hook_identity is not None:
+                            _hook_fire_cache[_hook_identity] = exc
+                        await self._manager._reject_and_log(
+                            client,
+                            event.request_id,
+                            session_key,
+                            event,
+                            error="hook_error",
+                            metadata={"subagent_id": info.id, "detail": str(exc)[:200]},
+                        )
+                        continue
+                _blocked, _detail = _should_block_results(
+                    _hook_results,
+                    event=HOOK_EVENT_PRE_TOOL_USE,
+                )
+                if _blocked:
+                    await self._manager._reject_and_log(
+                        client,
+                        event.request_id,
+                        session_key,
+                        event,
+                        error="hook_blocked",
+                        metadata={"subagent_id": info.id, "detail": _detail},
+                    )
+                    continue
                 if event.child_low_fidelity:
                     # UNCONDITIONAL parent grant: parent_policy=auto approves
                     # regardless of event content, so it may honor a request
@@ -2482,6 +2566,9 @@ class RunEventCoordinator(ManagerComponent):
                 # is the only progress signal a simple/read-only subagent task emits.
                 # Count it, record it, and broadcast the same subagent_tool event
                 # the permission path uses so the running-card shows live activity.
+                # A deny hook cannot veto here: the tool is already running
+                # (auto-approved by kiro-cli), so hook results stay informational
+                # and audit as auto_approved, never hook_blocked.
                 info.tool_count += 1
                 info.last_tool = event.title or info.last_tool
                 self._manager._note_tool_dispatch(info, event)
@@ -2498,6 +2585,14 @@ class RunEventCoordinator(ManagerComponent):
                 # Fire PreToolUse hooks for auto-approved tools (informational only).
                 # On a gated turn this frame precedes the call's permission request,
                 # so nothing has approved it yet.
+                _hook_identity = hook_event_identity(event)
+                if _hook_identity is not None and _hook_identity in _hook_fire_cache:
+                    _raw = event.title or ""
+                    if _raw.startswith("Running: "):
+                        _raw = _raw[9:]
+                    if event.tool_call_id:
+                        _pending_tools[event.tool_call_id] = _raw
+                    continue
                 sel().log_tool_invocation(
                     session_key=session_key,
                     source="subagent",
@@ -2517,15 +2612,32 @@ class RunEventCoordinator(ManagerComponent):
                 # instead (see hooks.permission_pre_tool_block); firing here too
                 # would run each twice.
                 if not _spec.gated:
-                    await fire_tool_hooks(
-                        self._manager.hook_store,
-                        event.title,
-                        event.tool_input,
-                        subagent_id=info.id,
-                        parent_session_key=info.parent_session_key or None,
-                        agent_role=info.agent or None,
-                    )
+                    _store = self._manager.hook_store
+                    try:
+                        _hook_results = cast(
+                            list[ScriptHookResult],
+                            await fire_tool_hooks(
+                                _store,
+                                event.title,
+                                event.tool_input,
+                                subagent_id=info.id,
+                                parent_session_key=info.parent_session_key or None,
+                                agent_role=info.agent or None,
+                                raise_on_error=True,
+                                return_results=True,
+                            ),
+                        )
+                    except Exception as exc:
+                        if _hook_identity is not None and _store is not None:
+                            _hook_fire_cache[_hook_identity] = exc
+                        logger.debug("PreToolUse hook error", exc_info=True)
+                    else:
+                        if _hook_identity is not None and _store is not None:
+                            _hook_fire_cache[_hook_identity] = _hook_results
             elif event.kind == EVENT_TOOL_RESULT:
+                _hook_identity = hook_event_identity(event)
+                if _hook_identity is not None:
+                    _hook_fire_cache.pop(_hook_identity, None)
                 # A FINAL result means the tool is done: drop the attribution
                 # snapshot so a later idle stretch is not judged against a
                 # command that has already returned. A non-final progress frame
