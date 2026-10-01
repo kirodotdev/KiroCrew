@@ -534,7 +534,7 @@ describe('ArtifactsPage', () => {
       const dialog = await screen.findByRole('dialog')
       await waitFor(() => expect(within(dialog).getByText('Findings headline')).toBeInTheDocument())
       expect(queryClient.getQueryData(['file-read', '/ws/research/FINDINGS.md']))
-        .toEqual({ text: '# Findings headline', ok: true, status: 200, binary: false })
+        .toEqual({ text: '# Findings headline', ok: true, status: 200, binary: false, truncated: false, redacted: false, lossy: false })
     })
 
     // A session doc is a .md/.txt path, but the BYTES on disk decide whether
@@ -583,7 +583,7 @@ describe('ArtifactsPage', () => {
       await waitFor(() =>
         expect(queryClient.getQueryData(['file-read', '/ws/research/FINDINGS.md'])).toBeTruthy())
       expect(queryClient.getQueryData(['file-read', '/ws/research/FINDINGS.md']))
-        .toEqual({ text: '', ok: true, status: 200, binary: true })
+        .toEqual({ text: '', ok: true, status: 200, binary: true, truncated: false, redacted: false, lossy: false })
     })
 
     // The row is a keyboard target too — and the star nested inside it bubbles
