@@ -8587,9 +8587,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               <motion.div
                 key="welcome-hero"
                 layout
-                className="flex-1 flex flex-col items-center justify-center gap-6 px-8 min-h-0 overflow-y-auto"
+                // `safe center`: a phone's welcome column is taller than this
+                // box, and plain centring pushes its top out of scroll reach.
+                className="flex-1 flex flex-col items-center [justify-content:safe_center] gap-6 px-8 min-h-0 overflow-y-auto"
                 // The dock floats over this box too, so the padding keeps the
-                // hero centred in the visible strip rather than behind the glass.
+                // hero centred in the visible strip rather than behind the glass,
+                // and lets its last row scroll clear (see WelcomeView's layout).
                 style={{ paddingBottom: dockH }}
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}

@@ -91,7 +91,11 @@ function SuggestedCards({ setInput }: { setInput: (v: string) => void }) {
   const spinning = isFetching || refreshing
 
   return (
-    <div className="w-full max-w-[620px] mx-auto">
+    // `isolate` keeps the z-10 / z-20 below inside this box. The composer dock
+    // floats over the hero with no z-index of its own (ChatPage explains why) and
+    // wins only by DOM order, so an escaped z-20 put the Refresh row on top of
+    // the composer's mic and Send buttons whenever the hero scrolled under it.
+    <div data-testid="welcome-suggestions" className="isolate w-full max-w-[620px] mx-auto">
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         {cards.map(({ text, kind }, i) => {
           const { Icon, tile } = SUGGESTION_KIND_STYLE[kind]
@@ -119,7 +123,8 @@ function SuggestedCards({ setInput }: { setInput: (v: string) => void }) {
           )
         })}
       </div>
-      {/* z-20 keeps the link above a hovered bottom-row card (z-10) growing over it. */}
+      {/* z-20 keeps the link above a hovered bottom-row card (z-10) growing over it;
+          `isolate` on the root keeps both from competing with the composer dock. */}
       <div className="relative z-20 flex justify-end mt-4">
         <button
           type="button"
@@ -158,7 +163,11 @@ export default function WelcomeView({ setInput }: WelcomeViewProps) {
     // Unprefixed = phones: a safe-centred column (falls back to top-aligned when it
     // overflows, so nothing clips). Short wide windows stack from the top. Wide and tall
     // viewports switch to the spread grid: greeting ~20% down, cards ~60%.
-    <div data-testid="welcome-layout" className="w-full flex-1 min-h-0 pt-12 pb-4 flex flex-col [justify-content:safe_center] sm:justify-start gap-6 [@media(min-width:640px)_and_(min-height:600px)]:pt-0 [@media(min-width:640px)_and_(min-height:600px)]:pb-0 [@media(min-width:640px)_and_(min-height:600px)]:grid [@media(min-width:640px)_and_(min-height:600px)]:grid-cols-1 [@media(min-width:640px)_and_(min-height:600px)]:grid-rows-[1.3fr_auto_0.7fr] [@media(min-width:640px)_and_(min-height:600px)]:gap-0">
+    // No `min-h-0`: the column must grow to its content so the hero scroller's
+    // bottom padding (the dock's height) lands after the Refresh row. A column
+    // shrunk to the hero let that row spill past the padding, where no scroll
+    // could lift it clear of the composer.
+    <div data-testid="welcome-layout" className="w-full flex-1 pt-12 pb-4 flex flex-col [justify-content:safe_center] sm:justify-start gap-6 [@media(min-width:640px)_and_(min-height:600px)]:pt-0 [@media(min-width:640px)_and_(min-height:600px)]:pb-0 [@media(min-width:640px)_and_(min-height:600px)]:grid [@media(min-width:640px)_and_(min-height:600px)]:grid-cols-1 [@media(min-width:640px)_and_(min-height:600px)]:grid-rows-[1.3fr_auto_0.7fr] [@media(min-width:640px)_and_(min-height:600px)]:gap-0">
       <div className="flex flex-col items-center w-full shrink-0 min-h-0">
         <div aria-hidden="true" className="hidden basis-[45%] shrink min-h-4 [@media(min-width:640px)_and_(min-height:600px)]:block" />
         <div className="flex flex-col items-center gap-3 text-center shrink-0">

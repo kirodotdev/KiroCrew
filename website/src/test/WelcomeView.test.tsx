@@ -96,6 +96,23 @@ describe('WelcomeView', () => {
       expect(cell.className).toContain('hover:z-10')
     })
 
+    it('keeps those z-indexes inside the suggestions, so the row never paints over the composer dock', () => {
+      // The dock has no z-index and wins over the hero by DOM order only; an
+      // escaped z-20 put Refresh suggestions on top of Send on phones. The real
+      // hit test is playwright/welcome-refresh-composer.spec.ts.
+      renderWithProviders(<WelcomeView {...defaultProps} />)
+      const root = screen.getByTestId('welcome-suggestions')
+      expect(root.className.split(/\s+/)).toContain('isolate')
+      expect(root.contains(screen.getByRole('button', { name: 'Refresh suggestions' }))).toBe(true)
+    })
+
+    it('lets the welcome column grow to its content so the hero padding lands after the last row', () => {
+      // `min-h-0` shrank the column to the hero and the Refresh row spilled past
+      // the hero's dock-height bottom padding, where no scroll could reach it.
+      renderWithProviders(<WelcomeView {...defaultProps} />)
+      expect(screen.getByTestId('welcome-layout').className.split(/\s+/)).not.toContain('min-h-0')
+    })
+
     it('safe-centres the phone stack, start-aligns short wide windows, and switches to the spread grid only on wide, tall viewports', () => {
       renderWithProviders(<WelcomeView {...defaultProps} />)
       const layout = screen.getByTestId('welcome-layout')
