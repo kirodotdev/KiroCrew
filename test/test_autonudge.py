@@ -3680,6 +3680,126 @@ async def test_bound_deactivation_never_overwrites_a_manual_pause(svc):
 
 
 @pytest.mark.asyncio
+async def test_a_pause_landing_after_a_bound_keeps_the_bound(svc):
+    """A reasonless ``active=False`` reaching a loop a bound already stopped is
+    a repeat of an inactive state, not a new stop: "manual" over the bound
+    would read as resumable and lose why the loop ended."""
+    await svc.start()
+    for slot, bound in (("chat-1-201", "runtime_budget"), ("chat-1-202", "cycle_cap")):
+        loop = await svc.add(slot_key=slot, message="go", idle_secs=15)
+        await svc.update(loop.id, active=False, stopped_reason=bound)
+        paused = await svc.update(loop.id, active=False)
+        assert svc._loops[loop.id].stopped_reason == bound
+        assert svc._loops[loop.id].active is False
+        assert paused is not None and paused.stopped_reason == bound
+    running = await svc.add(slot_key="chat-1-203", message="go", idle_secs=15)
+    await svc.update(running.id, active=False)
+    assert svc._loops[running.id].stopped_reason == "manual"
+    revived = await svc.update(loop.id, active=True)
+    assert revived is not None and revived.active is True and revived.stopped_reason == ""
+    svc.stop()
+
+
+@pytest.mark.asyncio
+async def test_revival_runs_a_fresh_budget_and_a_running_save_keeps_the_old_one(svc, monkeypatch):
+    """The user's resume (a revival flagged ``fresh_run``) runs a bound-stopped
+    loop again on a FRESH budget: the count restarts and the budget clock
+    re-anchors on the revival, so the next tick fires instead of re-stopping on
+    the still-spent bound and nothing has to be raised first. A save on a
+    RUNNING loop is not a revival."""
+    fired: list[str] = []
+
+    async def on_fire(loop):
+        fired.append(loop.id)
+        return True
+
+    async def _nosleep(_secs):
+        return None
+
+    svc._on_fire = on_fire
+    monkeypatch.setattr(_an.asyncio, "sleep", _nosleep)
+    await svc.start()
+
+    async def settle(loop_id: str) -> None:
+        # A loop the timer re-stops cancels its own task; the count below is the verdict.
+        await asyncio.gather(svc._timers[loop_id], return_exceptions=True)
+
+    capped = await svc.add(slot_key="chat-1-301", message="go", idle_secs=15, max_cycles=1)
+    await settle(capped.id)
+    svc._cancel_timer(capped.id)
+    await svc._timer(capped)
+    assert svc._loops[capped.id].stopped_reason == "cycle_cap"
+    assert fired.count(capped.id) == 1
+    assert (await svc.update(capped.id, active=True, fresh_run=True)) is not None
+    await settle(capped.id)
+    assert fired.count(capped.id) == 2, "the resumed loop must fire again under the same cap"
+    assert svc._loops[capped.id].active is True
+    assert svc._loops[capped.id].cycle_count == 1
+
+    budgeted = await svc.add(slot_key="chat-1-302", message="go", idle_secs=15, max_runtime_secs=60)
+    await settle(budgeted.id)
+    budgeted.created_ts -= 120
+    svc._cancel_timer(budgeted.id)
+    await svc._timer(budgeted)
+    assert svc._loops[budgeted.id].stopped_reason == "runtime_budget"
+    before_revival = _an.time.time()
+    assert (await svc.update(budgeted.id, active=True, fresh_run=True)) is not None
+    await settle(budgeted.id)
+    assert fired.count(budgeted.id) == 2, "the resumed loop must fire again under the same budget"
+    assert svc._loops[budgeted.id].active is True
+    assert svc._loops[budgeted.id].created_ts >= before_revival
+
+    running = await svc.add(slot_key="chat-1-303", message="go", idle_secs=15, max_cycles=3)
+    await settle(running.id)
+    created = svc._loops[running.id].created_ts
+    saved = await svc.update(running.id, active=True, fresh_run=True, message="go on")
+    assert saved is not None and saved.cycle_count == 1 and saved.created_ts == created
+    svc.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_bare_revival_keeps_the_count_so_a_reconciler_cannot_mint_a_fresh_allowance(
+    svc, monkeypatch
+):
+    """A revival WITHOUT ``fresh_run`` -- the Research Lab and Issue Radar
+    reconcilers re-arm any inactive loop of a live campaign or crew every few
+    seconds, and a ``monitor_update`` bound raise asks for its increment -- keeps
+    the loop's count and clock, so a cap-stopped loop is re-stopped unfired on
+    its first tick exactly as before the resume reset existed: the user's cap
+    stays a bound on unattended turns rather than becoming a per-run allowance."""
+    fired: list[str] = []
+
+    async def on_fire(loop):
+        fired.append(loop.id)
+        return True
+
+    async def _nosleep(_secs):
+        return None
+
+    svc._on_fire = on_fire
+    monkeypatch.setattr(_an.asyncio, "sleep", _nosleep)
+    await svc.start()
+
+    async def settle(loop_id: str) -> None:
+        await asyncio.gather(svc._timers[loop_id], return_exceptions=True)
+
+    capped = await svc.add(slot_key="research-c1", message="go", idle_secs=15, max_cycles=1)
+    await settle(capped.id)
+    svc._cancel_timer(capped.id)
+    await svc._timer(capped)
+    assert svc._loops[capped.id].stopped_reason == "cycle_cap"
+    created = svc._loops[capped.id].created_ts
+    revived = await svc.update(capped.id, active=True)
+    assert revived is not None and revived.cycle_count == 1 and revived.created_ts == created
+    assert revived.stopped_reason == "", "a revival still clears the reason it is undoing"
+    await settle(capped.id)
+    assert fired.count(capped.id) == 1, "the still-spent cap must re-stop the loop unfired"
+    assert svc._loops[capped.id].active is False
+    assert svc._loops[capped.id].stopped_reason == "cycle_cap"
+    svc.stop()
+
+
+@pytest.mark.asyncio
 async def test_budget_expiring_mid_turn_deactivates_post_delivery(svc, monkeypatch):
     """The budget gates turn STARTS and must not cancel an
     in-flight turn — but once a slow turn ENDS with the budget spent, the loop

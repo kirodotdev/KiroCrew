@@ -1086,6 +1086,10 @@ async def api_autonudge_update(request: web.Request) -> web.Response:
         idle_secs=body.get("idle_secs"),
         max_cycles=body.get("max_cycles"),
         active=body.get("active"),
+        # This route is the user's own press (the goal popover's Play), so a
+        # revival through it is a resume and runs on a fresh budget; a save on
+        # a running loop carries ``active: true`` too and the flag is inert there.
+        fresh_run=True,
         max_runtime_secs=body.get("max_runtime_secs"),
         banner=body.get("banner"),
         source="dashboard",

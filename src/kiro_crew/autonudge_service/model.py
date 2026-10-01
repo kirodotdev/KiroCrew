@@ -287,7 +287,10 @@ class NudgeLoop:
     # A cycle cap alone cannot bound COST: a loop whose turns are slow or whose
     # idle gap is long can run for days within its cycle budget. Anchoring on
     # the persisted ``created_ts`` (not arm time) makes the budget restart-proof
-    # — a gateway restart re-arms the loop but never resets its clock.
+    # — a gateway restart re-arms the loop but never resets its clock. The user's
+    # RESUME does: a revival flagged ``fresh_run`` re-anchors ``created_ts`` and
+    # zeroes ``cycle_count`` (``_update_unserialized``); a reconciler re-arm or a
+    # ``monitor_update`` bound raise revives without the flag and keeps both.
     max_runtime_secs: int = 0
     #: Whether this loop may be observation-gated. Defaults to FALSE, which is what
     #: a record stored before this field existed decodes to.

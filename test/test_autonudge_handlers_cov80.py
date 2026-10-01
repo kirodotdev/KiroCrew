@@ -1611,6 +1611,9 @@ async def test_update_forwards_raw_fields_to_the_authorizer(
     assert kwargs["idle_secs"] == "900"
     assert kwargs["active"] is False
     assert kwargs["max_cycles"] is None and kwargs["max_runtime_secs"] is None
+    # The dashboard route is the user's own press: a revival through it is a
+    # resume, so the authorizer is told to run the loop on a fresh budget.
+    assert kwargs["fresh_run"] is True
 
 
 @pytest.mark.asyncio

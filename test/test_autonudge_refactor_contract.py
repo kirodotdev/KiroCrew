@@ -224,8 +224,8 @@ _BASE_SERVICE_MEMBERS: dict[str, tuple[str, str]] = {
     "_sync_terminal_completion_timer": ("method", "fa9fb3019298"),
     "_terminal_still_holds": ("method+async", "75f382f079fb"),
     "_timer": ("method+async", "e290ef84f151"),
-    "_update_locked": ("method+async", "b7b62a00f723"),
-    "_update_unserialized": ("method+async", "b7b62a00f723"),
+    "_update_locked": ("method+async", "db9765212236"),
+    "_update_unserialized": ("method+async", "db9765212236"),
     "_waits_for_terminal_completion": ("method", "3a33d55b099b"),
     "_withdraw_judge_suppression": ("method", "fa9fb3019298"),
     "_worker_running": ("method", "490393185551"),
@@ -277,7 +277,7 @@ _BASE_SERVICE_MEMBERS: dict[str, tuple[str, str]] = {
     "stop_monitor": ("method+async", "bddc1c278f12"),
     "stop_monitor_if_budget_exhausted": ("method+async", "7ab50d99dd32"),
     "subscribe": ("method", "7a1b8e1c52f1"),
-    "update": ("method+async", "b7b62a00f723"),
+    "update": ("method+async", "db9765212236"),
     "update_monitor": ("method+async", "15a27e52eef4"),
 }
 

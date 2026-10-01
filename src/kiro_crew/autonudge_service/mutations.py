@@ -392,6 +392,7 @@ async def update(
     idle_secs: int | None = None,
     max_cycles: int | None = None,
     active: bool | None = None,
+    fresh_run: bool = False,
     max_runtime_secs: int | None = None,
     stopped_reason: str | None = None,
     banner: str | None = None,
@@ -407,7 +408,10 @@ async def update(
     A refused precondition changes nothing and returns ``None``, the same
     "not applied" answer as a missing row; only the stale-wake stop passes one.
     ``on_absent`` is called inside the same hold when the row is missing, so
-    that caller can tell a deleted row from a replaced one.
+    that caller can tell a deleted row from a replaced one. ``fresh_run`` marks
+    a revival as the user's own resume, which runs on a fresh budget; without
+    it a revival keeps the loop's count and clock (the reconciler re-arms and a
+    ``monitor_update`` bound raise, where a fresh allowance is not what was asked).
     """
     # CANCELLATION SAFETY: same contract as add(). The mutate+persist runs
     # as a SHIELDED, supervised task so a caller cancelled mid-write cannot
@@ -421,6 +425,7 @@ async def update(
             idle_secs=idle_secs,
             max_cycles=max_cycles,
             active=active,
+            fresh_run=fresh_run,
             max_runtime_secs=max_runtime_secs,
             stopped_reason=stopped_reason,
             banner=banner,
@@ -457,6 +462,7 @@ async def _update_locked(
     idle_secs: int | None = None,
     max_cycles: int | None = None,
     active: bool | None = None,
+    fresh_run: bool = False,
     max_runtime_secs: int | None = None,
     stopped_reason: str | None = None,
     banner: str | None = None,
@@ -477,6 +483,7 @@ async def _update_locked(
             idle_secs=idle_secs,
             max_cycles=max_cycles,
             active=active,
+            fresh_run=fresh_run,
             max_runtime_secs=max_runtime_secs,
             stopped_reason=stopped_reason,
             banner=banner,
@@ -499,6 +506,7 @@ async def _update_unserialized(
     idle_secs: int | None = None,
     max_cycles: int | None = None,
     active: bool | None = None,
+    fresh_run: bool = False,
     max_runtime_secs: int | None = None,
     stopped_reason: str | None = None,
     banner: str | None = None,
@@ -829,9 +837,8 @@ async def _update_unserialized(
             # budget-revivable against an explicit pause. Both transitions
             # serialize on _lock, so re-checking here closes the race: the
             # bound's deactivation degrades to a no-op when the loop is
-            # already inactive. The reverse order is already safe — a
-            # manual pause overwriting a bound tag only ever NARROWS
-            # revivability ("manual" never auto-revives).
+            # already inactive. The reverse order -- a reasonless pause
+            # arriving after the bound -- is closed two branches down.
             elif (
                 not active
                 and stopped_reason is None
@@ -846,6 +853,22 @@ async def _update_unserialized(
                     "AutoNudge: loop %s retains its source stop reason on "
                     "reasonless inactive update",
                     loop.id,
+                )
+            elif (
+                not active
+                and stopped_reason is None
+                and not loop.active
+                and loop.stopped_reason in _TERMINAL_BOUND_REASONS
+            ):
+                # The MIRROR of the race above: the bound landed first and a
+                # reasonless pause (the goal popover's, pressed off a stale
+                # running reading) arrives second. A repeat of an inactive state
+                # is not a new stop, and "manual" over the bound would lose why
+                # the loop ended.
+                logger.info(
+                    "AutoNudge: loop %s keeps its %s stop on reasonless inactive update",
+                    loop.id,
+                    loop.stopped_reason,
                 )
             elif stopped_reason in _TERMINAL_BOUND_REASONS and not active and not loop.active:
                 logger.info(
@@ -878,6 +901,21 @@ async def _update_unserialized(
                         # Same rule, same reason: the streak is evidence
                         # about a PAST run, and a revival starts a fresh one.
                         loop.consecutive_start_failures = 0
+                        # The user's resume runs a FRESH budget (Hermes ``/goal
+                        # resume`` resets the turn counter): without this the
+                        # timer's cap and budget checks re-stop a bound-stopped
+                        # loop on its first tick unless the bound was raised
+                        # first. ``created_ts`` IS the budget clock -- every
+                        # reader of the runtime left measures from it -- so it
+                        # moves too. Opt-in rather than a property of every
+                        # revival: the Research Lab and Issue Radar reconcilers
+                        # re-arm ANY inactive loop of a live campaign or crew
+                        # every few seconds, and a ``monitor_update`` bound raise
+                        # asks for its increment -- on those paths a reset would
+                        # turn the user's cap into a per-run allowance.
+                        if fresh_run:
+                            loop.cycle_count = 0
+                            loop.created_ts = time.time()
                 else:
                     loop.stopped_reason = stopped_reason or MANUAL_STOP_REASON
         revived = loop.active and not was_active

@@ -152,6 +152,18 @@ async def test_update_accepts_a_whole_number_float_budget_as_an_int(audits: list
 
 
 @pytest.mark.asyncio
+async def test_update_forwards_fresh_run_and_leaves_it_off_by_default(audits: list[dict]) -> None:
+    """The resume flag reaches the service exactly as the caller stated it: the
+    dashboard route passes True, the ``monitor_update`` applier passes nothing."""
+    svc = RecordingSvc()
+    await authorize_and_update_nudge(svc=svc, loop_id="l1", active=True, source="dashboard")
+    await authorize_and_update_nudge(
+        svc=svc, loop_id="l1", active=True, fresh_run=True, source="dashboard"
+    )
+    assert [u["fresh_run"] for u in svc.updated] == [False, True]
+
+
+@pytest.mark.asyncio
 async def test_update_audit_failure_does_not_break_the_denial(broken_sel: None) -> None:
     """A dead SEL must not turn a 400 into a 500: the warn-and-continue fallback
     keeps the caller's error contract intact."""

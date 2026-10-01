@@ -580,6 +580,7 @@ async def authorize_and_update_nudge(
     idle_secs: Any = None,
     max_cycles: Any = None,
     active: Any = None,
+    fresh_run: bool = False,
     max_runtime_secs: Any = None,
     banner: Any = None,
     judge: Any = None,
@@ -592,6 +593,11 @@ async def authorize_and_update_nudge(
     caller: str = "",
 ) -> tuple[Any | None, str | None, int]:
     """Validate + audit + apply a loop update; return ``(loop, error, status)``.
+
+    ``fresh_run`` is the caller's statement that a revival here is the user's
+    own resume (the dashboard route passes it); the service then runs the loop
+    on a fresh budget. The ``monitor_update`` applier leaves it unset, so an
+    agent raising its own bound buys the increment it asked for.
 
     The update-side twin of :func:`authorize_and_add_nudge`, and for the same
     reason it lives here rather than in the HTTP handler: ``message`` is the
@@ -775,6 +781,7 @@ async def authorize_and_update_nudge(
             idle_secs=idle_secs,
             max_cycles=max_cycles,
             active=active,
+            fresh_run=fresh_run,
             max_runtime_secs=max_runtime_secs,
             banner=banner,
             judge=judge,

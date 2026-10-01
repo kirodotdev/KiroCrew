@@ -940,6 +940,9 @@ async def test_self_wake_revives_cap_expired_loop_by_raising_cap(tmp_path):
             )
         assert loop.active and loop.stopped_reason == ""
         assert loop.max_cycles == 3
+        # The raise buys its increment: the count is kept, so 1 -> 3 is two more
+        # cycles, not a fresh three (the reset is the user's resume alone).
+        assert loop.cycle_count == 1
         assert "new user request" not in result
     finally:
         service.stop()

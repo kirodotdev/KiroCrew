@@ -7306,14 +7306,20 @@ class GatewayOrchestrator:
                     "cycle_count": loop.cycle_count,
                     "active": loop.active,
                     "last_fire_ts": loop.last_fire_ts,
+                    # On EVERY loop, not only a structured monitor's: the goal
+                    # popover words a paused loop by ``stopped_reason`` and reads
+                    # its countdown off ``next_due_ts``, and the dashboard caches
+                    # the frame over the REST read, so a frame without them blanks
+                    # both the moment it lands. Both are public on the ungated
+                    # REST list already.
+                    "next_due_ts": loop.next_due_ts,
+                    "stopped_reason": loop.stopped_reason,
                 }
                 if is_structured_monitor_loop(loop):
                     assert loop.monitor is not None
                     loop_payload["monitor"] = _redact_monitor_value(
                         monitor_state_public_dict(loop.monitor)
                     )
-                    loop_payload["next_due_ts"] = loop.next_due_ts
-                    loop_payload["stopped_reason"] = loop.stopped_reason
                 broadcast = (
                     self.dashboard_state.broadcast_ws_owners
                     if is_structured_monitor_loop(loop)
