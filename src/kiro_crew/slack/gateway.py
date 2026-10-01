@@ -206,7 +206,7 @@ from kiro_crew.executors import (  # noqa: F401
 )
 from kiro_crew.frontend import build_frontend_async
 from kiro_crew.gateway_restart import resolve_restart_launcher
-from kiro_crew.gateway_shutdown_budget import GRACEFUL_SHUTDOWN_SECS
+from kiro_crew.gateway_shutdown_budget import GRACEFUL_SHUTDOWN_SECS, UPDATE_INSTALLER_STOP_SECS
 from kiro_crew.heartbeat import (
     HEARTBEAT_TASK_TIMEOUT_SECS,
     HeartbeatService,
@@ -1317,6 +1317,14 @@ class GatewayOrchestrator:
         mandatory_key: str = "",
     ) -> bool:
         """Pause admission and reach an idle boundary before automatic apply."""
+        if shutdown_event.is_set():
+            # A stop is already under way: an installer admitted now would be
+            # stopped mid-write. The signal itself is the gate, because
+            # ``close_all`` (which closes turn admission) runs only at the end
+            # of the shutdown. ``pause_turn_admission_for_update`` checks it
+            # again under its lock, for a stop that lands while it waits.
+            logger.info("Auto-update not started: the gateway is shutting down")
+            return False
         if not mandatory:
             self._mandatory_update_deferred_at = None
             self._mandatory_update_deferred_key = None
@@ -1362,8 +1370,8 @@ class GatewayOrchestrator:
                 background_busy,
             )
 
-        await sessions.resume_turn_admission_after_update()
-        self._schedule_inbound_replay()
+        if await sessions.resume_turn_admission_after_update():
+            self._schedule_inbound_replay()
         self._update_apply_deferred = True
         logger.info("Auto-update deferred: %d in-flight turn(s)", busy)
         if self.dashboard_state:
@@ -1371,16 +1379,22 @@ class GatewayOrchestrator:
         return False
 
     async def _finish_auto_update_apply(self) -> None:
-        """Reopen admission when apply returns instead of replacing the process."""
+        """Reopen admission when apply returns instead of replacing the process.
+
+        The spool replay runs only when admission actually reopened: during a
+        shutdown the pause is kept, and a replay then would tell senders to
+        resend while the gateway is stopping.
+        """
         sessions = self.sessions
         if sessions is None:
             return
         try:
-            await sessions.resume_turn_admission_after_update()
+            reopened = await sessions.resume_turn_admission_after_update()
         except Exception:
             logger.exception("Auto-update could not resume turn admission")
         else:
-            self._schedule_inbound_replay()
+            if reopened:
+                self._schedule_inbound_replay()
 
     # ------------------------------------------------------------------
     # Tool approval callback (shared by cron, heartbeat, subagent, task)
@@ -10257,6 +10271,18 @@ class GatewayOrchestrator:
 
     async def _shutdown(self) -> None:
         """Graceful cleanup of all services."""
+        # FIRST, before anything spends the shutdown budget: start stopping the
+        # update coordinator. Its installer gets SIGTERM so it can restore the
+        # install it moved aside, and that rollback must finish before this
+        # process exits (past the GRACEFUL_SHUTDOWN_SECS cap the process is
+        # force-exited with the installer orphaned mid-write). The stop runs
+        # alongside the steps below, which do not touch the install, and is
+        # awaited before the handler and service teardown, bounded by
+        # UPDATE_INSTALLER_STOP_SECS.
+        update_task = self._update_check_task
+        update_stop_deadline = asyncio.get_running_loop().time() + UPDATE_INSTALLER_STOP_SECS
+        if update_task is not None and not update_task.done():
+            update_task.cancel()
         self._memory_repair_stop.set()
         if self._memory_repair_task is not None:
             self._memory_repair_task.cancel()
@@ -10332,6 +10358,15 @@ class GatewayOrchestrator:
                 logger.debug("Dashboard slot save before shutdown failed", exc_info=True)
             self.dashboard_state.file_indexes.stop_all()
 
+        if update_task is not None:
+            remaining = update_stop_deadline - asyncio.get_running_loop().time()
+            _done, pending = await asyncio.wait({update_task}, timeout=max(0.0, remaining))
+            if pending:
+                logger.warning(
+                    "Update coordinator did not stop within %.0fs; continuing shutdown",
+                    UPDATE_INSTALLER_STOP_SECS,
+                )
+
         # The general _background_tasks set is retention, not lifecycle ownership.
         # This task can own a dep_sync child plus pip/build descendants, so cancel
         # and await it explicitly while _check_console_script still has a live loop
@@ -10395,10 +10430,8 @@ class GatewayOrchestrator:
         # Cancel background auto-migration if still in flight
         if self._auto_migrate_task is not None and not self._auto_migrate_task.done():
             self._auto_migrate_task.cancel()
-        # Cancel the recurring update coordinator if it is still in flight — a
-        # check or installer subprocess can take ~70s to time out.
-        if self._update_check_task is not None and not self._update_check_task.done():
-            self._update_check_task.cancel()
+        # The update coordinator was stopped first (top of this method); the
+        # dashboard's own check is cancelled here with the other tails.
         from kiro_crew.dashboard.handlers.updates import _cancel_update_check
 
         cleanup_tasks.append(_cancel_update_check())
@@ -10777,6 +10810,12 @@ class GatewayOrchestrator:
         # fenced refusal path. Drain pre-fence workers and registered handlers
         # one final time; never cancel or force through them.
         await self._drain_update_callback_work(timeout=None)
+        if shutdown_event.is_set():
+            # The operator asked this process to stop while the restart was
+            # being prepared. Exec'ing would swallow that stop; the applied
+            # update takes effect at the next start instead.
+            logger.info("Update applied; restart skipped because the gateway is shutting down")
+            return
         logger.info("Update callback drain complete, restarting gateway")
         self._pending_update_respawn = None
         # The exec is past the point of no return: the guard above removed the
@@ -11901,8 +11940,9 @@ class GatewayOrchestrator:
         # cannot hijack the installer spawn. Fail CLOSED if no trusted shell:
         # a bare-name fallback would reopen the very hole this closes.
         from kiro_crew.platform.update_provider import (
-            _kill_and_reap,
+            INSTALLER_TIMEOUT_TERM_GRACE_SECS,
             _read_bounded_output,
+            _stop_installer,
             _trusted_path_env,
         )
         from kiro_crew.platform_compat import trusted_system_bin
@@ -11952,19 +11992,22 @@ class GatewayOrchestrator:
         except asyncio.CancelledError:
             # Shutdown (SIGTERM) cancels this task. Without this branch the
             # installer keeps mutating the installation after the gateway exits,
-            # leaving a half-replaced venv nobody is supervising. Kill the whole
-            # TREE (the line is a pipeline) and reap under a bound, then re-raise
-            # so cancellation still propagates. ``proc`` is None when the
-            # cancellation landed during the spawn itself.
+            # leaving a half-replaced venv nobody is supervising. Stop the whole
+            # GROUP (the line is a pipeline) with SIGTERM first so cli.sh's trap
+            # restores the venv it moved aside, then re-raise so cancellation
+            # still propagates. ``proc`` is None when the cancellation landed
+            # during the spawn itself.
             if proc is not None:
-                await _kill_and_reap(proc)
-            logger.warning("Auto-update (wheel): cancelled — installer child killed")
+                await _stop_installer(proc)
+            logger.warning("Auto-update (wheel): cancelled — installer child stopped")
             raise
         except asyncio.TimeoutError:
-            # Terminate the whole tree and reap under a bound so nothing keeps
-            # modifying the installation after we return.
+            # Same graceful stop as the cancel arm. cli.sh runs pip in a
+            # session of its own (setsid), outside the group signalled here:
+            # its TERM trap is what stops that step, so a cli.sh that ignores
+            # TERM past the grace can leave pip running after we return.
             if proc is not None:
-                await _kill_and_reap(proc)
+                await _stop_installer(proc, grace=INSTALLER_TIMEOUT_TERM_GRACE_SECS)
             logger.error("Auto-update (wheel): installer timed out (5 min)")
             if self.dashboard_state:
                 self.dashboard_state.push_update_progress(

@@ -289,11 +289,83 @@ but only while `SIGALRM` is at its default disposition (the same ownership rule
 `exit_mechanism()` applies: a Python handler on `SIGALRM` means another owner's
 `ITIMER_REAL`, which is left alone).
 
+### Stopping an in-flight update installer
+
+An apply that replaces the install in place cannot be killed outright. `cli.sh`
+moves the managed venv aside before it rebuilds it and restores it from its
+interrupt handling. Inside a step, `_run_step`'s own trap stops the step. The
+venv-create and wheel-install steps then restore from their failure branch
+(`_venv_restore_after_failure`); the pip-upgrade step has none and exits into
+the EXIT rollback below. That failure-branch restore runs with INT, TERM and HUP
+ignored and disarms the EXIT rollback only once it has returned, so a second
+INT, TERM or HUP cannot cut it short between its delete and its rename. For the
+rest of the rebuild, from just
+before the move-aside until the wheel lands, `cli.sh` arms an EXIT-trap
+rollback (`_venv_rollback_on_exit`, gated on the rename having happened), and
+INT, TERM and HUP simply exit into it. A SIGKILL skips all of that and leaves no
+venv and no console script. So both arms that stop an apply mid-run stop it gracefully: the
+cancellation arm (shutdown) and the timeout arm, on the wheel route
+(`_auto_apply_wheel_update`) and the policy route (`CommandProvider.apply`). Both
+call `update_provider._stop_installer`, which calls
+`platform_compat.terminate_and_reap`. `kirocrew update`'s installer
+(`cli_server._update_wheel`) runs in a session of its own for the same reason,
+and its timeout and Ctrl-C go through the blocking sibling,
+`terminate_and_reap_sync`. It sends SIGTERM to the installer's process
+group, drains and discards its pipes, and waits for the GROUP to empty: pipe EOF
+alone is not the end of a trap, because a member that holds neither pipe (`cmd
+>log 2>&1`) can still be rolling back. Only then does whatever is left get
+SIGKILL. The grace differs by arm:
+
+- **Cancellation arm:** `UPDATE_INSTALLER_TERM_GRACE_SECS`, a share of
+  `GRACEFUL_SHUTDOWN_SECS` (both in `gateway_shutdown_budget.py`).
+- **Timeout arm:** `update_provider.INSTALLER_TIMEOUT_TERM_GRACE_SECS`, which is
+  longer because no shutdown cap applies there.
+
+`cli.sh` runs its pip step in a session of its own (`setsid`), outside the group
+the gateway signals. Its TERM trap is what stops that step, so a `cli.sh` that
+ignores SIGTERM past the grace can leave pip running after the arm returns.
+
+**Shutdown starts the stop first.** `_shutdown` cancels `_update_check_task`
+before anything else. The early steps run alongside the stop because they do not
+touch the install. Before the handler and service teardown, `_shutdown` waits
+for the stop until `UPDATE_INSTALLER_STOP_SECS` after the cancel. Without that
+wait, the 10 s cap's force-exit can orphan the installer mid-write.
+
+**Once a stop is signalled (`shutdown_event` is set):**
+
+- No new apply is admitted. `_prepare_auto_update_apply` returns False, and
+  `SessionManager.pause_turn_admission_for_update` refuses, checked under its
+  lock so a stop that lands while it waits is still seen. The gate cannot be
+  `_closing`, because `close_all()` sets it only at the end of the shutdown.
+- `POST /api/update` answers 503 `shutting_down`.
+- `SessionManager.resume_turn_admission_after_update` keeps turn admission
+  paused (checked under the same lock), so inbound turns keep being spooled
+  instead of being admitted and then cancelled.
+- `_restart_after_update` does not exec. An applied update takes effect at the
+  next start instead of overriding the stop.
+
+The widest window for these races is boot. The first coordinator cycle starts
+before the MCP probe finishes, and the main flow reaches `shutdown_event.wait()`
+only after it.
+
+`systemctl stop|restart` on the generated unit already recovered before this:
+the unit's control-group SIGTERM reaches `cli.sh` directly. The paths that
+stranded the venv were `kirocrew stop`, Ctrl-C, `POST /api/shutdown` and the
+installer's own 300 s timeout.
+
+Not covered here:
+
+- The git route reinstalls through `dep_sync.sync_or_reinstall` in an executor
+  thread, and a cancelled await does not stop that thread, so its pip can
+  outlive a shutdown.
+- A policy apply started by `POST /api/update` runs in the request handler. The
+  shutdown does not stop it first.
+
 ### Shutdown Sequence
 
 1. First Ctrl+C sets `shutdown_event` → graceful shutdown begins (10s deadline)
 2. Second Ctrl+C calls `os._exit(0)` immediately (force exit)
-3. `_shutdown()` **first disarms the loop-stall watchdog** (`dashboard_state._loop_watchdog.stop()` + cancels `_loop_heartbeat`), then saves active chat slots, cancels handler tasks, stops cron/heartbeat, closes sessions. The watchdog MUST be disarmed before `close_all()`/`cancel_all()` because that teardown deliberately kills every kiro-cli child — the same `os.waitpid` reaping burst the watchdog guards against — and a slow teardown would otherwise let the armed stall alarm (`setitimer(ITIMER_REAL)` with faulthandler's `SIGALRM` handler) end the process mid-shutdown (a clean quit would look like a crash). The watchdog's own `on_cleanup` hook fires too late (inside `AppRunner.cleanup()`, gathered concurrently with the reaping).
+3. `_shutdown()` **first stops the update coordinator** (see "Stopping an in-flight update installer"), then **disarms the loop-stall watchdog** (`dashboard_state._loop_watchdog.stop()` + cancels `_loop_heartbeat`), then saves active chat slots, cancels handler tasks, stops cron/heartbeat, closes sessions. The watchdog MUST be disarmed before `close_all()`/`cancel_all()` because that teardown deliberately kills every kiro-cli child — the same `os.waitpid` reaping burst the watchdog guards against — and a slow teardown would otherwise let the armed stall alarm (`setitimer(ITIMER_REAL)` with faulthandler's `SIGALRM` handler) end the process mid-shutdown (a clean quit would look like a crash). The watchdog's own `on_cleanup` hook fires too late (inside `AppRunner.cleanup()`, gathered concurrently with the reaping).
 4. The gateway clears its port-keyed run marker in both dashboard and API-only
    modes, then `cleanup_orphaned_sessions()` kills any kiro-cli PIDs tracked in
    the PID file before `os._exit(0)`.

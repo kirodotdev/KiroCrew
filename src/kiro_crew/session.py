@@ -3114,8 +3114,15 @@ class SessionManager:
         self._allocation_boundary().begin_turn(key)
 
     async def pause_turn_admission_for_update(self) -> bool:
-        """Block new turns for update apply without overriding real shutdown."""
+        """Block new turns for update apply without overriding real shutdown.
+
+        Refused once a gateway stop is signalled: an apply admitted then would
+        be stopped mid-write by the shutdown that follows. Checked under the
+        lock, so a stop landing while the lock is contended is still seen.
+        """
         async with self._lock:
+            if shutdown_event.is_set():
+                return False
             if self._closing and not self._update_pause_owned:
                 return False
             self._closing = True
@@ -3130,14 +3137,23 @@ class SessionManager:
         self.update_restart_fenced = True
         return True
 
-    async def resume_turn_admission_after_update(self) -> None:
-        """Release this caller's temporary update pause, if it still owns it."""
+    async def resume_turn_admission_after_update(self) -> bool:
+        """Release this caller's temporary update pause, if it still owns it.
+
+        Returns True only when admission actually reopened. Kept once a gateway
+        stop is signalled: the shutdown stops the update first, so this runs at
+        its start, and a paused admission keeps refusing (and spooling) inbound
+        turns that reopened admission would admit only for the teardown to
+        cancel. Checked under the same lock as the release, so a stop landing
+        while the lock is contended is still seen.
+        """
         async with self._lock:
-            if not self._update_pause_owned:
-                return
+            if not self._update_pause_owned or shutdown_event.is_set():
+                return False
             self.update_restart_fenced = False
             self._update_pause_owned = False
             self._closing = False
+            return True
 
     # ── Per-session semaphore ──
 

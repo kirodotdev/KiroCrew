@@ -1669,6 +1669,12 @@ async def api_update_apply(request: web.Request) -> web.Response:
         return owner_denied
     state: DashboardState = request.app["state"]
 
+    if shutdown_event.is_set():
+        # An apply started now would be cut off by the shutdown mid-write.
+        return web.json_response(
+            {"error": "The gateway is shutting down", "code": "shutting_down"}, status=503
+        )
+
     # A policy-defined provider OWNS the update on this host. Checked before the
     # git precondition below so an authenticated operator clicking Update cannot
     # run the built-in mechanism their own policy excluded. A dashboard token

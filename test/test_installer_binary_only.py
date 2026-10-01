@@ -737,9 +737,11 @@ def test_restore_checks_the_path_is_gone_before_moving() -> None:
     """Every restore site uses the helper; no bare `rm -rf ... || true` followed
     by `mv backup target` remains, since that pair is what nests on residue."""
     body = INSTALLER.read_text(encoding="utf-8")
-    # pipx rollback, venv-create failure, wheel-install failure, and the
-    # interrupt exit in _tolerate.
-    assert body.count("_restore_tree ") == 4, body.count("_restore_tree ")
+    # pipx rollback, the venv rebuild's EXIT rollback, and
+    # _venv_restore_after_failure, which the venv-create and wheel-install
+    # failure branches both call.
+    assert body.count("_restore_tree ") == 3, body.count("_restore_tree ")
+    assert body.count("      _venv_restore_after_failure \\\n") == 2
     assert 'if [ -e "$2" ] || [ -L "$2" ]; then\n    return 1' in body
     for target in ('"$_PIPX_VENV"', '"$VENV"'):
         assert f"rm -rf {target} 2>/dev/null || true\n      mv " not in body, target

@@ -605,6 +605,23 @@ class TestApplyRefusals:
     """``POST /api/update`` — every precondition, and the worker's own failures."""
 
     @pytest.mark.asyncio
+    async def test_refuses_once_the_gateway_is_shutting_down(self, monkeypatch):
+        """An apply started now would be cut off mid-write by the shutdown."""
+        from types import SimpleNamespace
+
+        from kiro_crew.platform import update_provider
+
+        monkeypatch.setattr(updates, "shutdown_event", SimpleNamespace(is_set=lambda: True))
+        applied = AsyncMock()
+        monkeypatch.setattr(update_provider, "apply_policy_update", applied)
+
+        resp = await updates.api_update_apply(_request({}))
+
+        assert resp.status == 503
+        assert json.loads(resp.body.decode())["code"] == "shutting_down"
+        applied.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_refuses_when_no_project_dir_is_configured(self):
         resp = await updates.api_update_apply(_request({}))
         assert resp.status == 400

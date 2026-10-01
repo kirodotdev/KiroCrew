@@ -2192,6 +2192,43 @@ class TestUpdateWheelFeedValidation:
         assert "No version in release feed" in capsys.readouterr().out
 
 
+class _FakeInstaller:
+    """A ``subprocess.Popen`` stand-in for the CLI's installer spawn.
+
+    ``pid`` is above every platform's ``pid_max`` (see
+    ``test_update_provider._UNALLOCATABLE_PID``), so a stop path that reached
+    the real kill helpers could not signal a live process.
+    """
+
+    pid = 99_999_999_999
+
+    def __init__(self, argv, *, returncode: int = 0, wait_raises=None, **kwargs) -> None:
+        self.argv = list(argv)
+        self.kwargs = kwargs
+        self._returncode = returncode
+        self._wait_raises = wait_raises
+
+    def wait(self, timeout=None):
+        if self._wait_raises is not None:
+            raise self._wait_raises
+        return self._returncode
+
+    def poll(self):
+        return self._returncode
+
+
+def _installer(monkeypatch, **behaviour) -> list[_FakeInstaller]:
+    spawned: list[_FakeInstaller] = []
+
+    def _popen(argv, **kwargs):
+        proc = _FakeInstaller(argv, **behaviour, **kwargs)
+        spawned.append(proc)
+        return proc
+
+    monkeypatch.setattr(subprocess, "Popen", _popen)
+    return spawned
+
+
 class TestUpdateWheelInstaller:
     """Once the feed is trusted, the installer's failure modes stay actionable."""
 
@@ -2216,7 +2253,7 @@ class TestUpdateWheelInstaller:
         def boom(*a, **k):
             raise FileNotFoundError("sh")
 
-        monkeypatch.setattr(subprocess, "run", boom)
+        monkeypatch.setattr(subprocess, "Popen", boom)
         with pytest.raises(SystemExit) as exc:
             cli_server._update_wheel(_LAYOUT)
         assert exc.value.code == 1
@@ -2225,19 +2262,47 @@ class TestUpdateWheelInstaller:
         assert "cli.sh | sh" in out
 
     def test_installer_timeout_prints_the_manual_command(self, monkeypatch, capsys) -> None:
-        def boom(*a, **k):
-            raise subprocess.TimeoutExpired(cmd="sh", timeout=300)
-
-        monkeypatch.setattr(subprocess, "run", boom)
+        spawned = _installer(
+            monkeypatch, wait_raises=subprocess.TimeoutExpired(cmd="sh", timeout=300)
+        )
+        stops: list[tuple] = []
+        monkeypatch.setattr(
+            cli_server.platform_compat,
+            "terminate_and_reap_sync",
+            lambda proc, **kw: stops.append((proc, kw)),
+        )
         with pytest.raises(SystemExit) as exc:
             cli_server._update_wheel(_LAYOUT)
         assert exc.value.code == 1
         assert "timed out" in capsys.readouterr().out
+        # Stopped gracefully (SIGTERM + rollback grace), never killed outright.
+        assert [proc for proc, _ in stops] == spawned
+        assert stops[0][1]["grace"] > 0
+
+    def test_installer_runs_in_its_own_session(self, monkeypatch) -> None:
+        # One group to stop, never the CLI's own.
+        spawned = _installer(monkeypatch)
+        cli_server._update_wheel(_LAYOUT)
+        assert spawned[0].argv[:2] == ["sh", "-c"]
+        assert spawned[0].kwargs.get("start_new_session") is True
+
+    def test_ctrl_c_stops_the_installer_gracefully(self, monkeypatch) -> None:
+        # The installer is outside the terminal's foreground group, so Ctrl-C
+        # reaches only the CLI, which must pass the stop on.
+        spawned = _installer(monkeypatch, wait_raises=KeyboardInterrupt())
+        stops: list = []
+        monkeypatch.setattr(
+            cli_server.platform_compat,
+            "terminate_and_reap_sync",
+            lambda proc, **kw: stops.append(proc),
+        )
+        with pytest.raises(SystemExit) as exc:
+            cli_server._update_wheel(_LAYOUT)
+        assert exc.value.code == 130
+        assert stops == spawned
 
     def test_installer_nonzero_exit_is_surfaced(self, monkeypatch, capsys) -> None:
-        monkeypatch.setattr(
-            subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a[0], 17)
-        )
+        _installer(monkeypatch, returncode=17)
         with pytest.raises(SystemExit) as exc:
             cli_server._update_wheel(_LAYOUT)
         assert exc.value.code == 1
@@ -2305,18 +2370,12 @@ class TestUpdateWheelInstaller:
         assert "was not modified" in out
 
     def test_success_reports_the_new_version_and_restart_hint(self, monkeypatch, capsys) -> None:
-        seen: list[list[str]] = []
-
-        def _run(argv, **kw):
-            seen.append(list(argv))
-            return subprocess.CompletedProcess(argv, 0)
-
-        monkeypatch.setattr(subprocess, "run", _run)
+        spawned = _installer(monkeypatch)
         cli_server._update_wheel(_LAYOUT)
         out = capsys.readouterr().out
         assert "updated to 999.0.0" in out
         assert "kirocrew restart" in out
-        assert seen[0][:2] == ["sh", "-c"]
+        assert spawned[0].argv[:2] == ["sh", "-c"]
 
     def test_unparseable_remote_version_updates_anyway(
         self, monkeypatch, wheel_feed, capsys
@@ -2326,7 +2385,7 @@ class TestUpdateWheelInstaller:
             b'{"schema": "kirocrew-cli-artifact-manifest-v1", '
             b'"channel": "stable", "version": "not-a-version"}'
         )
-        monkeypatch.setattr(subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a[0], 0))
+        _installer(monkeypatch)
         cli_server._update_wheel(_LAYOUT)
         out = capsys.readouterr().out
         assert "Could not compare versions" in out

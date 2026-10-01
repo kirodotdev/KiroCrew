@@ -21,6 +21,7 @@ import json
 import os
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
@@ -1407,6 +1408,47 @@ class TestAutoApplyGuard:
         orch.sessions.pause_turn_admission_for_update.assert_awaited_once()
         orch.sessions.resume_turn_admission_after_update.assert_awaited_once()
         orch._schedule_inbound_replay.assert_called_once()
+
+    _MANAGED_UPDATE = {
+        "update_available": True,
+        "can_apply": False,
+        "managed_by": "kirocrew",
+        "remediation": {
+            "kind": "command",
+            "message": "Re-run the installer to upgrade.",
+            "command": "curl -fsSL … | sh",
+        },
+    }
+
+    def test_no_apply_starts_once_shutdown_is_signalled(self):
+        # The first coordinator cycle runs while boot is still inside the MCP
+        # probe, so a SIGTERM there reaches it before ``_shutdown`` does. An
+        # installer admitted now would be stopped mid-write moments later.
+        with patch("kiro_crew.slack.gateway.shutdown_event", SimpleNamespace(is_set=lambda: True)):
+            orch = self._run(dict(self._MANAGED_UPDATE), auto_update=True, managed_venv=True)
+        orch._auto_apply_wheel_update.assert_not_awaited()
+        orch.sessions.pause_turn_admission_for_update.assert_not_awaited()
+
+    def test_a_busy_retry_after_shutdown_is_signalled_starts_nothing(self):
+        orch = self._orchestrator()
+        orch._pending_update_respawn = MagicMock()
+        orch._restart_after_update = AsyncMock()
+        orch._finish_auto_update_apply = AsyncMock()
+        with patch("kiro_crew.slack.gateway.shutdown_event", SimpleNamespace(is_set=lambda: True)):
+            asyncio.run(orch._retry_pending_update_restart())
+        orch._restart_after_update.assert_not_awaited()
+        orch.sessions.pause_turn_admission_for_update.assert_not_awaited()
+
+    def test_finishing_while_the_pause_is_kept_schedules_no_replay(self):
+        # During a shutdown the resume keeps the pause and reports it; a replay
+        # then would tell senders to resend while the gateway is stopping.
+        orch = self._orchestrator()
+        orch.sessions.resume_turn_admission_after_update = AsyncMock(return_value=False)
+
+        asyncio.run(orch._finish_auto_update_apply())
+
+        orch.sessions.resume_turn_admission_after_update.assert_awaited_once()
+        orch._schedule_inbound_replay.assert_not_called()
 
     def test_busy_managed_install_defers_and_keeps_update_pending(self):
         orch = self._run(
