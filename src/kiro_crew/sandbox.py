@@ -8086,6 +8086,7 @@ def _build_launcher_script(
     extra_private_dir_ids: tuple[tuple[str, int, int], ...] = (),
     extra_writable_dirs: tuple[str, ...] = (),
     extra_expose_files: tuple[str, ...] = (),
+    extra_secret_files: tuple[str, ...] = (),
     fail_closed_file_masks: tuple[tuple[str, int, int], ...] = (),
     required_mask_targets: tuple[str, ...] = (),
     mask_occupants: "Mapping[str, tuple[int, ...]] | None" = None,
@@ -8301,6 +8302,17 @@ def _build_launcher_script(
     # pass chmod'ed it 0444, so a repeated entry raises PermissionError inside
     # the launcher and kills the spawn (found in review).
     expose_pairs = list(dict.fromkeys(expose_pairs))
+    # Edition-granted credential files (``SandboxPolicy.credential_file_grants``).
+    # Deliberately NOT folded into ``expose_pairs``: that primitive writes its copy
+    # into the hidden parent's stand-in, which is a directory on a HOST-visible
+    # tmpfs (``/run/user/<uid>``), so a secret restored that way would sit readable
+    # outside the sandbox until the janitor reclaims the stand-in. The launcher
+    # stages these on a tmpfs mounted inside the private mount namespace instead.
+    # A path in both lists would have its expose copy shadowed by the secret bind,
+    # so the secret path wins and the expose pair is dropped.
+    secret_files = list(dict.fromkeys(os.path.abspath(p) for p in extra_secret_files))
+    _secret_set = set(secret_files)
+    expose_pairs = [pair for pair in expose_pairs if pair[0] not in _secret_set]
     # Which absences are races. The set arrives as DATA from the pre-spawn passes, which
     # saw each target while they were already statting and creating off the event loop;
     # this function probes nothing, because ``test_the_builder_does_not_stat_the_hidden_paths``
@@ -8343,6 +8355,7 @@ def _build_launcher_script(
         }
     )
     expose_json = json.dumps(expose_pairs)
+    secret_json = json.dumps(secret_files)
     unreadable_masks_json = json.dumps(sorted(_CREW_UNREADABLE_MASK_LEAVES))
     env_prefixes_json = json.dumps(env_prefixes)
     ssh_dir = json.dumps(os.path.join(home, ".ssh"))
@@ -8430,7 +8443,7 @@ if _libc.prctl:
     _libc.prctl.argtypes = [ctypes.c_int, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong]
     _libc.prctl.restype = ctypes.c_int
 
-def _mount_or_die(source, target, flags, what):
+def _mount_or_die(source, target, flags, what, fs_type=None, data=None):
     """``mount(2)`` or refuse to exec, naming *what* and the errno.
 
     Every mount in this launcher IS a security control -- each one hides a
@@ -8456,7 +8469,7 @@ def _mount_or_die(source, target, flags, what):
     ``sandbox_level`` is the explicit opt-out for a host that cannot mount;
     a silent unhidden credential is not.
     """
-    if _libc.mount(source, target, None, flags, None) != 0:
+    if _libc.mount(source, target, fs_type, flags, data) != 0:
         _err = ctypes.get_errno()
         sys.exit(
             "sandbox: BLOCKED -- %s failed: errno %d (%s). The sandbox could not "
@@ -9228,6 +9241,8 @@ ALIAS_CREDENTIAL_IDS = {alias_credential_ids_json}
 REQUIRED_MASK_TARGETS = frozenset({required_json})
 MASK_OCCUPANTS = {occupants_json}
 EXPOSE_FILES = {expose_json}
+SECRET_FILES = {secret_json}
+SECRET_FILE_MAX_BYTES = {_SECRET_FILE_MAX_BYTES}
 ENV_PREFIXES = {env_prefixes_json}
 SSH_DIR = {ssh_dir}
 SSH_KNOWN_HOSTS = {ssh_known_hosts}
@@ -9390,6 +9405,60 @@ def main():
                         % (src_path, exc),
                         file=sys.stderr,
                     )
+
+        # Edition-granted credential files (SECRET_FILES). Read BEFORE any mask
+        # shadows them, and stricter than the EXPOSE_FILES read above because the
+        # bytes are a credential the operator chose to grant: O_NOFOLLOW so a
+        # symlink planted at the granted name cannot redirect the grant at another
+        # file, the type and size checked on the OPENED descriptor so a check/open
+        # race cannot substitute one, and a hard size cap so a granted path cannot
+        # be used to pull an arbitrary large file into the private tmpfs. Every
+        # refusal leaves the file ABSENT (the default, un-granted state) and says
+        # why -- a grant that silently does nothing is the failure mode to avoid.
+        secret_data = {{}}
+        for src_path in SECRET_FILES:
+            try:
+                _secret_fd = os.open(
+                    src_path,
+                    os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK,
+                )
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                print(
+                    "sandbox: WARNING — cannot safely read granted credential file "
+                    "%s (%s); it will be ABSENT inside the sandbox." % (src_path, exc),
+                    file=sys.stderr,
+                )
+                continue
+            try:
+                _secret_st = os.fstat(_secret_fd)
+                if not stat.S_ISREG(_secret_st.st_mode):
+                    print(
+                        "sandbox: WARNING — granted credential file %s is not a "
+                        "regular file; it will be ABSENT inside the sandbox." % src_path,
+                        file=sys.stderr,
+                    )
+                    continue
+                _secret_chunks = []
+                _secret_total = 0
+                while _secret_total <= SECRET_FILE_MAX_BYTES:
+                    _secret_chunk = os.read(_secret_fd, 65536)
+                    if not _secret_chunk:
+                        break
+                    _secret_chunks.append(_secret_chunk)
+                    _secret_total += len(_secret_chunk)
+                if _secret_total > SECRET_FILE_MAX_BYTES:
+                    print(
+                        "sandbox: WARNING — granted credential file %s exceeds %d "
+                        "bytes; it will be ABSENT inside the sandbox."
+                        % (src_path, SECRET_FILE_MAX_BYTES),
+                        file=sys.stderr,
+                    )
+                    continue
+                secret_data[src_path] = b"".join(_secret_chunks)
+            finally:
+                os.close(_secret_fd)
 
         # Private windows: a directory INSIDE a hidden tree that stays
         # visible read-write for THIS spawn only (the process's own scratch
@@ -9755,6 +9824,83 @@ def main():
                 # (which is undefined in that process). The launcher never runs
                 # on Windows, so there is no portability loss.
                 os.chmod(dest, 0o444)
+
+        # Restore edition-granted credential files (SECRET_FILES) as read-only
+        # snapshots. The bytes are written ONLY to a tmpfs mounted inside this
+        # private mount namespace: the host sees the empty directory it was mounted
+        # on, never a credential-bearing file, which is the difference from the
+        # EXPOSE_FILES restore above (its copy lands in a host-visible stand-in).
+        # Each snapshot is bind-mounted over a placeholder at the granted path and
+        # sealed read-only, then the staging tmpfs is lazily detached so the only
+        # remaining name for each snapshot is the granted path itself.
+        #
+        # Only a path a mask actually covers is restored. Outside every mask the
+        # real file is already visible, and binding a snapshot over it would only
+        # hide later host-side edits from the agent.
+        if secret_data:
+            _secret_root = tempfile.mkdtemp(dir=_tmpfs_src, prefix=_src_prefix)
+            _mount_or_die(
+                b"tmpfs",
+                _secret_root.encode(),
+                _MS_NOSUID | _MS_NODEV | _MS_NOEXEC,
+                "creating the private tmpfs for granted credential files",
+                b"tmpfs",
+                (
+                    "size=%d,mode=0700"
+                    % (len(secret_data) * SECRET_FILE_MAX_BYTES + 65536)
+                ).encode(),
+            )
+            for _secret_index, src_path in enumerate(SECRET_FILES):
+                if src_path not in secret_data:
+                    continue
+                if not any(
+                    src_path.startswith(d.rstrip("/") + "/") for d in SENSITIVE_DIRS
+                ):
+                    print(
+                        "sandbox: NOTE — granted credential file %s is not inside a "
+                        "directory this tier hides, so no snapshot is restored for it."
+                        % src_path,
+                        file=sys.stderr,
+                    )
+                    continue
+                _snapshot = os.path.join(_secret_root, "%d" % _secret_index)
+                _snap_fd = os.open(
+                    _snapshot, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o600
+                )
+                try:
+                    os.write(_snap_fd, secret_data[src_path])
+                finally:
+                    os.close(_snap_fd)
+                os.chmod(_snapshot, 0o444)
+                # The placeholder is an EMPTY file inside the hidden parent's
+                # stand-in; it carries no bytes and exists only as a mount point.
+                os.makedirs(os.path.dirname(src_path), exist_ok=True)
+                _placeholder_fd = os.open(
+                    src_path,
+                    os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC,
+                    0o444,
+                )
+                os.close(_placeholder_fd)
+                _mount_or_die(
+                    _snapshot.encode(),
+                    src_path.encode(),
+                    _MS_BIND,
+                    "restoring granted credential file %s" % src_path,
+                )
+                _mount_or_die(
+                    src_path.encode(),
+                    src_path.encode(),
+                    _MS_REMOUNT | _MS_BIND | _MS_RDONLY | _MS_NOSUID | _MS_NODEV | _MS_NOEXEC,
+                    "sealing granted credential file %s read-only" % src_path,
+                )
+            if _libc.umount2(_secret_root.encode(), _MNT_DETACH) != 0:
+                _err = ctypes.get_errno()
+                print(
+                    "sandbox: WARNING — could not detach the credential-grant staging "
+                    "tmpfs at %s (errno %d); the snapshots stay reachable there inside "
+                    "this sandbox only." % (_secret_root, _err),
+                    file=sys.stderr,
+                )
 
         # Bind-mount empty files over individual sensitive files. Source the
         # empty tempfile from a tmpfs (cross-fs) when available so the bind
@@ -10467,6 +10613,7 @@ def namespace_argv(
     extra_private_dir_ids: tuple[tuple[str, int, int], ...] = (),
     extra_writable_dirs: tuple[str, ...] = (),
     extra_expose_files: tuple[str, ...] = (),
+    extra_secret_files: tuple[str, ...] = (),
 ) -> list[str]:
     """Wrap *argv* via the Python namespace launcher.
 
@@ -10610,6 +10757,7 @@ def namespace_argv(
         extra_private_dir_ids=extra_private_dir_ids,
         extra_writable_dirs=extra_writable_dirs,
         extra_expose_files=extra_expose_files,
+        extra_secret_files=extra_secret_files,
         required_mask_targets=tuple(_required_targets),
         mask_occupants=_mask_occupants,
     )
@@ -12909,6 +13057,152 @@ def _forward_ssh_auth_sock() -> bool:
         return False
 
 
+#: Largest credential file a ``SandboxPolicy.credential_file_grants`` entry may
+#: carry into the sandbox. Credential configs are a few KiB; the cap bounds the
+#: private tmpfs and stops a grant being used to stage an arbitrary large file.
+_SECRET_FILE_MAX_BYTES = 256 * 1024
+
+#: ``$HOME``-relative roots no credential grant may reach, whatever the edition
+#: asks for: the crew data home (keystones, vault, signing keys) and the kiro
+#: agent/CLI trees. Granting any of them would let an edition adapter hand the
+#: agent the material its own ceiling is built from.
+_CREDENTIAL_GRANT_FORBIDDEN_ROOTS: tuple[str, ...] = (".kiro", ".kirocrew")
+
+
+def _validated_credential_file_grants(raw: object) -> tuple[str, ...]:
+    """Validate an edition's ``credential_file_grants()`` answer.
+
+    Each entry must be a ``$HOME``-relative, already-normalised path to a file
+    (``.docker/config.json``), never absolute, never containing ``..``, and never
+    under the crew data home or the kiro trees. An invalid entry is DROPPED with a
+    warning rather than failing the spawn: the grant only ever widens access, so
+    the fail-closed direction is "not granted". Returns absolute paths.
+    """
+    if raw is None:
+        return ()
+    # Runtime import: the module-level ``collections.abc`` import is TYPE_CHECKING-only.
+    from collections.abc import Iterable as _Iterable
+
+    if isinstance(raw, (str, bytes)) or not isinstance(raw, _Iterable):
+        logger.warning(
+            "SECURITY: SandboxPolicy.credential_file_grants() must return a sequence "
+            "of $HOME-relative paths; got %s -- no credential file is granted",
+            type(raw).__name__,
+        )
+        return ()
+    home = str(Path.home())
+    try:
+        crew_home = os.path.normpath(str(config_dir()))
+    except Exception:  # pragma: no cover - defensive; a spawn must not fail on this
+        crew_home = None
+    granted: list[str] = []
+    for entry in raw:
+        if not isinstance(entry, str) or not entry:
+            logger.warning("SECURITY: ignoring non-string credential file grant %r", entry)
+            continue
+        parts = entry.split("/")
+        if (
+            os.path.isabs(entry)
+            or entry.startswith("~")
+            or os.path.normpath(entry) != entry
+            or ".." in parts
+            or "\x00" in entry
+        ):
+            logger.warning(
+                "SECURITY: ignoring credential file grant %r: it must be a normalised "
+                "$HOME-relative path",
+                entry,
+            )
+            continue
+        if parts[0] in _CREDENTIAL_GRANT_FORBIDDEN_ROOTS:
+            logger.warning(
+                "SECURITY: ignoring credential file grant %r: the crew data home and "
+                "kiro trees can never be granted",
+                entry,
+            )
+            continue
+        absolute = os.path.join(home, entry)
+        if crew_home is not None and (
+            absolute == crew_home or absolute.startswith(crew_home.rstrip(os.sep) + os.sep)
+        ):
+            logger.warning(
+                "SECURITY: ignoring credential file grant %r: it resolves inside the "
+                "crew data home",
+                entry,
+            )
+            continue
+        granted.append(absolute)
+    return tuple(dict.fromkeys(granted))
+
+
+def credential_file_grants() -> tuple[str, ...]:
+    """Credential files the active edition grants to THIS agent spawn.
+
+    Consults ``SandboxPolicy.credential_file_grants()`` on the active platform
+    context. The Default adapter grants nothing, so the public edition is
+    unchanged. An edition that wants an operator-controlled opt-in (a time-boxed
+    registry login, for example) owns the decision, its storage and its consent
+    surface; the core owns only the mechanism, which restores each granted file
+    as a read-only snapshot on a namespace-private tmpfs (see
+    ``_build_launcher_script``'s ``SECRET_FILES``).
+
+    Resolved PER SPAWN, never cached, so a grant the edition revokes or lets
+    expire stops reaching the next spawn. Called off-loop by the ACP spawn paths,
+    exactly like :func:`_forward_ssh_auth_sock`: the adapter may read its own
+    grant file. Agent spawns only -- generic launchers never pass grants.
+
+    Linux namespace backend only. Seatbelt and Windows have no equivalent
+    private-snapshot primitive, so there the answer is always empty and the file
+    stays hidden. A companion that predates the method (only ``strict_dirs`` /
+    ``cc_dirs``) is treated as granting nothing. Any adapter failure grants
+    nothing.
+    """
+    if not sys.platform.startswith("linux"):
+        return ()
+    try:
+        provider = getattr(_sandbox_policy(), "credential_file_grants", None)
+        if provider is None:
+            return ()
+        raw = provider()
+    except Exception:
+        logger.warning(
+            "SECURITY: SandboxPolicy.credential_file_grants() failed -- no credential "
+            "file is granted to this spawn",
+            exc_info=True,
+        )
+        return ()
+    grants = _validated_credential_file_grants(raw)
+    if grants:
+        logger.warning(
+            "SECURITY: the edition sandbox policy grants %d credential file(s) to this "
+            "agent spawn as read-only snapshots: %s",
+            len(grants),
+            ", ".join(grants),
+        )
+    return grants
+
+
+def _secret_files_for_backend(files: tuple[str, ...], mode: str) -> tuple[str, ...]:
+    """The granted credential files :func:`wrap_argv` may carry for *mode*.
+
+    Only the Linux namespace launcher has the private-snapshot primitive. With the
+    sandbox off nothing is hidden, so there is nothing to restore; on any other
+    platform the grant is dropped LOUDLY and the file stays hidden -- the
+    fail-closed direction for a mechanism that only ever widens access.
+    """
+    if not files or mode == "off":
+        return ()
+    if not sys.platform.startswith("linux"):
+        logger.warning(
+            "SECURITY: credential file grants are only supported by the Linux namespace "
+            "sandbox; %d granted file(s) stay hidden on %s",
+            len(files),
+            sys.platform,
+        )
+        return ()
+    return tuple(files)
+
+
 def unsandboxed_exec_permitted_by() -> str:
     """Public read of the no-backend execution verdict, for diagnostics.
 
@@ -14161,6 +14455,7 @@ def wrap_argv(
     extra_private_dir_ids: tuple[tuple[str, int, int], ...] = (),
     extra_writable_dirs: tuple[str, ...] = (),
     extra_expose_files: tuple[str, ...] = (),
+    extra_secret_files: tuple[str, ...] = (),
     is_kiro_cli: bool | None = None,
     first_party_fixed_argv: bool = False,
 ) -> tuple[list[str], str | None]:
@@ -14184,6 +14479,13 @@ def wrap_argv(
             exception out of the hidden dir's read deny (the shape it uses
             for ``.ssh/known_hosts``). Writes and hardlinks stay denied on
             both.
+        extra_secret_files: Absolute credential files the active edition granted
+            to THIS agent spawn (:func:`credential_file_grants`). Linux namespace
+            backend only: each is restored as a read-only snapshot on a tmpfs
+            private to the sandbox's mount namespace, so the bytes never land in
+            a host-visible stand-in the way ``extra_expose_files`` copies do. On
+            every other backend the grant is dropped with a warning and the file
+            stays hidden. Pass only from agent spawn paths.
         extra_writable_dirs: Self-derived scratch directories INSIDE the sealed
             runtime parent (``<data home>/run``) that the child must be able to
             write — e.g. the MCP probe's private ``TMPDIR``. Validated
@@ -14241,6 +14543,7 @@ def wrap_argv(
     # the carve-out condition can never disagree about the same host.
     governance_floor = _governance_sandbox_floor()
     mode = _clamp_sandbox_mode_to_floor(mode, governance_floor)
+    extra_secret_files = _secret_files_for_backend(extra_secret_files, mode)
 
     if mode == "off":
         # Fix #2: verify kiro-cli delegation before honoring "off". The
@@ -14548,6 +14851,7 @@ def wrap_argv(
             or extra_private_dirs
             or extra_writable_dirs
             or extra_expose_files
+            or extra_secret_files
         ):
             wrapped = namespace_argv(
                 argv,
@@ -14562,6 +14866,7 @@ def wrap_argv(
                 extra_private_dir_ids=extra_private_dir_ids,
                 extra_writable_dirs=extra_writable_dirs,
                 extra_expose_files=extra_expose_files,
+                extra_secret_files=extra_secret_files,
             )
         else:
             wrapped = namespace_argv(
@@ -14901,6 +15206,7 @@ async def wrap_argv_async(
     extra_private_dirs: tuple[str, ...] = (),
     extra_writable_dirs: tuple[str, ...] = (),
     extra_expose_files: tuple[str, ...] = (),
+    extra_secret_files: tuple[str, ...] = (),
     is_kiro_cli: bool | None = None,
     first_party_fixed_argv: bool = False,
     _prepare: Callable[..., tuple[list[str], str | None]] | None = None,
@@ -14930,6 +15236,8 @@ async def wrap_argv_async(
         options["extra_writable_dirs"] = extra_writable_dirs
     if extra_expose_files:
         options["extra_expose_files"] = extra_expose_files
+    if extra_secret_files:
+        options["extra_secret_files"] = extra_secret_files
     if is_kiro_cli is not None:
         options["is_kiro_cli"] = is_kiro_cli
     if first_party_fixed_argv:

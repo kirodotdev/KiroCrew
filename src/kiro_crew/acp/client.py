@@ -292,6 +292,7 @@ from kiro_crew.sandbox import (
     bind_voice_safe_agent_workspace_async,
     cgroup_scope_argv,
     create_subprocess_limited,
+    credential_file_grants,
     delegated_workspace_exposes_sealed_target,
     release_bound_agent_workspace,
     resolve_bound_session_workspace,
@@ -7878,6 +7879,10 @@ class AcpClient:
         # (anchor: no-blocking-call-on-event-loop). Scoped to this agent spawn:
         # generic launchers default the flag off and keep scrubbing the socket.
         forward_ssh_auth_sock = await asyncio.to_thread(_forward_ssh_auth_sock)
+        # Edition-granted credential files, resolved off-loop per spawn for the
+        # same reason (the edition adapter may read its own grant state). Empty
+        # under the Default sandbox policy, so the public edition's argv is unchanged.
+        secret_files = await asyncio.to_thread(credential_file_grants)
         argv, self._sandbox_cleanup = await wrap_argv_async(
             argv,
             mode=self._sandbox_mode,
@@ -7889,6 +7894,7 @@ class AcpClient:
             extra_hidden_dirs=adapter_hidden_dirs,
             extra_private_dirs=scratch_window,
             extra_expose_files=adapter_expose,
+            extra_secret_files=secret_files,
             is_kiro_cli=delegate_internal_sandbox,
             _prepare=wrap_argv,
         )

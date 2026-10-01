@@ -219,6 +219,27 @@ class SandboxPolicy(Protocol):
 
     def cc_dirs(self) -> List[str]: ...
 
+    def credential_file_grants(self) -> List[str]:
+        """``$HOME``-relative credential FILES to restore read-only for this spawn.
+
+        WIRED: ``sandbox.credential_file_grants`` calls this off-loop on every ACP
+        agent spawn (never cached), validates each entry, and the Linux namespace
+        launcher restores each granted file as a read-only snapshot on a tmpfs
+        private to the sandbox's mount namespace, while the rest of its hidden
+        parent stays hidden. Generic launchers never receive grants.
+
+        The edition owns the DECISION -- whether a grant exists, how long it lasts,
+        how the operator consents, where that consent is stored -- and must keep
+        that state out of reach of the agent it governs (a keystone leaf, not
+        ``config.json``). The core owns only the mechanism and its floor: paths
+        under the crew data home or the kiro trees are always refused, and on
+        backends without the private-snapshot primitive the file stays hidden.
+
+        Optional: a companion that does not define it grants nothing. Default:
+        ``[]``.
+        """
+        ...
+
 
 class CredentialPolicy(Protocol):
     """Redaction passes + the credential/exfil regex bundle.
