@@ -1449,9 +1449,9 @@ class SubagentInfo:
 4. `_run_inner()` resolves `parent_policy` (parent session → YOLO fallback → config fallback), creates session `subagent:{id}` via `SessionManager.get_or_create(approval_policy=parent_policy)` — policy is persisted on the new session
 5. Streams through ACP with context injection, tool approval cascade, and turn counting
 6. On completion (in `_run` finally block): spawn a shielded report that fires `subagent_done` with terminal `elapsed` and cumulative `credits`, then calls `on_done`. Session release/reset and concurrency-slot release proceed independently of the report; successful delivery waits for teardown before marking the result delivered and stores both usage values in that delivery tombstone.
-7. On timeout: `error = "Timed out after 180 minutes"`
+7. On timeout: `error = "Timed out after 180 minutes"`, unless the run already claimed its completed ending (the ending claim below), which the deadline only cuts short
 8. On turn limit: `error = "turn_limit:{turn_limit}"` (default 1000)
-9. On `CancelledError`: three-way, by cancellation source (see **Terminal-State Contract** below) — user stop → neutral `user_stopped` record (NO error); shutdown / spent one-shot → `error = "cancelled"`; any other (unexpected) cancel → one-shot auto-continue via `_schedule_cancel_recovery`
+9. On `CancelledError`: by cancellation source (see **Terminal-State Contract** below) — user stop → neutral `user_stopped` record (NO error); shutdown / spent one-shot → `error = "cancelled"`; anything after the run claimed its completed ending (the ending claim below) → completed; any other unexpected cancel → one-shot auto-continue via `_schedule_cancel_recovery`
 
 **Early WS event firing**: `subagent_done` WS event is fired in the `_run` finally block BEFORE the slow `reset()` + `on_done()` path. This ensures the dashboard receives completion status within seconds, not 30-90s later when `stream_and_collect` finishes processing.
 
@@ -1469,7 +1469,7 @@ label for that value rather than claiming the run was free. The cumulative credi
 included in live and reconnect `subagent_done` frames, shown in the expanded
 terminal card body as the localized “Used … credits” summary, and included in
 completion, delivery-failure, and wave-digest messages. Restart-orphan notices
-omit usage because those interrupted runs have no settled terminal billing record.
+omit usage because a run the restart caught has no settled terminal billing record.
 Card headers retain elapsed time only so billing text does not crowd the status
 and model chips in a narrow rail. A managed terminal card without positive reported
 credits identifies the usage as unreported in the expanded card body. Backend
@@ -1513,6 +1513,7 @@ A record's terminal outcome is three-way, with a **single canonical source**: th
 | `completed` | neither | success |
 
 - A user stop is neutral **in the record itself**: `cancel()` sets `user_stopped=True` and neither it nor `_force_reap` ever synthesizes an `error` for it.
+- **A completed ending is a claim, taken first or not at all.** A run whose stream delivered a whole answer takes `SubagentInfo._ending_claimed` synchronously, before any await, unless a stop already did (`done`, `_reap_started`, `user_stopped`, or an `error` a failed child under `on_child_failure=fail_parent` or an expired wait stamped while its cancel is still scheduled); every stop path then treats the claim as `done` — a Stop returns False (with no stagger-queue lookup, since a registered run is never queued), a parent end and a reap stamp nothing, and neither a failed child under `on_child_failure=fail_parent` nor an expired wait stamps an `error` on it — so a stop landing while the claimed run writes its result can no longer leave the run returning with no ending recorded (see the ending claim under Unexpected-Cancel Recovery).
 - **A reap's echo is recorded as the reap, never as a runtime death.** `_force_reap` tears a dedicated run's session down (`sessions.reset` → `provider.shutdown()` → `runtime.kill(reason="provider shutdown")`) BEFORE it cancels the run task, so the in-flight `client.stream` observes the kill first and raises `AcpProcessDied` — `Runtime process died during prompt — killed (provider shutdown) [returncode=<not reaped>]` — inside `_run`'s `except Exception` arm, ahead of the reaper's own record. That arm reads `_reap_started` together with `agent_sdk.drivers.acp_vocab.is_runtime_death(exc)` (the `AcpProcessDied` test, offered from the driver vocabulary so application code never names the ACP class): both true, the exception is the ECHO of our own teardown; any other exception under a reap is the run's own fault and keeps the existing failure path and traceback and the record names the stop — `_stop_origin` ("stopped by user", "parent conversation ended (<verb>)", "reaped after Ns (<reason>)", written by `cancel()` / `cancel_for_teardown` / `_force_reap` next to the `_reap_started` marker) and the reap's own tombstone cause `_reap_reason` (`user_stop` / `parent_end` / `stage_cancel` / `reaped` / `startup_timeout`; the parent-end teardown and the stage-boundary cancel write it before calling `cancel`, a bare `cancel` is the user's Stop, and `_force_reap` fills in its own reason only when none is set — nothing is inferred from the origin text, and every writer assigns only when the field is still empty, so the FIRST stopper keeps the attribution when a user Stop, a parent end and a stage cancel race). `tombstone_terminal_state` maps `parent_end` / `stage_cancel` to the task queue's CANCELLED like `user_stop`, so boot reconciliation settles such a row instead of recovering a deliberately ended run. Neutrality is decided by the FIRST stopper, `SubagentInfo.stop_is_neutral` (`_reap_reason in _NEUTRAL_REAP_REASONS` = `user_stop` / `parent_end` / `stage_cancel`), never by `user_stopped` alone: a Stop that lands while a deadline reap is already tearing the run down sets `user_stopped` too, and both the echo arm and `_force_reap`'s own record put the flag back so the late Stop cannot convert a claimed deadline failure into a neutral stop. A user stop, a parent end and a stage cancel stay neutral (`error` unset, `outcome == "stopped"`, partial output preserved); a deadline reap is a failure whose `error` names the deadline. The gateway log gets ONE line — INFO for a user's own stop, WARNING for a parent end or a deadline reap — never `Subagent X failed` at ERROR with a traceback. Recording the death text as the run's error, tombstoned `cause="error"`, sends every reader of a run "dying at random" (a user Stop-all, an identity-sweep parent end) to the provider, the OOM killer and the leak reaper in turn. `_reap_started` (not `reaped`) is the gate because the reaper sets `reaped` late, after the awaits; the record is still first-arrival (`if not info.done`) so the reaper's own synthesis is never duplicated. Pinned by `test_subagent_reap_attribution.py`.
 - Every emission carries the flag explicitly: live `subagent_done` events, the `_run` finally emit, `_force_reap`'s emit, WS **reconnect replay** (managed and native), `native_subagent_snapshots`, and the `/api/spawn` listing all include `stopped`. Cancelling a native card persists `stopped` on the slot tracker record so replay reconstructs it as stopped.
 - The gateway completion consumer (`_subagent_done`) classifies three-way: a stopped agent is announced ⏹ with the record's own `_stop_origin` as its status ("stopped by user" when a user pressed Stop; a parent-end verb or a stage cancel otherwise, so the announce never credits the user with a stop they did not press), and partial output flagged.
@@ -1647,6 +1648,7 @@ An unmarked `CancelledError` (see intentional-cancel rule) triggers `_schedule_c
 
 - **Side-effect gate**: recovery fires ONLY when `tool_count == 0`. The respawn runs on a fresh session with no ledger of prior tool calls, so once any tool has executed the model cannot verify which side effects already happened — the run is finalized instead (error `"cancelled (auto-continue suppressed: tools already executed …)"`, partial output preserved and delivered). Text-only activity is safe to resume.
 - One-shot: gated by `info._cancel_retry_used`; the recovered run's own cancel is terminal.
+- **Ending claim**: a whole answer — a successful complete event, post-processed into `result` with no await since — takes `info._ending_claimed` synchronously unless a stop got there first (`done`, `_reap_started`, `user_stopped`, a stamped `error`), and records the success stats there. From the claim on, the run ends completed whatever lands: `cancel()`, `cancel_for_teardown` and `_force_reap` (the reaper's too) treat the claim as `done` and stamp nothing, and a cancel, the shutdown or the deadline only cut the tail short — the result write is drained, `done` is set in its `finally`, and every arm of `_run_impl` treats an already-set `done` as first-arrival-wins, its log line saying the run completed. A respawn would re-run finished work, and a failure would discard a whole answer. Because nothing else can end it, the claimed result write is bounded by `_STATE_DRAIN_TIMEOUT` even uncancelled: past it the worker finishes detached under the `_abandoned_state_writers` hold, `done` is set and the flag lands late or not at all, so a wedged filesystem holds the run, its lane slot and its parent for seconds, not until the run deadline. While a claimed run is not yet `done`, `settle_before_delete` answers `pending` (the DELETE route's 409 `completion_delivery_pending`), since its report does not exist yet. A whole answer a stop got to first claims nothing: it takes the ordinary tail (`done`, the success stats for a successful stop class with no stamped `error`) and records no `result_complete` (see Gateway Restart Reconciliation). The per-turn usage row is read synchronously and appended on a task held in `_report_tasks`, so no ending waits for it and `cancel_all()` drains it within its report bound.
 - Explicit handshake: `_resume` awaits the ORIGINAL task's full teardown (session release/reset, slot decrement, registry pop) before respawning — never a timed sleep.
 - Slot re-acquisition: waits (bounded, `_RECOVERY_SLOT_WAIT_SECS`) for free capacity; the slot claim and `create_task` are ATOMIC (no await between) so a concurrent `_drain_queue` cannot overshoot `max_concurrent`. The dispatcher honours the same invariant from its side with reserve-then-commit: when `spawn_impl` stops at the store claim (`ClaimPoint`) it has ALREADY taken the slot (`_running_count += 1`, stagger token) synchronously, the claim is awaited on the writer thread, and the re-entry (`_claimed=`) consumes that reservation instead of counting again; a claim the store refused or could not take, or a refusal at re-entry, releases it (`release_reservation`). So nothing admitted during the await -- a `spawn`, a `resume_grant`, a recovery re-acquisition -- can take a slot the dispatcher is about to use.
 - Shutdown-reachable: the pending `_resume` task is registered in `_tasks` under `"{id}:recovery"` so `cancel_all()` cancels it; a cancelled recovery finalizes the record terminally and never respawns.
@@ -1807,7 +1809,7 @@ The pre-cap decision carries TWO independent bounds, ownership and VISIBILITY, a
 
 A terminal outcome, once recorded on disk, is not erased by a later tombstone write that carries none. `write_tombstone` REPLACES the file and only its `**extra` can supply `outcome`, so a caller with no opinion about the outcome — a delivery acknowledgement is the ordinary one — would otherwise drop what an earlier write recorded, and `classify_persisted_ending` would fall back to deriving an outcome from `cause`, where `delivered` derives `completed`. A user stop reaped and then acknowledged would read as a success. The carry-forward lives at the single write rather than in each call site's argument list.
 
-`died` is carried on the same grounds and through the same read, with one difference: every write stamps it, so the carry is what keeps the field meaning the run's ENDING rather than the moment of the most recent bookkeeping write. The read is taken on exactly ONE condition, `outcome` absent, and that condition is load-bearing rather than incidental: a caller supplying an outcome is recording an ending, so its own fresh stamp IS that ending and there is nothing to carry, while widening the condition to "`died` absent" would take the read on every such caller — including the sync writers reached from a coroutine, where this function's synchronous file I/O must not land. A panel card's duration is the run's, and a delivery acknowledgement lands whenever the parent got round to the result. Where no write happened at the ending at all the carry has nothing to preserve — the queued and digest-held paths skip `mark_delivered` at completion (`_defer_queued_delivery`, settled later by the drain), so the acknowledgement is their FIRST tombstone and its stamp is the delivery wait. The run's own `result.txt` is the completion evidence that survives there: the run appends it as its output streams and the successful completion caps it in the same step, while delivery and retention only read or remove it. `_panel_record` therefore reports `elapsed` to the EARLIER of the tombstone's `died` and that file's last write, and a run that produced no output has no file and falls back to the tombstone. Only the duration uses it. The record's own retention window stays on the latest timestamp, because a run whose result reached its parent moments ago belongs in the panel whenever it happens to have finished.
+`died` is carried on the same grounds and through the same read, with one difference: every write stamps it, so the carry is what keeps the field meaning the run's ENDING rather than the moment of the most recent bookkeeping write. The read is taken on exactly ONE condition, `outcome` absent, and that condition is load-bearing rather than incidental: a caller supplying an outcome is recording an ending, so its own fresh stamp IS that ending and there is nothing to carry, while widening the condition to "`died` absent" would take the read on every such caller — including the sync writers reached from a coroutine, where this function's synchronous file I/O must not land. A panel card's duration is the run's, and a delivery acknowledgement lands whenever the parent got round to the result. Where no write happened at the ending at all the carry has nothing to preserve — the queued and digest-held paths skip `mark_delivered` at completion (`_defer_queued_delivery`, settled later by the drain), so the acknowledgement is their FIRST tombstone and its stamp is the delivery wait. The run's own `result.txt` is the completion evidence that survives there: the run appends it as its output streams, and its ending writes it last: a claimed completed ending rewrites it whole from memory after post-processing (or removes it, for an answer with no text), and any other ending caps it in place from `_run`'s `finally`, while delivery and retention only read or remove it. `_panel_record` therefore reports `elapsed` to the EARLIER of the tombstone's `died` and that file's last write, and a run with no file -- no output, or a whole answer with no text, even when an earlier attempt streamed some -- falls back to the tombstone. Only the duration uses it. The record's own retention window stays on the latest timestamp, because a run whose result reached its parent moments ago belongs in the panel whenever it happens to have finished.
 
 That carry-forward adds a disk READ to a function that already wrote, so it sharpens an obligation the write already carried: `write_tombstone` is synchronous and must not run on the gateway's event loop. The invariant is REACHABILITY, not enclosure — a sync helper called from a coroutine still runs on the loop — so every path on which this change puts a disk READ crosses an offload. Four of them do so explicitly: `mark_delivered` on the delivery path, the two `gateway_restart` writes in orphan reconciliation and orphan notification, and the digest-hold settlement, which is itself a coroutine for this reason and whose re-entry guard still holds because the id swap precedes every await. The settlement carries a SECOND obligation the others do not, and it follows from that same swap: the held deliveries are detached from `info` irrevocably, so the batch is handed to ONE `settle_delivered_batch` worker operation rather than awaited per delivery. A per-delivery await makes every one after the first a cancellation point, `CancelledError` is not an `Exception` and so escapes the per-delivery guard, and nothing re-arms the deliveries already taken off `info` — each one then keeps no `delivered` tombstone, which is the marker restart reconciliation uses to EXCLUDE a folder, so it replays as a duplicate completion. Handed over whole, the worker finishes the batch whether or not its waiter is still waiting. The batch takes the `SubagentDelivery` records rather than bare ids because the tombstone carries the run's terminal usage: settling by id alone would write a `delivered` tombstone with no `elapsed` or `credits`, so a held wave member would show no usage in the panel while its siblings carry theirs. That batch writes through the `mark_delivered` the MANAGER resolved, passed in as `writer`: the manager's modules take their names from the facade, the facade is the single point anything substituting the write replaces, and a batch reaching past it would be the one delivery path ignoring the substitution. The drained queue's own `await asyncio.to_thread(mark_delivered, agent_id, elapsed=…, credits=…)` predates them and is the pattern they follow; it stays per delivery because its deliveries come from its caller rather than from detached state, and because each one must first await its own teardown gate on the loop. Note the namespace: a manager method whose name ends in `_impl` executes with the FACADE's globals, so inside one the module's own private alias is not defined and the offload must name `asyncio`. The remaining `write_tombstone` callers pass an explicit `outcome`, take no read, and keep their existing behaviour — which means they still write synchronously on the loop. That is scoped deliberately, not claimed as covered: ten such coroutine call sites remain (`subagent_manager/run.py` ×7, `cancellation.py` ×2, `terminal.py` ×1), the structural test's `WRITERS`/`MODULES` sets do not reach them, and offloading them is its own change rather than a rider on this one.
 
@@ -1926,7 +1928,8 @@ spawn-path acquire in the third row:
 | `promote_retention` → injected writer | probes the state lock non-blocking, returns `RETRYABLE` on contention |
 | `create_agent_folder` → `update_execution_context` | the ONE on-loop acquire that can wait; bounded by sitting on the spawn and admission path, never a per-turn one |
 | `create_agent_folder` → `_atomic_write` | creation path; writes the initial file before any writer for the agent exists |
-| every writer inside a run | goes off-loop through `_write_state_off_loop`, inheriting the lock, and is drained on cancellation |
+| every writer inside a run | goes off-loop and is drained through `_drain_state_writer`, inheriting the lock; it enters through `_write_state_off_loop`, or through `_write_finished_result_off_loop` for the run's ending (next row) |
+| `write_finished_result` → `state_writer` | the run's ending: reached only from the worker `_write_finished_result_off_loop` hands `update_state` to (as `state_writer`), so it is off-loop, inherits the lock and shares the same drain, bounded even uncancelled |
 
 `update_execution_context`'s other three callers are absent from that table
 deliberately. `bind_session_execution`, `tighten_run_memory_mode` and
@@ -1939,8 +1942,9 @@ the lock itself.
 
 **How the asymmetry closes.** By moving the remaining on-loop sites OFF the loop,
 where each inherits the per-agent lock and needs no fence of its own — never by
-changing the on-disk format. The site census is therefore expected to shrink and
-never grow.
+changing the on-disk format. The ON-LOOP rows are therefore expected to shrink
+and never grow. A new row is admissible only as a site that runs on a pool thread
+behind the same drain and lock, like the run's ending above.
 
 **Enforcement.** `test_subagent_state_write_model` is a static AST gate over
 `kiro_crew` source. It pins the write-site census with a per-site call count, so
@@ -2212,8 +2216,10 @@ Specified in [taskq.md](taskq.md); this section is the manager's side of it.
   their original ids and params; rows a dead incarnation had `starting`/`running`
   are settled by reconcile — a subagent's default side-effect class is
   `unknown`, so such a run ends `unknown_side_effect` (never silently re-run)
-  unless its tombstone proves an outcome; the existing orphan reconciliation
-  still delivers the notification.
+  unless its artifacts prove an outcome (`taskq_artifact_probe`): a readable
+  tombstone's recorded outcome, then its cause; with no tombstone, or cause
+  `gateway_restart`, `done` when `subagent_persistence.result_is_whole` holds.
+  The existing orphan reconciliation still delivers the notification.
 - **Boot rows wait for the memory fence.** That boot wake-up is armed while the
   gateway is still inside its memory barrier, so the gateway builds the manager
   with `defer_queue_dispatch=True`: `_queue_dispatch_held` makes
@@ -2588,7 +2594,7 @@ Folder-per-agent persistence at `~/.kiro/crew/subagents/{id}/`:
 ```
 ~/.kiro/crew/subagents/{id}/
   state.json      # {task, parent_session_key, started, pid}
-  result.txt      # result text (APPENDED per streamed chunk, not on completion)
+  result.txt      # result text (APPENDED per streamed chunk, started afresh at each attempt's first chunk; rewritten whole from memory by a claimed completed ending, capped in place by any other)
   tombstone.json  # {error, elapsed, timestamp} (written on failure/orphan)
 ```
 
@@ -2598,7 +2604,7 @@ On startup, `SubagentManager` scans `~/.kiro/crew/subagents/` and reconciles:
 
 1. **PID alive** → kill process group, deliver result if available, tombstone if not
 2. **PID dead + result.txt exists** → deliver result to parent session
-3. **PID dead + no result** → write tombstone with "orphaned" error
+3. **PID dead + no result** → tombstone (`gateway_restart`) and the `lost to gateway restart` notice, unless the run recorded a whole answer without text (below)
 
 The kill in step 1 is audited on its result, in the reaper's vocabulary: `_kill_orphan_pid`
 returns `None` once the process is gone (signalled, or already exited by the time the signal
@@ -2613,11 +2619,63 @@ non-blocking and runs inline).
 
 A surviving `result.txt` is not by itself a result. It is appended per streamed
 chunk, so it is non-empty from the agent's first token and a size check cannot
-tell a finished answer from an opening sentence. The run records
-`result_complete` in `state.json` when its stream reaches the complete event;
-reconciliation classifies the file on that flag alone — `result_available` with
-it, `partial_result` without — and the `partial_result` notice tells the parent
-the text is an unfinished fragment rather than pointing it at a result to read.
+tell a finished answer from an opening sentence, and an append that failed leaves
+a hole. So a run that claimed its completed ending (the ending claim above)
+rewrites `result.txt` whole from the text it holds in memory — capped in bytes at
+character boundaries (`cap_result_bytes`), written by temp file and rename,
+fsynced with its folder; an empty answer leaves no `result.txt` at all — and only
+then records `result_complete` in `state.json`, both in one drained worker
+(`write_finished_result`). A failed write records `result_complete=False` and
+falls back to capping the streamed file in place. Every other ending -- the
+tail's, the turn-limit and escalation bails, the deadline, a cancel, a raised
+error, a reap -- caps the streamed file in place (`cap_result_file`) and records
+`result_complete=False` in the same worker, once, from `_run`'s `finally` before
+its report is spawned, so the 512 KB bound holds for partials too, and a whole
+answer a stop got to first is never flagged. The run is `done` by then, so
+`_conversation_busy` no longer counts it, and the cap holds its conversation
+(`_abandoned_state_writers`) until the worker lands: a release mid-write would
+write `keep` on the loop for the worker's whole-file `update_state` to roll back
+(`test_the_final_cap_of_a_done_run_holds_its_conversation`). Only a
+cancel-recovery respawn skips it, since its next attempt starts the file afresh. The cap rewrites the file in
+place rather than by rename: it only shrinks, so a full disk cannot refuse it,
+and on Windows a reader holding the file shares writes but not the delete a
+rename needs. An attempt's first text chunk starts the in-memory partial
+(`streaming_text`) and `result.txt` afresh, so a respawn never glues its text to
+the interrupted attempt's, and that partial stays where readers look until the
+new attempt has text. The two restart on their own facts: the partial on the
+attempt's first chunk whatever the disk does, the file on the first write that
+succeeds, so a `result.txt` that cannot be written (a full disk, a removed
+folder) never costs the partial a Stop delivers, which is then the only copy.
+Until a write succeeds, each chunk starts the file with everything the attempt
+has streamed so far, not with that chunk alone, so a refused first write leaves
+no hole at the head of the fragment a restart finds. That write grows with the
+answer, so it runs off the loop in a worker drained like a state write
+(`_start_result_file`), and the live partial takes the chunk before it, so a
+Stop landing in that wait still delivers the chunk. Later chunks append on the
+loop, and an append the disk refuses sends the next chunk back to that start
+write, so a lost chunk leaves no hole mid-file either. While the disk keeps
+refusing, each chunk retries the start write in that worker; a refusing disk
+fails at the open (a removed folder) or the first block (a full disk), so a
+retry writes nothing and never runs on the loop.
+That first write is a temp file and rename (`write_result_chunk(fresh=True)`),
+so a write that fails leaves the earlier attempt's partial on disk rather than
+an emptied file. The file is written as streamed (`newline=""`), LF on every
+platform, as the whole rewrite is. `subagent_persistence.result_is_whole` reads the flag.
+Reconciliation classifies a non-empty `result.txt` with it —
+`result_available` with it, `partial_result` without — and the
+`partial_result` notice tells the parent the text is an unfinished fragment
+rather than pointing it at a result to read. A finished run's
+`gateway_restart` tombstone records `outcome: completed` and its notice is `ok`
+(✅), with or without text, so the panel, the notice and the task queue's boot
+probe give one verdict; the notice is chosen from the same record
+(`result_is_whole`), never from a caller's say-so. What remains: a restart
+between the claim and the flag write reads a finished answer as a fragment, the
+safe direction; the flag never vouches for bytes an OS crash lost. A stream that
+ended with no complete event (the transport died between chunks) classifies as a
+success live but is not whole, so it is completed live and announced as a
+fragment after a restart.
+`test_subagent_stop_reason_consistency.py` pins the order, the endings and the
+write; `test_taskq_reconcile.py` pins the probe.
 
 No result is not no work. A run the restart caught before its first token has no
 `result.txt`, but its CONVERSATION — every turn and tool call kiro-cli persisted

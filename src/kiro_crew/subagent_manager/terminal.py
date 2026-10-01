@@ -609,7 +609,10 @@ class TerminalCoordinator(ManagerComponent):
             )
             await asyncio.shield(in_flight)
             return
-        if info._reap_started:
+        if info._reap_started or info._ending_claimed:
+            # Reaped already, or ending completed on its own: the run claimed
+            # its completed ending (see ``SubagentInfo._ending_claimed``),
+            # which is ``done`` to every stop.
             return
         settled: asyncio.Future[None] = asyncio.get_running_loop().create_future()
         self._manager._reaps_in_flight[agent_id] = settled

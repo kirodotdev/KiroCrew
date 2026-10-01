@@ -756,7 +756,13 @@ async def test_run_start_timeout_does_not_fall_back_to_dedicated_process():
         patch("kiro_crew.subagent.sel"),
     ):
         info = manager.spawn("test task", parent_session_key="dashboard:slot1")
+        run = manager._tasks[info.id]
         await _wait_until_done(info)
+        # ``done`` is recorded before _run's ``finally`` releases the slot, and
+        # that ``finally`` awaits off-loop work first, so the slot is read once
+        # the run itself has returned. ``asyncio.wait`` never cancels it.
+        finished, _ = await asyncio.wait({run}, timeout=30.0)
+        assert finished, "the run never returned after it was done"
     sessions.get_or_create.assert_not_awaited()
     assert "start_abandoned:" in info.error, info.error
     assert manager._running_count == 0

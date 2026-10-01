@@ -11,7 +11,7 @@ from ..session_map import session_files_resumable
 from ..subagent_persistence import (
     _agent_dir,
     _check_result_available,
-    result_marked_complete,
+    result_is_whole,
     subagent_id_from_conversation_key,
 )
 from ._component import ManagerComponent
@@ -35,6 +35,7 @@ if TYPE_CHECKING:
         _SUPPRESS_CEILING,
         OUTCOME_FAILED,
         OUTCOME_INTERRUPTED,
+        OUTCOME_OK,
         SUBAGENT_COMPLETION_PREFIX,
         VERDICT_DEAD,
         VERDICT_STUCK_INPUT,
@@ -128,25 +129,12 @@ def tombstone_recovery_action(agent_id: str, state: dict) -> str:
 
     ONE rule for every writer, so the two call sites cannot disagree.
 
-    A non-empty ``result.txt`` only means the provider emitted a token:
-    ``write_result_chunk`` appends per streamed chunk. The run records
-    ``result_complete`` when its stream reaches the complete event, so
-    without that flag these bytes are an opening sentence, not an answer.
-
-    That flag lives in ``state.json``, written in a step after the one that
-    finalizes ``result.txt``. A restart landing between the two can find a
-    finished answer on disk with the flag unwritten, which alone would read a
-    whole answer as a fragment. ``result_marked_complete`` reads the durable
-    marker the completion path drops in the SAME step it finalizes ``result.txt``
-    — so either signal is proof the answer is whole, closing the crash window
-    between the result bytes and the flag write.
+    Whole or not is :func:`~kiro_crew.subagent_persistence.result_is_whole`;
+    bytes it does not vouch for are an opening sentence, not an answer.
     """
-    has_result = _check_result_available(_agent_dir(agent_id) / "result.txt")
-    if not has_result:
+    if not _check_result_available(_agent_dir(agent_id) / "result.txt"):
         return "notification_pending"
-    if not (state.get("result_complete") or result_marked_complete(agent_id)):
-        return "partial_result"
-    return "result_available"
+    return "result_available" if result_is_whole(state) else "partial_result"
 
 
 class OrphanStallMonitor(ManagerComponent):
@@ -428,9 +416,9 @@ class OrphanStallMonitor(ManagerComponent):
         - PID dead + result → tombstone (gateway_restart, delivered)
         - PID dead + no result → tombstone (gateway_restart, notification_pending)
 
-        A surviving ``result.txt`` is classified further: only a run that
-        recorded ``result_complete`` has a whole answer on disk, and anything
-        else is a fragment the restart cut off mid-turn.
+        A surviving ``result.txt`` is classified further by
+        :func:`tombstone_recovery_action`: a whole answer, or a fragment the
+        restart cut off mid-turn.
         """
         try:
 
@@ -545,6 +533,9 @@ class OrphanStallMonitor(ManagerComponent):
                             pid=pid,
                             turns=state.get("turns", 0),
                             last_tool=state.get("last_tool", ""),
+                            # A run that finished is completed, whichever reader
+                            # asks: the panel, this notice and the task queue.
+                            **({"outcome": "completed"} if result_is_whole(state) else {}),
                         )
                     except Exception:
                         logger.debug("Failed to tombstone orphan %s", agent_id, exc_info=True)
@@ -567,7 +558,7 @@ class OrphanStallMonitor(ManagerComponent):
                     # failures queue); DM fallback is deferred to the digest.
                     try:
                         undelivered = await self._manager._notify_orphan(
-                            agent_id, state, recovery, has_result
+                            agent_id, state, has_result
                         )
                         if undelivered:
                             dm_pending.append(undelivered)
@@ -597,65 +588,47 @@ class OrphanStallMonitor(ManagerComponent):
         except Exception:
             logger.warning("Orphan reconciliation failed", exc_info=True)
 
-    async def _notify_orphan_impl(
-        self, agent_id: str, state: dict, recovery: str, has_result: bool
-    ) -> str | None:
+    async def _notify_orphan_impl(self, agent_id: str, state: dict, has_result: bool) -> str | None:
         """Notify user about an orphaned subagent.
 
         1. Try session injection if parent session still exists (delivered
            messages return ``None``).
         2. Otherwise return the redacted message so the caller can batch all
            undelivered notifications into a SINGLE digest DM — never N pings.
+
+        Which notice is decided by the run's own record (``result_is_whole``)
+        and whether ``result.txt`` holds text (*has_result*): the same facts
+        ``tombstone_recovery_action`` and the task queue's boot probe read, so
+        the three cannot disagree.
         """
         task_preview = (state.get("task", "") or "")[:100]
         parent_session = state.get("parent_session", "")
         result_path = str(agent_dir_for_display(agent_id) / "result.txt")
 
-        if has_result and recovery == "partial_result":
-            msg = (
-                f"{SUBAGENT_COMPLETION_PREFIX}\n"
-                f"Agent `{agent_id}` ⚠️ cut off mid-turn by gateway restart\n"
-                f"Task: {task_preview}\n"
-                f"Partial output saved at: `{result_path}`\n"
-                f"It stops wherever the restart landed — read it as an unfinished "
-                f"fragment, not as the agent's answer."
-            )
-            # Same interrupted outcome as a whole result, but the note has to
-            # carry the difference: the wording above is all that stops a parent
-            # from acting on an opening sentence as though it were a finding.
-            row_meta = single_completion_meta(
-                agent_id=agent_id,
-                outcome=OUTCOME_INTERRUPTED,
-                task=task_preview,
-                note="cut off mid-turn by gateway restart",
-                requested_model=str(state.get("requested_model") or ""),
-                resolved_model=str(state.get("resolved_model") or ""),
+        if result_is_whole(state):
+            # A run that finished before the restart, caught before delivery:
+            # completed (ok, and the ✅ the prose carries is derived from that),
+            # as its tombstone and task row record it. The note says why it
+            # arrives late.
+            glyph, note, outcome = "✅", "finished before gateway restart", OUTCOME_OK
+            lines = (
+                [f"Result saved at: `{result_path}`", "Use the read tool to retrieve it."]
+                if has_result
+                else ["It finished before the restart without writing any text."]
             )
         elif has_result:
-            msg = (
-                f"{SUBAGENT_COMPLETION_PREFIX}\n"
-                f"Agent `{agent_id}` ⚠️ orphaned by gateway restart\n"
-                f"Task: {task_preview}\n"
-                f"Result saved at: `{result_path}`\n"
-                f"Use the read tool to retrieve it."
-            )
-            # A restart orphan whose result survived on disk: interrupted, not a
-            # plain failure. The note is the only explanation the header carries.
-            row_meta = single_completion_meta(
-                agent_id=agent_id,
-                outcome=OUTCOME_INTERRUPTED,
-                task=task_preview,
-                note="orphaned by gateway restart",
-                requested_model=str(state.get("requested_model") or ""),
-                resolved_model=str(state.get("resolved_model") or ""),
-            )
+            # Interrupted, and the note has to carry it: the wording is all that
+            # stops a parent from acting on an opening sentence as though it
+            # were a finding.
+            glyph, note, outcome = "⚠️", "cut off mid-turn by gateway restart", OUTCOME_INTERRUPTED
+            lines = [
+                f"Partial output saved at: `{result_path}`",
+                "It stops wherever the restart landed — read it as an unfinished "
+                "fragment, not as the agent's answer.",
+            ]
         else:
-            msg = (
-                f"{SUBAGENT_COMPLETION_PREFIX}\n"
-                f"Agent `{agent_id}` ❌ lost to gateway restart\n"
-                f"Task: {task_preview}\n"
-                f"No result was captured before the restart."
-            )
+            glyph, note, outcome = "❌", "lost to gateway restart", OUTCOME_FAILED
+            lines = ["No result was captured before the restart."]
             # No result is not no work: when the run's conversation is still on
             # disk the parent is told how far it got and how to resume it. The
             # probe stats session files under KIRO_HOME, which can be network-
@@ -664,15 +637,23 @@ class OrphanStallMonitor(ManagerComponent):
                 maintenance_executor(), orphan_resume_hint, agent_id, state
             )
             if resume:
-                msg += f"\n{resume}"
-            row_meta = single_completion_meta(
-                agent_id=agent_id,
-                outcome=OUTCOME_FAILED,
-                task=task_preview,
-                note="lost to gateway restart",
-                requested_model=str(state.get("requested_model") or ""),
-                resolved_model=str(state.get("resolved_model") or ""),
-            )
+                lines.append(resume)
+        msg = "\n".join(
+            [
+                SUBAGENT_COMPLETION_PREFIX,
+                f"Agent `{agent_id}` {glyph} {note}",
+                f"Task: {task_preview}",
+                *lines,
+            ]
+        )
+        row_meta = single_completion_meta(
+            agent_id=agent_id,
+            outcome=outcome,
+            task=task_preview,
+            note=note,
+            requested_model=str(state.get("requested_model") or ""),
+            resolved_model=str(state.get("resolved_model") or ""),
+        )
 
         # Redact before any delivery path (injection or Slack DM)
         msg = _redact(msg)
@@ -1001,7 +982,7 @@ class OrphanStallMonitor(ManagerComponent):
             except Exception:
                 logger.debug("Reaper: cost-log compaction failed", exc_info=True)
             for agent_id, info in list(self._manager._agents.items()):
-                if info.done:
+                if info.done or info._ending_claimed:
                     continue
                 elapsed = now - info.started
                 # Startup watchdog: a subagent that entered execution but is

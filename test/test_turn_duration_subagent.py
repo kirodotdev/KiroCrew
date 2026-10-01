@@ -135,6 +135,14 @@ async def _spawn_and_capture(stream_factory) -> list[dict]:
             info = mgr.spawn("measure my turn")
             assert info is not None
             await mgr._tasks[info.id]
+            # The usage row is appended on its own task in ``_report_tasks``,
+            # not before the run task finishes: wait for it inside the patch, so
+            # the row is captured whatever the thread timing and a late write
+            # cannot reach the real ``_write_token_record``.
+            pending = set(mgr._report_tasks)
+            if pending:
+                _done, late = await asyncio.wait(pending, timeout=30)
+                assert not late, "the usage row never landed"
         finally:
             # Construction opened the durable task queue (``tasks.db`` + ``-wal`` +
             # ``-shm``); nothing else in this test closes it.

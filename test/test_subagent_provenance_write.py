@@ -1025,7 +1025,10 @@ def test_no_bare_to_thread_update_state_outside_the_drained_helper() -> None:
     import ast
     from pathlib import Path
 
-    allowed = "_write_state_off_loop_impl"
+    allowed = {
+        "update_state": "_write_state_off_loop_impl",
+        "write_finished_result": "_write_finished_result_off_loop_impl",
+    }
     src = Path(__file__).resolve().parents[1] / "src" / "kiro_crew"
     assert src.is_dir(), src
 
@@ -1057,8 +1060,8 @@ def test_no_bare_to_thread_update_state_outside_the_drained_helper() -> None:
                 and fn.attr == "to_thread"
                 and node.args
                 and isinstance(node.args[0], ast.Name)
-                and node.args[0].id == "update_state"
-                and (not self.stack or self.stack[-1] != allowed)
+                and node.args[0].id in allowed
+                and (not self.stack or self.stack[-1] != allowed[node.args[0].id])
             ):
                 self.hits.append((self.stack[-1] if self.stack else "<module>", node.lineno))
             self.generic_visit(node)
@@ -1073,7 +1076,7 @@ def test_no_bare_to_thread_update_state_outside_the_drained_helper() -> None:
         # `ast.parse` over the whole package is by far the expensive part. A
         # substring miss cannot hide a call, because the pattern this gate looks
         # for spells both names literally.
-        if "to_thread" not in text or "update_state" not in text:
+        if "to_thread" not in text or not any(name in text for name in allowed):
             continue
         try:
             tree = ast.parse(text)

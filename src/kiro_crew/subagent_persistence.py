@@ -15,7 +15,6 @@ import logging
 import os
 import re
 import shutil
-import tempfile
 import threading
 import time
 import weakref
@@ -26,7 +25,7 @@ from typing import Callable, NamedTuple, Protocol
 
 from kiro_crew import platform_compat
 from kiro_crew.acp.types import PROVIDER_LABEL_DEFAULT
-from kiro_crew.atomic_write import atomic_write
+from kiro_crew.atomic_write import atomic_write, fsync_dir, read_bytes_with_retry
 from kiro_crew.config.paths import data_home, kiro_sessions_dir
 from kiro_crew.execution_context import ExecutionContext
 from kiro_crew.jsonl_util import rotate_jsonl_at
@@ -811,8 +810,15 @@ def read_state(agent_id: str) -> dict | None:
     if _live_run_key(agent_id) in _LIVE_RUN_STATES:
         return dict(_LIVE_RUN_STATES[_live_run_key(agent_id)])
     try:
-        p = _agent_dir(agent_id) / "state.json"
-        state = json.loads(p.read_text(encoding="utf-8"))
+        return _read_state_at(_agent_dir(agent_id))
+    except ValueError:
+        return None
+
+
+def _read_state_at(agent_dir: Path) -> dict | None:
+    """:func:`read_state` for a folder already resolved."""
+    try:
+        state = json.loads((agent_dir / "state.json").read_text(encoding="utf-8"))
     except (OSError, ValueError, RecursionError):
         return None
     return state if isinstance(state, dict) else None
@@ -1047,7 +1053,9 @@ def update_state(agent_id: str, **fields: object) -> bool:
         holder.lock.acquire()
     try:
         try:
-            state = json.loads(p.read_text(encoding="utf-8"))
+            # Off the loop, a Windows sharing violation on the read is retried
+            # like the rename at the other end of this rewrite (_atomic_write).
+            state = json.loads(read_bytes_with_retry(p).decode("utf-8"))
         except (OSError, ValueError, RecursionError):
             logger.debug("update_state: cannot read state for %s, skipping", agent_id)
             return False
@@ -1099,73 +1107,43 @@ def promote_retention(
 # ── result streaming ─────────────────────────────────────────────────
 
 
-def write_result_chunk(agent_id: str, text: str) -> None:
-    """Append *text* to ``result.txt``."""
+def _replace_in_run_folder(
+    path: Path, content: str | bytes, *, fsync: bool = False, newline: str | None = None
+) -> None:
+    """:func:`atomic_write` *path*, never recreating a run folder that is gone.
+
+    ``atomic_write`` creates a missing parent; a run's folder that was removed
+    (retention, a dismissal) stays removed, as an append into it would leave it.
+    """
+    if not path.parent.is_dir():
+        raise FileNotFoundError(f"run folder {path.parent} is gone")
+    atomic_write(path, content, fsync=fsync, newline=newline)
+
+
+def write_result_chunk(agent_id: str, text: str, *, fresh: bool = False) -> bool:
+    """Append *text* to ``result.txt``; *fresh* replaces the file with it.
+
+    An attempt's first chunk is written *fresh*, so ``result.txt`` holds that
+    attempt's text alone, never glued to what an earlier attempt on this id
+    left. The fresh write is a temp file and rename, so the earlier partial
+    stays readable until the new text is on disk, and a write that fails
+    leaves it in place. Written as is (``newline=""``), so the file is LF on
+    every platform, like the whole rewrite (:func:`write_finished_result`).
+    False when nothing was written.
+    """
     if _live_run_key(agent_id) in _LIVE_RUN_STATES:
-        return
+        return True
     p = _agent_dir(agent_id) / "result.txt"
     try:
-        with p.open("a", encoding="utf-8") as f:
-            f.write(text)
+        if fresh:
+            _replace_in_run_folder(p, text, newline="")
+        else:
+            with p.open("a", encoding="utf-8", newline="") as f:
+                f.write(text)
     except OSError:
         logger.debug("write_result_chunk failed for %s", agent_id, exc_info=True)
-
-
-#: The sentinel a finished run drops beside its ``result.txt`` at the moment that
-#: file holds the whole answer. It exists because completeness and the bytes it
-#: describes lived in two files written at two times: ``result.txt`` streams in
-#: chunk by chunk, and ``result_complete`` was recorded only later, in
-#: ``state.json``. A gateway restart landing between those two writes left a
-#: finished result on disk with no flag, and the orphan reconciler then read the
-#: whole answer as a fragment "cut off mid-turn". This marker is written in the
-#: same completion step that caps ``result.txt``, so the signal cannot lag the
-#: bytes across a crash. Its presence is the whole signal — it carries no body.
-_RESULT_COMPLETE_MARKER = "result.complete"
-
-
-def mark_result_complete(agent_id: str) -> None:
-    """Record that ``result.txt`` holds a run's whole, successful answer.
-
-    Written by the completion path the instant it has finalized ``result.txt``
-    (after ``cap_result_file``), and BEFORE the separate ``state.json`` flag
-    write, so a restart that lands in the gap still finds the completeness signal
-    on disk. Atomic (temp file + rename) so a torn write is never read as a
-    half-present marker, and never overwrites: a run only completes once.
-
-    A transient (incognito / temporary) run keeps its whole record in memory and
-    never touches disk — the same guard ``write_result_chunk`` applies — so it
-    writes no marker either. Its result is delivered in-process and never reaches
-    the orphan reconciler this marker exists for.
-    """
-    if _live_run_key(agent_id) in _LIVE_RUN_STATES:
-        return
-    d = _agent_dir(agent_id)
-    marker = d / _RESULT_COMPLETE_MARKER
-    try:
-        d.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=d, suffix=".tmp")
-        try:
-            os.close(fd)
-            Path(tmp).replace(marker)
-        except BaseException:
-            Path(tmp).unlink(missing_ok=True)
-            raise
-    except OSError:
-        logger.debug("mark_result_complete failed for %s", agent_id, exc_info=True)
-
-
-def result_marked_complete(agent_id: str) -> bool:
-    """Whether this run finalized a whole answer, read off the durable marker.
-
-    The crash-safe complement to ``state.json``'s ``result_complete`` flag: the
-    two are written in the same completion step but to different files, and a
-    restart can catch the marker present while the flag write never landed. A
-    reader treats either as proof the answer is whole.
-    """
-    try:
-        return (_agent_dir(agent_id) / _RESULT_COMPLETE_MARKER).exists()
-    except (OSError, ValueError):
         return False
+    return True
 
 
 # ── tombstone ────────────────────────────────────────────────────────
@@ -1176,6 +1154,79 @@ def _check_result_available(path: Path) -> bool:
     try:
         return path.stat().st_size > 0
     except OSError:
+        return False
+
+
+def result_is_whole(state: dict) -> bool:
+    """Whether a run recorded that it finished with its whole answer.
+
+    THE completeness fact. True means the run claimed its completed ending and
+    rewrote ``result.txt`` whole from memory, durably, before recording it
+    (:func:`write_finished_result`). Anything else means the bytes in
+    ``result.txt``, if any, are a fragment: they are appended per streamed
+    chunk, so they prove only that a token arrived. A run that finished without
+    text is whole with no ``result.txt``. The orphan reconcile
+    (``tombstone_recovery_action``) and the task queue's boot probe decide with
+    this.
+    """
+    return bool(state.get("result_complete"))
+
+
+def write_finished_result(
+    agent_id: str,
+    text: str | None,
+    state_writer: Callable[..., bool] = update_state,
+    /,
+) -> bool:
+    """Leave ``result.txt`` as a run's ending reads it, then record ``result_complete``.
+
+    ONE worker job, so the executor finishes both halves even when its awaiting
+    run gives up the drain. *text* is the whole answer of a run that claimed its
+    completed ending: ``result.txt`` is rewritten from it, capped
+    (``cap_result_bytes``), by temp file and rename, and fsynced with its folder,
+    so the flag never vouches for a hole a failed append left or for bytes an OS
+    crash could lose. An empty answer leaves no ``result.txt``, and removes a
+    partial an earlier attempt left. A write that fails records
+    ``result_complete=False`` instead, logged at WARNING. ``None`` is any other
+    ending: the streamed file is capped in place (``cap_result_file``) and the
+    flag recorded False; a whole rewrite that fails falls back to that same
+    in-place cap, so the bound holds whatever refused the rename (a full disk,
+    a Windows reader holding the file). *state_writer* is the caller's seam for
+    ``update_state``. A transient run keeps its record in memory and its folder
+    never exists, so it records the flag and touches no disk.
+    """
+    from kiro_crew.context_management import cap_result_bytes, cap_result_file
+
+    whole = text is not None
+    if _live_run_key(agent_id) not in _LIVE_RUN_STATES:
+        try:
+            path = _agent_dir(agent_id) / "result.txt"
+            if text:
+                try:
+                    _replace_in_run_folder(path, cap_result_bytes(text.encode("utf-8")), fsync=True)
+                    fsync_dir(path.parent)
+                except OSError:
+                    logger.warning(
+                        "Could not write %s's finished result; it stays unflagged",
+                        agent_id,
+                        exc_info=True,
+                    )
+                    whole = False
+                    cap_result_file(path)
+            elif text is None:
+                cap_result_file(path)
+            else:
+                path.unlink(missing_ok=True)
+                fsync_dir(path.parent)
+        except (OSError, ValueError):
+            logger.warning(
+                "Could not finish %s's result file; it stays unflagged", agent_id, exc_info=True
+            )
+            whole = False
+    try:
+        return bool(state_writer(agent_id, result_complete=whole))
+    except (OSError, ValueError):
+        logger.warning("Could not record result_complete for %s", agent_id, exc_info=True)
         return False
 
 
@@ -1662,12 +1713,14 @@ def _panel_result_text(agent_dir: Path) -> str:
 def _result_written_at(agent_dir: Path) -> float:
     """When the run's own output last reached disk, or ``0.0`` when it never did.
 
-    The run writes ``result.txt`` itself as its output streams, and the stream's
-    completion caps that file in the same step, so its last write is the moment
-    the run stopped producing. Delivery and retention only read it or remove it,
-    which is what makes the timestamp the run's and not a later caller's. A run
-    that produced no output has no file, and the caller falls back to the
-    tombstone.
+    The run writes ``result.txt`` itself as its output streams, and its ending
+    may rewrite it once more just before recording ``result_complete`` (whole
+    from memory, or capped in place when it outgrew the cap), so its last write
+    is when the run stopped producing, give or take the ending's
+    post-processing, which this may include. Delivery and retention only read it
+    or remove it, which is what makes the timestamp the run's and not a later
+    caller's. A run that produced no output has no file, and the caller falls
+    back to the tombstone.
     """
     try:
         return _finite_time((agent_dir / "result.txt").stat().st_mtime)
@@ -2252,18 +2305,9 @@ def _cleanup_session_files_sync(
 
 
 def _atomic_write(path: Path, data: dict) -> None:
-    """Write JSON atomically via temp file + rename."""
+    """Write JSON atomically via temp file + rename, fsynced, owner-only."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
-    try:
-        with open(fd, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False)
-            f.flush()
-            os.fsync(f.fileno())
-        Path(tmp).replace(path)
-    except BaseException:
-        Path(tmp).unlink(missing_ok=True)
-        raise
+    atomic_write(path, json.dumps(data, ensure_ascii=False), fsync=True, mode=0o600)
 
 
 def read_session_memory_mode(session_key: str) -> str | None:
