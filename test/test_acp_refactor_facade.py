@@ -328,8 +328,10 @@ def test_the_transports_share_one_copy_of_each_moved_helper() -> None:
     """runtime.py imports the shared helpers from their owners, not a second copy."""
     for name in (
         "write_response_frame_bounded",
+        "write_request_frame_bounded",
         "write_notification_best_effort",
         "response_write_window_secs",
+        "_stall_window_phrase",
         "_drain_oversize_line",
         "OversizeLineUnrecoverable",
         "_RESPONSE_WRITE_BOUND_SECS",

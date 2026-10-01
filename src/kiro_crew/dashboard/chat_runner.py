@@ -131,6 +131,8 @@ from kiro_crew.dashboard.chat_utils import (
     _BLOCKED_SLASH_COMMANDS,
     _KIRO_ONLY_BLOCKED_SLASH_COMMANDS,
     _MAX_TOOL_PURPOSE,
+    STEER_POSSIBLY_DELIVERED_META,
+    STEER_POSSIBLY_DELIVERED_NOTE,
     ResetCause,
     _append_compaction_notice,
     _apply_incognito_prefix,
@@ -8338,6 +8340,7 @@ def _settle_consumed_steers(
     for settled_msg in set(previous) - set(remaining):
         slot._steer_attachment_meta.pop(settled_msg, None)
         slot._steer_decision_strips.pop(settled_msg, None)
+        slot._steer_possibly_delivered.discard(settled_msg)
 
 
 def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> None:
@@ -8454,6 +8457,14 @@ def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> No
         # narrower channel authority a queued channel message carries. Absent means
         # not through a channel.
         _channel = bool(getattr(slot, "_steer_channel_origin", {}).pop(steer_msg, False))
+        _maybe_delivered: set[str] = getattr(slot, "_steer_possibly_delivered", set())
+        # An RPC still in flight counts too: its frame may already be in the
+        # pipe, and its verdict lands after this entry may have drained.
+        if steer_msg in _maybe_delivered or steer_msg in getattr(
+            slot, "_steer_rpc_in_flight", set()
+        ):
+            _maybe_delivered.discard(steer_msg)
+            _meta[STEER_POSSIBLY_DELIVERED_META] = True
         qid = slot.queue_insert(
             0,
             steer_msg,
@@ -9544,6 +9555,8 @@ async def _start_next_queued_turn(
             _drained_meta.update(
                 (k, v) for k, v in _item_meta.items() if k != QUEUED_CONTAINMENT_META_KEY
             )
+    # Model input only: the row keeps the user's text as typed.
+    _possibly_delivered_steer = bool(_drained_meta.pop(STEER_POSSIBLY_DELIVERED_META, False))
     if _drained_ids:
         _drained_meta.pop("steer_delivery_id", None)
         _drained_meta["steer_delivery_ids"] = _drained_ids
@@ -9709,6 +9722,8 @@ async def _start_next_queued_turn(
         _run_kwargs["_image_recovery"] = True
     if is_recovery:
         _run_kwargs["_synthetic_recovery_turn"] = True
+    if _possibly_delivered_steer:
+        _run_kwargs["_steer_possibly_delivered"] = True
     task = spawn_guarded_turn(
         state,
         slot,
@@ -10358,6 +10373,10 @@ async def _run_chat(
     # user message, and re-arming the refusal-retry allowance on one would let a
     # crashing fallback replay re-arm and repeat indefinitely.
     _synthetic_recovery_turn: bool = False,
+    # The drained entry is a steer that may already have been delivered
+    # (``STEER_POSSIBLY_DELIVERED_META``): the model input, and only it, is led
+    # by ``STEER_POSSIBLY_DELIVERED_NOTE``.
+    _steer_possibly_delivered: bool = False,
     _directive_user_origin: bool = False,
     # This turn was drained from a queue entry a PREVIOUS process accepted
     # (`slot_queue_repository.RESTORED_QUEUE_KEY`). Its provenance therefore
@@ -13438,6 +13457,10 @@ async def _run_chat(
 
         if _interrupted_turn_preamble:
             full_message = f"{_interrupted_turn_preamble}\n\n{full_message}"
+        if _steer_possibly_delivered and not is_slash:
+            # Model input only: dispatch, the mirror legs and the row read the
+            # user's own text.
+            full_message = STEER_POSSIBLY_DELIVERED_NOTE + full_message
 
         # Checklist resync. The pill's snapshot outlives the native conversation
         # that produced it (agent switch, failed session/load, poisoned discard,
@@ -19593,6 +19616,10 @@ async def _run_chat(
         # here is what keeps `turn/failed` from reporting an unnamed failure.
         _crew_log_error = type(exc).__name__
         needs_session_reset = True
+        if getattr(exc, "ambiguous_delivery", False) is True:
+            # Every steer written into this turn sits in the same stalled pipe as
+            # its prompt, so the teardown requeues each as possibly delivered.
+            slot._steer_possibly_delivered.update(slot._pending_steers)
         _persist_partial_reply()
         # WHOSE failure was this? A process this slot was sharing -- with a
         # sub-agent of its own, or with a co-tenant session -- died for reasons
@@ -19637,6 +19664,10 @@ async def _run_chat(
                 _turn_emitted,
                 cause=ResetCause.CONNECTION_LOST,
                 message_is_synthetic=_is_synthetic,
+                # A request-frame drain stall may have delivered the buffered
+                # prompt to a kiro-cli that resumed reading; replaying it verbatim
+                # would run its tools twice. Resume from restored state instead.
+                ambiguous_delivery=getattr(exc, "ambiguous_delivery", False),
             )
             _queue_recovery(
                 0,

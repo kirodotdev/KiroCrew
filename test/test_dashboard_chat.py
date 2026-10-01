@@ -17784,6 +17784,64 @@ class TestAcpProcessDiedRecovery:
         ]
         assert dup_broadcasts == [], "retry card must not be double-emitted via broadcast_ws"
 
+    @pytest.mark.parametrize("ambiguous", [False, True])
+    @pytest.mark.asyncio
+    async def test_an_ambiguous_death_requeues_written_steers_as_possibly_delivered(
+        self, tmp_path: Path, ambiguous: bool
+    ) -> None:
+        """A steer written into a turn sits in the same pipe as its prompt, so
+        when the turn's death is ambiguous the teardown requeues it with the
+        possibly-delivered mark; a plain death requeues it plainly."""
+        from kiro_crew.acp.client import AcpProcessDied
+        from kiro_crew.dashboard.chat_utils import STEER_POSSIBLY_DELIVERED_META
+
+        state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+
+        async def _steered_then_died(msg):
+            slot._pending_steers.append("also tag it")  # written mid-turn
+            raise AcpProcessDied("stdin stalled", ambiguous_delivery=ambiguous)
+            yield  # noqa: E501
+
+        client.stream = _steered_then_died
+        client.stream_command = _steered_then_died
+        from kiro_crew.dashboard import chat_runner
+
+        requeued: list[dict] = []
+        _real = chat_runner._requeue_unconsumed_steers
+
+        def _spy(state_, slot_):
+            _real(state_, slot_)
+            requeued.extend(e for e in slot_._queue if e.get("content") == "also tag it")
+
+        with patch.object(chat_runner, "_requeue_unconsumed_steers", _spy):
+            await _run_chat(state, slot, "test message")
+
+        assert len(requeued) == 1
+        assert bool((requeued[0].get("meta") or {}).get(STEER_POSSIBLY_DELIVERED_META)) is ambiguous
+
+    @pytest.mark.asyncio
+    async def test_a_possibly_delivered_steer_note_leads_only_the_model_input(
+        self, tmp_path: Path
+    ) -> None:
+        """The note reaches the model; slash-command dispatch and the mirror still
+        read the user's own text."""
+        from kiro_crew.dashboard.chat_utils import STEER_POSSIBLY_DELIVERED_NOTE
+
+        state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+        sent: list[str] = []
+
+        async def _capture(msg):
+            sent.append(msg)
+            return
+            yield  # noqa: E501
+
+        client.stream = _capture
+        await _run_chat(state, slot, "also tag it", _steer_possibly_delivered=True)
+
+        assert sent, "the turn must reach the model"
+        assert STEER_POSSIBLY_DELIVERED_NOTE.strip() in sent[0]
+        assert sent[0].rstrip().endswith("also tag it")
+
     @pytest.mark.asyncio
     async def test_budget_exhaustion_shows_stuck(self, tmp_path: Path) -> None:
         """4th pipe death → 'Session stuck' shown, no re-queue."""

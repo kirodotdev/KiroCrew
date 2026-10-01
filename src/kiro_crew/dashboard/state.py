@@ -2911,6 +2911,8 @@ class _ChatSlot:
         "_turn_channel_narrowed",
         "_steer_admissions",
         "_steer_decision_strips",
+        "_steer_possibly_delivered",
+        "_steer_rpc_in_flight",
         "_steer_audience_fences",
         "_steer_audience_fence_holders",
         "_steer_attachment_meta",
@@ -4096,6 +4098,16 @@ class _ChatSlot:
         # outcome a decision did choose lands as a queue entry with no receipt.
         # Absent for a manual steer, which has none to carry.
         self._steer_decision_strips: dict[str, dict] = {}
+        # Steers whose RPC died ambiguously (``AcpProcessDied.ambiguous_delivery``):
+        # the frame may already have reached the turn. Left pending, so the
+        # turn's teardown requeues them, and that requeue says they may already
+        # have been delivered instead of re-sending the text as fresh.
+        self._steer_possibly_delivered: set[str] = set()
+        # Steers whose ``client.steer()`` RPC has not returned yet. A turn that
+        # ends meanwhile requeues them as possibly delivered: the frame may
+        # already be in the pipe, and the RPC's own verdict arrives too late to
+        # mark an entry the drain may already have run.
+        self._steer_rpc_in_flight: set[str] = set()
         # Admission snapshots of the peer steers that influenced THIS turn, keyed by
         # an opaque token. The turn consults them before publishing its CROSS-SURFACE
         # reply leg and withholds it when a constraint newly holds:

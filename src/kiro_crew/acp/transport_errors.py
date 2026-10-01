@@ -279,7 +279,28 @@ class AcpPermissionNeeded(AcpError):  # noqa: N818
 
 
 class AcpProcessDied(AcpError):  # noqa: N818
-    """kiro-cli process exited unexpectedly."""
+    """kiro-cli process exited unexpectedly.
+
+    ``ambiguous_delivery`` is True when the death followed a request-frame drain
+    stall: the frame had already been handed to the transport, so a kiro-cli that
+    merely paused reading could still consume it after the death is raised. The
+    recovery path must then NOT replay the prompt verbatim (that would run its
+    tools a second time) -- it resumes from restored conversation state instead,
+    the same choice it makes once a turn has emitted output. A write that never
+    reached the transport (a lock-phase stall, a broken pipe before the write)
+    leaves this False: the replay is the frame's first and only delivery.
+    An ambiguous death is never transient: a retry ladder that re-sends on a
+    transient verdict would replay exactly the prompt that may have run, so the
+    verdict is pinned False rather than left to the message's wording.
+    """
+
+    def __init__(self, *args: object, ambiguous_delivery: bool = False, **kwargs: object) -> None:
+        # Forward transient/code to AcpError so AcpRegistrationRateLimited (which
+        # subclasses this and passes transient=True) keeps working.
+        if ambiguous_delivery:
+            kwargs["transient"] = False
+        super().__init__(*args, **kwargs)  # type: ignore[arg-type]
+        self.ambiguous_delivery = ambiguous_delivery
 
 
 class AcpAuthRequired(AcpError):  # noqa: N818

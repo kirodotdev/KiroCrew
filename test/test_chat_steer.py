@@ -184,6 +184,54 @@ class TestApiChatSteer:
         client_mock.steer.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_an_ambiguous_steer_failure_requeues_it_as_possibly_delivered(
+        self, tmp_path, monkeypatch, _patch_sel
+    ):
+        """A steer whose RPC died on a stdin stall may already be in the turn.
+        It is not re-sent as a fresh queued message: it stays pending, and the
+        dying turn's teardown requeues it with a note that it may already have
+        been delivered."""
+        from kiro_crew.acp.client import AcpProcessDied
+        from kiro_crew.dashboard import chat_runner
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        slot = _running_slot(state)
+        client_mock = MagicMock()
+        client_mock.supports_steer = True
+        client_mock.steer = AsyncMock(
+            side_effect=AcpProcessDied("stdin stalled", ambiguous_delivery=True)
+        )
+        slot._acp_client = client_mock
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat", json={"slot": "test", "message": "also tag it", "steer": True}
+            )
+            assert resp.status == 200
+
+        assert slot._pending_steers == ["also tag it"]
+        assert all(entry["content"] != "also tag it" for entry in slot._queue)
+
+        chat_runner._requeue_unconsumed_steers(state, slot)
+        assert slot._queue[0]["content"] == "also tag it"
+        assert slot._steer_possibly_delivered == set()
+
+        state.subagents = None
+        with (
+            patch.object(chat_runner, "spawn_guarded_turn", return_value=MagicMock()),
+            patch.object(chat_runner, "_run_chat", return_value=MagicMock()) as run_chat,
+        ):
+            assert await chat_runner._start_next_queued_turn(state, slot) is True
+
+        assert run_chat.call_args.args[2] == "also tag it"
+        assert run_chat.call_args.kwargs.get("_steer_possibly_delivered") is True
+        rows = [m for m in slot.messages if m.get("role") == "user"]
+        assert rows[-1]["content"] == "also tag it", "the user's row keeps the text as typed"
+        assert "steer_possibly_delivered" not in (rows[-1].get("meta") or {})
+
+    @pytest.mark.asyncio
     async def test_steer_cuts_segment_before_user_append(self, tmp_path, monkeypatch, _patch_sel):
         """The segment cut runs BEFORE the steer user message is persisted, so
         the flushed pre-steer assistant text lands ABOVE the steer bubble."""

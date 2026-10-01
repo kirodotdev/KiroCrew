@@ -1133,7 +1133,9 @@ duck-typed over `urllib`/`aiohttp`/`httpx` error shapes) and `acp_provider`
 `_is_transient_raw_error`, defined in `acp.transport_errors` and read through
 `acp.client`, so a third copy cannot drift) — and returns the
 first match, or `None` when the error is not a dependency error at all. An
-exception carrying a pre-attached `dependency_signal` wins outright.
+exception carrying a pre-attached `dependency_signal` wins outright, and an
+`AcpProcessDied` flagged `ambiguous_delivery` is never a dependency error, whatever
+its text: the wait would end in a re-run of work that may already have run.
 `register_adapter(name, fn, first=False)` adds one; an adapter that raises is
 skipped. The two GitHub monitors (`monitoring/github_pull_request.py`,
 `monitoring/github_workflow_run.py`) map `adapters.github.parse_gh_stderr()`'s

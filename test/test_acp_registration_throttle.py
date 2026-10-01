@@ -174,17 +174,32 @@ def _provider(runtime, prompt_or_tool_seen: bool = False):
     return AcpSessionProvider(handle, runtime)
 
 
-def test_translate_dead_types_a_registration_throttled_death():
+@pytest.mark.parametrize("stalled", [False, True])
+def test_translate_dead_types_a_registration_throttled_death(stalled):
+    """A throttle line in the tail types the death transient -- unless the
+    runtime died of a stdin stall. The host knows that cause, and a transient
+    verdict would license replaying a prompt the live child may still read, so
+    the stall stays a non-transient AcpProcessDied carrying ambiguous_delivery."""
     from unittest.mock import MagicMock
 
-    from kiro_crew.acp.runtime import AcpRuntimeDead
+    from kiro_crew.acp.runtime import AcpRuntimeDead, AcpRuntimeStdinStalled
 
     runtime = MagicMock()
     runtime.saw_not_logged_in.return_value = False
     runtime.redacted_stderr_tail.return_value = "\n".join([_THROTTLE_LINE] * 5)
-    exc = _provider(runtime)._translate_dead(AcpRuntimeDead("process exited (rc=1)"))
-    assert isinstance(exc, AcpRegistrationRateLimited)
-    assert exc.transient is True
+    runtime.stdin_stall_death = stalled
+    death = (
+        AcpRuntimeStdinStalled("stdin stalled", ambiguous_delivery=True)
+        if stalled
+        else AcpRuntimeDead("process exited (rc=1)")
+    )
+    exc = _provider(runtime)._translate_dead(death)
+    if stalled:
+        assert type(exc) is AcpProcessDied
+        assert exc.ambiguous_delivery is True and exc.transient is False
+    else:
+        assert isinstance(exc, AcpRegistrationRateLimited)
+        assert exc.transient is True
 
 
 def test_translate_dead_auth_wins_over_a_throttle_line():
@@ -213,6 +228,25 @@ def test_translate_dead_stays_generic_without_the_signature():
     runtime.redacted_stderr_tail.return_value = "reader crashed"
     exc = _provider(runtime)._translate_dead(AcpRuntimeDead("process exited (rc=1)"))
     assert type(exc) is AcpProcessDied
+
+
+def test_translate_dead_carries_ambiguous_delivery_onto_the_process_died():
+    """A drain-stall death flagged ambiguous_delivery must keep that flag through
+    translation, so the recovery path suppresses a verbatim prompt replay."""
+    from unittest.mock import MagicMock
+
+    from kiro_crew.acp.runtime import AcpRuntimeDead
+
+    runtime = MagicMock()
+    runtime.saw_not_logged_in.return_value = False
+    runtime.redacted_stderr_tail.return_value = ""
+    ambiguous = _provider(runtime)._translate_dead(
+        AcpRuntimeDead("stdin stalled", ambiguous_delivery=True)
+    )
+    assert type(ambiguous) is AcpProcessDied
+    assert ambiguous.ambiguous_delivery is True
+    plain = _provider(runtime)._translate_dead(AcpRuntimeDead("process exited (rc=1)"))
+    assert plain.ambiguous_delivery is False
 
 
 # ── activity latch: classification is pre-work only ──

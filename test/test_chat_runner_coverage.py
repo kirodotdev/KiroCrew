@@ -2518,6 +2518,53 @@ class TestSteerLifecycle:
         # and this call site must not select anything else.
         assert settle.call_args.kwargs == {}
 
+    def test_a_settled_steer_drops_its_possibly_delivered_mark(self):
+        """A steer the turn consumed is settled: a later identical text must not
+        inherit the possibly-delivered note."""
+        slot = _slot()
+        slot._pending_steers = ["a"]
+        slot._steer_possibly_delivered = {"a"}
+
+        with patch.object(chat_runner, "settle_consumed_steers", return_value=[]):
+            chat_runner._settle_consumed_steers(slot, "a")
+
+        assert slot._steer_possibly_delivered == set()
+
+    def test_a_steer_requeued_with_its_rpc_in_flight_is_possibly_delivered(self, tmp_path):
+        """The turn ended while the steer's RPC was still writing: its frame may
+        already be in the pipe and the RPC's own verdict lands after the entry
+        may have drained, so the requeue marks it now."""
+        from kiro_crew.dashboard.chat_utils import STEER_POSSIBLY_DELIVERED_META
+
+        state, slot = _state(tmp_path), _slot()
+        slot._pending_steers = ["in flight", "settled"]
+        slot._steer_rpc_in_flight = {"in flight"}
+
+        chat_runner._requeue_unconsumed_steers(state, slot)
+
+        marks = {
+            e["content"]: bool((e.get("meta") or {}).get(STEER_POSSIBLY_DELIVERED_META))
+            for e in slot._queue
+        }
+        assert marks == {"in flight": True, "settled": False}
+
+    def test_a_possibly_delivered_steer_drains_alone(self, tmp_path):
+        """Its note speaks for one message, so a merge never folds the user's
+        later messages under it."""
+        from kiro_crew.dashboard.chat_utils import _dequeue_next_message
+
+        state, slot = _state(tmp_path), _slot()
+        slot.queue_append("later one")
+        slot._pending_steers = ["the steer"]
+        slot._steer_possibly_delivered = {"the steer"}
+        chat_runner._requeue_unconsumed_steers(state, slot)
+        slot.queue_append("later two")
+
+        content, consumed = _dequeue_next_message(slot, merge_enabled=True)
+        assert content == "the steer" and len(consumed) == 1
+        content, consumed = _dequeue_next_message(slot, merge_enabled=True)
+        assert len(consumed) == 2
+
     def test_requeue_is_a_noop_without_pending_steers(self, tmp_path):
         state, slot = _state(tmp_path), _slot()
 

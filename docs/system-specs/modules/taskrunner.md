@@ -347,6 +347,7 @@ class Task:
     attempts: int = 0
     error: str = ""
     result: str = ""  # updated during streaming (partial results visible)
+    resume_hint: str = ""  # "resume, do not restart" after a death that may have run the prompt
     requires_approval: bool = False
     force_approval: bool = False  # blocks even in YOLO mode
     depends_on: list[int] = field(default_factory=list)
@@ -858,6 +859,20 @@ Applies to both exception errors and test failure outputs.
 4. **Completed steps** — titles of passed steps
 5. **Current step** — title, description, spec content
 6. **Retry context** (if attempt > 1) — previous error message
+7. **Resume (do not restart)** (whenever `resume_hint` is set, at any attempt) —
+   the instruction to inspect current repository and session state first
+
+`resume_hint` is set when a step's `AcpProcessDied` may have left its prompt
+run: the death carries `ambiguous_delivery` (a stdin stall the live child may
+still read past), or the attempt had already produced output or a tool call. A
+mid-stream compaction after output sets it too, since it can end in a session
+reset that restates the step. A verbatim retry would run its tools again, and the death keeps the attempt
+number, so the hint cannot ride on the attempt > 1 guard. It is cleared ONLY
+when an attempt completes normally. It survives every give-up, a Resume or
+retry of the failed run (which restarts the step at attempt 1 in the same work
+dir), and the automatic replan, whose prompt is told the failed step may
+already have run. Keeping it costs one inspection; dropping it risks repeated
+side effects.
 
 ## Self-Review
 
@@ -1015,7 +1030,10 @@ The page uses a left run rail plus a detail/compose area. The rail defaults to
 ### Task snapshot persistence
 
 `runs.json` is the ordinary JSON list of retained task records, including each
-run's captured `execution_context`, input, results and diagnostic state. There is
+run's captured `execution_context`, input, results and diagnostic state. Each
+task entry carries its `resume_hint` (see Step Prompt Context), restored on load
+so it survives a gateway restart; the `/api/taskrunner` status payload does not
+expose it. There is
 no private sidecar, hidden directory or separate public projection. Incognito and
 Temporary runs are omitted according to their captured mode; cron runs are also
 excluded from this registry. Restored records reuse their captured identity,

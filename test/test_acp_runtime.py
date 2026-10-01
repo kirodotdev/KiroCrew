@@ -1226,7 +1226,7 @@ async def test_answer_cap_timeout_marks_runtime_dead_without_growth():
         else:
             second_started.set()
 
-    def mark_dead(reason: str) -> None:
+    def mark_dead(reason: str, **_kw: object) -> None:
         dead_reasons.append(reason)
         rt._dead = True
         marked_dead.set()
@@ -12808,7 +12808,7 @@ async def test_answer_task_cap_marks_dead_instead_of_growing_unbounded():
     )
     dead: list[str] = []
 
-    def _fake_mark_dead(reason):
+    def _fake_mark_dead(reason, **_kw):
         dead.append(reason)
         rt._dead = True  # mirror the real _mark_dead contract
 
@@ -12912,7 +12912,7 @@ async def test_sel_audit_tasks_do_not_count_toward_answer_cap():
         _t.add_done_callback(rt._audit_tasks.discard)
 
     dead: list[str] = []
-    rt._mark_dead = lambda reason: dead.append(reason)  # type: ignore[method-assign]
+    rt._mark_dead = lambda reason, **_kw: dead.append(reason)  # type: ignore[method-assign]
 
     answered: list[object] = []
 
@@ -12951,7 +12951,7 @@ async def test_buffered_burst_with_responsive_backend_does_not_trip_cap():
     _register(rt, "sA")
     rt._max_answer_tasks = 4
     dead: list[str] = []
-    rt._mark_dead = lambda reason: dead.append(reason)  # type: ignore[method-assign]
+    rt._mark_dead = lambda reason, **_kw: dead.append(reason)  # type: ignore[method-assign]
 
     # Buffer MORE frames than the cap before the reader runs at all.
     for i in range(10):

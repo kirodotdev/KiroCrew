@@ -1524,6 +1524,29 @@ through the same helper. Any non-owner entry -- a peer, an app, a channel, a
 disk-restored entry, or an app-driven edit -- stays fully redacted on delivery.
 Pinned by `test_queued_user_text_display.py`.
 
+**A steer whose RPC died ambiguously.** When `client.steer()` raises an
+`AcpProcessDied` with `ambiguous_delivery` (a stdin stall with the child alive),
+the steer frame may already be in the turn. A steer that WAS written is in the
+same position when the turn's own death is ambiguous: `_run_chat`'s
+`AcpProcessDied` handler then marks every pending steer, since each sits in the
+stalled pipe behind the prompt. So is a steer whose RPC is still in flight when
+its turn ends (`slot._steer_rpc_in_flight`): the requeue marks it at once,
+because the RPC's own verdict can land after the entry has drained. `steer_into_running_turn` then keeps
+the steer registered, marks it in `slot._steer_possibly_delivered` (cleared at
+the hard-kill discard and the requeue) and returns `STEER_REQUEUED`, so no
+caller re-sends it as a fresh message. The dying turn's teardown
+(`_requeue_unconsumed_steers`) queues it with `steer_possibly_delivered` in the
+entry meta (set on the entry directly when the teardown requeued it before the
+RPC's own stall surfaced), and the drain runs it with
+`_run_chat(_steer_possibly_delivered=True)`, which leads only the final model
+input with `STEER_POSSIBLY_DELIVERED_NOTE`. The next turn checks before acting
+on it again, while slash dispatch, the mirror legs and the user's row keep the
+text as typed. Such an entry drains
+alone (`_dequeue_next_message` never merges it), and the mark is cleared when
+the turn settles the steer as consumed. A steer refused before its first byte is
+not ambiguous and takes the ordinary unwind. Pinned by
+`test_chat_steer.py`.
+
 **Send identity through the REQUEUE path (#6751).** A steer whose turn dies
 before kiro-cli confirms it does not persist its own row: the teardown degrades
 it into a queue card and the DRAIN writes the row. That path is covered by the

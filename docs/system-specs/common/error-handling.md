@@ -24,7 +24,10 @@ AcpError (base, acp/transport_errors.py) — carries `transient`, the retry verd
 │                            terminal generic death. Classified only while the
 │                            session has produced no text and run no tool, so
 │                            the verdict can never license a replay that
-│                            repeats side effects
+│                            repeats side effects. An ambiguous-delivery death
+│                            (a stdin stall with the child alive) is never
+│                            this subclass: it stays a non-transient
+│                            AcpProcessDied with ambiguous_delivery set
 ├── AcpAuthRequired        — kiro-cli not authenticated; non-retryable
 ├── AcpSandboxInitFailed   — an OS sandbox refused to initialize; non-retryable
 ├── AcpToolGateUnroutable  — tool calls would bypass the PreToolUse gate;

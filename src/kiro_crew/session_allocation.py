@@ -940,6 +940,34 @@ class SessionAllocationService:
             existing = self._subagent_runtimes.get(parent_session_key)
             if existing is not None and existing.is_alive():
                 return existing
+            if existing is not None:
+                # A runtime marked dead on a stdin stall still has a live child
+                # that may read the frames buffered in its pipe; it is killed
+                # BEFORE its replacement starts, so a retried step never runs
+                # beside it (the reap ``get_subagent_runtime`` does too).
+                try:
+                    await existing.kill(reason="reaping a dead task-run runtime before respawn")
+                except Exception:
+                    self._deps.logger.debug(
+                        "run runtime: dead runtime kill failed for %s",
+                        parent_session_key,
+                        exc_info=True,
+                    )
+                reader_probe = getattr(existing, "stdin_reader_may_live", None)
+                if (
+                    getattr(existing, "stdin_stall_death", False) is True
+                    and callable(reader_probe)
+                    and await asyncio.to_thread(reader_probe) is True
+                ):
+                    # A process that can still read the stalled pipe survived
+                    # the kill (a signal that did not land, or a launcher child
+                    # that outlived its parent): a replacement now would run
+                    # beside it. The step's bounded retry ladder runs this
+                    # bootstrap, and so this kill, again on its next attempt.
+                    raise RuntimeError(
+                        "a stalled task-run runtime could not be confirmed dead; "
+                        "not starting a replacement beside it"
+                    )
             provider = owner._provider_factory(parent_session_key, agent=agent, cwd=cwd)
             pre_spawn = await pre_spawn_identity(getattr(owner, "spawn_identity_reader", None))
             await provider.start()

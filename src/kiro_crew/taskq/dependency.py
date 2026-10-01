@@ -292,7 +292,13 @@ def classify_exception(exc: BaseException, scope: str = "") -> DependencySignal 
     answer is returned; an adapter that raises is skipped, never fatal. *scope*
     is the caller's scope hint (``"github:api"``); adapters that can derive a
     narrower scope from the error (a host, a provider id) may override it.
+
+    An ambiguous-delivery death (``AcpProcessDied.ambiguous_delivery``) is never
+    a dependency wait, whatever its text says: the wait ends in a re-run of the
+    same work, and that work may already have run.
     """
+    if getattr(exc, "ambiguous_delivery", False) is True:
+        return None
     pre = getattr(exc, SIGNAL_ATTR, None)
     if isinstance(pre, DependencySignal):
         return pre
