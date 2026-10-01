@@ -3139,7 +3139,7 @@ and signature and calls the function that owns the rule in `kiro_crew.skill_runt
 | Module | Owns |
 |---|---|
 | `catalog` | The three `_iter` tiers, the `skill-catalog-refresh` worker and its generation and epoch fences, admission of stored snapshot rows, root enumeration in precedence order (`_iter_uncached`), disabled-app filtering by owning app (`_owning_app`), expansion of an agent's `skill://` mapping (`_scoped_entries`) and enumerated-name lookup |
-| `listing` | `list_skills` rows, the `owned` hint and delivery counts, and the byte-identical duplicate filter |
+| `listing` | `list_skills` rows, the `owned` hint and delivery counts, the byte-identical duplicate filter, and the reader-side frontmatter helper (`_readable_frontmatter`) every per-turn reader degrades through |
 | `delivery` | `get_context` (bounded directory, required bodies, legacy reader, project bodies) and its ranking, `split_triggered` and `trigger_hint` |
 | `search` | `search_skills` and its body matching, exact reads while a first walk runs, and `$skillname` resolution |
 | `read_credit` | Direct-read attribution (`resolve_tool_read_keys`, `credit_skill_reads`), ledger alias folding and `_record_use` |
@@ -3329,7 +3329,40 @@ removal after enumeration also degrades to no metadata/body rather than propagat
 open error into a chat turn. Confined read-only metadata uses replacement decoding for
 malformed UTF-8 so one project skill cannot abort context assembly. Unconfined metadata
 reads remain strict because they also serve writers that must never overwrite metadata
-they could not decode.
+they could not decode. That strictness is the reader's to absorb, not to propagate:
+`_cached_frontmatter` raises, and a READER takes its metadata through one helper,
+`_readable_frontmatter` (owned by `listing`, reached through the loader so a class-level
+patch reaches every caller), which answers a `UnicodeDecodeError` or an `OSError` from
+one unconfined SKILL.md by dropping THAT row with one warning naming the file and the
+problem, while every other row goes on. Four readers sit on the per-turn path and all
+four take it: `list_skills` in `read_entry` — the one function both of its `rows()`
+branches run, on the calling thread and on the worker pool, where an uncaught failure
+would otherwise surface at `future.result()` — and, once `skills.max_triggered` is above
+its shipped 0, the trigger matcher `get_triggered_skills` and the two renderers of its
+matches, `split_triggered` and `trigger_hint`, each of which skips the match instead.
+In the listing a row whose file cannot even be stat'ed (removed after the cached walk)
+gets the same answer rather than a phantom row named after its path. Left to propagate,
+one UTF-16
+file (PowerShell's default `Out-File` encoding, which opens with `0xFF`) took the whole
+index with it: `GET /api/skills` answered 500 and every chat turn's context build
+failed (#15490). The warning is bounded like the HTML-page refusal's — once per (file,
+stat fingerprint, problem) — because the listing runs on every turn and a failed read
+is never cached, so an unchanged bad file does not repeat while a re-saved one earns a
+fresh line. The fingerprint is a stat taken when the read fails, in every reader, not
+the one the catalog walk cached: between walks that one is stale, and keyed on it the
+fresh line would wait for the next re-walk. The dropped skill is not silently degraded
+to a mojibake row: its body read
+stays strict, and the dashboard budget reader (`skill_budget.py`) already catches the
+same failure at its own call site. Every SKILL.md byte read decodes as `utf-8-sig`: a
+UTF-8 file saved with a byte-order mark is valid UTF-8 whose leading U+FEFF is not
+content, and left in it sits before the `---` fence so the column-0 grammar finds no
+block and the mark lands in the injected body; the codec strips one leading mark and
+is otherwise plain UTF-8, so a file without one decodes exactly as before and a file
+that is not UTF-8 still raises under the strict read. Stored metadata rows are derived
+from that decode, and the index reuses a row while the file's stat fingerprint is
+unchanged, so the decoder change moves the index schema version: an index written by
+the previous decoder is dropped and rebuilt once, instead of serving a byte-order-marked
+file's frontmatter-less row across restarts.
 
 Confined metadata is byte-limited by `PROJECT_SKILL_BODY_CAP` before decoding or
 frontmatter caching. An oversized trusted row stays in `list_skills` under its

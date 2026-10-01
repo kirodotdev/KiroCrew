@@ -68,6 +68,7 @@ instead of the row simply disappearing.
 | ACP → CLI | Catch `AcpError`, print user-friendly message, `sys.exit(1)` |
 | JSON-RPC read | Non-JSON lines silently skipped (kiro-cli debug output) |
 | Config load | Invalid JSON → log warning, return defaults |
+| Skill index (`list_skills`) | One global SKILL.md that is not UTF-8 or cannot be opened → one warning naming the file, that row dropped, every other row listed. Never a failed listing: the index feeds every chat turn and `GET /api/skills`. Rationale: [memory-skills-hooks](../modules/memory-skills-hooks.md) |
 | Process spawn | Backend-specific executable resolver, including trusted-path checks where required; clear error if missing |
 | asyncio loop callback | A Windows Proactor reset repeated by its `connection_lost` close callback is warning-only; task-level connection resets and other exceptions remain ERRORs with crash breadcrumbs |
 

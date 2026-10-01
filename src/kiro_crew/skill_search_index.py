@@ -65,9 +65,11 @@ logger = logging.getLogger(__name__)
 #: travels together and a home copy carries a warm index.
 SKILL_SEARCH_INDEX_FILENAME = "skill_search_index.sqlite3"
 
-#: Bumped when the table shape or the derived metadata changes (6: HTML marker);
+#: Bumped when the table shape or the derived metadata changes (6: HTML marker;
+#: 7: SKILL.md bytes decode as utf-8-sig, so a byte-order-marked file's stored
+#: frontmatter-less row must not be served against its unchanged fingerprint);
 #: a mismatch drops and rebuilds, because every row is derived data one read regenerates.
-_SCHEMA_VERSION = 6
+_SCHEMA_VERSION = 7
 
 #: Another process may be indexing the same skill. Wait briefly, then give up and
 #: let the caller read files this once rather than block a chat turn on a lock.

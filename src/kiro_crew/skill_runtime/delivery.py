@@ -107,7 +107,11 @@ def split_triggered(
         if found is None:
             continue
         skill_file, within = found
-        meta = loader._cached_frontmatter(skill_file, within=within)
+        # A reader on the per-message path: one SKILL.md that is not UTF-8
+        # costs its own match, never the turn (rationale on the helper).
+        meta = loader._readable_frontmatter(skill_file, within=within)
+        if meta is None:
+            continue
         if within is not None:
             enforced.append(name)
         elif meta.get("inject_on_trigger", "").strip().lower() == "false":
@@ -152,7 +156,11 @@ def trigger_hint(
         skill_file, within = found
         if within is not None:
             continue
-        meta = loader._cached_frontmatter(skill_file, within=within)
+        # A reader on the per-message path: one SKILL.md that is not UTF-8
+        # costs its own pointer line, never the turn (rationale on the helper).
+        meta = loader._readable_frontmatter(skill_file, within=within)
+        if meta is None:
+            continue
         desc = loader._short_desc(meta.get("description", "") or name, suffix="…")
         lines.append(f"- **{meta.get('name', name)}**: {desc} → `{skill_file}`")
     if not lines:

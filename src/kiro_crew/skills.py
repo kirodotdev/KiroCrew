@@ -625,11 +625,20 @@ def _decode_skill_text(raw: bytes, *, strict: bool = True) -> str:
     ``\r``, nothing would match ``always`` or ``pinned``, and skill bodies would
     silently stop being injected there while Linux and macOS looked fine.
 
+    ``utf-8-sig`` for the same reason: a UTF-8 file saved "with BOM" (Notepad and
+    other Windows editors) is valid UTF-8 whose first character is U+FEFF, which
+    is not content. Left in, it sits in front of the ``---`` fence, so the
+    frontmatter grammar (column 0, position 0) finds no block and the skill lists
+    with no metadata -- and the mark itself lands in the injected body. The codec
+    strips one leading mark and is otherwise plain UTF-8: a file without one
+    decodes byte-for-byte as before, and a file that is not UTF-8 at all (UTF-16,
+    which opens with ``0xFF``) still raises under *strict*.
+
     *strict* decoding propagates invalid UTF-8, which a WRITER must hear
     (``update_auto_skill`` carries version metadata across a rewrite). Callers
     that only render text pass ``strict=False``.
     """
-    text = raw.decode("utf-8") if strict else raw.decode("utf-8", errors="replace")
+    text = raw.decode("utf-8-sig") if strict else raw.decode("utf-8-sig", errors="replace")
     # Universal newlines, matching TEXT-mode reads: CRLF and lone CR both fold.
     return text.replace("\r\n", "\n").replace("\r", "\n")
 
@@ -2847,6 +2856,28 @@ class SkillsLoader:
         self._fm_cache[key] = (mtime, meta)
         return meta
 
+    def _readable_frontmatter(
+        self,
+        path: Path,
+        *,
+        within: str | None,
+        mtime: float | None = None,
+        canonical_root: str | None = None,
+    ) -> dict[str, str] | None:
+        """Frontmatter for a READER, or ``None`` when the row must be dropped.
+
+        The reader-side counterpart of :meth:`_cached_frontmatter`, whose
+        failures propagate for the writers' sake. Contract and rationale:
+        ``skill_runtime.listing._readable_frontmatter``.
+        """
+        return _listing._readable_frontmatter(
+            self,
+            path,
+            within=within,
+            mtime=mtime,
+            canonical_root=canonical_root,
+        )
+
     def _confined_frontmatter_and_size(self, path: Path, within: str) -> tuple[dict[str, str], int]:
         """Read confined metadata before any path-following metadata probe."""
         refusal_reasons: list[str] = []
@@ -4965,7 +4996,11 @@ class SkillsLoader:
         visible = self._iter_visible(project_dir) if cap > 0 else ()
         text_words: set[str] = words_of(text) if cap > 0 else set()
         for name, skill_file, _within in visible:
-            meta = self._cached_frontmatter(skill_file, within=_within)
+            # A reader on the per-message path: one SKILL.md that is not UTF-8
+            # costs its own match, never the turn (rationale on the helper).
+            meta = self._readable_frontmatter(skill_file, within=_within)
+            if meta is None:
+                continue
             if meta.get("always", "").strip().lower() == "true":
                 continue
             triggers = meta.get("triggers", "")
