@@ -6,7 +6,10 @@ All AWS I/O is mocked at the cloud.aws chokepoint (run_aws / checked / checked_j
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
+import subprocess
 
 import pytest
 
@@ -32,22 +35,63 @@ class TestSubTemplateSyntax:
         ]
         assert not bad, f"illegal !Sub variable(s): {bad}"
 
-    def test_bootstrap_enforces_node_major_floor(self):
-        # The frontend build (vite 8 + rolldown) needs Node >=22; AL2023's default
+    def test_bootstrap_enforces_node_version_floor(self):
+        # The frontend build (vite 8 + rolldown) needs Node >=22.12.0; AL2023's default
         # AppStream nodejs is 18, which fails with a node:util/styleText SyntaxError.
-        # The template must (a) declare the >=22 floor, (b) upgrade via a PINNED
+        # The template must (a) declare the full-version floor, (b) upgrade via a PINNED
         # official nodejs.org tarball when the installed node is too old (dnf/NodeSource
         # is a dead end on AL2023 — its modular filtering keeps reinstalling node 18),
         # verifying the tarball's SHA-256 before extracting as root, and (c) fail the
         # bootstrap if it still cannot reach the floor.
         text = ec2.load_template()
-        assert "NODE_MAJOR_MIN=22" in text
+        assert "NODE_MIN=22.12.0" in text
+        assert "sort -V -C" in text
         assert "nodejs.org/dist/" in text
         assert 'fail "Node.js too old' in text
         # The tarball MUST be integrity-checked before it is extracted as root.
         assert "sha256sum -c" in text
         assert "9e7905fdee722f9650a03ae644b51c4c6effd3b98ac93c588700072ab35c9ddb" in text
         assert "e05a4d65232ae2b27b3d77da2e368522fb46b923335b8e0d5f77624c32484044" in text
+
+    @pytest.mark.skipif(os.name == "nt" or shutil.which("bash") is None, reason="POSIX bash + GNU sort")
+    @pytest.mark.parametrize(
+        ("version", "ok"),
+        [
+            ("v22.0.0", False),
+            ("v22.11.9", False),
+            ("v20.19.0", False),
+            ("v22.12.0", True),
+            ("v22.14.1", True),
+            ("v24.1.0", True),
+            (None, False),
+        ],
+    )
+    def test_bootstrap_node_floor_check_runs(self, tmp_path, version, ok):
+        # Run the template's own `node_floor_ok` (lifted verbatim) against a fake
+        # `node`, so the check is executed, not just pattern-matched.
+        text = ec2.load_template()
+        lines = [ln.strip() for ln in text.splitlines()]
+        floor = next(ln for ln in lines if ln.startswith("NODE_MIN="))
+        fn = next(ln for ln in lines if ln.startswith("node_floor_ok() {"))
+        binbox = tmp_path / "bin"
+        binbox.mkdir()
+        if version is not None:
+            node = binbox / "node"
+            node.write_text(f'#!/bin/sh\necho "{version}"\n')
+            node.chmod(0o755)
+        for util in ("sort", "printf"):
+            real = shutil.which(util)
+            if real:
+                (binbox / util).symlink_to(real)
+        rc = subprocess.run(
+            [shutil.which("bash"), "-c", f"{floor}\n{fn}\nnode_floor_ok"],
+            env={"PATH": str(binbox)},
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=30,
+        ).returncode
+        assert (rc == 0) is ok, (version, rc)
 
     def test_failure_reason_leads_with_the_error_not_the_log_tail(self):
         # CloudFormation's reason is read PREFIX-first (the CLI's streamed progress

@@ -545,11 +545,11 @@ Resources:
           # fall back to a pinned official nodejs.org tarball -- we AVOID
           # dnf/NodeSource because AL2023's modular filtering kept reinstalling the
           # distro node 18. /usr/local/bin precedes /usr/bin so the tarball shadows it.
-          NODE_MAJOR_MIN=22
+          # Full-version floor, as MIN_NODE_VERSION in constants.py.
+          NODE_MIN=22.12.0
+          node_floor_ok() { printf '%s\n' "v$NODE_MIN" "$(node --version 2>/dev/null)" | sort -V -C; }
           command -v node >/dev/null 2>&1 || dnf install -y nodejs npm || true
-          NODE_MAJOR=$(node --version 2>/dev/null | sed -n 's/^v\([0-9][0-9]*\).*/\1/p' | head -1)
-          [ -n "$NODE_MAJOR" ] || NODE_MAJOR=0
-          if [ "$NODE_MAJOR" -lt "$NODE_MAJOR_MIN" ]; then
+          if ! node_floor_ok; then
             NODE_V=v22.12.0
             case "$(uname -m)" in
               aarch64) NODE_ARCH=linux-arm64; NODE_SHA=9e7905fdee722f9650a03ae644b51c4c6effd3b98ac93c588700072ab35c9ddb ;;
@@ -568,10 +568,8 @@ Resources:
             ln -sf /usr/local/$NODE_TARB/bin/npm /usr/local/bin/npm
             ln -sf /usr/local/$NODE_TARB/bin/npx /usr/local/bin/npx
             hash -r 2>/dev/null || true
-            NODE_MAJOR=$(node --version 2>/dev/null | sed -n 's/^v\([0-9][0-9]*\).*/\1/p' | head -1)
-            [ -n "$NODE_MAJOR" ] || NODE_MAJOR=0
           fi
-          [ "$NODE_MAJOR" -ge "$NODE_MAJOR_MIN" ] || fail "Node.js too old (major $NODE_MAJOR, need >=$NODE_MAJOR_MIN)"
+          node_floor_ok || fail "Node.js too old ($(node --version 2>/dev/null || echo missing), need >=v$NODE_MIN)"
           echo "node: $(command -v node) $(node --version 2>/dev/null || echo missing)"
           echo "npm:  $(command -v npm) $(npm --version 2>/dev/null || echo missing)"
 

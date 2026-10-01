@@ -51,7 +51,14 @@ from kiro_crew.config.loader import (
     build_provider_factory,
 )
 from kiro_crew.config.paths import _default_home, _legacy_home
-from kiro_crew.constants import BANNER, MIN_NODE_MAJOR, env_flag_enabled
+from kiro_crew.constants import (
+    BANNER,
+    MIN_NODE_VERSION,
+    env_flag_enabled,
+    node_too_old_message,
+    node_version_meets_floor,
+    parse_node_version,
+)
 from kiro_crew.crash_guard import install as _install_crash_guard
 from kiro_crew.env import git_build_info
 from kiro_crew.gateway_lock import LIVE_HOLDER_EXIT_CODE, GatewayLock, GatewayLockError
@@ -306,7 +313,13 @@ def _ensure_node(proj_dir: str = "") -> bool:
 
 
 def _node_ok() -> bool:
-    """Check if node >= MIN_NODE_MAJOR is available."""
+    """Check that a node of the supported MAJOR is on PATH.
+
+    The answer gates the ensure-node repair at gateway boot and stays major-only,
+    so the full floor adds no boot-time install. A node of that major but below
+    the full ``MIN_NODE_VERSION`` still passes and logs a warning naming the exact
+    required version and how to update.
+    """
     node = shutil.which("node")
     if not node:
         return False
@@ -326,8 +339,12 @@ def _node_ok() -> bool:
             text=True,
             timeout=5,
         )
-        major = int(node_ver.stdout.strip().lstrip("v").split(".")[0])
-        return major >= MIN_NODE_MAJOR
+        version = parse_node_version(node_ver.stdout)
+        if version is None:
+            return False
+        if not node_version_meets_floor(version, MIN_NODE_VERSION):
+            logging.getLogger(__name__).warning(node_too_old_message(version, MIN_NODE_VERSION))
+        return version[0] >= MIN_NODE_VERSION[0]
     except Exception:
         return False
 

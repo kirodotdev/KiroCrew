@@ -1155,6 +1155,10 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # classification as ``cli_doctor.py::_doctor`` above.
         "cli_doctor.py::_discord_intent_grants",
         "cli_doctor.py::_doctor_mcp_tools",
+        # ``node -v`` with a fixed argv and a 5 s timeout, read-only, to judge the
+        # installed Node against ``MIN_NODE_VERSION``. Split out of ``_doctor``
+        # unchanged; same classification as ``cli.py::_node_ok``.
+        "cli_doctor.py::_report_node",
         # The AST heuristic matches ``asyncio.run`` (attr ``run`` on base
         # ``asyncio``) driving one async capability-manager read from the
         # loop-less doctor path so the Credentials section can report whether this

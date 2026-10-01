@@ -105,7 +105,7 @@ the container security model.
 
 ### Build from source
 
-macOS and Linux require Python 3.12+, Node.js 22+ (24 LTS recommended), and
+macOS and Linux require Python 3.12+, Node.js 22.12+ (24 LTS recommended), and
 npm. The default ACP backend also requires
 [`kiro-cli`](https://kiro.dev/docs/cli/): install it on the Gateway host and run
 `kiro-cli login` before using that backend. Other verified ACP harnesses have

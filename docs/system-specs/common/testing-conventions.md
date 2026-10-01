@@ -1227,7 +1227,7 @@ measures, never above.
 - **A capability `skipif` must observe the tool's VERSION, not merely its presence.**
   `shutil.which("node") is not None` is not "node works here": `import.meta.dirname` is
   undefined before Node 20.11, so two tests ran and failed on a host whose `PATH` led
-  with Node 18 while the repo declares `engines.node >= 22`. Gate on the floor the code
+  with Node 18 while the repo declares `engines.node >= 22.12.0`. Gate on the floor the code
   under test actually needs, and probe it the way the tests will experience it.
 
 - **If you stub the only thing that releases a resource, the fixture owes the release.**
@@ -1844,7 +1844,7 @@ carrying forward:
   uses `import.meta.dirname`, **undefined before Node 20.11**, so `path.resolve(undefined, "..")`
   raises `ERR_INVALID_ARG_TYPE` and two tests failed in all five runs on a host whose
   PATH led with Node 18 — while the repo declares `.node-version` = 24 and
-  `engines.node >= 22`. This is the rule already stated for config ("a `skipif` helper
+  `engines.node >= 22.12.0`. This is the rule already stated for config ("a `skipif` helper
   must observe what the tests will observe") extended to a version floor. Same shape as
   the per-user-install resolvers below: presence is not capability.
 

@@ -25,7 +25,7 @@ Four parts, in the order you will need them:
   with launchd instead of systemd.
 - **Python**: 3.12 or newer (`setup.cfg` sets `python_requires = >=3.12`).
 - **Node.js**: needed to build the dashboard bundle. `website/package.json`
-  declares `"node": ">=22"`; `kirocrew doctor` warns below Node 22.
+  declares `"node": ">=22.12.0"`; `kirocrew doctor` fails below Node 22.12.0, and startup logs a warning.
 - **RAM**: there is no single published floor, because the footprint scales with
   concurrent sessions, spawned subagents, and MCP servers. Two figures from the
   code give you the shape of it: `acp/runtime.py` recycles a long-lived

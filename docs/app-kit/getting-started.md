@@ -5,7 +5,7 @@ Build, install, and run your first Kiro Crew app in 5 minutes.
 ## Prerequisites
 
 - Kiro Crew installed and running (`kirocrew gateway`)
-- Node.js 22+ (24 LTS recommended) (for apps with UI)
+- Node.js 22.12+ (24 LTS recommended) (for apps with UI)
 
 ## 1. Create an App Directory
 
