@@ -2182,10 +2182,18 @@ describe('MembersPage side panel (Notes / Work log / Dashboard / Schedules) and 
       row({ name: 'quiet', slug: 'quiet' }),
     ])
     await rosterRow('oncall')
+    // The most recently used crewmate opens by default, and its identity pill
+    // in the thread header says "Idle" by design (once visibly, once for
+    // screen readers). Wait for that pill so the case always runs against the
+    // page it is checking, not only when the header happens to render late.
+    await screen.findByTestId('member-identity-pill')
     // The preview is the row's sub-line, like a session row. Presence rides
-    // the avatar dot, so a textual status label must not come back.
-    expect(screen.getByText('Six new issues triaged.')).toBeTruthy()
-    expect(screen.queryByText(/^(idle|working)$/i)).toBeNull()
+    // the avatar dot, so a textual status label must not come back in the
+    // ROSTER. The header's activity line is not a roster row, so the label
+    // check is scoped to the roster column.
+    expect(roster().getByText('Six new issues triaged.')).toBeTruthy()
+    expect(roster().queryByText(/^(idle|working)$/i)).toBeNull()
+    expect(roster().getByText('quiet')).toBeTruthy()
   })
 
   it('a projection left behind by a refused append does not outrank the transcript preview', async () => {
