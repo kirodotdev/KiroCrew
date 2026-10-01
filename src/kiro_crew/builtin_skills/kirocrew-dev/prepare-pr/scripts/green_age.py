@@ -45,10 +45,13 @@ Exit:   0 FRESH (no overlap) | 30 STALE (rebase and re-run) | 2 environment erro
 """
 
 import argparse
+import ast
+import functools
 import re
 import shutil
 import subprocess
 import sys
+import warnings
 
 # Exit codes, named so the callers in SKILL.md and pr_status.py cannot drift
 # from the values here.
@@ -79,10 +82,14 @@ GENERIC_DIR_NAMES = frozenset(
     }
 )
 
-# `from X import a, b` and `import X.Y, Z`, with optional indentation: an import
-# inside a function body binds the same module as one at column 0.
+# The LINE reading of a file (see `_import_statements`): `from X import a, b` and
+# `import X.Y, Z`, with optional indentation, since an import inside a function
+# body -- or inside a child-process script held in a string -- binds the same
+# module as one at column 0. The base is either a (possibly relative) dotted name
+# or dots alone: a bare `from . import a` / `from .. import a` names no module
+# after its dots.
 _IMPORT_RE = re.compile(
-    r"^[ \t]*(?:from[ \t]+(?P<from>\.*[A-Za-z_][\w.]*)[ \t]+import[ \t]+(?P<names>.+)"
+    r"^[ \t]*(?:from[ \t]+(?P<from>\.*[A-Za-z_][\w.]*|\.+)[ \t]+import[ \t]+(?P<names>.+)"
     r"|import[ \t]+(?P<plain>[A-Za-z_][\w.,\t ]*))$",
     re.MULTILINE,
 )
@@ -206,39 +213,114 @@ def imported_modules(text, path=""):
     given, because skipping it is a false FRESH -- the dangerous direction.
     ``src/kiro_crew/knowledge/retrieval.py`` writing ``from .._sqlite_compat
     import x`` binds ``kiro_crew._sqlite_compat``, and a PR changing that module
-    is a real overlap that a skipped import reports as no overlap at all. With no
+    is a real overlap that a skipped import reports as no overlap at all. A bare
+    relative import is the same rule with an empty tail:
+    ``src/kiro_crew/taskq/dependency.py`` writing ``from . import adapters``
+    binds ``kiro_crew.taskq`` and ``kiro_crew.taskq.adapters``: the named
+    submodule is matched like any other, and a name that is not a module -- a
+    function the package's ``__init__.py`` defines -- still reaches that
+    ``__init__.py`` through the package entry. With no
     ``path`` (a bare text probe) a relative target cannot be resolved and is
     skipped, which is why the callers always pass one.
     """
-    found = set()
+    found: set[str] = set()
     package = _package_of(path) if path else None
-    for m in _IMPORT_RE.finditer(text or ""):
-        if m.group("plain"):
-            for chunk in m.group("plain").split(","):
-                name = chunk.strip().split(" as ")[0].strip()
-                if name and not name.startswith("."):
-                    found.add(name)
-            continue
-        base = (m.group("from") or "").strip()
-        if not base:
+    for base, names in _import_statements(text or ""):
+        if base is None:
+            found.update(name for name in names if name and not name.startswith("."))
             continue
         if base.startswith("."):
             base = _resolve_relative(base, package)
-            if not base:
-                continue
+        if not base:
+            continue
         found.add(base)
-        names = (m.group("names") or "").split("#", 1)[0].strip()
+        # `*` and anything else that is not an identifier names no submodule.
+        for leaf in names:
+            if re.match(r"^[A-Za-z_]\w*$", leaf):
+                found.add(base + "." + leaf)
+    return found
+
+
+@functools.lru_cache(maxsize=256)
+def _import_statements(text):
+    """``(base, names)`` for every import ``text`` makes, read two ways at once.
+
+    ``base`` is None for a plain ``import a.b, c``, whose ``names`` are the
+    modules, and otherwise the ``from`` target spelled with its leading dots.
+
+    The syntax tree (:func:`_parsed_imports`) reads what a line scan misreads:
+    a trailing comment, a ``)`` inside one, a statement split across lines. The
+    line scan (:func:`_scanned_imports`) reads what the tree cannot: an import
+    inside a string a test hands to a child interpreter, which really runs it,
+    and every import of a blob that does not parse. Their UNION is used, so
+    neither reading can turn an overlap the other sees into a false FRESH; an
+    import-shaped line in a docstring over-reports, which is the safe direction.
+
+    A leading byte-order mark is dropped first: ``git show`` keeps it, and it
+    would fail the parse and hide the first line from the scan.
+
+    Cached because :func:`_imports_touch` re-reads a facade package's
+    ``__init__.py`` for every moved file that imports the package, and a parse
+    costs an order of magnitude more than the line scan.
+    """
+    text = text.lstrip("\ufeff")
+    return tuple(_parsed_imports(text) or ()) + tuple(_scanned_imports(text))
+
+
+def _parsed_imports(text):
+    """The import statements in ``text``'s syntax tree, or None when it does not parse.
+
+    It does not parse when the syntax is newer than the running interpreter, the
+    blob is truncated, or it nests deeper than the parser's stack (CPython raises
+    MemoryError for that one). A blob's compile-time warnings (an invalid escape
+    in a string) are not this script's output, so they are silenced.
+
+    Only statement lists are walked: an import is always a statement, and
+    visiting every expression node costs ten times as much for nothing.
+    """
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            tree = ast.parse(text)
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        return None
+    statements: list[tuple[str | None, list[str]]] = []
+    pending: list[ast.AST] = [tree]
+    while pending:
+        node = pending.pop()
+        if isinstance(node, ast.Import):
+            statements.append((None, [alias.name for alias in node.names]))
+        elif isinstance(node, ast.ImportFrom):
+            base = "." * node.level + (node.module or "")
+            statements.append((base, [alias.name for alias in node.names]))
+        # Bodies of functions, classes, branches, loops, `with`, `try` and its
+        # handlers, and `match` cases. An expression's `body`/`orelse` (a lambda,
+        # a conditional expression) is a single node, never a list.
+        for field in ("body", "orelse", "finalbody", "handlers", "cases"):
+            children = getattr(node, field, None)
+            if isinstance(children, list):
+                pending.extend(children)
+    return statements
+
+
+def _scanned_imports(text):
+    """The ``(base, names)`` of :func:`_import_statements`, from a line scan."""
+
+    def leaves(spelled):
+        return [chunk.strip().split(" as ")[0].strip() for chunk in spelled.split(",")]
+
+    statements: list[tuple[str | None, list[str]]] = []
+    for m in _IMPORT_RE.finditer(text):
+        if m.group("plain"):
+            statements.append((None, leaves(m.group("plain"))))
+            continue
+        names = m.group("names").split("#", 1)[0].strip()
         if names.startswith("(") and ")" not in names:
             # A parenthesized import spans lines; its names run to the close paren.
             close = text.find(")", m.end())
             names += re.sub(r"#[^\n]*", "", text[m.end() : close if close != -1 else None])
-        if names.startswith("*"):
-            continue
-        for chunk in names.strip("()").split(","):
-            leaf = chunk.strip().split(" as ")[0].strip()
-            if re.match(r"^[A-Za-z_]\w*$", leaf):
-                found.add(base + "." + leaf)
-    return found
+        statements.append((m.group("from"), leaves(names.strip("()"))))
+    return statements
 
 
 def _package_init_paths(package):

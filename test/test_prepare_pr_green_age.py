@@ -272,6 +272,99 @@ def test_relative_import_resolution_follows_pythons_own_rules(mod) -> None:
     assert mod._resolve_relative("..x", None) == ""
 
 
+_DEPENDENCY = "src/kiro_crew/taskq/dependency.py"
+# taskq/dependency.py's only binding of its `adapters` subpackage, inside a
+# function body: a bare relative import, so nothing names the module before
+# `import`.
+_DEPENDENCY_LOADER = (
+    "def _load():\n    from . import adapters as _adapters_pkg\n    return _adapters_pkg\n"
+)
+
+
+def test_a_moved_caller_with_only_a_bare_relative_import_is_stale(
+    mod, monkeypatch, pair, capsys
+) -> None:
+    """`from . import adapters` names its module after `import`, not after the dots.
+
+    A regex that wanted an identifier after the dots never matched this line, so
+    a moved `taskq/dependency.py` reaching a changed `taskq/adapters/github.py`
+    only through it shares no directory and no test stem with it: the head read
+    FRESH.
+    """
+    pair.branch_changes({"src/kiro_crew/taskq/adapters/github.py": "VALUE = 2\n"})
+    pair.base_gains({_DEPENDENCY: _DEPENDENCY_LOADER})
+
+    code = _run_main(mod, monkeypatch, pair)
+    payload = _summary(mod)
+
+    assert code == mod.EXIT_STALE
+    assert [(o["moved"], o["class"], o["mine"]) for o in payload["overlap"]] == [
+        (_DEPENDENCY, "import", "kiro_crew.taskq.adapters.github")
+    ]
+
+
+def test_a_bare_relative_import_binds_each_named_submodule(mod) -> None:
+    found = mod.imported_modules(_DEPENDENCY_LOADER, _DEPENDENCY)
+    assert {"kiro_crew.taskq", "kiro_crew.taskq.adapters"} <= found
+    # An alias is the local name, never a module.
+    assert "kiro_crew.taskq._adapters_pkg" not in found
+
+    # Each further dot climbs one package, as Python resolves it.
+    facade = "def settle():\n    from .. import subagent as _facade\n"
+    assert mod._parsed_imports(facade)
+    assert {"kiro_crew", "kiro_crew.subagent"} <= mod.imported_modules(
+        facade, "src/kiro_crew/subagent_manager/waves.py"
+    )
+
+    # A parenthesized list spans lines, and every name in it -- aliased or
+    # commented -- binds its own submodule.
+    text = "from .. import (\n    store,  # the queue\n    waits as w,\n)\n"
+    found = mod.imported_modules(text, "src/kiro_crew/taskq/adapters/github.py")
+    assert {"kiro_crew.taskq", "kiro_crew.taskq.store", "kiro_crew.taskq.waits"} <= found
+    assert "kiro_crew.taskq.w" not in found
+
+    # Climbing past the top is not a real import, so it binds nothing.
+    assert mod.imported_modules("from ... import x\n", _DEPENDENCY) == set()
+
+
+def test_a_bare_relative_name_that_is_no_module_reaches_the_packages_init(mod) -> None:
+    """`from .. import helper` may name a function the package `__init__.py` defines."""
+    found = mod.imported_modules("from .. import helper\n", "src/kiro_crew/taskq/dependency.py")
+
+    assert mod._imports_touch(found, mod.dotted_module_paths(["src/kiro_crew/__init__.py"])) == (
+        "kiro_crew"
+    )
+    # The root package entry reaches only the root's own __init__.py, never every
+    # module below it.
+    assert mod._imports_touch(found, {"kiro_crew.sel"}) == ""
+
+
+def test_imports_are_read_from_the_syntax_tree_and_the_lines(mod) -> None:
+    """Each spelling below is missed by one of the two readings alone."""
+    path = "test/test_main_entrypoint.py"
+    # A trailing comment on a plain import.
+    assert "kiro_crew.__main__" in mod.imported_modules(
+        "import kiro_crew.__main__  # noqa: F401\n", path
+    )
+    # A `)` inside a comment does not close a parenthesized list.
+    text = "from kiro_crew import (\n    agent,  # loop (see #123)\n    sel,\n)\n"
+    assert {"kiro_crew.agent", "kiro_crew.sel"} <= mod.imported_modules(text, path)
+    # An import in a script a test hands to a child interpreter really runs.
+    child = 'CHILD = """\nimport kiro_crew.vector_memory\n"""\nsubprocess.run([sys.executable, "-c", CHILD])\n'
+    assert "kiro_crew.vector_memory" in mod.imported_modules(child, path)
+    # A byte-order mark hides neither the parse nor the first line.
+    assert "kiro_crew.ledger.store" in mod.imported_modules(
+        "\ufefffrom kiro_crew.ledger import store\n", path
+    )
+
+
+def test_a_file_that_does_not_parse_is_still_scanned_line_by_line(mod) -> None:
+    """Reading no imports out of an unparsable blob would be a false FRESH."""
+    text = "def broken(:\n" + _DEPENDENCY_LOADER
+    assert mod._parsed_imports(text) is None
+    assert "kiro_crew.taskq.adapters" in mod.imported_modules(text, _DEPENDENCY)
+
+
 def test_the_skill_states_the_loops_own_bounds(mod) -> None:
     """A rule that can re-push every cycle needs a stated end, or it never settles.
 
@@ -451,6 +544,13 @@ def test_dotted_module_paths_drops_the_source_root_and_resolves_packages(mod) ->
     assert mod.dotted_module_paths(["docs/readme.md", "src/kiro_crew/not-a-module/x.py"]) == set()
 
 
+def test_a_file_too_deep_to_parse_is_still_scanned_line_by_line(mod) -> None:
+    """CPython raises MemoryError for a parser stack overflow; that is no verdict."""
+    text = "from kiro_crew import sel\nX = " + "(" * 6000 + ")" * 6000 + "\n"
+    assert mod._parsed_imports(text) is None
+    assert "kiro_crew.sel" in mod.imported_modules(text, "src/kiro_crew/gen.py")
+
+
 def test_imported_modules_reads_every_form_an_import_can_take(mod) -> None:
     text = (
         "import os, sys as system\n"
@@ -458,10 +558,14 @@ def test_imported_modules_reads_every_form_an_import_can_take(mod) -> None:
         "from . import sibling\n"
         "from .relative.deep import thing\n"
         "from kiro_crew.chat import *\n"
-        "    from kiro_crew.deep import nested\n"
         "from kiro_crew.parens import (one, two)\n"
+        "def f():\n"
+        "    from kiro_crew.deep import nested\n"
     )
     found = mod.imported_modules(text)
+    # The tree reads every form below on its own, not only through the line scan.
+    parsed = {name for base, names in mod._parsed_imports(text) if base is None for name in names}
+    assert parsed == {"os", "sys"}
 
     assert {"os", "sys"} <= found
     assert {"kiro_crew.ledger", "kiro_crew.ledger.store", "kiro_crew.ledger.kinds"} <= found
@@ -470,8 +574,10 @@ def test_imported_modules_reads_every_form_an_import_can_take(mod) -> None:
     assert {"kiro_crew.parens.one", "kiro_crew.parens.two"} <= found
     # A star import names the package and nothing more.
     assert "kiro_crew.chat" in found
-    # A relative import's target depends on the importing file's own package,
-    # which this script does not resolve, so it is skipped rather than guessed.
+    # An alias is the local name, never a module.
+    assert "system" not in found and "kiro_crew.ledger.k" not in found
+    # A relative import's target depends on the importing file's own package;
+    # with no path to resolve it against, it is skipped rather than guessed.
     assert not any(name.startswith(".") for name in found)
     assert "sibling" not in found
 
