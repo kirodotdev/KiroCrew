@@ -7957,3 +7957,102 @@ class TestStripExtendedLengthPrefix:
         monkeypatch.setattr(pc, "strip_extended_length_prefix", record)
         workflow_memory._allocator_path(tmp_path / "run-ids.json", tmp_path)
         assert calls, "workflow_memory did not reach the shared fold"
+
+
+class TestOpenLockFileForSweep:
+    """``open_lock_file_for_sweep`` lets the orphan-lock sweep delete a lock file
+    while still holding its own verification handle on it. On POSIX an open fd
+    never blocks an unlink; on Windows a CRT descriptor omits
+    ``FILE_SHARE_DELETE``, so the sweep's own handle would block the delete with a
+    sharing violation and residue would never be reclaimed (the shard-2 reds). The
+    Windows path must open with delete-sharing.
+    """
+
+    def test_posix_opens_rdwr_without_following_links_and_allows_unlink_while_open(
+        self, tmp_path, monkeypatch
+    ):
+        if not pc.IS_POSIX:
+            pytest.skip("exercises real POSIX unlink-while-open semantics")
+        monkeypatch.setattr(pc, "IS_POSIX", True)
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        lock = tmp_path / "lock"
+        lock.write_bytes(b"")
+        fd = pc.open_lock_file_for_sweep(lock)
+        try:
+            # The whole point: the inode is deletable while this fd is open, which
+            # is what lets the sweep remove residue under its own held lock.
+            os.unlink(lock)
+            assert not lock.exists()
+            assert os.fstat(fd).st_size == 0
+        finally:
+            os.close(fd)
+
+    def test_posix_refuses_a_symlink_at_the_name(self, tmp_path, monkeypatch):
+        if not pc.IS_POSIX:
+            pytest.skip("exercises real POSIX symlink + O_NOFOLLOW semantics")
+        if not hasattr(os, "O_NOFOLLOW"):
+            pytest.skip("O_NOFOLLOW unavailable")
+        monkeypatch.setattr(pc, "IS_POSIX", True)
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        target = tmp_path / "target"
+        target.write_bytes(b"")
+        link = tmp_path / "lock"
+        os.symlink(target, link)
+        with pytest.raises(OSError):
+            pc.open_lock_file_for_sweep(link)
+
+    def test_windows_createfilew_requests_delete_sharing_and_read_write(self, monkeypatch):
+        # Simulate the Windows path and capture the CreateFileW arguments. The
+        # share mode must include FILE_SHARE_DELETE so the subsequent unlink lands
+        # while this handle (and its byte-range lock) is still held; without it a
+        # sharing violation leaves genuine residue behind.
+        captured: dict = {}
+
+        def create_file(path, access, share, security, disposition, flags, template):
+            captured.update(
+                path=path,
+                access=access,
+                share=share,
+                disposition=disposition,
+                flags=flags,
+            )
+            return 0x1234
+
+        kernel = types.SimpleNamespace(
+            CreateFileW=create_file,
+            CloseHandle=lambda _h: True,
+        )
+        monkeypatch.setattr(pc, "IS_POSIX", False)
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc.ctypes, "WinDLL", lambda *_a, **_k: kernel, raising=False)
+        monkeypatch.setattr(
+            pc, "msvcrt", types.SimpleNamespace(open_osfhandle=lambda _h, _flags: 77), raising=False
+        )
+
+        fd = pc.open_lock_file_for_sweep(r"C:\agents\alias.lock")
+
+        assert fd == 77
+        assert captured["share"] == pc._WIN_FILE_SHARE_READ_WRITE_DELETE
+        assert captured["share"] & 0x00000004  # FILE_SHARE_DELETE bit is set
+        assert captured["access"] == pc._WIN_GENERIC_READ | pc._WIN_GENERIC_WRITE
+        assert captured["disposition"] == pc._WIN_OPEN_EXISTING  # never creates
+        assert captured["flags"] == 0  # no OPEN_REPARSE_POINT; caller pre-checks
+
+    def test_windows_closes_the_native_handle_when_wrapping_fails(self, monkeypatch):
+        closed: list = []
+        kernel = types.SimpleNamespace(
+            CreateFileW=lambda *_a: 0x1234,
+            CloseHandle=lambda h: closed.append(h) or True,
+        )
+        monkeypatch.setattr(pc, "IS_POSIX", False)
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc.ctypes, "WinDLL", lambda *_a, **_k: kernel, raising=False)
+
+        def boom(_h, _flags):
+            raise OSError("wrap failed")
+
+        monkeypatch.setattr(pc, "msvcrt", types.SimpleNamespace(open_osfhandle=boom), raising=False)
+
+        with pytest.raises(OSError):
+            pc.open_lock_file_for_sweep(r"C:\agents\alias.lock")
+        assert closed == [0x1234]

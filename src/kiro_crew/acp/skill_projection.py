@@ -1587,10 +1587,16 @@ def _unlink_unheld_lock_file(path: Path, identity: tuple[int, int]) -> bool:
     old one, and their rewrites would race. So the file is opened without
     following links, its identity checked, and an exclusive lock taken without
     waiting: a held lock is left alone, and the unlink happens while ours is held.
+
+    The open is :func:`platform_compat.open_lock_file_for_sweep`, not a bare
+    ``os.open``: on Windows a CRT descriptor omits ``FILE_SHARE_DELETE``, so our
+    own verification handle would block the very ``unlink`` below with a sharing
+    violation and the sweep would leave genuine residue behind. The helper opens
+    with delete-sharing on Windows so the unlink lands while the handle (and its
+    lock) is still held, matching POSIX, where an open fd never blocks an unlink.
     """
-    flags = os.O_RDWR | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
     try:
-        fd = os.open(path, flags)
+        fd = platform_compat.open_lock_file_for_sweep(path)
     except OSError:
         return False
     try:

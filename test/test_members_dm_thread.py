@@ -2558,6 +2558,97 @@ class TestMemberActivityRoute:
         assert len(data["entries"]) == handler_mod._ACTIVITY_LIMIT
 
 
+class TestEventlogServiceRetirementReleasesHandles:
+    """Retiring the service must release its cached handles NOW, not at a GC pass.
+
+    Resetting the singleton reference at a test boundary is necessary but not
+    sufficient for the Windows-only shard-8 red on ``TestMemberActivityRoute``: ``get_service()`` and its cached
+    ``MemberLog`` -> ``CrewLog`` chain sit in a REFERENCE CYCLE (the projection
+    registry holds ``set_on_change(service._on_change)``, a bound method back to
+    the service), so ``set_service(None)`` drops the last EXTERNAL reference but
+    does not free the graph -- the cycle keeps it alive until the cyclic collector
+    runs. Each cached ``CrewLog`` releases its write lease through a
+    ``weakref.finalize`` that fires only then, and holds its file descriptor until
+    then. On POSIX that deferral is invisible; on Windows the still-open descriptor
+    keeps a mandatory lock that pins the (torn-down) home directory and fails the
+    next writer on the inheriting worker -- ``record_activity`` returns ``False``,
+    which is exactly the observed traceback (`assert record_activity(...) is False`).
+
+    So retirement (``set_service`` replacing the singleton, and ``get_service``
+    rebuilding on a home change) must DETERMINISTICALLY release those handles and
+    sever the cycle rather than wait for GC. These tests pin that contract on the
+    retired instance directly, so they fail on Linux the moment the release is
+    dropped -- the CAUSE, provable without Windows.
+    """
+
+    def test_set_service_none_clears_cached_logs_and_breaks_cycle(self, tmp_path):
+        from kiro_crew.eventlog import service as svc_mod
+
+        # Touch the service so it caches a MemberLog whose CrewLog took the lease.
+        assert record_activity(CREW, "dashboard_chat-1", "persistent", via="chat")
+        svc = svc_mod.get_service()
+        assert len(svc._logs) >= 1
+        assert svc._registry._on_change is not None
+
+        # Retire exactly as the conftest floor does.
+        svc_mod.set_service(None)
+
+        # Without the deterministic close these both stay put: the service is
+        # cycle-pinned, so its _logs dict (and the Windows file handles those logs
+        # hold) survive the reset until a GC pass that may never come mid-run.
+        assert len(svc._logs) == 0, (
+            "retired service still caches MemberLog handles; on Windows their open "
+            "descriptors pin the torn-down home and fail the next worker's write"
+        )
+        assert svc._registry._on_change is None, (
+            "registry -> service cycle not severed on retirement; the service and "
+            "its handles then live until the cyclic collector runs"
+        )
+
+    def test_home_change_rebuild_retires_the_previous_service(self, tmp_path, monkeypatch):
+        from kiro_crew.eventlog import service as svc_mod
+
+        # First home: build a live service with a cached log.
+        assert record_activity(CREW, "dashboard_chat-1", "persistent", via="chat")
+        first = svc_mod.get_service()
+        assert len(first._logs) >= 1
+
+        # Move the home so the NEXT get_service() rebuilds (production never does
+        # this; a test boundary does). The rebuild must retire `first`.
+        new_home = tmp_path / "second-home"
+        new_home.mkdir()
+        monkeypatch.setenv("KIROCREW_HOME", str(new_home))
+        import kiro_crew.config.paths as paths
+
+        monkeypatch.setattr(paths, "_resolved_home", None, raising=False)
+
+        second = svc_mod.get_service()
+        assert second is not first
+        assert str(second.root) != str(first.root)
+        # The replaced service was retired by the rebuild, not left for GC.
+        assert len(first._logs) == 0
+        assert first._registry._on_change is None
+
+    def test_close_is_idempotent_and_reopens_on_demand(self, tmp_path):
+        from kiro_crew.eventlog import service as svc_mod
+        from kiro_crew.members import slug_for_name
+
+        assert record_activity(CREW, "dashboard_chat-1", "persistent", via="chat")
+        svc = svc_mod.get_service()
+        slug = slug_for_name(CREW)
+
+        svc.close()
+        assert len(svc._logs) == 0
+        svc.close()  # second call must not raise
+
+        # close() releases the cached handle; it does not delete data. A read after
+        # it re-opens the on-disk log on demand (the same behaviour a fresh service
+        # gives), so the member's history is still there -- what was released is the
+        # HANDLE, not the record.
+        history = svc.history(slug)
+        assert [ev["data"].get("session") for ev in history] == ["dashboard_chat-1"]
+
+
 # The briefing read fails CLOSED on platforms without O_NOFOLLOW (Windows) --
 # see read_member_briefing. Tests asserting briefing CONTENT through the
 # endpoint are therefore POSIX-only; the fail-closed flag itself is what the
