@@ -42,6 +42,7 @@ const { exitImmersiveModes } = require("./blocking-prompt");
 const { createMetricsRecorder } = require("./perf-metrics");
 const { initMochi, shutdownMochi } = require("./mochi/index");
 const { borrowSessionToken } = require("./mochi-session-token");
+const { clearCacheOnUpgrade } = require("./upgrade-cache");
 const {
   initCrewCompanion,
   shutdownCrewCompanion,
@@ -576,6 +577,18 @@ app.whenReady().then(async () => {
 
   await gateway.start();
   await gateway.connect(mainWindow);
+  // The gateway now answers and the dashboard is loading. After an upgrade, drop
+  // the old build's cached copies and connect again: a fresh navigation replaces
+  // the pending one, where a reload would replay the uncommitted splash.
+  const cleared = await clearCacheOnUpgrade({
+    session: session.defaultSession,
+    store,
+    appVersion: app.getVersion(),
+    probe: () => fetch(BACKEND_URL + "/api/health", { signal: AbortSignal.timeout(2000) })
+      .then((response) => (response.ok ? response.json() : null)).catch(() => null),
+    log: glog,
+  });
+  if (cleared && !mainWindow.isDestroyed()) await gateway.connect(mainWindow);
 
   // Optional companion surfaces start only after the primary gateway handoff.
   // Both are best-effort and must never block an otherwise usable dashboard.
