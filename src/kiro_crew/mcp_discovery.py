@@ -45,6 +45,7 @@ from kiro_crew.env import (
 )
 from kiro_crew.executors import mcp_probe_executor
 from kiro_crew.hooks import safe_read_file
+from kiro_crew.json_line import parse_json_object_line
 from kiro_crew.mcp_cleanup import (
     invalid_disabled_flag,
     mcp_entry_is_muted,
@@ -1799,12 +1800,9 @@ async def _read_jsonrpc_response(resp: aiohttp.ClientResponse) -> dict:
             if line.startswith("data:"):
                 payload = line[len("data:") :].strip()
                 if payload:
-                    try:
-                        parsed = json.loads(payload)
-                        if isinstance(parsed, dict) and "id" in parsed:
-                            last = parsed
-                    except json.JSONDecodeError:
-                        pass
+                    parsed = parse_json_object_line(payload)
+                    if parsed is not None and "id" in parsed:
+                        last = parsed
         return last
     return await resp.json()
 
@@ -2143,7 +2141,7 @@ async def _probe_remote(
 
 
 # Cap on how many *non-JSON banner* lines to skip while waiting for the
-# JSON-RPC handshake. Only undecodable banner/log lines count toward this cap;
+# JSON-RPC handshake. Only lines that are not JSON count toward this cap;
 # blank lines and well-formed JSON-RPC notifications are bounded by the shared
 # timeout budget alone (so a chatty-but-spec-compliant server that emits many
 # notifications before its response is not mis-capped). A well-behaved server
@@ -2167,7 +2165,7 @@ async def _read_stdio_jsonrpc_response(
     This consumes lines within one overall ``timeout`` budget, skipping blank
     lines, non-JSON lines, and JSON-RPC *notifications* (objects without an
     ``id``), and returns the first JSON object that carries an ``id`` (a
-    response). Only non-JSON *banner* lines count toward ``_MAX_BANNER_LINES``;
+    response). Only lines that are not JSON count toward ``_MAX_BANNER_LINES``;
     blanks and notifications are bounded by the timeout alone. Returns ``None``
     on EOF or once more than ``_MAX_BANNER_LINES`` banner lines have arrived
     (the flood case is logged). Raises ``asyncio.TimeoutError`` if the deadline
@@ -2204,9 +2202,10 @@ async def _read_stdio_jsonrpc_response(
             continue  # blank line — bounded by the timeout budget, not the cap
         try:
             parsed = json.loads(text)
-        except json.JSONDecodeError:
-            # Non-JSON banner/log line (e.g. `aim` self-update). Only these
-            # count toward the flood cap.
+        except (ValueError, RecursionError):
+            # Not JSON: a banner/log line (e.g. `aim` self-update), or a value
+            # nested past the decoder's ceiling. Only these count toward the
+            # flood cap.
             banner_lines += 1
             if not first_banner:
                 first_banner = text[:120]
@@ -2221,8 +2220,9 @@ async def _read_stdio_jsonrpc_response(
                 return None
             continue
         # A JSON-RPC response always carries "id"; skip notifications (objects
-        # with "method" and no "id") and non-object payloads. These do NOT
-        # count toward the banner cap — the timeout budget bounds them.
+        # with "method" and no "id") and non-object payloads (a progress
+        # counter, a list). These do NOT count toward the banner cap — the
+        # timeout budget bounds them.
         if isinstance(parsed, dict) and "id" in parsed:
             return parsed
 

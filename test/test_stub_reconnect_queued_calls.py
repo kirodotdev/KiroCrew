@@ -362,6 +362,20 @@ async def test_an_unparseable_line_is_held_verbatim(answers: _Answers) -> None:
     assert _held(session) == [junk]
 
 
+@pytest.mark.asyncio
+async def test_a_line_nested_past_the_decoder_is_held_verbatim(answers: _Answers) -> None:
+    """``RecursionError`` is not a ``ValueError``, and it must not end the drain."""
+    from stray_line_helpers import too_deep_line
+
+    deep = too_deep_line()
+    session = _session(deep, _request(3))
+
+    await _drain_until(session, lambda: session._line_q.qsize() == 0, grace_secs=60.0)
+
+    assert answers.ids == []
+    assert _held(session) == [deep, _request(3)]
+
+
 # --- (e) ordering and the handback ------------------------------------------
 
 
@@ -538,6 +552,35 @@ async def test_the_next_bridge_forwards_held_frames_before_newer_ones() -> None:
 
     forwarded = [json.loads(b) for b in gateway.written if b.strip() and "id" in json.loads(b)]
     assert [f["id"] for f in forwarded] == [1, 2]
+    assert session.reason == "stdin_eof"
+
+
+@pytest.mark.asyncio
+async def test_the_bridge_forwards_a_stray_line_verbatim_and_goes_on() -> None:
+    """``stdin_pump`` parses only for bookkeeping: a line it cannot parse, one
+    nested past the decoder's ceiling included, is forwarded as it came. A
+    ``RecursionError`` out of it would end the bridge with no reason, which is
+    not reconnectable, and the session would lose every pooled server behind it."""
+    from stray_line_helpers import STRAY_LINES
+
+    strays = [make() for make in STRAY_LINES.values()]
+    session = _session(*strays, _request(2))
+    session._line_q.put_nowait(b"")
+
+    gateway = _CaptureWriter()
+    await asyncio.wait_for(
+        stub_mod.run_bridge(
+            asyncio.StreamReader(),
+            gateway,  # type: ignore[arg-type]
+            asyncio.Event(),
+            stdout_writer=_CaptureWriter(),  # type: ignore[arg-type]
+            session=session,
+        ),
+        timeout=10,
+    )
+
+    assert all(line in gateway.written for line in strays)
+    assert _request(2) in gateway.written
     assert session.reason == "stdin_eof"
 
 

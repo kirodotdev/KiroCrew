@@ -15,8 +15,10 @@ import contextlib
 import json
 from typing import TYPE_CHECKING, Any, Optional
 
+from kiro_crew.json_line import parse_json_object_line
 from kiro_crew.mcp_gateway.daemon import logger
 from kiro_crew.mcp_gateway.pool import READ_BUFFER_LIMIT_BYTES
+from kiro_crew.validation import JSONRPC_PARSE_ERROR
 
 if TYPE_CHECKING:
     from kiro_crew.mcp_gateway import gatewayd as facade
@@ -55,11 +57,8 @@ def _is_ping_frame(line: bytes) -> bool:
     # Cheap pre-check before a JSON parse: a ping is a tiny control frame.
     if len(line) > 256 or b"ping" not in line:
         return False
-    try:
-        msg = json.loads(line.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        return False
-    return isinstance(msg, dict) and msg.get("type") == "ping"
+    msg = parse_json_object_line(line)
+    return msg is not None and msg.get("type") == "ping"
 
 
 async def _read_first_frame(reader: asyncio.StreamReader) -> Optional[dict[str, Any]]:
@@ -94,15 +93,9 @@ async def _read_first_frame(reader: asyncio.StreamReader) -> Optional[dict[str, 
         logger.warning("stub first frame too large: %d bytes", len(line))
         return None
 
-    try:
-        msg = json.loads(line.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        logger.warning("stub first frame not valid JSON: %s", exc)
-        return None
-
-    if not isinstance(msg, dict):
-        logger.warning("stub first frame not a JSON object: got %s", type(msg).__name__)
-        return None
+    msg = parse_json_object_line(line)
+    if msg is None:
+        logger.warning("stub first frame is not a JSON object; closing")
     return msg
 
 
@@ -141,6 +134,15 @@ def _jsonrpc_error(msg: dict[str, Any], reason: str) -> dict[str, Any]:
         "jsonrpc": "2.0",
         "id": msg.get("id"),
         "error": {"code": -32000, "message": reason},
+    }
+
+
+def _jsonrpc_parse_error(req_id: Any) -> dict[str, Any]:
+    """The JSON-RPC 2.0 parse-error answer to a frame whose id was recovered."""
+    return {
+        "jsonrpc": "2.0",
+        "id": req_id,
+        "error": {"code": JSONRPC_PARSE_ERROR, "message": "Parse error"},
     }
 
 

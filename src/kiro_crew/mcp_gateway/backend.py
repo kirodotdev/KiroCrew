@@ -20,12 +20,11 @@ import contextlib
 import json
 import logging
 import os
-import re
 import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Mapping, Optional
+from typing import Any, Awaitable, Mapping, Optional
 
 from kiro_crew import platform_compat
 from kiro_crew.constants import (
@@ -34,6 +33,12 @@ from kiro_crew.constants import (
     SUBAGENT_TIMEOUT_SECS,
 )
 from kiro_crew.executors import image_executor, maintenance_executor
+from kiro_crew.json_line import (
+    ID_PROBE_BYTES,
+    parse_json_object_line,
+    recover_line_id,
+    recover_top_level_id,
+)
 from kiro_crew.mcp_caller import (
     CALLER_CAPABILITY_KEY,
     CALLER_META_KEY,
@@ -266,6 +271,37 @@ _GLOBAL_BROADCAST_NOTIFICATIONS: frozenset[str] = frozenset({
 _RESOURCES_SUBSCRIBE_METHOD = "resources/subscribe"
 _RESOURCES_UNSUBSCRIBE_METHOD = "resources/unsubscribe"
 _RESOURCES_UPDATED_NOTIFICATION = "notifications/resources/updated"
+
+
+def _parse_initialize_response(response: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    """``(result, supports_caller_identity)`` from a backend's initialize reply.
+
+    Raises :class:`ValueError` for an error reply or a result that is not an
+    object: the handshake did not complete. A ``capabilities`` that is
+    present but not an object is cosmetic, so it is replaced with ``{}`` (and
+    logged) rather than failing the shared backend's handshake over it, and
+    the returned result carries the replacement so no later session is
+    replayed the bad value.
+    """
+    if "error" in response:
+        raise ValueError(f"backend returned initialize error: {response['error']}")
+    result = response.get("result")
+    if not isinstance(result, dict):
+        raise ValueError(f"initialize response missing/malformed result: {response!r}")
+    capabilities = result.get("capabilities", {})
+    if not isinstance(capabilities, dict):
+        logger.warning(
+            "backend initialize result carries a non-object capabilities (%s); "
+            "treating it as {}",
+            type(capabilities).__name__,
+        )
+        capabilities = {}
+        result = {**result, "capabilities": capabilities}
+    experimental = capabilities.get("experimental") or {}
+    supports_caller_identity = isinstance(experimental, dict) and (
+        CALLER_CAPABILITY_KEY in experimental
+    )
+    return result, supports_caller_identity
 
 
 def _is_heartbeat_id(msg_id: Any) -> bool:
@@ -2031,24 +2067,29 @@ class Backend:
                     # hanging the next request. The reader ``limit`` is
                     # ``READ_BUFFER_LIMIT_BYTES`` (64 MiB by default, and
                     # operator-tunable); a longer line is pathological and dropped.
-                    # Keep only the first _OVERSIZE_KEEP bytes — enough for
-                    # _fail_oversize_request to parse the JSON-RPC id — while
-                    # still draining the whole line off the pipe. Accumulating
-                    # the entire (possibly multi-GB) line would itself be the
-                    # memory blow-up this guard exists to prevent.
-                    _OVERSIZE_KEEP = 512
+                    # Keep only the first and the last _OVERSIZE_KEEP bytes —
+                    # enough for _fail_oversize_request to find the JSON-RPC
+                    # id, which a server writes first or (the MCP TypeScript
+                    # SDK) last — while still draining the whole line off the
+                    # pipe. Accumulating the entire (possibly multi-GB) line
+                    # would itself be the memory blow-up this guard exists to
+                    # prevent.
+                    _OVERSIZE_KEEP = ID_PROBE_BYTES
                     oversize_head = b""
+                    oversize_tail = b""
                     try:
                         while True:
                             try:
-                                tail = await self.stdout.readuntil(b"\n")
-                                if len(oversize_head) < _OVERSIZE_KEEP:
-                                    oversize_head += tail[:_OVERSIZE_KEEP - len(oversize_head)]
-                                break
+                                piece = await self.stdout.readuntil(b"\n")
+                                done = True
                             except asyncio.LimitOverrunError as exc:
-                                chunk = await self.stdout.readexactly(exc.consumed)
-                                if len(oversize_head) < _OVERSIZE_KEEP:
-                                    oversize_head += chunk[:_OVERSIZE_KEEP - len(oversize_head)]
+                                piece = await self.stdout.readexactly(exc.consumed)
+                                done = False
+                            if len(oversize_head) < _OVERSIZE_KEEP:
+                                oversize_head += piece[:_OVERSIZE_KEEP - len(oversize_head)]
+                            oversize_tail = (oversize_tail + piece[-_OVERSIZE_KEEP:])[-_OVERSIZE_KEEP:]
+                            if done:
+                                break
                     except (asyncio.IncompleteReadError, Exception):  # noqa: BLE001
                         pass
                     logger.warning(
@@ -2058,69 +2099,13 @@ class Backend:
                     # Fail the pending request so the waiting stub is not left
                     # dangling. Without this the heartbeat eventually kills the
                     # shared backend for ALL co-pooled sessions.
-                    await self._fail_oversize_request(oversize_head)
+                    await self._isolate_stdout_line(
+                        self._fail_oversize_request(oversize_head, oversize_tail)
+                    )
                     continue
                 if not line:
                     break
-                # Enforce the inline-image budget on tool results BEFORE the
-                # spill step: a downscaled image both shrinks what spill writes
-                # to disk and, more importantly, keeps an oversized image block
-                # out of kiro-cli's conversation history, where it would be
-                # replayed to the model on every later turn and wedge the
-                # session (see kiro_crew.imaging MAX_IMAGE_EDGE_PX). Two
-                # stages on two pools: the byte probe admits every frame that
-                # COULD carry an image block (its negative is provable, but
-                # any escaped non-ASCII text also matches), so a cheap
-                # parse-confirm runs on the maintenance pool first -- like the
-                # spill rewrite -- and only genuinely image-bearing frames
-                # reach the image pool, where seconds-long Pillow decodes
-                # from one server would otherwise head-of-line block every
-                # other server's text-only results behind the probe's false
-                # positives.
-                if line_may_carry_image_block(line):
-                    try:
-                        loop = asyncio.get_running_loop()
-                        image_msg = await loop.run_in_executor(
-                            maintenance_executor(),
-                            parse_image_bearing_frame,
-                            line,
-                        )
-                        if image_msg is not None:
-                            line = await loop.run_in_executor(
-                                image_executor(),
-                                rewrite_image_frame,
-                                image_msg,
-                                line,
-                                self.pool_key.server_name,
-                            )
-                    except Exception:
-                        # The rewrite never RAN (executor shutdown/saturation);
-                        # per-block fail-closed lives inside the hook. Routing
-                        # the raw line keeps co-pooled tenants alive, but the
-                        # frame may carry an unverified image -- log loudly
-                        # enough to diagnose a wedge that follows.
-                        logger.warning(
-                            "image-budget rewrite could not run for %s; routing raw line",
-                            self.pool_key.server_name,
-                            exc_info=True,
-                        )
-                # Spill oversized (but under the read limit) responses to a
-                # sidecar file and truncate inline, so a large-but-legitimate
-                # tool result doesn't balloon the shared daemon's memory or the
-                # agent's context. Offloaded to the maintenance executor (short
-                # filesystem I/O); a spill failure falls back to the raw line.
-                if len(line) > RESPONSE_SPILL_THRESHOLD_BYTES:
-                    try:
-                        line = await asyncio.get_running_loop().run_in_executor(
-                            maintenance_executor(),
-                            maybe_spill_response,
-                            line,
-                            self.pool_key.server_name,
-                            RESPONSE_SPILL_THRESHOLD_BYTES,
-                        )
-                    except Exception:
-                        logger.debug("spill-to-file failed; routing raw line", exc_info=True)
-                await self._route_backend_line(line)
+                await self._isolate_stdout_line(self._handle_stdout_line(line))
         except asyncio.CancelledError:
             raise
         except Exception:  # pragma: no cover — defensive
@@ -2134,16 +2119,377 @@ class Backend:
             self._dead_reason = reason
             await self._broadcast_backend_gone(reason)
 
-    async def _route_backend_line(self, line: bytes) -> None:
+    async def _isolate_stdout_line(self, handling: Awaitable[None]) -> None:
+        """Await one stdout line's handling; a raise costs that line only.
+
+        The pump is shared by every co-pooled session and its ``finally``
+        fails them all, so nothing one line does may end it.
+        """
         try:
-            msg = json.loads(line.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            logger.debug("backend non-JSON stdout line dropped: %r", line[:200])
+            await handling
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - one line must not end the shared pump
+            logger.warning(
+                "backend pid=%s could not handle a stdout line; dropping it",
+                self.pid,
+                exc_info=True,
+            )
+
+    async def _handle_stdout_line(self, line: bytes) -> None:
+        """Budget images, spill an oversized result, then route one line."""
+        # Enforce the inline-image budget on tool results BEFORE the
+        # spill step: a downscaled image both shrinks what spill writes
+        # to disk and, more importantly, keeps an oversized image block
+        # out of kiro-cli's conversation history, where it would be
+        # replayed to the model on every later turn and wedge the
+        # session (see kiro_crew.imaging MAX_IMAGE_EDGE_PX). Two
+        # stages on two pools: the byte probe admits every frame that
+        # COULD carry an image block (its negative is provable, but
+        # any escaped non-ASCII text also matches), so a cheap
+        # parse-confirm runs on the maintenance pool first -- like the
+        # spill rewrite -- and only genuinely image-bearing frames
+        # reach the image pool, where seconds-long Pillow decodes
+        # from one server would otherwise head-of-line block every
+        # other server's text-only results behind the probe's false
+        # positives.
+        if line_may_carry_image_block(line):
+            try:
+                loop = asyncio.get_running_loop()
+                image_msg = await loop.run_in_executor(
+                    maintenance_executor(),
+                    parse_image_bearing_frame,
+                    line,
+                )
+                if image_msg is not None:
+                    line = await loop.run_in_executor(
+                        image_executor(),
+                        rewrite_image_frame,
+                        image_msg,
+                        line,
+                        self.pool_key.server_name,
+                    )
+            except Exception:
+                # The rewrite never RAN (executor shutdown/saturation);
+                # per-block fail-closed lives inside the hook. Routing
+                # the raw line keeps co-pooled tenants alive, but the
+                # frame may carry an unverified image -- log loudly
+                # enough to diagnose a wedge that follows.
+                logger.warning(
+                    "image-budget rewrite could not run for %s; routing raw line",
+                    self.pool_key.server_name,
+                    exc_info=True,
+                )
+        # Spill oversized (but under the read limit) responses to a
+        # sidecar file and truncate inline, so a large-but-legitimate
+        # tool result doesn't balloon the shared daemon's memory or the
+        # agent's context. Offloaded to the maintenance executor (short
+        # filesystem I/O); a spill failure falls back to the raw line.
+        if len(line) > RESPONSE_SPILL_THRESHOLD_BYTES:
+            try:
+                line = await asyncio.get_running_loop().run_in_executor(
+                    maintenance_executor(),
+                    maybe_spill_response,
+                    line,
+                    self.pool_key.server_name,
+                    RESPONSE_SPILL_THRESHOLD_BYTES,
+                )
+            except Exception:
+                logger.debug("spill-to-file failed; routing raw line", exc_info=True)
+        await self._route_backend_line(line)
+
+    async def _route_backend_line(self, line: bytes) -> None:
+        """Route one stdout line; a line that does not parse costs that line.
+
+        A line that does not parse is dropped, unless it is recognisably a
+        response to a pending request, which is then failed rather than left
+        to hang. When routing a response raises after it took its pending
+        request, that request is answered with an error rather than silence
+        (the pump's per-line guard drops the line itself).
+        """
+        msg = parse_json_object_line(line)
+        if msg is None:
+            await self._fail_unparseable_response(line)
             return
-        if not isinstance(msg, dict):
+        method = msg.get("method")
+        if method is not None and not isinstance(method, str):
+            logger.debug("backend line with a non-string method dropped: %r", line[:200])
             return
         msg_id = msg.get("id")
-        method = msg.get("method")
+        # The request a RESPONSE answers, so a raise after routing popped it
+        # can still answer it. A server-to-client request claims nothing.
+        claimed = (
+            self._pending_requests.get(str(msg_id))
+            if msg_id is not None and method is None
+            else None
+        )
+        try:
+            await self._route_backend_message(msg, msg_id, method)
+        except Exception:
+            if claimed is not None and self._pending_requests.get(str(msg_id)) is not claimed:
+                await self._fail_claimed_request(
+                    claimed, msg_id, "backend response could not be routed; request dropped"
+                )
+            raise
+
+    async def _fail_unparseable_response(self, line: bytes) -> None:
+        """Fail the pending request an unparseable RESPONSE line answers, if any.
+
+        Only a line that opens like an object is probed, for its top-level
+        ``"id"`` at either end of the line; a log line on stdout is just
+        dropped. The probe reads a bounded head and tail, so it runs inline:
+        a scan of the whole line would hold this shared pump, and through the
+        GIL the whole event loop, for seconds on a multi-MiB line. Without
+        this a response nested past the decoder's ceiling would leave its
+        caller waiting for the heartbeat's hard ceiling.
+        """
+        msg_id = recover_line_id(line) if line.lstrip().startswith(b"{") else None
+        pending = self._pending_requests.pop(str(msg_id), None) if msg_id is not None else None
+        if pending is None:
+            logger.debug("backend non-JSON stdout line dropped: %r", line[:200])
+            return
+        logger.warning(
+            "backend pid=%s response to id=%r could not be parsed; failing that request",
+            self.pid,
+            msg_id,
+        )
+        await self._fail_claimed_request(
+            pending, msg_id, "backend response could not be parsed; request dropped"
+        )
+
+    async def _fail_claimed_request(
+        self, pending: "_PendingRequest", msg_id: Any, message: str
+    ) -> None:
+        """Settle a request whose response this pump took but could not use.
+
+        The request is settled exactly as an error response from the server
+        would settle it, so whatever waits on it (the forwarding stub, queued
+        initialize waiters, the MCP Apps fetch, lease riders and release
+        waiters) is answered, and no lease bookkeeping is left stuck. The
+        error is the gateway's, not the server's verdict, so a subscribe
+        settled this way is an UNKNOWN verdict: the server may hold the lease,
+        and the subscribe arms release it rather than read a refusal.
+        """
+        if pending.stub_uuid == "__init__" and self._init_state != "in_flight":
+            # The handshake already settled before the raise; failing it now
+            # would mark a ready backend dead with nobody left to answer.
+            return
+        await self._settle(
+            pending,
+            {
+                "jsonrpc": "2.0",
+                "id": msg_id,
+                "error": {"code": _JSONRPC_SERVER_ERROR, "message": message},
+            },
+            verdict_unknown=True,
+        )
+
+    async def _settle(
+        self,
+        pending: "_PendingRequest",
+        msg: dict[str, Any],
+        *,
+        verdict_unknown: bool = False,
+    ) -> None:
+        """Settle one popped pending request with *msg*, the response to it.
+
+        Every path that ends a forwarded request runs through here: a real
+        response, and the error the pump synthesises for a response it could
+        not parse or route, or one too large to read. Whatever waits on the
+        request (initialize waiters, the MCP Apps fetch, lease riders and
+        release waiters, the forwarding stub) is answered the same way.
+        ``verdict_unknown`` marks that synthetic error: its ``error`` is not
+        the server's refusal, so a subscribe arm treats it like a malformed
+        verdict and releases a lease nobody routes.
+        """
+        if pending.t_start_ms:
+            # Fire-and-forget: awaiting the emit here (even with its file
+            # I/O offloaded to a thread) yields the shared stdout pump,
+            # adding head-of-line latency to co-pooled sessions whenever
+            # the metrics volume is slow. Schedule it off the hot path.
+            #
+            # ``error_text`` is non-None for BOTH failure shapes (a
+            # JSON-RPC ``error`` and a ``result`` with ``isError: true``),
+            # so a tool that ran and reported its own failure is scored
+            # ``ok: false`` here rather than counted as a success.
+            error_text = _tool_call_error_text(msg)
+            self._spawn_metric_task({
+                "ts": int(time.time() * 1000),
+                "method": pending.method,
+                "dur_ms": round(time.monotonic() * 1000.0 - pending.t_start_ms, 3),
+                "pool": self.pool_key.human_readable(),
+                "pid": self.pid,
+                "ok": error_text is None,
+                "stub": pending.stub_uuid,
+            })
+            if error_text is not None and pending.method == "tools/call":
+                # One greppable breadcrumb per failed tool call (isError or
+                # a JSON-RPC error), so an operator searching gateway.log
+                # for an MCP outage finds the failing call rather than only
+                # the session's lifecycle lines. WARNING matches the
+                # severity of the per-session claim-push outcomes logged on
+                # this seam.
+                logger.warning(
+                    "mcp tool call failed: server=%s tool=%s session=%s error=%s",
+                    _log_safe_identifier(self.pool_key.server_name),
+                    _log_safe_identifier(pending.tool_name),
+                    _log_safe_identifier(pending.session_key),
+                    error_text,
+                )
+        if pending.stub_uuid == "__init__":
+            await self._on_upstream_initialize(msg)
+            return
+        if pending.stub_uuid == _APPS_STUB_SENTINEL:
+            # Gateway-originated resources/read reply for an MCP Apps
+            # ui:// fetch — hand it to the parked fetch coroutine, never a
+            # stub. (Already popped above so it is removed exactly once.)
+            fut = pending.apps_future
+            if fut is not None and not fut.done():
+                fut.set_result(msg)
+            return
+        if pending.stub_uuid == _RELEASE_STUB_SENTINEL:
+            # Gateway-originated lease maintenance (release after the last
+            # subscriber detached, a post-respawn replay, or a transition
+            # orphaned by its forwarder retracting/detaching mid-flight).
+            # Riders that parked on the URI after the orphaning are
+            # settled on the server's verdict exactly as the normal grant
+            # arm settles them — dropping a parking here would leave that
+            # stub's subscribe swallowed with no response, hung forever.
+            if pending.method == _RESOURCES_SUBSCRIBE_METHOD and pending.resource_uri:
+                orphan_uri = pending.resource_uri
+                self._lease_awaiting_grant.discard(orphan_uri)
+                riders = self._lease_pending_riders.pop(orphan_uri, [])
+                if _is_success_response(msg):
+                    granted: set[str] = set()
+                    # A replay grant is honoured only while its stub is
+                    # still attached — detach cannot see a sentinel-owned
+                    # pending, so this is where a mid-replay disconnect is
+                    # caught; granting the dead UUID would pin the lease
+                    # to a stub that can never drain it.
+                    if (
+                        pending.replay_stub
+                        and pending.replay_stub in self._stub_inboxes
+                    ):
+                        granted.add(pending.replay_stub)
+                    granted.update(rider_uuid for rider_uuid, _ in riders)
+                    # Routing is committed BEFORE any reply is awaited: a
+                    # reply into a full inbox detaches its stub, which
+                    # prunes the live table — updating the table from a
+                    # local set afterwards would reinsert the detached
+                    # UUID and route updates at a stub that is gone.
+                    if granted:
+                        self._resource_subscriptions.setdefault(
+                            orphan_uri, set()).update(granted)
+                        self._orphaned_leases.discard(orphan_uri)
+                        if (
+                            self.supports_caller_identity
+                            and pending.caller is not None
+                            and pending.replay_stub in granted
+                        ):
+                            # A replayed identity grant is held by the
+                            # replay's caller — record it so a later
+                            # detach can release as the right principal.
+                            self._grant_callers[
+                                (orphan_uri, pending.replay_stub)
+                            ] = pending.caller
+                    elif orphan_uri not in self._resource_subscriptions:
+                        # A granted lease nobody wants: release on the
+                        # spot, as the caller that took it (a replay's
+                        # grant belongs to the replay's principal).
+                        await self._release_upstream_subscriptions(
+                            [orphan_uri], caller=pending.caller)
+                    for rider_uuid, rider_id in riders:
+                        await self._reply_locally(rider_uuid, rider_id, result={})
+                else:
+                    error_obj = msg.get("error")
+                    # A refusal proves the server holds no lease; a
+                    # MALFORMED frame (no error either) or the gateway's own
+                    # error for a reply it could not use proves nothing —
+                    # the subscribe may well have taken. Denying routing
+                    # while keeping such a lease would strand it live
+                    # upstream, with every later update charged to the
+                    # server as a hazard, so an unsettled verdict with
+                    # nobody routed releases the lease on the spot.
+                    if (error_obj is None or verdict_unknown) and (
+                        orphan_uri not in self._resource_subscriptions
+                    ):
+                        await self._release_upstream_subscriptions(
+                            [orphan_uri], caller=pending.caller)
+                    for rider_uuid, rider_id in riders:
+                        await self._reply_locally(
+                            rider_uuid, rider_id,
+                            error=error_obj if isinstance(error_obj, dict) else {
+                                "code": _JSONRPC_SERVER_ERROR,
+                                "message": "resources/subscribe refused by server",
+                            },
+                        )
+            elif pending.method == _RESOURCES_UNSUBSCRIBE_METHOD and pending.resource_uri:
+                # A gateway-originated (or detach-orphaned) release
+                # settled. On success the lease is cleanly gone; on a
+                # refusal with nobody left to route to, the server has
+                # RETAINED a subscription that is now a consequence of
+                # the broker's own lease handling — its updates are
+                # dropped without recording a hazard, so the server is
+                # not condemned for behaviour that is correct. A
+                # MALFORMED release response is DELIBERATELY treated as
+                # a refusal here too: on the routing axis that fails
+                # closed, and on the hazard-ledger axis it fails open
+                # (orphan-marked, so unknowable frames are forgiven
+                # rather than charged to the server).
+                _rel_uri = pending.resource_uri
+                self._lease_awaiting_release.discard(_rel_uri)
+                waiters = self._lease_release_waiters.pop(_rel_uri, [])
+                if _is_success_response(msg):
+                    self._orphaned_leases.discard(_rel_uri)
+                    subscribers = self._resource_subscriptions.get(_rel_uri)
+                    if subscribers is not None:
+                        for waiter_uuid, _waiter_id in waiters:
+                            subscribers.discard(waiter_uuid)
+                        if not subscribers:
+                            del self._resource_subscriptions[_rel_uri]
+                    for waiter_uuid, waiter_id in waiters:
+                        await self._reply_locally(
+                            waiter_uuid, waiter_id, result={})
+                    await self._drain_replacement_subscribes(
+                        _rel_uri, released=True)
+                else:
+                    if _rel_uri not in self._resource_subscriptions:
+                        while len(self._orphaned_leases) >= _ORPHANED_LEASES_MAX:
+                            self._orphaned_leases.pop()
+                        self._orphaned_leases.add(_rel_uri)
+                    error_obj = msg.get("error")
+                    for waiter_uuid, waiter_id in waiters:
+                        await self._reply_locally(
+                            waiter_uuid, waiter_id,
+                            error=error_obj if isinstance(error_obj, dict) else {
+                                "code": _JSONRPC_SERVER_ERROR,
+                                "message": "resources/unsubscribe "
+                                           "refused by server",
+                            },
+                        )
+                    await self._drain_replacement_subscribes(
+                        _rel_uri, released=False)
+            return
+        if pending.resource_uri and pending.method in (
+            _RESOURCES_SUBSCRIBE_METHOD, _RESOURCES_UNSUBSCRIBE_METHOD
+        ):
+            await self._on_resource_subscription_response(
+                pending, msg, verdict_unknown=verdict_unknown
+            )
+        # MCP Apps interception: a tools/call result carrying a ui://
+        # resource is parked (the response is held off the stub) while an
+        # out-of-band resources/read fetches the app payload. When it
+        # returns True the (marked) response is delivered asynchronously by
+        # a background task, so DO NOT deliver here.
+        if await self._maybe_intercept_ui_result(pending, msg):
+            self.touch()
+            return
+        rewritten = dict(msg)
+        rewritten["id"] = pending.original_id
+        await self._deliver_to_stub(pending.stub_uuid, rewritten)
+        self.touch()
+
+    async def _route_backend_message(self, msg: dict[str, Any], msg_id: Any, method: Any) -> None:
         if msg_id is not None and method is None:
             # Gateway-internal liveness pong: the heartbeat
             # ping is sent under HEARTBEAT_PING_ID and its reply (result or
@@ -2159,189 +2505,7 @@ class Backend:
                     self.pid, msg_id,
                 )
                 return
-            if pending.t_start_ms:
-                # Fire-and-forget: awaiting the emit here (even with its file
-                # I/O offloaded to a thread) yields the shared stdout pump,
-                # adding head-of-line latency to co-pooled sessions whenever
-                # the metrics volume is slow. Schedule it off the hot path.
-                #
-                # ``error_text`` is non-None for BOTH failure shapes (a
-                # JSON-RPC ``error`` and a ``result`` with ``isError: true``),
-                # so a tool that ran and reported its own failure is scored
-                # ``ok: false`` here rather than counted as a success.
-                error_text = _tool_call_error_text(msg)
-                self._spawn_metric_task({
-                    "ts": int(time.time() * 1000),
-                    "method": pending.method,
-                    "dur_ms": round(time.monotonic() * 1000.0 - pending.t_start_ms, 3),
-                    "pool": self.pool_key.human_readable(),
-                    "pid": self.pid,
-                    "ok": error_text is None,
-                    "stub": pending.stub_uuid,
-                })
-                if error_text is not None and pending.method == "tools/call":
-                    # One greppable breadcrumb per failed tool call (isError or
-                    # a JSON-RPC error), so an operator searching gateway.log
-                    # for an MCP outage finds the failing call rather than only
-                    # the session's lifecycle lines. WARNING matches the
-                    # severity of the per-session claim-push outcomes logged on
-                    # this seam.
-                    logger.warning(
-                        "mcp tool call failed: server=%s tool=%s session=%s error=%s",
-                        _log_safe_identifier(self.pool_key.server_name),
-                        _log_safe_identifier(pending.tool_name),
-                        _log_safe_identifier(pending.session_key),
-                        error_text,
-                    )
-            if pending.stub_uuid == "__init__":
-                await self._on_upstream_initialize(msg)
-                return
-            if pending.stub_uuid == _APPS_STUB_SENTINEL:
-                # Gateway-originated resources/read reply for an MCP Apps
-                # ui:// fetch — hand it to the parked fetch coroutine, never a
-                # stub. (Already popped above so it is removed exactly once.)
-                fut = pending.apps_future
-                if fut is not None and not fut.done():
-                    fut.set_result(msg)
-                return
-            if pending.stub_uuid == _RELEASE_STUB_SENTINEL:
-                # Gateway-originated lease maintenance (release after the last
-                # subscriber detached, a post-respawn replay, or a transition
-                # orphaned by its forwarder retracting/detaching mid-flight).
-                # Riders that parked on the URI after the orphaning are
-                # settled on the server's verdict exactly as the normal grant
-                # arm settles them — dropping a parking here would leave that
-                # stub's subscribe swallowed with no response, hung forever.
-                if pending.method == _RESOURCES_SUBSCRIBE_METHOD and pending.resource_uri:
-                    orphan_uri = pending.resource_uri
-                    self._lease_awaiting_grant.discard(orphan_uri)
-                    riders = self._lease_pending_riders.pop(orphan_uri, [])
-                    if _is_success_response(msg):
-                        granted: set[str] = set()
-                        # A replay grant is honoured only while its stub is
-                        # still attached — detach cannot see a sentinel-owned
-                        # pending, so this is where a mid-replay disconnect is
-                        # caught; granting the dead UUID would pin the lease
-                        # to a stub that can never drain it.
-                        if (
-                            pending.replay_stub
-                            and pending.replay_stub in self._stub_inboxes
-                        ):
-                            granted.add(pending.replay_stub)
-                        granted.update(rider_uuid for rider_uuid, _ in riders)
-                        # Routing is committed BEFORE any reply is awaited: a
-                        # reply into a full inbox detaches its stub, which
-                        # prunes the live table — updating the table from a
-                        # local set afterwards would reinsert the detached
-                        # UUID and route updates at a stub that is gone.
-                        if granted:
-                            self._resource_subscriptions.setdefault(
-                                orphan_uri, set()).update(granted)
-                            self._orphaned_leases.discard(orphan_uri)
-                            if (
-                                self.supports_caller_identity
-                                and pending.caller is not None
-                                and pending.replay_stub in granted
-                            ):
-                                # A replayed identity grant is held by the
-                                # replay's caller — record it so a later
-                                # detach can release as the right principal.
-                                self._grant_callers[
-                                    (orphan_uri, pending.replay_stub)
-                                ] = pending.caller
-                        elif orphan_uri not in self._resource_subscriptions:
-                            # A granted lease nobody wants: release on the
-                            # spot, as the caller that took it (a replay's
-                            # grant belongs to the replay's principal).
-                            await self._release_upstream_subscriptions(
-                                [orphan_uri], caller=pending.caller)
-                        for rider_uuid, rider_id in riders:
-                            await self._reply_locally(rider_uuid, rider_id, result={})
-                    else:
-                        error_obj = msg.get("error")
-                        # A refusal proves the server holds no lease; a
-                        # MALFORMED frame (no error either) proves nothing —
-                        # the subscribe may well have taken. Denying routing
-                        # while keeping such a lease would strand it live
-                        # upstream, with every later update charged to the
-                        # server as a hazard, so an unsettled verdict with
-                        # nobody routed releases the lease on the spot.
-                        if error_obj is None and (
-                            orphan_uri not in self._resource_subscriptions
-                        ):
-                            await self._release_upstream_subscriptions(
-                                [orphan_uri], caller=pending.caller)
-                        for rider_uuid, rider_id in riders:
-                            await self._reply_locally(
-                                rider_uuid, rider_id,
-                                error=error_obj if isinstance(error_obj, dict) else {
-                                    "code": _JSONRPC_SERVER_ERROR,
-                                    "message": "resources/subscribe refused by server",
-                                },
-                            )
-                elif pending.method == _RESOURCES_UNSUBSCRIBE_METHOD and pending.resource_uri:
-                    # A gateway-originated (or detach-orphaned) release
-                    # settled. On success the lease is cleanly gone; on a
-                    # refusal with nobody left to route to, the server has
-                    # RETAINED a subscription that is now a consequence of
-                    # the broker's own lease handling — its updates are
-                    # dropped without recording a hazard, so the server is
-                    # not condemned for behaviour that is correct. A
-                    # MALFORMED release response is DELIBERATELY treated as
-                    # a refusal here too: on the routing axis that fails
-                    # closed, and on the hazard-ledger axis it fails open
-                    # (orphan-marked, so unknowable frames are forgiven
-                    # rather than charged to the server).
-                    _rel_uri = pending.resource_uri
-                    self._lease_awaiting_release.discard(_rel_uri)
-                    waiters = self._lease_release_waiters.pop(_rel_uri, [])
-                    if _is_success_response(msg):
-                        self._orphaned_leases.discard(_rel_uri)
-                        subscribers = self._resource_subscriptions.get(_rel_uri)
-                        if subscribers is not None:
-                            for waiter_uuid, _waiter_id in waiters:
-                                subscribers.discard(waiter_uuid)
-                            if not subscribers:
-                                del self._resource_subscriptions[_rel_uri]
-                        for waiter_uuid, waiter_id in waiters:
-                            await self._reply_locally(
-                                waiter_uuid, waiter_id, result={})
-                        await self._drain_replacement_subscribes(
-                            _rel_uri, released=True)
-                    else:
-                        if _rel_uri not in self._resource_subscriptions:
-                            while len(self._orphaned_leases) >= _ORPHANED_LEASES_MAX:
-                                self._orphaned_leases.pop()
-                            self._orphaned_leases.add(_rel_uri)
-                        error_obj = msg.get("error")
-                        for waiter_uuid, waiter_id in waiters:
-                            await self._reply_locally(
-                                waiter_uuid, waiter_id,
-                                error=error_obj if isinstance(error_obj, dict) else {
-                                    "code": _JSONRPC_SERVER_ERROR,
-                                    "message": "resources/unsubscribe "
-                                               "refused by server",
-                                },
-                            )
-                        await self._drain_replacement_subscribes(
-                            _rel_uri, released=False)
-                return
-            if pending.resource_uri and pending.method in (
-                _RESOURCES_SUBSCRIBE_METHOD, _RESOURCES_UNSUBSCRIBE_METHOD
-            ):
-                await self._on_resource_subscription_response(pending, msg)
-            # MCP Apps interception: a tools/call result carrying a ui://
-            # resource is parked (the response is held off the stub) while an
-            # out-of-band resources/read fetches the app payload. When it
-            # returns True the (marked) response is delivered asynchronously by
-            # a background task, so DO NOT deliver here.
-            if await self._maybe_intercept_ui_result(pending, msg):
-                self.touch()
-                return
-            rewritten = dict(msg)
-            rewritten["id"] = pending.original_id
-            await self._deliver_to_stub(pending.stub_uuid, rewritten)
-            self.touch()
+            await self._settle(pending, msg)
             return
         if method is not None and msg_id is None:
             # Subscription-scoped: ``notifications/resources/updated`` carries
@@ -2532,24 +2696,15 @@ class Backend:
         that registered during the in-flight window would hang forever
         waiting for a cached-initialize that never arrives.
         """
-        if "error" in response:
-            await self._fail_init(f"initialize error: {response['error']}")
-            return
-        result = response.get("result")
-        if not isinstance(result, dict):
-            await self._fail_init(
-                f"initialize response missing/malformed result: {response!r}"
-            )
+        try:
+            result, self.supports_caller_identity = _parse_initialize_response(response)
+        except ValueError as exc:
+            await self._fail_init(str(exc))
             return
         self._init_result = result
         self._init_state = "ready"
         self._init_done_event.set()
         self._cancel_init_deadline()
-        capabilities = result.get("capabilities") or {}
-        experimental = capabilities.get("experimental") or {}
-        self.supports_caller_identity = isinstance(experimental, dict) and (
-            CALLER_CAPABILITY_KEY in experimental
-        )
         logger.info(
             "backend pid=%s initialized supports_caller_identity=%s",
             self.pid, self.supports_caller_identity,
@@ -2951,11 +3106,19 @@ class Backend:
         return False
 
     async def _on_resource_subscription_response(
-        self, pending: "_PendingRequest", msg: dict[str, Any]
+        self,
+        pending: "_PendingRequest",
+        msg: dict[str, Any],
+        *,
+        verdict_unknown: bool = False,
     ) -> None:
         """Apply the lease transition a subscribe/unsubscribe RESPONSE
         confirms or refuses. The wire is one ordered stream, so transitions
         arrive in the order their requests were forwarded.
+
+        ``verdict_unknown`` (see :meth:`_settle`): *msg* is the gateway's
+        error for a reply it could not use, so a subscribe is released as
+        an unsettled verdict, never read as a refusal.
         """
         uri = pending.resource_uri
         ok = _is_success_response(msg)
@@ -2971,8 +3134,9 @@ class Backend:
                         # is certain; detach releases with this caller.
                         self._grant_callers[(uri, pending.stub_uuid)] = (
                             pending.caller)
-                elif "error" not in msg:
-                    # UNSETTLED verdict (neither result nor error): the
+                elif verdict_unknown or "error" not in msg:
+                    # UNSETTLED verdict (neither result nor error, or the
+                    # gateway's error for a reply it could not use): the
                     # subscribe may well have taken upstream, and recording
                     # nothing would strand a live per-caller lease firing
                     # updates that route nowhere. Release it as the caller
@@ -3005,7 +3169,7 @@ class Backend:
             # taken, and denying routing while keeping it would strand a
             # live lease whose every update is charged to the server as a
             # hazard. An unsettled verdict with nobody routed releases it.
-            if error_obj is None and uri not in self._resource_subscriptions:
+            if (error_obj is None or verdict_unknown) and uri not in self._resource_subscriptions:
                 await self._release_upstream_subscriptions([uri])
             for rider_uuid, rider_id in riders:
                 await self._reply_locally(
@@ -3768,67 +3932,29 @@ class Backend:
         self._metric_tasks.add(task)
         task.add_done_callback(self._metric_tasks.discard)
 
-    async def _fail_oversize_request(self, raw: bytes) -> None:
+    async def _fail_oversize_request(self, head: bytes, tail: bytes = b"") -> None:
         """Try to extract the JSON-RPC id from an oversize response and fail
         just that request, so the waiting stub is unblocked without killing
         the entire shared backend.
 
-        Best-effort: if the id cannot be parsed (e.g. the id field is beyond
-        the buffer we captured), fall back to failing the most-recent pending
-        request — at worst one stub gets an error, but the backend stays alive
-        for all others.
+        *head* and *tail* are the kept start and end of the drained line; the
+        id is recovered from the top-level object only, from either end. The
+        request is settled as an error response from the server would settle
+        it: an oversize *initialize* reply fails the handshake and answers
+        every queued waiter, an MCP Apps fetch is resolved at once.
         """
-        msg_id: Any = None
-        # Attempt to parse the id from the beginning of the oversize line.
-        try:
-            # The first ~200 bytes should contain {"jsonrpc":"2.0","id":...
-            prefix = raw[:512].decode("utf-8", errors="replace")
-            partial = json.loads(prefix.split("\n", 1)[0]) if prefix.strip().endswith("}") else None
-            if isinstance(partial, dict):
-                msg_id = partial.get("id")
-        except (ValueError, UnicodeDecodeError):
-            pass
-        # If prefix-parse failed, try a targeted regex for "id": value.
-        if msg_id is None:
-            prefix_str = raw[:256].decode("utf-8", errors="replace")
-            m = re.search(r'"id"\s*:\s*("(?:[^"\\]|\\.)*?"|\d+|null)', prefix_str)
-            if m:
-                try:
-                    msg_id = json.loads(m.group(1))
-                except ValueError:
-                    pass
+        msg_id = recover_top_level_id(head, tail)
         if msg_id is not None:
             pending = self._pending_requests.pop(str(msg_id), None)
-            if pending is not None and pending.stub_uuid == "__init__":
-                # Oversize *initialize* response: failing one request is not
-                # enough — the handshake can never complete, so ``_init_state``
-                # is stuck "in_flight" and every queued stub (plus any
-                # prime_initialize waiter) hangs forever with no wedge the
-                # heartbeat can detect. Recycle the whole backend instead so
-                # every init waiter gets a clean BackendGone and re-establishes
-                # (_broadcast_backend_gone marks init failed + wakes the event).
-                reason = (
-                    f"oversize initialize response (>{READ_BUFFER_LIMIT_BYTES} "
-                    "bytes); recycling shared backend"
-                )
-                self._dead_reason = self._dead_reason or reason
-                await self._broadcast_backend_gone(reason)
-                return
             if pending is not None:
-                err_response = {
-                    "jsonrpc": "2.0",
-                    "id": pending.original_id,
-                    "error": {
-                        "code": -32000,
-                        "message": (
-                            f"response exceeded size limit "
-                            f"({READ_BUFFER_LIMIT_BYTES} bytes); request dropped"
-                        ),
-                    },
-                }
-                await self._deliver_to_stub(pending.stub_uuid, err_response)
+                await self._fail_claimed_request(
+                    pending,
+                    msg_id,
+                    f"response exceeded size limit ({READ_BUFFER_LIMIT_BYTES} bytes); "
+                    "request dropped",
+                )
             return
-        # Id unrecoverable (it sat past the captured prefix): do NOT fail an
+        # Id unrecoverable (it was in neither kept end): do NOT fail an
         # arbitrary pending request — that sends a spurious error to an innocent
         # stub while the real culprit keeps hanging until the wedge timeout.
         # Recycle the shared backend instead so every attached stub gets a clean
@@ -4411,12 +4537,9 @@ async def send_initialize(
     async def _await_response() -> dict[str, Any]:
         while True:
             line = await backend.stdout.readuntil(b"\n")
-            try:
-                msg = json.loads(line.decode("utf-8"))
-            except (UnicodeDecodeError, json.JSONDecodeError):
-                logger.debug("backend pre-init line not JSON; dropping: %r", line[:200])
-                continue
-            if not isinstance(msg, dict):
+            msg = parse_json_object_line(line)
+            if msg is None:
+                logger.debug("backend pre-init line not a JSON object; dropping: %r", line[:200])
                 continue
             if msg.get("id") != _GATEWAY_INIT_ID:
                 continue
@@ -4429,17 +4552,7 @@ async def send_initialize(
             f"backend closed stdout before initialize response: got {len(exc.partial)} bytes"
         ) from exc
 
-    if "error" in response:
-        raise ValueError(f"backend returned initialize error: {response['error']}")
-    result = response.get("result")
-    if not isinstance(result, dict):
-        raise ValueError(f"backend initialize response missing/non-dict result: {response!r}")
-
-    capabilities = result.get("capabilities") or {}
-    experimental = capabilities.get("experimental") or {}
-    backend.supports_caller_identity = isinstance(experimental, dict) and (
-        CALLER_CAPABILITY_KEY in experimental
-    )
+    result, backend.supports_caller_identity = _parse_initialize_response(response)
     # Seed the init cache so a multi-stub flow can replay the result to
     # later attachers without re-issuing the handshake. Single-stub callers
     # (the M1 path) never observe this cache but the tests that drive the

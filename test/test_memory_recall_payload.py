@@ -314,7 +314,7 @@ async def test_actual_stdio_frame_counts_nested_json_escaping_and_content_wrappe
     # Capture the production writer's bytes, after its default ensure_ascii=True
     # JSON encoder. A UTF-8 count of the inner handler string misses this layer.
     frames = []
-    monkeypatch.setattr(mcp_shared, "_use_content_length", content_length)
+    monkeypatch.setattr(mcp_shared, "_framing", "content-length" if content_length else None)
     monkeypatch.setattr(mcp_shared, "_stdout_fd", 98765)
     monkeypatch.setattr(mcp_shared, "_write_all", lambda fd, frame: frames.append(frame))
     request_id = "memory-recall-76c7803c-9890-4427-8500-51c7b531fc99"
@@ -410,7 +410,7 @@ def test_mcp_budget_covers_unicode_expansion_by_final_sanitizer(
         context_cap=context_cap,
     )
     frames = []
-    monkeypatch.setattr(mcp_shared, "_use_content_length", content_length)
+    monkeypatch.setattr(mcp_shared, "_framing", "content-length" if content_length else None)
     monkeypatch.setattr(mcp_shared, "_stdout_fd", 98765)
     monkeypatch.setattr(mcp_shared, "_write_all", lambda fd, frame: frames.append(frame))
     mcp_shared.respond("memory-recall-unicode-expansion", build_tool_response(encoded))

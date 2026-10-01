@@ -53,7 +53,12 @@ on the hot path of every frame of every session:
   on that process, which a user sees as an unexplained chat failure. Every
   failure mode degrades to one log line and a permanent stand-down, after which
   anything still queued is discarded unwritten — one failure costs one line,
-  not one per pending frame.
+  not one per pending frame. A fault of the FRAME rather than the destination
+  -- one nested too deep to scrub, or anything else that fails while the frame
+  is turned into bytes -- skips that frame and leaves recording on, with at
+  most one counted warning a minute; a count still held when the minute is up,
+  recording stands down or the writer stops is logged then, so no skip goes
+  unreported.
 * **It redacts before it writes.** Frames carry tool output, prompts and
   transcripts. Recording runs every string leaf (keys and values, at any
   depth) through the same
@@ -107,9 +112,11 @@ import logging
 import os
 import re
 import stat
+import sys
 import threading
 import time
 from pathlib import Path
+from typing import Any
 
 from kiro_crew import pinned_fs, platform_compat
 from kiro_crew.acp._dispatch import redact_text
@@ -146,6 +153,15 @@ _stand_down_lock = threading.Lock()
 #: thread emits it (:func:`_emit_pending_stand_down`) -- not the file writer,
 #: which may be wedged on the very fault being reported.
 _pending_stand_down: BaseException | None = None
+#: Frames :func:`write_frame` skipped since its last warning, the fault of the
+#: latest one, and when that warning was logged. The drain thread counts; the
+#: drain or the notifier thread (a stand-down) may log, hence the lock.
+_skip_lock = threading.Lock()
+_skipped_frames = 0
+_skip_last_error: BaseException | None = None
+_skip_warned_at: float | None = None
+#: At most one skip warning per this many seconds; it carries the count.
+SKIP_WARNING_INTERVAL_SECS = 60.0
 
 
 class _Writer:
@@ -760,7 +776,7 @@ def _open_private_append(directory: Path, name: str):
     except Exception:
         os.close(fd)
         raise
-    return os.fdopen(fd, "a", encoding="utf-8")
+    return os.fdopen(fd, "ab")
 
 
 def write_frame(backend: str, frame: dict, dest: str) -> None:
@@ -768,7 +784,9 @@ def write_frame(backend: str, frame: dict, dest: str) -> None:
 
     Runs on a worker thread, never on the event loop. Swallows every failure:
     the caller is a transport reader whose job is the session, not the
-    recording.
+    recording. Faults split by STEP: anything that fails while the frame is
+    turned into bytes is that frame's, and skips it; only opening or writing
+    the destination stands recording down.
     """
     if not dest.strip():
         # Path("") resolves to the CWD, so a blank destination would append the
@@ -776,12 +794,95 @@ def write_frame(backend: str, frame: dict, dest: str) -> None:
         # A blank destination means recording is off.
         return
     try:
+        data = _frame_line(frame)
+    except Exception as exc:  # noqa: BLE001 - a bad frame costs that frame
+        _note_skipped_frame(exc)
+        return
+    try:
         directory = Path(dest).expanduser()
-        line = scrub_frame(frame)
         with _open_private_append(directory, f"{fixture_dir_name(backend)}.jsonl") as handle:
-            handle.write(line + "\n")
+            handle.write(data)
     except Exception as exc:  # noqa: BLE001 - a recorder must never take down a reader
         _stand_down(exc)
+
+
+def _frame_line(frame: dict) -> bytes:
+    """The bytes one frame appends: scrubbed JSON, a newline, UTF-8.
+
+    A frame nested past :func:`_scrub_depth_limit` is refused before the walk:
+    the scrub is recursive, and each string leaf is judged against its whole
+    key chain, so a deep frame costs a RecursionError at best and seconds of
+    GIL-held walking at worst. ``backslashreplace`` keeps a lone surrogate (a
+    tool's text cut mid-emoji, which ``json.loads`` keeps) from failing the
+    encode.
+    """
+    if _nests_deeper_than(frame, _scrub_depth_limit()):
+        raise ValueError(f"frame nested deeper than {_scrub_depth_limit()} levels")
+    return (scrub_frame(frame) + "\n").encode("utf-8", "backslashreplace")
+
+
+def _scrub_depth_limit() -> int:
+    """Deepest nesting the recursive scrub is handed: half the recursion limit.
+
+    The other half is headroom for the writer thread's own frames and the leaf
+    redactors the walk calls at every level.
+    """
+    return sys.getrecursionlimit() // 2
+
+
+def _nests_deeper_than(value: dict, limit: int) -> bool:
+    """True when containers in *value* nest more than *limit* deep.
+
+    Iterative, and it stops at the first container past the limit, so its cost
+    is bounded by the frame's size and never by its depth.
+    """
+    stack: list[tuple[Any, int]] = [(value, 1)]
+    while stack:
+        node, depth = stack.pop()
+        children = node.values() if isinstance(node, dict) else node
+        if depth > limit:
+            return True
+        stack.extend((c, depth + 1) for c in children if isinstance(c, (dict, list)))
+    return False
+
+
+def _note_skipped_frame(exc: BaseException) -> None:
+    """Count one skipped frame; warn at most once per interval, with the count."""
+    global _skipped_frames, _skip_last_error
+    with _skip_lock:
+        _skipped_frames += 1
+        _skip_last_error = exc
+    _flush_skipped_frames()
+
+
+def _flush_skipped_frames(*, force: bool = False) -> None:
+    """Log the held skip count once its interval is up, or now when *force*.
+
+    Called on every skip, by the idle drain thread (so a burst that stops is
+    still reported a minute later), and with *force* when recording stands
+    down or the writer stops.
+    """
+    global _skipped_frames, _skip_warned_at
+    with _skip_lock:
+        count = _skipped_frames
+        if not count:
+            return
+        now = time.monotonic()
+        if (
+            not force
+            and _skip_warned_at is not None
+            and now - _skip_warned_at < SKIP_WARNING_INTERVAL_SECS
+        ):
+            return
+        _skipped_frames = 0
+        _skip_warned_at = now
+        exc = _skip_last_error
+    logger.warning(
+        "%s: skipped %d frame(s) that could not be scrubbed, recording continues: %s",
+        ENV_RECORD_FRAMES,
+        count,
+        exc,
+    )
 
 
 def _drain(writer: _Writer) -> None:
@@ -796,7 +897,9 @@ def _drain(writer: _Writer) -> None:
         try:
             item = writer.items.popleft()
         except IndexError:
+            _flush_skipped_frames()
             if writer.stop.wait(0.05):
+                _flush_skipped_frames(force=True)
                 return
             continue
         # The drain thread MAY block on the lock: it is not a reader loop, and
@@ -993,6 +1096,7 @@ def _stand_down(exc: BaseException, *, from_reader_loop: bool = False) -> None:
 
 
 def _log_stand_down(exc: BaseException) -> None:
+    _flush_skipped_frames(force=True)
     logger.warning(
         "%s is set but recording failed; frame recording is now off for this process: %s",
         ENV_RECORD_FRAMES,
@@ -1078,6 +1182,7 @@ def _reset_for_tests() -> None:
     an error rather than a leak.
     """
     global _stood_down, _pending_stand_down, _writer
+    global _skipped_frames, _skip_last_error, _skip_warned_at
     _stood_down = False
     _pending_stand_down = None
     with _writer_lock:
@@ -1087,6 +1192,11 @@ def _reset_for_tests() -> None:
     with _writer_lock:
         if _writer is writer:
             _writer = None
+    # After the writer is stopped, so a frame it was still writing cannot
+    # count into the next test.
+    _skipped_frames = 0
+    _skip_last_error = None
+    _skip_warned_at = None
 
 
 # Started here, on the importing thread, so that a gateway launched with the

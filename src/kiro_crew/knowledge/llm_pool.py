@@ -14,7 +14,7 @@ import os
 import shutil
 import time
 from abc import ABC, abstractmethod
-from typing import Optional
+from typing import Any, Optional
 
 from kiro_crew import platform_compat
 from kiro_crew.agent_sdk.backends import (
@@ -29,6 +29,7 @@ from kiro_crew.effort import (
     EFFORT_LEVELS,
     is_valid_effort,
 )
+from kiro_crew.json_line import parse_json_object_line
 from kiro_crew.sandbox import (
     cgroup_scope_argv,
     create_subprocess_limited,
@@ -492,6 +493,26 @@ class AcpWorker(Worker):
         self.calls_since_reset = 0
 
 
+#: Longest stream-json line :class:`CCWorker` reads; the ACP transports' ceiling
+#: (``acp.transport_framing._STDOUT_BUFFER_LIMIT``, pinned equal by a test so
+#: this module stays importable without the ACP client).
+STDOUT_LINE_LIMIT = 10 * 1024 * 1024
+
+
+def _text_blocks(container: Any) -> list[str]:
+    """The ``text`` of each text block in ``container["content"]``, skipping bad shapes."""
+    content = container.get("content") if isinstance(container, dict) else None
+    if not isinstance(content, list):
+        return []
+    return [
+        block["text"]
+        for block in content
+        if isinstance(block, dict)
+        and block.get("type") == "text"
+        and isinstance(block.get("text"), str)
+    ]
+
+
 class CCWorker(Worker):
     """Long-lived external agent CLI subprocess using stream-json I/O."""
 
@@ -569,7 +590,10 @@ class CCWorker(Worker):
             *wrapped,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+            # Nothing reads it, and an unread pipe both holds what the CLI
+            # writes (up to twice the raised ``limit`` below, per worker) and
+            # stalls the CLI once it fills.
+            stderr=asyncio.subprocess.DEVNULL,
             # Own process group, so the worker's descendants are reachable as a tree.
             # `claude -p` forks helpers (see spine/agent_runner.py's _terminate_group),
             # and without this the child lands in the gateway's OWN group -- which is
@@ -593,26 +617,36 @@ class CCWorker(Worker):
             # ``strict`` scrubs the agent-denied keys, so the parent side is
             # where they are removed.
             env=scrub_agent_subprocess_env(),
+            # A stream-json line carries a whole event, a fetched page echoed
+            # back in a tool_result included; asyncio's 64 KiB default would
+            # refuse it. Same ceiling as the ACP transports. stdout is the only
+            # pipe, so it is the only reader this limit sizes.
+            limit=STDOUT_LINE_LIMIT,
         )
         self._event_queue = asyncio.Queue()
         self._reader_task = asyncio.create_task(self._stdout_reader())
 
     async def _stdout_reader(self) -> None:
-        """Background task: read NDJSON lines from stdout into event queue."""
+        """Background task: read NDJSON lines from stdout into event queue.
+
+        A line that is not a JSON object, or is over :data:`STDOUT_LINE_LIMIT`,
+        is dropped and the read goes on; the reader ends only with the stream.
+        """
         assert self._proc is not None and self._proc.stdout is not None
         try:
             while True:
-                line = await self._proc.stdout.readline()
+                try:
+                    line = await self._proc.stdout.readline()
+                except ValueError:
+                    # Over the limit: asyncio has discarded what it buffered,
+                    # and the rest of that line arrives as one more line that
+                    # does not parse.
+                    continue
                 if not line:
                     break
-                text = line.decode().strip()
-                if not text:
-                    continue
-                try:
-                    event = json.loads(text)
+                event = parse_json_object_line(line)
+                if event is not None:
                     await self._event_queue.put(event)
-                except json.JSONDecodeError:
-                    continue
         except Exception:
             pass
         finally:
@@ -634,7 +668,10 @@ class CCWorker(Worker):
             raise
 
     async def _collect_response(self) -> str:
-        """Collect text from events until a result event arrives."""
+        """Collect text from events until a result event arrives.
+
+        A value of the wrong type is skipped at its own level.
+        """
         text_parts: list[str] = []
         while True:
             event = await self._event_queue.get()
@@ -644,14 +681,10 @@ class CCWorker(Worker):
             event_type = event.get("type", "")
 
             if event_type == "assistant":
-                for block in event.get("message", {}).get("content", []):
-                    if block.get("type") == "text":
-                        text_parts.append(block.get("text", ""))
+                text_parts.extend(_text_blocks(event.get("message")))
 
             elif event_type == "result":
-                for block in event.get("result", {}).get("content", []):
-                    if block.get("type") == "text":
-                        text_parts.append(block.get("text", ""))
+                text_parts.extend(_text_blocks(event.get("result")))
                 break
 
         return "".join(text_parts)

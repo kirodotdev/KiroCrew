@@ -8,10 +8,13 @@ is exercised end to end while staying deterministic and Mac-free.
 from __future__ import annotations
 
 import asyncio
+import errno
 import json
+import logging
 from typing import Any
 
 import pytest
+from stray_line_helpers import STRAY_LINES
 
 from kiro_crew.imessage import rpc
 from kiro_crew.imessage.rpc import (
@@ -285,7 +288,12 @@ class TestNotifications:
 
 class TestReaderResilience:
     @pytest.mark.asyncio
-    async def test_an_unparseable_line_is_dropped_not_fatal(self, proc: FakeProc) -> None:
+    @pytest.mark.parametrize("stray", sorted(STRAY_LINES))
+    async def test_an_unparseable_line_is_dropped_not_fatal(
+        self, proc: FakeProc, stray, caplog
+    ) -> None:
+        """``RecursionError`` is not a ``ValueError``: unlisted, a deep line ended
+        the reader before its teardown failed the pending calls."""
         seen: list[str] = []
 
         async def handler(method: str, params: dict[str, Any]) -> None:
@@ -293,10 +301,30 @@ class TestReaderResilience:
 
         peer = JsonRpcPeer(["imsg", "rpc"], on_notification=handler)
         await peer.start()
-        proc.feed_raw("not json at all\n")
-        proc.feed({"jsonrpc": "2.0", "method": "after"})
-        await _until(lambda: seen == ["after"])
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.imessage.rpc"):
+            proc.stdout.feed_data(STRAY_LINES[stray]())
+            proc.feed({"jsonrpc": "2.0", "method": "after"})
+            await _until(lambda: seen == ["after"])
         await peer.close()
+        assert [r.message for r in caplog.records].count(
+            "imessage rpc: unparseable stdout line dropped"
+        ) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_blank_line_is_dropped_without_a_warning(self, proc: FakeProc, caplog) -> None:
+        seen: list[str] = []
+
+        async def handler(method: str, params: dict[str, Any]) -> None:
+            seen.append(method)
+
+        peer = JsonRpcPeer(["imsg", "rpc"], on_notification=handler)
+        await peer.start()
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.imessage.rpc"):
+            proc.stdout.feed_data(b"\n  \r\n")
+            proc.feed({"jsonrpc": "2.0", "method": "after"})
+            await _until(lambda: seen == ["after"])
+        await peer.close()
+        assert not [r for r in caplog.records if "unparseable" in r.message]
 
     @pytest.mark.asyncio
     async def test_a_non_object_frame_is_ignored(self, proc: FakeProc) -> None:
@@ -320,6 +348,22 @@ class TestReaderResilience:
 
 
 class TestErrors:
+    @pytest.mark.asyncio
+    async def test_a_read_error_runs_the_teardown(self, proc: FakeProc) -> None:
+        """An ``EIO`` from the pipe ends the loop like EOF: escaping it, the
+        pending call would wait out its timeout and the channel would never be
+        reported down."""
+        reasons: list[str] = []
+        peer = JsonRpcPeer(["imsg", "rpc"], on_disconnect=reasons.append)
+        await peer.start()
+        task = asyncio.create_task(peer.call("status", timeout=30))
+        await _until(lambda: bool(proc.stdin.lines))
+        proc.stdout.set_exception(OSError(errno.EIO, "Input/output error"))
+        with pytest.raises(RpcTransportError):
+            await asyncio.wait_for(task, timeout=5)
+        await _until(lambda: bool(reasons))
+        await peer.close()
+
     @pytest.mark.asyncio
     async def test_an_error_response_raises_rpcerror_with_its_code(self, proc: FakeProc) -> None:
         peer = await _started(proc)

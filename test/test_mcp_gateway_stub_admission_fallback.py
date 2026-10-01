@@ -431,3 +431,43 @@ async def test_a_capacity_refusal_answers_requests_with_a_typed_error_and_stays_
         assert reply["error"]["code"] == stub._CAPACITY_ERROR_CODE
         assert reply["error"]["data"] == {"class": "capacity", "retry_after_secs": 30}
         assert "pool full" in reply["error"]["message"]
+
+
+class _NullWriter:
+    def write(self, data: bytes) -> None:
+        pass
+
+    async def drain(self) -> None:
+        pass
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("queue_aware", [True, False], ids=["queue-aware", "legacy"])
+@pytest.mark.parametrize(
+    "stray, outcome",
+    [
+        (b"[1]\n42\n\"x\"\ntrue\n", stub._ADMIT_READY),
+        # Not JSON, or null: the daemon is not speaking the protocol, as before.
+        (b"not json\n", stub._ADMIT_CLOSED),
+        (b"null\n", stub._ADMIT_CLOSED),
+    ],
+    ids=["non-object-values", "not-json", "null"],
+)
+async def test_a_stray_value_during_admission_costs_that_frame(queue_aware, stray, outcome) -> None:
+    """Ending the wait on a list or a number abandoned a place in the queue the
+    daemon still held; the shared parser had folded it into "not JSON"."""
+    reader = asyncio.StreamReader()
+    reader.feed_data(stray + b'{"type":"ready"}\n')
+    reader.feed_eof()
+    got, frame = await asyncio.wait_for(
+        stub._ensure_backend_admitted(
+            reader,
+            _NullWriter(),  # type: ignore[arg-type]
+            queue_aware=queue_aware,
+            total_budget_secs=10.0,
+            silence_secs=10.0,
+        ),
+        timeout=10,
+    )
+    assert got == outcome
+    assert frame == ({"type": "ready"} if outcome == stub._ADMIT_READY else None)

@@ -2059,7 +2059,7 @@ serves many sessions.** In the pooled topology a single warm backend is reused
 across sessions, and a sub-agent spawned via `spawn_run` runs inside the parent
 slot's process tree and talks to the same MCP server. Anything the process
 remembers is therefore shared by every session and sub-agent that touches it.
-Two failure modes follow.
+Three failure modes follow.
 
 **1. Identity is not the process, it is the call.** `KIROCREW_SESSION_KEY` and
 `os.getppid()` identify the *process*, which is wrong by construction in a shared
@@ -2339,6 +2339,101 @@ where the lenient walk would have recorded a forgeable one.
 the session, then `POST` to a gateway HTTP endpoint that owns the state (usually
 in `DashboardState`), addressed by session key plus a per-request id, blocking on
 that round-trip if it needs a result.
+
+**3. One stray line costs that line, never the reader.** A shared process makes
+its stdio readers shared too, so a line that is not valid UTF-8, not JSON, not a
+JSON object, or nested past the decoder's ceiling is dropped and the next line is
+read. The line-oriented JSON-RPC readers on either side of a stdio MCP server
+(the stdio loop, the auto-improvement app's server, the gateway's stdout pump and
+pre-init reader, the stub's and gatewayd's frame readers, the app-call
+round trip, a script cron's `McpToolClient`) parse through
+`kiro_crew.json_line.parse_json_object_line`, which catches `ValueError` (that
+covers an integer literal past the int-string digit limit too) and
+`RecursionError`, the case a `JSONDecodeError` arm misses, and returns `None` for
+anything that is not an object. `None` there never means end of stream. The
+discovery probe's stdio reader is the one deliberate difference: it counts only
+lines that are not JSON toward its banner cap, so a server printing a JSON
+progress counter before it answers is bounded by the probe's timeout like a
+notification, not mistaken for a flood. The stub's admission wait skips a frame
+that is JSON but not an object; text that is not JSON, or `null`, still ends it
+as closed (the daemon is not speaking the protocol), and the handshake falls
+back on either.
+
+A dropped line may still be a request someone waits on. Every reader that serves
+requests (the stdio loop, the auto-improvement app's server, gatewayd's
+connection reader) answers a dropped REQUEST, one whose head shows a top-level
+`method`, that carries a recoverable top-level id with a `-32700` parse error
+under that id, instead of leaving its caller to its own timeout while pings keep
+the connection looking healthy. A dropped response is never answered: gatewayd's
+reader also carries kiro-cli's answers to a backend's own requests, under the
+backend's ids, and an error sent under one would answer whichever kiro-cli
+request shares the number. The id comes from
+`json_line.recover_line_id(line, requests_only=True)`, which reads only the
+first and last 512 bytes (`ID_PROBE_BYTES`) for the TOP-LEVEL object's `id`,
+never one nested in `params` or `result`: a writer puts the id first or (the
+MCP TypeScript SDK) last, and a bounded probe costs the same on a multi-MiB line
+as on a short one. A number the probe's edge cuts in half is not read as an id,
+and a line that fits in the probe is read by the head scan alone. An id in the
+middle of a long line, or a `method` past the head, is not found, and that line
+is just dropped.
+
+On the server side `mcp_shared._read_message` returns `SKIP` for each dropped
+frame, which is distinct from `None` (EOF), so a `null` line cannot end the
+server, and returned per frame, so a busy loop goes back to delivering a
+finished tool's result instead of blocking on the next line. Before the busy
+loop polls stdin it reads any complete line the buffered reader already holds:
+`select` sees only the descriptor, so a ping or a cancel that arrived in the
+same read as the line before it would otherwise wait for the client's next
+write. On a stream already read as bare JSON a `Content-Length:` line is skipped
+as noise. A declared body over
+`MAX_CONTENT_LENGTH_BYTES` (the gateway's default read limit) is drained in
+bounded reads and answered `-32600` under the id its top-level request object
+carries, found at either end. A header whose length cannot be read (a word, a
+negative number) ends the stream, logged at ERROR: a client that writes a header
+writes its body after it, and with no length that body cannot be delimited, so
+every later frame would be read joined to it and answered as unparseable. A
+declared length past any drainable size ends the stream the same way, because
+draining to it would swallow every later request.
+
+Every message is validated once, before the busy/idle split, so it is served
+or refused the same way under load as at rest. `validate_jsonrpc_request`
+reports `params` that are present and not an object (absent or `null` read as
+`{}`) as a `JsonRpcEnvelopeError` carrying the request's id: such a request is
+answered `-32602`, and a malformed envelope (a non-string `method`, a
+`jsonrpc` other than `2.0`) `-32600`; a notification is never answered. A
+`tools/call` without an object `params` and a non-empty string `name` is
+answered `-32602` and audited as a refused call (SEL `tool_call.invalid_params`,
+outcome `rejected`, recording the type it got in place of a name), never
+dispatched and never audited as an invocation of a tool. Any other exception
+while dispatching one message is logged, an id-bearing request is answered
+`-32603`, and the loop goes on; a worker thread that cannot start (the scope's
+task ceiling) costs that call the same way and leaves nothing behind for the
+next pass to join.
+
+On the gateway side the start path is the stdout pump: `Backend.run_stdout_pump`
+isolates each line's handling, so a raise anywhere in it (budgeting an image,
+spilling, routing, failing a request) costs that line, logged at WARNING; a
+raise that ended the pump would fail every co-pooled session with backend-gone
+in its `finally`. A line that does not parse is dropped at `DEBUG`, unless it
+opens like an object and `json_line.recover_line_id` finds the id of a pending
+request at either end of it, which is then failed (WARNING) rather than left to
+hang. The probe is the bounded one above and runs inline: bounded, it cannot
+hold the shared pump, and through the GIL the whole event loop, on a multi-MiB
+line. Only the top-level `id` counts, so a server logging the call
+it serves cannot fail that call; an oversize line keeps its first and last 512
+bytes for the same probe. A non-string `method` is dropped. When routing a response raises
+after it took its pending request, that request still gets an error. Every
+failed request is settled by `Backend._settle`, the same code a real response
+runs, with a synthetic error: queued `initialize` waiters are answered through
+`_fail_init`, an MCP Apps fetch is resolved at once, lease riders and release
+waiters are answered and the lease bookkeeping cleared, and the forwarding stub
+gets the error. That error is the gateway's, not the server's verdict, so a
+`resources/subscribe` settled this way is an unknown verdict, as a malformed
+reply is: with nobody routed, the lease is released upstream (as the caller that
+took it on an identity-capable server) instead of being read as a refusal and
+left live. A `capabilities` that is present but not an object is cosmetic,
+so the handshake reads it as `{}` (logged) instead of failing the shared backend
+over it, on both the lazy path and `send_initialize`.
 
 ### Reference implementations
 

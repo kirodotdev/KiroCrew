@@ -37,6 +37,7 @@ from pathlib import Path
 
 from kiro_crew import platform_compat, sandbox
 from kiro_crew.config.loader import config_dir
+from kiro_crew.json_line import parse_json_object_line
 
 logger = logging.getLogger(__name__)
 
@@ -1042,13 +1043,11 @@ class StreamingSession:
                 text = line.decode(errors="replace").strip()
                 if not text:
                     continue
-                try:
-                    event = json.loads(text)
-                except json.JSONDecodeError:
+                event = parse_json_object_line(text)
+                if event is None:
                     logger.debug("apple_speech: unparseable helper line: %s", text[:120])
                     continue
-                if isinstance(event, dict):
-                    await self._queue.put(event)
+                await self._queue.put(event)
         except (OSError, asyncio.CancelledError):
             pass
         finally:

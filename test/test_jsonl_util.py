@@ -28,6 +28,7 @@ from kiro_crew.jsonl_util import (
     UndecodableRecord,
     UnreadableRecord,
     bounded_raw_records,
+    bounded_raw_records_with_offsets,
     bounded_records,
     rotate_jsonl_at,
     strict_raw_records,
@@ -160,6 +161,24 @@ class TestBoundedRecordReaders:
         path = self._write(tmp_path, b'{"a":1}\n', b'{"a":2}\n')
         with open(path, "rb") as fh:
             assert list(bounded_records(fh, path, cap=RECORD_CAP)) == ['{"a":1}\n', '{"a":2}\n']
+
+    def test_offsets_resume_past_an_over_cap_record(self, tmp_path):
+        """A tail reader resumes from ``end``: an over-cap record is reported as
+        ``None`` so the offset moves past it instead of re-reading it every poll,
+        and an unterminated last record is told apart by its missing terminator."""
+        records = [b'{"a":1}\n', b"y" * 201 + b"\n", b'{"a":2}\r\n', b'{"a":3']
+        path = self._write(tmp_path, *records)
+        with open(path, "rb") as fh:
+            fh.seek(len(records[0]))
+            got = list(bounded_raw_records_with_offsets(fh, path, cap=200))
+        first = len(records[0])
+        second = first + len(records[1])
+        third = second + len(records[2])
+        assert got == [
+            (first, second, None),
+            (second, third, b'{"a":2}\r\n'),
+            (third, third + len(records[3]), b'{"a":3'),
+        ]
 
     def test_record_exactly_at_cap_survives(self, tmp_path):
         """The cap is INCLUSIVE: a cap-length record plus its terminator is fine."""
