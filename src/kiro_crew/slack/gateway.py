@@ -207,7 +207,7 @@ from kiro_crew.executors import (  # noqa: F401
     subprocess_executor,
 )
 from kiro_crew.frontend import build_frontend_async
-from kiro_crew.gateway_restart import resolve_restart_launcher
+from kiro_crew.gateway_restart import resolve_restart_launcher, supervisor_reentry
 from kiro_crew.gateway_shutdown_budget import GRACEFUL_SHUTDOWN_SECS
 from kiro_crew.heartbeat import (
     HEARTBEAT_TASK_TIMEOUT_SECS,
@@ -11250,6 +11250,9 @@ class GatewayOrchestrator:
         from kiro_crew.platform.wheel_engine import respawn_executable
 
         owned = contextlib.ExitStack()
+        # Set once the reset may have moved the tree, cleared once its
+        # dependencies are synced: in between, a relaunch could die at import.
+        tree_moved = False
         try:
             # Every git call below reads a tree an agent can write, and several of
             # them (`status`, `diff`, `reset`) will EXEC a program the repository
@@ -11779,6 +11782,9 @@ class GatewayOrchestrator:
                 stderr=asyncio.subprocess.DEVNULL,
                 start_new_session=platform_compat.IS_POSIX,
             )
+            # Only a reset that started can have moved the tree: a spawn that
+            # raised wrote nothing.
+            tree_moved = True
             try:
                 await asyncio.wait_for(reset.wait(), timeout=10)
             except (TimeoutError, asyncio.TimeoutError, asyncio.CancelledError):
@@ -11878,6 +11884,12 @@ class GatewayOrchestrator:
                 ),
             )
             if pip_rc != 0:
+                # The tree moved but its dependencies did not, and this step
+                # stays up rather than restart (below): a relaunch would die at
+                # import, so the stale-asset watchdog must not take one either.
+                update_ownership.refuse_restart(
+                    "the dependency sync after the git auto-update did not complete"
+                )
                 # Same reasoning as the dep-repair path: redact first, cap last.
                 err_text = "; ".join(m for m, _ in pip_messages)
                 err_text, _ = redact_exfiltration_urls(err_text)
@@ -11973,6 +11985,10 @@ class GatewayOrchestrator:
                     )
                 return
 
+            # The tree and its dependencies agree again: a refusal an earlier
+            # attempt recorded does not describe the install.
+            tree_moved = False
+            update_ownership.clear_restart_refusal()
             logger.info("Auto-update: rebuild complete, preparing safe restart")
             # Re-read version from rebuilt package for the operator-facing log;
             # restart ownership itself is centralized below.
@@ -11985,6 +12001,11 @@ class GatewayOrchestrator:
             await self._restart_after_update(respawn_executable)
         except Exception:
             logger.warning("Auto-update failed", exc_info=True)
+            if tree_moved:
+                update_ownership.refuse_restart(
+                    "the git auto-update failed after the tree moved, before its "
+                    "dependencies were synced"
+                )
             if self.dashboard_state:
                 # Surface the platform-correct manual restart command so a failed
                 # auto-restart doesn't leave the user guessing. Resolved OFF the
@@ -12792,9 +12813,14 @@ class GatewayOrchestrator:
         # install's static assets and triggers graceful shutdown so the
         # supervisor can restart a fresh process. It first drains in-flight
         # backend turns (count_in_flight) so active work isn't killed
-        # mid-prompt by the restart.
+        # mid-prompt by the restart, and stays up when its supervisor could
+        # not relaunch it (supervisor_reentry).
         _watchdog = asyncio.create_task(
-            run_stale_asset_watchdog(shutdown_event, count_in_flight=self._count_in_flight_work)
+            run_stale_asset_watchdog(
+                shutdown_event,
+                count_in_flight=self._count_in_flight_work,
+                reentry_check=supervisor_reentry,
+            )
         )
         self._background_tasks.add(_watchdog)
         _watchdog.add_done_callback(self._background_tasks.discard)

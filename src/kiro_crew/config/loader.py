@@ -2458,7 +2458,27 @@ def consume_managed_service_launch_environment(
     """
     source = os.environ if environ is None else environ
     value = source.pop(_MANAGED_SERVICE_ENV, None)
-    return {} if value is None else {_MANAGED_SERVICE_ENV: value}
+    if value is None:
+        return {}
+    if environ is None:
+        # Consumed for descendants only: the gateway's own exec successor (an
+        # in-app restart) is the same service launch and gets it back.
+        platform_compat.keep_for_reexec(_MANAGED_SERVICE_ENV, value)
+    return {_MANAGED_SERVICE_ENV: value}
+
+
+def launched_as_managed_service() -> bool:
+    """Whether a generated service definition launched this process.
+
+    Reads the marker where it still is, or where
+    :func:`consume_managed_service_launch_environment` kept it after taking it
+    out of the environment, so the answer does not change once the dashboard
+    has started.
+    """
+    marker = os.environ.get(_MANAGED_SERVICE_ENV)
+    if marker is None:
+        marker = platform_compat.kept_for_reexec().get(_MANAGED_SERVICE_ENV)
+    return marker == "1"
 
 
 def load_loop_stall_exit_after(

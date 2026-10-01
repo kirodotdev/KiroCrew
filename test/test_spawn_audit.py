@@ -990,6 +990,12 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # unisolated `python -c` would let a decoy on the caller's
         # PYTHONPATH/CWD answer for the interpreter under test.
         "dep_sync.py::_probe_interpreter",
+        # The stale-asset watchdog's relaunch probe: `<python> -X utf8 -c "import
+        # kiro_crew.cli"` from `/`, a fixed literal. The interpreter is the one
+        # the service manager's own loaded command names, run under that unit's
+        # environment, which the supervisor's relaunch would execute anyway; it
+        # is unisolated on purpose, because the relaunch is.
+        "dep_sync.py::_probe_relaunch_import",
         "dep_sync.py::sync",
         "dep_sync.py::sync_or_reinstall",
         # _git_blob_text is the pre-mutation interpreter-floor gate's one read:
@@ -1645,6 +1651,12 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # list-argv element, shell is never enabled, and no cwd is passed.
         "session_scope_reap.py::_scope_active_enter_us",
         "session_scope_reap.py::_systemctl_stop",
+        # The stale-asset watchdog's re-entry check reads the gateway's own unit:
+        # `systemctl [--user] show -p <fixed properties> kirocrew.service`, a fixed
+        # argv with no agent input, bounded by a timeout. The binary comes only from
+        # platform_compat.trusted_system_bin("systemctl"); a miss is inconclusive
+        # and spawns nothing, so neither PATH nor an agent can choose it.
+        "gateway_restart.py::_systemd_show",
         "slack/gateway.py::_auto_apply_update",
         # Wheel/cli.sh auto-update: runs the signed installer command
         # (composed locally from a validated channel name and https-pinned

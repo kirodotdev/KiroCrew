@@ -541,9 +541,25 @@ def _fresh_update_ownership(_floor_monkeypatch):
     registry: list = []
     _floor_monkeypatch.setattr(update_ownership, "_live", registry)
     _floor_monkeypatch.setattr(update_ownership, "_deferred_restart_until", None)
+    _floor_monkeypatch.setattr(update_ownership, "_restart_refusal", None)
     yield
     open_steps = [entry.step.label for entry in registry]
     assert not open_steps, f"the test left update steps open: {open_steps}"
+
+
+@pytest.fixture(autouse=True)
+def _fresh_reexec_environment(_floor_monkeypatch):
+    """Start every test with nothing kept for an exec successor.
+
+    Consuming the managed-service launch marker keeps it in
+    ``platform_compat._KEPT_FOR_REEXEC`` for the gateway's own exec restart, and
+    ``launched_as_managed_service`` reads it there; a value one test's launch
+    consumed must not make a later test's gateway read as service-launched, nor
+    be written into the environment by a later test's stubbed exec.
+    """
+    from kiro_crew import platform_compat
+
+    _floor_monkeypatch.setattr(platform_compat, "_KEPT_FOR_REEXEC", {})
 
 
 @pytest.fixture(autouse=True)

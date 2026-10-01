@@ -23,6 +23,11 @@ commits (:func:`restart_committed`), or when a restart finds no usable
 interpreter (:func:`clear_restart_deferral`): the pruned tree took the bundle
 too, and the watchdog's exit is what lets the supervisor relaunch.
 
+One more answer lives here because the update code is what knows it: an update
+that decided to stay up rather than restart (a dependency sync that failed after
+the tree moved) records why (:func:`refuse_restart`), and the watchdog will not
+take the relaunch that update declined.
+
 In-process only, and deliberately so: a shutdown can cancel only this
 process's own steps, never another process's installer. Everything here runs
 on the event loop and does no I/O.
@@ -85,6 +90,7 @@ class _Entry:
 
 _live: list[_Entry] = []
 _deferred_restart_until: float | None = None
+_restart_refusal: str | None = None
 
 #: This module's clock. Tests replace this name, never ``time.monotonic``: that is
 #: the event loop's clock too, and freezing it stops every ``wait_for`` timeout.
@@ -155,6 +161,30 @@ def clear_restart_deferral() -> None:
     _deferred_restart_until = None
 
 
+def refuse_restart(reason: str) -> None:
+    """An update stayed up instead of restarting; a restart now would fail.
+
+    Recorded once the update has moved the tree and could not sync its
+    dependencies, including when it raised after the move.
+    """
+    global _restart_refusal
+    _restart_refusal = reason
+
+
+def clear_restart_refusal() -> None:
+    """A later update synced the dependencies of the tree it moved.
+
+    Not when that update starts: one that fails before replacing anything
+    leaves the state the refusal describes on disk.
+    """
+    global _restart_refusal
+    _restart_refusal = None
+
+
+def restart_refusal() -> str | None:
+    return _restart_refusal
+
+
 def current_owner() -> str | None:
     """The label of what owns a missing bundle right now, or ``None``.
 
@@ -178,3 +208,20 @@ def current_owner() -> str | None:
     if _deferred_restart_until is not None and now < _deferred_restart_until:
         return "a deferred restart into an applied update"
     return None
+
+
+# --- the re-entry check's verdict -------------------------------------------------
+
+
+class Reentry(enum.Enum):
+    REENTERABLE = "reenterable"
+    REFUSED = "refused"
+    INCONCLUSIVE = "inconclusive"
+
+
+@dataclass(frozen=True)
+class ReentryVerdict:
+    """Whether the gateway's supervisor could relaunch it, and why not."""
+
+    status: Reentry
+    reason: str = ""
