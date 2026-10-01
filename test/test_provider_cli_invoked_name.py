@@ -17,13 +17,14 @@ from __future__ import annotations
 
 import logging
 import os
+import shlex
 import stat
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 
-from kiro_crew import github_runner
+from kiro_crew import github_runner, platform_compat
 from kiro_crew.apps.builtins.issue_radar.backend import gitlab_client as gl
 from kiro_crew.dashboard.handlers import source_providers as source
 
@@ -117,6 +118,10 @@ def _link(directory: Path, name: str, target: Path) -> Path:
     link = directory / name
     link.symlink_to(target)
     return link
+
+
+def _never_asked(path, gid):
+    raise AssertionError("the group was asked about when the mode already settled the answer")
 
 
 class TestWhichSpellingIsLaunched:
@@ -265,12 +270,47 @@ class TestWhoCanChange:
 
         assert github_runner._who_can_change(tool, uid=os.geteuid()) == (True, False)
 
-    def test_a_group_write_bit_lets_someone_else_change_it(self, tmp_path):
+    def test_a_group_write_bit_lets_someone_else_change_it(self, monkeypatch, tmp_path):
+        """Unless the group provably holds the gateway user alone, its other
+        members can replace what the directory holds."""
         directory = tmp_path / "bin"
         directory.mkdir()
         directory.chmod(0o775)
+        monkeypatch.setattr(
+            platform_compat,
+            "group_write_admits_another_account",
+            lambda path, gid: "group 'peers', shared with 3 other account(s)",
+        )
 
         assert github_runner._who_can_change(directory, uid=os.geteuid()) == (True, True)
+
+    def test_a_group_holding_the_user_alone_is_the_users_own(self, monkeypatch, tmp_path):
+        """A user-private group's bit, which every directory a per-user install
+        creates carries on a host with umask 002."""
+        directory = tmp_path / "bin"
+        directory.mkdir()
+        directory.chmod(0o775)
+        asked = []
+
+        def admits(path, gid):
+            asked.append((path, gid))
+            return None
+
+        monkeypatch.setattr(platform_compat, "group_write_admits_another_account", admits)
+
+        assert github_runner._who_can_change(directory, uid=os.geteuid()) == (True, False)
+        assert asked == [(directory, directory.stat().st_gid)]
+
+    @pytest.mark.parametrize("mode", [0o755, 0o777])
+    def test_a_mode_that_settles_it_never_asks_about_the_group(self, monkeypatch, tmp_path, mode):
+        """Without a group bit there is nothing to ask, and a bit for everyone
+        admits every account whoever holds the group."""
+        directory = tmp_path / "bin"
+        directory.mkdir()
+        directory.chmod(mode)
+        monkeypatch.setattr(platform_compat, "group_write_admits_another_account", _never_asked)
+
+        assert github_runner._who_can_change(directory, uid=os.geteuid()) == (True, mode == 0o777)
 
     def test_write_access_to_a_sticky_directory_someone_else_owns_does_not_count(self):
         """The user may add entries to a shared temp dir, but cannot replace
@@ -399,6 +439,73 @@ class TestReportsALinkItRulesOut:
             github_runner.validate_provider_executable(str(same))
 
         assert self._warnings(caplog) == []
+
+
+class TestUserPrivateGroups:
+    """On a host with user-private groups and umask 002, every directory a
+    per-user install creates is group-writable to a group holding that user
+    alone. The rule and the warning read these real directories; the stubbed
+    cases accept the ancestors' ownership policy instead of reading it, for the
+    reason the module docstring gives."""
+
+    @staticmethod
+    def _install(tmp_path) -> tuple[Path, Path]:
+        tools = tmp_path / "tools"
+        target = _multicall(tools / "lib")
+        link = _link(tools / "bin", "glab", target)
+        (tools / "bin").chmod(0o775)
+        return link, target
+
+    @staticmethod
+    def _accept_the_ancestors(monkeypatch) -> None:
+        monkeypatch.setattr(
+            github_runner, "check_provider_path_component", lambda path, *, label, uid, strict: None
+        )
+
+    def test_the_link_keeps_its_name(self, monkeypatch, tmp_path):
+        link, _ = self._install(tmp_path)
+        self._accept_the_ancestors(monkeypatch)
+        monkeypatch.setattr(
+            platform_compat, "group_write_admits_another_account", lambda path, gid: None
+        )
+
+        assert github_runner.validate_provider_executable(str(link)) == str(link)
+
+    def test_a_shared_group_launches_the_target_and_names_the_group(
+        self, monkeypatch, tmp_path, caplog
+    ):
+        link, target = self._install(tmp_path)
+        self._accept_the_ancestors(monkeypatch)
+        monkeypatch.setattr(
+            platform_compat,
+            "group_write_admits_another_account",
+            lambda path, gid: "group 'peers', shared with 3 other account(s)",
+        )
+
+        with caplog.at_level(logging.WARNING, logger=github_runner.__name__):
+            assert github_runner.validate_provider_executable(str(link)) == str(target.resolve())
+
+        [message] = TestReportsALinkItRulesOut._warnings(caplog)
+        directory = link.parent.resolve()
+        assert (
+            f"{str(directory)!r} (uid {os.geteuid()}, mode 0775) can be changed by an account "
+            "other than the gateway user and root: its group write bit admits group 'peers', "
+            f"shared with 3 other account(s) (chmod g-w {shlex.quote(str(directory))} removes it)"
+        ) in message
+
+    def test_with_nothing_stubbed_where_this_hosts_group_is_private(self, tmp_path):
+        """The real question, the real rule and the real ownership policy, on a
+        host whose own databases show the directory's group holding this
+        account alone."""
+        link, _ = self._install(tmp_path)
+        directory = link.parent
+        verdict = platform_compat.group_write_admits_another_account(
+            directory, directory.stat().st_gid
+        )
+        if verdict is not None:
+            pytest.skip(f"the test directory's group is not private here: {verdict}")
+
+        assert github_runner.validate_provider_executable(str(link)) == str(link)
 
 
 @_needs_a_plain_shell

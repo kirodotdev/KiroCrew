@@ -13,12 +13,10 @@ reused; each launch uploads to ``<tag>/kirocrew-src.tar.gz``.
 from __future__ import annotations
 
 import base64
-import errno
 import hashlib
 import logging
 import os
 import stat
-import struct
 import subprocess
 import tarfile
 import tempfile
@@ -194,115 +192,6 @@ def _chain_the_launcher_owns(base: Path) -> list[Path]:
     return chain
 
 
-def _group_shared_with_another_account(gid: int) -> Optional[str]:
-    """Why group ``gid`` admits an account other than this one, or ``None`` if it does not.
-
-    A group-writable directory is a foreign writer's door only when the GROUP holds
-    somebody else. A host with user-private groups leaves ordinary directories
-    group-writable to a group holding the operator alone, and refusing there would
-    reject a supported layout for no gain -- so the mode bit cannot decide this and
-    the membership has to.
-
-    Membership has two halves and BOTH are needed. ``gr_mem`` lists supplementary
-    members only: an account whose PRIMARY group this is never appears there, so a
-    thoroughly shared group can present an empty ``gr_mem`` and read as private.
-    The passwd database supplies the other half.
-
-    FAILS CLOSED, and that is the whole point of returning a reason rather than a
-    bool. Calling a group private takes a successful read of both databases, so a
-    lookup that raises, or a passwd database that will not enumerate -- SSSD and
-    other directory backends commonly refuse, and a directory host is exactly where
-    groups are shared -- leaves privacy UNPROVEN and refuses. The account's own
-    presence in the enumeration is the control: a passwd database that cannot see
-    this account cannot show that no other account shares the gid, however many
-    rows it returns.
-
-    ``getgrgid`` answers with ONE group entry, but a host may carry several entries
-    with the same gid, and each grants its members that gid as a supplementary
-    group. So the supplementary half reads every entry carrying the gid.
-    """
-    # Local import: neither module exists on Windows, which never reaches here --
-    # only the POSIX arm of the walk calls this; the Windows arm reads the ACL.
-    import grp
-    import pwd
-
-    try:
-        entry = grp.getgrgid(gid)
-    except (KeyError, OSError):
-        return f"a group (gid {gid}) this host cannot resolve"
-    try:
-        me = pwd.getpwuid(os.geteuid()).pw_name
-    except (KeyError, OSError):
-        return f"group {entry.gr_name!r}, which cannot be compared to this account"
-    try:
-        same_gid = [g for g in grp.getgrall() if g.gr_gid == gid]
-    except OSError:
-        return f"group {entry.gr_name!r}, whose entries this host will not enumerate"
-    members = {name for g in [entry, *same_gid] for name in g.gr_mem}
-    supplementary = sorted(members - {me})
-    if supplementary:
-        return f"group {entry.gr_name!r}, shared with {len(supplementary)} other account(s)"
-    try:
-        everyone = pwd.getpwall()
-    except OSError:
-        everyone = []
-    if not any(person.pw_name == me for person in everyone):
-        return f"group {entry.gr_name!r}, whose membership this host will not enumerate"
-    primary = sorted({p.pw_name for p in everyone if p.pw_gid == gid and p.pw_name != me})
-    if primary:
-        return f"group {entry.gr_name!r}, the primary group of {len(primary)} other account(s)"
-    return None
-
-
-_ACL_XATTR_VERSION = 2
-_ACL_USER = 0x02
-_ACL_GROUP = 0x08
-_ACL_MASK = 0x10
-_ACL_WRITE = 0o2
-# A filesystem or kernel that keeps no POSIX ACL answers with one of these.
-_NO_ACL_ERRNOS = frozenset(
-    e for e in (getattr(errno, n, None) for n in ("ENODATA", "ENOTSUP", "EOPNOTSUPP")) if e
-)
-
-
-def _acl_admits_another_account(node: Path, mine: int) -> Optional[str]:
-    """Why ``node``'s POSIX access ACL lets another account write it, or ``None``.
-
-    With an extended ACL the mode's group bits show the ACL mask, so a named entry
-    can give a peer write access behind a group bit that looks private. Only an
-    EFFECTIVE write counts: a named entry's bits are ANDed with the mask. A named
-    user that is ``mine`` (this process's uid) or root is already trusted, and a named group gets
-    the same membership question as the owning group. The default ACL governs what
-    is created inside, not this directory, so it is not read.
-
-    No ACL API (macOS, BSD) or no ACL on this node leaves the mode bits as the test.
-    Any other read failure, or a value this parser does not recognise, fails closed.
-    """
-    getxattr = getattr(os, "getxattr", None)
-    if getxattr is None:
-        return None
-    try:
-        raw = getxattr(node, "system.posix_acl_access")
-    except OSError as exc:
-        if exc.errno in _NO_ACL_ERRNOS:
-            return None
-        return "an ACL this host cannot read"
-    if len(raw) < 4 or (len(raw) - 4) % 8 or struct.unpack_from("<I", raw)[0] != _ACL_XATTR_VERSION:
-        return "an ACL this host cannot read"
-    entries = [struct.unpack_from("<HHI", raw, offset) for offset in range(4, len(raw), 8)]
-    mask = next((perm for tag, perm, _ in entries if tag == _ACL_MASK), 0o7)
-    for tag, perm, ident in entries:
-        if not perm & mask & _ACL_WRITE:
-            continue
-        if tag == _ACL_USER and ident not in (mine, 0):
-            return f"an ACL entry for another account (uid {ident})"
-        if tag == _ACL_GROUP:
-            shared = _group_shared_with_another_account(ident)
-            if shared is not None:
-                return f"an ACL entry for {shared}"
-    return None
-
-
 def _first_replaceable_windows(path: Path) -> Optional[tuple[Path, str]]:
     """The Windows arm of :func:`_first_replaceable`, read from the ACL.
 
@@ -424,10 +313,10 @@ def _first_replaceable(path: Path) -> Optional[tuple[Path, str]]:
     definition. GROUP-writable asks one more question first, because the bit cannot
     answer it: the same bit means a foreign writer on a shared group and nobody at
     all on a user-private one, where a group holds the operator alone.
-    :func:`_group_shared_with_another_account` settles which from the membership,
-    and fails closed -- a group whose privacy cannot be PROVEN counts as shared.
-    With an extended POSIX ACL that bit is the ACL mask, so
-    :func:`_acl_admits_another_account` asks the named entries the same question.
+    :func:`platform_compat.group_write_admits_another_account` settles which from
+    the membership, and fails closed -- a group whose privacy cannot be PROVEN counts
+    as shared. With an extended POSIX ACL that bit is the ACL mask, so the same
+    question asks the named entries too.
 
     Root-first, so the answer is the outermost problem rather than an inner symptom
     of it. On Windows ``st_uid`` and the mode bits carry no information, so the walk
@@ -450,9 +339,7 @@ def _first_replaceable(path: Path) -> Optional[tuple[Path, str]]:
         if mode & stat.S_IWOTH and not mode & stat.S_ISVTX:
             return node, f"is writable by any account and not sticky (mode {mode:04o})"
         if mode & stat.S_IWGRP and not mode & stat.S_ISVTX:
-            shared = _acl_admits_another_account(node, mine) or _group_shared_with_another_account(
-                info.st_gid
-            )
+            shared = platform_compat.group_write_admits_another_account(node, info.st_gid)
             if shared is not None:
                 return node, f"is writable by {shared} and not sticky (mode {mode:04o})"
     return None

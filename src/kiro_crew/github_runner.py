@@ -46,6 +46,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -395,9 +396,15 @@ def _who_can_change(path: Path, *, uid: int) -> tuple[bool, bool]:
     The gateway user can when it owns the component or may write to it. Write
     access to a sticky directory someone else owns does not count, because only
     an entry's owner may replace that entry there. Anyone else can when a third
-    account owns the component or its mode lets a group or everyone write to it;
-    a group bit counts even for a group the gateway user belongs to, since that
-    group may have other members.
+    account owns the component, its mode lets everyone write to it, or it carries
+    a group write bit that
+    :func:`kiro_crew.platform_compat.group_write_admits_another_account` finds
+    admitting another account: a group holding anyone besides the gateway user,
+    an ACL entry granting another account write, or anything that question cannot
+    read. A group bit counts even for a group the gateway user belongs to, since
+    that group may have other members; on a host with user-private groups, where
+    a per-user install's directories are group-writable to a group holding that
+    user alone, the bit is the gateway user's own.
 
     An unreadable component raises like the rest of the walk instead of
     answering either way.
@@ -409,8 +416,42 @@ def _who_can_change(path: Path, *, uid: int) -> tuple[bool, bool]:
     mode = path_stat.st_mode
     sticky_directory = stat.S_ISDIR(mode) and bool(mode & stat.S_ISVTX)
     gateway_user = path_stat.st_uid == uid or (not sticky_directory and os.access(path, os.W_OK))
-    anyone_else = path_stat.st_uid not in (0, uid) or bool(mode & (stat.S_IWGRP | stat.S_IWOTH))
+    anyone_else = (
+        path_stat.st_uid not in (0, uid)
+        or bool(mode & stat.S_IWOTH)
+        or (
+            bool(mode & stat.S_IWGRP)
+            and platform_compat.group_write_admits_another_account(path, path_stat.st_gid)
+            is not None
+        )
+    )
     return gateway_user, anyone_else
+
+
+def _group_write_note(path: Path, *, uid: int) -> str:
+    """Whom the group write bit on *path* admits, as a suffix for a warning that
+    names *path*, or ``""`` when that bit is not why another account can change it.
+
+    The uid and mode the warning prints already show ownership and a write bit
+    for everyone. A group bit does not say whose it is, so this names that, and
+    the ``chmod`` that removes the bit when the gateway user owns *path*. With an
+    ACL the group bits are its mask, so that ``chmod`` also takes the write from
+    every named entry.
+    """
+    try:
+        info = path.stat()
+    except OSError:
+        return ""
+    mode = stat.S_IMODE(info.st_mode)
+    if info.st_uid not in (0, uid) or mode & stat.S_IWOTH or not mode & stat.S_IWGRP:
+        return ""
+    admits = platform_compat.group_write_admits_another_account(path, info.st_gid)
+    if admits is None:
+        return ""
+    note = f": its group write bit admits {admits}"
+    if info.st_uid == uid:
+        note += f" (chmod g-w {shlex.quote(str(path))} removes it)"
+    return note
 
 
 def _symlink_owner(link: Path) -> int:
@@ -480,6 +521,12 @@ def _link_launch_risk(
     * every walked directory and the target are root's alone to change, so
       neither spelling moves without root.
 
+    A group write bit that admits nobody else -- a group the account database
+    shows holding the gateway user alone, with no ACL entry granting another
+    account write -- counts as the gateway user's own (see
+    :func:`_who_can_change`): on a host with user-private groups, every directory
+    a per-user install creates carries one.
+
     What only the link's side reads is each directory the target's side does not
     read, and each symlink the walk follows. A symlink's directory decides who
     may replace it, except in a sticky directory, where an account that may write
@@ -517,6 +564,7 @@ def _link_launch_risk(
                 return (
                     f"{str(directory)!r} ({_ownership_note(directory)}) can be changed "
                     "by an account other than the gateway user and root"
+                    f"{_group_write_note(directory, uid=uid)}"
                 )
         for link in links:
             owner = _symlink_owner(link)
