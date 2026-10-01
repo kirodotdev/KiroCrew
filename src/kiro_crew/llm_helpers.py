@@ -45,6 +45,8 @@ from kiro_crew.platform.tool_paths import (
     command_shaped_strings,
     edit_target_candidates,
     is_document_writing_tool,
+    mcp_document_body_keys,
+    split_document_bodies,
 )
 from kiro_crew.providers.base import (
     EVENT_COMPLETE,
@@ -1318,6 +1320,7 @@ def _first_tool_input_denial(
     denied_regexes: list[str] | None,
     *,
     exempt_command: str | None = None,
+    command_rules: bool = True,
 ) -> tuple[str, str, str] | None:
     """Return the first tool_input denial among *strings*, or ``None``.
 
@@ -1334,6 +1337,11 @@ def _first_tool_input_denial(
     own wall clock -- a denied oversized string is recoverable, a worker parked
     for minutes on a pathological payload is not -- and an oversized one is
     denied rather than scanned or skipped.
+
+    ``command_rules=False`` applies the size ceiling and the path tier only:
+    the caller passes it for a named MCP document body
+    (``platform.tool_paths.MCP_DOCUMENT_BODY_FIELDS``), which is stored text
+    and not a command line.
 
     The tuple is ``(kind, reason, matched_string)`` where *kind* is
     ``"path"`` / ``"bash"`` / ``"regex"`` / ``"oversize"``. Mechanism
@@ -1364,6 +1372,8 @@ def _first_tool_input_denial(
             if is_unverifiable_path_refusal(path_refusal):
                 return ("path", path_refusal, s)
             return ("path", f"Blocked: sensitive path in tool_input: {s}", s)
+        if not command_rules:
+            continue
         _input_bash = is_sensitive_bash_command(s)
         if _input_bash:
             return ("bash", _input_bash, s)
@@ -2939,11 +2949,41 @@ async def _resolve_permission(
         )
         else None
     )
+    # A Kiro Crew core MCP tool listed in ``platform.tool_paths.
+    # MCP_DOCUMENT_BODY_FIELDS`` (``knowledge_add_document``'s ``content``)
+    # stores that field as document text, so the field skips the command-text
+    # rules -- the deny list and the argv floor -- that read a page mentioning a
+    # product subcommand as an attempt to run it. The body keeps the size
+    # ceiling and the path tier; every other argument keeps the full scan. Same
+    # provenance bar as the built-in scoping above, and the identity is the
+    # cached server AND tool, so a same-named tool on another server, or a frame
+    # whose identity did not come from the caches, keeps the full scan.
+    _mcp_body_keys = (
+        mcp_document_body_keys(
+            getattr(event, "tool_name", ""), getattr(event, "mcp_server_name", "")
+        )
+        if (
+            _edit_params is None
+            and _scoped_params is None
+            and getattr(event, "shell_classified", False)
+            and not event.is_shell
+            and getattr(event, "raw_params_trusted", False)
+            and getattr(event, "mcp_identity_trusted", False)
+            and isinstance(getattr(event, "raw_tool_params", None), dict)
+        )
+        else frozenset()
+    )
     _scoped_truncated = False
+    _body_strings: list[str] = []
     if _edit_params is not None:
         _input_strings: list[str] = []
     elif _scoped_params is not None:
         _scoped_strings = command_shaped_strings(_scoped_params)
+        _scoped_truncated = _scoped_strings.truncated
+        _input_strings = list(_scoped_strings)
+    elif _mcp_body_keys and isinstance(event.raw_tool_params, dict):
+        _rest_params, _body_strings = split_document_bodies(event.raw_tool_params, _mcp_body_keys)
+        _scoped_strings = command_shaped_strings(_rest_params, body_keys=frozenset())
         _scoped_truncated = _scoped_strings.truncated
         _input_strings = list(_scoped_strings)
     else:
@@ -2985,6 +3025,10 @@ async def _resolve_permission(
             )
             if input_hit is not None:
                 return (*input_hit, "always_deny_input")
+        if _body_strings:
+            body_hit = _first_tool_input_denial(_body_strings, _denied_regexes, command_rules=False)
+            if body_hit is not None:
+                return (*body_hit, "always_deny_input")
         return None
 
     _hit = await asyncio.to_thread(_scan_off_loop)
