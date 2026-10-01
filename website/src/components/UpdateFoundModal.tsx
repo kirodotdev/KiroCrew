@@ -401,8 +401,17 @@ export default function UpdateFoundModal() {
     // contain interactive descendants, and with programmatic focus never
     // landing here a scrim keydown handler is unreachable anyway. Click-to-
     // dismiss needs no role; Escape covers keyboard dismissal.
+    //
+    // z-[65]: this modal renders inside the App shell's `relative z-[1]` root
+    // (NOT portaled to document.body like Modal), so it must sit above every
+    // chat-page layer it would otherwise paint under -- the sessions flyout
+    // (z-[59]), its drawer morph (z-[60]), the focus-peek rail toggle (z-[61])
+    // and the focus-mode rail (inline z 62/63) -- and below the shell's z-[70]
+    // toast/menu band and its z-[100] full-screen takeovers. Modal.tsx's z-[100]
+    // is not the reference: it portals to a separate stacking context, while a
+    // z-[100] here would tie a DOM-earlier takeover and win on document order.
     <div
-      className="fixed inset-0 z-50 bg-bg/80 backdrop-blur-xs flex items-center justify-center animate-rise"
+      className="fixed inset-0 z-[65] bg-bg/80 backdrop-blur-xs flex items-center justify-center animate-rise"
       role="presentation"
       onClick={e => { if (e.target === e.currentTarget && !required) dismiss() }}
     >

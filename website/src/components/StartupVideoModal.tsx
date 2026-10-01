@@ -359,8 +359,16 @@ function OpenStartupVideoModal({ video, remote, shareEnabled, onClose, sessionKe
     // would be unreachable. Escape covers keyboard dismissal -- and unlike this
     // scrim it RECORDS a verdict, because pressing it is a deliberate act where a
     // stray click is not.
+    //
+    // z-[65]: this modal renders inside the App shell's `relative z-[1]` root
+    // (NOT portaled to document.body like Modal), so it must sit above every
+    // chat-page layer it would otherwise paint under -- the sessions flyout
+    // (z-[59]), its drawer morph (z-[60]), the focus-peek rail toggle (z-[61])
+    // and the focus-mode rail (inline z 62/63) -- and below the shell's z-[70]
+    // toast/menu band and its z-[100] full-screen takeovers. Modal.tsx's z-[100]
+    // is not the reference: it portals to a separate stacking context.
     <div
-      className="fixed inset-0 z-50 bg-bg/80 backdrop-blur-xs flex items-center justify-center"
+      className="fixed inset-0 z-[65] bg-bg/80 backdrop-blur-xs flex items-center justify-center"
       role="presentation"
       onClick={e => { if (e.target === e.currentTarget) closeWithoutVerdict() }}
     >

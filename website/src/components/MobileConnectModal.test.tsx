@@ -350,17 +350,23 @@ describe('MobileConnectModal — paints above the chat chrome, below the takeove
 
   it('the dialog layer sits below the full-screen takeovers, which must hide a live QR', () => {
     mount(['login_link'])
-    // Every `fixed inset-0 z-[N]` overlay UpdateModal declares (the
-    // "Installing update…" / install-failed takeover). The dialog renders in
-    // the same shell stacking context DOM-later, so a tie or more would paint
-    // the panel — and its live QR/link — over the takeover and cover the
-    // install-failed card's "Back to dashboard" button.
-    const takeovers = [
+    // UpdateModal's full-screen takeover (the "Installing update…" /
+    // install-failed surface) — the overlay that must cover everything,
+    // including an open panel. It is the HIGHEST `fixed inset-0 z-[N]` overlay
+    // UpdateModal declares: since #15776 that component ALSO renders a
+    // dismissible "update ready" dialog in the chat-chrome band (z-[65], the
+    // same layer as this one), so the takeover is specifically the top overlay,
+    // not every one. The dialog renders in the same shell stacking context
+    // DOM-later, so a tie or more would paint the panel — and its live QR/link —
+    // over the takeover and cover the install-failed card's "Back to dashboard"
+    // button.
+    const overlays = [
       ...readSource('components', 'UpdateModal.tsx')
         .matchAll(/fixed inset-0 z-\[(\d+)\]/g),
     ].map(m => Number(m[1]))
-    expect(takeovers.length).toBeGreaterThan(0)
-    expect(dialogLayerZ()).toBeLessThan(Math.min(...takeovers))
+    expect(overlays.length).toBeGreaterThan(0)
+    const takeover = Math.max(...overlays)
+    expect(dialogLayerZ()).toBeLessThan(takeover)
   })
 
   it('clicks outside the panel pass through the dialog layer to what is underneath', () => {
