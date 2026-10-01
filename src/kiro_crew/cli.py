@@ -1273,6 +1273,14 @@ def main() -> None:
     os.environ.pop("KIROCREW_SANDBOX_ACTIVE", None)
     os.environ.pop("KIROCREW_SANDBOX_LEVEL", None)
 
+    # Every kirocrew process started from a managed venv's versioned tree (the
+    # gateway, an MCP stdio server, a CLI command) holds that tree's liveness
+    # lock for its lifetime, so an update's prune never deletes it underneath.
+    # One stat when this process does not run from such a tree.
+    from kiro_crew.platform.tree_liveness import hold_running_tree_lock
+
+    hold_running_tree_lock()
+
     # Validate KIROCREW_PORT early — fail fast before anything else loads.
     # Range as well as type: an in-range check that lives only in the binder
     # would let `KIROCREW_PORT=70000 kirocrew service install` bake an

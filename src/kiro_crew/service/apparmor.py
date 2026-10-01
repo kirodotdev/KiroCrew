@@ -942,6 +942,56 @@ def installed_attachment(
     return match.group("path") if match else None
 
 
+def service_profile_attachment(
+    launcher: str,
+    unit_path: Path,
+    profile_path: Path | None = None,
+    profile_name: str | None = None,
+) -> str | None:
+    """The launcher the service profile really applies to today, or ``None``.
+
+    The confining mechanism is a path attachment, not a systemd
+    ``AppArmorProfile=<name>`` directive: the profile is attached BY PATH to the
+    launcher script ``ExecStart`` uses, and installing the directive alongside a
+    path attachment makes the directive silently win, defeating the attachment.
+    So the profile applies only when its attachment clause names the launcher
+    as it resolves NOW (*launcher*, resolved strictly) AND the unit at
+    *unit_path* carries no ``AppArmorProfile=`` line. A moved or reinstalled
+    launcher reads as ``None`` until ``kirocrew service install`` re-renders the
+    profile. Shared by ``kirocrew doctor`` and the update engine's re-attach
+    question, so the two can never disagree.
+
+    *profile_path*/*profile_name* default to the service profile, resolved in
+    the body so a test's ``monkeypatch.setattr(apparmor, "PROFILE_PATH", ...)``
+    applies.
+    """
+    if profile_path is None:
+        profile_path = PROFILE_PATH
+    if profile_name is None:
+        profile_name = PROFILE_NAME
+    attached = installed_attachment(profile_path, profile_name)
+    if attached is None:
+        return None
+    try:
+        current = str(Path(launcher).resolve(strict=True))
+    except OSError:
+        return None
+    if attached != current:
+        return None
+    # A unit that still carries ``AppArmorProfile=`` (a hand-edited unit, a
+    # drop-in, an older install) silently WINS over the path attachment. Best
+    # effort: an unreadable unit (or none installed) proves nothing and does not
+    # flip a verified attachment.
+    try:
+        # errors="replace": undecodable bytes must not crash the verdict.
+        unit_text = unit_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return attached
+    if any(line.strip().startswith("AppArmorProfile=") for line in unit_text.splitlines()):
+        return None
+    return attached
+
+
 def install_launcher(
     sudo_install_file,
     sudo_run,

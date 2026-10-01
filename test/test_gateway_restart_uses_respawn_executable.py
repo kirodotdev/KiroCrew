@@ -22,6 +22,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from wheel_update_test_helpers import wire_wheel_apply
 
 from kiro_crew import platform_compat
 from kiro_crew.config.loader import KiroCrewConfig
@@ -67,23 +68,6 @@ def exec_seams(monkeypatch, tmp_path):
     # The breadcrumb drain hits the real safety-override store; not under test.
     monkeypatch.setattr(gw, "flush_breadcrumb_writes", lambda *_a, **_k: None)
     return respawn, reexec, str(interpreter)
-
-
-@pytest.fixture
-def update_info():
-    """Hand a test the process-global update cache, restored on teardown.
-
-    ``dashboard.handlers.updates._update_info`` is module-level state shared by
-    every test in the worker (the convention ``test_get_update_info.py`` also
-    follows). A test that repopulates it must not leave its shape behind for
-    whatever runs next.
-    """
-    from kiro_crew.dashboard.handlers import updates
-
-    original = dict(updates._update_info)
-    yield updates._update_info
-    updates._update_info.clear()
-    updates._update_info.update(original)
 
 
 def _assert_execs_the_respawn_interpreter(
@@ -161,7 +145,7 @@ class TestResolverIsLoadedBeforeTheApply:
         [
             ("_check_for_updates_via_provider", {"apply"}),
             ("_auto_apply_update", {"create_subprocess_exec"}),
-            ("_auto_apply_wheel_update", {"create_subprocess_exec"}),
+            ("_auto_apply_wheel_update", {"run_wheel_apply"}),
         ],
     )
     def test_import_precedes_the_first_apply(self, method, apply_attrs):
@@ -217,7 +201,7 @@ class TestDashboardResolverIsLoadedBeforeTheApply:
         ("method", "apply_names"),
         [
             ("api_update_apply", {"apply_policy_update", "_venv_pip_install"}),
-            ("api_update_approve", {"apply_wheel_update"}),
+            ("api_update_approve", {"run_wheel_apply"}),
         ],
     )
     def test_import_precedes_every_apply(self, method, apply_names):
@@ -232,9 +216,12 @@ class TestDashboardResolverIsLoadedBeforeTheApply:
         applies = [
             node.lineno
             for node in ast.walk(fn)
-            if isinstance(node, ast.Name)
-            and isinstance(node.ctx, ast.Load)
-            and node.id in apply_names
+            if (
+                isinstance(node, ast.Name)
+                and isinstance(node.ctx, ast.Load)
+                and node.id in apply_names
+            )
+            or (isinstance(node, ast.Attribute) and node.attr in apply_names)
         ]
         assert applies, f"{method}: no apply reference found"
         assert imports[0] < min(
@@ -244,46 +231,15 @@ class TestDashboardResolverIsLoadedBeforeTheApply:
 
 class TestAutoApplyWheelUpdate:
     @pytest.mark.asyncio
-    async def test_successful_install_execs_the_respawn_interpreter(
-        self, exec_seams, update_info, monkeypatch
-    ):
+    async def test_successful_install_execs_the_respawn_interpreter(self, exec_seams, monkeypatch):
         respawn, reexec, interpreter = exec_seams
         orch = _make_orchestrator()
+        # The shadow engine is the apply; it promoted the new tree.
+        apply = wire_wheel_apply(monkeypatch)
 
-        update_info.clear()
-        update_info.update(
-            {
-                "remediation": {
-                    "kind": "command",
-                    "message": "Re-run the installer to upgrade.",
-                    "command": "sh -c true",
-                }
-            }
-        )
-        # Same pins the wheel-apply tests in test_slack_gateway.py use to reach
-        # the spawn on any host: POSIX platform, a trusted `sh`, a trusted PATH.
-        monkeypatch.setattr("kiro_crew.platform.update_layout.cdn_bases_are_safe", lambda: True)
-        monkeypatch.setattr(
-            "kiro_crew.platform.update_governance.update_blocked_reason", lambda _base: None
-        )
-        monkeypatch.setattr("kiro_crew.slack.gateway.sys.platform", "linux")
-        monkeypatch.setattr("kiro_crew.platform_compat.trusted_system_bin", lambda name: "/bin/sh")
-        monkeypatch.setattr(
-            "kiro_crew.platform.update_provider._trusted_path_env",
-            lambda: {"PATH": "/usr/bin:/bin"},
-        )
+        await orch._auto_apply_wheel_update("stable", "9.9.9")
 
-        proc = MagicMock()
-        proc.returncode = 0  # the installer succeeded: the method must restart
-        proc.stdout = None
-        proc.stderr = None
-        proc.wait = AsyncMock(return_value=0)
-        spawn = AsyncMock(return_value=proc)
-        monkeypatch.setattr("asyncio.create_subprocess_exec", spawn)
-
-        await orch._auto_apply_wheel_update()
-
-        spawn.assert_awaited_once()
+        apply.assert_called_once()
         _assert_execs_the_respawn_interpreter(respawn, reexec, interpreter)
 
 

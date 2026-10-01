@@ -142,7 +142,12 @@ def kirocrew_bin() -> str:
     found = shutil.which("kirocrew")
     if found:
         return found
-    return os.path.realpath(sys.argv[0])
+    # Resolved for a development install, but never PAST a managed venv's stable
+    # link: this value is persisted into ExecStart, and a path inside one
+    # versioned tree would outlive the next update's prune.
+    from kiro_crew.platform.tree_liveness import through_stable_link
+
+    return through_stable_link(os.path.realpath(sys.argv[0]))
 
 
 def service_environment(home: str) -> "dict[str, str]":

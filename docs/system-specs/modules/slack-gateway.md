@@ -267,6 +267,116 @@ or store the user token.
 ### `run_gateway(cfg: KiroCrewConfig, *, no_dashboard=False, no_crons=False) -> None`
 Starts the Socket Mode listener. Blocks until SIGINT/SIGTERM. When `no_crons=True`, the `CronService` is instantiated but not started — cron jobs are visible in the dashboard but not executed. Use for multi-instance setups where a single primary instance handles cron execution. On shutdown, calls `dashboard_state.close_all_ws()` before `AppRunner.cleanup()` to prevent 30s hang from blocked WebSocket `async for msg` loops.
 
+### Automatic apply on a managed-venv install
+
+When the update coordinator applies an update unattended on a `cli.sh`
+managed-venv install (`auto_update` on, or a policy `min_version` floor that
+outranks it; the check's snapshot carries an installer command and
+`running_from_managed_venv()` is true), `_auto_apply_wheel_update` runs
+`wheel_apply.run_wheel_apply`. `POST /api/update/approve` runs the same helper,
+and `kirocrew update` drives the same engine (`wheel_engine.apply_wheel_update`);
+the engine itself is described in
+[rfc-update-architecture](../../request-for-change/rfc-update-architecture.md).
+Nothing on this path re-runs `cli.sh`, which moves the live venv aside and
+rebuilds it in place.
+
+- **One preflight, one order** (`wheel_apply.preflight_bases`, shared by all
+  three callers): the policy source pin on the feed base and then the artifact
+  base, then the shape of `KIROCREW_CDN_BASE`. A refusal relights the badge and
+  fetches nothing. A release version outside the engine's grammar
+  (`wheel_engine.check_release_version`; the unsigned feed is read before the
+  signed manifest, and the feed check admits a wider grammar) is refused before
+  anything names its tree: the coordinator logs it and relights the badge, the
+  CLI exits on its failure path, and the approve route answers `approve_refused`
+  and releases the update lock.
+- **Operator-only promotions wait.** When the host restricts unprivileged user
+  namespaces and the `kirocrew-userns` AppArmor profile applies to the launcher
+  today (`apparmor.service_profile_attachment`, the predicate `kirocrew doctor`
+  reports), promotion would move that launcher into the new tree and the next
+  fresh service start would run unconfined (`wheel_apply.userns_reattach_needed`).
+  The unattended apply stops before it builds and sends one notice per version
+  naming the two commands (`kirocrew update`, then `kirocrew service install`).
+  A policy floor in that state is retried on the short cadence rather than left
+  for the check interval. The approve route and the CLI proceed, and after
+  promotion name only `kirocrew service install`
+  (`wheel_apply.userns_reattach_after_apply`), since the update itself is done.
+- **Off the stable link before the build.** A gateway an earlier version
+  restarted as `crew-venv-current/bin/python3` keeps that spelling in
+  `sys.prefix`, so every module it imports later resolves through the link, and
+  a promotion under it would load the new version's code into the running one
+  for as long as a busy restart waits. When `wheel_apply.relaunch_before_apply`
+  reports that shape, the coordinator builds nothing and runs the pending restart
+  below onto `respawn_executable()` (the link's resolved tree, the same version),
+  under the same mandatory grace; the successor builds on its next cycle. It is
+  skipped when that restart would land on the link again.
+- **Built beside the served tree, with admission open.** The apply runs on the
+  single-worker `mc-update` executor; a second apply in the same process
+  answers `busy` before it is submitted, unless its caller already holds the
+  update lock (the approve route takes it before it spends the nonce), since
+  every other apply then loses on that lock. The approve route also refuses
+  (`approve_restarting`, before the lock and the nonce) while a gateway restart
+  is under way, whose exec would stop the apply before its outcome is audited.
+  Turns, crons and spawns keep running for the whole build; nothing pauses until
+  the restart.
+- **Restart through the bracket.** On promotion the coordinator sets
+  `_pending_update_respawn` (with `_pending_update_mandatory` and its key) and
+  calls `_retry_pending_update_restart`, which pauses admission through
+  `_prepare_auto_update_apply`. A busy gateway defers to the short cadence, and
+  every retry runs under the same mandatory grace, so a floor's grace warning
+  still fires. An apply still in flight (an approved in-app one) counts as
+  in-flight work, so a pending restart never cancels it; its own restart owns
+  the exec. `_restart_after_update` claims `_gateway_restart_in_progress`, the
+  flag `_restart_gateway` claims, so only one restart sequence runs at a time.
+  The interpreter is `respawn_executable()`: the stable link's RESOLVED tree.
+  No restart is scheduled when that would not exec the promoted tree
+  (`wheel_apply.restart_reaches`; `respawn_executable` falls back to the running
+  interpreter when the link cannot carry a restart): the successor would run the
+  old version, find the same update and restart again for ever. The coordinator
+  sends one notice naming the installer re-run instead; the approve route pushes
+  it as its `failed` step.
+- **Outcomes** (`wheel_apply.classify`, shared with the CLI): `busy`, `deferred`
+  (memory is still being prepared) and `cancelled` retry on the short cadence,
+  with nothing pushed onto another apply's progress feed. `incompatible` comes
+  only from the SIGNED release metadata (today `python_requires` against the
+  build interpreter), decided again before any download on every cycle; the
+  notice goes out once per process per release and names the installer re-run
+  (`wheel_apply.incompatible_remedy`), the only way such a host moves onto a
+  newer Python. `kirocrew update` prints the same command and the approve route
+  appends it to its `failed` step. `failed`, `timed_out` and
+  `snapshot_failed` push a `failed` step whose text is redacted in full, then
+  capped to the step and the tail of its detail; a pip "no wheel" failure is an
+  ordinary `failed`.
+- **Bounded.** `wheel_apply.APPLY_DEADLINE_SECS` (30 min) caps the apply from
+  the moment it holds the update lock, through its cancel; the wheel download
+  has its own total bound (`_WHEEL_FETCH_TOTAL_SECS`) besides the per-read
+  timeout, both checked after every `read1`.
+- **A stop owns the apply.** `wheel_apply` registers `cancel_wheel_applies` as a
+  process exit hook (`platform_compat.register_process_exit_hook`). The hooks run
+  in `_on_signal` (both signals), at the start of `_shutdown`, in both exec seams
+  (`reexec_launcher`, `reexec_python_module`) and in `platform_compat.hard_exit`,
+  which the second-signal force exit and the owner's `/kirocrew restart` use. A
+  deferred or refused restart therefore never cancels an apply: only an exec
+  that is about to happen does. Setting the cancel kills the build child's whole
+  process group and shuts a download's socket synchronously, so the child is dead
+  before any exit path runs. `_shutdown` then waits up to
+  `wheel_apply.STOP_GRACE_SECS` for the applies and the coordinator, concurrently
+  with the rest of its teardown and without importing the apply module (it is
+  read from `sys.modules`). Each build child also holds the update lock's
+  descriptor, so a child orphaned by a hard kill keeps the lock and the
+  successor's apply answers `busy` instead of clearing a tree still being
+  written. Windows locks are not inherited, and the managed venv is POSIX-only.
+- **Memory is copied before promotion.** Readiness is checked before anything is
+  downloaded (`wheel_apply.check_memory_ready`); the copy is the engine's last
+  step before the flip (`wheel_apply.memory_snapshot_hook`). See
+  [memory-skills-hooks](memory-skills-hooks.md).
+- **Differences from a direct installer run.** This route keeps the current
+  interpreter, the same as the CLI and approve routes. Moving onto the managed
+  Python, a release whose `requires-python` this interpreter fails (once
+  `cli.sh` provisions a series that meets it; see
+  [release](../../build/release.md#raising-the-python-floor)), and retiring
+  a venv nested inside the data home all need a direct `cli.sh` run, and that run
+  still rebuilds the fixed `crew-venv` in place (under the same update lock).
+
 ### Restart after update
 
 Automatic-update restarts select and validate the composed gateway launcher before
@@ -292,8 +402,8 @@ but only while `SIGALRM` is at its default disposition (the same ownership rule
 ### Shutdown Sequence
 
 1. First Ctrl+C sets `shutdown_event` → graceful shutdown begins (10s deadline)
-2. Second Ctrl+C calls `os._exit(0)` immediately (force exit)
-3. `_shutdown()` **first disarms the loop-stall watchdog** (`dashboard_state._loop_watchdog.stop()` + cancels `_loop_heartbeat`), then saves active chat slots, cancels handler tasks, stops cron/heartbeat, closes sessions. The watchdog MUST be disarmed before `close_all()`/`cancel_all()` because that teardown deliberately kills every kiro-cli child — the same `os.waitpid` reaping burst the watchdog guards against — and a slow teardown would otherwise let the armed stall alarm (`setitimer(ITIMER_REAL)` with faulthandler's `SIGALRM` handler) end the process mid-shutdown (a clean quit would look like a crash). The watchdog's own `on_cleanup` hook fires too late (inside `AppRunner.cleanup()`, gathered concurrently with the reaping).
+2. Second Ctrl+C calls `platform_compat.hard_exit(0)` immediately (force exit: the process exit hooks, then `os._exit`)
+3. `_shutdown()` cancels every managed-venv apply in flight (see "Automatic apply on a managed-venv install"), then **disarms the loop-stall watchdog** (`dashboard_state._loop_watchdog.stop()` + cancels `_loop_heartbeat`), then saves active chat slots, cancels handler tasks, stops cron/heartbeat, closes sessions. The watchdog MUST be disarmed before `close_all()`/`cancel_all()` because that teardown deliberately kills every kiro-cli child — the same `os.waitpid` reaping burst the watchdog guards against — and a slow teardown would otherwise let the armed stall alarm (`setitimer(ITIMER_REAL)` with faulthandler's `SIGALRM` handler) end the process mid-shutdown (a clean quit would look like a crash). The watchdog's own `on_cleanup` hook fires too late (inside `AppRunner.cleanup()`, gathered concurrently with the reaping).
 4. The gateway clears its port-keyed run marker in both dashboard and API-only
    modes, then `cleanup_orphaned_sessions()` kills any kiro-cli PIDs tracked in
    the PID file before `os._exit(0)`.
@@ -492,7 +602,7 @@ Command name configurable via `slack.command` in config (default: `kirocrew`).
 | `/<command> sessions` | `_handle_slash` | List active sessions with Slack link status (Block Kit) |
 | `/<command> sessions resume <key>` | `_handle_slash` | Resume a session in the current Slack thread |
 | `/<command> dashboard` | `_handle_slash` | Generate presigned dashboard link (DM'd to user) |
-| `/<command> restart` | `_handle_restart` | Restart the gateway (owner-only; requires an `INVOCATION_ID` / systemd supervisor, else refuses). SEL-audited (approved/denied). Best-effort `save_all_slots_to_history` + `close_all` + `sel.flush` (each bounded by `wait_for`), then `os._exit(1)` so the supervisor respawns |
+| `/<command> restart` | `_handle_restart` | Restart the gateway (owner-only; requires an `INVOCATION_ID` / systemd supervisor, else refuses). SEL-audited (approved/denied). Best-effort `save_all_slots_to_history` + `close_all` + `sel.flush` (each bounded by `wait_for`), then `platform_compat.hard_exit(1)` (the process exit hooks, then `os._exit(1)`) so the supervisor respawns |
 
 #### Owner-Only `!` Commands (`handler.py`)
 

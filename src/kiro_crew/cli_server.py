@@ -1734,13 +1734,9 @@ def _snapshot_memory_or_exit() -> None:
     around the one store nothing else can rebuild is the loss this prevents.
     """
     from kiro_crew import memory_backup
+    from kiro_crew.platform.wheel_apply import snapshot_memory_before_update
 
-    try:
-        keep = int(KiroCrewConfig.load().memory.backup_keep)
-        snapshot = memory_backup.back_up_all_stores(keep, force=True)
-        failure = f"{snapshot['failed']} store(s) not copied" if snapshot["failed"] else ""
-    except Exception as exc:
-        snapshot, failure = {"backed_up": 0}, str(exc) or exc.__class__.__name__
+    copied, failure = snapshot_memory_before_update()
     if failure:
         print(f"  ❌ Pre-update memory snapshot failed: {failure}")
         print("     Not updating: the store would be rewritten with no fresh copy of it.")
@@ -1750,7 +1746,7 @@ def _snapshot_memory_or_exit() -> None:
     # store would point at the wrong place.
     newest = memory_backup.newest_backup()
     where = f"; default store copies in {newest.parent}" if newest is not None else ""
-    print(f"  💾 Memory snapshot: {snapshot['backed_up']} store(s) copied{where}\n")
+    print(f"  💾 Memory snapshot: {copied} store(s) copied{where}\n")
 
 
 def _update(force: bool = False) -> None:
@@ -2266,38 +2262,24 @@ def _update_wheel(layout) -> None:
     """
 
     from kiro_crew import __version__ as local_version
-    from kiro_crew.platform.update_governance import update_blocked_reason
-    from kiro_crew.platform.update_layout import (
-        cdn_bases,
-        cdn_bases_are_safe,
-        release_channel,
-        wheel_update_command,
-    )
-    from kiro_crew.platform.wheel_engine import (
-        WheelUpdateError,
-        apply_wheel_update,
-        running_from_managed_venv,
-    )
+    from kiro_crew.platform import wheel_apply
+    from kiro_crew.platform.update_layout import release_channel, wheel_update_command
+    from kiro_crew.platform.wheel_engine import running_from_managed_venv
 
     channel = release_channel()
-    feed_base, artifact_base = cdn_bases()
-    feed_url = f"{feed_base}/feed/{channel}/latest-cli.json"
-
-    # Source-pin governance check: same seam the git path uses, applied to the
-    # feed URL so a pinned fleet's wheel installs cannot bypass the ceiling.
-    blocked = update_blocked_reason(feed_base)
-    if not blocked:
-        blocked = update_blocked_reason(artifact_base)
-    if blocked:
-        print(f"  🛡️  Update blocked by security policy: {blocked}")
-        sys.exit(1)
-
-    # Shell safety: cdn_bases() reads KIROCREW_CDN_BASE which is operator-set.
-    # Reject metacharacters that could enable command injection when the URL
+    # The one preflight every apply route runs, in its one order: the policy
+    # source pin on both CDN bases (a pinned fleet's wheel installs cannot bypass
+    # the ceiling), then the shape of the operator-set KIROCREW_CDN_BASE, which
     # flows through wheel_update_command() into ``sh -c``.
-    if not cdn_bases_are_safe():
-        print("  ❌ CDN base URL contains disallowed characters")
+    try:
+        feed_base, artifact_base = wheel_apply.preflight_bases()
+    except wheel_apply.WheelApplyRefused as exc:
+        if exc.code == "blocked_by_policy":
+            print(f"  🛡️  Update blocked by security policy: {exc.message}")
+        else:
+            print("  ❌ CDN base URL contains disallowed characters")
         sys.exit(1)
+    feed_url = f"{feed_base}/feed/{channel}/latest-cli.json"
 
     print(f"  📦 Install type: {layout.kind} (channel: {channel})")
     print(f"  📡 Checking {feed_url}…")
@@ -2343,7 +2325,7 @@ def _update_wheel(layout) -> None:
         sys.exit(1)
 
     remote_version = manifest.get("version", "")
-    if not remote_version:
+    if not remote_version or not isinstance(remote_version, str):
         print("  ❌ No version in release feed")
         sys.exit(1)
 
@@ -2367,44 +2349,7 @@ def _update_wheel(layout) -> None:
     # other shape (pipx, a bare venv the operator manages) keeps the
     # installer re-run, whose behavior is owned by cli.sh.
     if running_from_managed_venv():
-        _snapshot_memory_or_exit()
-        print("\n  🔄 Building the new version beside the current one…")
-        try:
-            promoted = apply_wheel_update(
-                channel=channel,
-                feed_base=feed_base,
-                artifact_base=artifact_base,
-                expected_version=remote_version,
-                progress=lambda msg: print(f"     {msg}"),
-            )
-        except (WheelUpdateError, OSError) as e:
-            # The engine wraps its own I/O failures in WheelUpdateError, but
-            # staging-filesystem errors raised outside those conversion sites
-            # (a full or unwritable disk at mkdir/tempdir time) surface as raw
-            # OSError — both take the same operator-facing failure path
-            # instead of a traceback.
-            # Failure text can quote the URL it tried, and the fallback
-            # installer command embeds the CDN base — either may carry
-            # credentials (a token-bearing KIROCREW_CDN_BASE), and this
-            # print lands in terminal history/scrollback. Same redaction
-            # pair the dashboard update surface applies before showing
-            # failure text.
-            from kiro_crew.security import (
-                redact_credentials,
-                redact_exfiltration_urls,
-            )
-
-            msg, _ = redact_credentials(str(e))
-            msg, _ = redact_exfiltration_urls(msg)
-            fallback, _ = redact_credentials(wheel_update_command(channel))
-            print(f"\n  ❌ {msg}")
-            print("  The current install was not modified. To update by")
-            print("  re-running the installer instead:")
-            print(f"    {fallback}")
-            sys.exit(1)
-        print(f"\n✅ Kiro Crew {remote_version} installed at {promoted}")
-        print("\n  Restart the gateway to switch to it:")
-        print("    kirocrew restart")
+        _update_managed_venv(channel, feed_base, artifact_base, remote_version)
         return
 
     # Run the installer
@@ -2445,6 +2390,81 @@ def _update_wheel(layout) -> None:
     print(f"\n✅ Kiro Crew updated to {remote_version}!")
     print("\n  Restart the gateway to use the new version:")
     print("    kirocrew restart")
+
+
+def _update_managed_venv(
+    channel: str, feed_base: str, artifact_base: str, remote_version: str
+) -> None:
+    """``kirocrew update`` on the managed venv: the shadow engine, in this shell.
+
+    The new version is built into a fresh sibling tree while this install keeps
+    working, verified, then promoted atomically; the running gateway is never
+    overwritten in place, and its restart picks the new tree up through the
+    stable link. Memory readiness is checked before anything is downloaded and
+    the copy taken just before promotion, the same steps every apply route runs.
+    Children get THIS shell's full environment (``trusted_env=False``), so a
+    toolchain on the operator's PATH reaches a source build. How the apply ended
+    is read through the one classification the gateway uses, and the installer
+    re-run is offered only where it is a real way forward: never while another
+    update holds the lock (it would race that apply's promotion) and never for a
+    refused memory copy (it would perform the un-copied update).
+    """
+    from kiro_crew.platform import wheel_apply
+    from kiro_crew.platform.wheel_engine import WheelUpdateError, apply_wheel_update
+
+    print("\n  🔄 Building the new version beside the current one…")
+
+    def _progress(msg: str) -> None:
+        print(f"     {msg}")
+
+    failure: BaseException | None = None
+    reattach = False
+    try:
+        # Inside the try: a feed version outside the release grammar is refused here.
+        reattach = wheel_apply.userns_reattach_needed(remote_version)
+        promoted = apply_wheel_update(
+            channel=channel,
+            feed_base=feed_base,
+            artifact_base=artifact_base,
+            expected_version=remote_version,
+            progress=_progress,
+            preflight=wheel_apply.check_memory_ready,
+            before_promote=wheel_apply.memory_snapshot_hook(_progress),
+            trusted_env=False,
+        )
+    except (WheelUpdateError, OSError) as exc:
+        # The engine wraps its own I/O failures in WheelUpdateError, but
+        # staging-filesystem errors raised outside those conversion sites (a
+        # full or unwritable disk at mkdir/tempdir time) surface as raw OSError;
+        # both take the operator-facing path instead of a traceback.
+        failure = exc
+    outcome = wheel_apply.classify(failure)
+    if outcome.status == "promoted":
+        print(f"\n✅ Kiro Crew {remote_version} installed at {promoted}")
+        if reattach:
+            print(f"\n  ⚠️  {wheel_apply.userns_reattach_after_apply(remote_version)}")
+            return
+        print("\n  Restart the gateway to switch to it:")
+        print("    kirocrew restart")
+        return
+    # Redacted: failure text can quote the URL it tried, which may carry
+    # credentials from a token-bearing KIROCREW_CDN_BASE.
+    message = wheel_apply.shown_failure_text(str(failure), limit=None)
+    if outcome.status == "busy":
+        print(f"\n  ⏳ {message}")
+        print("     Another update (possibly the gateway's own) is in progress. Wait for it")
+        print("     to finish, then run `kirocrew update` again.")
+        sys.exit(1)
+    print(f"\n  ❌ {message}")
+    if outcome.status in ("snapshot_failed", "deferred"):
+        sys.exit(1)
+    if outcome.status == "incompatible":
+        print(f"  {wheel_apply.incompatible_remedy(channel)}")
+        sys.exit(1)
+    print("  The current install was not modified. To update by")
+    print("  re-running the installer instead:")
+    print(f"    {wheel_apply.installer_rerun_command(channel)}")
+    sys.exit(1)
 
 
 def _update_approve() -> None:

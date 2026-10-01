@@ -371,24 +371,24 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # ``pdfplumber`` commits a page's whole character list before any caller
         # can measure it, so the memory bound has to sit one process down.
         "pdf_extract.py::extract_pdf_segments",
-        # The shadow-venv update engine's four spawns. None is agent-influenced
-        # and none can route through sandboxed_spawn_argv, because the engine's
-        # whole job is to build the NEXT gateway install outside the agent
-        # sandbox: (1) _verify_signature runs the openssl binary resolved via
-        # trusted_system_bin (never PATH) over files it just wrote into its own
-        # mkstemp workdir; (2) _run spawns `sys.executable -m venv <tree>` and
-        # `<shadow python> -m pip install <wheel>` where the tree name is
-        # composed from the SIGNED manifest's validated version string and the
-        # wheel path from the same workdir; (3) build_shadow_venv's best-effort
-        # pip self-upgrade in the shadow tree; (4) verify_shadow_venv's `-I`
-        # isolated import probe against the shadow interpreter. The update flow
-        # is reachable only from the CLI on the operator's terminal or the
-        # gateway's approve endpoint behind the OQ7 host-local step-up — the
-        # agent's own bash path is closed by the self-update denied rule.
-        "platform/wheel_engine.py::_run",
-        "platform/wheel_engine.py::_verify_signature",
-        "platform/wheel_engine.py::build_shadow_venv",
-        "platform/wheel_engine.py::verify_shadow_venv",
+        # The shadow-venv update engine's one spawn seam. Nothing it runs is
+        # agent-influenced, and none of it can route through sandboxed_spawn_argv,
+        # because the engine's whole job is to build the NEXT gateway install
+        # outside the agent sandbox. _spawn_build_child runs, in its own session
+        # (inside the gateway with the trusted-PATH scrubbed environment, under
+        # `kirocrew update` with the operator's own shell environment; interpreter
+        # children run -I either way): the openssl binary
+        # resolved via trusted_system_bin (never PATH) over files in the run's own
+        # staging workdir, `sys.executable -I -m venv <tree>`, the shadow
+        # interpreter's `-I -m pip` refresh, install and `pip check`, and the `-I`
+        # import probe. The tree name is composed from the SIGNED manifest's
+        # validated version string and the wheel path from the same workdir. The
+        # update flow is reachable only from the CLI on the operator's terminal,
+        # the gateway's approve endpoint behind the OQ7 host-local step-up, and the
+        # gateway's own update coordinator (auto_update or a policy floor, against
+        # the check's own verdict) — the agent's own bash path is closed by the
+        # self-update denied rule.
+        "platform/wheel_engine.py::_spawn_build_child",
         # The userns probe child: ONE fixed argv, `sys.executable -I -S -c <shim>`,
         # no shell, no cwd, stdin/stdout are the two handshake pipes. Nothing is
         # agent-influenced -- the shim is a module-level string constant and takes
@@ -1646,13 +1646,6 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "session_scope_reap.py::_scope_active_enter_us",
         "session_scope_reap.py::_systemctl_stop",
         "slack/gateway.py::_auto_apply_update",
-        # Wheel/cli.sh auto-update: runs the signed installer command
-        # (composed locally from a validated channel name and https-pinned
-        # artifact base, never from feed data). The child is the cli.sh
-        # installer, which performs its own RSA-SHA256 signature verification.
-        # NOT sandbox-routed because the installer must write to the managed
-        # venv and symlink ~/.local/bin/kirocrew.
-        "slack/gateway.py::_auto_apply_wheel_update",
         # Pluggable update provider: CommandProvider runs operator-configured
         # shell commands from security_policy.json or config.json (sensitive
         # home dirs the agent cannot write). The check command probes for a

@@ -2184,6 +2184,16 @@ class TestUpdateWheelFeedValidation:
         assert exc.value.code == 1
         assert "Feed channel mismatch" in capsys.readouterr().out
 
+    def test_a_non_string_version_is_refused(self, wheel_feed, capsys) -> None:
+        wheel_feed(
+            b'{"schema": "kirocrew-cli-artifact-manifest-v1", "channel": "stable", '
+            b'"version": 999}'
+        )
+        with pytest.raises(SystemExit) as exc:
+            cli_server._update_wheel(_LAYOUT)
+        assert exc.value.code == 1
+        assert "No version in release feed" in capsys.readouterr().out
+
     def test_missing_version_is_refused(self, wheel_feed, capsys) -> None:
         wheel_feed(b'{"schema": "kirocrew-cli-artifact-manifest-v1", "channel": "stable"}')
         with pytest.raises(SystemExit) as exc:
@@ -2202,6 +2212,11 @@ class TestUpdateWheelInstaller:
             b'"channel": "stable", "version": "999.0.0"}'
         )
         monkeypatch.setattr(sys, "platform", "linux")
+        # The host's real AppArmor state is never read; a test that needs the
+        # re-attach branch sets it itself.
+        from kiro_crew.platform import wheel_apply
+
+        monkeypatch.setattr(wheel_apply, "userns_reattach_needed", lambda _version: False)
 
     def test_windows_refuses_the_posix_installer(self, monkeypatch, capsys) -> None:
         monkeypatch.setattr(sys, "platform", "win32")
@@ -2303,6 +2318,149 @@ class TestUpdateWheelInstaller:
         out = capsys.readouterr().out
         assert "No space left on device" in out
         assert "was not modified" in out
+
+    def test_shadow_success_snapshots_before_promotion_and_names_the_profile_remedy(
+        self, monkeypatch, capsys
+    ) -> None:
+        """The managed venv takes the shared path: the memory snapshot runs as the
+        engine's last step before promotion, and a promotion that moves the launcher
+        a userns AppArmor profile applies to prints how to re-attach it."""
+        from kiro_crew.platform import wheel_apply, wheel_engine
+
+        monkeypatch.setattr(wheel_engine, "running_from_managed_venv", lambda: True)
+        monkeypatch.setattr(wheel_apply, "userns_reattach_needed", lambda _version: True)
+        monkeypatch.setattr(wheel_apply, "snapshot_memory_before_update", lambda: (3, ""))
+        early = []
+        monkeypatch.setattr(cli_server, "_snapshot_memory_or_exit", lambda: early.append(True))
+        seen: dict[str, object] = {}
+
+        def _apply(**kw):
+            seen.update(kw)
+            kw["before_promote"]()
+            return Path("/x/crew-venv-999.0.0")
+
+        monkeypatch.setattr(wheel_engine, "apply_wheel_update", _apply)
+        cli_server._update_wheel(_LAYOUT)
+        out = capsys.readouterr().out
+        assert early == [], "the snapshot is the engine's step, not a separate one"
+        assert "Memory snapshot: 3 store(s) copied" in out
+        assert "kirocrew service install" in out
+        # Said after the update finished: it is installed, and only the re-attach is left.
+        assert "999.0.0 is installed" in out
+        assert "Run `kirocrew update`" not in out
+
+    def test_a_feed_version_outside_the_release_grammar_is_an_update_failure(
+        self, wheel_feed, monkeypatch, capsys, tmp_path
+    ) -> None:
+        """An unsigned feed version that cannot name a tree is refused by the REAL
+        engine as an update failure: an exit, never a traceback, nothing built."""
+        from kiro_crew.platform import wheel_engine
+
+        wheel_feed(
+            b'{"schema": "kirocrew-cli-artifact-manifest-v1", '
+            b'"channel": "stable", "version": "999/0"}'
+        )
+        layout = wheel_engine.ManagedVenvLayout(
+            legacy=tmp_path / "crew-venv", stable_link=tmp_path / "crew-venv-current"
+        )
+        monkeypatch.setattr(wheel_engine, "running_from_managed_venv", lambda: True)
+        monkeypatch.setattr(wheel_engine, "managed_venv_layout", lambda: layout)
+        monkeypatch.setattr(wheel_engine, "hold_update_lock", lambda: -1)
+        monkeypatch.setattr(wheel_engine, "release_update_lock", lambda _fd: None)
+        with pytest.raises(SystemExit) as exc:
+            cli_server._update_wheel(_LAYOUT)
+        assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert "fails validation" in out
+        assert "was not modified" in out
+        assert list(tmp_path.iterdir()) == []
+
+    def test_a_reattach_probe_that_refuses_the_version_is_an_update_failure(
+        self, monkeypatch, capsys
+    ) -> None:
+        """The AppArmor probe names the promoted tree too, so it runs inside the
+        failure handling rather than ahead of it."""
+        from kiro_crew.platform import wheel_apply, wheel_engine
+
+        monkeypatch.setattr(wheel_engine, "running_from_managed_venv", lambda: True)
+
+        def _refuse(_version: str) -> bool:
+            raise wheel_engine.WheelUpdateError("release version '999/0' fails validation")
+
+        monkeypatch.setattr(wheel_apply, "userns_reattach_needed", _refuse)
+        monkeypatch.setattr(
+            wheel_engine,
+            "apply_wheel_update",
+            lambda **kw: pytest.fail("nothing is applied after a refusal"),
+        )
+        with pytest.raises(SystemExit) as exc:
+            cli_server._update_wheel(_LAYOUT)
+        assert exc.value.code == 1
+        assert "fails validation" in capsys.readouterr().out
+
+    @pytest.mark.parametrize(
+        ("exc_name", "message"),
+        [
+            ("WheelUpdateBusy", "another kirocrew update is already in progress"),
+            ("WheelUpdateSnapshotFailed", "Pre-update memory snapshot failed: 1 store(s)"),
+        ],
+    )
+    def test_shadow_refusals_never_offer_the_installer_rerun(
+        self, monkeypatch, capsys, exc_name, message
+    ) -> None:
+        """The installer re-run would race the other update's promotion (busy), or
+        perform exactly the un-copied update the snapshot refusal stops."""
+        from kiro_crew.platform import wheel_engine
+
+        monkeypatch.setattr(wheel_engine, "running_from_managed_venv", lambda: True)
+
+        def _refuse(**kw):
+            raise getattr(wheel_engine, exc_name)(message)
+
+        monkeypatch.setattr(wheel_engine, "apply_wheel_update", _refuse)
+        with pytest.raises(SystemExit) as exc:
+            cli_server._update_wheel(_LAYOUT)
+        assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert message in out
+        assert "re-running the installer" not in out
+
+    def test_an_incompatible_release_names_the_installer_rerun(self, monkeypatch, capsys) -> None:
+        """Only the installer moves an install onto a Python the release accepts."""
+        from kiro_crew.platform import wheel_engine
+
+        monkeypatch.setattr(wheel_engine, "running_from_managed_venv", lambda: True)
+
+        def _refuse(**kw):
+            raise wheel_engine.WheelUpdateIncompatible(
+                "kirocrew 999.0.0 requires Python >= 3.99", version="999.0.0", sha256="a" * 64
+            )
+
+        monkeypatch.setattr(wheel_engine, "apply_wheel_update", _refuse)
+        with pytest.raises(SystemExit) as exc:
+            cli_server._update_wheel(_LAYOUT)
+        assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert "requires Python >= 3.99" in out
+        assert "re-run the installer" in out.lower() and "cli.sh | sh" in out
+        assert "was not modified" not in out
+
+    def test_shadow_children_get_this_shells_environment_and_memory_is_checked_first(
+        self, monkeypatch, capsys
+    ) -> None:
+        from kiro_crew.platform import wheel_apply, wheel_engine
+
+        monkeypatch.setattr(wheel_engine, "running_from_managed_venv", lambda: True)
+        seen: dict[str, object] = {}
+
+        def _apply(**kw):
+            seen.update(kw)
+            return Path("/x/crew-venv-999.0.0")
+
+        monkeypatch.setattr(wheel_engine, "apply_wheel_update", _apply)
+        cli_server._update_wheel(_LAYOUT)
+        assert seen["trusted_env"] is False, "a toolchain on the operator's PATH reaches pip"
+        assert seen["preflight"] is wheel_apply.check_memory_ready
 
     def test_success_reports_the_new_version_and_restart_hint(self, monkeypatch, capsys) -> None:
         seen: list[list[str]] = []

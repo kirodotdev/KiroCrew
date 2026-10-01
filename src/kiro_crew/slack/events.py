@@ -887,7 +887,11 @@ async def _handle_restart(
     from kiro_crew.cli import drain_log_queue_before_hard_exit
 
     await drain_log_queue_before_hard_exit()
-    os._exit(1)
+    # The process-exit hooks run first: an update apply in flight is cancelled
+    # (its build child killed) rather than left writing a tree after the exit.
+    from kiro_crew import platform_compat
+
+    platform_compat.hard_exit(1)
 
 
 register_slash_command("restart", _handle_restart, "restart the gateway (owner-only)")

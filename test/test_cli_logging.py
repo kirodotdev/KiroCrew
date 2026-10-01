@@ -784,8 +784,10 @@ class TestEveryGatewayHardExitDrainsTheQueue:
         return names
 
     def _hard_exit_functions(self, tree):
-        """(function node, line) for each ``os._exit(...)`` call, attributed to
-        the nearest enclosing function."""
+        """(function node, line) for each ``os._exit(...)`` or
+        ``platform_compat.hard_exit(...)`` call (the spelling that runs the
+        process exit hooks first, then ``os._exit``), attributed to the nearest
+        enclosing function."""
         parents: "dict[ast.AST, ast.AST]" = {}
         for node in ast.walk(tree):
             for child in ast.iter_child_nodes(node):
@@ -795,9 +797,11 @@ class TestEveryGatewayHardExitDrainsTheQueue:
             if not (
                 isinstance(node, ast.Call)
                 and isinstance(node.func, ast.Attribute)
-                and node.func.attr == "_exit"
                 and isinstance(node.func.value, ast.Name)
-                and node.func.value.id == "os"
+                and (
+                    (node.func.attr == "_exit" and node.func.value.id == "os")
+                    or (node.func.attr == "hard_exit" and node.func.value.id == "platform_compat")
+                )
             ):
                 continue
             cur = parents.get(node)

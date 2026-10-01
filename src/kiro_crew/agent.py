@@ -792,6 +792,23 @@ def _kirocrew_bin_subpath(root: Path) -> Path:
     return root / "bin" / "kirocrew"
 
 
+def _through_stable_link(path: str) -> str:
+    """*path* as a launcher that outlives this process names it.
+
+    On a managed venv the running tree is one versioned tree among several, and
+    a later update's prune may delete it once no process runs from it; the
+    stable link follows every promotion (see
+    :func:`kiro_crew.platform.tree_liveness.through_stable_link`). Only for the
+    ``~/.local/bin`` shim: :func:`_resolve_kirocrew_bin` itself keeps the running
+    tree, because what this process hands its own children (the built-in MCP
+    servers, the jail re-exec) must run the version this process runs, not one a
+    promotion made current before this process restarted.
+    """
+    from kiro_crew.platform.tree_liveness import through_stable_link
+
+    return through_stable_link(path)
+
+
 def _resolve_kirocrew_bin() -> str:
     """Resolve the absolute path of the ``kirocrew`` executable.
 
@@ -1215,6 +1232,9 @@ def ensure_kirocrew_on_path(
         return None
 
     target = _resolve_kirocrew_bin()
+    if os.path.isabs(target):
+        # The shim outlives this process, so it follows promotions.
+        target = _through_stable_link(target)
     # Nothing concrete to point at — bare "kirocrew" or a non-executable file.
     if not (os.path.isabs(target) and os.path.isfile(target) and os.access(target, os.X_OK)):
         return None

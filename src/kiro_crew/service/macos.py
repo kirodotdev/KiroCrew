@@ -278,7 +278,11 @@ def _repairer_bin() -> str:
         "kirocrew.exe" if os.name == "nt" else "kirocrew"
     )
     if _is_executable_file(sibling):
-        return str(sibling)
+        # The launcher persists this path, so on a managed venv it names the
+        # stable link rather than the versioned tree the interpreter runs from.
+        from kiro_crew.platform.tree_liveness import through_stable_link
+
+        return through_stable_link(str(sibling))
     raise OSError(
         "refusing to restore the launchd launcher: no kirocrew console script "
         f"beside the running interpreter ({sys.executable}). PATH is not "
