@@ -1121,13 +1121,6 @@ _TURN_INJECT_KINDS: frozenset[str] = frozenset(
 )
 
 
-#: The dispatching inject kinds that CONTINUE the turn above them rather than
-#: opening one of their own: a recovery (Resume, an automatic retry) and a replay
-#: of the user's own words. The rest of ``_TURN_INJECT_KINDS`` begin new work.
-_TURN_CONTINUING_INJECT_KINDS: frozenset[str] = frozenset({"recovery", "user_replay"})
-TURN_OPENING_INJECT_KINDS: frozenset[str] = _TURN_INJECT_KINDS - _TURN_CONTINUING_INJECT_KINDS
-
-
 def _is_turn_inject(meta: object) -> bool:
     """Whether an ``inject`` row's meta says it dispatched a turn."""
     return isinstance(meta, dict) and meta.get("injectKind") in _TURN_INJECT_KINDS

@@ -217,7 +217,7 @@ def _local_turn_generation(meta: Mapping[str, object]) -> int:
     return stored if type(stored) is int and stored > 0 else 0
 
 
-_LOCAL_TURN_PROMPT_ROLES = frozenset({"user", "nudge", "subagent", "inject"})
+_LOCAL_TURN_PROMPT_ROLES = frozenset({"user", "nudge", "inject"})
 _LOCAL_TURN_PROMPT_META_KEYS = ("mid", "files", "dirs", "injectKind")
 #: Bounds on the opening-row copy the marker retains. The attachment bounds are
 #: the send path's own (``chat_delivery.ATTACHMENT_LIST_MAX_ITEMS`` entries of

@@ -71,7 +71,6 @@ _MARKERS: Final[tuple[tuple[str, str], ...]] = (
     ("incognito", r"\[INCOGNITO SESSION\]"),
     ("temporary_session", r"\[TEMPORARY SESSION\]"),
     ("cancelled_turn", r"\[PREVIOUS TURN WAS CANCELLED"),
-    ("interrupted_turn", r"\[INTERRUPTED TURN"),
     (REPLY_FORMAT_LABEL, r"\[REPLY FORMAT RULES\]"),
     ("request_header", r"\[CURRENT USER REQUEST"),
 )
@@ -168,7 +167,6 @@ _CLOSERS: Final[dict[str, re.Pattern[str]]] = {
         ("ui_language", r"\[End of UI language\]"),
         ("response_preferences", r"\[END RESPONSE PREFERENCES\]"),
         ("cancelled_turn", r"\[END PREVIOUS TURN\]"),
-        ("interrupted_turn", r"\[END INTERRUPTED TURN\]"),
     )
 }
 

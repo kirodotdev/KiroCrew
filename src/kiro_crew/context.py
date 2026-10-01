@@ -15,7 +15,6 @@ import time
 import unicodedata
 from collections import OrderedDict, defaultdict, deque
 from collections.abc import Awaitable, Callable, Iterator
-from collections.abc import Set as AbstractSet
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
@@ -669,13 +668,6 @@ _STRUCTURAL_MARKER_RES: tuple[re.Pattern[str], ...] = (
     # frame. The em dash the block uses folds to ``-`` before matching.
     re.compile(r"\[\s*TASK\s*CHECKLIST\s*[-]{1,2}", re.IGNORECASE),
     re.compile(r"\[\s*END\s*TASK\s*CHECKLIST\s*\]", re.IGNORECASE),
-    # The interrupted-turn restore (``build_interrupted_turn_preamble``). Its frame
-    # names the request inside it as the one the model is to carry on with, so a
-    # copy planted in a fetched page or a channel message would hand attacker
-    # text that authority. Minted AFTER the egress scrub by the runner, like the
-    # checklist, with its own payload scrubbed first.
-    re.compile(r"\[\s*INTERRUPTED\s*TURN\s*[-]{1,2}", re.IGNORECASE),
-    re.compile(r"\[\s*END\s*INTERRUPTED\s*TURN\s*\]", re.IGNORECASE),
 )
 _STRUCTURAL_MARKER_NEUTRALIZED = "[marker-removed]"
 
@@ -2823,93 +2815,6 @@ def build_cancelled_turn_preamble(
     if assistant_text:
         lines += ["", f"Partial assistant response before cancel:\n{assistant_text}"]
     lines.append("[END PREVIOUS TURN]")
-    return "\n".join(lines)
-
-
-# Roles that OPEN a turn in a dashboard transcript: the row an interrupted turn
-# was answering. An ``inject`` row opens one only when its ``meta.injectKind`` is
-# in the caller's *opener_inject_kinds* (a cron delivery, an app message, a
-# synthesis); every other row between the opener and the resume -- tool cards,
-# error and notice rows, a recovery inject such as an earlier Resume press -- is
-# walked past.
-_TURN_OPENER_ROLES = frozenset({"user", "nudge", "subagent"})
-
-
-def build_interrupted_turn_preamble(
-    messages: list[dict],
-    current: dict | None = None,
-    *,
-    opener_inject_kinds: AbstractSet[str] = frozenset(),
-    user_cap: int = 8000,
-    assist_cap: int = 4000,
-) -> str:
-    """Restore the interrupted turn for a backend that natively resumed without it.
-
-    kiro-cli appends a prompt to its session log only once the model has
-    answered it. When the process serving a turn dies mid-answer -- a gateway
-    restart, a crash, a recycled runtime -- that turn's request is never written,
-    so ``session/load`` brings the conversation back WITHOUT it. A resumed
-    session gets no Kiro Crew replay (the native history is trusted to be
-    complete), so a Resume pressed on that turn reaches the model as a bare
-    "finish the user's most recent request" with the request missing: the model
-    answers the turn before it, or reports there is nothing to continue.
-
-    *messages* is the slot's transcript window, which still holds the turn (the
-    turn-in-flight marker restores its opener after a restart). Walk back from
-    *current* -- the resume row this turn is running, excluded -- to the row that
-    opened the interrupted turn, collecting the assistant text it had streamed.
-    Returns "" when no opener is found. The caller mints the result AFTER the
-    prompt's egress scrub (its markers are in ``_STRUCTURAL_MARKER_RES``); the
-    payload is scrubbed here instead.
-    """
-    end = len(messages)
-    if current is not None:
-        for i in range(len(messages) - 1, -1, -1):
-            if messages[i] is current:
-                end = i
-                break
-    opener_idx = -1
-    for i in range(end - 1, -1, -1):
-        role = messages[i].get("role")
-        meta = messages[i].get("meta")
-        if role in _TURN_OPENER_ROLES or (
-            role == "inject"
-            and isinstance(meta, dict)
-            and meta.get("injectKind") in opener_inject_kinds
-        ):
-            opener_idx = i
-            break
-    if opener_idx < 0:
-        return ""
-    user_text = str(messages[opener_idx].get("content") or "").strip()
-    if not user_text:
-        return ""
-    assistant_parts = [
-        str(m.get("content") or "").strip()
-        for m in messages[opener_idx + 1 : end]
-        if m.get("role") == "assistant" and str(m.get("content") or "").strip()
-    ]
-    assistant_text = "\n".join(assistant_parts)
-    if len(user_text) > user_cap:
-        user_text = user_text[:user_cap] + "… [truncated]"
-    if len(assistant_text) > assist_cap:
-        assistant_text = assistant_text[:assist_cap] + "… [truncated]"
-    # The frame is minted outside the prompt's egress scrub, so its payload is
-    # scrubbed here: a transcript row must not carry a structural marker past it.
-    user_text = _neutralize_structural_markers(user_text)
-    assistant_text = _neutralize_structural_markers(assistant_text)
-    lines = [
-        "[INTERRUPTED TURN — context restore]",
-        "The turn below was cut off when the agent process serving this "
-        "conversation stopped, so the restored conversation may not include it. "
-        "It is the user's most recent request, the one you are being asked to "
-        "carry on with. Tool calls it made may already have taken effect.",
-        "",
-        f"Interrupted request:\n{user_text}",
-    ]
-    if assistant_text:
-        lines += ["", f"Partial response before the interruption:\n{assistant_text}"]
-    lines.append("[END INTERRUPTED TURN]")
     return "\n".join(lines)
 
 
