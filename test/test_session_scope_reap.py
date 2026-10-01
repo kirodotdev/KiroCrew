@@ -35,12 +35,13 @@ def _scope_errors_fail_the_test(request, monkeypatch):
     errors: list[tuple[str, str, BaseException]] = []
     real = r._warn_scope_error
 
-    def record(unit_name, phase, exc):
+    def record(unit_name, phase, exc, errored):
         errors.append((unit_name, phase, exc))
-        real(unit_name, phase, exc)
+        real(unit_name, phase, exc, errored)
 
     monkeypatch.setattr(r, "_warn_scope_error", record)
     monkeypatch.setattr(r, "_SCOPE_ERRORS_WARNED", {})
+    monkeypatch.setattr(r, "_SWEEP_RESUME_AFTER", None)
     yield errors
     if "allow_scope_errors" not in request.fixturenames:
         assert errors == [], f"a scope raised during the sweep: {errors!r}"
@@ -92,6 +93,7 @@ def _make_proc(
     ppid: int = 1,
     cmdline: bytes | None = None,
     raw_comm: bytes | None = None,
+    start_ticks: int = 4242,
 ) -> None:
     d = proc_root / str(pid)
     d.mkdir(parents=True, exist_ok=True)
@@ -101,7 +103,7 @@ def _make_proc(
     (d / "environ").write_bytes(environ)
     # /proc/<pid>/stat: "pid (comm) state ppid pgrp ...". After the last ')':
     # index 0 state, 1 ppid, 2 pgrp, ... 19 starttime.
-    after = ["S", str(ppid), str(pgrp)] + ["0"] * 16 + ["4242"]
+    after = ["S", str(ppid), str(pgrp)] + ["0"] * 16 + [str(start_ticks)]
     # ``raw_comm`` writes the name as the kernel stores it: any bytes a process
     # set through prctl(PR_SET_NAME), valid UTF-8 or not.
     name = raw_comm if raw_comm is not None else comm.encode()
@@ -143,6 +145,7 @@ class _Recorder:
         _members: list[int],
         _scope_dir: Path,
         _proc_root: Path,
+        _pinned,
     ) -> tuple[bool, str]:
         self.kill(pid, sig)
         return True, ""
@@ -163,6 +166,7 @@ def _reap(
     min_age=600,
     stop_unit=None,
     signal_owned=None,
+    clock=None,
 ):
     enter = enter or {}
     return r.reap_scopes(
@@ -177,6 +181,7 @@ def _reap(
         signal_owned=signal_owned or rec.signal_owned,
         sleep=rec.sleep,
         active_enter_us=lambda unit: enter.get(unit),
+        clock=clock or r.time.monotonic,
     )
 
 
@@ -611,7 +616,7 @@ class TestSandboxCredentialHelperRule:
     def _authorizes(self, cmdline: bytes, *, marker: bool = True) -> bool:
         proc = self.tmp_path / "proc"
         _make_proc(proc, 601, pgrp=600, marker=marker, comm="creds_agent", cmdline=cmdline)
-        return r._scope_is_only_credential_helpers([601], proc)
+        return r._scope_is_only_credential_helpers([601], r._ProcReads(proc))
 
     @pytest.fixture(autouse=True)
     def _tmp(self, tmp_path):
@@ -643,7 +648,9 @@ class TestSandboxCredentialHelperRule:
         assert self._authorizes(cmdline) is False
 
     def test_an_empty_scope_authorizes_nothing(self):
-        assert r._scope_is_only_credential_helpers([], self.tmp_path / "proc") is False
+        assert (
+            r._scope_is_only_credential_helpers([], r._ProcReads(self.tmp_path / "proc")) is False
+        )
 
     def test_the_helper_is_not_one_of_the_existential_anchor_identities(self):
         # Pinned in the direction that matters: if the helper ever becomes an
@@ -1041,14 +1048,14 @@ def test_one_evaluation_reads_each_pid_once(tmp_path, monkeypatch):
     assert Counter(reads) == {301: 1, 302: 1}
 
 
-def test_the_stat_memo_is_not_a_container(tmp_path):
+def test_the_read_memo_is_not_a_container(tmp_path):
     # A mapping-shaped memo with only __getitem__ falls back to the sequence
     # protocol on ``in`` and iteration, reading /proc/0, /proc/1, ... forever.
-    stats = r._stat_memo(tmp_path)
+    reads = r._ProcReads(tmp_path)
     with pytest.raises(TypeError):
-        201 in stats  # noqa: B015
+        201 in reads  # noqa: B015
     with pytest.raises(TypeError):
-        iter(stats)
+        iter(reads)
 
 
 def test_a_live_leader_outside_the_scope_keeps_it_alive(tmp_path):
@@ -1095,42 +1102,203 @@ def test_an_unparsable_member_pgrp_fails_closed_to_leader_alive(tmp_path, caplog
     assert "leader-alive=1" in caplog.text
 
 
-def test_the_signal_recheck_reads_stat_fresh_not_from_the_decision(tmp_path, monkeypatch):
-    # The decision adopted unmarked 302 through its ppid 301. Between the stop
-    # and the signal 302's ppid changes to a pid outside the scope (a recycled
-    # pid's new parent); the per-signal recheck must see that and skip it.
+def _reparenting_scope(tmp_path, monkeypatch, *, child_start: int):
+    """Marked runtime 301 with env-cleared child 302; SIGTERM kills 301 only.
+
+    When 301 dies, 302 is rewritten with ppid 1 and start ticks *child_start*:
+    4242 (its own) models a reparented child, anything else a recycled pid.
+    """
     proc = tmp_path / "proc"
     slice_dir = tmp_path / "slice"
     _make_proc(proc, 301, pgrp=300, comm="kiro-cli")
     _make_proc(proc, 302, pgrp=300, marker=False, comm="chrome", ppid=301)
     scope = _make_scope(slice_dir, "run-u1.scope", [301, 302])
-    signalled: list[int] = []
+    signalled: list[tuple[int, int]] = []
     monkeypatch.setattr(
         r, "os", _ModuleProxy(r.os, pidfd_open=lambda pid: pid + 1000, close=lambda _fd: None)
     )
-    monkeypatch.setattr(
-        r.signal,
-        "pidfd_send_signal",
-        lambda fd, _sig: signalled.append(fd - 1000),
-        raising=False,
-    )
 
-    def stop_then_reparent(_unit):
-        _make_proc(proc, 302, pgrp=300, marker=False, comm="chrome", ppid=999)
-        return True
+    def send(fd, sig):
+        pid = fd - 1000
+        signalled.append((pid, sig))
+        if pid == 301 and sig == signal.SIGTERM:
+            (scope / "cgroup.procs").write_text("302\n")
+            _make_proc(proc, 302, pgrp=300, marker=False, comm="chrome", start_ticks=child_start)
 
-    summary = _reap(
+    monkeypatch.setattr(r.signal, "pidfd_send_signal", send, raising=False)
+    return slice_dir, proc, signalled
+
+
+def test_a_child_reparented_by_its_parents_sigterm_still_gets_sigkill(tmp_path, monkeypatch):
+    # The child ignored SIGTERM; its parent did not, so its ppid is now 1. It is
+    # still the process this reclaim attributed (same pid, same start ticks),
+    # so the escalation reaches it.
+    slice_dir, proc, signalled = _reparenting_scope(tmp_path, monkeypatch, child_start=4242)
+
+    _reap(
         slice_dir,
         proc,
-        _Recorder(),
+        _Recorder(empty_on_stop=False),
         enter={"run-u1.scope": _enter_us_for_age(700)},
-        stop_unit=stop_then_reparent,
         signal_owned=r._pidfd_signal_owned,
     )
 
-    assert set(signalled) == {301}
-    assert summary.reclaimed == 0  # the fake scope never empties
-    assert scope.exists()
+    assert (302, signal.SIGKILL) in signalled
+
+
+def test_a_recycled_pid_in_the_scope_is_not_signalled_and_says_why(tmp_path, monkeypatch, caplog):
+    # Same pid, different start ticks: a different process. The recheck reads
+    # stat fresh after the pin, so the decision's reading cannot vouch for it.
+    slice_dir, proc, signalled = _reparenting_scope(tmp_path, monkeypatch, child_start=9999)
+
+    with caplog.at_level("WARNING", logger=r.__name__):
+        _reap(
+            slice_dir,
+            proc,
+            _Recorder(empty_on_stop=False),
+            enter={"run-u1.scope": _enter_us_for_age(700)},
+            signal_owned=r._pidfd_signal_owned,
+        )
+
+    assert (302, signal.SIGKILL) not in signalled
+    assert any("member not attributable to this install" in m for m in caplog.messages)
+
+
+def test_a_sigkill_that_settles_on_a_later_read_clears_the_scope(tmp_path):
+    # A killed task stays in cgroup.procs until its exit completes; the reclaim
+    # re-reads before judging, so a kill that worked is not audited as failed.
+    proc = tmp_path / "proc"
+    _make_proc(proc, 201, pgrp=200)
+    scope = _make_scope(tmp_path / "slice", "run-u1.scope", [201])
+    rec = _Recorder(empty_on_stop=False)
+    kills: list[int] = []
+
+    def signal_owned(pid, sig, *_rest):
+        if sig == signal.SIGTERM:
+            return False, ""  # ignored: nothing to wait for
+        kills.append(pid)
+        return True, ""
+
+    def sleep(secs):
+        rec.sleep(secs)
+        if kills:
+            (scope / "cgroup.procs").write_text("")  # the exit completes
+
+    cleared = r._reclaim_scope(
+        scope,
+        "run-u1.scope",
+        proc_root=proc,
+        stop_unit=rec.stop_unit,
+        signal_owned=signal_owned,
+        sleep=sleep,
+    )
+
+    assert cleared is True
+    assert kills == [201]
+    assert rec.slept == [r._EXIT_POLL_SECS]
+
+
+def test_waits_end_when_the_signalled_members_are_gone(tmp_path):
+    # 202 is refused, so it will never leave because of this reclaim; waiting
+    # on the whole scope would spend the full grace and settle on it.
+    proc = tmp_path / "proc"
+    _make_proc(proc, 201, pgrp=200)
+    _make_proc(proc, 202, pgrp=200)
+    scope = _make_scope(tmp_path / "slice", "run-u1.scope", [201, 202])
+    rec = _Recorder(empty_on_stop=False)
+
+    def signal_owned(pid, _sig, *_rest):
+        if pid == 202:
+            return False, ""
+        (scope / "cgroup.procs").write_text("202\n")  # 201 exits at once
+        return True, ""
+
+    cleared = r._reclaim_scope(
+        scope,
+        "run-u1.scope",
+        proc_root=proc,
+        stop_unit=rec.stop_unit,
+        signal_owned=signal_owned,
+        sleep=rec.sleep,
+    )
+
+    assert cleared is False  # 202 is still there, as before
+    assert rec.slept == []
+
+
+def test_a_spent_budget_defers_the_rest_and_the_next_sweep_resumes(tmp_path, monkeypatch):
+    slice_dir = tmp_path / "slice"
+    proc = tmp_path / "proc"
+    for unit, pid in (("run-a.scope", 201), ("run-b.scope", 301), ("run-c.scope", 401)):
+        _make_proc(proc, pid, pgrp=pid - 1)
+        _make_scope(slice_dir, unit, [pid])
+    seen: list[str] = []
+    real_decide = r._scope_reclaimable
+    now = [0.0]
+
+    def decide(scope_dir, **kwargs):
+        seen.append(scope_dir.name)
+        now[0] += r._SWEEP_BUDGET_SECS  # every scope spends the whole budget
+        return real_decide(scope_dir, **kwargs)
+
+    monkeypatch.setattr(r, "_scope_reclaimable", decide)
+
+    def sweep():
+        enter = {
+            unit: _enter_us_for_age(700) for unit in ("run-a.scope", "run-b.scope", "run-c.scope")
+        }
+        return _reap(
+            slice_dir, proc, _Recorder(), tracked={201, 301, 401}, enter=enter, clock=lambda: now[0]
+        )
+
+    first = sweep()
+    second = sweep()
+
+    assert (first.scanned, first.deferred) == (1, 2)
+    assert (second.scanned, second.deferred) == (1, 2)
+    assert seen == ["run-a.scope", "run-b.scope"]
+
+
+def test_a_deferred_scope_keeps_its_warning_rate_limit(
+    tmp_path, monkeypatch, caplog, allow_scope_errors
+):
+    # Every tick spends the budget on one scope, so the failing run-b is reached
+    # every other tick. A deferred tick is not a clean check: it must not re-arm
+    # run-b's WARNING. Once run-b is gone, its entry is dropped.
+    slice_dir = tmp_path / "slice"
+    proc = tmp_path / "proc"
+    for unit, pid in (("run-a.scope", 201), ("run-b.scope", 301)):
+        _make_proc(proc, pid, pgrp=pid - 1)
+        _make_scope(slice_dir, unit, [pid])
+    real_decide = r._scope_reclaimable
+    now = [0.0]
+
+    def decide(scope_dir, **kwargs):
+        now[0] += r._SWEEP_BUDGET_SECS
+        if scope_dir.name == "run-b.scope":
+            raise RuntimeError("unreadable scope")
+        return real_decide(scope_dir, **kwargs)
+
+    monkeypatch.setattr(r, "_scope_reclaimable", decide)
+    enter = {unit: _enter_us_for_age(700) for unit in ("run-a.scope", "run-b.scope")}
+
+    def sweep():
+        return _reap(
+            slice_dir, proc, _Recorder(), tracked={201, 301}, enter=enter, clock=lambda: now[0]
+        )
+
+    with caplog.at_level("WARNING", logger=r.__name__):
+        summaries = [sweep() for _ in range(6)]
+
+    assert [s.deferred for s in summaries] == [1] * 6
+    assert [unit for unit, _phase, _exc in allow_scope_errors] == ["run-b.scope"] * 3
+    assert len(_scope_warnings(caplog, "run-b.scope")) == 1
+    assert list(r._SCOPE_ERRORS_WARNED) == [("run-b.scope", "evaluation")]
+
+    (slice_dir / "run-b.scope" / "cgroup.procs").unlink()
+    (slice_dir / "run-b.scope").rmdir()
+    sweep()
+    assert r._SCOPE_ERRORS_WARNED == {}
 
 
 def test_systemctl_output_is_decoded_leniently(monkeypatch):
@@ -1278,7 +1446,12 @@ def test_fallback_signals_recheck_skips_recycled_pid(tmp_path, monkeypatch):
     signalled_pids = {pid for pid, _sig in signalled}
     assert signalled_pids == {201}
     assert 202 not in signalled_pids
-    assert rec.slept == [r._TERM_GRACE_SECS]  # SIGTERM, grace, then SIGKILL
+    # The grace for SIGTERM, then the settle after SIGKILL, each waited out in
+    # full because the fake scope never empties.
+    polls = round(r._TERM_GRACE_SECS / r._EXIT_POLL_SECS) + round(
+        r._KILL_SETTLE_SECS / r._EXIT_POLL_SECS
+    )
+    assert rec.slept == [r._EXIT_POLL_SECS] * polls
     assert cleared is False  # fake scope never emptied
 
 
@@ -1295,6 +1468,7 @@ def test_fallback_skips_term_grace_when_no_signal_was_sent(tmp_path):
         _members: list[int],
         _scope_dir: Path,
         _proc_root: Path,
+        _pinned,
     ) -> tuple[bool, str]:
         attempted.append(sig)
         return False, ""
@@ -1410,7 +1584,7 @@ def test_pidfd_pin_precedes_ownership_and_signal(monkeypatch, tmp_path):
     monkeypatch.setattr(
         r,
         "_scope_owned_pids",
-        lambda _members, _proc, _stats: events.append("verify") or ({201}, ""),
+        lambda _members, _reads: events.append("verify") or ({201}, ""),
     )
     monkeypatch.setattr(
         r.signal,
@@ -1419,7 +1593,7 @@ def test_pidfd_pin_precedes_ownership_and_signal(monkeypatch, tmp_path):
         raising=False,
     )
 
-    sent, reason = r._pidfd_signal_owned(201, signal.SIGTERM, [201], scope, tmp_path)
+    sent, reason = r._pidfd_signal_owned(201, signal.SIGTERM, [201], scope, tmp_path, {})
 
     assert sent is True and reason == ""
     assert events == ["pin", "verify", "signal", "close"]
@@ -1445,7 +1619,7 @@ def test_pidfd_skips_pid_removed_from_scope_before_pin(monkeypatch, tmp_path):
         raising=False,
     )
 
-    sent, reason = r._pidfd_signal_owned(201, signal.SIGTERM, [201], scope, proc)
+    sent, reason = r._pidfd_signal_owned(201, signal.SIGTERM, [201], scope, proc, {})
 
     assert sent is False and reason == ""
     assert signalled == []
@@ -1457,7 +1631,7 @@ def test_pidfd_process_lookup_is_quiet(monkeypatch, tmp_path):
 
     monkeypatch.setattr(r.os, "pidfd_open", gone, raising=False)
     monkeypatch.setattr(r.signal, "pidfd_send_signal", lambda *_args: None, raising=False)
-    assert r._pidfd_signal_owned(201, signal.SIGTERM, [201], tmp_path, tmp_path) == (False, "")
+    assert r._pidfd_signal_owned(201, signal.SIGTERM, [201], tmp_path, tmp_path, {}) == (False, "")
 
 
 def test_pidfd_unavailable_never_falls_back_to_numeric_kill(monkeypatch, tmp_path):
@@ -1469,7 +1643,7 @@ def test_pidfd_unavailable_never_falls_back_to_numeric_kill(monkeypatch, tmp_pat
         lambda *_args: (_ for _ in ()).throw(AssertionError("numeric kill fallback used")),
     )
 
-    sent, reason = r._pidfd_signal_owned(201, signal.SIGTERM, [201], tmp_path, tmp_path)
+    sent, reason = r._pidfd_signal_owned(201, signal.SIGTERM, [201], tmp_path, tmp_path, {})
 
     assert sent is False
     assert reason == "pidfd signalling unavailable"
@@ -1487,7 +1661,7 @@ def test_pidfd_open_oserror_never_falls_back(monkeypatch, tmp_path):
         lambda *_args: (_ for _ in ()).throw(AssertionError("numeric kill fallback used")),
     )
 
-    sent, reason = r._pidfd_signal_owned(201, signal.SIGTERM, [201], tmp_path, tmp_path)
+    sent, reason = r._pidfd_signal_owned(201, signal.SIGTERM, [201], tmp_path, tmp_path, {})
 
     assert sent is False
     assert reason == "pidfd_open failed (38)"
@@ -1679,7 +1853,7 @@ def test_member_age_uses_proc_start_ticks(tmp_path, monkeypatch, raw_comm):
     _make_proc(proc, 201, pgrp=200, raw_comm=raw_comm)
     _pin_boot_clock(monkeypatch, now=100.0)
 
-    assert r._scope_age_secs(None, [201], _NOW, r._stat_memo(proc)) == pytest.approx(57.58)
+    assert r._scope_age_secs(None, [201], _NOW, r._ProcReads(proc)) == pytest.approx(57.58)
 
 
 def test_member_age_returns_none_for_malformed_stat(tmp_path):
@@ -1687,7 +1861,7 @@ def test_member_age_returns_none_for_malformed_stat(tmp_path):
     _make_proc(proc, 201, pgrp=200)
     (proc / "201" / "stat").write_text("malformed")
 
-    assert r._scope_age_secs(None, [201], _NOW, r._stat_memo(proc)) is None
+    assert r._scope_age_secs(None, [201], _NOW, r._ProcReads(proc)) is None
 
 
 def test_member_age_rejects_zero_clock_ticks(tmp_path, monkeypatch):
@@ -1695,20 +1869,16 @@ def test_member_age_rejects_zero_clock_ticks(tmp_path, monkeypatch):
     _make_proc(proc, 201, pgrp=200)
     _pin_tick_rate(monkeypatch, 0)
 
-    assert r._scope_age_secs(None, [201], _NOW, r._stat_memo(proc)) is None
+    assert r._scope_age_secs(None, [201], _NOW, r._ProcReads(proc)) is None
 
 
 def test_scope_age_falls_back_to_youngest_readable_member(tmp_path, monkeypatch):
     proc = tmp_path / "proc"
-    _make_proc(proc, 201, pgrp=200)
-    _make_proc(proc, 202, pgrp=200)
-    for pid, start_ticks in ((201, 1_000), (202, 9_000)):
-        stat_path = proc / str(pid) / "stat"
-        prefix, _old_ticks = stat_path.read_text().rsplit(" ", 1)
-        stat_path.write_text(f"{prefix} {start_ticks}")
+    _make_proc(proc, 201, pgrp=200, start_ticks=1_000)
+    _make_proc(proc, 202, pgrp=200, start_ticks=9_000)
     _pin_boot_clock(monkeypatch, now=100.0)
 
-    assert r._scope_age_secs(None, [201, 202], _NOW, r._stat_memo(proc)) == pytest.approx(10.0)
+    assert r._scope_age_secs(None, [201, 202], _NOW, r._ProcReads(proc)) == pytest.approx(10.0)
 
 
 def test_scope_age_fallback_returns_none_without_readable_member(tmp_path):
@@ -1718,7 +1888,7 @@ def test_scope_age_fallback_returns_none_without_readable_member(tmp_path):
     (proc / "201" / "stat").unlink()
     (proc / "202" / "stat").write_text("malformed")
 
-    assert r._scope_age_secs(None, [201, 202], _NOW, r._stat_memo(proc)) is None
+    assert r._scope_age_secs(None, [201, 202], _NOW, r._ProcReads(proc)) is None
 
 
 def test_instance_dir_reports_missing_per_instance_cgroup(tmp_path, monkeypatch):
@@ -1769,7 +1939,7 @@ def test_pidfd_send_error_survives_close_error(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(r.signal, "pidfd_send_signal", send_error, raising=False)
 
-    sent, reason = r._pidfd_signal_owned(201, signal.SIGTERM, [201], scope, proc)
+    sent, reason = r._pidfd_signal_owned(201, signal.SIGTERM, [201], scope, proc, {})
 
     assert sent is False
     assert reason == "pidfd_send_signal failed (5)"
