@@ -325,6 +325,14 @@ OPERATOR_LINES: Tuple[_LineSpec, ...] = (
 #: DEFECT rather than an absent feature, and a card that listed defect classes in
 #: front of someone choosing a harness would be worse than one line shorter.
 OFF_CARD_SETS: Mapping[str, str] = {
+    "ACP_BACKENDS_SERIAL_SESSION_STARTS": (
+        "which backend's process answers session starts and mode switches one at a "
+        "time. It decides only what a timed-out start's error says about the "
+        "requests ahead of it; every request is sent the same way on every harness, "
+        "so a reader choosing a harness loses nothing. A wrong membership makes that "
+        "error claim a queue that was not there, or omit one that was, which is a "
+        "defect"
+    ),
     "ACP_BACKENDS_MEMBER_PANEL": (
         "whether a member DM session may mount its own webview. Its membership is the "
         "same as ACP_BACKENDS_MEMBER_DISPATCH's, and the member-thread-tools line "

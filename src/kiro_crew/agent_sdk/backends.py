@@ -168,6 +168,9 @@ with no row here.
      - pre-session registry query (whether a side-chat turn may execute
        read-only tools under the derived ``<agent>--readonly`` spec; asked
        about the configured backend id before the side session is created)
+   * - ``ACP_BACKENDS_SERIAL_SESSION_STARTS``
+     - driver-internal (whether a timed-out session start names the unanswered
+       starts and mode switches it was sent behind on the same process)
    * - ``ACP_BACKENDS_HARNESS_OWNED_SESSIONS``
      - driver-internal (whether ``session/load`` is gated on a Crew-side transcript)
    * - ``ACP_BACKENDS_LOAD_WITHOUT_MODES``
@@ -2014,6 +2017,22 @@ ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD = frozenset({ACP_BACKEND_KIRO})
 # than asks, so no call reaches the host gate and no SEL row is written. A side turn
 # on it runs ``REJECT_ALL``.
 ACP_BACKENDS_SIDE_READONLY = frozenset({ACP_BACKEND_KIRO})
+
+# Backends whose process answers ``session/new``, ``session/load`` and
+# ``session/set_mode`` one at a time, so a session start sent while one of those is
+# unanswered spends its budget waiting for it. Membership decides only whether a
+# timed-out start's error names the requests it was sent behind
+# (``AcpRuntime._one_at_a_time_ahead``); nothing is sent differently.
+#
+# kiro-cli is a member on measurement: on 2.26.1, four ``session/new`` sent at once
+# on one process, each injecting a server that never answers ``initialize``,
+# returned at 31 / 61 / 91 / 121 s, and a ``session/new`` sent during a slow
+# ``set_mode`` returned only when the ``set_mode`` did. Its ACP handlers await those
+# requests inside the connection's dispatch loop.
+#
+# KAS and codex are NOT members: neither has been measured, so a start that
+# overlaps another on them is not claimed to have waited for it.
+ACP_BACKENDS_SERIAL_SESSION_STARTS = frozenset({ACP_BACKEND_KIRO})
 
 # Backends whose model-side REFUSAL arrives with a structured reason, not just a
 # stop reason. When the Kiro service's content filter declines a turn, kiro-cli

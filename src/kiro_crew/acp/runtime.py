@@ -107,6 +107,7 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_MARKDOWN_AGENT_SPECS,
+    ACP_BACKENDS_SERIAL_SESSION_STARTS,
     MCP_ROSTER_COMPLETE_NOTE,
     METHOD_MCP_OAUTH_REQUEST,
     METHOD_MCP_SERVER_INIT_FAILURE,
@@ -963,6 +964,35 @@ def _capped_names(names: list[str]) -> str:
     rest = len(names) - len(head)
     joined = ", ".join(head)
     return f"{joined} (+{rest} more)" if rest > 0 else joined
+
+
+# Requests a backend in ACP_BACKENDS_SERIAL_SESSION_STARTS answers one at a time.
+# kiro-cli (2.26 and earlier) awaits each of these inside its ACP connection's
+# dispatch loop, so while one waits on a slow MCP server or the model list, every
+# message behind it waits too, including the next session start. A start sent
+# behind one therefore spends its own budget on the earlier request.
+_ONE_AT_A_TIME_METHODS = frozenset({METHOD_SESSION_NEW, METHOD_SESSION_LOAD, METHOD_SET_MODE})
+
+
+def _queued_behind_note(ahead: list[tuple[str, float]]) -> str:
+    """Describe the requests a timed-out session start was queued behind.
+
+    ``ahead`` holds ``(method, seconds sent before this start)`` for each request
+    in :data:`_ONE_AT_A_TIME_METHODS` that was outstanding when the start went out
+    and was STILL unanswered at its deadline. An empty list says nothing.
+    """
+    if not ahead:
+        return ""
+    counts: dict[str, int] = {}
+    for method, _age in ahead:
+        counts[method] = counts.get(method, 0) + 1
+    kinds = ", ".join(f"{n} {m}" for m, n in sorted(counts.items()))
+    oldest = max(age for _m, age in ahead)
+    return (
+        f"queued behind {len(ahead)} earlier request(s) this agent process had not "
+        f"answered by the deadline ({kinds}; oldest sent {oldest:.0f}s earlier), "
+        "and it answers those one at a time"
+    )
 
 
 # Teardown must be snappy: a session is usually terminated on a hot path
@@ -1837,6 +1867,10 @@ class AcpRuntime:
 
         # Demux routing
         self._pending_requests: _PendingRequests = _PendingRequests()
+        # Method and send time of each awaited request in _ONE_AT_A_TIME_METHODS.
+        # An id stays listed only while _pending_requests still holds it, so a
+        # timed-out start that a collector adopted still counts.
+        self._one_at_a_time_sent: dict[int, tuple[str, float]] = {}
         # session/new requests whose caller timed out but whose answer is still
         # owned (RFC §4.4); keyed by request id, settled by the collector.
         self._start_collectors: dict[int, StartCollector] = {}
@@ -5499,7 +5533,7 @@ class AcpRuntime:
 
     # ── Session Management ──
 
-    def _mcp_init_progress(self, expected: Any) -> str:
+    def _mcp_init_progress(self, expected: Any, *, queued_behind: bool = False) -> str:
         """Describe MCP registration progress for a session start that stalled.
 
         Reads the frames the reader loop already staged in
@@ -5584,12 +5618,14 @@ class AcpRuntime:
             silent = [n for n in roster if n not in reported]
             if silent:
                 parts.append(f"no report from {_capped_names(silent)}")
-            elif not set(failed) & set(roster):
+            elif not set(failed) & set(roster) and not queued_behind:
                 # Every roster member reported READY. A member that reported an
                 # init failure counts as reported (so it is never chased as
                 # silent) but is named under ``failed:`` below, and the stall
                 # may be in it -- so the "not in those servers" verdict is
-                # withheld then.
+                # withheld then. It is withheld too when the start was sent
+                # behind unanswered requests: the budget may have gone to those
+                # before this start ran at all, which is not "later in startup".
                 parts.append(MCP_ROSTER_COMPLETE_NOTE)
         else:
             # No roster to attribute against: these reports belong to the agent
@@ -5622,7 +5658,12 @@ class AcpRuntime:
         answer. Returns a replacement to raise rather than raising here, so the
         caller keeps the ``from exc`` chain.
         """
-        progress = self._mcp_init_progress(expected)
+        queued = _queued_behind_note(getattr(exc, "queued_behind", None) or [])
+        progress = "; ".join(
+            part
+            for part in (queued, self._mcp_init_progress(expected, queued_behind=bool(queued)))
+            if part
+        )
         logger.warning("%s stalled: %s", method, progress or "no MCP reports staged")
         # Tag the exception the caller will raise as a SESSION-START failure,
         # whichever of the two it is: both reach a self-driving caller as "the
@@ -7903,6 +7944,34 @@ class AcpRuntime:
                 await self.terminate_session(handle.session_id)
             raise
 
+    def _one_at_a_time_ahead(self, method: str, req_id: int) -> list[tuple[int, str, float]]:
+        """Record *req_id* if the backend serializes it; return what it was sent behind.
+
+        Returns ``(id, method, seconds since sent)`` for every request in
+        :data:`_ONE_AT_A_TIME_METHODS` still awaiting an answer, but only when
+        *method* is a session start, the one caller that reports it, and only on a
+        backend in ``ACP_BACKENDS_SERIAL_SESSION_STARTS``. Answered or abandoned
+        ids are dropped here, so the map never outgrows ``_pending_requests``.
+        """
+        sent = self._one_at_a_time_sent
+        for stale in [rid for rid in sent if rid not in self._pending_requests]:
+            del sent[stale]
+        # H6: only a backend measured to serialize these is described as having
+        # made this start wait; an overlap on any other harness says nothing.
+        if (
+            method not in _ONE_AT_A_TIME_METHODS
+            or self._acp_backend not in ACP_BACKENDS_SERIAL_SESSION_STARTS
+        ):
+            return []
+        now = time.monotonic()
+        ahead = (
+            [(rid, m, now - t) for rid, (m, t) in sent.items()]
+            if method in (METHOD_SESSION_NEW, METHOD_SESSION_LOAD)
+            else []
+        )
+        sent[req_id] = (method, now)
+        return ahead
+
     async def _send_and_await(
         self,
         method: str,
@@ -7929,6 +7998,7 @@ class AcpRuntime:
 
         req_id = self._next_id
         self._next_id += 1
+        ahead = self._one_at_a_time_ahead(method, req_id)
 
         projection = getattr(self, "_native_skill_projection", None)
         if projection is not None and translate:
@@ -8019,6 +8089,14 @@ class AcpRuntime:
             # Name the budget: a session-start timeout (90s) must be
             # distinguishable from a generic control-plane one (30s).
             timeout_exc = AcpRequestTimeout(f"Request {method} timed out after {timeout:g}s")
+            # Only a request the process had still not answered at this deadline
+            # is reported: on a backend that answers them one at a time, this
+            # start had not begun while that one was outstanding. One answered
+            # earlier may have cost a few seconds or nothing, so it is left out
+            # rather than blamed for the whole budget.
+            unanswered = [(m, age) for rid, m, age in ahead if rid in self._pending_requests]
+            if unanswered:
+                setattr(timeout_exc, "queued_behind", unanswered)
             if adopted is not None:
                 # What create_session needs to build the collector.
                 setattr(timeout_exc, "req_id", req_id)
