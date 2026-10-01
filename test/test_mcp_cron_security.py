@@ -37,6 +37,7 @@ from kiro_crew.mcp_cron import (
     _has_bash_brace_expansion,
     _not_found,
     _quote_states,
+    _shell_quote_removal,
     _substitute_local_assignments,
     _unidentified_caller_refusal,
     _unowned_row_refusal,
@@ -1807,3 +1808,112 @@ def test_command_length_ceiling_sits_above_the_storable_maximum():
     at_max = "echo " + "x" * (storable - 5)
     verdict = _vet_shell_command(at_max)
     assert verdict is None, f"a benign command at the storage cap was refused: {verdict}"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # Clean at the first two parse levels; only the THIRD shell receives
+        # `.q{s,s}h`, because the escapes sit inside the outer double quotes.
+        '/bin/bash -c "/bin/bash -c cat\\ /tmp/.q{s\\,s}h/notes.txt"',
+        # Four shells deep, with the outer levels alternating quote styles.
+        "bash -c 'bash -c \"bash -c cat\\ /tmp/.q{s\\,s}h/notes.txt\"'",
+    ],
+)
+def test_brace_scan_follows_every_nested_shell_level(command):
+    """A group hidden behind several quote-removal levels is still refused."""
+
+    assert _has_bash_brace_expansion(command) is True
+    verdict = _vet_shell_command(command)
+    assert verdict is not None and "brace expansion" in verdict
+
+
+def test_brace_group_built_from_local_assignments_is_refused():
+    """`A={; B=}` then `${A}s,s${B}` gives a nested shell a group the raw text lacks."""
+
+    command = 'A={; B=}; sh -c "cat /tmp/.q${A}s,s${B}h/notes.txt"'
+    assert _has_bash_brace_expansion(command) is False
+    verdict = _vet_shell_command(command)
+    assert verdict is not None and "brace expansion" in verdict
+
+
+def test_plain_command_with_a_local_assignment_is_stored():
+    """Resolving assignments for the brace scan does not refuse an ordinary command."""
+
+    assert _vet_shell_command("A=hello; echo $A from cron") is None
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'grep "[0-9]\\{1,3\\}" /tmp/notes.txt',
+        # Argv wrappers exec their argument as words and never parse it, so they
+        # do not open a deeper level, alone or stacked.
+        'timeout 60 grep "[0-9]\\{1,3\\}" /tmp/notes.txt',
+        'flock -n /tmp/x.lock timeout 60 grep "[0-9]\\{1,3\\}" /tmp/notes.txt',
+        'env timeout 5 grep "[0-9]\\{1,3\\}" /tmp/notes.txt',
+        'find /tmp -name "*.log" | xargs grep "[0-9]\\{1,3\\}"',
+        # Inside double quotes the assignment keeps both backslashes, so the
+        # resolved form is the same escaped interval.
+        'PAT="[0-9]\\{1,3\\}"; grep "$PAT" /tmp/notes.txt',
+    ],
+)
+def test_escaped_bre_interval_in_double_quotes_is_stored(command):
+    """The refusal text's own BRE rewrite must still be accepted.
+
+    grep receives `[0-9]\\{1,3\\}` and never re-parses it, so no shell ever sees a
+    brace group. A third quote-removal level would strip those backslashes and
+    refuse it; that level is only taken while a nested re-parser is named.
+    """
+
+    assert _vet_shell_command(command) is None
+
+
+def test_resolved_form_over_the_ceiling_is_refused_fast():
+    """A short command whose local variables multiply its length is refused before scanning."""
+
+    import time
+
+    command = "A=" + "a" * 5000 + "; echo " + "$A" * 1590
+    assert len(command) <= 8192
+    started = time.monotonic()
+    verdict = _vet_shell_command(command)
+    elapsed = time.monotonic() - started
+    assert verdict is not None and "local variables filled in" in verdict
+    assert elapsed < 2.0, f"refusal took {elapsed:.1f}s"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # The second shell is spelled `\bash`, so the level that holds it does not
+        # read it as a word; only the next projection does. Real bash expands the
+        # group at the third parse.
+        'bash -c "\\bash -c cat\\ /tmp/.q{s\\,s}h/notes.txt"',
+        # `$(` exists only once the assignments resolve; the inner shell runs it.
+        'A=$; B="("; sh -c "cat /tmp/.q${A}${B}printf qq)h/notes.txt"',
+    ],
+)
+def test_composition_hidden_from_the_raw_text_is_refused(command):
+    """A re-parser or a `$(` that only appears after one more parse is still seen."""
+
+    assert _vet_shell_command(command) is not None
+
+
+@pytest.mark.parametrize(
+    "word,value",
+    [
+        # Each row is what `A=<word>; printf %s "$A"` prints under bash.
+        ("s\\h", "sh"),
+        ('"s\\h"', "s\\h"),
+        ("'s\\h'", "s\\h"),
+        ('"a\\"b"', 'a"b'),
+        ('"[0-9]\\{1,3\\}"', "[0-9]\\{1,3\\}"),
+        ("a\\\\b", "a\\b"),
+        ("s\\,s", "s,s"),
+    ],
+)
+def test_assignment_values_get_the_shells_quote_removal(word, value):
+    """A resolved value keeps exactly the backslashes the shell keeps."""
+
+    assert _shell_quote_removal(word) == value

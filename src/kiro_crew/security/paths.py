@@ -913,11 +913,11 @@ _KEYSTONE_ARTIFACT_PARENTS: list[str] = sorted(
 # shared read+write gate, and reading config.json is routine and intended (the
 # dashboard file viewer, ``cat``, and knowledge indexing all read it). We
 # instead block only WRITES, at the agent file-edit tool gate
-# (hooks.on_tool_call), via ``is_sensitive_write_path``. This is defense in
-# depth on top of the loader's load-time clamp, which already neutralizes any
-# inflated on-disk value no matter how it was written. The operator edits config
-# out-of-band (dashboard config API / CLI), which do NOT route through this
-# gate, so legitimate config changes still work.
+# (hooks.on_tool_call), via ``is_sensitive_write_path``. That gate sees the
+# file-edit tool only, and the loader's clamp bounds NUMBERS, not SWITCHES
+# (``agent.sandbox: "off"``), so the load-bearing half is the OS sandbox, which
+# mounts both files read-only (``sandbox._CREW_READONLY_LEAVES``). The operator
+# edits config out-of-band (dashboard API / own-terminal CLI), outside both.
 # (The denied-command opt-out state does NOT live here — it is a security
 # ceiling and lives on the read+write keystone floor in ``denied_commands.json``
 # above, so no bash-level write matcher is needed for it. The computer-use primary
@@ -1258,6 +1258,52 @@ _WRITE_PROTECTED_HOME_PATHS += [
 # the crew secrets.
 _KIRO_AGENTS_DIR = ".kiro/agents"
 _WRITE_PROTECTED_HOME_PATHS += [_KIRO_AGENTS_DIR]
+
+# ── kiro-cli global MCP registry (~/.kiro/settings/mcp.json) ──
+# The sibling of the agents dir above, and an INPUT TO A SECURITY DECISION by the
+# same route: an ``autoApprove`` on an entry here is honoured by default
+# (``mcp.honour_auto_approve``), and kiro-cli approves an autoApproved MCP tool
+# LOCALLY and emits no permission request -- so those verbs skip
+# ``hooks.on_tool_call`` and the tool gate never runs for them.
+# ``governance._is_owner_written`` admits an entry on its NAME SHAPE (no ``:``, no
+# provenance marker), never on who wrote the file, so a plainly-named entry an agent
+# appended is indistinguishable from one the owner typed. The opt-in's own wording is
+# what this entry makes true: it respects a list "hand-added to ``mcp.json``" -- by a
+# HAND.
+#
+# WRITE-protection, NOT read+write sensitive, as for the agents dir: the registry
+# must stay READABLE (the app MCP-policy merge reads it, ``kirocrew doctor`` reports
+# it, and the deregistration scrub has to find an older build's leaked entries).
+# Kiro Crew's own writers take the advisory lock and ``atomic_write`` the path
+# directly without routing through this gate, so app registration, health-check
+# promotion and that scrub keep working; only the agent's file-edit tool is refused.
+#
+# A LEAF, not the ``settings`` directory: that directory also holds
+# ``amazon-internal.json``, whose ``sandbox`` key ``sandbox.py`` reads, and fencing a
+# whole kiro-cli-owned directory on this file's account would claim a protection this
+# entry has not reasoned about.
+#
+# A literal, like the agents dir, to avoid a config->security import cycle, and
+# deliberately not resolved through a data-home helper:
+# ``config.paths.shared_kiro_settings_writable`` records that this file belongs to the
+# kiro-cli installation and resolves from the REAL home. ``KIRO_HOME`` moves kiro-cli's
+# whole user directory INCLUDING ``settings`` (see ``kiro_home``'s scope caveat), so
+# that location is re-anchored in ``_home_dir_targets_uncached``.
+_KIRO_SETTINGS_MCP_JSON = ".kiro/settings/mcp.json"
+_WRITE_PROTECTED_HOME_PATHS += [_KIRO_SETTINGS_MCP_JSON]
+
+
+#: The kiro-cli-owned entries on the write-only tier, as ONE list because they
+#: share an anchoring rule rather than only an owner: each is re-anchored under
+#: ``KIRO_HOME`` and each has its ``$HOME``-rooted form resolved, so a symlink
+#: anywhere below the home root cannot move the real file out from under the
+#: fence. BOTH halves are driven from this tuple -- the ``$HOME`` resolve loop and
+#: the ``KIRO_HOME`` re-anchoring -- so a third kiro-cli leaf joins both by landing
+#: here, and neither half can be the one somebody forgets.
+_KIRO_CLI_WRITE_TIER_LEAVES: tuple[str, ...] = (
+    _KIRO_AGENTS_DIR,
+    _KIRO_SETTINGS_MCP_JSON,
+)
 _WRITE_PROTECTED_HOME_PATHS += [
     # Operator-authored panel templates (agent_panel.py). WRITE-protected rather
     # than read+write sensitive, and the asymmetry is the whole point: a crew's
@@ -2188,7 +2234,9 @@ class _BuiltTargets(set[str]):
     rather than left to be read as "every target". The build resolves five classes
     of path and no others: ``$HOME``, ``KIROCREW_OS_HOME``, each entry of the
     CALLER'S ``home_dirs`` list that carries a crew prefix, re-anchored under
-    ``KIROCREW_HOME``, the agents dir under ``KIRO_HOME``, and each harness
+    ``KIROCREW_HOME``, each kiro-cli path in ``_KIRO_CLI_WRITE_TIER_LEAVES`` -- the
+    agents dir and the MCP registry leaf, resolved under ``$HOME`` AND re-anchored
+    under ``KIRO_HOME``, one class because they share one rule -- and each harness
     credential leaf re-anchored under its own home override. Every
     other member of the set comes from ``_anchor`` or
     ``_anchor_both_separators``, neither of which touches the filesystem, so the
@@ -2197,8 +2245,10 @@ class _BuiltTargets(set[str]):
     An ordinary symlinked dotfile under ``$HOME`` can set this flag, and a
     dotfile-managed home is therefore a case to look for. The trigger is the union
     this build already resolves: a crew-prefixed entry of the caller's
-    ``home_dirs`` under ``KIROCREW_HOME``, the agents dir under ``KIRO_HOME``, or a
-    DECLARED credential leaf under whichever harness variable relocates it. So a
+    ``home_dirs`` under ``KIROCREW_HOME``, a kiro-cli path under ``$HOME`` or under
+    ``KIRO_HOME``, or a DECLARED credential leaf under whichever harness variable
+    relocates it. The kiro-cli arm is why a dotfile-managed ``~/.kiro`` reports a
+    traversal on the write tier: that is the case it exists to cover. So a
     symlinked ``sessions`` or ``models`` leaf under a ``KIROCREW_HOME`` that sits
     below ``$HOME`` pins the write tier, and a symlinked ``goose`` directory under
     whatever ``XDG_CONFIG_HOME`` resolves to pins the tier handed that leaf. Read
@@ -2413,25 +2463,61 @@ def _anchor_targets(
                     if full_real is not None:
                         sensitive_targets.add(full_real.casefold())
                     break
-    # The agents dir (``~/.kiro/agents``) follows ``KIRO_HOME`` — kiro-cli's own
-    # home override, honoured by ``kiro_agents_dir()``. When it is set, the specs
-    # the gateway execs live at ``<KIRO_HOME>/agents``, NOT under the real home,
-    # so the ``.kiro/agents`` entry anchored above misses them and an agent write
-    # there would bypass the gate. Re-anchor the leaf under the override, mirroring
-    # the ``KIROCREW_HOME`` expansion directly above (the ~/-rooted default form
-    # stays, so both locations are always covered). Only added when the agents dir
-    # is actually in *home_dirs* — it is on the write-only tier
-    # (``_WRITE_PROTECTED_HOME_PATHS``) and NOT in ``_SENSITIVE_HOME_DIRS``, so
-    # this must not leak an agents target into the read gate. No validity check on
-    # the override: an unsafe ``KIRO_HOME`` falls back to ``~/.kiro`` in
-    # ``kiro_home()`` (already covered by the default form), so an extra target
-    # under a bogus value is harmless and fail-safe.
-    if kiro_home_override and _KIRO_AGENTS_DIR in home_dirs:
-        agents_full = os.path.join(kiro_home_override, "agents")
-        sensitive_targets.add(agents_full.casefold())
-        agents_real = resolve_target(agents_full)
-        if agents_real is not None:
-            sensitive_targets.add(agents_real.casefold())
+    # Both kiro-cli leaves are RESOLVED under the default home as well, not only
+    # under the override below. Anchoring them lexically is not enough: ``home``
+    # arrives already resolved and ``home_real`` covers a symlinked ``$HOME``
+    # ITSELF, but neither follows a symlink further down the path. A
+    # dotfile-managed ``~/.kiro`` or ``~/.kiro/settings`` -- the case
+    # :class:`_BuiltTargets` names as one to look for -- therefore leaves the real
+    # file outside the fence while the ``~``-spelled path inside it stays
+    # protected, and the agent simply writes the destination instead. What it wins
+    # there is what each leaf is fenced for: a planted spec the MCP gateway execs
+    # unsandboxed, or an ``autoApprove`` that skips the tool gate.
+    #
+    # Same shape as the crew-prefix arm above (add the lexical form, then its
+    # resolved spelling when they differ) and guarded on *home_dirs* membership for
+    # the same reason as the overrides below: both leaves are write-tier only, so a
+    # target must not leak into the read gate.
+    for _cli_leaf in _KIRO_CLI_WRITE_TIER_LEAVES:
+        if _cli_leaf not in home_dirs:
+            continue
+        _cli_full = os.path.join(home, *_leaf_segments(_cli_leaf))
+        _cli_real = resolve_target(_cli_full)
+        if _cli_real is not None and _cli_real.casefold() != _cli_full.casefold():
+            sensitive_targets.add(_cli_real.casefold())
+    # Both kiro-cli leaves follow ``KIRO_HOME`` — kiro-cli's own home override,
+    # honoured by ``kiro_agents_dir()`` and by the registry's own resolver. When it
+    # is set, the specs the gateway execs live at ``<KIRO_HOME>/agents`` and the
+    # registry whose ``autoApprove`` skips the tool gate at
+    # ``<KIRO_HOME>/settings/mcp.json``, NOT under the real home, so the
+    # ``$HOME``-anchored entries above miss them and an agent write there would
+    # bypass the gate. Re-anchor each leaf's tail under the override, mirroring the
+    # ``KIROCREW_HOME`` expansion directly above (the ~/-rooted default forms stay,
+    # so every location is always covered).
+    #
+    # Driven from the SAME tuple as the ``$HOME`` loop rather than one arm per leaf:
+    # the two halves are the tuple's whole contract, so a third kiro-cli leaf is one
+    # tuple entry and not a third arm someone has to remember to add. The tail comes
+    # off the leaf spec (``_leaf_segments(leaf)[1:]`` drops the ``.kiro`` the override
+    # replaces), so no leaf's path is spelled twice and the two spellings cannot
+    # drift apart.
+    #
+    # Only added when the leaf is actually in *home_dirs* — both are on the
+    # write-only tier (``_WRITE_PROTECTED_HOME_PATHS``) and NOT in
+    # ``_SENSITIVE_HOME_DIRS``, so this must not leak a write-tier target into the
+    # read gate. No validity check on the override: an unsafe ``KIRO_HOME`` falls
+    # back to ``~/.kiro`` in ``kiro_home()`` (already covered by the default form),
+    # so an extra target under a bogus value is harmless and fail-safe.
+    if kiro_home_override:
+        for _cli_leaf in _KIRO_CLI_WRITE_TIER_LEAVES:
+            if _cli_leaf not in home_dirs:
+                continue
+            _under = _leaf_segments(_cli_leaf)[1:]
+            _over_full = os.path.join(kiro_home_override, *_under) if _under else kiro_home_override
+            sensitive_targets.add(_over_full.casefold())
+            _over_real = resolve_target(_over_full)
+            if _over_real is not None:
+                sensitive_targets.add(_over_real.casefold())
     # An ACP adapter's OAuth token follows that adapter's own home override, so
     # the ``$HOME``-rooted entry anchored above covers only the documented
     # default. Re-anchor the token leaf under each override the adapter honours
@@ -2727,8 +2813,9 @@ def _report_expiry_pin(home_dirs: list[str], pinned: bool) -> None:
 
     Without this the availability half self-disables in silence. On an install
     whose RESOLVED leaf under a home-override root is a symlink -- a crew-prefixed
-    entry of the caller's ``home_dirs`` under ``KIROCREW_HOME``, the agent-spec dir
-    under ``KIRO_HOME``, or a declared harness credential leaf under any variable in
+    entry of the caller's ``home_dirs`` under ``KIROCREW_HOME``, a kiro-cli path
+    under ``$HOME`` or ``KIRO_HOME``, or a declared harness credential leaf under any
+    variable in
     ``host_auth.home_override_env_vars()`` --
     the build that was handed that leaf reports a traversal, ITS expiry is
     therefore the floor, and both knobs read as no-ops for that tier to whoever
@@ -2738,8 +2825,8 @@ def _report_expiry_pin(home_dirs: list[str], pinned: bool) -> None:
     A dotfile-managed home IS a case to look for. The trigger is narrower than
     "any symlinked dotfile" but not exotic: the symlinked path has to fall in one
     of the three classes above -- a crew-prefixed entry of the caller's
-    ``home_dirs`` under ``KIROCREW_HOME``, the agent-spec dir under ``KIRO_HOME``,
-    or a declared harness credential leaf -- and it has to sit BELOW the resolved
+    ``home_dirs`` under ``KIROCREW_HOME``, a kiro-cli path under ``$HOME`` or
+    ``KIRO_HOME``, or a declared harness credential leaf -- and it has to sit BELOW the resolved
     root, since ``_resolve_root_anchors`` canonicalises each root first. A
     symlinked ``sessions`` leaf under a ``KIROCREW_HOME`` below ``$HOME`` is that
     shape, and so is a ``goose`` directory symlinked into a store underneath
