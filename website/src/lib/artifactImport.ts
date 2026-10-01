@@ -19,8 +19,8 @@ import type { Artifact } from '../types'
 /**
  * Extension → artifact kind for importable files.
  *
- * Mirrors `_EXT_KIND_MAP` in `src/kiro_crew/artifacts.py` (the backend's
- * kind-inference map for file-backed artifacts). Both answer the same
+ * Mirrors `_EXT_KIND_MAP` in `src/kiro_crew/artifact_store/rules.py` (the
+ * backend's kind-inference map for file-backed artifacts). Both answer the same
  * question — which file extension means which artifact kind — so they are
  * held identical by `test/test_artifact_import_parity.py`, which parses this
  * object and fails if the two drift.

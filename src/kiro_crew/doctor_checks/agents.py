@@ -172,8 +172,9 @@ def _open_slot_agent_names() -> list[tuple[str, str]]:
 def _doctor_deprecated_agent_specs(cfg: KiroCrewConfig, issues: list[str]) -> None:
     """Report configs that still name a deprecated agent spec.
 
-    A deprecated spec (``DEPRECATED_AGENT_SPECS`` in ``agent.py``) still
-    resolves for one release, so a config surface naming it -- a cron job, a
+    A deprecated spec (``DEPRECATED_AGENT_SPECS`` in
+    ``agent_materialization/conductor_agents.py``) still resolves for one
+    release, so a config surface naming it -- a cron job, a
     crew binding, an open chat slot, or one of the config's own agent
     selectors -- keeps working today and breaks with ``Mode not found`` at
     dispatch time once the alias is deleted. Each finding names the replacement so the owner

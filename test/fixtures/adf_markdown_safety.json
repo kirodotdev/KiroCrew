@@ -8,8 +8,8 @@
     "stack and asserts the selectors, so the escape set is checked against the",
     "renderer that actually runs rather than against a comment describing it.",
     "Adding a case here makes BOTH sides assert it. If the frontend side starts",
-    "failing, the escape set in source_providers.py is what needs to change --",
-    "not this file."
+    "failing, the escape set in dashboard/source_providers/adf.py is what",
+    "needs to change -- not this file."
   ],
   "cases": [
     {

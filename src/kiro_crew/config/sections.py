@@ -3440,7 +3440,7 @@ CHAT_TURN_TIMEOUT_MIN = 300
 CHAT_TURN_TIMEOUT_MAX = 86400
 
 # agent.session_start_timeout_secs — budget for ACP session/new + session/load
-# on the shared runtime (acp/runtime.py ``_SESSION_NEW_TIMEOUT`` is the built-in
+# on the shared runtime (acp/runtime_start.py ``_SESSION_NEW_TIMEOUT`` is the built-in
 # default). kiro-cli blocks the session/new response while it initializes the
 # session's MCP servers, so start time scales with the agent's server count and
 # per-server cold-start cost (observed: a 71-server agent with no pending OAuth

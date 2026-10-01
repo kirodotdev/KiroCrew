@@ -149,8 +149,8 @@ export interface InstanceSessionRow {
    *  conductor lane reads a peer row exactly as it reads a local one. Each half
    *  is kept only when it is a string, and the object only when at least one
    *  half survived. `key` is resolved within this row's `peer_id`, never across
-   *  origins (`ChatSidebar` `lineage`); `slot` feeds `orphanCitation`,
-   *  `citesParent` and the `citedCreatorRef` move baseline. */
+   *  origins (`lineage` in pages/chat-sidebar/conductor.ts); `slot` feeds
+   *  `orphanCitation`, `citesParent` and the `citedCreatorRef` move baseline. */
   parent?: { slot?: string; key?: string }
   lineage_pending?: boolean
 }

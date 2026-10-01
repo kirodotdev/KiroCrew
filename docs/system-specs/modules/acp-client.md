@@ -29,6 +29,15 @@ error chains and tracebacks still name the path callers import it from.
 harness executable resolution, `finish_suspended_spawn` and the model-push ladder
 (`_push_model_via_effort_split`, `_is_config_value_rejection`) in `acp/client.py`.
 
+New module-level code goes to the owner whose row above names its
+responsibility, not to `acp/client.py` or `acp/runtime.py`: stdio framing and
+write bounds to `acp/transport_framing.py`; an `AcpError` subclass, or a
+classifier that reads a harness failure into one, to `acp/transport_errors.py`;
+model-catalog rules to `acp/runtime_models.py`; process-tree inspection to
+`acp/runtime_process_tree.py`; session-start admission to
+`acp/runtime_start.py`. A moved name a test patches through its facade is
+forwarded in `_EXPORTS_BY_OWNER`, which `test_acp_refactor_facade.py` pins.
+
 ## Native skill startup views
 
 Native CLI launches prepare a `skill_projection` after the existing spec freshness

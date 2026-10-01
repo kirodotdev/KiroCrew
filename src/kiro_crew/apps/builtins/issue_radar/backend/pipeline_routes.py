@@ -146,13 +146,13 @@ def _repo_params(request: web.Request) -> tuple[str, str] | web.Response:
 async def _reject_unconnected(owner: str, repo: str) -> web.Response | None:
     """Refuse a repository Issue Radar is not connected to. None means it is.
 
-    This is the HOST APP's authorization gate, not a courtesy: ``routes.py``
-    enforces ``store.is_repo_connected`` at every repo-scoped handler it owns, and
-    its own note names that call as "the gate that actually decides whether this
-    request may touch a repo". These three handlers read the SAME per-repository
-    data -- the issue cache under the repo's own directory, and its queue shard --
-    so skipping the gate would make them the one door in the app that opens on a
-    repository the operator has not connected.
+    This is the HOST APP's authorization gate, not a courtesy: every repo-scoped
+    read in ``http_routes`` is gated on ``store.is_repo_connected`` through
+    ``routes._connected``, and ``routes.py``'s own note names that call as "the
+    gate that actually decides whether this request may touch a repo". These three
+    handlers read the SAME per-repository data -- the issue cache under the repo's
+    own directory, and its queue shard -- so skipping the gate would make them the
+    one door in the app that opens on a repository the operator has not connected.
 
     Disconnecting does not erase what is on disk. The trail keeps its events, the
     issue cache keeps its titles, labels and assignees, and the queue shard keeps
@@ -162,7 +162,7 @@ async def _reject_unconnected(owner: str, repo: str) -> web.Response | None:
     the status and code the sibling handlers already return.
 
     Off the event loop: the gate reads the store's JSON from disk, exactly as
-    ``routes.py`` does at each of its own call sites.
+    ``http_routes`` does at each of its ``routes._connected`` call sites.
     """
     if await asyncio.to_thread(store.is_repo_connected, owner, repo):
         return None

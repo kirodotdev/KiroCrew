@@ -354,11 +354,11 @@ def _ceiling_filtered_allowed(refs: object, agent_name: str = "") -> list[Any]:
     The decision itself is NOT made here. It is
     :func:`~kiro_crew.platform.governance.may_skip_gate`, because this is one of
     two places that write an ``allowedTools`` list — the host agent's shared-MCP
-    sync in ``agent.py`` is the other — and the earlier revision reimplemented
-    the rule locally, including a private copy of the builtin-tool→scope map. One
-    copy meant one write point was protected and the other was not, and a newly
-    governed scope silently re-opened the shortcut for the copy that had not heard
-    of it.
+    sync (``sync_shared_server_refs`` in ``agent_materialization/mcp_sources.py``)
+    is the other — so the rule is not reimplemented here. A local copy, including
+    a private builtin-tool→scope map, would protect one write point and not the
+    other, and a newly governed scope would silently re-open the shortcut for the
+    copy that had not heard of it.
     """
     out: list[Any] = []
     withheld: list[str] = []

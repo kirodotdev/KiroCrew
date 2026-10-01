@@ -8,7 +8,13 @@ import { join } from 'node:path'
  *    owners and no owner imports the facade, because about thirty specs mock
  *    the facade by id and three of them build the mock from `importOriginal`,
  *    so an owner reaching back would receive the stub (or a half-evaluated
- *    module). The owners import each other without cycles. ── */
+ *    module). The owners import each other without cycles.
+ *
+ *    `useComposerTreeDrop` reads the optimizer's `optimizing`, so the facade
+ *    calls it after `usePromptOptimizer`, and its three effects run after the
+ *    optimizer's completion effect. The two share no state: the drop caret,
+ *    its animation frame and the window drag listeners on one side, the
+ *    optimize slot and the undo boundary on the other. ── */
 
 const COMPONENTS = join(__dirname, '..', 'components')
 const OWNERS_DIR = join(COMPONENTS, 'chat-input')

@@ -2850,7 +2850,7 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
         recovery_backoff_max_secs=_safe_float(
             agent_data.get("recovery_backoff_max_secs", 120.0), 120.0, 1.0, 3600.0
         ),
-        # Session-start gate (acp/runtime.py SessionStartGate).
+        # Session-start gate (acp/runtime_start.py SessionStartGate).
         session_start_concurrency=_safe_int(
             agent_data.get("session_start_concurrency", 2), 2, 1, 64
         ),

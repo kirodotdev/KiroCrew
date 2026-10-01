@@ -15,8 +15,8 @@ import MarkdownRenderer from '../components/MarkdownRenderer'
 // The fixture is shared: test/test_source_providers.py pins that the converter
 // produces each `markdown` from each `adf`, so a case cannot drift from the
 // converter, and this file pins what the renderer then does with it. A failure
-// here means the escape set in source_providers.py needs re-deriving, not that
-// the fixture needs editing.
+// here means the escape set in dashboard/source_providers/adf.py needs
+// re-deriving, not that the fixture needs editing.
 
 type SafetyCase = {
   name: string

@@ -771,7 +771,7 @@ def project_table(repo: Path) -> dict[str, Any] | None:
     one: a hand-rolled reader answering a question only a parser can answer.
 
     So a parser answers it wherever one exists -- ``tomllib`` on 3.11+, ``tomli``
-    if the venv happens to carry it, exactly the ladder ``onboarding_import``
+    if the venv happens to carry it, exactly the ladder ``onboarding_scan``
     already uses. ``None`` means neither was importable (a 3.10 venv without
     ``tomli``), and each caller then falls back to its text reader, which is
     best-effort by nature; that residual is stated in the PR rather than hidden.

@@ -4478,7 +4478,7 @@ def validate_hook_fields(
 # which a hostile or careless command could echo straight back through stdout,
 # stderr, or the audit trail. This is the same strict-allowlist boundary the
 # authenticated ``gh``/``glab`` spawns cross (``_PROVIDER_BASE_ENV_KEYS`` in
-# ``dashboard/handlers/source_providers.py``); a variable a hook genuinely needs
+# ``dashboard/source_providers/runner.py``); a variable a hook genuinely needs
 # is added here by name, never by opening the gate to the whole environment. A
 # key absent from the host environment is simply not forwarded — the allowlist
 # is a filter, not a set of required keys — so a minimal container is unaffected.

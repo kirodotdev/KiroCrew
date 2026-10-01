@@ -366,7 +366,6 @@ line-ref	docs/request-for-change/rfc-i18n-measurement.md	website/src/surfaces/re
 line-ref	docs/request-for-change/rfc-i18n-measurement.md	website/vite.config.ts:426-427
 line-ref	docs/request-for-change/rfc-issue-radar-crews.md	WateringHoleScene.tsx:92
 line-ref	docs/request-for-change/rfc-issue-radar-crews.md	acp/client.py:676
-line-ref	docs/request-for-change/rfc-issue-radar-crews.md	auto_research/handlers.py:126
 line-ref	docs/request-for-change/rfc-issue-radar-crews.md	autonudge.py:456
 line-ref	docs/request-for-change/rfc-issue-radar-crews.md	chat_handlers.py:1941
 line-ref	docs/request-for-change/rfc-issue-radar-crews.md	chat_runner.py:3668
@@ -379,13 +378,10 @@ line-ref	docs/request-for-change/rfc-issue-radar-crews.md	gateway.py:3202
 line-ref	docs/request-for-change/rfc-issue-radar-crews.md	github_client.py:1-14
 line-ref	docs/request-for-change/rfc-issue-radar-crews.md	github_client.py:2416
 line-ref	docs/request-for-change/rfc-issue-radar-crews.md	github_client.py:347
-line-ref	docs/request-for-change/rfc-issue-radar-crews.md	handlers.py:867-869
 line-ref	docs/request-for-change/rfc-issue-radar-crews.md	handlers/terminal.py:53
 line-ref	docs/request-for-change/rfc-issue-radar-crews.md	hooks/sceneText.ts:145
-line-ref	docs/request-for-change/rfc-issue-radar-crews.md	routes.py:1357
 line-ref	docs/request-for-change/rfc-issue-radar-crews.md	scenes/GhostScene.tsx:36
 line-ref	docs/request-for-change/rfc-issue-radar-crews.md	session.py:748
-line-ref	docs/request-for-change/rfc-issue-radar-crews.md	src/kiro_crew/apps/builtins/auto_research/handlers.py:974-1040
 line-ref	docs/request-for-change/rfc-issue-radar-crews.md	state.py:2329
 line-ref	docs/request-for-change/rfc-issue-radar-crews.md	turn_dispatch.py:50
 line-ref	docs/request-for-change/rfc-issue-radar-crews.md	useSceneInteraction.tsx:20
@@ -582,7 +578,6 @@ line-ref	docs/request-for-change/rfc-transcript-section-markers.md	dashboard/sta
 line-ref	docs/request-for-change/rfc-transcript-section-markers.md	dashboard/state.py:3953
 line-ref	docs/request-for-change/rfc-transcript-section-markers.md	dashboard/state.py:3956-3961
 line-ref	docs/request-for-change/rfc-transcript-section-markers.md	hooks/useScrollMemory.ts:32
-line-ref	docs/request-for-change/rfc-transcript-section-markers.md	hooks/useWebSocket.ts:1229
 line-ref	docs/request-for-change/rfc-transcript-section-markers.md	mcp_tools/control.py:733
 line-ref	docs/request-for-change/rfc-transcript-section-markers.md	pages/ChatPage.tsx:1009
 line-ref	docs/request-for-change/rfc-transcript-section-markers.md	pages/ChatPage.tsx:5738
@@ -603,7 +598,6 @@ line-ref	docs/request-for-change/rfc-transcript-section-markers.md	session_direc
 line-ref	docs/request-for-change/rfc-transcript-section-markers.md	session_directive_apply.py:9-13
 line-ref	docs/request-for-change/rfc-transcript-section-markers.md	session_lifecycle.py:653
 line-ref	docs/request-for-change/rfc-transcript-section-markers.md	session_map.py:964-977
-line-ref	docs/request-for-change/rfc-transcript-section-markers.md	website/src/components/MarkdownRenderer.tsx:984
 line-ref	docs/request-for-change/rfc-transcript-section-markers.md	website/src/types/index.ts:950-952
 line-ref	docs/request-for-change/rfc-update-architecture.md	AboutPanel.tsx:342,364,377,549-550
 line-ref	docs/request-for-change/rfc-update-architecture.md	AboutPanel.tsx:491

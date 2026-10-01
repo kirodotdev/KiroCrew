@@ -21,7 +21,7 @@ operating procedure of record; this document carries the intent and the decision
 
 **Status.** M0 and M1 are on main. The agent is registered — `kirocrew-security-conductor` in
 `UNADVERTISED_AGENTS` (`src/kiro_crew/subagent.py`) with its installer
-`_install_security_conductor_agent` in `src/kiro_crew/agent.py`
+`_install_security_conductor_agent` in `src/kiro_crew/agent_materialization/conductor_agents.py`
 ([#9273](https://github.com/kirodotdev/KiroCrew/pull/9273)) — and the skill plus the first rules of
 engagement are on main as `src/kiro_crew/builtin_skills/security-conductor/SKILL.md` and
 `rules-of-engagement.json` ([#9271](https://github.com/kirodotdev/KiroCrew/pull/9271)), whose merge
@@ -139,7 +139,8 @@ that installer argues for:
 
 Registered alongside `kirocrew-pipeline-conductor` in `UNADVERTISED_AGENTS`
 (`src/kiro_crew/subagent.py`), with its own filename constant in `src/kiro_crew/agent_files.py` and
-its own installer in `src/kiro_crew/agent.py`, mirroring the existing installer tests.
+its own installer in `src/kiro_crew/agent_materialization/conductor_agents.py`, mirroring the
+existing installer tests.
 
 ## The trust boundary
 
