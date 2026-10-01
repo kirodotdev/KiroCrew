@@ -69,7 +69,16 @@ def _setup_env(tmp_path, monkeypatch):
 
 
 def _make_app():
-    app = web.Application()
+    # Stands in for token_auth_middleware authenticating the dashboard owner,
+    # which the registry-write owner gate requires.
+    @web.middleware
+    async def _owner(request, handler):
+        request["app"] = ""
+        request["user"] = "owner"
+        return await handler(request)
+
+    app = web.Application(middlewares=[_owner])
+    app["state"] = SimpleNamespace(owner_id="owner")
     register_app_routes(app)
     return app
 

@@ -8,7 +8,9 @@ import subprocess
 from unittest.mock import MagicMock, patch
 
 import pytest
+from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
+from dashboard_owner_helpers import as_owner
 
 from kiro_crew.dashboard.handlers import files as files_mod
 from kiro_crew.dashboard.handlers.files import api_file_diff
@@ -31,7 +33,11 @@ EXFIL_URL = "https://collect.example.com/p?d=" + "A" * 900
 def _req(path: str = "") -> make_mocked_request:
     """Create a mocked GET request with ?path= query param."""
     url = f"/api/file-diff?path={path}" if path else "/api/file-diff"
-    req = make_mocked_request("GET", url)
+    req = make_mocked_request("GET", url, app=as_owner(web.Application()))
+    # The owner: /api/file-diff is owner-gated, and these tests are about the
+    # diff, not the gate.
+    req["user"] = "local-app"
+    req["app"] = ""
     return req
 
 

@@ -285,6 +285,10 @@ async def _handle_get_config(_request: web.Request) -> web.StreamResponse:
 
 
 async def _handle_put_config(request: web.Request) -> web.StreamResponse:
+    owner_denied = await require_owner_dashboard_request(request, "auto_improvement.put_config")
+    if owner_denied is not None:
+        return owner_denied
+    await _audit_owner_route_allowed(request, "auto_improvement.put_config")
     patch = await _json_body(request)
     rejected = sorted(set(patch) - _CONFIG_WRITABLE)
 
@@ -338,6 +342,10 @@ async def _handle_setup_clone(request: web.Request) -> web.StreamResponse:
     the agent is turned loose on. The clone itself is a blocking git subprocess,
     so it runs off the event loop.
     """
+    owner_denied = await require_owner_dashboard_request(request, "auto_improvement.setup_clone")
+    if owner_denied is not None:
+        return owner_denied
+    await _audit_owner_route_allowed(request, "auto_improvement.setup_clone")
     body = await _json_body(request)
     url = str(body.get("url") or "").strip()
     if not url:
@@ -456,7 +464,15 @@ async def _handle_branches(request: web.Request) -> web.StreamResponse:
 
 
 async def _handle_pr_status(request: web.Request) -> web.StreamResponse:
-    """Live status + CI checks + watcher verdict for one PR url."""
+    """Live status + CI checks + watcher verdict for one PR url.
+
+    The fetch runs with the owner's forge credential, so only the dashboard owner
+    may call it; an app token is refused like any other non-owner caller.
+    """
+    owner_denied = await require_owner_dashboard_request(request, "auto_improvement.pr_status")
+    if owner_denied is not None:
+        return owner_denied
+    await _audit_owner_route_allowed(request, "auto_improvement.pr_status")
     url = (request.query.get("url") or "").strip()
     if not url:
         return web.json_response(
@@ -499,6 +515,10 @@ async def _handle_save_session(request: web.Request) -> web.StreamResponse:
     The frontend calls this after creating a slot so a repeat click RESUMES the
     same conversation instead of starting a duplicate one.
     """
+    owner_denied = await require_owner_dashboard_request(request, "auto_improvement.session_save")
+    if owner_denied is not None:
+        return owner_denied
+    await _audit_owner_route_allowed(request, "auto_improvement.session_save")
     key = request.match_info.get("key", "")
     patch = await _json_body(request)
     allowed = {"slot_key", "folder_id", "status", "subject", "title", "url"}
@@ -511,6 +531,10 @@ async def _handle_save_session(request: web.Request) -> web.StreamResponse:
 
 
 async def _handle_delete_session(request: web.Request) -> web.StreamResponse:
+    owner_denied = await require_owner_dashboard_request(request, "auto_improvement.session_delete")
+    if owner_denied is not None:
+        return owner_denied
+    await _audit_owner_route_allowed(request, "auto_improvement.session_delete")
     key = request.match_info.get("key", "")
     try:
         removed = await asyncio.to_thread(store.delete_session, key)
@@ -761,6 +785,10 @@ async def _handle_draft_pr(request: web.Request) -> web.StreamResponse:
     passes ``--draft`` and never publishes, marks ready, merges, or enables
     auto-merge.
     """
+    owner_denied = await require_owner_dashboard_request(request, "auto_improvement.draft_pr")
+    if owner_denied is not None:
+        return owner_denied
+    await _audit_owner_route_allowed(request, "auto_improvement.draft_pr")
     fp, _bad = _validated_fp(request)
     if _bad is not None:
         return _bad
@@ -988,7 +1016,7 @@ def ledger_admin_record(fp: str, pr_ref: str) -> None:
 # ── per-PR watcher sessions ──────────────────────────────────────────────────
 
 
-async def _handle_watchers(_request: web.Request) -> web.StreamResponse:
+async def _handle_watchers(request: web.Request) -> web.StreamResponse:
     """Every watcher session and its current state, plus a reconcile sweep.
 
     Reconciling from this polled read is how upstream drove it too: a watcher exits when
@@ -1003,6 +1031,10 @@ async def _handle_watchers(_request: web.Request) -> web.StreamResponse:
     side effect of a READ gave the operator no consent moment. Orphan-clone reclamation still
     runs either way — that only deletes scratch directories.
     """
+    owner_denied = await require_owner_dashboard_request(request, "auto_improvement.watchers_list")
+    if owner_denied is not None:
+        return owner_denied
+    await _audit_owner_route_allowed(request, "auto_improvement.watchers_list")
 
     registry = pr_watchers.get_registry()
     sessions = await asyncio.to_thread(registry.list_sessions)
@@ -1071,6 +1103,10 @@ async def _handle_watcher_start(request: web.Request) -> web.StreamResponse:
     nothing to watch, and the registry records that refusal as terminal state
     rather than raising.
     """
+    owner_denied = await require_owner_dashboard_request(request, "auto_improvement.watcher_start")
+    if owner_denied is not None:
+        return owner_denied
+    await _audit_owner_route_allowed(request, "auto_improvement.watcher_start")
     fp, _bad = _validated_fp(request)
     if _bad is not None:
         return _bad
@@ -1118,6 +1154,10 @@ async def _handle_watcher_start(request: web.Request) -> web.StreamResponse:
 
 async def _handle_watcher_stop(request: web.Request) -> web.StreamResponse:
     """Ask a watcher to stop after its current attempt."""
+    owner_denied = await require_owner_dashboard_request(request, "auto_improvement.watcher_stop")
+    if owner_denied is not None:
+        return owner_denied
+    await _audit_owner_route_allowed(request, "auto_improvement.watcher_stop")
     fp, _bad = _validated_fp(request)
     if _bad is not None:
         return _bad
@@ -1184,6 +1224,10 @@ async def _handle_forget(request: web.Request) -> web.StreamResponse:
     forever — even after the reason it failed has been fixed. This is the escape
     hatch for exactly that, and it keeps the artifacts.
     """
+    owner_denied = await require_owner_dashboard_request(request, "auto_improvement.forget")
+    if owner_denied is not None:
+        return owner_denied
+    await _audit_owner_route_allowed(request, "auto_improvement.forget")
     fp, _bad = _validated_fp(request)
     if _bad is not None:
         return _bad
@@ -1202,6 +1246,10 @@ async def _handle_forget(request: web.Request) -> web.StreamResponse:
 
 async def _handle_purge(request: web.Request) -> web.StreamResponse:
     """Forget a finding AND remove its artifacts."""
+    owner_denied = await require_owner_dashboard_request(request, "auto_improvement.purge")
+    if owner_denied is not None:
+        return owner_denied
+    await _audit_owner_route_allowed(request, "auto_improvement.purge")
     fp, _bad = _validated_fp(request)
     if _bad is not None:
         return _bad
@@ -1224,19 +1272,27 @@ async def _handle_purge_dead(request: web.Request) -> web.StreamResponse:
     Artifact removal is opt-in (``?artifacts=1``): a sweep is a bulk operation and
     the evidence is usually the reason someone is looking at a dead record.
     """
+    owner_denied = await require_owner_dashboard_request(request, "auto_improvement.purge_dead")
+    if owner_denied is not None:
+        return owner_denied
+    await _audit_owner_route_allowed(request, "auto_improvement.purge_dead")
     remove = request.query.get("artifacts") in {"1", "true", "yes"}
 
     result = await asyncio.to_thread(ledger_admin.purge_dead, remove_artifacts=remove)
     return web.json_response(result)
 
 
-async def _handle_calibrate(_request: web.Request) -> web.StreamResponse:
+async def _handle_calibrate(request: web.Request) -> web.StreamResponse:
     """Run Phase 1 — prove the ruler — before any improvement cycle.
 
     A run refuses to start on an uncalibrated ruler, so this is the gate for the
     perf track. Building the profile touches git and the test suite, so the whole
     call runs off the event loop and the work itself continues on a worker thread.
     """
+    owner_denied = await require_owner_dashboard_request(request, "auto_improvement.calibrate")
+    if owner_denied is not None:
+        return owner_denied
+    await _audit_owner_route_allowed(request, "auto_improvement.calibrate")
     config = await asyncio.to_thread(store.read_json, store.config_path(), {})
     config = config or {}
     if not str(config.get("clone") or "").strip():
@@ -1258,6 +1314,10 @@ async def _handle_commit(request: web.Request) -> web.StreamResponse:
     """Commit a queued change straight to the configured branch (the one-click
     autocommit button). Denylist-gated to a non-protected branch, same as the
     loop's direct-commit mode."""
+    owner_denied = await require_owner_dashboard_request(request, "auto_improvement.commit")
+    if owner_denied is not None:
+        return owner_denied
+    await _audit_owner_route_allowed(request, "auto_improvement.commit")
     fp, _bad = _validated_fp(request)
     if _bad is not None:
         return _bad
@@ -1366,6 +1426,36 @@ async def _audit_deps_install_allowed(request: web.Request) -> None:
         logger.debug("SEL audit dispatch for deps install failed", exc_info=True)
 
 
+def _audit_owner_route_allowed_sync(caller: str, operation: str) -> None:
+    """Best-effort SEL record of an allowed owner-gated action; never raises.
+
+    Blocking body of :func:`_audit_owner_route_allowed`: the first ``sel()`` of a
+    process constructs the log, so handlers reach this through the async
+    wrapper, which runs it off the event loop.
+    """
+    try:
+        from kiro_crew.sel import sel  # circular import: sel->config->apps cycle
+
+        sel().log_api_access(
+            caller=caller,
+            operation=operation,
+            outcome="allowed",
+            source="dashboard",
+            resources="owner_route",
+        )
+    except Exception:  # pragma: no cover - audit must never change the outcome
+        logger.debug("SEL audit for %s failed", operation, exc_info=True)
+
+
+async def _audit_owner_route_allowed(request: web.Request, operation: str) -> None:
+    """Record an allowed owner-gated action in SEL; the owner gate audits only its refusals."""
+    caller = str(request.get("app") or request.get("user") or "unknown")
+    try:
+        await asyncio.to_thread(_audit_owner_route_allowed_sync, caller, operation)
+    except Exception:  # pragma: no cover - audit must never change the outcome
+        logger.debug("SEL audit dispatch for %s failed", operation, exc_info=True)
+
+
 async def _handle_deps_install(request: web.Request) -> web.StreamResponse:
     """Install the optional dependencies that can be installed safely.
 
@@ -1397,7 +1487,7 @@ async def _handle_health(_request: web.Request) -> web.StreamResponse:
 # ── the run engine (start / status / stop) ───────────────────────────────────
 
 
-async def _handle_run_start(_request: web.Request) -> web.StreamResponse:
+async def _handle_run_start(request: web.Request) -> web.StreamResponse:
     """Start a run from the config ON DISK.
 
     The body is ignored on purpose: the run's target repository, base branch and
@@ -1405,6 +1495,10 @@ async def _handle_run_start(_request: web.Request) -> web.StreamResponse:
     repo or a wider budget than what the config endpoints allow. Building the driver
     is blocking (git, provider probe), so the whole call runs off the event loop.
     """
+    owner_denied = await require_owner_dashboard_request(request, "auto_improvement.run_start")
+    if owner_denied is not None:
+        return owner_denied
+    await _audit_owner_route_allowed(request, "auto_improvement.run_start")
 
     # Read the config INSIDE the lock, together with the start it feeds. Read outside, a
     # retarget landing between the read and the start means the run operates on the repo
@@ -1440,9 +1534,13 @@ async def _handle_run_status(_request: web.Request) -> web.StreamResponse:
     return web.json_response(runner.get_supervisor().status())
 
 
-async def _handle_run_stop(_request: web.Request) -> web.StreamResponse:
+async def _handle_run_stop(request: web.Request) -> web.StreamResponse:
     """Request a clean stop. Blocking (it joins the worker thread, bounded), so it runs
     off the event loop."""
+    owner_denied = await require_owner_dashboard_request(request, "auto_improvement.run_stop")
+    if owner_denied is not None:
+        return owner_denied
+    await _audit_owner_route_allowed(request, "auto_improvement.run_stop")
 
     def _stop() -> dict:
 

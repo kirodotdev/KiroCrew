@@ -232,6 +232,18 @@ def _request(
     return request
 
 
+def _owner_request(*args: Any, **kwargs: Any) -> Any:
+    """``_request`` carrying the dashboard owner's claims, for the owner-gated secret
+    routes: the gate reads ``request.get("user")``, ``"app" in request`` and
+    ``request["app"]``."""
+    request = _request(*args, **kwargs)
+    claims = {"user": "local-app", "app": ""}
+    request.get = lambda key, default=None: claims.get(key, default)
+    request.__contains__.side_effect = lambda key: key in claims
+    request.__getitem__.side_effect = lambda key: claims[key]
+    return request
+
+
 def _payload(response: web.StreamResponse) -> Any:
     """The JSON body of a handler's response (every handler here answers ``json_response``)."""
     assert isinstance(response, web.Response), response
@@ -672,7 +684,9 @@ class TestEverySeamControlsItsCallSites(_Home):
                 _request({"site": "datadoghq.eu"}, match={"provider_id": "datadog"})
             ),
             "put_secret": lambda: routes._handle_put_secret(
-                _request({"field": "api_token", "value": "v"}, match={"provider_id": "pagerduty"})
+                _owner_request(
+                    {"field": "api_token", "value": "v"}, match={"provider_id": "pagerduty"}
+                )
             ),
         }
         for label, call in cases.items():
@@ -841,14 +855,18 @@ class TestEverySeamControlsItsCallSites(_Home):
         await self._reaches(
             "put_secret",
             lambda: routes._handle_put_secret(
-                _request({"field": "api_token", "value": "v"}, match={"provider_id": "pagerduty"})
+                _owner_request(
+                    {"field": "api_token", "value": "v"}, match={"provider_id": "pagerduty"}
+                )
             ),
         )
 
     async def test_delete_secret_is_read_by_the_revocation_route(self) -> None:
         await self._reaches(
             "delete_secret",
-            lambda: routes._handle_delete_secret(_request(match={"provider_id": "pagerduty"})),
+            lambda: routes._handle_delete_secret(
+                _owner_request(match={"provider_id": "pagerduty"})
+            ),
         )
 
     async def test_merge_provider_config_is_read_by_the_config_route(self) -> None:
@@ -1238,7 +1256,7 @@ class TestTheLifecycleAndConfigurationEdges(_Home):
         for label, (body, provider, status, _code) in cases.items():
             with self.subTest(case=label):
                 response = await routes._handle_put_secret(
-                    _request(body, match={"provider_id": provider})
+                    _owner_request(body, match={"provider_id": provider})
                 )
                 self.assertEqual(response.status, status)
                 expected = codes.get(label, "missing_required_field")
@@ -1246,14 +1264,18 @@ class TestTheLifecycleAndConfigurationEdges(_Home):
 
     async def test_a_secret_round_trips_through_save_and_revoke(self) -> None:
         saved = await routes._handle_put_secret(
-            _request({"field": "api_token", "value": "u+token"}, match={"provider_id": "pagerduty"})
+            _owner_request(
+                {"field": "api_token", "value": "u+token"}, match={"provider_id": "pagerduty"}
+            )
         )
         self.assertEqual(
             _payload(saved), {"ok": True, "provider": "pagerduty", "field": "api_token"}
         )
-        revoked = await routes._handle_delete_secret(_request(match={"provider_id": "pagerduty"}))
+        revoked = await routes._handle_delete_secret(
+            _owner_request(match={"provider_id": "pagerduty"})
+        )
         self.assertEqual(_payload(revoked), {"ok": True, "removed": True})
-        missing = await routes._handle_delete_secret(_request(match={}))
+        missing = await routes._handle_delete_secret(_owner_request(match={}))
         self.assertEqual(missing.status, 400)
 
     async def test_the_ledger_reads_and_a_missing_entry_is_a_coded_404(self) -> None:

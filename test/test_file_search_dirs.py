@@ -14,6 +14,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from dashboard_owner_helpers import as_owner
 
 from kiro_crew.dashboard.file_index import FileIndex
 from kiro_crew.dashboard.handlers import api_file_search
@@ -25,8 +26,11 @@ def _make_app(index=None) -> web.Application:
     app.router.add_get("/api/file-search", api_file_search)
     state = MagicMock()
     state.file_indexes.get.return_value = index
+    # A MagicMock attribute reads as a non-empty configured owner id, which no
+    # caller can equal, so the owner gate would answer every row alike.
+    state.owner_id = ""
     app["state"] = state
-    return app
+    return as_owner(app)
 
 
 @pytest.fixture()

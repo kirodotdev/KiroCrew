@@ -259,7 +259,10 @@ def _app() -> web.Application:
 
 def _req(path: str, query: str = "", method: str = "GET") -> web.Request:
     req = make_mocked_request(method, f"{path}?{query}" if query else path, app=_app())
-    req["user"] = "test-user"
+    # The owner: the file readers are owner-gated, and these tests are about
+    # the probe, not the gate.
+    req["user"] = "local-app"
+    req["app"] = ""
     return req
 
 
@@ -270,7 +273,10 @@ def _body(resp: web.Response) -> Any:
 async def _grep_req(query: str, root: Path | str) -> web.Response:
     """One ``POST /api/file-grep`` with the body the handler reads."""
     req = make_mocked_request("POST", "/api/file-grep", app=_app())
-    req["user"] = "test-user"
+    # The owner: the file readers are owner-gated, and these tests are about
+    # the probe, not the gate.
+    req["user"] = "local-app"
+    req["app"] = ""
     with mock.patch.object(
         f, "read_bounded_json", mock.AsyncMock(return_value=({"q": query, "root": str(root)}, None))
     ):

@@ -9,6 +9,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from dashboard_owner_helpers import owner_claims
 
 import kiro_crew.apps.routes as routes_mod
 from kiro_crew.apps.manager import app_lifecycle_lock
@@ -49,7 +50,9 @@ async def test_registry_workspace_removal_runs_off_the_loop_thread(tmp_path: Pat
     state = MagicMock()
     state.crons = None  # no cron service, so that step is skipped
     state.sessions = None  # no session map, so the pointer step is skipped
+    state.owner_id = ""
     request.app = {"state": state}
+    owner_claims(request)
     request.json = AsyncMock(return_value={})
     result = MagicMock(ok=True, to_dict=lambda: {"ok": True})
 

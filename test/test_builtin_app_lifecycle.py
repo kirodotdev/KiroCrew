@@ -18,6 +18,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from dashboard_owner_helpers import NoConfiguredOwner, owner_claims
 
 from kiro_crew.apps import routes
 from kiro_crew.apps.routes import (
@@ -254,6 +255,7 @@ class TestHandleDisableBuiltin:
         request = AsyncMock()
         request.match_info = {"name": _TEST_BUILTIN}
         request.app = {"state": state}
+        owner_claims(request)
 
         with (
             patch("kiro_crew.apps.routes.get_app", return_value={
@@ -285,7 +287,8 @@ class TestHandleDisableBuiltin:
 
         request = AsyncMock()
         request.match_info = {"name": "my-app"}
-        request.app = {}
+        request.app = {"state": NoConfiguredOwner()}
+        owner_claims(request)
 
         with (
             patch("kiro_crew.apps.routes.get_app", return_value={
@@ -365,7 +368,7 @@ class TestBuiltinConfigSyncHoldsBothConfigLocks:
         request.app = {"state": state} if state is not None else {}
         # No app identity: the enable route refuses app tokens outright.
         request.get = lambda key, default=None: default
-        return request
+        return owner_claims(request)
 
     @staticmethod
     def _probe():

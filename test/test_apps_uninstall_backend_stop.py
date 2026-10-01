@@ -31,6 +31,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from dashboard_owner_helpers import owner_claims
 
 from kiro_crew import cli_commands as cc
 
@@ -190,7 +191,8 @@ class TestUninstallHandlerStopsAndObservesTheBackend:
         }
         request = MagicMock()
         request.match_info = {"name": "test-app"}
-        request.app = {"state": MagicMock()}
+        request.app = {"state": MagicMock(owner_id="")}
+        owner_claims(request)
         request.json = AsyncMock(return_value={})
 
         def _recorded(name: str) -> int | None:
@@ -359,7 +361,8 @@ class TestACronWriteFailureAbortsBeforeAnythingDestructive:
         }
         request = MagicMock()
         request.match_info = {"name": "test-app"}
-        request.app = {"state": MagicMock()}
+        request.app = {"state": MagicMock(owner_id="")}
+        owner_claims(request)
         request.json = AsyncMock(return_value={})
 
         with (

@@ -36,6 +36,7 @@ import pathlib
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from dashboard_owner_helpers import owner_claims
 
 from kiro_crew.apps import bridges, routes
 from kiro_crew.gateway_lock import GatewayLock
@@ -695,6 +696,7 @@ async def test_a_flush_that_fails_does_not_abandon_the_rest_of_the_uninstall(
     sessions = _DurableWriteFails()
     state = MagicMock()
     state.sessions = sessions
+    state.owner_id = ""
     # No cron service, so the handler's cron step is skipped and this test is
     # scoped to the step it is about. A bare MagicMock here is not inert: the
     # handler would drive a fake CronSDK whose removal raises, and an uninstall
@@ -704,6 +706,7 @@ async def test_a_flush_that_fails_does_not_abandon_the_rest_of_the_uninstall(
     request = MagicMock()
     request.match_info = {"name": APP}
     request.app = {"state": state}
+    owner_claims(request)
     request.json = AsyncMock(return_value={})
 
     fake_app = {
@@ -822,6 +825,7 @@ async def test_a_teardown_that_raises_still_leaves_the_suppression_durable(tmp_p
     sessions = _ShutdownRaisesAfterTheClear()
     state = MagicMock()
     state.sessions = sessions
+    state.owner_id = ""
     # No cron service, so the handler's cron step is skipped and this test is
     # scoped to the step it is about. A bare MagicMock here is not inert: the
     # handler would drive a fake CronSDK whose removal raises, and an uninstall
@@ -831,6 +835,7 @@ async def test_a_teardown_that_raises_still_leaves_the_suppression_durable(tmp_p
     request = MagicMock()
     request.match_info = {"name": APP}
     request.app = {"state": state}
+    owner_claims(request)
     request.json = AsyncMock(return_value={})
 
     fake_app = {

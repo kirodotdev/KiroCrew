@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+from unittest import mock
 
 import pytest
 from aiohttp import web
@@ -45,8 +46,17 @@ def _write_ledger(root: Path, rows: list[dict]) -> None:
     )
 
 
+@web.middleware
+async def _as_dashboard_owner(request: web.Request, handler):  # type: ignore[no-untyped-def]
+    """Stamp the dashboard owner's claims, as the gateway's token middleware would."""
+    request["app"] = ""
+    request["user"] = "owner-subject"
+    return await handler(request)
+
+
 async def _client() -> TestClient:
-    app = web.Application()
+    app = web.Application(middlewares=[_as_dashboard_owner])
+    app["state"] = mock.MagicMock(owner_id="owner-subject")
     routes.register_routes(app)
     client = TestClient(TestServer(app))
     await client.start_server()

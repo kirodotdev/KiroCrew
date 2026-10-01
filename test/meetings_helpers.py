@@ -32,6 +32,7 @@ from pathlib import Path
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from dashboard_owner_helpers import as_owner
 
 from kiro_crew.apps.builtins.meetings.backend import store
 from kiro_crew.apps.builtins.meetings.backend.domain import session as sess
@@ -72,11 +73,11 @@ def enabled_fixture(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def make_app(root: Path) -> web.Application:
-    """An aiohttp Application carrying only this app's routes."""
+    """An aiohttp Application carrying only this app's routes, called as the owner."""
     application = web.Application()
     application["_meetings_data_root"] = root
     register_routes(application)
-    return application
+    return as_owner(application)
 
 
 @pytest.fixture(name="app")

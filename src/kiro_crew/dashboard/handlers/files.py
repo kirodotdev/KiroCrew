@@ -65,7 +65,11 @@ from kiro_crew.dashboard.chat_utils import (
     run_config_write,
 )
 from kiro_crew.dashboard.file_index import _SKIP_DIRS as _WALK_SKIP_DIRS
-from kiro_crew.dashboard.handlers._shared import _probe_persisted_session, read_bounded_json
+from kiro_crew.dashboard.handlers._shared import (
+    _probe_persisted_session,
+    read_bounded_json,
+    require_owner_dashboard_request,
+)
 from kiro_crew.dashboard.handlers.messaging import _resolve_session_target
 from kiro_crew.dashboard.origin import is_direct_local_request
 from kiro_crew.dashboard.state import (
@@ -2898,6 +2902,9 @@ def _read_request_path(raw: str, read_cap: int) -> _TextRead:
 
 async def api_file_watch(request: web.Request) -> web.StreamResponse:
     """GET /api/file-watch?path=... — SSE stream of file content changes."""
+    owner_denied = await require_owner_dashboard_request(request, "file_watch")
+    if owner_denied is not None:
+        return owner_denied
     raw_path = request.query.get("path", "")
     try:
         validate_tool_args({"path": raw_path}, FILE_READ_SCHEMA)
@@ -3040,6 +3047,9 @@ async def _owner_view_bypasses_credential_pass(request: web.Request) -> bool:
 
 async def api_file_read(request: web.Request) -> web.Response:
     """GET /api/file-read?path=... — read file content for the markdown panel."""
+    owner_denied = await require_owner_dashboard_request(request, "file_read")
+    if owner_denied is not None:
+        return owner_denied
     from kiro_crew.validation import (  # noqa: F811
         FILE_READ_SCHEMA,
         ValidationError,
@@ -3457,6 +3467,9 @@ async def api_file_download(request: web.Request) -> web.Response:
     disposition + nosniff prevents inline rendering on the dashboard
     origin.
     """
+    owner_denied = await require_owner_dashboard_request(request, "file_download")
+    if owner_denied is not None:
+        return owner_denied
     # Path validation now happens inside ``_open_checked``, which keeps the
     # late-binding ``handlers`` alias so tests can still monkey-patch
     # ``_validate_dashboard_path`` (legitimate circular-import workaround,
@@ -3675,6 +3688,9 @@ async def api_file_office_preview(request: web.Request) -> web.Response:
     applied. All of it — validation, open, fstat, ZIP+XML parsing,
     redaction — runs in ONE worker-thread hop, like ``api_file_sheet``.
     """
+    owner_denied = await require_owner_dashboard_request(request, "file_office_preview")
+    if owner_denied is not None:
+        return owner_denied
     raw_path = request.query.get("path", "")
 
     def _log(outcome: str, res: str, error: str = "") -> None:
@@ -3895,6 +3911,12 @@ async def api_file_office_preview(request: web.Request) -> web.Response:
 
 async def api_file_raw(request: web.Request) -> web.Response:
     """GET /api/file-raw?path=... — serve a file with its native content type (images, etc.)."""
+    # A named App Kit app keeps its manifest-scoped path; the owner gate
+    # binds the dashboard-user class, whose reach is the whole host.
+    if not request.get("app"):
+        owner_denied = await require_owner_dashboard_request(request, "file_raw")
+        if owner_denied is not None:
+            return owner_denied
     # Envelope (validate -> sensitive -> nofollow-open -> bounded read) is
     # shared with api_file_download so a hardening change lands on both.
     # Offloaded to a worker thread: the envelope is synchronous file I/O and
@@ -4094,6 +4116,9 @@ async def api_file_stream(request: web.Request) -> web.StreamResponse:
     (file-raw) performs no content scan at all. The probe exists to catch
     the honest-mistake shape: a text file wearing a forged media magic.
     """
+    owner_denied = await require_owner_dashboard_request(request, "file_stream")
+    if owner_denied is not None:
+        return owner_denied
 
     def _log(outcome: str, res: str) -> None:
         _sel().log_tool_invocation(
@@ -4507,16 +4532,74 @@ def _fuzzy_score(q: str, name: str, rel: str) -> float:
     return score
 
 
+async def _audit_file_search_exit(
+    caller: str, resources: str, error: str = ""
+) -> None:
+    """Record one file-search outcome without blocking the loop or raising.
+
+    Two properties this endpoint needs and a bare ``_sel()`` call does not give:
+
+    * The singleton is warmed at gateway start, but a FAILED warm leaves
+      construction to the first caller -- key load and a tail read of the log --
+      and this runs on the event loop. Same gate and hop as
+      ``handlers/decisions._audit`` and ``server._audit_middleware_denial``: two
+      attribute reads on the healthy path, a worker thread on the degraded one
+      (``no-blocking-call-on-event-loop``).
+    * Best-effort. These calls sit on EARLY-EXIT paths that answered cleanly
+      before, so an audit that raised would turn a 200 or a 404 into a 500. The
+      record is what degrades, never the response.
+    """
+    from kiro_crew.sel import sel_is_warm
+
+    def _write() -> None:
+        _sel().log_api_access(
+            caller=caller,
+            operation="file_search",
+            outcome="allowed",
+            resources=resources,
+            error=error,
+        )
+
+    try:
+        if sel_is_warm():
+            _write()
+        else:
+            await asyncio.to_thread(_write)
+    except Exception:  # noqa: BLE001 - the record degrades, not the answer
+        logger.warning("SEL logging failed for file_search", exc_info=True)
+
+
 async def api_file_search(request: web.Request) -> web.Response:
-    """GET /api/file-search?q=... — fuzzy filename search for the @-mention file picker."""
+    """GET /api/file-search?q=... — fuzzy filename search for the @-mention file picker.
+
+    OWNER-ONLY, like every other reader in this module (``file_read``,
+    ``file_grep``, ``browse_dirs``, ``browse_files`` and the rest). The gate
+    matters more here than on any of them, because this is the one path reader
+    that takes an ARBITRARY root: ``?project=`` names any directory on the host
+    and only ``is_sensitive_path`` is consulted, so without the gate a non-owner
+    dashboard session could walk the host outside the credential set and read
+    back real names, sizes and mtimes. ``/api/path-complete`` answers the same
+    picker and is not in that position: it resolves the SERVER-HELD value its
+    ``path`` matched against the known project directories.
+    """
     # Re-imported at call time (not reused from the module-level binding) so a
     # test that stubs ``kiro_crew.security.is_sensitive_path`` is observed by the
     # project-root rejection below.
     from kiro_crew.security import is_sensitive_path  # noqa: F811
 
+    owner_denied = await require_owner_dashboard_request(request, "file_search")
+    if owner_denied is not None:
+        return owner_denied
     caller = request.get("user", "dashboard")
     query = request.query.get("q", "").strip().lower()
     if len(query) < 2:
+        # Audited like every other exit of this handler. The shared gate records
+        # only denials, so an exit that answers without an audit of its own leaves
+        # a SUCCESSFUL authorization with no SEL event at all -- the access was
+        # granted and nothing says so. Same idiom as ``api_file_diff``'s early
+        # ``allowed`` events: the ordinary outcome vocabulary, distinguished by
+        # ``resources``, rather than a marker only this handler emits.
+        await _audit_file_search_exit(caller, "short_query")
         return web.json_response({"results": []})
 
     # Result page size. Default mirrors SEARCH_RESULT_CAP in FolderPanel.tsx;
@@ -4556,6 +4639,11 @@ async def api_file_search(request: web.Request) -> web.Response:
         if project_is_dir:
             search_roots.append(project)
         else:
+            # Audited for the same reason as the short-query exit above: the
+            # authorization succeeded, so the record must not end at the gate.
+            await _audit_file_search_exit(
+                caller, f"project={project}", error="not a directory"
+            )
             return web.json_response(
                 {"results": [], "error": "Project directory not found"}, status=404
             )
@@ -5898,6 +5986,9 @@ async def api_file_grep(request: web.Request) -> web.Response:
     loop. The search takes a TRANSFER slot, not a probe slot, because it holds
     its worker for the length of the search.
     """
+    owner_denied = await require_owner_dashboard_request(request, "file_grep")
+    if owner_denied is not None:
+        return owner_denied
     caller = request.get("user", "dashboard")
     body, body_err = await read_bounded_json(request)
     if body_err is not None:
@@ -5996,6 +6087,9 @@ async def api_file_grep(request: web.Request) -> web.Response:
 
 async def api_file_diff(request: web.Request) -> web.Response:
     """GET /api/file-diff?path=... — returns git diff and HEAD content for a file."""
+    owner_denied = await require_owner_dashboard_request(request, "file_diff")
+    if owner_denied is not None:
+        return owner_denied
     raw_path = request.query.get("path", "").strip()
     if not raw_path:
         _sel().log_api_access(caller=request.get("user", "dashboard"), operation="file_diff", outcome="allowed", resources="empty_path")
@@ -6249,6 +6343,9 @@ async def api_browse_dirs(request: web.Request) -> web.Response:
     knows it is at the top. On other platforms the flag is a 400: there is no
     such level to show.
     """
+    owner_denied = await require_owner_dashboard_request(request, "browse_dirs")
+    if owner_denied is not None:
+        return owner_denied
     caller = request.get("user", "dashboard")
     if request.query.get("drives") == "1":
         if not platform_compat.IS_WINDOWS:
@@ -6527,6 +6624,9 @@ async def api_browse_files(request: web.Request) -> web.Response:
     are sorted dirs-first then alphabetically; hidden files and common build dirs
     are skipped.
     """
+    owner_denied = await require_owner_dashboard_request(request, "browse_files")
+    if owner_denied is not None:
+        return owner_denied
     caller = request.get("user", "dashboard")
     raw = request.query.get("path", "").strip()
     # Off-loop: realpath then the isdir probe, on a caller-supplied root (the
@@ -7375,6 +7475,9 @@ async def api_file_sheet(request: web.Request) -> web.Response:
     dashboard egress. openpyxl is soft-imported: without it the endpoint
     answers 501 and the frontend degrades to the download card.
     """
+    owner_denied = await require_owner_dashboard_request(request, "file_sheet")
+    if owner_denied is not None:
+        return owner_denied
 
     def _log(outcome: str, res: str) -> None:
         _sel().log_tool_invocation(

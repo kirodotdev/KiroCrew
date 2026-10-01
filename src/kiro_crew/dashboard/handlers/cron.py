@@ -43,7 +43,10 @@ from kiro_crew.dashboard.cron_inject import (
     inject_cron_result_to_dashboard,
     move_cron_job_tab,
 )
-from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+from kiro_crew.dashboard.handlers._shared import (
+    _owner_denial_response,
+    require_owner_dashboard_request,
+)
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 from kiro_crew.dashboard.state import DashboardState, SlotOrigin, note_crew_log_class
 from kiro_crew.executors import discovery_executor
@@ -671,6 +674,65 @@ def _resolve_chat_folder_id(
     return folder_id, None
 
 
+async def _refuse_foreign_app_job(
+    request: web.Request, state: DashboardState, job_ids: list[str], operation: str
+) -> web.Response | None:
+    """Refuse an APP caller acting on any cron job it does not own.
+
+    ``app == ""`` callers are ruled on by ``require_owner_dashboard_request``
+    already, and an internal-secret caller carries no app claim; both skip
+    this. An app token may reach these routes (``docs/app-kit/api-reference.md``
+    lists them), but only for its OWN jobs: the ones whose host-written
+    ``created_by`` is its ``app:<name>`` stamp. A job without that stamp -- the
+    person's, another app's, or one that does not exist -- is refused with the
+    owner gate's own 403 (``_owner_denial_response``), so a missing id reads the
+    same as a foreign one.
+
+    Both outcomes are SEL-audited under ``app:<name>``, the caller that actually
+    decided the outcome. ``require_owner_dashboard_request`` is not reused for
+    the denial: it records ``request["user"]``, which for an app token is the
+    person the token was minted for, not the app acting.
+
+    Every id is checked before the caller acts on any, so a batch that names one
+    foreign job changes nothing. The lookup is cache-only: ``created_by`` never
+    changes after creation, and a stale miss can only refuse, never allow.
+    """
+    app = request.get("app")
+    # The token middleware publishes the claim as a ``str``; ``None`` (absent)
+    # is the internal-secret transport. Anything else is not an app caller,
+    # matching the ``== ""`` test the owner gate above applies.
+    if not isinstance(app, str) or not app:
+        return None
+    # Function-local for the reason ``api_crons`` gives: importing
+    # ``kiro_crew.apps.cron_sdk`` runs ``kiro_crew.apps.__init__`` and its cycle.
+    from kiro_crew.apps.cron_sdk import app_owner_name
+
+    refused = next(
+        (
+            job_id
+            for job_id in job_ids
+            if app_owner_name(getattr(state.crons.get_job(job_id), "created_by", None)) != app
+        ),
+        None,
+    )
+    # One SEL row per decision, allow and deny alike. A bare enqueue: SEL is
+    # warmed at gateway startup (sel.warm_sel_singleton); guarded because a
+    # FAILED warm leaves construction to retry here.
+    try:
+        _sel().log_api_access(
+            caller=f"app:{app}",
+            operation=operation,
+            outcome="allowed" if refused is None else "denied",
+            source="dashboard",
+            resources=",".join(job_ids) if refused is None else refused,
+        )
+    except Exception:  # pragma: no cover - audit must never change the outcome
+        logger.debug("SEL audit for app cron %s failed", operation, exc_info=True)
+    if refused is not None:
+        return _owner_denial_response(request)
+    return None
+
+
 async def api_crons_create(request: web.Request) -> web.Response:
     """POST /api/crons — create a cron job."""
     # Owner identity is a property of a dashboard-user request: ``app == ""`` is
@@ -818,6 +880,16 @@ async def api_crons_create(request: web.Request) -> web.Response:
     }
     if approval_mode:
         add_kwargs["approval_mode"] = approval_mode
+    # An app token's job is stamped as that app's, exactly as ``CronSDK`` stamps
+    # it: without the stamp every later reader (the app's own PATCH/DELETE, the
+    # cron session's scope, the disabled-app fire gate, uninstall cleanup) takes
+    # the job for the person's. Host-written from the verified claim, never the
+    # body, so an app cannot claim another's jobs.
+    app_claim = request.get("app")
+    if isinstance(app_claim, str) and app_claim:
+        from kiro_crew.apps.cron_sdk import owner_tag
+
+        add_kwargs["created_by"] = owner_tag(app_claim)
     # Which schedule this job carries. Resolved to kwargs FIRST, then handed to a
     # single add_job_async call: one call site means the store-failure handling
     # below is written once and cannot drift between the three schedule shapes.
@@ -865,10 +937,17 @@ async def api_crons_create(request: web.Request) -> web.Response:
 
 async def api_cron_delete(request: web.Request) -> web.Response:
     """DELETE /api/crons/{id} — remove a cron job."""
+    if request.get("app") == "":
+        owner_denied = await require_owner_dashboard_request(request, "crons.delete")
+        if owner_denied is not None:
+            return owner_denied
     state: DashboardState = request.app["state"]
     job_id = request.match_info["job_id"]
     if (_e := _invalid_path_id_response(job_id, "job_id")) is not None:
         return _e
+    app_denied = await _refuse_foreign_app_job(request, state, [job_id], "crons.delete")
+    if app_denied is not None:
+        return app_denied
     try:
         ok = await state.crons.remove_job_async(job_id, actor="dashboard", source="api_cron_delete")
     except CronStoreBusy:
@@ -896,6 +975,10 @@ async def api_cron_batch_delete(request: web.Request) -> web.Response:
     purged per successfully-removed job, mirroring the single-delete path, and a
     single ``crons`` refresh is pushed after the batch instead of one per id.
     """
+    if request.get("app") == "":
+        owner_denied = await require_owner_dashboard_request(request, "crons.batch_delete")
+        if owner_denied is not None:
+            return owner_denied
     state: DashboardState = request.app["state"]
     # Default cap: the body is a bounded list of short job ids.
     body, body_err = await read_bounded_json(request)
@@ -911,6 +994,9 @@ async def api_cron_batch_delete(request: web.Request) -> web.Response:
     unique_ids = list(dict.fromkeys(ids))
     if len(unique_ids) > _MAX_BATCH_DELETE:
         return web.json_response({"error": f"too many ids (max {_MAX_BATCH_DELETE})"}, status=400)
+    app_denied = await _refuse_foreign_app_job(request, state, unique_ids, "crons.batch_delete")
+    if app_denied is not None:
+        return app_denied
     deleted: list[str] = []
     failed: list[str] = []
     try:
@@ -953,10 +1039,17 @@ async def api_cron_batch_delete(request: web.Request) -> web.Response:
 
 async def api_cron_update(request: web.Request) -> web.Response:
     """PATCH /api/crons/{id} — update a cron job (partial)."""
+    if request.get("app") == "":
+        owner_denied = await require_owner_dashboard_request(request, "crons.update")
+        if owner_denied is not None:
+            return owner_denied
     state: DashboardState = request.app["state"]
     job_id = request.match_info["job_id"]
     if (_e := _invalid_path_id_response(job_id, "job_id")) is not None:
         return _e
+    app_denied = await _refuse_foreign_app_job(request, state, [job_id], "crons.update")
+    if app_denied is not None:
+        return app_denied
     # Per-route cap: a partial update can carry the job's full agent
     # message/prompt text, whose field bound (MAX_CRON_MESSAGE chars) can
     # exceed the shared 64 KB default in multibyte UTF-8. The helper also owns
@@ -1792,10 +1885,17 @@ async def api_cron_secret_grant(request: web.Request) -> web.Response:
 
 async def api_cron_run(request: web.Request) -> web.Response:
     """POST /api/crons/{id}/run — trigger immediate execution."""
+    if request.get("app") == "":
+        owner_denied = await require_owner_dashboard_request(request, "crons.run")
+        if owner_denied is not None:
+            return owner_denied
     state: DashboardState = request.app["state"]
     job_id = request.match_info["job_id"]
     if (_e := _invalid_path_id_response(job_id, "job_id")) is not None:
         return _e
+    app_denied = await _refuse_foreign_app_job(request, state, [job_id], "crons.run")
+    if app_denied is not None:
+        return app_denied
     # Freshness-guaranteed lookup: this endpoint is handed a job id minted by
     # ANOTHER process (`kirocrew cron add`, the MCP cron_add tool), which writes
     # crons.json directly. The cache-only `list_jobs()` would not see that job
@@ -1913,10 +2013,17 @@ async def api_cron_to_chat(request: web.Request) -> web.Response:
 
 async def api_cron_enable(request: web.Request) -> web.Response:
     """POST /api/crons/{id}/enable — toggle enable/disable."""
+    if request.get("app") == "":
+        owner_denied = await require_owner_dashboard_request(request, "crons.enable")
+        if owner_denied is not None:
+            return owner_denied
     state: DashboardState = request.app["state"]
     job_id = request.match_info["job_id"]
     if (_e := _invalid_path_id_response(job_id, "job_id")) is not None:
         return _e
+    app_denied = await _refuse_foreign_app_job(request, state, [job_id], "crons.enable")
+    if app_denied is not None:
+        return app_denied
     # Default cap: the body is a single flag. allow_absent keeps the
     # missing-body-means-defaults contract; a body that is PRESENT but
     # malformed is a 400; only an absent body defaults.
