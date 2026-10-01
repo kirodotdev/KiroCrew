@@ -2002,6 +2002,10 @@ file-tree-container{
    so the search is exactly window-centred by construction — no measurement, no
    ResizeObserver, no absolutely-positioned overlay to keep clear of.
 
+   Desktop windows use the flow variant at the end of this section (`tb-flow`),
+   which sizes the side tracks by their content and measures the row instead;
+   this width function still sets its preferred search width.
+
    The side tracks deliberately have NO floor: they are pure remainder, and each
    group re-lays-out its own contents against the width it was handed
    (`container-type: inline-size` below). Content never pushes back on the track,
@@ -2106,7 +2110,9 @@ file-tree-container{
    tracks -- and `overflow:hidden` clipped the 36px menu button down to an 8px
    sliver, leaving a phone with no visible route to the nav at all. Only the
    centre track, whose item is not a size container, may be `auto`. Pinned by
-   test/topbarMenuButtonNarrow.test.ts. */
+   test/topbarMenuButtonNarrow.test.ts. The flow variant below content-sizes both
+   side tracks, which is safe only because it turns that containment off in the
+   same rule set; the same test pins the pairing. */
 
 /* The collapse ladder. Each rung is keyed off the GROUP's own width, so it
    responds to the space actually handed to it rather than to a viewport
@@ -2229,6 +2235,67 @@ file-tree-container{
    and shrinking (unlike `display:none`) is what its own measurement reads as cut
    off, so those crews' unread rolls into the aggregate badge. */
 @container (max-width:128px){ .tb-left .tb-crew-active-chip{display:none} }
+
+/* Desktop FLOW layout (`tb-flow`, set by App.tsx whenever the desktop form is
+   rendered; phones keep the three-track grid and the container ladder above).
+   Each side track is at least its content (`max-content`) and the two share the
+   spare room, so the search stays centred while there is room, slides off centre
+   when one side outgrows its share, and only then shrinks, to the same 240px
+   floor as the three-track layout. A content-sized track cannot hold a size
+   container (it has no content size to give), so the groups drop containment
+   here, the @container rungs above go inert, and the ladder is the `.tbc-N`
+   classes lib/useTopbarCollapse.ts sets on the header: one ordered list for both
+   groups, measured against the whole row, so an unplanned extra (a prerelease
+   chip, an update pill, a longer locale) collapses something instead of clipping.
+
+   Pinned crews still give way first, as they do in the three-track layout: the
+   chip row adds nothing to the identity track's content size (`width:0`), grows
+   into whatever room that track has spare up to its natural width, and its own
+   clipped-chip measurement takes over from there. Every wrapper between the
+   group and the row (`.instance-tab-bar-inline`, `.tb-crew-grow`) grows to pass
+   that room down. The crews list's error notice (`.tb-crew-notice`) gives way the
+   same way, so a failing list is truncated rather than collapsing the readouts. It
+   keeps its 14px warning icon. While it shows, the switcher's own wrapper is
+   flattened (`display:contents`) so the pinned row, the dropdown and the notice
+   are siblings in one flex line: the notice follows the dropdown directly instead
+   of trailing an empty grown wrapper. The notice grows first (`flex-grow:100`
+   against the row's 1), up to its 320px cap, so the failure stays readable; the
+   pinned row takes what is left, and its cut chips stay in the dropdown. An even
+   split squeezes the message out at mid widths and leaves only a clipped
+   hand-off link. (`flex-grow:0` on that wrapper would keep the notice in
+   place but starve the row, which only grows THROUGH that wrapper, so every
+   pinned chip would measure as cut at any width.) Nothing reads that
+   wrapper's box -- the row is its own offsetParent and the menu anchors to its
+   trigger -- so flattening it costs no measurement.
+   Rung 6 hides the chip names, and with them the 5ch floor a connected chip keeps
+   for a readable name (`min-w-[calc(5ch+…)]` in InstanceTabBar.tsx), so the chips
+   go icon-only instead of holding blank width.
+
+   Rung 9 is the floor for what no rung can hide (the Windows menu while it is
+   open, an extension widget): the side tracks go back to equal halves, so each
+   group clips its own tail instead of the row overflowing the header, and the
+   actions group aligns `safe` to its end, so its first item, the connection dot,
+   is the last thing it clips. */
+@media (min-width:768px){
+  .topbar.tb-flow{grid-template-columns:minmax(max-content,1fr) minmax(240px,clamp(240px,22vw,480px)) minmax(max-content,1fr)}
+  .topbar.tb-flow > .tb-left,.topbar.tb-flow > .tb-right{container-type:normal}
+  .topbar.tb-flow .tb-left .instance-tab-bar-inline,.topbar.tb-flow .tb-left .tb-crew-grow{flex:1 1 auto}
+  .topbar.tb-flow .tb-left .crew-chip-row{width:0;flex:1 1 auto;max-width:max-content}
+  .topbar.tb-flow .tb-left .tb-crew-notice{width:0;flex:100 1 auto;min-width:14px}
+  .topbar.tb-flow .tb-left .tb-crew-grow:has(> .tb-crew-notice) > .tb-crew-grow{display:contents}
+  .tb-flow:not(.tbc-1) .tb-narrow-only{display:none}
+  .tb-flow.tbc-1 .tb-drop-metrics{display:none}
+  .tb-flow.tbc-2 .tb-drop-feedback-label{display:none}
+  .tb-flow.tbc-3 .tb-drop-navhistory{display:none}
+  .tb-flow.tbc-4 .tb-drop-usage{display:none}
+  .tb-flow.tbc-5 .tb-drop-feedback{display:none}
+  .tb-flow.tbc-6 .tb-left .tb-drop-crew-name{display:none}
+  .tb-flow.tbc-6 .tb-left .crew-chip-row > *{min-width:auto}
+  .tb-flow.tbc-7 .tb-capsule > :not([data-liquid-glass-layer]) ~ :not([data-liquid-glass-layer]){display:none}
+  .tb-flow.tbc-8 .tb-left .tb-crew-active-chip{display:none}
+  .topbar.tb-flow.tbc-9{grid-template-columns:minmax(0,1fr) minmax(240px,clamp(240px,22vw,480px)) minmax(0,1fr)}
+  .topbar.tb-flow.tbc-9 > .tb-right{justify-content:safe flex-end}
+}
 
 /* ── Topbar glass ── */
 .topbar-glass{

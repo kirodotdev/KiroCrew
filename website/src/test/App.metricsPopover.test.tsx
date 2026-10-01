@@ -336,4 +336,107 @@ describe('top-bar metrics control — collapsed band opens a popover', () => {
     expect(localStorage.getItem('mc-topbar-metrics')).toBe('1')
     expect(screen.queryByRole('dialog', { name: 'System metrics' })).toBeNull()
   })
+
+  it('renders the same contents in both bands, changing only what a click does', async () => {
+    // The desktop flow top bar picks the band by measuring these contents
+    // (lib/useTopbarCollapse.ts). A control that rendered other contents in the
+    // collapsed band made the narrower form fit the wider band, which brought the
+    // readings back, which no longer fit: the bar flipped between the two forever.
+    const shapeOf = async () => {
+      const btn = await screen.findByRole('button', { name: /System metrics/ })
+      await waitFor(() => expect(btn.textContent).toMatch(/CPU\s*25/))
+      const shape = [...btn.querySelectorAll('*')].map(n => `${n.tagName}.${n.getAttribute('class') ?? ''}`)
+      return { shape, haspopup: btn.getAttribute('aria-haspopup') }
+    }
+    localStorage.setItem('mc-topbar-metrics', '1')
+    const wide = renderWithProviders(<App />, { route: '/chat' })
+    const inline = await shapeOf()
+    wide.unmount()
+
+    localStorage.setItem('mc-topbar-metrics', '1')
+    injected = collapseTheLadder()
+    renderWithProviders(<App />, { route: '/chat' })
+    const collapsed = await shapeOf()
+
+    expect(inline.haspopup).toBeNull()
+    expect(collapsed.haspopup).toBe('dialog')
+    expect(collapsed.shape).toEqual(inline.shape)
+  })
+
+  it('keeps a failed fetch readable in the collapsed band, where a click opens the card instead of switching the readings off', async () => {
+    // Readings on and the fetch failed. The words stay at every step (the band
+    // never changes what the control renders), and in the collapsed band the
+    // click opens the card that reports the failure, as in every other open
+    // state, rather than storing the readout as switched off.
+    vi.mocked(api.system).mockRejectedValue(new Error('metrics unavailable'))
+    localStorage.setItem('mc-topbar-metrics', '1')
+    injected = collapseTheLadder()
+    const { queryClient } = renderWithProviders(<App />, { route: '/chat' })
+    await waitFor(() => expect(queryClient.getQueryState(['system-metrics'])?.status).toBe('error'))
+    const btn = await screen.findByRole('button', { name: /metrics unavailable/i })
+    expect(btn.getAttribute('aria-haspopup')).toBe('dialog')
+
+    fireEvent.click(btn)
+
+    const card = await screen.findByRole('dialog', { name: 'System metrics' })
+    expect(card.querySelector('[role="alert"]')?.textContent).toContain('The last metrics update failed')
+    expect(localStorage.getItem('mc-topbar-metrics')).toBe('1')
+  })
+
+  // At the rung that drops the readings the glyph is all that is visible of an
+  // open readout, so it has to show whether the card is pinned. jsdom applies no
+  // Tailwind, so these assert the contract that produces the colour: the button
+  // is the `group`, its `aria-expanded` follows the pin, and the glyph carries
+  // the group variant that reads it. The classes are the same in both bands
+  // (the band-invariance test above), and the inline band sets no
+  // `aria-expanded`, so the variant has nothing to match there.
+  it('tints the collapsed-band glyph by the pinned state while the readings are loaded', async () => {
+    localStorage.setItem('mc-topbar-metrics', '1')
+    injected = collapseTheLadder()
+    renderWithProviders(<App />, { route: '/chat' })
+    const btn = await screen.findByRole('button', { name: /System metrics/ })
+    await waitFor(() => expect(btn.textContent).toMatch(/CPU\s*25/))
+    const glyph = btn.querySelector('.tb-narrow-only')!
+    expect(btn.classList.contains('group')).toBe(true)
+    expect(glyph.classList.contains('group-aria-[expanded=false]:text-muted')).toBe(true)
+    expect(glyph.classList.contains('text-accent')).toBe(true)
+    expect(btn.getAttribute('aria-expanded')).toBe('false')
+
+    fireEvent.click(btn)
+    await screen.findByRole('dialog', { name: 'System metrics' })
+    expect(btn.getAttribute('aria-expanded')).toBe('true')
+
+    fireEvent.click(btn)
+    expect(btn.getAttribute('aria-expanded')).toBe('false')
+  })
+
+  it('tints the collapsed-band glyph accent while pinned after a failed fetch, keeping the words danger', async () => {
+    vi.mocked(api.system).mockRejectedValue(new Error('metrics unavailable'))
+    localStorage.setItem('mc-topbar-metrics', '1')
+    injected = collapseTheLadder()
+    const { queryClient } = renderWithProviders(<App />, { route: '/chat' })
+    await waitFor(() => expect(queryClient.getQueryState(['system-metrics'])?.status).toBe('error'))
+    const btn = await screen.findByRole('button', { name: /metrics unavailable/i })
+    const glyph = btn.querySelector('svg')!
+    expect(btn.classList.contains('group')).toBe(true)
+    expect(btn.classList.contains('text-danger')).toBe(true)
+    expect(glyph.classList.contains('group-aria-expanded:text-accent')).toBe(true)
+    expect(btn.getAttribute('aria-expanded')).toBe('false')
+
+    fireEvent.click(btn)
+    await screen.findByRole('dialog', { name: 'System metrics' })
+    expect(btn.getAttribute('aria-expanded')).toBe('true')
+    expect(btn.classList.contains('text-danger')).toBe(true)
+  })
+
+  it('leaves the inline band without aria-expanded, so the pinned tint cannot apply there', async () => {
+    localStorage.setItem('mc-topbar-metrics', '1')
+    renderWithProviders(<App />, { route: '/chat' })
+    const btn = await screen.findByRole('button', { name: /System metrics/ })
+    await waitFor(() => expect(btn.textContent).toMatch(/CPU\s*25/))
+    expect(btn.getAttribute('aria-expanded')).toBeNull()
+    expect(btn.getAttribute('aria-haspopup')).toBeNull()
+    expect(btn.classList.contains('group')).toBe(true)
+    expect(btn.querySelector('.tb-narrow-only')!.classList.contains('group-aria-[expanded=false]:text-muted')).toBe(true)
+  })
 })
