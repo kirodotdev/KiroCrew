@@ -6651,3 +6651,63 @@ class TestConsolidationLessonApplies:
         assert '"applies": "always|on_topic"' in prompt
         assert "YOU decide it from what the user actually said" in prompt
         assert "Omit the field when you genuinely cannot tell" in prompt
+
+
+class TestInterruptedTurnPreamble:
+    """The turn a natively resumed session lost, rebuilt from the slot window."""
+
+    @staticmethod
+    def _rows():
+        return [
+            {"role": "user", "content": "first request"},
+            {"role": "assistant", "content": "first answer"},
+            {"role": "user", "content": "deploy the canary to us-west-2"},
+            {"role": "tool", "content": "", "meta": {"tool": "shell"}},
+            {"role": "assistant", "content": "Starting the canary deploy"},
+            {"role": "error", "content": "connection lost"},
+        ]
+
+    def test_restores_the_newest_opener_and_its_partial_answer(self):
+        from kiro_crew.context import build_interrupted_turn_preamble
+
+        rows = self._rows()
+        current = {"role": "inject", "content": "resume"}
+        rows.append(current)
+
+        out = build_interrupted_turn_preamble(rows, current=current)
+
+        assert out.startswith("[INTERRUPTED TURN")
+        assert out.endswith("[END INTERRUPTED TURN]")
+        assert "deploy the canary to us-west-2" in out
+        assert "Starting the canary deploy" in out
+        assert "first request" not in out and "first answer" not in out
+
+    def test_a_second_resume_press_still_finds_the_interrupted_opener(self):
+        from kiro_crew.context import build_interrupted_turn_preamble
+
+        rows = self._rows()
+        rows.append({"role": "inject", "content": "resume (first press)"})
+        rows.append({"role": "error", "content": "session start failed"})
+        current = {"role": "inject", "content": "resume (second press)"}
+        rows.append(current)
+
+        out = build_interrupted_turn_preamble(rows, current=current)
+
+        assert "deploy the canary to us-west-2" in out
+        assert "resume (first press)" not in out
+
+    def test_no_opener_restores_nothing(self):
+        from kiro_crew.context import build_interrupted_turn_preamble
+
+        current = {"role": "inject", "content": "resume"}
+        assert build_interrupted_turn_preamble([current], current=current) == ""
+        assert build_interrupted_turn_preamble([]) == ""
+
+    def test_the_block_is_attributed_by_the_context_scanner(self):
+        from kiro_crew.context import build_interrupted_turn_preamble
+        from kiro_crew.context_blocks import split_blocks
+
+        out = build_interrupted_turn_preamble(self._rows())
+        blocks = split_blocks(out + "\n\n[REPLY FORMAT RULES]\nx\n")
+
+        assert blocks.get("interrupted_turn", 0) >= len(out)
