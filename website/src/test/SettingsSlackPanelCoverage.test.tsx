@@ -64,6 +64,7 @@ const MANIFEST = {
   alias: 'tester',
   manifest: 'display_information:\n  name: KiroCrew-tester\n',  // brand-ok: product emits KiroCrew-<alias> (slack-manifest.yaml)
   create_url: 'https://example.invalid/apps/new',
+  command: 'kirocrew-tester',
 }
 
 /** Not-connected, fully configured, nothing stored — the most branch-rich start. */
@@ -101,7 +102,7 @@ function seed(cfgOver: Partial<SlackConfigData> = {}, opts: SeedOpts = {}) {
 
   const manifest = vi.spyOn(api, 'getSlackManifest')
   if (opts.manifestFails) manifest.mockRejectedValue(new Error('manifest unavailable'))
-  else manifest.mockResolvedValue(MANIFEST)
+  else manifest.mockImplementation(async alias => ({ ...MANIFEST, alias, command: `kirocrew-${alias}` }))
 
   const save = vi.spyOn(api, 'saveSlackConfig')
   let settle: (v: SaveResult) => void = () => {}
@@ -196,13 +197,19 @@ describe('SlackPanel connection status', () => {
 
 /* ── manifest card ────────────────────────────────────────────────────────── */
 
+/** Type the alias that names the app and its slash command. */
+function typeAlias(alias: string) {
+  fireEvent.change(screen.getByPlaceholderText('johndoe'), { target: { value: alias } })
+}
+
 describe('SlackPanel manifest card', () => {
   it('links the one-click create URL and copies the YAML, reverting the pill after 1.5s', async () => {
     const writeText = stubClipboard(() => Promise.resolve())
     seed()
     await hydrated()
+    typeAlias('tester')
 
-    expect(screen.getByRole('link', { name: 'Create Slack app' })).toHaveAttribute('href', MANIFEST.create_url)
+    await waitFor(() => expect(screen.getByRole('link', { name: 'Create Slack app' })).toHaveAttribute('href', MANIFEST.create_url))
     expect(screen.getByText(/named KiroCrew-tester/)).toBeInTheDocument()  // brand-ok: product emits KiroCrew-<alias> (slack-manifest.yaml)
 
     fireEvent.click(screen.getByRole('button', { name: 'Copy manifest YAML' }))
@@ -217,6 +224,8 @@ describe('SlackPanel manifest card', () => {
     stubClipboard(() => Promise.reject(new Error('clipboard denied')))
     seed()
     await hydrated()
+    typeAlias('tester')
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Copy manifest YAML' })).toBeEnabled())
 
     fireEvent.click(screen.getByRole('button', { name: 'Copy manifest YAML' }))
     await act(async () => { vi.advanceTimersByTime(50) })
@@ -224,10 +233,61 @@ describe('SlackPanel manifest card', () => {
     expect(screen.queryByText('Copied')).not.toBeInTheDocument()
   })
 
+  it('requests no manifest and disables create + copy until an alias is typed', async () => {
+    // Every install in an Enterprise Grid registering one shared command name
+    // is the bug this panel exists to avoid, so there is no default alias.
+    const writeText = stubClipboard(() => Promise.resolve())
+    seed()
+    const manifest = vi.mocked(api.getSlackManifest)
+    await hydrated()
+
+    const create = screen.getByRole('link', { name: 'Create Slack app' })
+    expect(create).toHaveAttribute('href', '#')
+    expect(create).toHaveAttribute('aria-disabled', 'true')
+    expect(screen.getByRole('button', { name: 'Copy manifest YAML' })).toBeDisabled()
+    expect(screen.getByText(/named KiroCrew-<alias>/)).toBeInTheDocument()  // brand-ok: product emits KiroCrew-<alias> (slack-manifest.yaml)
+    expect(manifest).not.toHaveBeenCalled()
+    // The disabled pair says nothing about why; the line under the field does.
+    const hint = screen.getByText('Type an alias to render the manifest and enable these.')
+    expect(hint).toHaveClass('text-[12px]', 'text-muted', 'mt-1')
+    expect(hint.closest('[role="alert"]')).toBeNull()
+    expect(screen.getByPlaceholderText('johndoe')).toHaveAccessibleDescription(hint.textContent ?? '')
+
+    typeAlias('has space')
+    expect(screen.queryByText('Type an alias to render the manifest and enable these.')).not.toBeInTheDocument()
+    expect(manifest).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Copy manifest YAML' }))
+    expect(writeText).not.toHaveBeenCalled()
+  })
+
+  it('greys the create link out like the copy button while the alias is invalid', async () => {
+    // Both controls are inert here; a link that keeps full-weight text while the
+    // button beside it fades reads as enabled, and its click then goes nowhere.
+    seed()
+    await hydrated()
+    typeAlias('has space')
+
+    const create = screen.getByRole('link', { name: 'Create Slack app' })
+    expect(create).toHaveAttribute('aria-disabled', 'true')
+    expect(create).toHaveAttribute('tabindex', '-1')
+    expect(create).toHaveClass('opacity-30', 'cursor-not-allowed')
+    expect(create).not.toHaveClass('pointer-events-none')
+    const click = fireEvent.click(create)
+    expect(click).toBe(false)  // default action (following '#') prevented
+
+    typeAlias('tester')
+    await waitFor(() => expect(create).toHaveAttribute('href', MANIFEST.create_url))
+    expect(create).toHaveAttribute('aria-disabled', 'false')
+    expect(create).not.toHaveAttribute('tabindex')
+    expect(create).not.toHaveClass('opacity-30', 'cursor-not-allowed')
+  })
+
   it('inertly disables create + copy while the manifest is unavailable', async () => {
     const writeText = stubClipboard(() => Promise.resolve())
     seed({}, { manifestFails: true })
     await hydrated()
+    typeAlias('tester')
+    await screen.findByText(/Could not load the Slack app manifest/, undefined, { timeout: 5_000 })
 
     const create = screen.getByRole('link', { name: 'Create Slack app' })
     expect(create).toHaveAttribute('href', '#')
@@ -235,10 +295,121 @@ describe('SlackPanel manifest card', () => {
 
     const copy = screen.getByRole('button', { name: 'Copy manifest YAML' })
     expect(copy).toBeDisabled()
-    expect(screen.getByText(/named KiroCrew-you/)).toBeInTheDocument()  // brand-ok: product emits KiroCrew-<alias> (slack-manifest.yaml)
 
     fireEvent.click(copy)
     expect(writeText).not.toHaveBeenCalled()
+  })
+
+  it('sets the slash command to the one the typed alias registers', async () => {
+    // The manifest for `tester` registers /kirocrew-tester, so slack.command
+    // must be offered as the same name or the gateway listens for a command
+    // Slack never sends it.
+    const { save } = seed({ configured: false })
+    await hydrated()
+    typeAlias('tester')
+
+    await waitFor(() => expect(screen.getByPlaceholderText('kirocrew')).toHaveValue('kirocrew-tester'))
+    fireEvent.click(saveBtn())
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
+    expect(save.mock.calls[0][0]).toMatchObject({ command: 'kirocrew-tester' })
+  })
+
+  it('keeps a slash command the user typed while the manifest was still loading', async () => {
+    // The manifest request for the alias is in flight when the user edits the
+    // Slash command; the response that lands afterwards must not erase it.
+    let resolveManifest: (m: typeof MANIFEST) => void = () => {}
+    const { save } = seed({ configured: false })
+    vi.mocked(api.getSlackManifest).mockImplementation(() => new Promise(r => { resolveManifest = r }))
+    await hydrated()
+    typeAlias('tester')
+    await waitFor(() => expect(api.getSlackManifest).toHaveBeenCalledWith('tester'))
+
+    fireEvent.change(screen.getByPlaceholderText('kirocrew'), { target: { value: 'mine' } })
+    await act(async () => { resolveManifest(MANIFEST) })
+    await act(async () => { vi.advanceTimersByTime(50) })
+
+    expect(screen.getByPlaceholderText('kirocrew')).toHaveValue('mine')
+    fireEvent.click(saveBtn())
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
+    expect(save.mock.calls[0][0]).toMatchObject({ command: 'mine' })
+  })
+
+  it('stops following the alias once the slash command has been edited', async () => {
+    seed({ configured: false })
+    await hydrated()
+    typeAlias('tester')
+    await waitFor(() => expect(screen.getByPlaceholderText('kirocrew')).toHaveValue('kirocrew-tester'))
+
+    fireEvent.change(screen.getByPlaceholderText('kirocrew'), { target: { value: 'kirocrew' } })
+    typeAlias('other')
+    await waitFor(() => expect(api.getSlackManifest).toHaveBeenCalledWith('other'))
+    await act(async () => { vi.advanceTimersByTime(50) })
+
+    expect(screen.getByPlaceholderText('kirocrew')).toHaveValue('kirocrew')
+  })
+
+  it('names the rule the alias breaks as muted help text, charset before length', async () => {
+    // The description two lines above already states the whole shape; the hint
+    // says which half failed, or it adds nothing.
+    seed()
+    await hydrated()
+    const chars = /Only letters, digits, - and _ are allowed\./
+    const long = /Too long: 23 characters at most\./
+
+    expect(screen.queryByText(chars)).not.toBeInTheDocument()
+    expect(screen.queryByText(long)).not.toBeInTheDocument()
+    typeAlias('has space')
+    const hint = screen.getByText(chars)
+    expect(hint).toHaveClass('text-[12px]', 'text-muted', 'mt-1')
+    expect(hint.closest('[role="alert"]')).toBeNull()
+    // Help text, not an alert: the input points at it, so a screen reader hears
+    // the rule when the field is focused rather than on every keystroke.
+    const input = screen.getByPlaceholderText('johndoe')
+    expect(input.getAttribute('aria-describedby')).toBe(hint.id)
+    expect(input).toHaveAccessibleDescription(hint.textContent ?? '')
+    expect(screen.queryByText(long)).not.toBeInTheDocument()
+    typeAlias('abcdefghijklmnopqrstuvwx')
+    expect(screen.getByText(long)).toBeInTheDocument()
+    expect(screen.queryByText(chars)).not.toBeInTheDocument()
+    // Both rules broken: the charset one wins, since fixing it may fix the length.
+    typeAlias('abcdefghijklmnopqrstuvw x')
+    expect(screen.getByText(chars)).toBeInTheDocument()
+    expect(screen.queryByText(long)).not.toBeInTheDocument()
+    typeAlias('tester')
+    expect(screen.queryByText(chars)).not.toBeInTheDocument()
+    expect(screen.queryByText(long)).not.toBeInTheDocument()
+    expect(input).not.toHaveAttribute('aria-describedby')
+  })
+
+  it('renders the manifest once typing pauses, not once per keystroke', async () => {
+    // Each render is a server-side template read, and the Slash command field
+    // would otherwise cycle through kirocrew-t, kirocrew-te, ... on the way.
+    seed({ configured: false })
+    const manifest = vi.mocked(api.getSlackManifest)
+    await hydrated()
+
+    for (const prefix of ['t', 'te', 'tes', 'test', 'teste', 'tester']) {
+      typeAlias(prefix)
+      await act(async () => { vi.advanceTimersByTime(100) })
+    }
+    expect(manifest).not.toHaveBeenCalled()
+    expect(screen.getByPlaceholderText('kirocrew')).toHaveValue('kirocrew')
+
+    await act(async () => { vi.advanceTimersByTime(300) })
+    await waitFor(() => expect(screen.getByPlaceholderText('kirocrew')).toHaveValue('kirocrew-tester'))
+    expect(manifest).toHaveBeenCalledTimes(1)
+    expect(manifest).toHaveBeenCalledWith('tester')
+  })
+
+  it('leaves a configured slash command alone until an alias is typed', async () => {
+    // An installed app already registered this command; only the user naming
+    // a new app moves it -- never token state or a background refetch.
+    seed({ command: 'kirocrew-mine', bot_token_set: true, app_token_set: true, bot_token_preview: 'xoxb-…', app_token_preview: 'xapp-…' })
+    await hydrated()
+
+    expect(screen.getByPlaceholderText('kirocrew')).toHaveValue('kirocrew-mine')
+    await act(async () => { vi.advanceTimersByTime(50) })
+    expect(screen.getByPlaceholderText('kirocrew')).toHaveValue('kirocrew-mine')
   })
 })
 
@@ -266,6 +437,22 @@ describe('SlackPanel read-only session', () => {
     // An empty allowlist under read-only renders the placeholder, not an editor.
     expect(screen.getByText('(none)')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Add' })).not.toBeInTheDocument()
+  })
+
+  it('still renders the manifest for a typed alias while read-only', async () => {
+    // The alias is not persisted, so a remote session may type one and get the
+    // manifest and the Create link; the stored Slash command stays as it is.
+    seed({ read_only: true, command: 'kirocrew-mine', allowed_enterprise_ids: [] })
+    await hydrated()
+
+    const aliasInput = screen.getByPlaceholderText('johndoe')
+    expect(aliasInput).toBeEnabled()
+    expect(screen.getByPlaceholderText('kirocrew')).toBeDisabled()
+    typeAlias('tester')
+    await waitFor(() => expect(screen.getByRole('link', { name: 'Create Slack app' })).toHaveAttribute('href', MANIFEST.create_url))
+    expect(screen.getByRole('button', { name: 'Copy manifest YAML' })).toBeEnabled()
+    await act(async () => { vi.advanceTimersByTime(50) })
+    expect(screen.getByPlaceholderText('kirocrew')).toHaveValue('kirocrew-mine')
   })
 
   it('hides the per-tag remove button while read-only', async () => {

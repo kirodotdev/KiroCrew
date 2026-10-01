@@ -259,11 +259,13 @@ interface SettingsInputProps {
   disabled?: boolean
   multiline?: boolean
   'aria-label'?: string
+  /** Id of a caller-rendered help line below the control. */
+  'aria-describedby'?: string
   /** Backend config key this input writes. */
   configKey?: string
 }
 
-export function SettingsInput({ label, description, hint, value, onChange, onBlur, onKeyDown, onFocus, onCompositionStart, onCompositionEnd, placeholder, type = 'text', min, max, step, disabled, multiline, 'aria-label': ariaLabel, configKey }: SettingsInputProps) {
+export function SettingsInput({ label, description, hint, value, onChange, onBlur, onKeyDown, onFocus, onCompositionStart, onCompositionEnd, placeholder, type = 'text', min, max, step, disabled, multiline, 'aria-label': ariaLabel, 'aria-describedby': ariaDescribedBy, configKey }: SettingsInputProps) {
   // Per-instance id pairing the caption's htmlFor with the control. This is
   // what gives the single-line branch an accessible name by DEFAULT: it used
   // to render aria-label={ariaLabel} with ariaLabel undefined unless a caller
@@ -287,6 +289,7 @@ export function SettingsInput({ label, description, hint, value, onChange, onBlu
           disabled={disabled}
           rows={3}
           aria-label={ariaLabel ?? label}
+          aria-describedby={ariaDescribedBy}
           className="w-full rounded border border-border bg-bg px-2 py-1 text-sm text-text focus-visible:border-accent focus:outline-hidden resize-y flex-none"
         />
       ) : (
@@ -306,6 +309,7 @@ export function SettingsInput({ label, description, hint, value, onChange, onBlu
           step={step}
           disabled={disabled}
           aria-label={ariaLabel}
+          aria-describedby={ariaDescribedBy}
           className="flex-none"
         />
       )}

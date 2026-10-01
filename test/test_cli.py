@@ -1718,6 +1718,44 @@ class TestGetAlias:
                 assert e.code == 1
 
 
+class TestDetectAlias:
+    """Tests for _detect_alias."""
+
+    def test_a_long_login_is_cut_to_the_alias_bound(self, monkeypatch, capsys):
+        from kiro_crew import slack_manifest
+        from kiro_crew.cli_setup import _detect_alias
+
+        login = "abcdefghijklmnopqrstuvwxyz"
+        assert slack_manifest.ALIAS_MAX < len(login) <= slack_manifest.SLASH_COMMAND_MAX
+        monkeypatch.setenv("USER", login)
+        alias = _detect_alias()
+        assert alias == login[: slack_manifest.ALIAS_MAX]
+        assert slack_manifest.valid_alias(alias)
+        err = capsys.readouterr().err
+        assert alias in err
+        assert "--alias" in err
+
+    def test_a_login_within_the_bound_is_returned_unchanged(self, monkeypatch, capsys):
+        from kiro_crew import slack_manifest
+        from kiro_crew.cli_setup import _detect_alias
+
+        login = "a" * slack_manifest.ALIAS_MAX
+        monkeypatch.setenv("USER", login)
+        assert _detect_alias() == login
+        assert capsys.readouterr().err == ""
+
+    def test_a_long_login_with_an_illegal_character_still_fails_validation(self, monkeypatch):
+        from kiro_crew import slack_manifest
+        from kiro_crew.cli_setup import _manifest
+
+        monkeypatch.setenv("USER", "a" * slack_manifest.ALIAS_MAX + ".b")
+        try:
+            _manifest()
+            assert False, "should have exited"
+        except SystemExit as e:
+            assert e.code == 1
+
+
 class TestManifest:
     """Tests for _manifest."""
 
@@ -1820,6 +1858,22 @@ class TestManifest:
             except SystemExit as e:
                 assert e.code == 1
 
+    def test_rejects_alias_whose_command_exceeds_slack_limit(self, capsys):
+        """The one validator refuses an alias whose /kirocrew-<alias> is over 32 chars."""
+        from kiro_crew import slack_manifest
+        from kiro_crew.cli_setup import _manifest
+
+        alias = "a" * (slack_manifest.ALIAS_MAX + 1)
+        assert len(slack_manifest.slash_command(alias)) > slack_manifest.SLASH_COMMAND_MAX
+        try:
+            _manifest(alias=alias)
+            assert False, "should have exited"
+        except SystemExit as e:
+            assert e.code == 1
+        err = capsys.readouterr().err
+        assert "Invalid alias" in err
+        assert f"at most {slack_manifest.ALIAS_MAX} characters" in err
+
     def test_url_flag_prints_creation_link(self, capsys):
         with self._patch_template("# comment\nname: KiroCrew-{{ALIAS}}\n"):
             from kiro_crew.cli_setup import _manifest
@@ -1831,6 +1885,15 @@ class TestManifest:
         assert "%0A" in out  # newlines are URL-encoded
         assert "\nname:" not in out  # raw YAML not printed
         assert "%23" not in out  # comments stripped from URL
+        assert "kirocrew config set slack.command kirocrew-alice" in out
+
+    def test_plain_render_prints_only_the_yaml(self, capsys):
+        template = "name: KiroCrew-{{ALIAS}}\n"  # brand-ok: product emits KiroCrew-<alias> (slack-manifest.yaml)
+        with self._patch_template(template):
+            from kiro_crew.cli_setup import _manifest
+
+            _manifest(alias="alice")
+        assert "slack.command" not in capsys.readouterr().out
 
 
 class TestLogout:
@@ -5820,7 +5883,8 @@ class TestSetupChannelGating:
         ):
             monkeypatch.setattr(cs, name, lambda *a, **k: None)
         monkeypatch.setattr(cs, "_setup_slack_tokens", lambda: calls.append("slack_tokens"))
-        monkeypatch.setattr(cs, "_setup_slash_command", lambda: calls.append("slash_command"))
+        monkeypatch.setattr(cs, "_slack_tokens_stored", lambda: False)
+        monkeypatch.setattr(cs, "_setup_slash_command", lambda **k: calls.append("slash_command"))
         monkeypatch.setattr(cs, "_setup_whatsapp", lambda: calls.append("whatsapp"))
         # Conductor-skill step catches Exception and continues.
         monkeypatch.setattr(

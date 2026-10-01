@@ -34,6 +34,13 @@
       "configKey": "dashboard.use_builtin_browser"
     },
     {
+      "id": "channels.alias-slack",
+      "label": "Alias (Slack)",
+      "tab": "channels",
+      "route": "/settings/channels/slack?highlight=channels.alias-slack",
+      "description": "Names the app and its slash command /kirocrew-<alias>; the Slash command below follows it until you edit that field. Letters, digits, - and _ only, up to 23 characters."
+    },
+    {
       "id": "channels.allowed-emails-webex",
       "label": "Allowed emails (Webex)",
       "tab": "channels",

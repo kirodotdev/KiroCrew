@@ -13,8 +13,14 @@ from kiro_crew.voice_reply import DEFAULT_PROVIDER, PROVIDER_POLLY
 
 
 @pytest.fixture(autouse=True)
-def _reset_vc():
-    """Reset _vc flags before/after each test."""
+def _reset_vc(monkeypatch):
+    """Reset _vc flags before/after each test and undo the ``set_orch_cfg`` install.
+
+    Without the restore, the ``SimpleNamespace()`` these tests install stays in
+    the module global and every later ``slack_cfg()`` reader in the same worker
+    gets it instead of a real config.
+    """
+    monkeypatch.setattr(handler_mod, "_orch_cfg", handler_mod._orch_cfg)
     _vc.auto_speak = False
     _vc.global_enabled = False
     _vc.auto_reply_to_voice = False

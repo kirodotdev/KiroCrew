@@ -43,7 +43,16 @@ This prints a one-click URL that opens Slack's "Create New App" page with all sc
 ```
 🔗 Click to create your Slack app:
 https://api.slack.com/apps?new_app=1&manifest_yaml=...
+
+   Slash command: /kirocrew-<alias> — set slack.command to match:
+   kirocrew config set slack.command kirocrew-<alias>
 ```
+
+The app, its bot user and its slash command are all named after your login
+(`KiroCrew-<alias>`, `/kirocrew-<alias>`). The suffix matters in a Slack
+Enterprise Grid: slash command names are resolved org-wide, so two workspaces
+that both register `/kirocrew` make Slack dispatch to the wrong app and fail
+with `invalid_service`. Pass `--alias <name>` to pick a different suffix.
 
 ### Step 2. Create the App from the Link
 
@@ -95,6 +104,9 @@ kirocrew setup --slack
 ```
 
 Paste your App Token (`xapp-...`), Bot Token (`xoxb-...`), and your Slack Member ID when prompted.
+
+The slash command prompt defaults to `kirocrew-<alias>`, the name the manifest
+registered. Accept it unless you changed the command in Slack.
 
 To find your Slack Member ID: open your workspace in Slack → click your profile picture → **Profile** → **⋮** → **Copy member ID**.
 
@@ -158,6 +170,12 @@ Add it only if you want custom workspace emojis to appear in the emoji picker.
 > **reinstalled** to the workspace. After adding scopes (or importing an
 > updated manifest), go to **Settings → Install App → Reinstall to Workspace**
 > and copy the new Bot Token.
+>
+> A manifest rendered by `kirocrew manifest` or the dashboard registers the
+> slash command `/kirocrew-<alias>`. Importing it into an app that registered
+> `/kirocrew` renames the command, so after the reinstall set `slack.command`
+> to match (`kirocrew config set slack.command kirocrew-<alias>`) or edit the
+> command back to its old name in the imported manifest before saving it.
 
 ### Step 4. Add User Scopes
 
@@ -191,16 +209,21 @@ and configure that token only in the integration that consumes it.
 
 | Field | Value |
 |-------|-------|
-| Command | `/kirocrew` |
+| Command | `/kirocrew-<alias>` (any unique name; see below) |
 | Short Description | Dashboard access, agent, session, and channel controls |
 | Usage Hint | `dashboard [duration] \| agent [name] \| sessions \| #channel` |
 
-The command name you choose here must match the `slack.command` value in `~/.kiro/crew/config.json` (default: `kirocrew`):
+Pick a name no other app in your Slack organization uses. In an Enterprise
+Grid, slash command names are resolved org-wide, so a shared name such as
+`/kirocrew` makes Slack dispatch to another workspace's app and fail with
+`invalid_service`. Suffixing your login is the convention the manifest path uses.
+
+The command name you choose here must match the `slack.command` value in `~/.kiro/crew/config.json`:
 
 ```json
 {
   "slack": {
-    "command": "kirocrew"
+    "command": "kirocrew-<alias>"
   }
 }
 ```
@@ -339,8 +362,8 @@ Any of these work:
 ```
 !dashboard              # DM: 1-hour session (default)
 !dashboard 2h           # DM: 2-hour session
-/kirocrew dashboard     # Slash command: 1-hour session
-/kirocrew dashboard 30m # Slash command: 30-minute session
+/<command> dashboard     # Slash command: 1-hour session
+/<command> dashboard 30m # Slash command: 30-minute session
 ```
 
 Durations are `<N>h` or `<N>m` and are capped at **20 hours**; anything longer
@@ -387,7 +410,7 @@ the dashboard on:
 From this single URL, Kiro Crew derives:
 - **Port** to bind on (8080 in this example)
 - **Allowed origins** for the CSRF / WebSocket checks
-- **Dashboard link hostname** for `!dashboard` and `/kirocrew dashboard`
+- **Dashboard link hostname** for `!dashboard` and `/<command> dashboard`
 
 When omitted, it defaults to port 5476 and the `localhost` hostname.
 
@@ -441,7 +464,12 @@ message being forwarded to the linked session.
 
 ### Slash Commands
 
-The slash command name is configurable via `slack.command` in config (default: `kirocrew`).
+The slash command name is configurable via `slack.command` in config. The
+manifest registers `/kirocrew-<alias>` and `kirocrew setup --slack` defaults to
+the same name; the gateway only answers the command it is configured for. If
+Slack answers `/<command>` with `invalid_service`, the name is registered by
+another workspace's app in your organization: rename the command in your app,
+reinstall it, and set `slack.command` to the new name.
 
 | Command | Purpose |
 |---------|---------|

@@ -256,6 +256,8 @@ def test_manifest_endpoint_renders_alias_and_url(monkeypatch) -> None:
     body = json.loads(asyncio.run(mod.api_slack_manifest(req)).text)
     assert body["alias"] == "myteam"
     assert "KiroCrew-myteam" in body["manifest"]
+    assert "command: /kirocrew-myteam" in body["manifest"]
+    assert body["command"] == "kirocrew-myteam"
 
 
 def test_manifest_endpoint_rejects_bad_alias() -> None:
@@ -264,6 +266,23 @@ def test_manifest_endpoint_rejects_bad_alias() -> None:
     req = make_mocked_request("GET", "/api/slack/manifest?alias=../evil")
     resp = asyncio.run(mod.api_slack_manifest(req))
     assert resp.status == 400
+
+
+def test_manifest_endpoint_rejects_alias_too_long_for_command() -> None:
+    """The endpoint has no length check of its own: ``valid_alias`` is bounded so
+    that every alias it admits renders a /kirocrew-<alias> Slack accepts."""
+    import kiro_crew.dashboard.handlers.messaging as mod
+    from kiro_crew import slack_manifest
+
+    longest = "a" * slack_manifest.ALIAS_MAX
+    req = make_mocked_request("GET", f"/api/slack/manifest?alias={longest}")
+    body = json.loads(asyncio.run(mod.api_slack_manifest(req)).text)
+    assert len(body["command"]) == slack_manifest.SLASH_COMMAND_MAX
+
+    req = make_mocked_request("GET", f"/api/slack/manifest?alias={longest}a")
+    resp = asyncio.run(mod.api_slack_manifest(req))
+    assert resp.status == 400
+    assert json.loads(resp.text) == {"error": "invalid alias"}
 
 
 def test_clear_flags_must_be_strict_booleans(tmp_path, monkeypatch) -> None:
