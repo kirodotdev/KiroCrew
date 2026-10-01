@@ -1203,7 +1203,7 @@ def turn_lessons(
     if not entries:
         return []
     query_stems = {_stem_one(word) for word in store._lesson_keywords(query_text.lower())}
-    row_tokens = _row_stem_tokens_for_scan(len(entries))
+    row_tokens = _text_scoring._row_stem_tokens_for_scan(len(entries))
     shared_by_row, sizes, document_frequency = _shared_lesson_stems(
         entries, query_stems, row_tokens
     )
