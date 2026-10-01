@@ -121,6 +121,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Prefix of ``task.error`` when self-review could not judge the step at all.
+_REVIEW_UNVERIFIED = "Self-review could not verify the step"
+
 
 async def _reset_session_quietly(sessions: "SessionManager", session_key: str) -> None:
     """Reset the ACP session for the next turn; a reset that fails is not fatal.
@@ -311,17 +314,32 @@ async def execute_single_task(
     run.last_task_time = _time.time()
 
     if success:
-        committed = False
+        committed = commit_failed = False
         if run.branch_name:
             try:
                 sha = await git_coord.commit_step(run, task)
                 committed = bool(sha)
             except Exception:
+                commit_failed = True
                 logger.debug("Git commit failed for task %d", task.index, exc_info=True)
 
         task.status = TaskStatus.REVIEWING
-        review_ok = await self_review(run, task, sessions, agent, session_key, ctx=ctx)
-        if not review_ok:
+        # Passed only when set, so the common call keeps its existing shape.
+        _review_kw = {"commit_failed": True} if commit_failed else {}
+        review_ok = await self_review(
+            run, task, sessions, agent, session_key, ctx=ctx, **_review_kw
+        )
+        if not review_ok and task.error.startswith(_REVIEW_UNVERIFIED):
+            # Nothing to judge the step by: fail it. A re-run would repeat any
+            # push or CR the step made and pass without a review.
+            task.status = TaskStatus.FAILED
+            success = False
+            await on_notify(
+                f"❌ Task {task.index}/{len(run.tasks)} failed",
+                f"{task.title}\n{task.error}",
+                run=run,
+            )
+        elif not review_ok:
             if committed and run.branch_name:
                 try:
                     await git_coord.revert_step(run)
@@ -1341,8 +1359,15 @@ async def self_review(
     session_key: str = "",
     *,
     ctx: "ContextBuilder | None" = None,
+    commit_failed: bool = False,
 ) -> bool:
-    """Review task using a separate session that reads the actual git diff."""
+    """Review task using a separate session that reads the actual git diff.
+
+    Fails closed: a review error, or a git run whose step has no diff to show,
+    returns False with ``task.error`` starting ``_REVIEW_UNVERIFIED``. A step
+    whose commit failed (non-fatal by design) has no diff for that reason, so it
+    keeps the generic review instead.
+    """
     review_key = f"{SESSION_PREFIX}:{run.task_id}:review"
     from kiro_crew.context import inherit_session_memory
 
@@ -1355,6 +1380,10 @@ async def self_review(
             except Exception:
                 pass
 
+        if run.branch_name and not commit_failed and not diff.strip():
+            task.error = f"{_REVIEW_UNVERIFIED}: the step left no diff to review"
+            logger.warning("Task %d unverified: no diff on a git run", task.index)
+            return False
         if diff.strip():
             prompt = (
                 "You are an independent review agent. You did NOT write this code.\n"
@@ -1430,8 +1459,9 @@ async def self_review(
             return False
         return True
     except Exception:
-        logger.debug("Self-review failed", exc_info=True)
-        return True  # don't block on review failure
+        logger.warning("Self-review errored for task %d", task.index, exc_info=True)
+        task.error = f"{_REVIEW_UNVERIFIED}: the review itself failed"
+        return False
     finally:
         sessions.release(review_key)
         await sessions.reset(review_key)

@@ -2997,8 +2997,8 @@ class TestSelfReview:
         assert len(run.memory.blockers) == 1
 
     @pytest.mark.asyncio
-    async def testself_review_exception_passes(self, tmp_path: Path) -> None:
-        """Self-review exception → doesn't block step."""
+    async def testself_review_exception_fails_closed(self, tmp_path: Path) -> None:
+        """Self-review exception → the step is not verified, so it does not pass."""
         sessions = _make_mock_sessions()
         sessions.get_or_create = AsyncMock(side_effect=RuntimeError("boom"))
 
@@ -3008,7 +3008,88 @@ class TestSelfReview:
         run.tasks = [step]
 
         result = await runner.self_review(run, step)
-        assert result is True  # graceful fallback
+        assert result is False
+        assert step.error.startswith("Self-review could not verify the step")
+
+    @pytest.mark.asyncio
+    async def testself_review_no_diff_on_a_git_run_is_unverified(self, tmp_path: Path) -> None:
+        """A git run whose step left no diff has nothing to review: not passed."""
+        sessions = _make_mock_sessions()
+        runner = TaskRunner(sessions=sessions, auto_test=False, work_dir=tmp_path)
+        run = TaskRun(spec_path=str(tmp_path / "t.md"), spec_content="s")
+        run.branch_name = "task/x"
+        step = Step(index=1, title="Push", description="push the branch")
+        run.tasks = [step]
+
+        judge = AsyncMock(return_value={"ok": True})
+        with (
+            patch("kiro_crew.task_executor.git_coord.get_step_diff", AsyncMock(return_value="")),
+            patch("kiro_crew.task_executor.stream_and_collect_json", judge),
+        ):
+            result = await runner.self_review(run, step)
+
+        assert result is False
+        assert "no diff" in step.error
+        judge.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def testself_review_no_diff_after_a_failed_commit_asks_the_reviewer(
+        self, tmp_path: Path
+    ) -> None:
+        """A failed commit (non-fatal) explains the missing diff, so review still runs."""
+        from kiro_crew.task_executor import self_review
+
+        sessions = _make_mock_sessions()
+        sessions.get_or_create = AsyncMock(return_value=(MagicMock(), True, False))
+        run = TaskRun(spec_path=str(tmp_path / "t.md"), spec_content="s")
+        run.branch_name = "task/x"
+        step = Step(index=1, title="Code", description="d")
+        run.tasks = [step]
+
+        with (
+            patch("kiro_crew.task_executor.git_coord.get_step_diff", AsyncMock(return_value="")),
+            patch("kiro_crew.task_executor.stream_and_collect_json", return_value={"ok": True}),
+        ):
+            assert await self_review(run, step, sessions, "", commit_failed=True) is True
+
+    @pytest.mark.asyncio
+    async def testself_review_no_diff_without_git_still_asks_the_reviewer(
+        self, tmp_path: Path
+    ) -> None:
+        sessions = _make_mock_sessions()
+        runner = TaskRunner(sessions=sessions, auto_test=False, work_dir=tmp_path)
+        run = TaskRun(spec_path=str(tmp_path / "t.md"), spec_content="s")
+        step = Step(index=1, title="Research", description="d")
+        run.tasks = [step]
+        sessions.get_or_create = AsyncMock(return_value=(MagicMock(), True, False))
+
+        with patch("kiro_crew.task_executor.stream_and_collect_json", return_value={"ok": True}):
+            assert await runner.self_review(run, step) is True
+
+    @pytest.mark.asyncio
+    async def test_an_unverified_review_fails_the_step_without_a_rerun(
+        self, tmp_path: Path
+    ) -> None:
+        sessions = _make_mock_sessions()
+        sessions.get_or_create = AsyncMock(return_value=(_make_mock_provider("done"), True, False))
+        runner = TaskRunner(sessions=sessions, auto_test=False, work_dir=tmp_path)
+        run = TaskRun(spec_path=str(tmp_path / "t.md"), spec_content="s", status="running")
+        step = Step(index=1, title="Push", description="d")
+        run.tasks = [step]
+
+        async def _unverified(r, s, sessions, agent, session_key="", *, ctx=None):
+            s.error = "Self-review could not verify the step: the review itself failed"
+            return False
+
+        with (
+            patch("kiro_crew.task_executor.self_review", side_effect=_unverified),
+            patch("kiro_crew.task_executor.execute_task", AsyncMock(return_value=True)) as ex,
+        ):
+            success = await runner._execute_single_task(run, step, "key")
+
+        assert success is False
+        assert step.status == StepStatus.FAILED
+        assert ex.await_count == 1
 
 
 # ── Phase 12.2: Approval Gates ──

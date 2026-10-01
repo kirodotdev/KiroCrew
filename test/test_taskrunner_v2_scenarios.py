@@ -575,7 +575,7 @@ class TestScenarioReviewWithDiff:
 
     @pytest.mark.asyncio
     async def test_review_fallback_without_diff(self, tmp_path: Path) -> None:
-        """Without git diff, review uses generic prompt."""
+        """A run without git has no diff, so review uses the generic prompt."""
         from kiro_crew import git_coord  # noqa: F401
 
         sessions = _mock_sessions()
@@ -584,7 +584,7 @@ class TestScenarioReviewWithDiff:
         runner = TaskRunner(sessions=sessions, auto_test=False, work_dir=tmp_path)
         run = TaskRun(spec_path=str(tmp_path / "t.md"), spec_content="s")
         run.task_id = "no_diff"
-        run.branch_name = "kirocrew/task/no_diff"
+        run.branch_name = ""
         step = Step(index=1, title="Test", description="d")
         run.tasks = [step]
 
@@ -849,7 +849,7 @@ class TestScenarioCompletionNotification:
             patch.object(git_coord, "init_workspace", side_effect=_mock_init),
             patch.object(git_coord, "commit_step", return_value="sha123"),
             patch.object(git_coord, "finalize", return_value="kirocrew/task/test_branch"),
-            patch.object(runner, "self_review", return_value=True),
+            patch("kiro_crew.task_executor.self_review", return_value=True),
         ):
             result = await runner.run(spec)
 
@@ -2282,13 +2282,15 @@ class TestScenarioGitCommitFailureNonFatal:
 
         with (
             patch("kiro_crew.task_executor.execute_task", return_value=True),
-            patch.object(runner, "self_review", return_value=True),
+            patch("kiro_crew.task_executor.self_review", return_value=True) as review,
             patch("kiro_crew.task_executor.git_coord") as mock_git,
         ):
             mock_git.commit_step = AsyncMock(side_effect=RuntimeError("git broken"))
             result = await runner._execute_single_task(run, step, "hk")
 
         assert result is True
+        # The failed commit is why there is no diff: the no-diff refusal is skipped.
+        assert review.call_args.kwargs.get("commit_failed") is True
 
 
 # ═══════════════════════════════════════════════════════════════════════
